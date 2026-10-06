@@ -209,6 +209,7 @@ impl ShortcutMenuState {
         let label = offer.label().to_string();
         self.requests.push(CollabRequest::RemoteAction {
             message: RemoteActionMessage::Invoke(InvokeRequest {
+                on_behalf_of: None,
                 invocation,
                 target: RemoteActionTarget {
                     provider: offer.provider.clone(),

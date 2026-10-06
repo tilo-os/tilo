@@ -111,18 +111,27 @@ impl Widget for DisplayBars {
         Some(self)
     }
 
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         for (_, bar) in &mut self.bars {
             bar.sync(state, root);
         }
     }
 
-    fn update(&mut self, state: &mut AppModel, root: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, root: &ModelPath) -> bool {
         let mut changed = false;
         for (_, bar) in &mut self.bars {
             changed |= bar.update(state, root);
         }
         changed
+    }
+
+    /// The bars hold no children for the default walk, so their clocks'
+    /// deadlines are gathered here.
+    fn next_wake_deadline(&self) -> Option<ui::clock::Instant> {
+        self.bars
+            .iter()
+            .filter_map(|(_, bar)| bar.next_wake_deadline())
+            .min()
     }
 
     fn build_layout(

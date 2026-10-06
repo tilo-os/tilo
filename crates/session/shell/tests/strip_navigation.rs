@@ -253,7 +253,7 @@ impl Harness {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -330,7 +330,7 @@ impl Harness {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -483,7 +483,12 @@ fn invoke(
         .ok_or_else(|| ActionError::Refused(format!("{id} is not on the action door")))?;
     let args = args.as_object().cloned().unwrap_or_default();
     selected
-        .invoke_json(&mut doc, &root, &h.chrome, &args)
+        .invoke_json(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+            &h.chrome,
+            &args,
+        )
         .map(drop)
 }
 
@@ -1069,7 +1074,7 @@ fn every_close_route_commits_the_exact_surface_durably() {
             // intentionally refuse a cache-only mutation because the next peer
             // revision would undo it.
             tree.seed_doc_from_cache();
-            tree.flush_to_disk();
+            tree.queue_save();
         }
 
         let close = h
@@ -1213,7 +1218,7 @@ fn every_close_route_commits_the_exact_surface_durably() {
                 };
             }
             tree.seed_doc_from_cache();
-            tree.flush_to_disk();
+            tree.queue_save();
         }
 
         let first = h.tabs[0][0];

@@ -18,10 +18,11 @@
 )]
 
 use tilo_automerge::ApplyIncoming;
+use ui::tilo_resource::Effect as _;
 use ui::time::Duration;
 
 use automerge::AutoCommit;
-use tilo_actions::{ActionAddress, Resource, ResourceProvider};
+use tilo_actions::{ActionAddress, Resource};
 use tilo_agent::{Config, Session};
 use tilo_content::ContentStore;
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
@@ -50,10 +51,25 @@ fn granted(name: &str, app: &str) -> ui::permissions::PermissionContext {
     )
 }
 
-/// Nothing granted at all: the agent may enumerate and perform nothing.
-fn nothing_granted(name: &str) -> ui::permissions::PermissionContext {
-    use ui::permissions::{Actor, PermissionContext};
-    PermissionContext::from_capabilities(Actor::agent(name), vec![])
+/// Leave to answer in the document and nothing else: the agent may write
+/// its reply (one typed edit, or several as one) and enumerate and perform
+/// none of the app's own operations.
+fn only_answering(name: &str) -> ui::permissions::PermissionContext {
+    use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
+    let answer = |action: &str| {
+        CapOverride::grant(
+            Subject::agent(name),
+            Scope::Action {
+                app: APP.to_string(),
+                action: action.to_string(),
+            },
+            Verb::Write,
+        )
+    };
+    PermissionContext::from_capabilities(
+        Actor::agent(name),
+        vec![answer(tilo_resource::APPLY), answer(tilo_resource::GROUP)],
+    )
 }
 
 /// A title paragraph, an image, and one instruction naming an operation the
@@ -61,10 +77,10 @@ fn nothing_granted(name: &str) -> ui::permissions::PermissionContext {
 fn seed_document_with_image(instruction: &str) -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from("ada".as_bytes()));
-    let c = qdoc::model::init(&mut doc, &automerge::ROOT);
-    let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
+    let c = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+    let mut ids = tilo_doc::model::seeded_id_gen(&doc, &c);
     {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &c,
             ids: &mut ids,
@@ -79,15 +95,15 @@ fn seed_document_with_image(instruction: &str) -> AutoCommit {
     doc
 }
 
-fn blocks(doc: &AutoCommit) -> Vec<qdoc::BlockView> {
-    let c = qdoc::model::open(doc, &automerge::ROOT).expect("schema");
-    qdoc::model::materialize(doc, &c).blocks
+fn blocks(doc: &AutoCommit) -> Vec<tilo_doc::BlockView> {
+    let c = tilo_doc::model::open(doc, &automerge::ROOT).expect("schema");
+    tilo_doc::model::materialize(doc, &c).blocks
 }
 
 fn word_processor_resources(doc: &AutoCommit, content: &ContentStore) -> Vec<Resource> {
     let b = blocks(doc);
     let caret = b.last().map(|block| block.id.clone()).unwrap_or_default();
-    word_processor::actions::provide_resources(
+    word_processor::actions::published_for(
         &word_processor::actions::WpResourceCtx {
             caret_block: caret.clone(),
             caret_offset: 0,
@@ -102,8 +118,31 @@ fn word_processor_resources(doc: &AutoCommit, content: &ContentStore) -> Vec<Res
     )
 }
 
+/// How far the library's one photograph is turned.
+fn photo_rotation(doc: &AutoCommit) -> u8 {
+    photos::doc::PhotosDoc::library(doc)
+        .photos
+        .first()
+        .map_or(0, |photo| photo.edits.rotate_quarters)
+}
+
+/// The photograph as Photos publishes it in its library's tree: the
+/// one resource this scenario edits, so the catalogue the agent plans
+/// against stays small.
 fn photos_resources(doc: &AutoCommit) -> Vec<Resource> {
-    photos::actions::PhotosResources.resources(doc)
+    tilo_agent::surface::tree(
+        tilo_agent::surface::for_app_id("so.tilo.photos").expect("Photos is spoken to"),
+        doc,
+    )
+    .into_iter()
+    .flat_map(|library| library.children)
+    .filter(|child| {
+        child
+            .actions
+            .iter()
+            .any(|action| action.id == "rotate-right")
+    })
+    .collect()
 }
 
 /// Bring up the relay, seed `replica`, connect a peer under it, and run the
@@ -265,8 +304,7 @@ fn a_discovered_operation_runs_only_when_granted_and_explicitly_confirmed() {
                 model_timeout: Duration::from_secs(1),
                 await_document: Duration::ZERO,
                 settle: Duration::ZERO,
-                directory: None,
-                permissions: granted("Scribe", "word-processor"),
+                permissions: granted("Scribe", APP),
                 content: ContentStore::memory(),
             },
             replica,
@@ -304,7 +342,7 @@ fn a_discovered_operation_runs_only_when_granted_and_explicitly_confirmed() {
         assert!(!reply.text.contains('#'), "{}", reply.text);
 
         // The refusal itself is still an attributed agent-authored document edit.
-        let genesis = qdoc::model::schema_genesis_actor_hex();
+        let genesis = tilo_doc::model::schema_genesis_actor_hex();
         let seed = hex::encode("ada");
         let actors: std::collections::HashSet<String> =
             tilo_resource::history::versions(&mut replica)
@@ -344,8 +382,7 @@ fn a_discovered_operation_runs_only_when_granted_and_explicitly_confirmed() {
                 model_timeout: Duration::from_secs(1),
                 await_document: Duration::ZERO,
                 settle: Duration::ZERO,
-                directory: None,
-                permissions: nothing_granted("Scribe"),
+                permissions: only_answering("Scribe"),
                 content: ContentStore::memory(),
             },
             replica,
@@ -416,8 +453,7 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
                 model_timeout: Duration::from_secs(1),
                 await_document: Duration::ZERO,
                 settle: Duration::ZERO,
-                directory: None,
-                permissions: granted("Scribe", "word-processor"),
+                permissions: granted("Scribe", APP),
                 content: ContentStore::memory(),
             },
             replica,
@@ -449,7 +485,7 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
 
         // The app-hosted action is attributed to the authenticated broker actor;
         // the agent's local acknowledgement edit may retain its display actor.
-        let genesis = qdoc::model::schema_genesis_actor_hex();
+        let genesis = tilo_doc::model::schema_genesis_actor_hex();
         let seed = hex::encode("ada");
         let actors: std::collections::HashSet<String> =
             tilo_resource::history::versions(&mut replica)
@@ -520,7 +556,6 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
             model_timeout: Duration::from_secs(1),
             await_document: Duration::ZERO,
             settle: Duration::ZERO,
-            directory: None,
             permissions,
             content: content.clone(),
         };
@@ -568,11 +603,11 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
         assert!(
             acted,
             "the agent never completed the result-carrying plan; answered={done}, rotation={}, blocks={shown:?}",
-            photos::doc::PhotosDoc::edits(&photo_replica).rotate_quarters
+            photo_rotation(&photo_replica)
         );
         assert!(done, "the consuming action never landed; blocks: {shown:?}");
         assert_eq!(
-            photos::doc::PhotosDoc::edits(&photo_replica).rotate_quarters,
+            photo_rotation(&photo_replica),
             1,
             "the discovered operation never reached the second application's document"
         );
@@ -588,7 +623,7 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
         let placed = images
             .iter()
             .find_map(|block| match block.attrs.get("blob") {
-                Some(qdoc::AttrVal::Str(hash)) => Some(hash),
+                Some(tilo_doc::AttrVal::Str(hash)) => Some(hash),
                 _ => None,
             })
             .expect("the carried image has a content hash");
@@ -628,7 +663,7 @@ fn connect_word_processor(sock: &std::path::Path, room: Uuid) -> (UnixStream, Au
 }
 
 /// Connect the photo-editor peer to `sock` under the same room, announce it,
-/// and seed its replica with one open image — a second application's
+/// and seed its replica with one photograph — a second application's
 /// document the agent was never told about.
 fn connect_photo_editor(
     sock: &std::path::Path,
@@ -649,14 +684,17 @@ fn connect_photo_editor(
     .unwrap();
     let mut photo_replica = AutoCommit::new();
     photo_replica.set_actor(automerge::ActorId::from("photos-peer".as_bytes()));
-    photos::doc::PhotosDoc::seed(&mut photo_replica);
     let png = photos::pixels::encode_png(&photos::shots_pattern(40, 24))
         .expect("the source photograph encodes");
     let original = content.put(&png).expect("the source photograph is stored");
-    photos::doc::PhotosDoc::set_image(
-        &mut photo_replica,
-        Some(&photos::OpenImage::from_path("photo.png", 40, 24).with_content(&original)),
+    let photo = photos::model::LibraryPhoto::from_image(
+        photos::OpenImage::from_path("photo.png", 40, 24).with_content(&original),
     );
+    tilo_actions::Action::apply(
+        &photos::actions::PhotosAction::ImportPhoto { photo },
+        &mut photo_replica,
+    )
+    .expect("the photograph is imported");
     photo_replica.commit();
     (photo_peer, photo_replica)
 }
@@ -669,13 +707,13 @@ fn word_processor_and_photos_permissions() -> ui::permissions::PermissionContext
         vec![
             CapOverride::grant(
                 Subject::agent("Scribe"),
-                Scope::App("word-processor".to_string()),
+                Scope::App("so.tilo.word-processor".to_string()),
                 Verb::Write,
             )
             .with_id("wp"),
             CapOverride::grant(
                 Subject::agent("Scribe"),
-                Scope::App("photos".to_string()),
+                Scope::App("so.tilo.photos".to_string()),
                 Verb::Write,
             )
             .with_id("photos"),
@@ -735,37 +773,31 @@ fn drive_photo_peer(
             } => {
                 let resources = photos_resources(&photo_replica);
                 let update = if action == photos::actions::EXPORT_EDITED_CONTENT_ACTION_ID {
-                    let encoded = resources
-                        .iter()
-                        .find(|candidate| candidate.id.as_str() == resource)
-                        .and_then(|candidate| {
-                            candidate
-                                .actions
-                                .iter()
-                                .find(|candidate| candidate.id == action)
-                        })
-                        .and_then(|spec| match &spec.input {
-                            tilo_actions::ActionInput::Immediate(encoded) => Some(encoded),
-                            tilo_actions::ActionInput::Prompted { .. }
-                            | tilo_actions::ActionInput::Deferred { .. } => None,
-                        })
-                        .expect("the published export has one immediate operation payload");
-                    let result =
-                        photos::actions::decode_operation(&encoded.type_id, &encoded.payload)
-                            .and_then(|operation| match operation {
-                                Some(photos::actions::PhotosOperation::ExportEditedContent {
-                                    resource_id,
-                                    source_content,
-                                    edits,
-                                }) => photos::actions::export_edited_content(
-                                    &resource_id,
-                                    &source_content,
-                                    edits,
-                                    &photo_replica,
-                                    content,
-                                ),
-                                _ => Err("the export descriptor did not encode an export".into()),
-                            });
+                    let encoded = tilo_actions::door::resolve(
+                        &resources,
+                        &ActionAddress::new(resource.clone(), action.clone()),
+                    )
+                    .and_then(|spec| match &spec.input {
+                        tilo_actions::ActionInput::Immediate(encoded) => Some(encoded),
+                        tilo_actions::ActionInput::Prompted { .. }
+                        | tilo_actions::ActionInput::Deferred { .. } => None,
+                    })
+                    .expect("the published export has one immediate operation payload");
+                    let result = photos::actions::PhotosEffect::from_payload(&encoded.payload)
+                        .and_then(|effect| match effect {
+                            photos::actions::PhotosEffect::ExportEditedContent {
+                                resource_id,
+                                source_content,
+                                edits,
+                            } => photos::actions::export_edited_content(
+                                &resource_id,
+                                &source_content,
+                                edits,
+                                &photos::doc::PhotosDoc::library(&photo_replica),
+                                content,
+                            ),
+                            _ => Err("the export descriptor did not encode an export".into()),
+                        });
                     let invocation =
                         tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
                     match result {

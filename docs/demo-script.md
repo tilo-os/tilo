@@ -171,8 +171,8 @@ a cut for each.
 ## 7 · ada's writing appears on bob's screen ❌ — not on any frame yet
 
 **Two packaged word processors converge when both are opened from the
-palette.** Proven from the receiving side:
-`/tmp/qs-gpxaor_7/shots/bob-received.png` — bob's page carrying text he
+palette.** Proven from the receiving side: the `bob-received.png`
+shot shows bob's page carrying text he
 never typed, with alice's caret and pointer.
 
 That took fixing something subtle. The op stream carries signed
@@ -345,7 +345,7 @@ the run fails if any frame came from its session.
 ```bash
 # The demo rig needs debug-assertions on for TILO_TEST_CONTROL, and
 # refuses to record a binary older than the sources under test.
-cargo build --profile demo -p shell --bin shell --bin tilo-control
+cargo build --profile demo -p shell -p tilo-control --bin shell --bin tilo-control
 cargo build -p launcher --bin tilo-launcher
 cargo build -p agent --bin tilo-agent                # beat 9
 cargo build -p app-cli --bins --examples      # beat 5's registry

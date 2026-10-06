@@ -177,7 +177,7 @@ pub fn fetch_verified_case(
         &events,
         case_id,
         &registry.owner_pubkey_hex,
-        &snapshot.moderation_head_hex,
+        snapshot.moderation_head_hex(),
     )
     .map_err(|error| ModerationClientError::InvalidProof(error.to_string()))
 }

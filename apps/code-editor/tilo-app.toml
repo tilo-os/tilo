@@ -9,8 +9,8 @@
 #
 # Beyond the system read profile it needs, as a consented capability:
 # read+exec on the host bin dirs, for `$SHELL` in the built-in
-# terminal tab and for any language server enabled through
-# `TILO_CODE_LSP`.
+# terminal tab and for the language servers it starts unless they are
+# turned off in its preferences.
 #
 
 
@@ -66,7 +66,6 @@ mode = "off"
 [sandbox.services]
 collab = "optional@1"
 tilo-fs = "optional@1"
-spellcheck = "optional@1"
 
 [entrypoint]
 bin             = "bin/code-editor"

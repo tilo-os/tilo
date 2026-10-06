@@ -11,6 +11,8 @@
     reason = "in a test these are the assertion, not a hazard; the host lives as long as the phase that uses it"
 )]
 
+#[path = "support/steward.rs"]
+mod steward;
 mod support;
 
 use std::sync::atomic::Ordering;
@@ -71,6 +73,7 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
+    let mut steward = steward::Steward::start(&host.relay, &root).await;
     let listen = host.web.addr;
 
     let author = start_peer(
@@ -89,6 +92,7 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     );
     author.join(workspace()).unwrap();
     observer.join(workspace()).unwrap();
+    observer.open_route(route()).unwrap();
     ready(&[&author, &observer]).await;
 
     author
@@ -123,6 +127,7 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     drop(host.web);
     host.relay.shutdown().await;
     let host = start_host(&root, &host_device, state.path(), listen).await;
+    steward.reconnect(&host.relay, &root).await;
     author.reconnect().unwrap();
     ready(&[&author]).await;
     author
@@ -153,6 +158,7 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
         fresh.key,
     );
     fresh.join(workspace()).unwrap();
+    fresh.open_route(route()).unwrap();
     assert_eq!(receive(&fresh, HISTORY + 3).await.len(), HISTORY + 3);
     eprintln!(
         "reconnect: {resume_bytes} bytes of /events resuming, {} bytes replaying the history",

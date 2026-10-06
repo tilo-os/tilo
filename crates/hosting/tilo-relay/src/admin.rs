@@ -44,6 +44,13 @@ enum Cmd {
         #[arg(long)]
         service: String,
     },
+    /// Refresh every enrolled home peer's registration from its current
+    /// status: endpoint, and what its workers run for environments. A peer
+    /// that does not answer keeps its last registration.
+    HomePeerRefresh {
+        #[arg(long)]
+        identity_root: PathBuf,
+    },
     /// Rename an enrolled home peer after mutual authentication.
     HomePeerRename {
         #[arg(long)]
@@ -168,6 +175,7 @@ fn run() -> anyhow::Result<()> {
             service,
             label,
         } => cmd_home_peer(&identity_root, &device, &service, Some(label)),
+        Cmd::HomePeerRefresh { identity_root } => cmd_home_peer_refresh(&identity_root),
         Cmd::HomePeerRemove {
             identity_root,
             device,
@@ -247,13 +255,39 @@ fn cmd_home_peer(
     if let Some(label) = requested_label {
         update_home_peer_registry(identity_root, device, Some(label))?;
     }
-    refresh_home_peer_endpoint(
-        identity_root,
-        device,
-        device_key(service)?,
-        &response.relay_endpoint,
-    )?;
+    refresh_home_peer_endpoint(identity_root, device, device_key(service)?, &response)?;
     println!("{}", serde_json::to_string(&response)?);
+    Ok(())
+}
+
+fn cmd_home_peer_refresh(identity_root: &std::path::Path) -> anyhow::Result<()> {
+    let path = identity_root.join("home-peers.json");
+    let registrations: Vec<tilo_relay::HomePeerRegistration> =
+        serde_json::from_slice(&std::fs::read(&path)?)?;
+    let mut refreshed = 0usize;
+    for registration in &registrations {
+        let (device, service) = (
+            registration.device_node_id.as_str(),
+            registration.relay_service_node_id.as_str(),
+        );
+        let answered = remote_home_peer(
+            identity_root,
+            device,
+            service,
+            tilo_relay::transport::HomePeerManagementRequest::Status,
+        )
+        .and_then(|response| {
+            refresh_home_peer_endpoint(identity_root, device, device_key(service)?, &response)
+        });
+        match answered {
+            Ok(()) => refreshed = refreshed.saturating_add(1),
+            Err(error) => eprintln!("{}: {error:#}", registration.label),
+        }
+    }
+    println!(
+        "{}",
+        serde_json::json!({ "refreshed": refreshed, "registered": registrations.len() })
+    );
     Ok(())
 }
 
@@ -263,7 +297,7 @@ fn registered_home_peer_addr(
     service: [u8; 32],
 ) -> anyhow::Result<iroh_base::EndpointAddr> {
     let service_id = iroh_base::PublicKey::from_bytes(&service)?;
-    let path = identity_root.join("home-peers.json");
+    let path = tilo_relay::home_peer_registry_path(identity_root);
     let registrations: Vec<tilo_relay::HomePeerRegistration> =
         serde_json::from_slice(&std::fs::read(path)?)?;
     let registration = registrations
@@ -282,12 +316,13 @@ fn refresh_home_peer_endpoint(
     identity_root: &std::path::Path,
     device: &str,
     service: [u8; 32],
-    endpoint: &iroh_base::EndpointAddr,
+    response: &tilo_relay::transport::HomePeerManagementResponse,
 ) -> anyhow::Result<()> {
+    let endpoint = &response.relay_endpoint;
     if endpoint.id.as_bytes() != &service || endpoint.is_empty() {
         anyhow::bail!("home peer returned an invalid relay endpoint advertisement");
     }
-    let path = identity_root.join("home-peers.json");
+    let path = tilo_relay::home_peer_registry_path(identity_root);
     let mut registrations: Vec<tilo_relay::HomePeerRegistration> =
         serde_json::from_slice(&std::fs::read(&path)?)?;
     let registration = registrations
@@ -297,8 +332,13 @@ fn refresh_home_peer_endpoint(
         })
         .ok_or_else(|| anyhow::anyhow!("home peer is not registered"))?;
     registration.relay_endpoint = Some(endpoint.clone());
+    registration.environments = response.environments;
     registration.schema_version = tilo_relay::HomePeerRegistration::CURRENT_SCHEMA;
-    atomic_file::write_with_mode(&path, &serde_json::to_vec_pretty(&registrations)?, 0o644)?;
+    tilo_files::native::atomic::write_with_mode(
+        &path,
+        &serde_json::to_vec_pretty(&registrations)?,
+        0o644,
+    )?;
     Ok(())
 }
 
@@ -345,7 +385,7 @@ fn cmd_home_peer_remove(
     fleet_revocations.push(intent.revocation.clone());
     tilo_relay::store::save_revocations(identity_root, &fleet_revocations)?;
     persist_fleet_revocation(&intent.revocation)?;
-    if identity_root.join("home-peers.json").exists() {
+    if tilo_relay::home_peer_registry_path(identity_root).exists() {
         update_home_peer_registry(identity_root, device, None)?;
     }
 
@@ -372,6 +412,7 @@ fn cmd_home_peer_remove(
         label: "Removed".into(),
         files_ready: false,
         services: tilo_relay_protocol::ServiceCapabilities::default(),
+        environments: tilo_relay_protocol::RelayEnvironments::default(),
         decommissioned: false,
     });
     println!("{}", serde_json::to_string(&response)?);
@@ -404,7 +445,7 @@ fn save_pending_decommissions(
     identity_root: &std::path::Path,
     pending: &[PendingDecommission],
 ) -> anyhow::Result<()> {
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &pending_decommissions_path(identity_root),
         &serde_json::to_vec_pretty(pending)?,
         0o600,
@@ -423,7 +464,7 @@ fn retry_pending_removals(identity_root: &std::path::Path) -> anyhow::Result<()>
         relay_revocations.push(intent.revocation.clone());
         tilo_relay::store::save_revocations(identity_root, &relay_revocations)?;
         persist_fleet_revocation(&intent.revocation)?;
-        if identity_root.join("home-peers.json").exists() {
+        if tilo_relay::home_peer_registry_path(identity_root).exists() {
             update_home_peer_registry(identity_root, &intent.device, None)?;
         }
         if remote_home_peer(
@@ -471,7 +512,7 @@ fn persist_canonical_revocation(
     entries.retain(|entry| entry.revoked_device_public_key != revocation.revoked_device_public_key);
     entries.push(revocation.clone());
     entries.sort_by_key(|entry| entry.revoked_device_public_key);
-    atomic_file::write_with_mode(&path, &postcard::to_allocvec(&entries)?, 0o600)?;
+    tilo_files::native::atomic::write_with_mode(&path, &postcard::to_allocvec(&entries)?, 0o600)?;
     Ok(())
 }
 
@@ -512,7 +553,7 @@ fn persist_fleet_revocation(
             })
     });
     revocations.push(serde_json::to_value(revocation)?);
-    atomic_file::write_with_mode(&path, &serde_json::to_vec_pretty(&fleet)?, 0o600)?;
+    tilo_files::native::atomic::write_with_mode(&path, &serde_json::to_vec_pretty(&fleet)?, 0o600)?;
     Ok(())
 }
 
@@ -521,7 +562,7 @@ fn update_home_peer_registry(
     device: &str,
     new_label: Option<String>,
 ) -> anyhow::Result<()> {
-    let path = identity_root.join("home-peers.json");
+    let path = tilo_relay::home_peer_registry_path(identity_root);
     let bytes = std::fs::read(&path)?;
     if bytes.len() > 1024 * 1024 {
         anyhow::bail!("home-peer registry is too large");
@@ -540,7 +581,11 @@ fn update_home_peer_registry(
     } else {
         registrations.retain(|entry| entry.device_node_id != device);
     }
-    atomic_file::write_with_mode(&path, &serde_json::to_vec_pretty(&registrations)?, 0o644)?;
+    tilo_files::native::atomic::write_with_mode(
+        &path,
+        &serde_json::to_vec_pretty(&registrations)?,
+        0o644,
+    )?;
     Ok(())
 }
 

@@ -360,7 +360,7 @@ pub struct JoinedDeviceLayout<'a> {
     pub local_identity_dir: &'a Path,
     /// This machine's system identity paths, including its device certificate.
     pub local_system: &'a IdentityPaths,
-    /// This machine's `home-peers.json`, copied when it is present.
+    /// This machine's home-peer registry, copied when it is present.
     pub local_home_peers: &'a Path,
     /// This machine's exported workspace room ids, copied when the file exists.
     pub local_rooms: &'a Path,
@@ -426,12 +426,12 @@ pub fn install_joined_device(
         [88, 101, 242],
         user_public_key,
     )?;
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &identity_dir.join(format!("{record_id}.json")),
         &record,
         0o600,
     )?;
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &identity_dir.join("active"),
         format!("{record_id}\n").as_bytes(),
         0o600,
@@ -471,17 +471,20 @@ pub fn install_joined_device(
         relay_service,
         cert.device_public_key,
     )?;
-    let rooms_dest = target_system
-        .user_pubkey
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "target identity root is missing",
-            )
-        })?
-        .join("personal-rooms.json");
+    // Beside the peer lists the shell reads it with.
+    let rooms_dest = tilo_relay_protocol::home_peer_registry_path(
+        target_system
+            .user_pubkey
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "target identity root is missing",
+                )
+            })?,
+    )
+    .with_file_name("personal-rooms.json");
     copy_personal_rooms(layout.local_rooms, &rooms_dest)?;
     Ok(cert)
 }
@@ -572,7 +575,7 @@ fn copy_personal_rooms(source: &Path, dest: &Path) -> io::Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
-    atomic_file::write(
+    tilo_files::native::atomic::write(
         dest,
         &serde_json::to_vec_pretty(&ids)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
@@ -655,6 +658,7 @@ fn copy_home_peers(
             user_public_key: identity_id.clone(),
             device_cert: Some(local_cert.clone()),
             relay_workspace_ids: vec![topic],
+            environments: tilo_relay_protocol::RelayEnvironments::default(),
         };
         if !relay_is_dialable(&entries, &registration) {
             entries.push(registration);
@@ -664,7 +668,7 @@ fn copy_home_peers(
         if let Some(parent) = source.parent() {
             fs::create_dir_all(parent)?;
         }
-        atomic_file::write(source, &local_encoded)?;
+        tilo_files::native::atomic::write(source, &local_encoded)?;
     }
     let own: Vec<_> = entries
         .into_iter()
@@ -683,9 +687,13 @@ fn copy_home_peers(
             )
         })?;
     fs::create_dir_all(parent)?;
-    atomic_file::write(&parent.join("home-peers.json"), &encoded)?;
+    tilo_files::native::atomic::write_creating_parent(
+        &tilo_relay_protocol::home_peer_registry_path(parent),
+        &encoded,
+    )?;
     remember_personal_device(
-        &parent.join("personal-device-peers.json"),
+        &tilo_relay_protocol::home_peer_registry_path(parent)
+            .with_file_name("personal-device-peers.json"),
         local_cert.device_public_key,
     )?;
     let local_peers = source.with_file_name("personal-device-peers.json");
@@ -733,7 +741,7 @@ fn remember_personal_device(path: &Path, device_public_key: [u8; 32]) -> io::Res
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    atomic_file::write(path, &encoded)?;
+    tilo_files::native::atomic::write(path, &encoded)?;
     Ok(())
 }
 
@@ -1046,6 +1054,47 @@ fn read_claimed_owner(path: &Path) -> io::Result<[u8; 32]> {
     persist::read_public_key(path).map_err(|error| io::Error::other(error.to_string()))
 }
 
+/// Whether the identity this account signs in with owns the device.
+///
+/// The owner is the identity that claimed the machine at its first login
+/// ([`claim_device_owner`]) and holds the device's primary certificate; the
+/// account that signs in with it is the device admin. Another account on the
+/// same machine has its own identity and a shared-device certificate, and an
+/// account that has not finished first login has no identity at all: both
+/// answer `false`.
+///
+/// Only public material is read — the active record's metadata, the owner
+/// claim and the certificate — so the answer needs no unlocked secret.
+///
+/// # Errors
+///
+/// Fails when the owner claim, the device certificate, the device key or the
+/// active identity record exists but cannot be read, or when the primary
+/// certificate does not verify.
+pub fn active_identity_owns_device(identity_dir: &Path, paths: &IdentityPaths) -> io::Result<bool> {
+    let Some(record) = runtime_identity::resolve_active_identity(identity_dir) else {
+        return Ok(false);
+    };
+    if !paths.user_pubkey.exists() {
+        return Ok(false);
+    }
+    let owner = read_claimed_owner(&paths.user_pubkey)?;
+    let identity = runtime_identity::load_metadata_from_path(&record)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    if identity.group_public_key != owner {
+        return Ok(false);
+    }
+    let cert = persist::read_device_cert(&paths.device_cert)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    tilo_user_identity::verify_device_cert(&cert)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    let device = persist::load_device_key(paths)
+        .map_err(|error| io::Error::other(error.to_string()))?
+        .verifying_key()
+        .to_bytes();
+    Ok(cert.user_public_key == owner && cert.device_public_key == device)
+}
+
 /// Enrol the machine's existing device key under an imported local identity.
 ///
 /// This keeps app signing and collaboration transport authentication on the
@@ -1169,6 +1218,27 @@ pub fn verify_collaboration_identity(
             ));
         }
     }
+    // A joined device holds no share of the identity's key: its record only
+    // names the identity, and its certificate binds this device's key to it.
+    let joined = persist::joined_device_is_ready(paths, now_ns).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("pre-enrolled device identity is not usable: {error}"),
+        )
+    })?;
+    if joined {
+        let metadata = runtime_identity::load_metadata_from_path(&primary_path)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        let root_public = persist::read_public_key(&paths.user_pubkey)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        if metadata.group_public_key != root_public {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "personal identity and persisted certification root do not match",
+            ));
+        }
+        return Ok(());
+    }
     let identity = runtime_identity::load_from_path(primary_path)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
     if !identity.is_single_device() {
@@ -1291,6 +1361,54 @@ mod tests {
         assert!(persist::joined_device_is_ready(&paths, now_ns_u64()).unwrap());
     }
 
+    /// A device approved from a nearby device: a public-only record selected
+    /// as the account's identity and an ordinary member certificate.
+    #[cfg(unix)]
+    #[test]
+    fn a_nearby_paired_member_verifies_through_its_certificate() {
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let dir = tempfile::tempdir().unwrap();
+        let identity_dir = dir.path().join("identity");
+        let paths = IdentityPaths::under(dir.path().join("system"));
+        let (device, _) = persist::load_or_create_device_key(&paths).unwrap();
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "laptop".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1_000,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+        persist::install_device_cert(&paths, &cert, 2_000).unwrap();
+        prepare_identity_directory(&identity_dir).unwrap();
+        let write_record = |root_public: [u8; 32]| {
+            let record = identity_dir.join("identity-joined.json");
+            fs::write(
+                &record,
+                runtime_identity::public_member_record("Member", [1, 2, 3], root_public).unwrap(),
+            )
+            .unwrap();
+            fs::set_permissions(&record, fs::Permissions::from_mode(0o600)).unwrap();
+            let active = identity_dir.join("active");
+            fs::write(&active, "identity-joined").unwrap();
+            fs::set_permissions(&active, fs::Permissions::from_mode(0o600)).unwrap();
+        };
+
+        write_record(root.verifying_key().to_bytes());
+        verify_collaboration_identity(&identity_dir, &paths, 2_000).unwrap();
+        assert_eq!(
+            ensure_collaboration_identity(&identity_dir, &paths).unwrap(),
+            ProvisionOutcome::Existing
+        );
+
+        // A record naming another identity is not this device's.
+        write_record([7; 32]);
+        let error = verify_collaboration_identity(&identity_dir, &paths, 2_000).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -1317,6 +1435,7 @@ mod tests {
                 can_act_as_host: false,
                 can_read_all_workspaces: true,
                 foreign: false,
+                can_administer_devices: false,
             },
             issued_at_ns: 1_000,
             expires_at_ns: None,
@@ -1335,6 +1454,7 @@ mod tests {
             user_public_key: identity_id.clone(),
             device_cert: None,
             relay_workspace_ids: vec![1],
+            environments: tilo_relay_protocol::RelayEnvironments::default(),
         };
         let other = HomePeerRegistration {
             user_public_key: hex::encode([9_u8; 32]),
@@ -1415,7 +1535,10 @@ mod tests {
                 .any(|item| { item.device_public_key == cert.device_public_key })
         );
         let copied: Vec<HomePeerRegistration> = serde_json::from_slice(
-            &std::fs::read(dir.path().join("var/lib/tilo/home-peers.json")).unwrap(),
+            &std::fs::read(tilo_relay_protocol::home_peer_registry_path(
+                &dir.path().join("var/lib/tilo"),
+            ))
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(copied[0].user_public_key, identity_id);
@@ -1429,7 +1552,11 @@ mod tests {
             "a machine that cannot host is not recorded as a relay"
         );
         let direct: Vec<String> = serde_json::from_slice(
-            &std::fs::read(dir.path().join("var/lib/tilo/personal-device-peers.json")).unwrap(),
+            &std::fs::read(
+                tilo_relay_protocol::home_peer_registry_path(&dir.path().join("var/lib/tilo"))
+                    .with_file_name("personal-device-peers.json"),
+            )
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(direct, vec![hex::encode(local_cert.device_public_key)]);
@@ -1439,11 +1566,18 @@ mod tests {
         .unwrap();
         assert_eq!(local_direct, vec![hex::encode(cert.device_public_key)]);
         let rooms: Vec<String> = serde_json::from_slice(
-            &std::fs::read(dir.path().join("var/lib/tilo/personal-rooms.json")).unwrap(),
+            &std::fs::read(
+                tilo_relay_protocol::home_peer_registry_path(&dir.path().join("var/lib/tilo"))
+                    .with_file_name("personal-rooms.json"),
+            )
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(rooms, vec!["11111111-1111-4111-8111-111111111111"]);
-        let peers_bytes = std::fs::read(dir.path().join("var/lib/tilo/home-peers.json")).unwrap();
+        let peers_bytes = std::fs::read(tilo_relay_protocol::home_peer_registry_path(
+            &dir.path().join("var/lib/tilo"),
+        ))
+        .unwrap();
         assert!(
             !peers_bytes
                 .windows(32)
@@ -1496,6 +1630,7 @@ mod tests {
                 user_public_key: identity_id,
                 device_cert: None,
                 relay_workspace_ids: vec![1],
+                environments: tilo_relay_protocol::RelayEnvironments::default(),
             }])
             .unwrap(),
         )
@@ -1892,6 +2027,28 @@ mod tests {
                     .expect("identity-specific certificate");
             tilo_user_identity::verify_device_cert(&cert).expect("valid imported chain");
         }
+    }
+
+    #[test]
+    fn only_the_identity_that_claimed_the_device_owns_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let paths = IdentityPaths::under(tmp.path().join("system"));
+        let alice = tmp.path().join("alice/tilo/identity");
+        let bob = tmp.path().join("bob/tilo/identity");
+        let carol = tmp.path().join("carol/tilo/identity");
+        // Before anyone's first login there is no owner.
+        assert!(!active_identity_owns_device(&alice, &paths).expect("no identity yet"));
+        ensure_collaboration_identity(&alice, &paths).expect("alice claims the device");
+        ensure_collaboration_identity(&bob, &paths).expect("bob shares it");
+        assert!(active_identity_owns_device(&alice, &paths).expect("alice"));
+        assert!(!active_identity_owns_device(&bob, &paths).expect("bob"));
+        // An account that never finished first login is not the owner either.
+        assert!(!active_identity_owns_device(&carol, &paths).expect("carol"));
+        // A primary certificate that no longer verifies is an error, not a yes.
+        let mut cert = persist::read_device_cert(&paths.device_cert).expect("cert");
+        cert.device_label = "Tampered".into();
+        persist::write_device_cert(&paths.device_cert, &cert).expect("rewrite cert");
+        assert!(active_identity_owns_device(&alice, &paths).is_err());
     }
 
     #[test]

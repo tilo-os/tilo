@@ -24,16 +24,18 @@
 # tree is layered. See dist/rpm/host-update.sh.
 %{!?tilo_release:%global tilo_release 1}
 
-# The payload is already built and stripped; there is no source to extract
-# debug symbols from, and an empty -debuginfo subpackage would fail the
-# build.
+# The payload is prebuilt. Its native binaries deliberately keep their symbol
+# table (`[profile.release]` in Cargo.toml) so a crash log on the user's
+# machine names each frame's function, and carry no debug info to extract.
 %global debug_package %{nil}
 
-# The signed Tilo runtime is already stripped before its bundle manifest is
-# hashed and signed. Fedora's generic brp-strip pass would mutate the bundled
-# ELF loader and shared libraries after that signature was created, leaving a
-# formally packaged but unusable runtime. Keep the ordinary post-processing
-# chain, but make its strip helpers no-ops for this prebuilt, signed payload.
+# Nothing in the payload is stripped here. The signed Tilo runtime is already
+# stripped before its bundle manifest is hashed and signed, and Fedora's
+# generic brp-strip pass would mutate the bundled ELF loader and shared
+# libraries after that signature was created, leaving a formally packaged but
+# unusable runtime; on the session binaries it would remove the symbol table
+# the crash log needs. Keep the ordinary post-processing chain, but make its strip
+# helpers no-ops for this prebuilt payload.
 %global __strip /bin/true
 
 # These signature-covered application trees are private sandbox payloads, not
@@ -41,6 +43,9 @@
 # for package binaries and exclude only these two private stores.
 %global __provides_exclude_from ^/usr/lib/tilo-(apps|runtime)/.*$
 %global __requires_exclude_from ^/usr/lib/tilo-(apps|runtime)/.*$
+# The env-runtime environment image in the app store is a signed userland:
+# rewriting its scripts' interpreter lines would change signed bytes.
+%global __brp_mangle_shebangs_exclude_from ^/usr/lib/tilo-(apps|runtime)/.*$
 
 Name:           tilo-session
 Version:        %{tilo_version}
@@ -77,6 +82,10 @@ Requires:       pam
 # therefore invisible to RPM's ELF dependency generator. Existing host apps
 # deliberately keep their original confinement (or lack of it).
 Requires:       bubblewrap
+# A shell environment (`ush`) runs in a network namespace of its own; `pasta`
+# connects it to the host's network, unprivileged. An environment granted
+# hosts refuses to start without it rather than run unfiltered.
+Requires:       passt
 # Sandboxed Tilo applications reach file choosers and other desktop APIs only
 # through the portal frontend and a filtered proxy. Without either helper the
 # compositor starts, but ordinary app workflows are incomplete.
@@ -98,6 +107,11 @@ Requires:       upower
 # Rootless Xwayland maps legacy X11 windows into ordinary Wayland toplevels,
 # preserving applications the user installed before adding Tilo.
 Requires:       xwayland-satellite
+# Legacy VMs (tilo-legacy): each app's windows reach the compositor through a
+# waypipe client over vsock, and granted directories are shared into the VM by
+# an unprivileged virtiofsd.
+Requires:       waypipe
+Requires:       virtiofsd
 # Xwayland compiles an independent server-side XKB map. Settings changes use
 # the standard authenticated X11 utility to update that map in place, so
 # Electron/X11 windows keep working without logout or bridge restart.
@@ -229,6 +243,9 @@ install -Dpm 0755 apps/bin/tilo-model-gateway %{buildroot}%{_bindir}/tilo-model-
 install -Dpm 0755 apps/libexec/tilo-cli-shim %{buildroot}%{_libexecdir}/tilo-cli-shim
 install -Dpm 0755 apps/libexec/tilo-app-host %{buildroot}%{_libexecdir}/tilo-app-host
 install -Dpm 0755 apps/libexec/tilo-ush %{buildroot}%{_libexecdir}/tilo-ush
+install -Dpm 0755 apps/libexec/tilo-relay-environment %{buildroot}%{_libexecdir}/tilo-relay-environment
+install -Dpm 0755 apps/libexec/tilo-relay-offers %{buildroot}%{_libexecdir}/tilo-relay-offers
+install -Dpm 0755 apps/bin/tilo-legacy %{buildroot}%{_bindir}/tilo-legacy
 for unit in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
     install -Dpm 0644 apps/systemd-user/$unit.service \
         %{buildroot}%{_userunitdir}/$unit.service
@@ -236,7 +253,7 @@ for unit in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
         %{buildroot}%{_userunitdir}/$unit.socket
 done
 install -Dpm 0644 apps/user-tmpfiles/tilo-model-manager.conf \
-                  %{buildroot}%{_prefix}/lib/user-tmpfiles.d/tilo-model-manager.conf
+                  %{buildroot}%{_datadir}/user-tmpfiles.d/tilo-model-manager.conf
 install -Dpm 0644 apps/profile.d/tilo-apps.sh \
                   %{buildroot}%{_sysconfdir}/profile.d/tilo-apps.sh
 install -Dpm 0644 apps/license/LICENSE \
@@ -291,10 +308,15 @@ grep -q '^id = "so.tilo.settings"$' %{buildroot}%{_datadir}/tilo-apps/registry.t
 grep -q '^payload_root = "/usr/lib/tilo-apps/' %{buildroot}%{_datadir}/tilo-apps/registry.toml
 test -d %{buildroot}%{_prefix}/lib/tilo-apps/pkgs
 test ! -e %{buildroot}%{_datadir}/tilo-apps/pkgs
-test -f %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07/bundle.toml
-test "$(stat -c %%a %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07/bundle.toml)" = 644
+# One runtime build of the 2026.07 release, named by its ABI digest.
+test -f %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07+native.*/bundle.toml
+test "$(stat -c %%a %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07+native.*/bundle.toml)" = 644
 grep -q '/usr/lib/tilo-apps/bin' %{buildroot}%{_sysconfdir}/profile.d/tilo-apps.sh
 test -s %{buildroot}%{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
+# What the ush supervisor runs, at the paths it looks for them.
+test -x %{buildroot}%{_libexecdir}/tilo-relay-environment
+test -x %{buildroot}%{_libexecdir}/tilo-relay-offers
+test -x %{buildroot}%{_bindir}/tilo-legacy
 for unit in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
     test -f %{buildroot}%{_userunitdir}/$unit.service
     test -f %{buildroot}%{_userunitdir}/$unit.socket
@@ -328,6 +350,9 @@ done
 %{_libexecdir}/tilo-cli-shim
 %{_libexecdir}/tilo-app-host
 %{_libexecdir}/tilo-ush
+%{_libexecdir}/tilo-relay-environment
+%{_libexecdir}/tilo-relay-offers
+%{_bindir}/tilo-legacy
 %{_userunitdir}/tilo-app-host.service
 %{_userunitdir}/tilo-app-host.socket
 %{_userunitdir}/tilo-models.service
@@ -336,7 +361,7 @@ done
 %{_userunitdir}/tilo-model-gateway.socket
 %{_userunitdir}/tilo-ush.service
 %{_userunitdir}/tilo-ush.socket
-%{_prefix}/lib/user-tmpfiles.d/tilo-model-manager.conf
+%{_datadir}/user-tmpfiles.d/tilo-model-manager.conf
 %config %{_sysconfdir}/profile.d/tilo-apps.sh
 %{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
 %{_datadir}/tilo-apps

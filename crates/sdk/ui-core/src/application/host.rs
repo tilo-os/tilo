@@ -14,6 +14,10 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 const PERSONAL_WORKSPACE: &str = "personal";
+/// Names the directory the launcher keeps the person's own records of an
+/// app in ([`crate::record::person`]): one per app, bound into its launches
+/// in every room, so a record of the person's is one record on the device.
+pub const PERSON_DIR_ENV: &str = "TILO_PERSON_DIR";
 const DEVICE_ID_FILE: &str = ".tilo-device-id";
 
 /// The host inputs a normal application process receives from the trusted
@@ -59,6 +63,9 @@ impl NativeProcessHost {
             tilo_actions::ActionContext::default(),
         )?;
         host.package_id = Some(resolved.package_id);
+        if let Some(person) = resolved.person_dir {
+            host.keep_person_records_in(Rc::new(app_state::FsStore::new(person)));
+        }
         Ok(Self {
             host,
             instance_id: resolved.instance_id,
@@ -87,6 +94,7 @@ struct NativeProcessEnvironment {
     quick_workspace_id: Option<String>,
     participation: Option<String>,
     continuity_instance: Option<String>,
+    person_dir: Option<PathBuf>,
     xdg_data_home: Option<PathBuf>,
     local_app_data: Option<PathBuf>,
     user_profile: Option<PathBuf>,
@@ -101,6 +109,9 @@ struct ResolvedNativeProcessHost {
     workspace_scoped: bool,
     instance_id: InstanceId,
     permissions: PermissionContext,
+    /// Where the launcher keeps the person's own records of this app,
+    /// shared by its launches in every room.
+    person_dir: Option<PathBuf>,
 }
 
 impl NativeProcessEnvironment {
@@ -123,6 +134,7 @@ impl NativeProcessEnvironment {
             quick_workspace_id: string("QUICK_CLUSTER_ID"),
             participation: string("TILO_PARTICIPATION"),
             continuity_instance: string("TILO_CONTINUITY_INSTANCE"),
+            person_dir: path(PERSON_DIR_ENV),
             xdg_data_home: path("XDG_DATA_HOME"),
             local_app_data: path("LOCALAPPDATA"),
             user_profile: path("USERPROFILE"),
@@ -168,6 +180,7 @@ impl NativeProcessEnvironment {
             workspace_scoped,
             instance_id,
             permissions,
+            person_dir: self.person_dir.filter(|dir| dir.is_absolute()),
         })
     }
 
@@ -415,6 +428,9 @@ pub struct ApplicationHost {
     permissions: Rc<RefCell<PermissionContext>>,
     author: UserId,
     action_context: tilo_actions::ActionContext,
+    /// Where the person's own records are kept: the host's store unless the
+    /// host names another ([`Self::keep_person_records_in`]).
+    person: RecordOwners,
 }
 
 impl ApplicationHost {
@@ -441,6 +457,7 @@ impl ApplicationHost {
             action_context,
         )?;
         host.owners.retain_profile(lifetime.clone());
+        host.person.retain_profile(lifetime.clone());
         let views = Rc::try_unwrap(host.views).map_err(|_| LaunchError::BindingMismatch)?;
         host.views = Rc::new(views.with_profile_lifetime(lifetime));
         Ok(host)
@@ -490,6 +507,7 @@ impl ApplicationHost {
         );
         Ok(Self {
             package_id: None,
+            person: RecordOwners::with_store(Rc::clone(&store)),
             owners: RecordOwners::with_store(store),
             views,
             device_id,
@@ -497,6 +515,31 @@ impl ApplicationHost {
             author,
             action_context,
         })
+    }
+
+    /// Keep the person's own records ([`crate::record::person`]) in `store`
+    /// rather than the host's: the directory a launcher shares between an
+    /// app's launches in every room.
+    pub fn keep_person_records_in(&mut self, store: Rc<dyn durable_store::DurableStore>) {
+        self.person = RecordOwners::with_store(store);
+    }
+
+    /// Hand `context` the person's own records of `definition`'s app.
+    fn with_person_records(
+        &mut self,
+        definition: &ApplicationDefinition,
+        mut context: HostContext,
+    ) -> HostContext {
+        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id);
+        match crate::record::person::PersonRecords::open(
+            &mut self.person,
+            package_id,
+            self.author.clone(),
+        ) {
+            Ok(records) => context.provide_person_records(records),
+            Err(error) => tracing::warn!(%error, "the person's records are unavailable"),
+        }
+        context
     }
 
     /// Return the unique canonical writer registry for this app and workspace.
@@ -593,9 +636,6 @@ impl ApplicationHost {
         initial_view: Option<ApplicationLocalView>,
         runner_inputs: ComponentRunnerInputs,
     ) -> Result<PreparedComponentInputs, LaunchError> {
-        /// Retired records followed before giving up: each move out of a room
-        /// retires one, so this only bounds a pathological history.
-        const MAX_SUCCESSORS: usize = 64;
         let records = self.records_for(definition)?;
         if definition.keeps_room_record() {
             let target = definition.unsaved_target(&records);
@@ -616,16 +656,83 @@ impl ApplicationHost {
                 RestoreInput::Local(context.envelope(View::default(), Some(application)))
             });
             return Ok(PreparedComponentInputs {
-                context,
+                context: self.with_person_records(definition, context),
                 target,
                 restore,
                 runner_inputs,
             });
         }
-        let mut checkout = self
+        let checkout = self
             .saved_record(definition, instance_id)?
             .unwrap_or(default);
-        let mut saved = self.saved_view_for(definition, instance_id, &checkout)?;
+        let saved = self.saved_view_for(definition, instance_id, &checkout)?;
+        let (context, target, restore) = self.prepare_checkout(
+            definition,
+            records,
+            instance_id,
+            checkout,
+            saved,
+            initial_view,
+        )?;
+        Ok(PreparedComponentInputs {
+            context: self.with_person_records(definition, context),
+            target,
+            restore,
+            runner_inputs,
+        })
+    }
+
+    /// Open `checkout` for `instance_id`, or reserve it for the definition's
+    /// New factory when it does not exist yet: the record a launch named (the
+    /// file a person opened), whatever the instance showed before. The
+    /// instance's saved presentation is restored only when it is of that
+    /// record; one of another record is left for the next save to replace.
+    /// # Errors
+    /// Rejects foreign kinds, contested writers, corrupt records and denied authority.
+    pub fn prepare_record(
+        &mut self,
+        definition: &ApplicationDefinition,
+        instance_id: InstanceId,
+        checkout: RecordCheckout,
+        runner_inputs: ComponentRunnerInputs,
+    ) -> Result<PreparedComponentInputs, LaunchError> {
+        let records = self.records_for(definition)?;
+        if checkout.kind != definition.record_kind
+            || RecordId::parse(checkout.id.as_str()).as_ref() != Some(&checkout.id)
+            || checkout.id.is_package_primary()
+        {
+            return Err(LaunchError::BindingMismatch);
+        }
+        let saved = self
+            .views
+            .load(instance_id)
+            .map_err(LaunchError::Restore)?
+            .filter(|saved| {
+                saved.record_id == checkout.id.as_str() && checkout.kind.names(&saved.record_kind)
+            });
+        let (context, target, restore) =
+            self.prepare_checkout(definition, records, instance_id, checkout, saved, None)?;
+        Ok(PreparedComponentInputs {
+            context: self.with_person_records(definition, context),
+            target,
+            restore,
+            runner_inputs,
+        })
+    }
+
+    /// The checked construction the default and the named record share.
+    fn prepare_checkout(
+        &self,
+        definition: &ApplicationDefinition,
+        records: RecordStore,
+        instance_id: InstanceId,
+        mut checkout: RecordCheckout,
+        mut saved: Option<SavedInstanceView>,
+        initial_view: Option<ApplicationLocalView>,
+    ) -> Result<(HostContext, LaunchTarget, RestoreInput), LaunchError> {
+        /// Retired records followed before giving up: each move out of a room
+        /// retires one, so this only bounds a pathological history.
+        const MAX_SUCCESSORS: usize = 64;
         let mut successors = 0;
         let target = loop {
             match records.try_open_record(&checkout) {
@@ -681,12 +788,7 @@ impl ApplicationHost {
                 initial_view.map(|application| context.envelope(View::default(), Some(application)))
             })
             .map_or(RestoreInput::None, RestoreInput::Local);
-        Ok(PreparedComponentInputs {
-            context,
-            target,
-            restore,
-            runner_inputs,
-        })
+        Ok((context, target, restore))
     }
 }
 
@@ -712,6 +814,7 @@ mod native_process_tests {
             required: vec![],
             optional: vec![],
             opens: &[],
+            room_record: false,
             create: rejected_factory,
         }
     }

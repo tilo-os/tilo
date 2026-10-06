@@ -77,8 +77,10 @@ pub fn avatar_color(theme: &Theme, email: &str, tint: u8) -> Color {
         c.semantic.warning,
         c.accent[6],
         c.accent[3],
-        Color::from_rgb8(217, 70, 239),
-        Color::from_rgb8(20, 184, 166),
+        // The last two slots are the accent's own categorical series, so a
+        // high-contrast accent retints them with the rest of the disc.
+        c.categorical(1),
+        c.categorical(2),
     ];
     let h = email.bytes().fold(u32::from(tint), |a, b| {
         a.wrapping_mul(31).wrapping_add(u32::from(b))
@@ -161,6 +163,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn avatar_colours_follow_the_theme() {
+        let dark = Theme::dark();
+        let contrast = Theme::high_contrast();
+        let mut changed = false;
+        for n in 0..32 {
+            let email = format!("person{n}@example.com");
+            if avatar_color(&dark, &email, 0) != avatar_color(&contrast, &email, 0) {
+                changed = true;
+                break;
+            }
+        }
+        assert!(
+            changed,
+            "avatar discs are theme colours, including high contrast"
+        );
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
@@ -171,6 +191,20 @@ mod tests {
             // Canonical Gravatar example hash for "MyEmailAddress@example.com".
             let u = gravatar_url("  MyEmailAddress@example.com ");
             assert!(u.contains("0bc83cb571cd1c50ba6f3e8a78ef1346"), "{u}");
+        }
+    }
+
+    #[test]
+    fn every_avatar_hue_comes_from_the_theme() {
+        let dark = Theme::dark();
+        let nord = Theme::named("Nord").expect("Nord");
+        for i in 0..64 {
+            let email = format!("person{i}@example.com");
+            assert_ne!(
+                avatar_color(&dark, &email, 0),
+                avatar_color(&nord, &email, 0),
+                "{email}: its initials disc ignores the theme"
+            );
         }
     }
 }

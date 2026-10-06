@@ -33,13 +33,16 @@
 //! never the shared CRDT, so by the recipe's rule none of them is an action. A
 //! refused socket surfaces as an honest error, not a replicated document change.
 //!
-//! ## The SQL buffer stays on the native text path
+//! ## The SQL buffer is a plain-text child resource
 //!
 //! The other shared-document object is the SQL query buffer, a single Automerge
-//! `Text` at `root["editor"]["sql"]` (see [`crate::doc::EditorDoc`]). Flowing
-//! text takes the toolkit's CRDT-native text path *instead of* the action
-//! executor: the `Text` already replicates and undoes for free, so re-encoding a
-//! keystroke as an action would only duplicate that.
+//! `Text` at `root["editor"]["sql"]` (see [`crate::doc::EditorDoc`]). It is
+//! published as a [`PlainText`](ui::tilo_resource::PlainText) child of the
+//! workspace, and every edit of it is [`DbAction::EditSql`] carrying one
+//! [`TextEdit`]: a keystroke is a splice (undone a word at a time), loading a
+//! snippet or an accessibility set-value replaces the text. So a viewer cannot
+//! type into it, and a collaborator's concurrent typing merges character by
+//! character.
 //!
 //! ## Presentation is never an action
 //!
@@ -54,6 +57,7 @@ use uuid::Uuid;
 
 use tilo_actions::{Action, ActionError, ActionRegistry, Doc, EncodedAction, ExecutionLocus};
 use ui::doc::put_if_changed;
+use ui::tilo_resource::TextEdit;
 
 use crate::doc::{CONNECTIONS_KEY, SAVED_QUERIES_KEY};
 use crate::model::{ConnectionProfile, Engine};
@@ -90,6 +94,9 @@ pub enum DbAction {
     },
     /// Hide a saved query while retaining its stable CRDT row as a tombstone.
     RemoveQuery { id: String },
+    /// One edit of the shared SQL buffer: a keystroke's splice, or a snippet
+    /// load replacing the text.
+    EditSql(TextEdit),
 }
 
 impl Action for DbAction {
@@ -170,6 +177,10 @@ impl Action for DbAction {
                 {
                     put_if_changed(doc, &row, "removed", true);
                 }
+            }
+            DbAction::EditSql(edit) => {
+                let text = crate::doc::EditorDoc::sql_text(doc);
+                edit.apply_under(doc, &text)?;
             }
         }
         Ok(())
@@ -335,34 +346,23 @@ mod tests {
         ] {
             action.apply(&mut doc).unwrap();
         }
-        crate::doc::EditorDoc::set_sql(&mut doc, "SELECT * FROM customers");
+        DbAction::EditSql(TextEdit::ReplaceText {
+            text: "SELECT * FROM customers".into(),
+        })
+        .apply(&mut doc)
+        .unwrap();
         doc.commit();
         doc
     }
 
-    /// What the live app publishes for `doc`: its eager workspace tree plus
-    /// the saved-connection and saved-query resources it resolves by id,
-    /// after the frame `sync` that reconciles its session from the document.
+    /// What [`tilo_resource::publish`] owns for `doc`: workspace door, connection
+    /// and saved-query children, save-query / run-SQL palette ops.
     fn resources_for(doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        use ui::widget::Widget;
-        let mut app = crate::app::DbClientApp::new();
-        app.sync(&mut doc.clone(), &ROOT);
-        let mut resources = ui::resources::resources(&app, doc);
-        let addressed = ConnectionsDoc::read(doc)
-            .into_iter()
-            .map(|c| format!("connection:{}", c.id))
-            .chain(
-                crate::doc::SavedQueriesDoc::read(doc)
-                    .into_iter()
-                    .map(|q| format!("saved-query:{}", q.id)),
-            );
-        for id in addressed {
-            resources.push(
-                ui::resources::resource(&app, doc, &id)
-                    .unwrap_or_else(|| panic!("the app resolves {id}")),
-            );
-        }
-        resources
+        use ui::tilo_resource::Resource as _;
+        let state = crate::resource::DbClient::read(doc).unwrap();
+        vec![ui::tilo_resource::publish::<crate::resource::DbClient>(
+            "database", "Database", &state,
+        )]
     }
 
     fn first_connection(doc: &AutoCommit) -> Uuid {
@@ -381,7 +381,7 @@ mod tests {
             registry
         },
         resources: |doc| resources_for(doc),
-        palette: ["Remove saved connection", "Remove saved query", "Save current query", "Connect"],
+        palette: ["Remove saved connection", "Remove saved query", "Save current query", "Connect", "Add connection"],
         replay: [
             add_connection => |_| encode(&add_connection_action(&ConnectionProfile::new(
                 "Local",
@@ -402,13 +402,10 @@ mod tests {
             )),
         ],
         encodes: [
-            remove_connection => ("database.connection", "remove", |doc, _| {
+            remove_connection => ("database.workspace.connections", "remove_connection", |doc, _| {
                 encode(&remove_connection_action(first_connection(doc)))
             }),
-            rename_connection => ("database.connection", "rename", arg: "Prod analytics", |doc, _| {
-                encode(&rename_connection_action(first_connection(doc), "Prod analytics"))
-            }),
-            remove_query => ("database.saved-query", "remove", |doc, _| {
+            remove_query => ("database.workspace.saved_queries", "remove_query", |doc, _| {
                 encode(&remove_query_action(saved_query(doc)))
             }),
         ],

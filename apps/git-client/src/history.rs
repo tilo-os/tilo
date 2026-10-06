@@ -6,7 +6,6 @@
 use vello::kurbo::{BezPath, Point, Rect, Stroke};
 use vello::peniko::Color;
 
-use ui::ColorCompat;
 use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
@@ -585,15 +584,30 @@ fn meta_row(ctx: &mut PaintCtx<'_>, origin: Point, label: &str, value: &str, mon
 fn ref_colors(theme: &Theme, kind: RefKind) -> (Color, Color) {
     let c = &theme.tokens.colors;
     match kind {
-        RefKind::Head => (Color::WHITE, theme.accent_primary),
+        RefKind::Head => (
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
+            theme.accent_primary,
+        ),
         RefKind::LocalBranch => (c.text_primary, c.accent[2]),
         RefKind::RemoteBranch => {
             let g = c.semantic.success;
-            (Color::WHITE, Color::from_rgba8(g.r(), g.g(), g.b(), 60))
+            // The pill is a 60/255 wash, so ink is measured on the composite
+            // over both the list ground and the selected-row lift.
+            let wash = 60.0_f32 / 255.0;
+            let on_row = ui::tokens::colors::over(c.surfaces.base, g, wash);
+            let on_selected = ui::tokens::colors::over(c.lift(0.72), g, wash);
+            (
+                c.ink_on_any(
+                    &[on_row, on_selected],
+                    c.text_primary,
+                    ui::tokens::colors::ON_FILL_MIN_CONTRAST,
+                ),
+                ui::paint::with_alpha(g, 60),
+            )
         }
         RefKind::Tag => {
             let a = c.semantic.warning;
-            (c.surfaces.base, Color::from_rgba8(a.r(), a.g(), a.b(), 220))
+            (c.surfaces.base, ui::paint::with_alpha(a, 220))
         }
     }
 }

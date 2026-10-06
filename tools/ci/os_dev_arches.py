@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Which architectures a Build / OS dev run builds.
 
-A main push builds both. A pull request builds x86_64, and aarch64 as well
-when its own diff (from its real merge base) touches an architecture-specific
-input or it carries the `os-arm64` label.
+Main pushes build in Build / OS dev (x86_64) and (aarch64) (os-dev-x86.yml,
+os-dev-arm.yml), newest commit only; a push here is a manual run. A pull
+request builds
+x86_64, and aarch64 as well when its own diff (from its real merge base)
+touches an architecture-specific input or it carries the `os-arm64` label.
 
     os_dev_arches.py --event push
     os_dev_arches.py --event pull_request --base SHA --head SHA [--label NAME ...]
@@ -48,7 +50,7 @@ def changed_paths(base, head):
 
 
 def arches(event, labels=(), paths=()):
-    if event != "pull_request" or LABEL in labels or arch_specific(paths):
+    if event == "pull_request" and (LABEL in labels or arch_specific(paths)):
         return ["x86_64", "aarch64"]
     return ["x86_64"]
 

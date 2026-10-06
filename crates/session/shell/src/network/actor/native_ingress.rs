@@ -40,6 +40,16 @@ impl Routes {
     }
 }
 
+/// The connected relay session of the joined room on topic `ws`.
+pub(super) fn native_session(
+    sessions: &HashMap<(u64, iroh::EndpointId), HostRuntime>,
+    ws: u64,
+) -> Option<Arc<RelayCoeditSession>> {
+    sessions.iter().find_map(|((topic, _), runtime)| {
+        (*topic == ws && runtime.native_scope.is_some()).then(|| runtime.session.clone())
+    })
+}
+
 impl ActorState {
     /// A refresh only asks the original subscribed host to run its own genuine
     /// checkpoint barrier. It grants no local admission and retires no outbox.
@@ -60,6 +70,27 @@ impl ActorState {
             }
         }
     }
+    /// Send `msg`, a member's own sealed write, on the room's relay
+    /// session, or hold it until the session is up.
+    pub(super) fn publish_sealed_native(&mut self, ws: u64, msg: &super::NeighbourMsg) {
+        let (Some((channel, retention)), Ok(bytes)) =
+            (super::retention(msg, false), postcard::to_allocvec(msg))
+        else {
+            return;
+        };
+        if let Some(session) = native_session(&self.host_sessions, ws) {
+            let sent = match retention {
+                super::Retention::Checkpoint => session.publish_checkpoint(channel, bytes),
+                super::Retention::Delta => session.publish_retained_delta(channel, bytes),
+            };
+            if let Err(error) = sent {
+                tracing::warn!(ws, %error, "sealed write not sent to the room's relay");
+            }
+            return;
+        }
+        self.hold_backlog(ws, channel, retention, bytes);
+    }
+
     pub(super) fn drive_native_publication(&self, ws: u64) {
         let Some(identity) = self.host_identity.as_ref() else {
             return;
@@ -237,6 +268,23 @@ impl ActorState {
             self.internal_tx.clone(),
             Some(scope.clone()),
         );
+        // What this device said while the session was down: its channel
+        // governance (the steward redelivers its own) and its sealed writes.
+        for (channel, bytes) in self.governance.get(&ws).into_iter().flatten() {
+            if let Err(error) = session.publish_checkpoint(*channel, bytes.clone()) {
+                tracing::warn!(ws, %error, "channel governance not sent to the room's relay");
+            }
+        }
+        for (channel, retention, bytes) in self.host_backlog.remove(&ws).unwrap_or_default() {
+            let sent = match retention {
+                super::Retention::Checkpoint => session.publish_checkpoint(channel, bytes),
+                super::Retention::Delta => session.publish_retained_delta(channel, bytes),
+            };
+            if let Err(error) = sent {
+                tracing::warn!(ws, %error, "held sealed write not sent to the room's relay");
+            }
+        }
+        self.native_media.reconnected(ws, &session);
         self.host_sessions.insert(
             (ws, host),
             HostRuntime {

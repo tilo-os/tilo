@@ -5,7 +5,7 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -53,6 +53,8 @@ pub struct Column {
     cache_rect: vello::kurbo::Rect,
     cache_present: bool,
     descendant_caches_released: bool,
+    /// Whether the cached subtree shows a secret, replayed with the cache.
+    cache_shows_secret: bool,
 }
 
 impl Default for Column {
@@ -84,6 +86,7 @@ impl Column {
             cache_rect: vello::kurbo::Rect::ZERO,
             cache_present: false,
             descendant_caches_released: false,
+            cache_shows_secret: false,
         }
     }
 
@@ -248,8 +251,7 @@ impl Widget for Column {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::permissions::capability::PermissionGated,
-        dyn crate::presence::capability::PublishesPresence,
-        dyn crate::undo::UndoPoints
+        dyn crate::presence::capability::PublishesPresence
     );
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -262,7 +264,7 @@ impl Widget for Column {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         // This container owns no operation handler: offer each child once.
@@ -272,7 +274,7 @@ impl Widget for Column {
     /// Forward the per-frame update pass; every child runs, and a
     /// change in any of them is a change here. Not short-circuited —
     /// a child that skipped its pass would miss a frame of state.
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let mut changed = false;
         for child in &mut self.children {
             changed |= child.update(state, path);
@@ -314,6 +316,17 @@ impl Widget for Column {
                 // the start so surplus block space does not inflate the
                 // requested gap between them.
                 align_content: self.intrinsic_height.then_some(taffy::AlignContent::Start),
+                // The one column is the Column's own width, never wider: an
+                // `auto` track grows to its widest child's content and pushes
+                // a padded child past the Column's edge.
+                grid_template_columns: if self.intrinsic_height {
+                    vec![taffy::style_helpers::minmax(
+                        length(0.0_f32),
+                        taffy::style_helpers::fr(1.0_f32),
+                    )]
+                } else {
+                    Vec::new()
+                },
                 flex_shrink: 0.0, // Prevent vertical squashing
                 gap: taffy::Size {
                     width: length(0.0_f32),
@@ -554,6 +567,7 @@ impl Widget for Column {
             let prev_vp = presence.viewport.replace(None);
             let mut local = std::mem::take(&mut self.subtree_cache);
             local.reset();
+            let secrets = crate::secret_paint::SecretPaint::begin();
             for child in &mut self.children {
                 child.draw_with_presence(
                     &mut local,
@@ -564,6 +578,7 @@ impl Widget for Column {
                     permissions,
                 );
             }
+            self.cache_shows_secret = secrets.finish();
             scene.append(&local, Some(transform));
             self.subtree_cache = local;
             self.cache_rect = self.rect;
@@ -581,6 +596,9 @@ impl Widget for Column {
             )]
             let cache_transform = transform * Affine::translate((dx, dy));
             scene.append(&self.subtree_cache, Some(cache_transform));
+            if self.cache_shows_secret {
+                crate::secret_paint::note_secret_painted();
+            }
             if !self.descendant_caches_released {
                 for child in &mut self.children {
                     child.release_scene_cache();
@@ -616,19 +634,6 @@ impl Widget for Column {
         self.descendant_caches_released = true;
         for child in &mut self.children {
             child.release_scene_cache();
-        }
-    }
-}
-
-impl crate::undo::UndoPoints for Column {
-    fn needs_commit(&self) -> bool {
-        self.children()
-            .iter()
-            .any(|c| crate::undo::needs_commit(*c))
-    }
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            crate::undo::on_commit(child);
         }
     }
 }
@@ -753,6 +758,12 @@ mod tests {
                     radius_px: 6.0,
                     spacing_px: 9.0,
                     font: "Inter".into(),
+                    motion_scale: 1.0,
+                    material_scale: 1.0,
+                    icon_scale: 1.0,
+                    chrome_weight: 1.0,
+                    motion_character: 1.0,
+                    material_tint: 0.0,
                 })
                 .unwrap(),
             ] {

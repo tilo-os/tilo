@@ -9,7 +9,7 @@
 //! both an app's scrubber and the compositor's room-level timeline need it.
 //!
 //! Two summary strategies, in order of preference: **structural**, which
-//! materialises the window with [`qdoc::snapshot::series`] and
+//! materialises the window with [`tilo_doc::snapshot::series`] and
 //! diffs snapshots for real per-paragraph insert/delete counts on
 //! documents carrying the `qdoc` schema; and **patch**, the fallback that
 //! reads the change's own patch set via `AutoCommit::diff`, weaker only in
@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjType, PatchAction, ReadDoc};
 use collab_types::{ArtifactKind, OpClass};
-use qdoc::snapshot::DocSnapshot;
+use tilo_doc::snapshot::DocSnapshot;
 
 use crate::widget::history::{HistoryEntry, HistoryEntryId};
 
@@ -43,9 +43,11 @@ pub mod run_undo;
 pub mod runs;
 pub mod schema_ops;
 pub mod seen;
+pub mod steps;
 pub use authors::{
     AuthorDirectory, UNKNOWN_AUTHOR_NAME, actor_handle, agent_display_label, agent_principal_name,
-    local_identity_author, participant_display_label, short_id, stable_hue,
+    author_coloured, author_for_identity, local_identity_author, participant_display_label,
+    short_id, stable_hue,
 };
 pub use compare::{CompareError, HistoryComparison, compare_entries};
 pub use detail::{HistoryResourceTarget, HistorySelectionDetail};
@@ -109,10 +111,10 @@ pub fn committed_heads(doc: &AutoCommit) -> Vec<ChangeHash> {
 pub fn materialize_entry(
     doc: &mut AutoCommit,
     id: &HistoryEntryId,
-) -> Result<Option<DocSnapshot>, qdoc::DocError> {
+) -> Result<Option<DocSnapshot>, tilo_doc::DocError> {
     with_committed_history(doc, |doc| {
         version_index_for_entry(doc, id)
-            .map(|version| qdoc::snapshot::at(doc, version))
+            .map(|version| tilo_doc::snapshot::at(doc, version))
             .transpose()
     })
 }
@@ -211,35 +213,39 @@ impl HistorySource {
         let start = versions.len().saturating_sub(self.max_entries);
         let genesis_actor = crate::record::genesis_actor(doc).map(|actor| actor.to_hex_string());
 
-        // Plus the one before the window — the patch path diffs between
+        // Plus the one before the window — the fallback diffs between
         // consecutive frontiers.
         let heads = prefix_heads_series(doc, start, versions.len());
 
-        // One replay of the change log yields every snapshot in the window,
-        // plus the one before it, so the first row still describes a delta.
-        let before_window = start.checked_sub(1);
-        let indices: Vec<usize> = before_window
-            .into_iter()
-            .chain(start..versions.len())
-            .collect();
-        let mut snapshots = qdoc::snapshot::series(doc, &indices).into_iter();
-        let mut prev_snapshot: Option<DocSnapshot> = match before_window {
-            None => Some(DocSnapshot::default()),
-            Some(_) => snapshots.next().flatten(),
+        // One replay of the change log describes every change in the window:
+        // each change's patches come from the replica's incremental diff, so
+        // describing a change costs that change, not a scan of the document.
+        // Only a document carrying the qdoc schema is also materialised per
+        // version for the structural summary.
+        let mut replay = Replay::new(doc, start, tilo_doc::snapshot::of(doc).is_some());
+        let mut prev_snapshot: Option<DocSnapshot> = if start == 0 {
+            Some(DocSnapshot::default())
+        } else {
+            replay.snapshot()
         };
 
         let mut out = Vec::with_capacity(versions.len().saturating_sub(start));
         for (index, v) in versions.iter().enumerate().skip(start) {
-            let cur_snapshot = snapshots.next().flatten();
+            let patches = replay.advance();
+            let cur_snapshot = replay.snapshot();
             let before = heads
                 .get(&index.wrapping_sub(1))
                 .cloned()
                 .unwrap_or_default();
             let after = heads.get(&index).cloned().unwrap_or_default();
-            let (structural_summary, op_class, text_delta) = match (&prev_snapshot, &cur_snapshot) {
-                (Some(prev), Some(cur)) => structural_summary(prev, cur),
-                _ => patch_summary(doc, &before, &after, self.field_paths),
-            };
+            let (structural_summary, op_class, text_delta) =
+                match (&prev_snapshot, &cur_snapshot, &patches) {
+                    (Some(prev), Some(cur), _) => structural_summary(prev, cur),
+                    (_, _, Some(patches)) => {
+                        summarize_patches(replay.document(), patches, self.field_paths)
+                    }
+                    _ => patch_summary(doc, &before, &after, self.field_paths),
+                };
             prev_snapshot = cur_snapshot;
 
             // The schema genesis is a change nobody made — its containers are
@@ -248,7 +254,7 @@ impl HistorySource {
             // a revision to a nonexistent person. Skipped here rather than in
             // `versions`, which stays positional (`materialize_at` / `prefix_heads`
             // address a change by its place).
-            if qdoc::model::is_schema_genesis(v) {
+            if tilo_doc::model::is_schema_genesis(v) {
                 continue;
             }
             // A record's genesis is the same kind of change; so is a
@@ -266,7 +272,7 @@ impl HistorySource {
             // Checked only when there's no other summary, so the common path
             // pays no extra diff.
             if structural_summary == NO_VISIBLE_CHANGE {
-                let patches = doc.diff(&before, &after);
+                let patches = patches.unwrap_or_else(|| doc.diff(&before, &after));
                 if groups::is_group_marker(&patches) || runs::is_run_marker(&patches) {
                     continue;
                 }
@@ -388,36 +394,78 @@ fn timestamp_from_ms(time_ms: i64) -> SystemTime {
         .unwrap_or(UNIX_EPOCH)
 }
 
+/// A replica rebuilt change by change in the document's causal order, for
+/// describing each change of a history window from one pass over the log.
+struct Replay {
+    changes: std::vec::IntoIter<automerge::Change>,
+    replica: AutoCommit,
+    structural: bool,
+    failed: bool,
+}
+
+impl Replay {
+    /// The replica as of the first `start` changes of `doc`.
+    fn new(doc: &mut AutoCommit, start: usize, structural: bool) -> Self {
+        use tilo_automerge::ApplyIncoming as _;
+        let mut changes = doc.get_changes(&[]).into_iter();
+        let mut replica = AutoCommit::new();
+        let prefix: Vec<_> = changes.by_ref().take(start).collect();
+        let failed = !prefix.is_empty() && replica.apply_incoming(prefix).is_err();
+        // Every later change is then indexed as it applies, so each one's
+        // patches are read without diffing the whole document.
+        replica.update_diff_cursor();
+        Self {
+            changes,
+            replica,
+            structural,
+            failed,
+        }
+    }
+
+    /// Apply the next change; its patches, or `None` once the replay failed.
+    fn advance(&mut self) -> Option<Vec<automerge::Patch>> {
+        use tilo_automerge::ApplyIncoming as _;
+        let change = self.changes.next()?;
+        if self.failed || self.replica.apply_incoming([change]).is_err() {
+            self.failed = true;
+            return None;
+        }
+        Some(self.replica.diff_incremental())
+    }
+
+    /// The replica's qdoc snapshot, when the document carries that schema.
+    fn snapshot(&self) -> Option<DocSnapshot> {
+        (self.structural && !self.failed)
+            .then(|| tilo_doc::snapshot::of(&self.replica))
+            .flatten()
+    }
+
+    fn document(&self) -> &AutoCommit {
+        &self.replica
+    }
+}
+
 /// Versions `start - 1 ..= end - 1`, computed in one pass — `prefix_heads`
 /// re-reads the change list per call, so a timeline asking for every
-/// version builds the series from one read instead.
+/// version builds the series from one read instead. The change list is in
+/// causal order, so a prefix's heads are the previous prefix's heads minus
+/// what the next change depends on, plus that change: linear in the history,
+/// where recomputing each prefix from scratch was quadratic.
 fn prefix_heads_series(
     doc: &mut AutoCommit,
     start: usize,
     end: usize,
 ) -> HashMap<usize, Vec<ChangeHash>> {
-    let changes = doc.get_changes(&[]);
+    let metas = doc.get_changes_meta(&[]);
     let mut out = HashMap::new();
     let lo = start.saturating_sub(1);
-    for i in lo..end.min(changes.len()) {
-        // The loop bound guarantees `i < changes.len()`, so `..=i` is
-        // always in range; `get` plus `continue` keeps that provable
-        // rather than assumed.
-        let Some(prefix) = changes.get(..=i) else {
-            continue;
-        };
-        let depended_on: std::collections::HashSet<ChangeHash> = prefix
-            .iter()
-            .flat_map(|c| c.deps().iter().copied())
-            .collect();
-        out.insert(
-            i,
-            prefix
-                .iter()
-                .map(automerge::Change::hash)
-                .filter(|h| !depended_on.contains(h))
-                .collect(),
-        );
+    let mut heads: Vec<ChangeHash> = Vec::new();
+    for (i, meta) in metas.iter().enumerate().take(end) {
+        heads.retain(|head| !meta.deps.contains(head));
+        heads.push(meta.hash);
+        if i >= lo {
+            out.insert(i, heads.clone());
+        }
     }
     out
 }
@@ -430,31 +478,31 @@ fn structural_summary(
     prev: &DocSnapshot,
     cur: &DocSnapshot,
 ) -> (String, OpClass, Option<(usize, usize)>) {
-    let diff = qdoc::diff_snapshots(prev, cur);
+    let diff = tilo_doc::diff_snapshots(prev, cur);
 
     let mut inserted = 0usize;
     let mut deleted = 0usize;
     let mut formatting = 0usize;
     for b in &diff.blocks {
         match b.op {
-            qdoc::BlockOp::Added => {
+            tilo_doc::BlockOp::Added => {
                 inserted =
                     inserted.saturating_add(b.new_text.as_deref().unwrap_or("").chars().count());
             }
-            qdoc::BlockOp::Removed => {
+            tilo_doc::BlockOp::Removed => {
                 deleted =
                     deleted.saturating_add(b.old_text.as_deref().unwrap_or("").chars().count());
             }
-            qdoc::BlockOp::Changed | qdoc::BlockOp::Equal => {
+            tilo_doc::BlockOp::Changed | tilo_doc::BlockOp::Equal => {
                 for r in &b.runs {
                     match r.op {
-                        qdoc::RunOp::Insert => {
+                        tilo_doc::RunOp::Insert => {
                             inserted = inserted.saturating_add(r.text.chars().count());
                         }
-                        qdoc::RunOp::Delete => {
+                        tilo_doc::RunOp::Delete => {
                             deleted = deleted.saturating_add(r.text.chars().count());
                         }
-                        qdoc::RunOp::Equal => {}
+                        tilo_doc::RunOp::Equal => {}
                     }
                 }
             }
@@ -585,9 +633,19 @@ fn patch_summary(
     paths: bool,
 ) -> (String, OpClass, Option<(usize, usize)>) {
     let patches = doc.diff(before, after);
+    summarize_patches(doc, &patches, paths)
+}
+
+/// [`patch_summary`] of patches already read; `doc` is a replica holding
+/// the objects they touch.
+fn summarize_patches(
+    doc: &AutoCommit,
+    patches: &[automerge::Patch],
+    paths: bool,
+) -> (String, OpClass, Option<(usize, usize)>) {
     // A change that only named a version or recorded a run reports as
     // nothing visible, so the caller drops the row.
-    if groups::is_group_marker(&patches) || runs::is_run_marker(&patches) {
+    if groups::is_group_marker(patches) || runs::is_run_marker(patches) {
         return (NO_VISIBLE_CHANGE.to_string(), OpClass::EditMeta, None);
     }
     let mut inserted = 0usize;
@@ -599,7 +657,7 @@ fn patch_summary(
     let mut marks = 0usize;
     let mut field_paths: Vec<String> = Vec::new();
 
-    for p in &patches {
+    for p in patches {
         if let Some(path) = field_path(p)
             && !field_paths.contains(&path)
         {

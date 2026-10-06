@@ -85,6 +85,11 @@ pub struct ChannelMember {
     /// `None` for a member kept only in memory.
     record_path: Option<PathBuf>,
     buffered: BTreeMap<[u8; 32], MlsGovernanceFrameV1>,
+    /// The `issued_at` of the last request minted here. A steward keeps
+    /// only a request newer than the one a device was admitted with, so a
+    /// request minted again in the same second (after a Welcome this device
+    /// could not open, or a removal) must still be newer.
+    issued: u64,
 }
 
 impl ChannelMember {
@@ -126,6 +131,7 @@ impl ChannelMember {
             record,
             record_path: Some(record_path),
             buffered: BTreeMap::new(),
+            issued: 0,
         })
     }
 
@@ -150,6 +156,7 @@ impl ChannelMember {
             record: MemberRecord::Waiting(Box::new(MemberKey::for_device(&device)?)),
             record_path: None,
             buffered: BTreeMap::new(),
+            issued: 0,
         })
     }
 
@@ -212,6 +219,7 @@ impl ChannelMember {
             record,
             record_path: None,
             buffered: BTreeMap::new(),
+            issued: 0,
         })
     }
 
@@ -286,6 +294,7 @@ impl ChannelMember {
         // The package's HPKE secret now lives in the member key's storage;
         // it must be durable before the package leaves the device.
         self.save(vault)?;
+        let issued_at = self.next_issued(issued_at);
         MlsAccessRequestV1::signed(self.channel, package, issued_at, device_key)
             .map(Some)
             .map_err(|error| Error::Serialization(error.to_string()))
@@ -381,7 +390,7 @@ impl ChannelMember {
                 let Some((recipient, welcome, _, key_history)) = action.admission() else {
                     return Ok(MemberEvent::Recorded);
                 };
-                if *recipient != me {
+                if *recipient != me || !ChannelGroup::welcome_names(welcome, pending) {
                     return Ok(MemberEvent::Recorded);
                 }
                 let attempt = pending.duplicate()?;
@@ -435,6 +444,12 @@ impl ChannelMember {
         }
     }
 
+    /// `issued_at`, or later when a request was already minted at or after it.
+    fn next_issued(&mut self, issued_at: u64) -> u64 {
+        self.issued = issued_at.max(self.issued.saturating_add(1));
+        self.issued
+    }
+
     fn store(&mut self, record: MemberRecord, vault: &VaultKey) -> Result<()> {
         if let Some(path) = &self.record_path {
             record.save_sealed(path, vault)?;
@@ -474,6 +489,7 @@ impl ChannelMember {
         };
         let package = crate::encode_key_package(&member.fresh_key_package()?)?;
         self.save(vault)?;
+        let issued_at = self.next_issued(issued_at);
         Ok(Some(MlsAccessRequestV1::unsigned(
             self.channel,
             self.device,

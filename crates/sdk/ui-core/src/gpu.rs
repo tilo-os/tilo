@@ -72,7 +72,52 @@ impl DeviceHandle {
     pub fn adapter(&self) -> &Adapter {
         &self.adapter
     }
+
+    /// The same driver's device on a fresh instance of this adapter's backend, with this
+    /// device's features and limits. Blocks while the device opens.
+    ///
+    /// Not a second device on this adapter: Mesa's CPU Vulkan driver compiles shaders for every
+    /// device of one physical device one at a time, so work meant to run beside this device's
+    /// needs a physical device of its own.
+    pub fn open_peer(&self) -> Option<(Device, Queue)> {
+        let info = self.adapter.get_info();
+        let backends = wgpu::Backends::from(info.backend);
+        let instance = Instance::new(wgpu::InstanceDescriptor {
+            display: None,
+            backends,
+            flags: wgpu::InstanceFlags::from_build_config().with_env(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            backend_options: wgpu::BackendOptions::from_env_or_default(),
+        });
+        let adapter = pollster::block_on(instance.enumerate_adapters(backends))
+            .into_iter()
+            .find(|adapter| {
+                let peer = adapter.get_info();
+                (peer.name.as_str(), peer.driver.as_str(), peer.device_type)
+                    == (info.name.as_str(), info.driver.as_str(), info.device_type)
+            })?;
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: None,
+            required_features: self.device.features(),
+            required_limits: self.device.limits(),
+            memory_hints: MEMORY_HINTS,
+            ..Default::default()
+        }))
+        .ok()
+    }
 }
+
+/// See the module header for the default's cost. `MemoryUsage` (8 MB first block, 64 MB
+/// largest) is still not enough, because the block size doubles with every block a process opens
+/// (`min << active_general_blocks`, capped at the maximum): one idle app held
+/// 4+8+16+32+64 = 124 MB of blocks to suballocate ~50 MB of buffers out of.
+///
+/// Fixed 4 MB blocks stop the doubling. Anything larger gets a dedicated allocation of its own
+/// exact size instead (`gpu_allocator`'s `requires_personal_block`), so big buffers cost what
+/// they are. 4 MB is the floor wgpu clamps to.
+const MEMORY_HINTS: wgpu::MemoryHints = wgpu::MemoryHints::Manual {
+    suballocated_device_memory_block_size: (4 << 20)..(4 << 20),
+};
 
 /// wgpu state for one process, with a memory hint that fits a shared GPU.
 pub struct RenderContext {
@@ -221,6 +266,9 @@ impl RenderContext {
             wgpu::util::initialize_adapter_from_env_or_default(&self.instance, compatible_surface)
                 .await
                 .ok()?;
+        if compatible_surface.is_some() {
+            report_adapter(&self.instance, &adapter).await;
+        }
         let features = adapter.features();
         let maybe_features = wgpu::Features::CLEAR_TEXTURE | wgpu::Features::PIPELINE_CACHE;
         // Timestamp queries allocate profile-only GPU resources and are not a
@@ -261,20 +309,7 @@ impl RenderContext {
                 label: None,
                 required_features: (features & maybe_features) | timestamp_features,
                 required_limits: required_limits(&adapter.limits()),
-                // See the module header for the default's cost. `MemoryUsage`
-                // (8 MB first block, 64 MB largest) is still not enough,
-                // because the block size doubles with every block a process
-                // opens (`min << active_general_blocks`, capped at the
-                // maximum): one idle app held 4+8+16+32+64 = 124 MB of blocks
-                // to suballocate ~50 MB of buffers out of.
-                //
-                // Fixed 4 MB blocks stop the doubling. Anything larger gets a
-                // dedicated allocation of its own exact size instead
-                // (`gpu_allocator`'s `requires_personal_block`), so big
-                // buffers cost what they are. 4 MB is the floor wgpu clamps to.
-                memory_hints: wgpu::MemoryHints::Manual {
-                    suballocated_device_memory_block_size: (4 << 20)..(4 << 20),
-                },
+                memory_hints: MEMORY_HINTS,
                 ..Default::default()
             })
             .await
@@ -336,15 +371,27 @@ impl RenderContext {
             .ok_or(CreateSurfaceError::NoCompatibleDevice)?;
         tilo_startup_metrics::mark("surface-capabilities-start");
         let capabilities = surface.get_capabilities(&handle.adapter);
-        let format = capabilities
-            .formats
-            .into_iter()
-            .find(|it| matches!(it, TextureFormat::Rgba8Unorm | TextureFormat::Bgra8Unorm))
-            .ok_or(CreateSurfaceError::UnsupportedSurfaceFormat)?;
+        // The intermediate target is RGBA8. Prefer a matching surface format
+        // so capable backends can present it with a texture copy instead of
+        // compiling a fullscreen blit shader for every new surface.
+        let format = if capabilities.formats.contains(&TextureFormat::Rgba8Unorm) {
+            TextureFormat::Rgba8Unorm
+        } else if capabilities.formats.contains(&TextureFormat::Bgra8Unorm) {
+            TextureFormat::Bgra8Unorm
+        } else {
+            return Err(CreateSurfaceError::UnsupportedSurfaceFormat);
+        };
+        let direct_copy = format == TextureFormat::Rgba8Unorm
+            && capabilities.usages.contains(wgpu::TextureUsages::COPY_DST);
         tilo_startup_metrics::mark("surface-capabilities-done");
 
         let config = SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | if direct_copy {
+                    wgpu::TextureUsages::COPY_DST
+                } else {
+                    wgpu::TextureUsages::empty()
+                },
             format,
             width,
             height,
@@ -408,6 +455,89 @@ impl RenderContext {
     }
 }
 
+/// Prefix of every line a window prints about the adapter it renders on.
+/// The compositor reads app stderr for it; session checks grep for it.
+pub const ADAPTER_LINE_PREFIX: &str = "tilo-gpu:";
+
+/// What follows [`ADAPTER_LINE_PREFIX`] when a window presents through a CPU
+/// adapter on a machine that has a GPU.
+pub const SOFTWARE_FALLBACK_MESSAGE: &str =
+    "window renders on a CPU adapter although a GPU is present";
+
+/// The one line naming a window's adapter, e.g.
+/// `tilo-gpu: window adapter "Turnip Adreno (TM) X1-85" type=IntegratedGpu backend=Vulkan driver="turnip Mesa driver"`.
+fn adapter_line(info: &wgpu::AdapterInfo) -> String {
+    format!(
+        "{ADAPTER_LINE_PREFIX} window adapter {:?} type={:?} backend={:?} driver={:?}",
+        info.name, info.device_type, info.backend, info.driver
+    )
+}
+
+/// The hardware adapters a window passed over for a CPU one, or nothing when
+/// the choice was not a fallback.
+///
+/// Mesa's hardware Vulkan drivers present on Wayland only through
+/// `zwp_linux_dmabuf_v1`; without it they report the surface lost and the
+/// only adapter left that can present is lavapipe, which rasterises every
+/// frame on the CPU and JIT-compiles every shader on the first one. That cost
+/// seconds per launch on a Snapdragon laptop and nothing reported it.
+fn passed_over_hardware(
+    chosen: wgpu::DeviceType,
+    available: impl IntoIterator<Item = (wgpu::DeviceType, String)>,
+) -> Vec<String> {
+    if chosen != wgpu::DeviceType::Cpu {
+        return Vec::new();
+    }
+    available
+        .into_iter()
+        .filter(|(kind, _)| {
+            matches!(
+                kind,
+                wgpu::DeviceType::IntegratedGpu
+                    | wgpu::DeviceType::DiscreteGpu
+                    | wgpu::DeviceType::VirtualGpu
+                    | wgpu::DeviceType::Other
+            )
+        })
+        .map(|(_, name)| name)
+        .collect()
+}
+
+/// Name the adapter a window renders on, and call it an error when it is a
+/// software fallback. Enumerating again costs a few milliseconds, so it only
+/// happens once the choice is already a CPU adapter.
+async fn report_adapter(instance: &Instance, chosen: &Adapter) {
+    let info = chosen.get_info();
+    crate::diag!("{}", adapter_line(&info));
+    if info.device_type != wgpu::DeviceType::Cpu {
+        return;
+    }
+    let available = instance
+        .enumerate_adapters(wgpu::Backends::all())
+        .await
+        .into_iter()
+        .map(|adapter| {
+            let other = adapter.get_info();
+            (
+                other.device_type,
+                format!("{} ({:?})", other.name, other.backend),
+            )
+        });
+    let hardware = passed_over_hardware(info.device_type, available);
+    if hardware.is_empty() {
+        return;
+    }
+    // Plain stderr, not only `tracing`: an app's subscriber prints errors,
+    // but the compositor matches this exact line to raise it in GPU health.
+    crate::diag!(
+        "{ADAPTER_LINE_PREFIX} {SOFTWARE_FALLBACK_MESSAGE}: {:?} chosen over {} \
+         because none of them can present to this window (does the compositor \
+         advertise zwp_linux_dmabuf_v1 on their render node?)",
+        info.name,
+        hardware.join(", ")
+    );
+}
+
 /// Why a surface could not be made.
 #[derive(Debug, thiserror::Error)]
 pub enum CreateSurfaceError {
@@ -421,8 +551,29 @@ pub enum CreateSurfaceError {
 
 #[cfg(test)]
 mod tests {
-    use super::create_targets;
+    use super::{create_targets, passed_over_hardware};
     use crate::offscreen::shared_gpu;
+    use wgpu::DeviceType;
+
+    #[test]
+    fn a_cpu_adapter_beside_a_gpu_is_reported_as_a_fallback() {
+        let adapters = || {
+            [
+                (DeviceType::IntegratedGpu, "Turnip Adreno X1-85".to_owned()),
+                (DeviceType::Cpu, "llvmpipe".to_owned()),
+            ]
+        };
+        assert_eq!(
+            passed_over_hardware(DeviceType::Cpu, adapters()),
+            ["Turnip Adreno X1-85"]
+        );
+        assert!(passed_over_hardware(DeviceType::IntegratedGpu, adapters()).is_empty());
+        assert!(
+            passed_over_hardware(DeviceType::Cpu, [(DeviceType::Cpu, "llvmpipe".to_owned())])
+                .is_empty(),
+            "a machine with only a software adapter has nothing to fall back from"
+        );
+    }
 
     #[test]
     fn gpu_context_shares_device_loss_callbacks_and_accepts_native_damage() {

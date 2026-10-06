@@ -17,7 +17,7 @@ hermetic and do not depend on the process working directory.
 Written by LibreOffice (26.8, flatpak `org.libreoffice.LibreOffice`) from the flat-ODF
 sources in `src/`, converted with `soffice --headless --convert-to docx|odt`; run
 `src/regenerate.sh` to rebuild them all, and `src/regenerate.sh --check FILE…` to have
-LibreOffice re-open exported files. `qdoc-codecs`' `tests/office_fidelity.rs` imports, edits
+LibreOffice re-open exported files. `tilo-doc-codecs`' `tests/office_fidelity.rs` imports, edits
 and exports each one and checks that what the model does not represent survives.
 
 - `lo-structure.docx`, `lo-structure.odt` — from `src/structure.fodt`: headings, custom

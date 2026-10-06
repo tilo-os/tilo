@@ -1,10 +1,9 @@
 //! One independently refreshed observation table. No device enumeration runs
 //! while the shell holds a capture lease or service installation lock.
-use super::{
-    Arc, AtomicBool, AtomicU64, BTreeMap, Duration, Instant, Mutex, Ordering, media_wire, observer,
-};
+use super::{Arc, AtomicBool, AtomicU64, Duration, Instant, Mutex, Ordering, observer};
 use crate::portal::{CaptureBroker, CaptureKind, capture_broker::LocalCaptureHandle};
 use media::AudioGraph;
+use std::collections::BTreeMap;
 
 const FRESH: Duration = Duration::from_secs(2);
 pub(super) struct Observation {
@@ -160,9 +159,10 @@ impl Devices {
                 {
                     continue;
                 }
-                let Ok(nonce) = media_wire::fresh_nonce() else {
+                let mut nonce = [0_u8; 16];
+                if getrandom::fill(&mut nonce).is_err() {
                     continue;
-                };
+                }
                 let id = format!("voice-{}", hex::encode(nonce));
                 let label: String = source
                     .description

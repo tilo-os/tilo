@@ -1,3 +1,6 @@
+import type {CaptureSource} from './panorama';
+export {createPanorama} from './panorama';
+export type {CaptureSource, PanoramaCamera, CaptureBounds, PanoramaReceipt, PanoramaObserver} from './panorama';
 import type {DesktopNavigationV1} from "./navigation";
 export type * from "./navigation";
 import type {CertifiedActionsV1,PrivateInvocation} from './peer';
@@ -121,6 +124,10 @@ export interface RuntimeStatus {
   error?: string;
   persistence?: 'committed' | 'failed';
   frames?: number;
+  /** Exact instance used with publication aliases; absent on desktop mounts. */
+  componentInstance?: number;
+  presentation?: boolean;
+  layoutGeneration?: number;
   /** Private caller observation; never a claim of replicated document completion. */
   action?: Pick<PrivateInvocation,'invocation'|'state'|'terminal'|'cancellationRequested'>;
   actionError?: string;
@@ -187,6 +194,13 @@ export interface MountOptions {
   resolveApp?: AppResolver;
   /** With `app: 'desktop'`: mount the page's own desktop, seeded thus. */
   local?: LocalDesktop;
+  /**
+   * The desktop's Invite (its launchpad card and the people control in its
+   * top bar) calls this; without it the desktop offers no invitation.
+   */
+  onInvite?: () => void;
+  /** The workspace name a desktop this mount seeds starts with. */
+  workspaceName?: string;
 }
 /** Which window of a desktop an action call addresses. */
 export interface WindowOption {
@@ -212,6 +226,29 @@ export interface ActionResult {
   state: 'completed' | 'accepted';
   output?: {value?: unknown; resources?: string[]};
 }
+/** Local exact publication identity; authenticated admission is the caller's job. */
+export interface SemanticPresentationTarget {
+  app: string;
+  instance: number;
+  record: string;
+  resource: string;
+  action: string;
+}
+export interface SemanticPresentationReceipt {
+  target: SemanticPresentationTarget;
+  rect: [number, number, number, number];
+  frame: number;
+  gpuGeneration: number;
+  layoutGeneration: number;
+  presentedAtMs: number;
+  logicalSize: [number, number];
+  pixels: [number, number];
+}
+export interface SemanticPresentationWatch {
+  read(bounds?: {maxAgeMs?: number}): SemanticPresentationReceipt | null;
+  close(): void;
+}
+
 export interface DesktopMount {
   navigation?: DesktopNavigationV1;
   /** The mounted application; absent for the canonical desktop. */
@@ -234,6 +271,10 @@ export interface DesktopMount {
    * window's app (`window`, else the focused window).
    */
   actions(resource?: string, options?: WindowOption): ActionDescriptor[];
+  /** Current host/lifetime aliases; invokeAction accepts these through the same door. */
+  publications(): ActionDescriptor[];
+  /** At most 32 exact targets. No locus until a subsequent successful presentation. */
+  observeSemanticTarget(target: SemanticPresentationTarget): SemanticPresentationWatch;
   /**
    * Invoke one published action through the application's action door, the
    * one the palette, agents and assistive technology use. Throws
@@ -256,6 +297,8 @@ export interface DesktopMount {
   flush(): Promise<void>;
   state(): RuntimeStatus | undefined;
   readonly canvas: HTMLCanvasElement;
+  /** Explicit single-app source for a shared-host composition, never desktop capture. */
+  readonly captureSource: CaptureSource;
   readonly editor: HTMLTextAreaElement;
   readonly semantics: HTMLElement;
   semantic(path: string, target: string | undefined, action: string, value: string, anchor: number, focus: number): unknown;

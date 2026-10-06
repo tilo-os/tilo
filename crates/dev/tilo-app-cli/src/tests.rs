@@ -1071,7 +1071,7 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
         ));
         let source = std::fs::read_to_string(app.join("src/components/profile_form.rs")).unwrap();
         assert!(source.contains("// tilo-app:graph-props=form-v2"));
-        assert!(source.contains("TextInput::from_document_string(value_path)"));
+        assert!(source.contains("TextInput::from_state(&values.text(value_path))"));
         assert!(source.contains("pub fn register_ui_graph("));
         let report = doctor_app(&app).unwrap();
         assert!(report.is_ready(), "{}", report.summary());
@@ -2493,7 +2493,7 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         let library = std::fs::read_to_string(destination.join("src/lib.rs")).expect("library");
         assert!(library.contains("pub const APP_ID: &str = \"local.dev.reading.list\";"));
         assert!(library.contains("#[derive(Model, Default, Debug, Clone, PartialEq)]"));
-        assert!(library.contains("#[resource(kind = \"generated.greeting\""));
+        assert!(library.contains("#[resource(kind = \"local.dev.reading.list.greeting\""));
         assert!(library.contains("impl ResourceApp for App"));
         assert!(library.contains(".input(|greeting| greeting.name.clone(), Greeting::SET_NAME)"));
         assert!(library.contains("with_id(\"name-input\")"));
@@ -3497,7 +3497,7 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
             assert!(readme.contains("tilo-app keys new\n"));
             assert!(readme.contains("tilo-app apply --domain example.com\n"));
             assert!(readme.contains("tilo-app publish\n"));
-            assert!(readme.contains("\"resource\":\"generated.greeting\""));
+            assert!(readme.contains("\"resource\":\"so.tilo.notes.greeting\""));
             assert!(readme.contains("`#[derive(Model)]` resource"));
             assert!(readme.contains("tilo-app test\n"));
             assert!(readme.contains("tilo-app dev\n"));
@@ -4155,7 +4155,11 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         let identity = pack::load_identity(&identity_path).expect("load identity");
         let output = temp.path().join("reading-list.tapp");
         let kinds = resource_kinds::declared_in(&spec.app_dir).expect("resource kinds");
-        assert_eq!(kinds, ["generated.greeting"], "the starter's resource");
+        assert_eq!(
+            kinds,
+            ["local.dev.reading.list.greeting"],
+            "the starter's resource, under the app's id"
+        );
         let manifest = || {
             tilo_app_package::Manifest::from_toml_str(
                 &std::fs::read_to_string(&spec.manifest_path).expect("manifest"),
@@ -4174,7 +4178,7 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         assert_eq!(tapp.meta.id.to_string(), packed.id);
         assert_eq!(
             tapp.meta.manifest.resources.kinds,
-            ["generated.greeting"],
+            ["local.dev.reading.list.greeting"],
             "the signed manifest declares the app's resource kinds"
         );
         assert_eq!(tapp.meta.publisher(), identity.public_key_bytes());
@@ -4378,8 +4382,17 @@ fn the_dev_loop_watches_rebuilds_and_restarts_only_on_real_edits() {
         };
         assert_eq!(build_dev_candidate(&plan).unwrap(), executable);
         assert_eq!(dev_binary_name(&manifest).unwrap(), "desktop");
-        let arguments = std::fs::read_to_string(argument_log).unwrap();
+        let arguments = std::fs::read_to_string(&argument_log).unwrap();
         assert!(arguments.contains("--bin\ndesktop\n"), "{arguments}");
+        assert!(!arguments.contains("--profile"), "{arguments}");
+        let DevCandidate::Built(optimised) =
+            build_dev_candidate_interruptible(&plan, Some("thin-app"), None, &[], |_| {}).unwrap()
+        else {
+            panic!("no watcher, so nothing supersedes the build");
+        };
+        assert_eq!(optimised, executable);
+        let arguments = std::fs::read_to_string(&argument_log).unwrap();
+        assert!(arguments.contains("--profile\nthin-app\n"), "{arguments}");
 
         let failing_cargo = app.join("failing-cargo");
         std::fs::write(&failing_cargo, "#!/bin/sh\nexit 9\n").unwrap();
@@ -4513,7 +4526,8 @@ fn dev_build_cancels_when_a_newer_source_edit_arrives() {
         ))
         .add_path(source)));
     });
-    let outcome = build_dev_candidate_interruptible(&plan, Some(&events), &roots, |_| {}).unwrap();
+    let outcome =
+        build_dev_candidate_interruptible(&plan, None, Some(&events), &roots, |_| {}).unwrap();
     watcher.join().unwrap();
     assert!(
         matches!(outcome, DevCandidate::Superseded),
@@ -4577,7 +4591,8 @@ fn dev_build_keeps_compiling_through_editor_noise() {
         ))
         .add_path(app.join("target/debug/desktop"))))
         .unwrap();
-    let outcome = build_dev_candidate_interruptible(&plan, Some(&events), &roots, |_| {}).unwrap();
+    let outcome =
+        build_dev_candidate_interruptible(&plan, None, Some(&events), &roots, |_| {}).unwrap();
     assert_eq!(outcome_path(outcome), executable);
 }
 
@@ -4594,7 +4609,8 @@ fn dev_restart_hands_the_checkpoint_to_the_next_process() {
 dir=\"$TILO_DEV_SESSION\"\n\
 if [ -z \"$dir\" ]; then echo missing session >&2; exit 2; fi\n\
 if [ -f \"$dir/checkpoint.bin\" ]; then\n\
-  cp \"$dir/checkpoint.bin\" \"$dir/restored\"\n\
+  cp \"$dir/checkpoint.bin\" \"$dir/restored.part\"\n\
+  mv \"$dir/restored.part\" \"$dir/restored\"\n\
 fi\n\
 trap 'printf document-route-caret > \"$dir/checkpoint.bin\"; exit 0' TERM\n\
 touch \"$dir/ready\"\n\
@@ -4911,7 +4927,13 @@ fn thin_dev_builds_link_the_toolkit_dynamically_inside_and_outside_the_workspace
             .collect::<Vec<_>>()
     };
 
-    let member = thin_dev_steps(manifest, "notes", &ThinDevLinkage::WorkspaceToolkit, true);
+    let member = thin_dev_steps(
+        manifest,
+        "notes",
+        &ThinDevLinkage::WorkspaceToolkit,
+        None,
+        true,
+    );
     assert_eq!(
         member.iter().map(|step| step.label).collect::<Vec<_>>(),
         ["the reload host", "the reload library"]
@@ -4930,6 +4952,7 @@ fn thin_dev_builds_link_the_toolkit_dynamically_inside_and_outside_the_workspace
         manifest,
         "notes",
         &ThinDevLinkage::Target(triple.into()),
+        None,
         false,
     );
     assert_eq!(
@@ -4949,6 +4972,32 @@ fn thin_dev_builds_link_the_toolkit_dynamically_inside_and_outside_the_workspace
     };
     assert_eq!(key, "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS");
     assert!(flags.to_string_lossy().ends_with("-C prefer-dynamic"));
+
+    assert!(
+        member
+            .iter()
+            .all(|step| !args(step).contains(&"--profile".to_owned()))
+    );
+    let optimised = thin_dev_steps(
+        manifest,
+        "notes",
+        &ThinDevLinkage::WorkspaceToolkit,
+        Some(DEV_RELEASE_PROFILE),
+        true,
+    );
+    assert!(optimised.iter().all(|step| {
+        let args = args(step);
+        let separator = args.iter().position(|arg| arg == "--").unwrap();
+        args[..separator]
+            .windows(2)
+            .any(|pair| pair == ["--profile", "thin-app"])
+    }));
+    assert!(profile_reloads_in_place(None));
+    assert!(profile_reloads_in_place(Some(DEV_RELEASE_PROFILE)));
+    assert!(
+        !profile_reloads_in_place(Some("release")),
+        "an LTO profile cannot link the toolkit dynamically"
+    );
 
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
     assert!(app_is_workspace_member(&repo.join("apps/hot-reload-demo")));
@@ -6109,4 +6158,17 @@ fn an_app_from_an_example_is_renamed_and_ready() {
         let report = doctor_app(&destination).unwrap();
         assert!(report.is_ready(), "{}: {}", example.name, report.summary());
     }
+}
+
+#[test]
+fn code_only_reads_past_quote_characters_and_raw_strings() {
+    let source = concat!(
+        "fn escape(t: &str) -> String { t.replace('\"', \"&quot;\").replace('\\'', \"'\") }\n",
+        "const A: &str = r#\" d=\"1\" x=\"#;\n",
+        "impl Resource for Artwork {}\n",
+    );
+    let code = rust_code_only(source);
+    assert!(code.contains("impl Resource for Artwork"), "{code}");
+    assert!(!code.contains("&quot;"), "{code}");
+    assert_eq!(code.lines().count(), source.lines().count());
 }

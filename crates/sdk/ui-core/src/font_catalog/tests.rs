@@ -303,3 +303,31 @@ fn incremental_browser_asset_install_is_idempotent_and_integrity_checked() {
             .is_err()
     );
 }
+
+#[test]
+fn a_face_installed_twice_resolves_the_same_whatever_the_discovery_order() {
+    let tmp = tempfile::tempdir().unwrap();
+    let font = std::fs::read(fixture().root().join("NotoSans[wght].ttf")).unwrap();
+    for dir in ["a", "b"] {
+        std::fs::create_dir(tmp.path().join(dir)).unwrap();
+        std::fs::write(tmp.path().join(dir).join("NotoSans.ttf"), &font).unwrap();
+    }
+    for order in [["a", "b"], ["b", "a"]] {
+        let mut db = fontdb::Database::new();
+        for dir in order {
+            db.load_font_file(tmp.path().join(dir).join("NotoSans.ttf"))
+                .unwrap();
+        }
+        drop_duplicate_faces(&mut db);
+        let query = Query {
+            families: &[fontdb::Family::Name("Noto Sans")],
+            ..Query::default()
+        };
+        let id = db.query(&query).unwrap();
+        let face = db.face(id).unwrap();
+        assert_eq!(db.len(), 1);
+        assert!(
+            matches!(&face.source, fontdb::Source::File(path) if path.starts_with(tmp.path().join("a")))
+        );
+    }
+}

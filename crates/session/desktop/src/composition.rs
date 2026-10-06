@@ -136,6 +136,7 @@ pub fn build_group(
             let checked = matches!(
                 &resolution,
                 crate::resolver::TileResolution::Component(_)
+                    | crate::resolver::TileResolution::App(..)
                     | crate::resolver::TileResolution::Retained(_)
             );
             let mut host = resolution.mount(failures, wake.clone());
@@ -632,6 +633,12 @@ impl DesktopSurface {
                 .map(|g| g.id)
                 .collect();
             for id in stale {
+                if row.groups.iter().any(|g| g.id == id && g.is_closing()) {
+                    // Super+W (and the ✕) start the close animation
+                    // before the tree drop is reconciled; keep the last
+                    // frame here until `GroupRow::prune_closed_groups`.
+                    continue;
+                }
                 if let Some(group) = row.groups.iter_mut().find(|g| g.id == id) {
                     reports.extend(ui::component_lifecycle::close_components(group));
                 }
@@ -728,6 +735,7 @@ impl DesktopSurface {
                                     let checked = matches!(
                                         &other,
                                         crate::resolver::TileResolution::Component(_)
+                                            | crate::resolver::TileResolution::App(..)
                                             | crate::resolver::TileResolution::Retained(_)
                                     );
                                     let mut host = other.mount(&mut failures, wake_sink.clone());
@@ -781,6 +789,7 @@ impl DesktopSurface {
                         let checked = matches!(
                             &resolution,
                             crate::resolver::TileResolution::Component(_)
+                                | crate::resolver::TileResolution::App(..)
                                 | crate::resolver::TileResolution::Retained(_)
                         );
                         let mut host = resolution.mount(&mut failures, wake_sink.clone());
@@ -942,7 +951,7 @@ impl Widget for DesktopSurface {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
-    fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
         let wake = self.take_component_wake();
         self.root.update(doc, path) || wake
     }

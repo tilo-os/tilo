@@ -3,8 +3,8 @@
 use launcher::{
     managed::{
         InstalledManagedPackage, ManagedBinding, ManagedLaunchAuthority, ManagedLaunchEvent,
-        ManagedLauncher, ManagedRuntime, PackageTrust, ProcessIdentity, VerifiedManagedProcess,
-        VerifiedManagedSupervisor,
+        ManagedLaunchScope, ManagedLauncher, ManagedRuntime, PackageTrust, ProcessIdentity,
+        VerifiedManagedProcess, VerifiedManagedSupervisor,
         channel::{ManagedProcessAuthority, PendingManagedConnection},
     },
     services::{EnrolledServiceContext, ManagedProviderSelection},
@@ -369,8 +369,10 @@ fn qualify_tree(owned_stop: bool) {
         room: uuid::Uuid::new_v4().to_string(),
         app: "so.tilo.agent".into(),
         agent: "tree-fixture".into(),
-        task: "tree-task".into(),
-        run: "tree-run".into(),
+        scope: ManagedLaunchScope::Task {
+            task: "tree-task".into(),
+            run: "tree-run".into(),
+        },
         launch: uuid::Uuid::new_v4().to_string(),
         generation: 1,
     };

@@ -18,6 +18,7 @@ use crate::vello::kurbo::Vec2;
 )]
 pub(super) struct FloatingRuntime {
     pub client: Option<FloatingSurfaceServiceClient>,
+    host_shell_allow: Option<std::rc::Weak<std::cell::RefCell<crate::widget::HostShellAllow>>>,
     pub presentations: HashMap<String, FloatingSurfacePresentation>,
     pub active_ids: HashSet<String>,
     pub prepared_ids: HashSet<String>,
@@ -26,15 +27,23 @@ pub(super) struct FloatingRuntime {
     pub host_messages: Vec<FloatingSurfaceHostMessage>,
     /// Whether the app wants its windows withheld from captures.
     pub capture_protected: bool,
+    /// Whether the last frame showed a secret field holding a value; the
+    /// windows are withheld while it does, whatever the app asked.
+    pub secret_on_screen: bool,
     /// What the shell was last told (it starts unprotected), so the
     /// request goes out once per change.
     pub capture_protection_sent: bool,
+    /// The shell was told this app can stream its page.
+    pub paint_capable_sent: bool,
+    /// Outside a Tilo session, "close this tab" closes this window.
+    pub close_window_requested: bool,
 }
 
 impl FloatingRuntime {
     pub(super) fn new(client: Option<FloatingSurfaceServiceClient>) -> Self {
         Self {
             client,
+            host_shell_allow: None,
             presentations: HashMap::new(),
             active_ids: HashSet::new(),
             prepared_ids: HashSet::new(),
@@ -42,7 +51,10 @@ impl FloatingRuntime {
             suspended_ids: HashSet::new(),
             host_messages: Vec::new(),
             capture_protected: false,
+            secret_on_screen: false,
             capture_protection_sent: false,
+            paint_capable_sent: false,
+            close_window_requested: false,
         }
     }
 }
@@ -60,6 +72,29 @@ impl App {
     #[must_use]
     pub fn capture_protected(&self) -> bool {
         self.floating.capture_protected
+    }
+
+    /// Record whether the frame just drawn shows a secret field with a
+    /// value, masked or shown. Such a frame is withheld from captures like a
+    /// protected app's, so a typed password never reaches a screenshot or a
+    /// screen share.
+    #[cfg_attr(
+        not(feature = "native"),
+        allow(dead_code, reason = "only the native runner draws frames")
+    )]
+    pub(crate) fn set_secret_on_screen(&mut self, shown: bool) {
+        self.floating.secret_on_screen = shown;
+    }
+
+    /// What the shell should withhold: everything the app asked for, and
+    /// any window while it shows a secret.
+    #[cfg_attr(
+        not(feature = "native"),
+        allow(dead_code, reason = "only the native runner draws frames")
+    )]
+    #[must_use]
+    pub(crate) fn wants_capture_protection(&self) -> bool {
+        self.floating.capture_protected || self.floating.secret_on_screen
     }
 }
 
@@ -114,11 +149,35 @@ impl App {
     }
 
     #[cfg(feature = "native")]
+    fn take_native_host_shell_allow(
+        &mut self,
+    ) -> Option<std::rc::Weak<std::cell::RefCell<crate::widget::HostShellAllow>>> {
+        let widget = crate::widget::capability::capability_mut::<dyn crate::AppWidget>(
+            &mut *self.root_widget,
+        )?;
+        match widget.take_host_intent()? {
+            crate::widget::AppHostIntent::AllowHostShell { reply } => Some(reply),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "native")]
     fn drain_unhosted_floating_requests(&mut self) -> bool {
+        let mut changed = false;
+        if let Some(reply) = self
+            .take_native_host_shell_allow()
+            .and_then(|reply| reply.upgrade())
+        {
+            reply.borrow_mut().answer = Some(false);
+            changed = true;
+        }
         // Outside a Tilo session there is no trusted shell chooser to open.
         // Drain the edge so reconnecting later cannot replay a stale gesture.
         while self.root_widget.take_capture_studio_request().is_some() {}
-        let mut changed = false;
+        for request in crate::shell_tabs::take_requests() {
+            self.apply_unhosted_tab_request(request);
+            changed = true;
+        }
         while let Some(request) = self.root_widget.take_floating_surface_request() {
             let message =
                 crate::floating_surface::FloatingSurfaceHostMessage::Reattach { id: request.id };
@@ -141,13 +200,42 @@ impl App {
         client: &mut FloatingSurfaceServiceClient,
         changed: &mut bool,
     ) -> Result<(), String> {
-        if self.floating.capture_protection_sent != self.floating.capture_protected {
+        if let Some(reply) = self.take_native_host_shell_allow() {
+            self.floating.host_shell_allow = Some(reply);
+            *changed = true;
+            client.send(&crate::floating_surface::FloatingSurfaceClientMessage::AllowHostShell)?;
+        }
+        let protected = self.wants_capture_protection();
+        if !self.floating.paint_capable_sent && crate::webview::paint::share_capable() {
+            client.send(&crate::floating_surface::FloatingSurfaceClientMessage::PaintCapable)?;
+            self.floating.paint_capable_sent = true;
+        }
+        // A window withheld from captures shares no page either.
+        let shared = crate::webview::paint::take_share_frames();
+        if !protected {
+            use base64::Engine as _;
+            for frame in shared {
+                client.send(
+                    &crate::floating_surface::FloatingSurfaceClientMessage::PaintStream {
+                        payload: base64::engine::general_purpose::STANDARD.encode(&frame.payload),
+                        page: frame.page,
+                        scale: frame.scale,
+                    },
+                )?;
+            }
+        }
+        if self.floating.capture_protection_sent != protected {
             client.send(
                 &crate::floating_surface::FloatingSurfaceClientMessage::SetCaptureProtection {
-                    protected: self.floating.capture_protected,
+                    protected,
                 },
             )?;
-            self.floating.capture_protection_sent = self.floating.capture_protected;
+            self.floating.capture_protection_sent = protected;
+        }
+        let instance = crate::shell_tabs::launch_instance();
+        for request in crate::shell_tabs::take_requests() {
+            client.send(&tab_request_message(request, instance))?;
+            *changed = true;
         }
         while let Some(mode) = self.root_widget.take_capture_studio_request() {
             let mode = match mode {
@@ -318,6 +406,16 @@ impl App {
         let changed = !messages.is_empty();
         for message in messages {
             match &message {
+                FloatingSurfaceHostMessage::HostShellAllowed { allowed } => {
+                    if let Some(reply) = self
+                        .floating
+                        .host_shell_allow
+                        .take()
+                        .and_then(|reply| reply.upgrade())
+                    {
+                        reply.borrow_mut().answer = Some(*allowed);
+                    }
+                }
                 FloatingSurfaceHostMessage::PrepareSurface {
                     id,
                     coordinate_offset,
@@ -349,6 +447,12 @@ impl App {
                     self.floating.coordinate_offsets.remove(id);
                     self.floating.suspended_ids.insert(id.clone());
                 }
+                FloatingSurfaceHostMessage::PaintKeyframe => {
+                    crate::webview::paint::set_share_watched(true);
+                }
+                FloatingSurfaceHostMessage::PaintStop => {
+                    crate::webview::paint::set_share_watched(false);
+                }
                 FloatingSurfaceHostMessage::DesktopBounds { bounds } => {
                     match crate::floating_surface::protocol_rect(*bounds) {
                         Ok(bounds) => self.root_widget.set_floating_surface_bounds(bounds),
@@ -365,6 +469,16 @@ impl App {
     }
     #[cfg(feature = "native")]
     fn reattach_after_floating_service_loss(&mut self) {
+        if let Some(reply) = self
+            .floating
+            .host_shell_allow
+            .take()
+            .and_then(|reply| reply.upgrade())
+        {
+            reply.borrow_mut().answer = Some(false);
+        }
+        // Without the shell nobody can be watching the shared page.
+        crate::webview::paint::set_share_watched(false);
         let ids = self
             .floating
             .presentations
@@ -431,5 +545,110 @@ impl App {
             }
             _ => None,
         }
+    }
+}
+
+/// The `shell-ui` message that carries `request` for the app the shell
+/// launched as record `instance`.
+#[cfg(feature = "native")]
+fn tab_request_message(
+    request: crate::shell_tabs::TabRequest,
+    instance: Option<u64>,
+) -> crate::floating_surface::FloatingSurfaceClientMessage {
+    use crate::floating_surface::FloatingSurfaceClientMessage as Message;
+    use crate::shell_tabs::TabRequest;
+    match request {
+        TabRequest::OpenBeside { target, background } => Message::OpenTabBeside {
+            target,
+            background,
+            instance,
+        },
+        TabRequest::CloseThis => Message::CloseTab { instance },
+        TabRequest::ReopenClosed => Message::ReopenClosedTab,
+        TabRequest::PlaceNextWindowBeside { background } => Message::PlaceNextWindowBeside {
+            background,
+            instance,
+        },
+    }
+}
+
+impl App {
+    /// Without a desktop tab model, another instance is another window of
+    /// this app, and closing this tab closes this window.
+    #[cfg(feature = "native")]
+    fn apply_unhosted_tab_request(&mut self, request: crate::shell_tabs::TabRequest) {
+        use crate::shell_tabs::TabRequest;
+        match request {
+            TabRequest::OpenBeside { target, .. } => {
+                if let Err(error) = open_standalone_instance(target.as_deref()) {
+                    tracing::warn!(%error, "could not open another window of this app");
+                }
+            }
+            TabRequest::CloseThis => self.floating.close_window_requested = true,
+            // A window this app starts itself is placed by the host's own
+            // window manager, and there is no closed-tab history to reopen.
+            TabRequest::ReopenClosed | TabRequest::PlaceNextWindowBeside { .. } => {}
+        }
+    }
+
+    /// Whether a tab request asked to close this window. Consumed.
+    #[cfg(feature = "native")]
+    fn take_close_window_request(&mut self) -> bool {
+        std::mem::take(&mut self.floating.close_window_requested)
+    }
+}
+
+/// Start another process of this executable showing `target`.
+#[cfg(feature = "native")]
+fn open_standalone_instance(target: Option<&str>) -> Result<(), String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let mut command = std::process::Command::new(executable);
+    if let Some(target) = target {
+        // One opaque positional, never something an argument parser
+        // could read as a flag.
+        if target.starts_with('-') {
+            return Err("refusing an argument-shaped target".into());
+        }
+        command.arg(target);
+    }
+    let mut child = command
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    crate::background::Background::current()
+        .spawn("standalone-instance-reaper", move || {
+            let _ = child.wait();
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[cfg(all(test, feature = "native"))]
+mod host_shell_allow_tests {
+    use super::*;
+    #[test]
+    fn desktop_reply_resolves_native_permission_and_service_loss_refuses_it() {
+        let mut app = App::new_with_controlled_inputs(
+            crate::State::new(),
+            Box::new(crate::widget::Container::new()),
+        );
+        for allowed in [false, true] {
+            let reply = std::rc::Rc::new(std::cell::RefCell::new(
+                crate::widget::HostShellAllow::default(),
+            ));
+            app.floating.host_shell_allow = Some(std::rc::Rc::downgrade(&reply));
+            let wire =
+                serde_json::to_vec(&FloatingSurfaceHostMessage::HostShellAllowed { allowed })
+                    .unwrap();
+            app.apply_floating_host_messages(vec![serde_json::from_slice(&wire).unwrap()]);
+            assert_eq!(reply.borrow().answer, Some(allowed));
+            assert!(app.floating.host_shell_allow.is_none());
+        }
+        let reply = std::rc::Rc::new(std::cell::RefCell::new(
+            crate::widget::HostShellAllow::default(),
+        ));
+        app.floating.host_shell_allow = Some(std::rc::Rc::downgrade(&reply));
+        app.reattach_after_floating_service_loss();
+        assert_eq!(reply.borrow().answer, Some(false));
     }
 }

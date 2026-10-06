@@ -40,6 +40,8 @@ python3 "$repo_root/dist/session/tests/session-report.py"
 "$repo_root/dist/rpm/test-app-store-stage.sh"
 "$repo_root/dist/rpm/test-build-target-dir.sh"
 "$repo_root/dist/rpm/test-host-update.sh"
+"$repo_root/dist/rpm/test-app-collection.sh"
+"$repo_root/dist/rpm/test-rpmbuild-route.sh"
 
 # A production import entry must name an installed native executable. This
 # fails before the import payload is added, and must remain in every builder.
@@ -263,11 +265,11 @@ if "$repo_root/dist/ci/verify-nix-result.sh" "$nix" "$other_arch" >/dev/null 2>&
     exit 1
 fi
 
-# The OS hand-off is deterministic and contains only the three native binaries
-# already install-tested by the distro package lane.
+# The OS hand-off is deterministic and contains only the native desktop binaries
+# produced by the distro package lane.
 payload_bin=$work/payload-bin
 mkdir -p "$payload_bin" "$work/payload-a" "$work/payload-b"
-for binary in shell tilo-launcher tilo-unlock-helper; do
+for binary in shell tilo-launcher tilo-runtime-mcp tilo-unlock-helper; do
     install -m755 "$true_bin" "$payload_bin/$binary"
 done
 SOURCE_DATE_EPOCH=123 GITHUB_SHA="$(printf 'a%.0s' {1..40})" \

@@ -306,7 +306,8 @@ fn names_app(clause: &[String], app: &str) -> bool {
 /// It reads the task clause by clause (`;`, new lines and "then" separate
 /// them). For the first clause it picks the offer sharing the most words
 /// with it, weighing the app the clause names and the action's own verb,
-/// and fills text parameters from the clause's quoted phrases and number
+/// and fills text parameters (required ones first, then optional ones) from
+/// the clause's quoted phrases and number
 /// parameters from its numbers. When that app is not open yet it opens it
 /// and asks again with the same clause; otherwise the remaining clauses are
 /// the plan's `then`. It reveals what it names before planning, bound by
@@ -334,7 +335,7 @@ impl ScriptedModel {
         let wants_text = descriptor
             .params
             .iter()
-            .any(|param| param.required && param.ty == tilo_actions::ParamType::Text);
+            .any(|param| param.ty == tilo_actions::ParamType::Text);
         let mut score = shared;
         if verb {
             score = score.saturating_add(2);
@@ -448,6 +449,16 @@ impl PlanModel for ScriptedModel {
                     }
                 };
                 arguments.insert(param.name.to_string(), value);
+            }
+            // A quoted phrase left over names an optional text parameter
+            // (the new sheet's name), in the order they are declared.
+            for param in offer.descriptor.params.iter().filter(|param| {
+                !param.required
+                    && param.ty == tilo_actions::ParamType::Text
+                    && param.choices.is_empty()
+            }) {
+                let Some(text) = texts.next() else { break };
+                arguments.insert(param.name.to_string(), text.clone().into());
             }
             if offer.descriptor.params.is_empty()
                 && let tilo_actions::InputSpec::Text { .. } = offer.descriptor.input
@@ -933,7 +944,6 @@ mod tests {
     fn open_notes() -> Catalogue {
         let (catalogue, _) = catalogue(&PlanContext {
             open: Vec::new(),
-            controls: Vec::new(),
             known: Vec::new(),
             apps: vec!["so.tilo.notes".into()],
         });

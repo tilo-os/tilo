@@ -8,7 +8,7 @@
 //! root
 //! ├── "seeded"       (bool)                      # one-time seed guard
 //! ├── "workspaces"   (Map<wsId,  {name,glyph,color_idx,order}>)
-//! ├── "categories"   (Map<catId, {workspace,name,order,collapsed}>)
+//! ├── "categories"   (Map<catId, {workspace,name,order}>)
 //! ├── "users"        (Map<userId,{name,initials,color_idx,status}>)
 //! ├── "channels"     (Map<chId,  {workspace,category,name,topic,kind,order}>)
 //! ├── "messages"     (Map<chId,  List<Message>>)
@@ -16,7 +16,6 @@
 //! │                  parent(Str ""), reactions(List<{emoji,user}>),
 //! │                  history(List<{ts,text}>), attachment(Map? blob hash),
 //! │                  work(Map{state, since, reasoning, trace}) }
-//! ├── "voice"        (Map<chId,  Map<userId,{talking,muted,deafened,audio_only}>>)
 //! ├── "read"         (Map<userId, Map<chId, i64>>) # each peer's read watermark
 //! └── "rich_drafts"  (Map<chId, rich text>)      # per-channel composer body
 //! ```
@@ -36,18 +35,14 @@
 //! renamed, deleted, reordered, and moved between categories — all as plain
 //! map/scalar writes so two peers' edits converge.
 //!
-//! Persistence: the whole document is saved to disk (see
-//! [`crate::storage`]) so messages, structure, reactions, edits, and
-//! voice membership survive across runs. The save bytes are the raw
-//! Automerge document — no lossy projection — so reloading is a faithful
-//! restore and a future peer can merge against it.
+//! The document is the room's chat record: the host keeps, syncs and
+//! restores it whole, and every change to it is a [`crate::actions::ChatAction`].
 //!
 //! "Which channel I'm viewing", the open call overlay's position, and the
 //! composer caret are deliberately NOT in this document — they're per-peer
 //! UI state owned by [`crate::app::ChatApp`], exactly so two peers can read
-//! different channels while sharing one workspace. Voice *membership* IS in
-//! the document (it's shared truth: everyone sees who is in a call), while a
-//! given peer's overlay layout is local.
+//! different channels while sharing one workspace. Who is in a call is the
+//! voice service's live state, never written here.
 
 use std::collections::HashMap;
 use ui::doc::{read_bool, read_i64_coerced, read_str, read_text};
@@ -60,7 +55,7 @@ use uuid::Uuid;
 
 use crate::model::{
     Attachment, Category, Channel, ChannelKind, EditRecord, Message, Presence, Reaction, User,
-    VoiceMember, Workspace,
+    Workspace,
 };
 
 /// Attachments in the chat CRDT are portable content-addressed descriptors;
@@ -98,7 +93,7 @@ pub struct NewMessage {
     pub ts: i64,
     pub text: String,
     /// The body as written; empty stores only `text`.
-    pub body: Vec<qdoc_rich_text::ClipBlock>,
+    pub body: Vec<tilo_document::ClipBlock>,
     pub parent: Option<String>,
     pub reactions: Vec<(String, Vec<String>)>,
     pub attachment: Option<Attachment>,
@@ -117,19 +112,6 @@ pub struct NewMessage {
     /// replies to. Written by the agent at the moment it takes a summons, so
     /// the reply exists — and says so — before there is an outcome.
     pub work: Option<crate::model::AgentWork>,
-}
-
-/// Mutable call-participant fields persisted together in the voice map.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "typed snapshot of the four independent call-state fields persisted atomically for one participant"
-)]
-pub struct VoiceState {
-    pub talking: bool,
-    pub muted: bool,
-    pub deafened: bool,
-    pub audio_only: bool,
 }
 
 pub struct ChatDoc;
@@ -328,8 +310,8 @@ impl ChatDoc {
 
         Self::put_user(doc, me_id, me_name, me_initials, 0, Presence::Online);
         Self::put_workspace(doc, "ws_home", "My Workspace", "MW", 0, 0);
-        Self::put_category(doc, "cat_home_text", "ws_home", "Channels", 0, false);
-        Self::put_category(doc, "cat_home_voice", "ws_home", "Voice", 1, false);
+        Self::put_category(doc, "cat_home_text", "ws_home", "Channels", 0);
+        Self::put_category(doc, "cat_home_voice", "ws_home", "Voice", 1);
         Self::put_channel(
             doc,
             "c_general",
@@ -353,28 +335,47 @@ impl ChatDoc {
     }
 
     /// Populate the document with a believable demo workspace if it is
-    /// empty. **Demo/screenshot only** — the live app seeds via
-    /// [`Self::seed_starter`] instead. Idempotent via the `seeded` guard.
-    pub fn seed_if_empty(doc: &mut AutoCommit) {
+    /// empty, with `me` as the person reading it. **Screenshots and tests
+    /// only** — a real record starts from [`Self::seed_starter`]. Idempotent
+    /// via the `seeded` guard.
+    pub fn seed_demo(doc: &mut AutoCommit, me: &str) {
         if Self::is_seeded(doc) {
             return;
         }
         let _ = doc.put(&ROOT, "seeded", true);
         Self::put_shared_roots(doc);
 
-        Self::seed_demo_users(doc);
+        Self::seed_demo_users(doc, me);
         Self::seed_demo_workspaces(doc);
         Self::seed_demo_categories(doc);
         Self::seed_demo_channels(doc);
-        Self::seed_demo_voice_membership(doc);
-        Self::seed_demo_design_crit(doc);
-        Self::seed_demo_design_crit_thread(doc, "m_concept");
-        Self::seed_demo_general_welcome(doc);
+        Self::seed_demo_design_crit(doc, me);
+        Self::seed_demo_design_crit_thread(doc, "m_concept", me);
+        Self::seed_demo_general_welcome(doc, me);
     }
 
-    fn seed_demo_users(doc: &mut AutoCommit) {
+    /// [`Self::seed_demo`] read by the demo's own person, [`crate::model::ME`].
+    pub fn seed_if_empty(doc: &mut AutoCommit) {
+        Self::seed_demo(doc, crate::model::ME);
+    }
+
+    /// `message` as the demo's person `me` wrote and reacted to it.
+    fn demo_as(mut message: NewMessage, me: &str) -> NewMessage {
+        let mine = |id: &mut String| {
+            if id == crate::model::ME {
+                me.clone_into(id);
+            }
+        };
+        mine(&mut message.author);
+        for (_, users) in &mut message.reactions {
+            users.iter_mut().for_each(mine);
+        }
+        message
+    }
+
+    fn seed_demo_users(doc: &mut AutoCommit, me: &str) {
         for (id, name, initials, color, status) in [
-            ("u_me", "You", "QD", 0usize, Presence::Online),
+            (me, "You", "QD", 0usize, Presence::Online),
             ("u_aria", "Aria Chen", "AC", 1, Presence::Online),
             ("u_milo", "Milo Park", "MP", 2, Presence::Idle),
             ("u_sora", "Sora Vega", "SV", 3, Presence::Online),
@@ -405,7 +406,7 @@ impl ChatDoc {
             ("cat_tilo_voice", "ws_tilo", "Voice", 1),
             ("cat_jam_main", "ws_jam", "Hangout", 0),
         ] {
-            Self::put_category(doc, id, ws, name, order, false);
+            Self::put_category(doc, id, ws, name, order);
         }
     }
 
@@ -554,30 +555,6 @@ impl ChatDoc {
         ]
     }
 
-    /// A lively Design Huddle: mirrors the call overlay's demo roster so the
-    /// sidebar presence and the overlay agree out of the box. Aria is the
-    /// active speaker.
-    fn seed_demo_voice_membership(doc: &mut AutoCommit) {
-        for (user, talking, muted, audio_only) in [
-            ("u_aria", true, false, false),
-            ("u_milo", false, true, false),
-            ("u_sora", false, false, true),
-        ] {
-            Self::voice_join(doc, "c_huddle", user);
-            Self::voice_set_state(
-                doc,
-                "c_huddle",
-                user,
-                VoiceState {
-                    talking,
-                    muted,
-                    deafened: false,
-                    audio_only,
-                },
-            );
-        }
-    }
-
     /// The first half of a real conversation in #design-crit.
     fn seed_demo_design_crit_early() -> Vec<(&'static str, NewMessage)> {
         let m = |off_min: i64| NOW - off_min * 60;
@@ -700,16 +677,16 @@ impl ChatDoc {
         ]
     }
 
-    fn seed_demo_design_crit(doc: &mut AutoCommit) {
+    fn seed_demo_design_crit(doc: &mut AutoCommit, me: &str) {
         let mut convo = Self::seed_demo_design_crit_early();
         convo.extend(Self::seed_demo_design_crit_late());
         for (id, nm) in convo {
-            Self::push_message_with_id(doc, "c_crit", id, nm);
+            Self::push_message_with_id(doc, "c_crit", id, Self::demo_as(nm, me));
         }
     }
 
     /// A thread hanging off the concept image (`parent_id`).
-    fn seed_demo_design_crit_thread(doc: &mut AutoCommit, parent_id: &str) {
+    fn seed_demo_design_crit_thread(doc: &mut AutoCommit, parent_id: &str, me: &str) {
         let m = |off_min: i64| NOW - off_min * 60;
         let thread: Vec<NewMessage> = vec![
             NewMessage {
@@ -736,23 +713,23 @@ impl ChatDoc {
             },
         ];
         for nm in thread {
-            Self::push_message(doc, "c_crit", nm);
+            Self::push_message(doc, "c_crit", Self::demo_as(nm, me));
         }
     }
 
     /// A little life in #general too.
-    fn seed_demo_general_welcome(doc: &mut AutoCommit) {
+    fn seed_demo_general_welcome(doc: &mut AutoCommit, me: &str) {
         let m = |off_min: i64| NOW - off_min * 60;
         Self::push_message(
             doc,
             "c_general",
-            NewMessage {
+            Self::demo_as(NewMessage {
                 author: "u_iris".into(),
                 ts: m(220),
                 text: "Welcome to Acme Design on Tilo 👋 Channels relate to the workspace you're standing in — switch workspaces from the rail on the left.".into(),
                 reactions: vec![("👋".into(), vec!["u_me".into(), "u_aria".into(), "u_milo".into()])],
                 ..Default::default()
-            },
+            }, me),
         );
     }
 
@@ -803,20 +780,12 @@ impl ChatDoc {
         let _ = doc.put(&w, "order", i64::from(order));
     }
 
-    fn put_category(
-        doc: &mut AutoCommit,
-        id: &str,
-        ws: &str,
-        name: &str,
-        order: u32,
-        collapsed: bool,
-    ) {
+    fn put_category(doc: &mut AutoCommit, id: &str, ws: &str, name: &str, order: u32) {
         let cats = get_or_map(doc, &ROOT, "categories");
         let cat = get_or_map(doc, &cats, id);
         let _ = doc.put(&cat, "workspace", ws);
         let _ = doc.put(&cat, "name", name);
         let _ = doc.put(&cat, "order", i64::from(order));
-        let _ = doc.put(&cat, "collapsed", collapsed);
     }
 
     fn put_channel(
@@ -837,16 +806,6 @@ impl ChatDoc {
         let _ = doc.put(&c, "topic", topic);
         let _ = doc.put(&c, "kind", kind.as_str());
         let _ = doc.put(&c, "order", i64::from(order));
-        // Pre-create the shared, empty voice-membership map for a voice channel
-        // at creation time. Without this, two peers who join the same call
-        // before syncing each independently create the `voice→channel` map, and
-        // an Automerge merge keeps only one — silently dropping a participant.
-        // Seeding one shared map object means concurrent joins add distinct
-        // user keys to the *same* map and converge to the full roster.
-        if kind == ChannelKind::Voice {
-            let voice = get_or_map(doc, &ROOT, "voice");
-            let _ = get_or_map(doc, &voice, id);
-        }
         // The same for the channel's message list and composer draft: created
         // here, inside the one (replayed, content-addressed) channel-creation
         // change, so two peers' first messages or first keystrokes land in one
@@ -883,7 +842,7 @@ impl ChatDoc {
 
     /// The body as written, as rich text under the message's `rich` map;
     /// nothing for an empty body (the plain text is the whole message).
-    fn write_message_body(doc: &mut AutoCommit, block: &ObjId, body: &[qdoc_rich_text::ClipBlock]) {
+    fn write_message_body(doc: &mut AutoCommit, block: &ObjId, body: &[tilo_document::ClipBlock]) {
         if body.is_empty() {
             let _ = doc.delete(block, "rich");
             return;
@@ -891,7 +850,7 @@ impl ChatDoc {
         let Ok(root) = doc.put_object(block, "rich", ObjType::Map) else {
             return;
         };
-        let written = qdoc_rich_text::RichText::initialize_under(doc, &root).is_ok()
+        let written = tilo_document::RichText::initialize_under(doc, &root).is_ok()
             && tilo_rich_text::fill_clips_under(doc, &root, body).is_ok();
         if !written {
             // The plain text still stands for the message.
@@ -1231,34 +1190,26 @@ impl ChatDoc {
         })
     }
 
-    /// Record `name` as the agent display name of `author`, beside the
-    /// message `id` it just wrote (`agent_authors/<author> = name`). Only an
-    /// agent task participant author is labelled, only when that message
-    /// exists with that author, and only when the stored name differs.
-    pub fn label_agent_author(doc: &mut AutoCommit, id: &str, author: &str, name: &str) {
-        if !author.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
+    /// Record `name` as what every member calls agent task `participant`.
+    /// Only an agent task is named this way; a person names themselves in
+    /// the roster.
+    pub fn name_agent(doc: &mut AutoCommit, participant: &str, name: &str) {
+        if !participant.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
             || name.trim().is_empty()
             || name.len() > crate::actions::MAX_AGENT_AUTHOR_NAME_BYTES
         {
             return;
         }
-        let authored = map_candidates(doc, &ROOT, "messages").iter().any(|channels| {
-            doc.keys(channels).any(|channel| {
-                message_lists(doc, &channel).into_iter().any(|list| {
-                    (0..doc.length(&list)).any(|index| {
-                        matches!(doc.get(&list, index), Ok(Some((Value::Object(ObjType::Map), row)))
-                            if read_str(doc, &row, "id").unwrap_or_default() == id && read_str(doc, &row, "author").unwrap_or_default() == author)
-                    })
-                })
-            })
-        });
-        if !authored {
-            return;
-        }
         let agents = get_or_map(doc, &ROOT, "agent_authors");
-        if read_str(doc, &agents, author).unwrap_or_default() != name {
-            let _ = doc.put(&agents, author, name);
+        if read_str(doc, &agents, participant).unwrap_or_default() != name {
+            let _ = doc.put(&agents, participant, name);
         }
+    }
+
+    /// Who wrote message `msg` of `channel`; `None` for no such message.
+    pub fn message_author(doc: &AutoCommit, channel: &str, msg: &str) -> Option<String> {
+        let message = Self::find_message_obj(doc, channel, msg)?;
+        read_str(doc, &message, "author")
     }
 
     /// Agent display names of agent-authored message authors.
@@ -1526,17 +1477,17 @@ impl ChatDoc {
         channel: &str,
         msg_id: &str,
         new_text: &str,
-        body: &[qdoc_rich_text::ClipBlock],
+        body: &[tilo_document::ClipBlock],
         ts: i64,
     ) {
         let Some(block) = Self::find_message_obj(doc, channel, msg_id) else {
             return;
         };
         let old = read_text(doc, &block, "text").unwrap_or_default();
-        let old_body: Vec<qdoc_rich_text::ClipBlock> = map_at(doc, &block, "rich")
-            .and_then(|root| qdoc::model::open(doc, &root).ok())
+        let old_body: Vec<tilo_document::ClipBlock> = map_at(doc, &block, "rich")
+            .and_then(|root| tilo_doc::model::open(doc, &root).ok())
             .map(|containers| {
-                qdoc::model::materialize_region(doc, &containers, qdoc::model::Region::Body)
+                tilo_doc::model::materialize_region(doc, &containers, tilo_doc::model::Region::Body)
                     .iter()
                     .map(tilo_rich_text::clip_block)
                     .collect()
@@ -1579,6 +1530,10 @@ impl ChatDoc {
     /// The rich text the composer for `key` edits, created when missing.
     /// Drafts two peers created at once are joined into one, winner first,
     /// so no one's keystrokes are hidden.
+    pub fn rich_draft_is_settled(doc: &AutoCommit, key: &str) -> bool {
+        Self::rich_draft_candidates(doc, key).len() == 1
+    }
+
     pub fn ensure_rich_draft(doc: &mut AutoCommit, key: &str) -> Option<ObjId> {
         let candidates = Self::rich_draft_candidates(doc, key);
         if let [only] = candidates.as_slice() {
@@ -1603,7 +1558,7 @@ impl ChatDoc {
         }
         let drafts = get_or_map(doc, &ROOT, RICH_DRAFTS);
         let root = doc.put_object(&drafts, key, ObjType::Map).ok()?;
-        qdoc_rich_text::RichText::initialize_under(doc, &root).ok()?;
+        tilo_document::RichText::initialize_under(doc, &root).ok()?;
         let blocks: Vec<ui::widget::BlockContent> = blocks
             .iter()
             .map(|block| ui::widget::BlockContent {
@@ -1641,12 +1596,12 @@ impl ChatDoc {
     }
 
     /// The draft for `key` as an action carries it.
-    pub fn draft_clips(doc: &AutoCommit, key: &str) -> Vec<qdoc_rich_text::ClipBlock> {
+    pub fn draft_clips(doc: &AutoCommit, key: &str) -> Vec<tilo_document::ClipBlock> {
         Self::distinct_drafts(doc, key)
             .iter()
-            .filter_map(|(root, _)| qdoc::model::open(doc, root).ok())
+            .filter_map(|(root, _)| tilo_doc::model::open(doc, root).ok())
             .flat_map(|containers| {
-                qdoc::model::materialize_region(doc, &containers, qdoc::model::Region::Body)
+                tilo_doc::model::materialize_region(doc, &containers, tilo_doc::model::Region::Body)
             })
             .map(|view| tilo_rich_text::clip_block(&view))
             .collect()
@@ -1729,6 +1684,27 @@ impl ChatDoc {
             wrote = true;
         }
         wrote
+    }
+
+    /// Whether the roster row already matches this peer. Does not create maps.
+    pub fn user_is_current(
+        doc: &AutoCommit,
+        id: &str,
+        name: &str,
+        initials: &str,
+        color: usize,
+        status: Presence,
+    ) -> bool {
+        let Some(users) = map_at(doc, &ROOT, "users") else {
+            return false;
+        };
+        let Some(user) = map_at(doc, &users, id) else {
+            return false;
+        };
+        read_str(doc, &user, "name").unwrap_or_default() == name
+            && read_str(doc, &user, "initials").unwrap_or_default() == initials
+            && read_i64_coerced(doc, &user, "color_idx").unwrap_or(0) == color as i64
+            && read_str(doc, &user, "status").unwrap_or_default() == status.as_str()
     }
 
     /// The peer's `read` watermark map (channel → count), created on demand
@@ -1817,7 +1793,7 @@ impl ChatDoc {
     /// keeps the replicated action deterministic.
     pub fn insert_category(doc: &mut AutoCommit, id: &str, ws: &str, name: &str) {
         let order = Self::next_category_order(doc, ws);
-        Self::put_category(doc, id, ws, name, order, false);
+        Self::put_category(doc, id, ws, name, order);
     }
 
     /// Create a workspace at the end of the rail, scaffolded with a minimal
@@ -1900,30 +1876,13 @@ impl ChatDoc {
         }
     }
 
-    pub fn set_category_collapsed(doc: &mut AutoCommit, id: &str, collapsed: bool) {
-        if let Some(c) = map_at(doc, &map_at(doc, &ROOT, "categories").unwrap_or(ROOT), id) {
-            let _ = doc.put(&c, "collapsed", collapsed);
-        }
-    }
-
-    pub fn toggle_category_collapsed(doc: &mut AutoCommit, id: &str) {
-        let collapsed = Self::list_categories(doc)
-            .into_iter()
-            .find(|c| c.id == id)
-            .is_some_and(|c| c.collapsed);
-        Self::set_category_collapsed(doc, id, !collapsed);
-    }
-
-    /// Delete a channel and its messages, voice membership, and draft.
+    /// Delete a channel and its messages and draft.
     pub fn delete_channel(doc: &mut AutoCommit, id: &str) {
         if let Some(chans) = map_at(doc, &ROOT, "channels") {
             let _ = doc.delete(&chans, id);
         }
         for msgs in map_candidates(doc, &ROOT, "messages") {
             let _ = doc.delete(&msgs, id);
-        }
-        if let Some(voice) = map_at(doc, &ROOT, "voice") {
-            let _ = doc.delete(&voice, id);
         }
         for drafts in map_candidates(doc, &ROOT, RICH_DRAFTS) {
             let _ = doc.delete(&drafts, id);
@@ -1996,108 +1955,6 @@ impl ChatDoc {
     }
 
     // -----------------------------------------------------------------------
-    // Voice membership
-    //
-    // `voice` maps a channel id to a map of member states. Membership is
-    // shared truth (everyone sees who is in a call); a peer's overlay layout
-    // is local. Per-member fields converge as last-writer-wins scalars,
-    // which is the right semantics for transient mic/cam state.
-    // -----------------------------------------------------------------------
-
-    fn voice_channel_map(doc: &mut AutoCommit, channel: &str) -> ObjId {
-        let voice = get_or_map(doc, &ROOT, "voice");
-        get_or_map(doc, &voice, channel)
-    }
-
-    pub fn voice_join(doc: &mut AutoCommit, channel: &str, user: &str) {
-        let ch = Self::voice_channel_map(doc, channel);
-        let m = get_or_map(doc, &ch, user);
-        // Only seed defaults on first join so a re-join doesn't clobber state.
-        if doc.get(&m, "talking").ok().flatten().is_none() {
-            let _ = doc.put(&m, "talking", false);
-            let _ = doc.put(&m, "muted", false);
-            let _ = doc.put(&m, "deafened", false);
-            let _ = doc.put(&m, "audio_only", false);
-            let _ = doc.put(&m, "sharing", false);
-        }
-    }
-
-    pub fn voice_leave(doc: &mut AutoCommit, channel: &str, user: &str) {
-        if let Some(voice) = map_at(doc, &ROOT, "voice")
-            && let Some(ch) = map_at(doc, &voice, channel)
-        {
-            let _ = doc.delete(&ch, user);
-        }
-    }
-
-    pub fn voice_set_state(doc: &mut AutoCommit, channel: &str, user: &str, state: VoiceState) {
-        let ch = Self::voice_channel_map(doc, channel);
-        let m = get_or_map(doc, &ch, user);
-        let _ = doc.put(&m, "talking", state.talking);
-        let _ = doc.put(&m, "muted", state.muted);
-        let _ = doc.put(&m, "deafened", state.deafened);
-        let _ = doc.put(&m, "audio_only", state.audio_only);
-    }
-
-    pub fn voice_set_field(
-        doc: &mut AutoCommit,
-        channel: &str,
-        user: &str,
-        field: &str,
-        value: bool,
-    ) {
-        let ch = Self::voice_channel_map(doc, channel);
-        let m = get_or_map(doc, &ch, user);
-        let _ = doc.put(&m, field, value);
-    }
-
-    /// Publish whether `user` is currently sharing their screen into the call.
-    /// This is the shared truth the featured screen tile keys off — every peer
-    /// learns a share started (or stopped) over the same collab transport as the
-    /// mic/deafen flags. Guarded so a redundant write doesn't churn the doc.
-    pub fn voice_set_sharing(doc: &mut AutoCommit, channel: &str, user: &str, sharing: bool) {
-        let ch = Self::voice_channel_map(doc, channel);
-        let m = get_or_map(doc, &ch, user);
-        if read_bool(doc, &m, "sharing").unwrap_or(false) != sharing {
-            let _ = doc.put(&m, "sharing", sharing);
-        }
-    }
-
-    /// Publish `user`'s dialable media ticket into the shared voice membership.
-    /// This is the call's signalling write: every peer polling the `voice` map
-    /// then learns how to dial this peer's media transport. Guarded so a
-    /// re-announce with the same ticket doesn't churn the document.
-    pub fn voice_set_ticket(doc: &mut AutoCommit, channel: &str, user: &str, ticket: &str) {
-        let ch = Self::voice_channel_map(doc, channel);
-        let m = get_or_map(doc, &ch, user);
-        if read_str(doc, &m, "ticket").unwrap_or_default() != ticket {
-            let _ = doc.put(&m, "ticket", ticket);
-        }
-    }
-
-    /// Publish which video codecs `user` decodes (hardware and software),
-    /// so senders in the call can pick a codec every member takes. Stored as
-    /// comma-separated wire labels; guarded so an unchanged announcement
-    /// doesn't churn the document.
-    pub fn voice_set_video_caps(
-        doc: &mut AutoCommit,
-        channel: &str,
-        user: &str,
-        caps: &crate::model::VideoCaps,
-    ) {
-        let ch = Self::voice_channel_map(doc, channel);
-        let m = get_or_map(doc, &ch, user);
-        let hw = caps.hardware_decode.join(",");
-        let sw = caps.software_decode.join(",");
-        if read_str(doc, &m, "video_hw_decode").as_deref() != Some(hw.as_str()) {
-            let _ = doc.put(&m, "video_hw_decode", hw);
-        }
-        if read_str(doc, &m, "video_sw_decode").as_deref() != Some(sw.as_str()) {
-            let _ = doc.put(&m, "video_sw_decode", sw);
-        }
-    }
-
-    // -----------------------------------------------------------------------
     // Readers
     // -----------------------------------------------------------------------
 
@@ -2114,62 +1971,12 @@ impl ChatDoc {
                     workspace: read_str(doc, &cat, "workspace").unwrap_or_default(),
                     name: read_str(doc, &cat, "name").unwrap_or_default(),
                     order: read_i64_coerced(doc, &cat, "order").unwrap_or(0) as u32,
-                    collapsed: read_bool(doc, &cat, "collapsed").unwrap_or(false),
+                    collapsed: false,
                 })
             })
             .collect();
         out.sort_by_key(|c| c.order);
         out
-    }
-
-    /// All members of a voice channel, sorted talking-first then by name-key.
-    pub fn list_voice_members(doc: &AutoCommit, channel: &str) -> Vec<VoiceMember> {
-        let Some(voice) = map_at(doc, &ROOT, "voice") else {
-            return vec![];
-        };
-        let Some(ch) = map_at(doc, &voice, channel) else {
-            return vec![];
-        };
-        let mut out: Vec<VoiceMember> = doc
-            .keys(&ch)
-            .filter_map(|user| {
-                let m = map_at(doc, &ch, &user)?;
-                let ticket = read_str(doc, &m, "ticket").unwrap_or_default();
-                let labels = |s: String| -> Vec<String> {
-                    s.split(',')
-                        .filter(|l| !l.is_empty())
-                        .map(str::to_string)
-                        .collect()
-                };
-                let video =
-                    read_str(doc, &m, "video_sw_decode").map(|sw| crate::model::VideoCaps {
-                        hardware_decode: labels(
-                            read_str(doc, &m, "video_hw_decode").unwrap_or_default(),
-                        ),
-                        software_decode: labels(sw),
-                    });
-                Some(VoiceMember {
-                    user,
-                    talking: read_bool(doc, &m, "talking").unwrap_or(false),
-                    muted: read_bool(doc, &m, "muted").unwrap_or(false),
-                    deafened: read_bool(doc, &m, "deafened").unwrap_or(false),
-                    audio_only: read_bool(doc, &m, "audio_only").unwrap_or(false),
-                    sharing: read_bool(doc, &m, "sharing").unwrap_or(false),
-                    ticket: if ticket.is_empty() {
-                        None
-                    } else {
-                        Some(ticket)
-                    },
-                    video,
-                })
-            })
-            .collect();
-        out.sort_by(|a, b| b.talking.cmp(&a.talking).then_with(|| a.user.cmp(&b.user)));
-        out
-    }
-
-    pub fn voice_count(doc: &AutoCommit, channel: &str) -> usize {
-        Self::list_voice_members(doc, channel).len()
     }
 
     pub fn list_workspaces(doc: &AutoCommit) -> Vec<Workspace> {
@@ -2542,7 +2349,7 @@ mod tests {
                 "c_general",
                 "m_about",
                 NewMessage {
-                    author: model::ME.into(),
+                    author: crate::model::ME.into(),
                     ts: 1000,
                     text: "look at this".into(),
                     reference: Some(about.clone()),
@@ -2554,7 +2361,7 @@ mod tests {
                 "c_general",
                 "m_plain",
                 NewMessage {
-                    author: model::ME.into(),
+                    author: crate::model::ME.into(),
                     ts: 1001,
                     text: "hi".into(),
                     ..Default::default()
@@ -2574,7 +2381,7 @@ mod tests {
         {
             let mut doc = seeded();
             let message = NewMessage {
-                author: model::ME.into(),
+                author: crate::model::ME.into(),
                 ts: NOW,
                 text: "idempotent send".into(),
                 ..Default::default()
@@ -2609,7 +2416,7 @@ mod tests {
                 "c_general",
                 "m_first_reply",
                 NewMessage {
-                    author: model::ME.into(),
+                    author: crate::model::ME.into(),
                     ts: NOW,
                     text: "first reply".into(),
                     parent: Some("m_retry".into()),
@@ -2651,16 +2458,16 @@ mod tests {
         {
             let mut doc = seeded();
             // m_me1 starts with no reactions
-            ChatDoc::toggle_reaction(&mut doc, "c_crit", "m_me1", "🔥", model::ME);
+            ChatDoc::toggle_reaction(&mut doc, "c_crit", "m_me1", "🔥", crate::model::ME);
             let msgs = ChatDoc::list_messages(&doc, "c_crit");
             let m = msgs.iter().find(|m| m.id == "m_me1").unwrap();
             assert!(
                 m.reactions
                     .iter()
-                    .any(|r| r.emoji == "🔥" && r.reacted_by(model::ME))
+                    .any(|r| r.emoji == "🔥" && r.reacted_by(crate::model::ME))
             );
             // toggling again removes it and prunes the emoji
-            ChatDoc::toggle_reaction(&mut doc, "c_crit", "m_me1", "🔥", model::ME);
+            ChatDoc::toggle_reaction(&mut doc, "c_crit", "m_me1", "🔥", crate::model::ME);
             let msgs = ChatDoc::list_messages(&doc, "c_crit");
             let m = msgs.iter().find(|m| m.id == "m_me1").unwrap();
             assert!(!m.reactions.iter().any(|r| r.emoji == "🔥"));
@@ -2677,11 +2484,11 @@ mod tests {
         {
             // The live first-run seed: just the local person + an empty workspace.
             let mut doc = AutoCommit::new();
-            ChatDoc::seed_starter(&mut doc, model::ME, "Ada Lovelace", "AL");
+            ChatDoc::seed_starter(&mut doc, crate::model::ME, "Ada Lovelace", "AL");
 
             let users = ChatDoc::list_users(&doc);
             assert_eq!(users.len(), 1, "only the local user — no fabricated people");
-            assert_eq!(users[0].id, model::ME);
+            assert_eq!(users[0].id, crate::model::ME);
             assert_eq!(users[0].name, "Ada Lovelace");
 
             let ws = ChatDoc::list_workspaces(&doc);
@@ -2703,7 +2510,7 @@ mod tests {
             );
 
             // Idempotent: adopting or re-seeding never duplicates.
-            ChatDoc::seed_starter(&mut doc, model::ME, "X", "X");
+            ChatDoc::seed_starter(&mut doc, crate::model::ME, "X", "X");
             assert_eq!(ChatDoc::list_users(&doc).len(), 1);
             assert_eq!(ChatDoc::list_workspaces(&doc).len(), 1);
         }
@@ -2744,12 +2551,6 @@ mod tests {
                 cats.iter()
                     .any(|c| c.workspace == "ws_acme" && c.name == "Voice")
             );
-            // The huddle is pre-populated with three members; Aria is talking.
-            let members = ChatDoc::list_voice_members(&doc, "c_huddle");
-            assert_eq!(members.len(), 3);
-            assert!(members.iter().any(|m| m.user == "u_aria" && m.talking));
-            assert!(members.iter().any(|m| m.user == "u_milo" && m.muted));
-            assert!(members.iter().any(|m| m.user == "u_sora" && m.audio_only));
         }
 
         // Phase: create_workspace_scaffolds_a_usable_workspace.
@@ -2893,7 +2694,7 @@ mod tests {
                 &mut doc,
                 "c_crit",
                 NewMessage {
-                    author: model::ME.into(),
+                    author: crate::model::ME.into(),
                     ts: NOW,
                     text: "hi there".into(),
                     ..Default::default()
@@ -2921,8 +2722,8 @@ mod tests {
     fn type_into(doc: &mut AutoCommit, key: &str, at: usize, text: &str) {
         let root = ChatDoc::ensure_rich_draft(doc, key).unwrap();
         let block = ChatDoc::draft_blocks(doc, key)[0].id.clone();
-        qdoc_rich_text::RichTextAction::SpliceText {
-            region: qdoc_rich_text::action::RegionKind::Body,
+        tilo_document::RichTextAction::SpliceText {
+            region: tilo_document::action::RegionKind::Body,
             block,
             at,
             del: 0,
@@ -2934,7 +2735,7 @@ mod tests {
 
     fn msg(text: &str, ts: i64) -> NewMessage {
         NewMessage {
-            author: model::ME.into(),
+            author: crate::model::ME.into(),
             ts,
             text: text.into(),
             ..Default::default()
@@ -2981,14 +2782,14 @@ mod tests {
     #[test]
     fn a_rich_body_is_stored_beside_its_plain_text_and_edited_as_written() {
         let mut doc = seeded();
-        let body = vec![qdoc_rich_text::ClipBlock {
+        let body = vec![tilo_document::ClipBlock {
             kind: "paragraph".into(),
             text: "hi @Ada".into(),
-            marks: vec![qdoc::document::MarkSpan {
+            marks: vec![tilo_doc::document::MarkSpan {
                 start: 3,
                 end: 7,
                 name: "mention".into(),
-                value: qdoc::document::MarkValue::Str("u-ada".into()),
+                value: tilo_doc::document::MarkValue::Str("u-ada".into()),
             }],
             level: None,
             ordered: None,
@@ -3021,11 +2822,11 @@ mod tests {
             )]
         );
         let mut bold = body;
-        bold[0].marks.push(qdoc::document::MarkSpan {
+        bold[0].marks.push(tilo_doc::document::MarkSpan {
             start: 0,
             end: 2,
             name: "strong".into(),
-            value: qdoc::document::MarkValue::Bool(true),
+            value: tilo_doc::document::MarkValue::Bool(true),
         });
         ChatDoc::edit_message(&mut doc, "c_crit", "m_rich", "hi @Ada", &bold, NOW + 5);
         let edited = read(&doc);
@@ -3216,71 +3017,6 @@ mod tests {
     }
 
     #[test]
-    fn voice_membership_and_screen_share_round_trip() {
-        // Phase: voice_join_leave_and_state.
-        {
-            let mut doc = seeded();
-            ChatDoc::voice_join(&mut doc, "c_huddle", "u_me");
-            assert_eq!(ChatDoc::voice_count(&doc, "c_huddle"), 4);
-            ChatDoc::voice_set_state(
-                &mut doc,
-                "c_huddle",
-                "u_me",
-                VoiceState {
-                    talking: true,
-                    muted: true,
-                    deafened: true,
-                    audio_only: true,
-                },
-            );
-            let me = ChatDoc::list_voice_members(&doc, "c_huddle")
-                .into_iter()
-                .find(|m| m.user == "u_me")
-                .unwrap();
-            assert!(me.talking);
-            assert!(me.muted);
-            assert!(me.deafened);
-            assert!(me.audio_only);
-            ChatDoc::voice_leave(&mut doc, "c_huddle", "u_me");
-            assert_eq!(ChatDoc::voice_count(&doc, "c_huddle"), 3);
-        }
-
-        // Phase: voice_screen_share_round_trips_through_the_shared_membership.
-        {
-            let mut doc = seeded();
-            ChatDoc::voice_join(&mut doc, "c_huddle", "u_me");
-            let sharing = |doc: &AutoCommit| {
-                ChatDoc::list_voice_members(doc, "c_huddle")
-                    .into_iter()
-                    .find(|m| m.user == "u_me")
-                    .is_some_and(|m| m.sharing)
-            };
-            assert!(!sharing(&doc), "a fresh member is not sharing");
-            let video = |doc: &AutoCommit| {
-                ChatDoc::list_voice_members(doc, "c_huddle")
-                    .into_iter()
-                    .find(|m| m.user == "u_me")
-                    .and_then(|m| m.video)
-            };
-            assert_eq!(
-                video(&doc),
-                None,
-                "a member that never announced is a legacy peer"
-            );
-            let caps = crate::model::VideoCaps {
-                hardware_decode: vec!["av1".into(), "vp9".into()],
-                software_decode: vec!["h264".into()],
-            };
-            ChatDoc::voice_set_video_caps(&mut doc, "c_huddle", "u_me", &caps);
-            assert_eq!(video(&doc), Some(caps));
-            ChatDoc::voice_set_sharing(&mut doc, "c_huddle", "u_me", true);
-            assert!(sharing(&doc), "a started share is visible to every peer");
-            ChatDoc::voice_set_sharing(&mut doc, "c_huddle", "u_me", false);
-            assert!(!sharing(&doc), "a stopped share clears the shared flag");
-        }
-    }
-
-    #[test]
     fn unread_derives_from_an_idempotent_read_watermark() {
         // Phase: unread_derives_from_the_read_watermark.
         {
@@ -3288,10 +3024,10 @@ mod tests {
             // #design-crit has eight top-level messages (thread replies excluded).
             assert_eq!(ChatDoc::top_level_count(&doc, "c_crit"), 8);
             // Never opened → every top-level message is unread.
-            assert_eq!(ChatDoc::unread_count(&doc, "c_crit", model::ME), 8);
+            assert_eq!(ChatDoc::unread_count(&doc, "c_crit", crate::model::ME), 8);
             // Reading it clears the badge…
-            ChatDoc::mark_read(&mut doc, "c_crit", model::ME);
-            assert_eq!(ChatDoc::unread_count(&doc, "c_crit", model::ME), 0);
+            ChatDoc::mark_read(&mut doc, "c_crit", crate::model::ME);
+            assert_eq!(ChatDoc::unread_count(&doc, "c_crit", crate::model::ME), 0);
             // …and a new message makes it unread again.
             ChatDoc::push_message(
                 &mut doc,
@@ -3303,7 +3039,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            assert_eq!(ChatDoc::unread_count(&doc, "c_crit", model::ME), 1);
+            assert_eq!(ChatDoc::unread_count(&doc, "c_crit", crate::model::ME), 1);
             // A threaded reply is not a top-level message, so it doesn't count.
             ChatDoc::push_message(
                 &mut doc,
@@ -3317,7 +3053,7 @@ mod tests {
                 },
             );
             assert_eq!(
-                ChatDoc::unread_count(&doc, "c_crit", model::ME),
+                ChatDoc::unread_count(&doc, "c_crit", crate::model::ME),
                 1,
                 "thread replies don't bump unread"
             );
@@ -3328,9 +3064,9 @@ mod tests {
             // Reading a channel twice with no new messages must not append a new
             // change (the watermark write is guarded on a real value change).
             let mut doc = seeded();
-            ChatDoc::mark_read(&mut doc, "c_crit", model::ME);
+            ChatDoc::mark_read(&mut doc, "c_crit", crate::model::ME);
             let heads = doc.get_heads();
-            ChatDoc::mark_read(&mut doc, "c_crit", model::ME);
+            ChatDoc::mark_read(&mut doc, "c_crit", crate::model::ME);
             assert_eq!(doc.get_heads(), heads, "a no-op mark_read writes nothing");
         }
     }
@@ -3389,41 +3125,6 @@ mod tests {
             let thumbs = m.reactions.iter().find(|r| r.emoji == "👍").unwrap();
             assert_eq!(thumbs.count(), 2, "both reactors converge on one emoji");
         }
-
-        // Phase: concurrent_voice_joins_converge_to_the_full_roster.
-        {
-            // Two peers join the same voice channel before syncing. Because the
-            // voice-membership map is pre-created with the channel (shared object),
-            // their concurrent joins add distinct user keys to the *same* map and a
-            // merge keeps BOTH — no silently-dropped participant.
-            let mut a = AutoCommit::new();
-            ChatDoc::seed_starter(&mut a, "u_alice", "Alice", "AL");
-            let mut b = AutoCommit::load(&a.save()).unwrap();
-            // Concurrent, un-synced joins.
-            ChatDoc::voice_join(&mut a, "c_lounge", "u_alice");
-            ChatDoc::voice_set_ticket(&mut a, "c_lounge", "u_alice", "iroh://alice");
-            ChatDoc::voice_join(&mut b, "c_lounge", "u_bob");
-            ChatDoc::voice_set_ticket(&mut b, "c_lounge", "u_bob", "iroh://bob");
-            // Merge both ways.
-            let mut b2 = AutoCommit::load(&b.save()).unwrap();
-            a.merge_incoming(&mut b2).unwrap();
-            let members = ChatDoc::list_voice_members(&a, "c_lounge");
-            assert_eq!(
-                members.len(),
-                2,
-                "both concurrent joiners survive the merge"
-            );
-            assert!(
-                members
-                    .iter()
-                    .any(|m| m.user == "u_alice" && m.ticket.as_deref() == Some("iroh://alice"))
-            );
-            assert!(
-                members
-                    .iter()
-                    .any(|m| m.user == "u_bob" && m.ticket.as_deref() == Some("iroh://bob"))
-            );
-        }
     }
 
     #[test]
@@ -3441,7 +3142,7 @@ mod tests {
                 &mut doc,
                 "c_general",
                 NewMessage {
-                    author: model::ME.into(),
+                    author: crate::model::ME.into(),
                     ts: NOW,
                     attachment: Some(Attachment::Video {
                         name: "demo.mp4".into(),
@@ -3721,5 +3422,65 @@ mod tests {
                 "merge must choose one complete authored transition, not a hybrid: {merged:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_composer_draft_is_created_by_the_action() {
+        use tilo_actions::Action as _;
+        let mut doc = ui::automerge::AutoCommit::new();
+        crate::actions::ChatAction::EnsureRichDraft {
+            key: "channel-1".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert!(ChatDoc::rich_draft_is_settled(&doc, "channel-1"));
+        let first = ChatDoc::ensure_rich_draft(&mut doc, "channel-1");
+        crate::actions::ChatAction::EnsureRichDraft {
+            key: "channel-1".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert_eq!(
+            ChatDoc::ensure_rich_draft(&mut doc, "channel-1"),
+            first,
+            "a second ensure keeps the same draft"
+        );
+        assert!(
+            crate::actions::ChatAction::EnsureRichDraft { key: String::new() }
+                .apply(&mut doc)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_new_chat_record_starts_from_the_seed_action() {
+        use tilo_actions::Action as _;
+        let mut doc = automerge::AutoCommit::new();
+        let seed = crate::actions::ChatAction::SeedStarter {
+            name: "Ada".into(),
+            initials: "Ad".into(),
+            color_idx: 3,
+        };
+        assert!(seed.apply(&mut doc).is_err(), "a starter needs its creator");
+        crate::actions::apply_as(&mut doc, "person-1", &seed).unwrap();
+        assert!(ChatDoc::is_seeded(&doc));
+        assert!(
+            ChatDoc::list_channels(&doc)
+                .iter()
+                .any(|channel| channel.name == "general")
+        );
+        crate::actions::apply_as(&mut doc, "person-1", &seed).unwrap();
+        assert!(
+            ChatDoc::list_users(&doc)
+                .iter()
+                .any(|user| user.id == "person-1")
+        );
+        assert_eq!(
+            ChatDoc::list_channels(&doc)
+                .iter()
+                .filter(|channel| channel.name == "general")
+                .count(),
+            1
+        );
     }
 }

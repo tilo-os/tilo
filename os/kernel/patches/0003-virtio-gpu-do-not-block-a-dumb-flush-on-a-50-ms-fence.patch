@@ -1,0 +1,28 @@
+From: Tilo <tilo@tilo.so>
+Subject: virtio-gpu: do not block a dumb flush on a 50 ms fence
+
+The synchronous dirtyfb commit waits up to 50 ms for a fence allocated
+in the same flush, after that flush has already been sent to the host.
+When the host does not signal the fence, every virtual present stalls
+for that timeout. The compositor then schedules the next paint one
+refresh past the late retirement, about 67 ms after the previous one.
+
+The atomic commit still waits for the CRTC vblank timer. The driver
+keeps its own fence reference until the host signals it.
+
+--- a/drivers/gpu/drm/virtio/virtgpu_plane.c
++++ b/drivers/gpu/drm/virtio/virtgpu_plane.c
+@@ -224,8 +224,11 @@ static void virtio_gpu_resource_flush(struct drm_plane *plane,
+ 					      width, height, objs,
+ 					      vgplane_st->fence);
+ 		virtio_gpu_notify(vgdev);
+-		dma_fence_wait_timeout(&vgplane_st->fence->f, true,
+-				       msecs_to_jiffies(50));
++		/*
++		 * The flush is already queued. Waiting out this fence blocks the
++		 * guest's atomic commit for 50 ms when the host does not signal it.
++		 * The commit's vblank wait is the refresh clock.
++		 */
+ 	} else {
+ 		virtio_gpu_cmd_resource_flush(vgdev, bo->hw_res_handle, x, y,
+ 					      width, height, NULL, NULL);

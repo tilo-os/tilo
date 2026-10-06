@@ -163,6 +163,7 @@ impl RecordReservation {
     pub(super) fn initialize_portable(
         &self,
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+        seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<(), RecordOpenError> {
         let (actor, workspace) = {
             let set = self.store.0.borrow();
@@ -187,6 +188,7 @@ impl RecordReservation {
         )
         .map_err(error)?;
         super::genesis(&mut doc, &self.checkout, &workspace, initialize)?;
+        seed(&mut doc).map_err(RecordOpenError::Initialization)?;
         if doc.get_actor() != &actor {
             return Err(RecordOpenError::IdentityMismatch);
         }

@@ -77,9 +77,6 @@ struct Download {
     error: String,
 }
 impl Capabilities {
-    pub fn share_downloads(&mut self, other: &Self) {
-        self.downloads = other.downloads.clone();
-    }
     pub fn downloads_changed(&mut self) -> bool {
         let version = self.downloads.borrow().version;
         let changed = version != self.observed_download_version;
@@ -308,7 +305,6 @@ impl Capabilities {
                 Button::new(
                     &format!("browser.decision.{permission}.{id}.{allow}"),
                     label,
-                    None,
                 )
                 .with_size(80.0, 36.0)
                 .on_effect(move || {
@@ -356,10 +352,11 @@ impl Capabilities {
             if d.state == "progress" {
                 let engine = engine.clone();
                 row = row.push(Box::new(
-                    Button::new(&format!("browser.download.cancel.{id}"), "Cancel", None)
-                        .on_effect(move || {
+                    Button::new(&format!("browser.download.cancel.{id}"), "Cancel").on_effect(
+                        move || {
                             engine.send(WebViewCommand::CancelNativeDownload { id });
-                        }),
+                        },
+                    ),
                 ));
             }
             if d.state == "complete" && !d.path.is_empty() {
@@ -367,8 +364,8 @@ impl Capabilities {
                     let path = std::path::PathBuf::from(&d.path);
                     let notice = self.notice.writer();
                     row = row.push(Box::new(
-                        Button::new(&format!("browser.download.{name}.{id}"), label, None)
-                            .on_effect(move || match open_download(&path, reveal) {
+                        Button::new(&format!("browser.download.{name}.{id}"), label).on_effect(
+                            move || match open_download(&path, reveal) {
                                 Err(message) => notice.set(message),
                                 Ok(channel) => {
                                     let notice = notice.clone();
@@ -386,7 +383,8 @@ impl Capabilities {
                                             });
                                         });
                                 }
-                            }),
+                            },
+                        ),
                     ));
                 }
             }
@@ -394,10 +392,11 @@ impl Capabilities {
                 if d.retryable {
                     let engine = engine.clone();
                     row = row.push(Box::new(
-                        Button::new(&format!("browser.download.retry.{id}"), "Retry", None)
-                            .on_effect(move || {
+                        Button::new(&format!("browser.download.retry.{id}"), "Retry").on_effect(
+                            move || {
                                 engine.send(WebViewCommand::RetryDownload { id });
-                            }),
+                            },
+                        ),
                     ));
                 } else {
                     row = row.push(Box::new(
@@ -415,6 +414,7 @@ impl Capabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::framework::HostDelivery as _;
     fn contains(widget: &dyn Widget, id: &str) -> bool {
         widget.test_id() == Some(id) || widget.children().iter().any(|child| contains(*child, id))
     }
@@ -425,22 +425,18 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn download_records_outlive_origin_and_offer_host_actions_when_complete() {
-        // Phase `download_records_survive_origin_close_and_permissions_stay_local`.
+        // Phase `download_records_offer_cancel_then_open_and_stay_bounded`.
         {
-            let first_engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
-            let second_capture = ui::webview::test_engine::TestEngine::new();
-            let second_engine: SharedEngine = second_capture.clone();
-            let mut first = Capabilities::default();
-            let mut second = Capabilities::default();
-            second.share_downloads(&first);
-            first.apply(WebViewEvent::PermissionRequested {
+            let capture = ui::webview::test_engine::TestEngine::new();
+            let engine: SharedEngine = capture.clone();
+            let mut capabilities = Capabilities::default();
+            capabilities.apply(WebViewEvent::PermissionRequested {
                 id: 1,
                 origin: "https://site.test".into(),
                 permissions: "camera".into(),
             });
-            assert!(first.prompt(&first_engine).is_some());
-            assert!(second.prompt(&second_engine).is_none());
-            first.apply(WebViewEvent::DownloadUpdated {
+            assert!(capabilities.prompt(&engine).is_some());
+            capabilities.apply(WebViewEvent::DownloadUpdated {
                 id: 7,
                 state: "progress".into(),
                 path: "/tmp/file".into(),
@@ -451,29 +447,25 @@ mod tests {
                 total: 20,
                 error: String::new(),
             });
-            assert!(second.downloads_changed());
-            let mut rows = second.downloads(&second_engine);
+            assert!(capabilities.downloads_changed());
+            let mut rows = capabilities.downloads(&engine);
             assert!(contains(rows.as_ref(), "browser.download.cancel.7"));
             let result = rows
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        ui::tilo_actions::OperationKind::Effect,
-                        "tilo.ui.control.invoke",
-                        &serde_json::to_vec("browser.download.cancel.7").unwrap(),
-                    ),
+                .start_encoded(
+                    ui::tilo_actions::OperationKind::Effect,
+                    "tilo.ui.control.invoke",
+                    &serde_json::to_vec("browser.download.cancel.7").unwrap(),
                     &mut automerge::AutoCommit::new(),
                     &automerge::ROOT,
                 )
                 .unwrap();
             assert!(result.is_some());
             assert!(
-                second_capture
+                capture
                     .commands()
                     .contains(&WebViewCommand::CancelNativeDownload { id: 7 })
             );
-            drop(first);
-            second.apply(WebViewEvent::DownloadUpdated {
+            capabilities.apply(WebViewEvent::DownloadUpdated {
                 id: 7,
                 state: "complete".into(),
                 path: "/tmp/file".into(),
@@ -485,11 +477,11 @@ mod tests {
                 error: String::new(),
             });
             assert!(contains(
-                second.downloads(&second_engine).as_ref(),
+                capabilities.downloads(&engine).as_ref(),
                 "browser.download.open.7"
             ));
             for id in 8..150 {
-                second.apply(WebViewEvent::DownloadUpdated {
+                capabilities.apply(WebViewEvent::DownloadUpdated {
                     id,
                     state: "complete".into(),
                     path: "/tmp/file".into(),
@@ -501,7 +493,7 @@ mod tests {
                     error: String::new(),
                 });
             }
-            assert_eq!(second.downloads.borrow().records.len(), 100);
+            assert_eq!(capabilities.downloads.borrow().records.len(), 100);
         }
 
         // Phase `open_and_reveal_go_to_the_host_for_an_existing_download`.
@@ -623,13 +615,10 @@ mod tests {
             let mut rows = capabilities.downloads(&engine);
             assert!(contains(rows.as_ref(), "browser.download.retry.41"));
             let result = rows
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        ui::tilo_actions::OperationKind::Effect,
-                        "tilo.ui.control.invoke",
-                        &serde_json::to_vec("browser.download.retry.41").unwrap(),
-                    ),
+                .start_encoded(
+                    ui::tilo_actions::OperationKind::Effect,
+                    "tilo.ui.control.invoke",
+                    &serde_json::to_vec("browser.download.retry.41").unwrap(),
                     &mut automerge::AutoCommit::new(),
                     &automerge::ROOT,
                 )

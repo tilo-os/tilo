@@ -180,7 +180,7 @@ impl VaultStore {
         let blob = FORMAT
             .seal(&key, &plaintext)
             .ok_or_else(|| "sealing the vault failed".to_string())?;
-        atomic_file::write_private(&self.dir.join(secret_vault::VAULT_FILE), &blob)
+        tilo_files::native::atomic::write_private(&self.dir.join(secret_vault::VAULT_FILE), &blob)
             .map_err(|error| format!("could not write the vault: {error}"))
     }
 

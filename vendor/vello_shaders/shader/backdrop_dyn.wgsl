@@ -73,7 +73,12 @@ fn main(
         }
         let width = sh_row_width[el_ix];
         if width > 0u {
-            var seq_ix = row - select(0u, sh_row_count[el_ix - 1u], el_ix > 0u);
+            // `select` evaluates both arms, so the first element would read index -1.
+            var prev_count = 0u;
+            if el_ix > 0u {
+                prev_count = sh_row_count[el_ix - 1u];
+            }
+            var seq_ix = row - prev_count;
             var tile_ix = sh_offset[el_ix] + seq_ix * width;
             var sum = tiles[tile_ix].backdrop;
             for (var x = 1u; x < width; x += 1u) {

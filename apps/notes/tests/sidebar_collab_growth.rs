@@ -18,7 +18,6 @@
 use notes::NotesApp;
 use notes::doc::NotesDoc;
 use notes::model::PageMeta;
-use tempfile::TempDir;
 use ui::headless::Framed;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -53,14 +52,23 @@ fn draw(app: &mut NotesApp, theme: &Theme, tr: &mut TextRenderer) {
 
 #[test]
 fn sidebar_survives_remote_page_added_between_layout_and_draw() {
-    let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-    app.bypass_seed_grace_for_test();
+    let mut state = ui::State::new();
+    notes::notebook::initialize_empty(&mut state.doc).unwrap();
+    NotesDoc::upsert_page_meta(
+        &mut state.doc,
+        &PageMeta {
+            id: uuid::Uuid::new_v4(),
+            title: "Local Page".into(),
+            parent: None,
+            order: "a".into(),
+        },
+    );
+    let app = NotesApp::from_document(&state.doc, &ui::permissions::UserId("me".into())).unwrap();
     let theme = Theme::dark();
     let mut tr = TextRenderer::new();
 
     // Frame 1: full cycle so the sidebar lays out its welcome row(s).
-    let mut app = Framed::new(ui::State::new(), app, (1024, 768), theme.clone());
+    let mut app = Framed::new(state, app, (1024, 768), theme.clone());
     draw(&mut app, &theme, &mut tr);
 
     // A remote peer adds a second page to the SHARED doc.
@@ -70,7 +78,7 @@ fn sidebar_survives_remote_page_added_between_layout_and_draw() {
             id: uuid::Uuid::new_v4(),
             title: "Remote Page".into(),
             parent: None,
-            order: 1,
+            order: "b".into(),
         },
     );
 
@@ -78,7 +86,7 @@ fn sidebar_survives_remote_page_added_between_layout_and_draw() {
     // before the next relayout — the exact ordering that panicked in the
     // live demo. Must not panic.
     let (notes, state) = Framed::split(&mut app);
-    notes.sync(&mut state.doc, &state.root);
+    notes.sync(&state.doc, &state.root);
     draw(&mut app, &theme, &mut tr);
 
     // And after a proper relayout it renders both rows without panic.

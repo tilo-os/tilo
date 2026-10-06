@@ -57,6 +57,8 @@ const DECODE_WAIT: Duration = Duration::from_millis(150);
 enum Event {
     Sample(gst::Sample),
     Error(String),
+    /// Every buffer pushed before end-of-stream has come out.
+    Eos,
 }
 
 /// Initialise `GStreamer` once for the process.
@@ -114,7 +116,13 @@ pub fn local_capabilities() -> CodecCapabilities {
         for e in realtime_decoders(codec) {
             if registry_has(e.element) {
                 if e.is_hardware() {
-                    caps.hardware_decode.insert(codec);
+                    // The first hardware decoder listed is the one a stream
+                    // gets, so its limit is the codec's.
+                    if caps.hardware_decode.insert(codec)
+                        && let Some(limit) = decoder_size_limit(e)
+                    {
+                        caps.hardware_decode_max.insert(codec, limit);
+                    }
                 } else {
                     caps.software_decode.insert(codec);
                 }
@@ -122,6 +130,45 @@ pub fn local_capabilities() -> CodecCapabilities {
         }
     }
     caps
+}
+
+/// The largest picture a hardware decoder element takes. VA-API, NVDEC and
+/// stateful V4L2 elements state their device's range in their sink caps.
+/// Stateless V4L2 elements (`v4l2sl*dec`, the decoders of ARM boards) state
+/// none; only the kernel's frame-size enumeration knows theirs, so they are
+/// taken to stop at 1920x1088, where the Hantro G1 and its peers do, rather
+/// than be sent pictures they would hand back to the CPU.
+fn decoder_size_limit(element: &CodecElement) -> Option<(u32, u32)> {
+    const STATELESS_V4L2_MAX: (u32, u32) = (1920, 1088);
+    let stated = gst::ElementFactory::find(element.element).and_then(|factory| {
+        factory
+            .static_pad_templates()
+            .iter()
+            .filter(|template| template.direction() == gst::PadDirection::Sink)
+            .flat_map(|template| {
+                let caps = template.caps();
+                caps.iter()
+                    .filter_map(|structure| {
+                        let side = |field: &str| {
+                            structure
+                                .get::<gst::IntRange<i32>>(field)
+                                .map(|range| range.max())
+                                .or_else(|_| structure.get::<i32>(field))
+                                .ok()
+                                .and_then(|max| u32::try_from(max).ok())
+                        };
+                        Some((side("width")?, side("height")?))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            // An open range (`[1, MAX]`) states no limit.
+            .filter(|(w, h)| *w < 32_768 && *h < 32_768)
+            .max_by_key(|(w, h)| u64::from(*w).saturating_mul(u64::from(*h)))
+    });
+    stated.or_else(|| {
+        (element.family == CodecFamily::V4l2 && element.element.starts_with("v4l2sl"))
+            .then_some(STATELESS_V4L2_MAX)
+    })
 }
 
 fn make(factory: &str) -> Result<gst::Element, String> {
@@ -404,16 +451,22 @@ impl Running {
                 .build(),
         );
         let bus = pipeline.bus().ok_or("pipeline has no bus")?;
-        let error_tx = Mutex::new(tx);
+        let bus_tx = Mutex::new(tx);
         bus.set_sync_handler(move |_bus, msg| {
-            if let gst::MessageView::Error(err) = msg.view() {
-                let src = msg
-                    .src()
-                    .map_or_else(|| "pipeline".to_string(), |s| s.name().to_string());
-                let text = format!("{src}: {}", err.error());
-                if let Ok(tx) = error_tx.lock() {
-                    let _ = tx.send(Event::Error(text));
+            let event = match msg.view() {
+                gst::MessageView::Error(err) => {
+                    let src = msg
+                        .src()
+                        .map_or_else(|| "pipeline".to_string(), |s| s.name().to_string());
+                    Some(Event::Error(format!("{src}: {}", err.error())))
                 }
+                gst::MessageView::Eos(_) => Some(Event::Eos),
+                _ => None,
+            };
+            if let Some(event) = event
+                && let Ok(tx) = bus_tx.lock()
+            {
+                let _ = tx.send(event);
             }
             gst::BusSyncReply::Drop
         });
@@ -433,6 +486,7 @@ impl Running {
         match self.events.recv_timeout(timeout) {
             Ok(Event::Sample(s)) => Ok(Some(s)),
             Ok(Event::Error(e)) => Err(e),
+            Ok(Event::Eos) => Err("pipeline reached end of stream".into()),
             Err(RecvTimeoutError::Timeout) => Ok(None),
             Err(RecvTimeoutError::Disconnected) => Err("pipeline stopped".into()),
         }
@@ -445,6 +499,7 @@ impl Running {
             match ev {
                 Event::Sample(s) => out.push(s),
                 Event::Error(e) => return Err(e),
+                Event::Eos => return Err("pipeline reached end of stream".into()),
             }
         }
         Ok(out)
@@ -588,17 +643,33 @@ impl RealtimeEncoder {
         // Pin the colour of the samples the encoder receives, so the
         // conversion targets the stream's colour and the encoder signals it.
         // `vapostproc` is left to report its own.
+        // A smaller output is scaled before encoding: `vapostproc` scales as
+        // it converts; otherwise `videoscale` follows the conversion.
+        let scale_to = config
+            .output_size
+            .filter(|size| *size != (config.width, config.height));
+        let scaler = match scale_to {
+            Some(_) if !use_vapostproc => Some(make("videoscale")?),
+            _ => None,
+        };
+        let mut target = if use_vapostproc {
+            gst::Caps::builder("video/x-raw")
+        } else {
+            gst::Caps::builder("video/x-raw")
+                .field("colorimetry", stream_color_to_gst(config.color).to_string())
+        };
+        if let Some((width, height)) = scale_to {
+            target = target
+                .field("width", i32::try_from(width).unwrap_or(i32::MAX))
+                .field("height", i32::try_from(height).unwrap_or(i32::MAX));
+        }
+        let target = if use_vapostproc && scale_to.is_none() {
+            gst::Caps::new_any()
+        } else {
+            target.build()
+        };
         let yuv_filter = gst::ElementFactory::make("capsfilter")
-            .property(
-                "caps",
-                if use_vapostproc {
-                    gst::Caps::new_any()
-                } else {
-                    gst::Caps::builder("video/x-raw")
-                        .field("colorimetry", stream_color_to_gst(config.color).to_string())
-                        .build()
-                },
-            )
+            .property("caps", target)
             .build()
             .map_err(|e| format!("capsfilter: {e}"))?;
         let convert_handle = convert.clone();
@@ -623,19 +694,15 @@ impl RealtimeEncoder {
             .build();
         let src_el = appsrc.clone().upcast::<gst::Element>();
         let sink_el = appsink.clone().upcast::<gst::Element>();
-        let chain = [
-            &src_el,
-            &convert,
-            &yuv_filter,
-            &encoder,
-            &parser,
-            &filter,
-            &sink_el,
-        ];
+        let mut chain = vec![&src_el, &convert];
+        if let Some(scaler) = scaler.as_ref() {
+            chain.push(scaler);
+        }
+        chain.extend([&yuv_filter, &encoder, &parser, &filter, &sink_el]);
         pipeline
-            .add_many(chain)
+            .add_many(chain.iter().copied())
             .map_err(|e| format!("assemble: {e}"))?;
-        gst::Element::link_many(chain).map_err(|e| format!("link: {e}"))?;
+        gst::Element::link_many(chain.iter().copied()).map_err(|e| format!("link: {e}"))?;
 
         let running = Running::start(pipeline, appsrc, &appsink)?;
         let mut enc = Self {
@@ -836,6 +903,43 @@ impl RealtimeEncoder {
         samples.extend(self.running.drain().map_err(RealtimeError::Pipeline)?);
         if !samples.is_empty() {
             self.first_output_seen = true;
+        }
+        Ok(samples
+            .iter()
+            .filter_map(|s| self.unit_from_sample(s))
+            .collect())
+    }
+
+    /// End the stream and return every unit still in flight, in order.
+    ///
+    /// [`Self::encode`] hands late output back with the next frame; after
+    /// the last frame there is no next call, so a recording that stops
+    /// collects the rest here.
+    ///
+    /// # Errors
+    ///
+    /// [`RealtimeError::Pipeline`] when the encoder fails or does not drain.
+    pub fn finish(self) -> Result<Vec<EncodedUnit>, RealtimeError> {
+        self.running
+            .appsrc
+            .end_of_stream()
+            .map_err(|e| RealtimeError::Pipeline(format!("end of stream: {e:?}")))?;
+        let mut samples = Vec::new();
+        loop {
+            match self.running.events.recv_timeout(startup_timeout()) {
+                Ok(Event::Sample(s)) => samples.push(s),
+                Ok(Event::Eos) => break,
+                Ok(Event::Error(e)) => return Err(RealtimeError::Pipeline(e)),
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(RealtimeError::Pipeline(format!(
+                        "the encoder did not drain within {:?}",
+                        startup_timeout()
+                    )));
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(RealtimeError::Pipeline("pipeline stopped".into()));
+                }
+            }
         }
         Ok(samples
             .iter()

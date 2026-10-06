@@ -4,19 +4,28 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
-/// Launch a separate browser process with isolated private storage.
+/// Launch a separate browser process with isolated private storage, showing
+/// `url` when given.
 ///
 /// # Errors
-/// Returns an error if the executable cannot be located or the child/reaper cannot be started.
-pub fn launch() -> Result<(), String> {
+/// Returns an error if the executable cannot be located, `url` is
+/// argument-shaped, or the child/reaper cannot be started.
+pub fn launch(url: Option<&str>) -> Result<(), String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    launch_executable(&executable)
+    launch_executable(&executable, url)
 }
 
-fn launch_executable(executable: &Path) -> Result<(), String> {
-    let child = Command::new(executable)
-        .arg("--private")
-        .env("TILO_BROWSER_PRIVATE", "1")
+fn launch_executable(executable: &Path, url: Option<&str>) -> Result<(), String> {
+    let mut command = Command::new(executable);
+    command.arg("--private");
+    if let Some(url) = url {
+        // One opaque positional; never something read as a flag.
+        if url.starts_with('-') {
+            return Err("Refusing an argument-shaped address".into());
+        }
+        command.arg(url);
+    }
+    let child = command
         .env_remove("TILO_BROWSER_APP_ROOT")
         .env_remove("TILO_CHROMIUM_PROFILE")
         // Runtime sockets belong to the parent process. The SDK closes them
@@ -94,13 +103,13 @@ mod tests {
         std::fs::write(
             &executable,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$#\" \"$@\" \"$TILO_BROWSER_PRIVATE\" \"$TILO_BROWSER_APP_ROOT\" \"$TILO_CHROMIUM_PROFILE\" \"$TILO_SVC_COLLAB_FD\" \"$TILO_SVC_IDENTITY_FD\" \"$TILO_RUNTIME_RESUME_LIVE\" \"$TILO_RUNTIME_PROFILE\" \"$TILO_RUNTIME_BINARY\" > '{capture}.tmp'\nmv '{capture}.tmp' '{capture}'\n",
+                "#!/bin/sh\nprintf '%s\\n' \"$#\" \"$@\" \"$TILO_BROWSER_APP_ROOT\" \"$TILO_CHROMIUM_PROFILE\" \"$TILO_SVC_COLLAB_FD\" \"$TILO_SVC_IDENTITY_FD\" \"$TILO_RUNTIME_RESUME_LIVE\" \"$TILO_RUNTIME_PROFILE\" \"$TILO_RUNTIME_BINARY\" > '{capture}.tmp'\nmv '{capture}.tmp' '{capture}'\n",
                 capture = capture.display()
             ),
         )
         .unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
-        launch_executable(&executable).unwrap();
+        launch_executable(&executable, Some("https://example.test/")).unwrap();
         let deadline = tilo_test_env::hang_deadline();
         while !capture.exists() && ui::time::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -108,7 +117,7 @@ mod tests {
         let lines = std::fs::read_to_string(capture).unwrap();
         assert_eq!(
             lines,
-            "1\n--private\n1\n\n\n\n\n\n/fixture/runtime\n/fixture/tilo-runtime-mcp\n"
+            "2\n--private\nhttps://example.test/\n\n\n\n\n\n/fixture/runtime\n/fixture/tilo-runtime-mcp\n"
         );
     }
 }

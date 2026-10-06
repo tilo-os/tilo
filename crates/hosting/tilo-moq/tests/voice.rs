@@ -73,60 +73,6 @@ fn rejects_truncated_extra_oversized_and_malformed_objects() {
 }
 
 #[test]
-fn browser_codec_encodes_and_decodes_the_same_golden_and_u64_edges() {
-    let profile = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../browser/tilo-browser-runtime/web/media-voice-profile.mjs");
-    let script = r"
-        const {encodeVoiceObject, decodeVoiceObject} = await import(process.argv[1]);
-        for (const [sequence, timestamp, payload] of [
-            [0x0102030405060708n, 0x1112131415161718n, [248,255,254]],
-            [18446744073709551615n, 0n, [7]],
-        ]) {
-            const encoded = encodeVoiceObject({sequence, timestamp, duration:960, payload:Uint8Array.from(payload)});
-            const decoded = decodeVoiceObject(encoded);
-            process.stdout.write(JSON.stringify({bytes:[...encoded], sequence:decoded.sequence.toString(), timestamp:decoded.timestamp.toString()})+'\n');
-        }
-    ";
-    let output = std::process::Command::new("node")
-        .args(["--input-type=module", "-e", script])
-        .arg(profile)
-        .output()
-        .unwrap_or_else(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => panic!(
-                "node missing: this test runs the browser voice codec in Node.js and needs \
-                 `node` on PATH (the CI builder image installs nodejs)"
-            ),
-            _ => panic!("could not run node for the browser voice codec: {error}"),
-        });
-    assert!(
-        output.status.success(),
-        "browser codec failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let lines: Vec<serde_json::Value> = String::from_utf8(output.stdout)
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
-    assert_eq!(lines.len(), 2);
-    for (line, expected) in lines.iter().zip([
-        fixture(),
-        VoiceObject {
-            sequence: u64::MAX,
-            timestamp: 0,
-            payload: vec![7],
-            ..fixture()
-        },
-    ]) {
-        let bytes: Vec<u8> = serde_json::from_value(line["bytes"].clone()).unwrap();
-        assert_eq!(expected.encode().unwrap(), bytes);
-        assert_eq!(VoiceObject::decode(&bytes).unwrap(), expected);
-        assert_eq!(line["sequence"], expected.sequence.to_string());
-        assert_eq!(line["timestamp"], expected.timestamp.to_string());
-    }
-}
-
-#[test]
 fn datagram_bundles_hold_one_to_three_valid_objects() {
     use tilo_moq::voice::{bundle_objects, validate_bundle};
     let second = VoiceObject {

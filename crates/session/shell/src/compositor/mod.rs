@@ -11,6 +11,8 @@ pub mod accessibility;
 #[cfg(target_os = "linux")]
 pub mod activation;
 #[cfg(target_os = "linux")]
+pub(crate) mod admin_control;
+#[cfg(target_os = "linux")]
 pub mod agent_seats;
 #[cfg(target_os = "linux")]
 mod audio_capture;
@@ -25,6 +27,8 @@ pub mod chooser_service;
 pub mod client_cursor;
 #[cfg(target_os = "linux")]
 pub mod client_input;
+#[cfg(target_os = "linux")]
+pub mod client_settle;
 pub mod controller_nav;
 pub mod cursor;
 pub mod dev_env;
@@ -36,7 +40,9 @@ pub mod drag_feedback;
 pub mod floating_service;
 pub mod foreign;
 pub mod frame;
+pub mod frame_stall;
 #[cfg(target_os = "linux")]
+pub mod gpu_health;
 pub mod gpu_import;
 #[cfg(target_os = "linux")]
 pub mod hosted;
@@ -50,6 +56,7 @@ pub mod input_environment;
 pub mod input_method;
 #[cfg(target_os = "linux")]
 pub mod input_method_service;
+pub mod key_latency;
 pub mod lock_auth;
 pub mod lock_controller;
 pub mod lock_screen;
@@ -69,6 +76,8 @@ pub mod pad_layout;
 #[cfg(target_os = "linux")]
 pub mod pointer_lock;
 pub mod present;
+#[cfg(target_os = "linux")]
+pub mod presentation;
 pub mod projection_capture;
 #[cfg(target_os = "linux")]
 pub mod remote_seat;
@@ -76,6 +85,8 @@ pub mod render_node;
 pub mod screen_dim;
 pub mod selection;
 pub mod session_env;
+#[cfg(target_os = "linux")]
+pub mod shell_text_input;
 #[cfg(target_os = "linux")]
 pub mod shortcut_inhibit;
 #[cfg(target_os = "linux")]
@@ -91,10 +102,10 @@ pub mod tablet;
 pub mod tablet_pad;
 #[cfg(target_os = "linux")]
 pub mod test_control;
-#[cfg(target_os = "linux")]
 pub mod text_commit;
 #[cfg(target_os = "linux")]
 pub mod toplevel_icon;
+pub mod touch_pointer;
 #[cfg(target_os = "linux")]
 pub mod window_previews;
 #[cfg(target_os = "linux")]
@@ -183,70 +194,6 @@ pub fn parse_peer_sync(args: &[&str]) -> bool {
 /// Pure, testable parser for the explicit offline/recovery override.
 pub fn parse_peer_sync_disabled(args: &[&str]) -> bool {
     args.contains(&"--disable-peer-sync")
-}
-
-/// Source of truth for the peer-sync marker file. Mockable so tests don't touch the
-/// filesystem; production wires up [`XdgConfigMarkerSource`], checking
-/// `$XDG_CONFIG_HOME/tilo-desktop/peer-sync.enabled` (falling back to `~/.config/...`). See
-/// `os/docs/peer-sync.md`: the `shell-peer-sync.service` user unit drops this marker so the next launch picks up peer-sync without the CLI flag.
-pub trait MarkerSource {
-    /// Returns true if the peer-sync marker exists.
-    fn peer_sync_marker_exists(&self) -> bool;
-}
-
-/// Production marker source — checks `$XDG_CONFIG_HOME/tilo-desktop/peer-sync.enabled`, falling back to `$HOME/.config/...` when `XDG_CONFIG_HOME` is unset.
-pub struct XdgConfigMarkerSource;
-
-impl XdgConfigMarkerSource {
-    /// Resolve the marker file path using the same rules `peer_sync_marker_exists` uses; exposed for diagnostics and for tests asserting resolution without touching the filesystem.
-    pub fn marker_path() -> Option<std::path::PathBuf> {
-        peer_sync_marker_path_from_env(
-            std::env::var_os("XDG_CONFIG_HOME").as_deref(),
-            std::env::var_os("HOME").as_deref(),
-        )
-    }
-}
-
-impl MarkerSource for XdgConfigMarkerSource {
-    fn peer_sync_marker_exists(&self) -> bool {
-        Self::marker_path().is_some_and(|p| p.exists())
-    }
-}
-
-/// Pure helper for [`XdgConfigMarkerSource::marker_path`], so tests can drive the path-resolution rules with fixture env-var values.
-pub fn peer_sync_marker_path_from_env(
-    xdg_config_home: Option<&std::ffi::OsStr>,
-    home: Option<&std::ffi::OsStr>,
-) -> Option<std::path::PathBuf> {
-    Some(
-        xdg_paths::xdg::Base::Config
-            .resolve_from(xdg_config_home, home)?
-            .join("tilo-desktop")
-            .join("peer-sync.enabled"),
-    )
-}
-
-/// Combined peer-sync resolution. Sync is on by default; an explicit
-/// `--disable-peer-sync` always wins so a broken network stack can never keep
-/// a recovery or test session from starting. The old enable flag and marker
-/// remain accepted for compatibility with existing launchers.
-pub fn peer_sync_enabled_with(args: &[&str], markers: &dyn MarkerSource) -> bool {
-    if parse_peer_sync_disabled(args) {
-        return false;
-    }
-    if parse_peer_sync(args) {
-        return true;
-    }
-    let _legacy_marker = markers.peer_sync_marker_exists();
-    true
-}
-
-/// Process-global wrapper around [`peer_sync_enabled_with`], reading CLI args from
-/// `std::env::args` and the marker via [`XdgConfigMarkerSource`].
-pub fn peer_sync_enabled_from_env_or_marker() -> bool {
-    let owned: Vec<String> = std::env::args().skip(1).collect();
-    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
-    peer_sync_enabled_with(&borrowed, &XdgConfigMarkerSource)
 }
 
 /// Pure, testable `--portal-server-only` flag parser (mirrors [`parse_peer_sync`]). When set,
@@ -552,84 +499,15 @@ mod tests {
         }
     }
 
-    // peer-sync marker file
-
-    struct FakeMarker {
-        present: bool,
-    }
-    impl MarkerSource for FakeMarker {
-        fn peer_sync_marker_exists(&self) -> bool {
-            self.present
-        }
-    }
-
     #[test]
-    fn peer_sync_resolution_combines_flag_marker_and_disable_override() {
-        let cases: &[(&str, &[&str], bool, bool)] = &[
-            // Default on without a marker.
-            ("default, no marker", &[], false, true),
-            ("mode, no marker", &["--mode", "native"], false, true),
-            // CLI flag enables peer-sync regardless of marker absence.
-            ("flag, no marker", &["--enable-peer-sync"], false, true),
-            // And marker presence + flag is still on (no double-disable).
-            ("flag and marker", &["--enable-peer-sync"], true, true),
-            // Existing marker-managed installations remain enabled without a CLI flag.
-            ("legacy marker", &[], true, true),
-            ("legacy marker with mode", &["--mode", "native"], true, true),
-            // The disable override wins over default enable and marker.
-            ("disable over marker", &["--disable-peer-sync"], true, false),
-            (
-                "disable over flag and marker",
-                &["--enable-peer-sync", "--disable-peer-sync"],
-                true,
-                false,
-            ),
-        ];
-        for (case, args, marker, want) in cases {
-            let m = FakeMarker { present: *marker };
-            assert_eq!(peer_sync_enabled_with(args, &m), *want, "case {case}");
-        }
+    fn peer_sync_is_on_unless_explicitly_disabled() {
+        assert!(!parse_peer_sync_disabled(&[]));
+        assert!(!parse_peer_sync_disabled(&["--mode", "native"]));
+        assert!(!parse_peer_sync_disabled(&["--enable-peer-sync"]));
         assert!(parse_peer_sync_disabled(&["--disable-peer-sync"]));
-    }
-
-    #[test]
-    fn marker_path_prefers_xdg_then_home_and_treats_empty_as_unset() {
-        use std::ffi::OsStr;
-        use std::path::PathBuf;
-        #[allow(
-            clippy::type_complexity,
-            reason = "one row per case: name and the three optional inputs"
-        )]
-        let cases: &[(&str, Option<&str>, Option<&str>, Option<&str>)] = &[
-            (
-                "prefers XDG_CONFIG_HOME",
-                Some("/custom/xdg"),
-                Some("/home/ignored"),
-                Some("/custom/xdg/tilo-desktop/peer-sync.enabled"),
-            ),
-            (
-                "falls back to HOME/.config",
-                None,
-                Some("/home/alice"),
-                Some("/home/alice/.config/tilo-desktop/peer-sync.enabled"),
-            ),
-            // POSIX convention: an empty env-var means "use the default".
-            (
-                "empty XDG treated as unset",
-                Some(""),
-                Some("/home/bob"),
-                Some("/home/bob/.config/tilo-desktop/peer-sync.enabled"),
-            ),
-            // No way to resolve a path → caller defaults to "marker absent".
-            ("no XDG, no HOME", None, None, None),
-            ("empty XDG and HOME", Some(""), Some(""), None),
-        ];
-        for (case, xdg, home, want) in cases {
-            assert_eq!(
-                peer_sync_marker_path_from_env(xdg.map(OsStr::new), home.map(OsStr::new)),
-                want.map(PathBuf::from),
-                "case {case}"
-            );
-        }
+        assert!(parse_peer_sync_disabled(&[
+            "--enable-peer-sync",
+            "--disable-peer-sync"
+        ]));
     }
 }

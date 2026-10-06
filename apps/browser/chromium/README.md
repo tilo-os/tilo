@@ -24,16 +24,29 @@ The default macOS executable is:
 target/chromium/Browser Engine.app/Contents/MacOS/tilo-chromium-host
 ```
 
-Linux produces `target/chromium/tilo-chromium-host` and adjacent CEF resources.
+Linux produces `target/chromium/tilo-chromium-host` and adjacent CEF resources;
+run the browser against it with `TILO_CHROMIUM_HOST` set to that path. On Tilo
+OS the engine is the signed runtime bundle `tilo-runtime/2026.10.1-chromium`
+(`ui::webview::chromium::runtime`): the image build runs
+`build-host.py --sdk-archive … --runtime …` and signs the resulting tree, the
+browser's manifest lists it under `optional-runtimes`, and the launcher mounts
+it read-only into the browser's sandbox.
 Linux requires Chromium sandbox support (user namespaces or the distribution's
 correctly installed setuid sandbox). The host never disables the sandbox. The
 primary process skips Chromium first-run UI because Tilo owns onboarding; this
 also avoids an offscreen initialization stall on Linux.
-Linux packaging is implemented but has not yet been exercised on Linux.
 
 Run with `--profile=/absolute/profile/directory`. Each concurrently running host
 must use its own profile directory. The profile is canonicalized to avoid
 macOS `/var` versus `/private/var` cache path mismatches.
+
+Browser processes that use one profile therefore share one host. The first
+process to open the profile holds `<profile>.lock`, starts the host and serves
+`<profile>.sock` beside the profile directory; every later process connects
+there and drives its own tabs through that host (see
+`crates/sdk/ui-core/src/webview/chromium/shared.rs`). The owning process calls
+`ui::webview::chromium::serve_shared_until_idle()` after its event loop exits,
+so the host outlives every process still using it.
 
 ## IPC
 
@@ -52,6 +65,18 @@ plan. Invalid packets or command fields and stdin EOF close the browser.
 Diagnostics use stderr or the profile's `cef.log`. Resize dimensions, pointer
 coordinates and wheel deltas are physical pixels; the host converts them to CEF
 logical coordinates using `scale_factor`.
+
+Resource navigation uses `scoped_navigation` with a strictly increasing positive
+signed-32-bit `request_id`, a `command` (`navigate`, `back`, `forward`, `reload`,
+or `history_entry`), and the command's URL or history snapshot/entry fields.
+`cancel_navigation` invalidates the matching owner. `navigation_outcome` echoes
+that owner, the actual final URL, and an optional failure. Redirects retain the
+owner; bootstrap and legacy visual load events cannot complete an owned action.
+Renderer termination fails affected owners explicitly; its visual event cannot
+invalidate a subsequently admitted recovery. Helper closure fails outstanding
+requests. Navigation waits for document-start script registration and the prior
+native lifecycle, and replacements stop the prior load without crediting its
+callbacks to a new action.
 
 CEF callbacks enqueue output without pipe writes. Events have a bounded queue;
 only the newest pending CPU frame is kept. Frames are copied during OnPaint;
@@ -135,6 +160,15 @@ Not yet covered: cross-origin and same-origin iframe content (listed as
 python3 apps/browser/chromium/tests/page_actions.py target/chromium/tilo-chromium-host
 ```
 
+What an agent host relies on — the process budget (the browser, its storage
+service and one renderer per site; Linux adds its sandbox zygotes), hidden
+pages painting nothing yet answering page actions, and the paint stream's
+`paint_capture` / `paint_resource` ops:
+
+```sh
+python3 apps/browser/chromium/tests/agent_host.py target/chromium/tilo-chromium-host
+```
+
 ## Native blocking
 
 A request-context handler checks HTTP(S) resources, including dedicated-worker
@@ -181,6 +215,26 @@ python3 apps/browser/chromium/tests/nested_bundle.py \
 It requires the nested location and verifies initialization, local HTTP navigation,
 frame delivery, and clean shutdown using the packaged executable.
 
+## Native navigation receipt regression
+
+```sh
+cargo run --locked -p browser --example native_navigation_completion
+```
+
+On Linux this builds the pinned, digest-verified engine with the maintained host
+helper and drives the real Browser's registered actions against an isolated local
+HTTP fixture. It verifies trusted fragment-link Back/Forward receipts, one durable
+history visit per completion, a concrete refused-connection failure, and recovery
+followed by the same history route. Chromium runs unprivileged with its sandbox
+enabled. A fixture supervisor reaps its descendants before the ordinary isolated
+test profile is removed. Missing engine dependencies or observations fail the run.
+`--host PATH` selects an existing runtime's exact executable and reports its
+SHA256 while preserving the same unprivileged supervisor and sandbox. The
+fixture also checks startup navigation ownership, redirects, repeated URLs,
+explicit internal-URL rejection at the Browser boundary, and native-engine
+blank/canonical URL, cancellation/recovery, history refusal, and renderer
+termination followed by Reload.
+
 ## Remaining integration work
 
 - Browser UI extension management and Chrome extension behavior remain separate
@@ -193,4 +247,5 @@ frame delivery, and clean shutdown using the packaged executable.
   macOS native and Linux X11 key mappings. Physical codes use a US layout because
   IPC carries logical names; IME, composed text, other layouts and full native
   shortcut handling need platform integration.
-- Linux runtime execution and macOS release signing/notarization remain unverified.
+- The isolated Linux ARM64 native navigation receipt regression is verified.
+  Packaged hardware acceptance and macOS release signing/notarization remain separate checks.

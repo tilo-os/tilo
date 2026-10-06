@@ -16,7 +16,7 @@ use tilo_ui::widget::{AppWidget, Button, Widget};
 fn widget_trait_defaults_presence_draw_and_token_radius() {
     // Case `widget_defaults_for_collab_methods`.
     {
-        let b = Button::new("b", "label", None);
+        let b = Button::new("b", "label");
         assert!(tilo_ui::presence::capability::presence_key(&b).is_none());
         assert!(tilo_ui::permissions::capability::permission_scope(&b).is_none());
         assert!(!b.accepts_drop(&DragPayload::Text { value: "x".into() }));
@@ -66,6 +66,8 @@ fn widget_trait_defaults_presence_draw_and_token_radius() {
             text_scale: 1.0,
             ui_scale: 1.0,
             caret_width: 2.0,
+            forced_colors: false,
+            allow_app_accents: true,
             tokens: t,
         };
         assert_eq!(theme.radius_standard, 99.0);

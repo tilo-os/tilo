@@ -41,6 +41,9 @@ pub enum TlsSource {
         certificate_chain: PathBuf,
         /// PKCS#8, PKCS#1 or SEC1 private key.
         private_key: PathBuf,
+        /// The name the certificate is for, which browsers dial. Needed for
+        /// addresses the host hands out when it listens on every address.
+        host: Option<String>,
     },
     /// ACME inside the host (not implemented).
     Managed {
@@ -78,6 +81,7 @@ impl Identity {
             TlsSource::Files {
                 certificate_chain,
                 private_key,
+                ..
             } => {
                 let chain = CertificateDer::pem_file_iter(certificate_chain)
                     .map_err(|error| format!("certificate chain: {error}"))?
@@ -153,5 +157,11 @@ fn save_stored(path: &std::path::Path, identity: &Identity) -> Result<(), String
         sha256: identity.pinned_sha256.clone().unwrap_or_default(),
     };
     let bytes = postcard::to_allocvec(&stored).map_err(|error| error.to_string())?;
-    atomic_file::write_with_mode(path, &bytes, 0o600).map_err(|error| error.to_string())
+    // A host awaiting its certificate serves before anything else created
+    // its state directory.
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
+        .map_err(|error| error.to_string())
 }

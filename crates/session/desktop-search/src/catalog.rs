@@ -41,6 +41,12 @@ pub(super) const APPS: &[CatalogApp] = &[
         platforms: &["linux", "macos", "web"],
     },
     CatalogApp {
+        id: "so.tilo.canvas",
+        name: "Canvas",
+        category: "Multimedia",
+        platforms: &["linux", "macos", "web"],
+    },
+    CatalogApp {
         id: "so.tilo.chat",
         name: "Chat",
         category: "Network",
@@ -135,12 +141,6 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Hot reload",
         category: "Utility",
         platforms: &["linux", "macos"],
-    },
-    CatalogApp {
-        id: "so.tilo.image-editor",
-        name: "Image Editor",
-        category: "Multimedia",
-        platforms: &["linux", "macos", "web"],
     },
     CatalogApp {
         id: "so.tilo.imager",

@@ -175,10 +175,10 @@ For a zero-argument control, keep ordinary closure ergonomics with
 `Button::on_effect` or `Button::on_view`:
 
 ```rust
-let refresh = ui::Button::new("refresh", "Refresh", None)
+let refresh = ui::Button::new("refresh", "Refresh")
     .on_effect(move || refresh_from_service());
 
-let inspector = ui::Button::new("toggle-inspector", "Toggle inspector", None)
+let inspector = ui::Button::new("toggle-inspector", "Toggle inspector")
     .on_view(move || inspector_state.toggle());
 ```
 
@@ -197,7 +197,7 @@ agents see:
 ```rust
 let resource = document_resource(&model);
 let save = ui::tilo_actions::ActionBinding::unit_for(&resource, "save")?;
-let button = ui::Button::new("save", "Save", None).on_action(save);
+let button = ui::Button::new("save", "Save").on_action(save);
 ```
 
 `ActionBinding::unit_for` looks up the actual `ActionSpec` on the resource, so
@@ -664,6 +664,13 @@ complete Cargo/app process group, so an earlier window cannot be stranded
 beside the new one.
 Use `--app-only` when toolkit edits should not restart this app, and
 `--debounce-ms` to adjust the default 30 ms quiet period.
+When the debug build is too slow to judge what you are changing (painting,
+video, large documents), `tilo-app dev --release` builds the app with the
+`thin-app` profile thin Tilo builds ship with: release optimisation without
+LTO, so it still links quickly and reloads in place. `--profile NAME` picks any
+Cargo profile; one other than `dev` or `thin-app` restarts the app on each
+change instead, as an LTO profile cannot link the toolkit dynamically.
+`scripts/agent-loop/session.py start APP --release` passes it on.
 `tilo-app dev --platform web` runs the same loop in the browser
 ([The web](#the-web)).
 
@@ -720,10 +727,10 @@ tilo-app shot --viewport 1280x800
 tilo-app shot --output artifacts/empty.png --scenario empty
 ```
 
-Arguments after `--` are forwarded as app-defined screenshot options. Use
-`shot_root` only when a deterministic scenario needs different seeded data,
-or `shot_handler` for an app-specific capture pipeline. The default is the
-production widget tree at the requested viewport and active shot theme.
+Arguments after `--` are forwarded as app-defined screenshot options. A
+capture is the production view at the requested viewport and active shot
+theme; a scenario stages it through the resource's actions and its views'
+stage hooks.
 
 Build an installable package from the same app root with:
 
@@ -841,6 +848,24 @@ relink only what changed. `build --target web --bundle app` is the same
 build; Tilo's own apps also build into the shared desktop bundle
 (`--bundle desktop`).
 
+The core the build links exports what the app imports. The core the registry
+serves is built for Tilo's own web apps, so a package that imports something
+only this app uses (a generic instantiation from `serde_json`, say) can fail
+to link in a page that runs that core; the page names the missing symbols.
+
+`dev --platform web` serves the page and rebuilds after every save. An edit to
+the app relinks only its module; the page notices the finished build and
+reloads into the same record. The record's state lives in the browser's
+storage, not in the module, so the document survives the new code. An edit
+to the SDK rebuilds the core too. `--bind` picks another address.
+
+The build needs wasm-bindgen 0.2.108, binaryen's `wasm-opt`, lld's `wasm-ld`,
+Node.js and brotli, which the builder image `tilo-app add ci` uses has.
+`TILO_WEB_BUILD_RUNNER` runs the build under a command prefix instead, for
+example a wrapper that runs it on a remote machine and brings `target/web`
+back. A web package's `[budget]` applies to its module as it
+does to a thin binary.
+
 ### Android
 
 The same app builds as a standalone Android app, with nothing Android-specific
@@ -907,9 +932,8 @@ to the app the host prepared.
 | Preferences | `cx.settings()` (the app's section) or `ui::storage::Settings::section("locale")` for a shared one: `load`, `bool`, `string`, `update` | the desktop settings document (`settings-store`), or the host's source |
 | Secrets | `cx.secrets()` (`ui::storage::secrets(id)`) | `tilo-secrets`: Secret Service, Keychain, wrapped IndexedDB |
 
-Apps do not depend on `settings-store`, `app-state`, `xdg-paths` or
-`atomic-file`: those are the SDK's internals (the last two are deprecated
-shims over `tilo-paths` and `tilo_files::native::atomic`). The exceptions are
+Apps do not depend on `settings-store`, `app-state` or `xdg-paths`: those
+are the SDK's internals (the last is a deprecated shim over `tilo-paths`). The exceptions are
 the Settings app, which owns the settings document, and Notes' capture
 fault-injection scenario, which locates its record on disk. Desktop-only code
 that must name a native path uses `tilo_paths` and `tilo_files::native`
@@ -981,10 +1005,9 @@ impl ResourceApp for App {
 The same declaration is shared by the real event loop, screenshots, the
 headless driver and `TestApp`. Use toolkit widgets for controls so focus,
 keyboard input, IME positioning, accessibility, theme behavior, and testing
-metadata remain one implementation rather than app-local replicas. The
-toolkit-level `LaunchSpec::new(id, app_root)` path, where the library returns a
-`Box<dyn Widget>` root itself, remains available for roots that manage their
-own documents.
+metadata remain one implementation rather than app-local replicas. A custom
+widget takes part as a surface (`ResourceSurface`) of the app's resource;
+every launch is the framework app's.
 
 Compose ordinary heterogeneous children with the layout macros instead of
 writing one allocation step per child:
@@ -1005,8 +1028,8 @@ pub fn app_root() -> Box<dyn Widget> {
             Checkbox::new("project-pinned", "project-pinned"),
         ),
         ui::row![
-            Button::new("cancel", "cancel-label", None),
-            Button::new("save", "save-label", None).primary(),
+            Button::new("cancel", "cancel-label"),
+            Button::new("save", "save-label").primary(),
         ],
     ])
 }
@@ -1044,7 +1067,7 @@ accessibility, Ctrl+K and headless activation all reach the same action intent:
 
 ```rust
 let save = tilo_actions::ActionBinding::unit_for(&document, "save")?;
-Button::new("save", "app-save", None)
+Button::new("save", "app-save")
     .on_action(save)
     .primary()
     .fit_content(32.0)
@@ -1517,6 +1540,32 @@ host resolves the action back to the shortest enabled visible semantic path,
 so the ordinary retained UI updates from the same state transition a human
 would have caused.
 
+#### Tabs belong to the desktop
+
+An app shows one thing: a page, a file, a conversation. Never build a tab
+strip, a list of open documents or a "switch document" control into an app.
+Several things side by side are several instances of the app, and the shell
+groups them as tabs of a window group, with one tab model, one set of chords
+and one closed-tab history for every app.
+
+When the app wants another of itself next to it — a link opened in a new tab,
+"open beside", a file from a project tree — call
+`ui::shell_tabs::open_beside(Some(uri), background)`. The shell launches
+another instance right after this app's tab, opening `uri` (a scheme the
+manifest declares under `[providers] schemes`), in front or, with
+`background`, behind the current tab. `ui::shell_tabs::close_this()` closes
+the app's own tab through the desktop's tab lifecycle, so it can be reopened.
+Each instance keeps its own record; what it shows comes back on restart or
+reopen through its continuity metadata, not through a session file of the
+app's own.
+
+Ctrl+T (another instance), Ctrl+W (close this tab) and Ctrl+Shift+T (reopen
+the last closed tab) — Cmd on macOS — reach these requests whenever the
+focused widget leaves the chord unhandled; Ctrl+Tab and Ctrl+Shift+Tab are
+the shell's own tab bindings. Outside a Tilo session the same calls open a
+new window of the app and close this one. The `tab.open-beside` shell action
+is the same open for agents and scripts.
+
 ### One driveability surface
 
 Every operation must be reachable through the resource/action catalogue. Use
@@ -1601,7 +1650,42 @@ not invalidate an address. Duplicate resource or semantic IDs fail closed;
 they are never repaired with an ordinal suffix that could target the wrong
 thing.
 
-A representative effect looks like this:
+A framework app declares its effects as one typed enum and answers them where
+the state they need lives:
+
+```rust
+#[derive(Clone, Debug, Effect)]
+#[effect(operation = "mail.effects")]
+pub enum MailEffect {
+    /// Archive conversation.
+    #[effect(job)]
+    Archive { conversation: String },
+}
+
+// In the view (a custom surface implements `ResourceSurface<R, MailEffect>`
+// and answers in `effect(&mut self, ..)` instead).
+cx.effects(move |effect: MailEffect, cx| match effect {
+    MailEffect::Archive { conversation } => Ok(cx.thread(
+        move |progress| server.archive(&conversation, &progress),
+        |(), archived, cx| {
+            cx.invoke(Mail::MARK_ARCHIVED.with(archived?));
+            Ok(Effected::done())
+        },
+    )),
+});
+let archive = cx.effect_button("Archive", &MailEffect::Archive { conversation: id });
+```
+
+Each variant is a published `Effect` action with typed parameters; its options
+(`job`, `cancellable`, `returns`, `destructive`, `permission = "read"`) are its
+contract. The framework publishes the vocabulary beside the resource's
+actions, with the availability the handler reports now (`EffectStatus`), and
+routes the palette, agents, scripts and bound controls to the handler as a
+typed value. A job reports progress through its `Progress`, finishes on the UI
+thread, and changes the document only through actions. A projection queued in
+the document (an outbox) is drained with `ViewCx::drain`.
+
+A widget outside the framework describes an effect with an `ActionSpec`:
 
 ```rust
 ActionSpec::operation(
@@ -1619,14 +1703,12 @@ ActionSpec::operation(
 })
 ```
 
-For a small app with one launchable resource, wrap its ordinary retained root
-with `ui::widget::resource_actions::immediate` or `background`. The toolkit
-owns the forwarding widget, operation dispatch, pending-job bookkeeping, and
-failure conversion; the app supplies only its resource contract and operation
-closure. The generated `async` app uses this path for its effect action inside a
-framework view, and imports action types through
-`ui::tilo_actions`, so a generated project contains no copied host
-implementation and needs no direct internal actions dependency.
+For a small widget root with one launchable resource,
+`ui::widget::resource_actions::immediate` owns the forwarding widget,
+operation dispatch and failure conversion; the app supplies only its resource
+contract and operation closure. An app on the framework declares its effects
+with `#[derive(Effect)]` instead, and runs long work as a job through the
+`EffectCx` its handler receives.
 
 Register document action decoders in `App::action_registry_mut`. Handle every
 effect and view type in `Widget::start_operation`, the single entry: return
@@ -1916,7 +1998,7 @@ Pass message ids—not eagerly translated strings—to retained controls:
 
 ```rust
 let title = Text::new("project-title");
-let save = Button::new("save", "save-project", None);
+let save = Button::new("save", "save-project");
 let name = TextInput::local()
     .with_accessible_name("project-name")
     .with_placeholder("project-name-placeholder");
@@ -2245,7 +2327,8 @@ keeps its own focus, input, animation, inspection, and accessibility behavior:
 let actions = ColumnDef::new("actions", "Actions", ColumnWidth::Fixed(120.0))
     .with_widget(|row: &ResultRow, _visible_index| {
         let id = format!("open-{}", row.id);
-        Box::new(Button::new(&id, "Open", Some("open-result")))
+        let row_id = row.id.clone();
+        Box::new(Button::new(&id, "Open").on_view(move || open(&row_id)))
     });
 ```
 
@@ -2288,7 +2371,7 @@ let list = VirtualList::from_items(
     |contact, _index, _key| {
         Box::new(ui::row![
             Text::new(&contact.name),
-            Button::new("message", "Message", None),
+            Button::new("message", "Message"),
         ])
     },
 )?
@@ -2510,7 +2593,7 @@ let tree = TreeView::from_model(files)
     .with_row_delegate(|model, id, _depth| {
         Box::new(ui::row![
             Text::new(model.label(id).unwrap_or("")),
-            Button::new("more", "More actions", None),
+            Button::new("more", "More actions"),
         ])
     });
 ```

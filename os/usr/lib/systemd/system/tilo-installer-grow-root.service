@@ -19,7 +19,8 @@ RemainAfterExit=yes
 ExecStart=/usr/lib/systemd/systemd-growfs /sysroot
 TimeoutSec=infinity
 UMask=0077
-NoNewPrivileges=yes
+# No NoNewPrivileges=: systemd-growfs runs in its own SELinux domain (fsadm_t),
+# a transition NNP forbids. Capabilities and the sandbox below bound it.
 PrivateTmp=yes
 PrivateNetwork=yes
 PrivateIPC=yes
@@ -41,8 +42,8 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 RemoveIPC=yes
-# Filesystem resize ioctls require CAP_SYS_ADMIN; retain no other capability.
-CapabilityBoundingSet=CAP_SYS_ADMIN
+# Btrfs needs CAP_SYS_ADMIN; Ext4 online resize also needs CAP_SYS_RESOURCE.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_RESOURCE
 AmbientCapabilities=
 SystemCallArchitectures=native
 

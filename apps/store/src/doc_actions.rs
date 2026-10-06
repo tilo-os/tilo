@@ -1,14 +1,29 @@
-//! Replayable Store-document actions for durable, collaborative reports.
+//! The Store document: collaborative report drafts, their notes and the
+//! moderation case each one became.
+//!
+//! Everything else the Store shows — the catalogue, what is installed, the
+//! Flatpak remotes — is live device state its surface publishes as rows.
 
 use automerge::transaction::Transactable;
-use automerge::{ObjType, ROOT};
+use automerge::{ObjId, ObjType, ROOT, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
 use tilo_actions::{Action, ActionError, ActionRegistry, Doc};
+use ui::tilo_resource::TextEdit;
+
+use crate::resource::{ReportProjection, StoreState};
 
 pub const STORE_DOCUMENT_ACTION_TYPE: &str = "store.document";
 pub const REPORT_RESOURCE_KEY_PREFIX: &str = "store.report_resource.";
+pub const REPORT_CASE_KEY_PREFIX: &str = "store.report_case.";
+pub const REPORT_NOTE_KEY_PREFIX: &str = "store.report_note.";
+const REPORT_SNAPSHOT_LIMIT: usize = 128;
+const MAX_REPORT_STATUS_CHARS: usize = 128;
+pub const MAX_REPORT_NOTE_CHARS: usize = 4_096;
+const MAX_CASE_ID_CHARS: usize = 128;
+/// The status a report has until the registry knows of it.
+pub const DRAFT_STATUS: &str = "Draft · not submitted";
 
-fn valid_app_id(value: &str) -> bool {
+pub(crate) fn valid_app_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 255
         && value
@@ -18,8 +33,16 @@ fn valid_app_id(value: &str) -> bool {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StoreDocumentAction {
+    /// Start a report about an app, with an empty note to describe it in.
     CreateReportDraft { app_id: String },
-    SetReportNote { app_id: String, note: String },
+    /// Edit the note of an app's report.
+    EditReportNote { app_id: String, edit: TextEdit },
+    /// Record the registry's case id and status for one app's report.
+    RecordModerationCase {
+        app_id: String,
+        case_id: String,
+        status: String,
+    },
 }
 
 impl Action for StoreDocumentAction {
@@ -35,27 +58,75 @@ impl Action for StoreDocumentAction {
                 doc.put(
                     &ROOT,
                     format!("{REPORT_RESOURCE_KEY_PREFIX}{app_id}"),
-                    "Draft · not submitted",
+                    DRAFT_STATUS,
                 )?;
+                note_object(doc, app_id)?;
             }
-            Self::SetReportNote { app_id, note } => {
+            Self::EditReportNote { app_id, edit } => {
                 let app_id = app_id.trim();
-                if !valid_app_id(app_id) || note.chars().count() > 4_096 {
-                    return Err(ActionError::Refused("invalid report note".into()));
+                if !valid_app_id(app_id) {
+                    return Err(ActionError::Refused(
+                        "invalid app id for report note".into(),
+                    ));
                 }
-                // An absolute agent operation replaces the text object rather
-                // than splicing an existing one. Concurrent absolute writes
-                // therefore resolve to one authored value instead of
-                // interleaving sentences; ordinary on-screen typing remains
-                // character-granular CRDT text within the chosen object.
-                let object =
-                    doc.put_object(&ROOT, format!("store.report_note.{app_id}"), ObjType::Text)?;
-                if !note.is_empty() {
-                    doc.splice_text(&object, 0, 0, note)?;
+                let note = note_object(doc, app_id)?;
+                let current = doc.text(&note)?.chars().count();
+                let edited = match edit {
+                    TextEdit::Splice { delete, insert, .. } => current
+                        .saturating_sub(*delete)
+                        .saturating_add(insert.chars().count()),
+                    TextEdit::ReplaceText { text } => text.chars().count(),
+                };
+                if edited > MAX_REPORT_NOTE_CHARS {
+                    return Err(ActionError::Refused(format!(
+                        "a report note holds at most {MAX_REPORT_NOTE_CHARS} characters"
+                    )));
                 }
+                edit.apply_under(doc, &note)?;
+            }
+            Self::RecordModerationCase {
+                app_id,
+                case_id,
+                status,
+            } => {
+                let app_id = app_id.trim();
+                let case_id = case_id.trim();
+                if !valid_app_id(app_id)
+                    || !valid_case_id(case_id)
+                    || status.is_empty()
+                    || status.chars().count() > MAX_REPORT_STATUS_CHARS
+                {
+                    return Err(ActionError::Refused(
+                        "invalid moderation case record".into(),
+                    ));
+                }
+                doc.put(&ROOT, format!("{REPORT_CASE_KEY_PREFIX}{app_id}"), case_id)?;
+                doc.put(
+                    &ROOT,
+                    format!("{REPORT_RESOURCE_KEY_PREFIX}{app_id}"),
+                    status.as_str(),
+                )?;
             }
         }
         Ok(())
+    }
+}
+
+/// The note text of `app_id`'s report, created when the report has none.
+fn note_object(doc: &mut Doc, app_id: &str) -> Result<ObjId, ActionError> {
+    let key = format!("{REPORT_NOTE_KEY_PREFIX}{app_id}");
+    match doc.get(&ROOT, &key)? {
+        Some((Value::Object(ObjType::Text), note)) => Ok(note),
+        Some(_) => Err(ActionError::Refused("report note is not text".into())),
+        None => Ok(doc.put_object(&ROOT, key, ObjType::Text)?),
+    }
+}
+
+/// The note text of `app_id`'s report in `doc`, if it has one.
+pub fn report_note(doc: &Doc, app_id: &str) -> Option<ObjId> {
+    match doc.get(&ROOT, format!("{REPORT_NOTE_KEY_PREFIX}{app_id}")) {
+        Ok(Some((Value::Object(ObjType::Text), note))) => Some(note),
+        _ => None,
     }
 }
 
@@ -63,163 +134,156 @@ pub fn register(registry: &mut ActionRegistry) {
     registry.register::<StoreDocumentAction>(STORE_DOCUMENT_ACTION_TYPE);
 }
 
+pub(crate) fn valid_case_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.chars().count() <= MAX_CASE_ID_CHARS
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' || ch == ':')
+}
+
+fn note_at(doc: &Doc, app_id: &str) -> String {
+    report_note(doc, app_id)
+        .and_then(|note| doc.text(&note).ok())
+        .unwrap_or_default()
+        .chars()
+        .take(MAX_REPORT_NOTE_CHARS)
+        .collect()
+}
+
+/// The reports `doc` holds, by app.
+pub(crate) fn state_from_doc(doc: &Doc) -> StoreState {
+    let mut reports = doc
+        .keys(&ROOT)
+        .filter_map(|key| {
+            let app_id = key.strip_prefix(REPORT_RESOURCE_KEY_PREFIX)?.to_string();
+            if !valid_app_id(&app_id) {
+                return None;
+            }
+            let status = doc
+                .get(&ROOT, &key)
+                .ok()
+                .flatten()?
+                .0
+                .as_str()?
+                .chars()
+                .take(MAX_REPORT_STATUS_CHARS)
+                .collect::<String>();
+            let id = doc
+                .get(&ROOT, format!("{REPORT_CASE_KEY_PREFIX}{app_id}"))
+                .ok()
+                .flatten()
+                .and_then(|(value, _)| value.as_str().map(str::to_owned))
+                .filter(|value| valid_case_id(value))
+                .unwrap_or_else(|| format!("report:{app_id}"));
+            Some(ReportProjection {
+                id,
+                note: note_at(doc, &app_id),
+                app_id,
+                status,
+            })
+        })
+        .take(REPORT_SNAPSHOT_LIMIT)
+        .collect::<Vec<_>>();
+    reports.sort_by(|a, b| a.app_id.cmp(&b.app_id));
+    StoreState { reports }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::{ReadDoc, Value};
     use tilo_automerge::ApplyIncoming;
-    use ui::widget::Widget;
 
     fn note(doc: &Doc) -> String {
-        doc.get(&ROOT, "store.report_note.so.tilo.notes")
-            .unwrap()
-            .and_then(|(value, id)| matches!(value, Value::Object(ObjType::Text)).then_some(id))
-            .and_then(|id| doc.text(&id).ok())
-            .unwrap_or_default()
+        note_at(doc, "so.tilo.notes")
     }
 
-    fn registry() -> ActionRegistry {
-        let mut registry = ActionRegistry::new();
-        register(&mut registry);
-        registry
-    }
-
-    fn encode(action: &StoreDocumentAction) -> tilo_actions::EncodedAction {
-        tilo_actions::EncodedAction::encode(STORE_DOCUMENT_ACTION_TYPE, action)
-            .expect("store document actions serialize")
-    }
-
-    /// The Store as the live host holds it: the screenshot catalogue, with
-    /// report records hydrated from `doc` the way every frame's `sync` does.
-    fn synced_app(doc: &mut Doc) -> crate::app::StoreApp {
-        let mut app = crate::app::StoreApp::new();
-        app.set_flatpak_available(true);
-        app.set_items(crate::shots::fixture_catalog());
-        app.sync(doc, &ROOT);
-        app.sync(doc, &ROOT);
-        app
-    }
-
-    /// A document holding one report draft for Notes, written by the
-    /// dispatched draft action and then reconciled by the app's own sync
-    /// (which materialises the draft's shared note text).
-    fn seeded_doc() -> Doc {
-        let mut doc = Doc::new();
-        let draft = StoreDocumentAction::CreateReportDraft {
+    fn draft(doc: &mut Doc) {
+        StoreDocumentAction::CreateReportDraft {
             app_id: "so.tilo.notes".into(),
-        };
-        tilo_actions::apply_local(&mut doc, &draft, encode(&draft)).expect("draft applies");
-        synced_app(&mut doc);
-        doc.commit();
-        doc
+        }
+        .apply(doc)
+        .unwrap();
     }
 
-    ui::action_contract_tests! {
-        seed: seeded_doc(),
-        registry: registry(),
-        resources: |doc| ui::resources::resources(&synced_app(&mut doc.clone()), doc),
-        palette: ["Create report draft", "Set report concern", "Refresh catalog", "Search apps"],
-        replay: [
-            draft_report => |_| encode(&StoreDocumentAction::CreateReportDraft {
-                app_id: "so.tilo.terminal".into(),
-            }),
-            set_report_note => |_| encode(&StoreDocumentAction::SetReportNote {
-                app_id: "so.tilo.notes".into(),
-                note: "The listing omits a network dependency.".into(),
-            }),
-        ],
-        undo: [
-            set_report_note => |_| encode(&StoreDocumentAction::SetReportNote {
-                app_id: "so.tilo.notes".into(),
-                note: "The listing omits a network dependency.".into(),
-            }),
-            draft_report => |_| encode(&StoreDocumentAction::CreateReportDraft {
-                app_id: "so.tilo.files".into(),
-            }),
-        ],
-        encodes: [
-            draft_report => ("app:so.tilo.terminal", "draft-report", |_, _| {
-                encode(&StoreDocumentAction::CreateReportDraft {
-                    app_id: "so.tilo.terminal".into(),
-                })
-            }),
-            set_report_note => ("report:so.tilo.notes", "set-note", arg: "Unsigned binary", |_, _| {
-                encode(&StoreDocumentAction::SetReportNote {
-                    app_id: "so.tilo.notes".into(),
-                    note: "Unsigned binary".into(),
-                })
-            }),
-        ],
+    fn type_note(doc: &mut Doc, at: usize, insert: &str) -> Result<(), ActionError> {
+        StoreDocumentAction::EditReportNote {
+            app_id: "so.tilo.notes".into(),
+            edit: TextEdit::Splice {
+                at,
+                delete: 0,
+                insert: insert.into(),
+            },
+        }
+        .apply(doc)
     }
 
-    /// Report drafts and notes are replayable document resources that converge without interleaving.
+    /// A draft starts with its note text, keeps a note it already has,
+    /// bounds the note, and two people typing in one note merge.
     #[test]
-    fn report_drafts_are_bounded_replayable_and_converge() {
-        // Case `report_draft_is_a_replayable_document_resource`.
-        {
-            let mut doc = Doc::new();
+    fn report_drafts_carry_a_bounded_collaborative_note() {
+        let mut doc = Doc::new();
+        draft(&mut doc);
+        assert_eq!(
+            doc.get(&ROOT, "store.report_resource.so.tilo.notes")
+                .unwrap()
+                .and_then(|(value, _)| value.into_scalar().ok())
+                .and_then(|value| value.into_string().ok())
+                .as_deref(),
+            Some(DRAFT_STATUS)
+        );
+        assert!(report_note(&doc, "so.tilo.notes").is_some());
+
+        type_note(&mut doc, 0, "Unsigned binary").unwrap();
+        draft(&mut doc);
+        assert_eq!(note(&doc), "Unsigned binary", "a new draft keeps the note");
+        assert!(
+            type_note(&mut doc, 0, &"x".repeat(MAX_REPORT_NOTE_CHARS)).is_err(),
+            "the note is bounded"
+        );
+        assert_eq!(note(&doc), "Unsigned binary");
+        assert!(
             StoreDocumentAction::CreateReportDraft {
-                app_id: "so.tilo.notes".into(),
+                app_id: "../x".into()
             }
             .apply(&mut doc)
-            .unwrap();
-            assert!(
-                doc.get(&ROOT, "store.report_resource.so.tilo.notes")
-                    .unwrap()
-                    .is_some()
-            );
-        }
+            .is_err()
+        );
 
-        // Case `absolute_report_note_is_bounded_and_replayable`.
-        {
-            let action = StoreDocumentAction::SetReportNote {
-                app_id: "so.tilo.notes".into(),
-                note: "The listing omits a network dependency.".into(),
-            };
-            let mut doc = Doc::new();
-            action.apply(&mut doc).unwrap();
-            assert_eq!(note(&doc), "The listing omits a network dependency.");
-            action.apply(&mut doc).unwrap();
-            assert_eq!(note(&doc), "The listing omits a network dependency.");
-            assert!(
-                StoreDocumentAction::SetReportNote {
-                    app_id: "so.tilo.notes".into(),
-                    note: "x".repeat(4_097),
-                }
-                .apply(&mut Doc::new())
-                .is_err()
-            );
-        }
+        let bytes = doc.save();
+        let mut left = Doc::load(&bytes).unwrap();
+        let mut right = Doc::load(&bytes).unwrap();
+        type_note(&mut left, 0, "Seen offline: ").unwrap();
+        type_note(&mut right, 15, " in 0.2").unwrap();
+        left.merge_incoming(&mut right).unwrap();
+        assert_eq!(note(&left), "Seen offline: Unsigned binary in 0.2");
+    }
 
-        // Case `divergent_absolute_report_notes_converge_without_sentence_interleaving`.
-        {
-            let mut seed = Doc::new();
-            StoreDocumentAction::CreateReportDraft {
-                app_id: "so.tilo.notes".into(),
-            }
-            .apply(&mut seed)
-            .unwrap();
-            let bytes = seed.save();
-            let mut left = Doc::load(&bytes).unwrap();
-            let mut right = Doc::load(&bytes).unwrap();
-            for (doc, value) in [(&mut left, "left evidence"), (&mut right, "right evidence")] {
-                StoreDocumentAction::SetReportNote {
-                    app_id: "so.tilo.notes".into(),
-                    note: value.into(),
-                }
-                .apply(doc)
-                .unwrap();
-            }
-            let mut left_then_right = left.clone();
-            left_then_right.merge_incoming(&mut right.clone()).unwrap();
-            let mut right_then_left = right;
-            right_then_left.merge_incoming(&mut left).unwrap();
-            let resolved = note(&left_then_right);
-            assert_eq!(resolved, note(&right_then_left));
-            assert!(matches!(
-                resolved.as_str(),
-                "left evidence" | "right evidence"
-            ));
+    /// The registry's case is recorded with its status, and a malformed
+    /// case id is refused.
+    #[test]
+    fn a_moderation_case_is_recorded_on_its_report() {
+        let mut doc = Doc::new();
+        draft(&mut doc);
+        StoreDocumentAction::RecordModerationCase {
+            app_id: "so.tilo.notes".into(),
+            case_id: "case-authoritative".into(),
+            status: "Open".into(),
         }
+        .apply(&mut doc)
+        .unwrap();
+        let state = state_from_doc(&doc);
+        assert_eq!(state.reports.len(), 1);
+        assert_eq!(state.reports[0].id, "case-authoritative");
+        assert_eq!(state.reports[0].status, "Open");
+        assert!(
+            StoreDocumentAction::RecordModerationCase {
+                app_id: "so.tilo.notes".into(),
+                case_id: "case-../../outside".into(),
+                status: "Open".into(),
+            }
+            .apply(&mut doc)
+            .is_err()
+        );
     }
 }

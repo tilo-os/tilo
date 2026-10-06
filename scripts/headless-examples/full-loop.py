@@ -11,8 +11,8 @@ Usage:
 
 What it does:
   1. Spawns ./target/debug/shell --backend headless with
-     TILO_TEST_CONTROL set to the socket path and DISPLAY +
-     WAYLAND_DISPLAY unset.
+     HOME and the XDG dirs in a scratch profile, TILO_TEST_CONTROL
+     set to the socket path, and DISPLAY + WAYLAND_DISPLAY unset.
   2. Waits up to 15s for the socket to appear.
   3. Lists targets, picks the workspace wheel, clicks it.
   4. Opens global search (Super+K), types "Files", proves its live state,
@@ -26,12 +26,14 @@ Exits non-zero on any compositor error response or process timeout.
 """
 import os
 import pathlib
+import shutil
 import struct
 import subprocess
 import sys
 import time
 
 from _control import call, require_ok, runtime_socket_path
+from tilo_client import scratch_session_env
 
 SOCKET = sys.argv[1] if len(sys.argv) > 1 else runtime_socket_path("full-loop.sock")
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -170,16 +172,21 @@ def main() -> int:
         os.unlink(SOCKET)
     except FileNotFoundError:
         pass
-    env = {**os.environ, "TILO_TEST_CONTROL": SOCKET}
+    env, profile = scratch_session_env()
+    env["TILO_TEST_CONTROL"] = SOCKET
     env.pop("DISPLAY", None)
     env.pop("WAYLAND_DISPLAY", None)
     print(f"spawning {BINARY} --backend headless ...")
-    proc = subprocess.Popen(
-        [str(BINARY), "--backend", "headless"],
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        proc = subprocess.Popen(
+            [str(BINARY), "--backend", "headless"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        shutil.rmtree(profile, ignore_errors=True)
+        raise
 
     try:
         # 2. Wait for socket.
@@ -248,6 +255,7 @@ def main() -> int:
             os.unlink(SOCKET)
         except FileNotFoundError:
             pass
+        shutil.rmtree(profile, ignore_errors=True)
 
 
 if __name__ == "__main__":

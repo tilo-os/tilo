@@ -3,7 +3,14 @@
 # that runs something else the rest of the time.
 #
 #   dist/rpm/build-rpm.sh              build binaries, then the RPM
-#   dist/rpm/build-rpm.sh --no-cargo   package binaries that are already built
+#   dist/rpm/build-rpm.sh --no-cargo   package session binaries that are already built
+#                                      (the app collection is still built when stale)
+#
+# Each step can fail and be rerun on its own: Cargo rebuilds only what changed,
+# the app collection is kept while it matches the checkout
+# (dist/rpm/app-collection.sh), and staging starts afresh. Binaries compile
+# with this host's `cargo`; rpmbuild runs here, or in the build container on a
+# host without rpm-build (dist/rpm/rpmbuild.sh).
 #
 # Output lands in dist/rpm/build/RPMS/<native-rpm-architecture>/.
 set -euo pipefail
@@ -20,6 +27,8 @@ run_cargo=1
 [[ ${1:-} == --no-cargo ]] && run_cargo=0
 
 say() { printf '\n== %s\n' "$*"; }
+# Asked before each long step, so a host that cannot package learns it first.
+check_rpmbuild() { "$repo_root/dist/rpm/rpmbuild.sh" --check; }
 
 # ---------------------------------------------------------------------------
 # 1. The binaries.
@@ -28,16 +37,22 @@ say() { printf '\n== %s\n' "$*"; }
 # `hosted-test-control`, which a normal login session never reaches. Video
 # goes through GStreamer, whose library ABI is stable across Fedora releases.
 if (( run_cargo )); then
+    check_rpmbuild
     say "cargo build --release (session and app support)"
     ( cd "$repo_root" && cargo build --release --locked \
         -p launcher -p tilo-unlock-helper -p tilo-app-package-cli -p install -p runtime-bundle \
         -p cli-shim -p app-host -p ush -p local-model-service -p tilo-model-gateway )
     ( cd "$repo_root" && cargo build --release --locked -p imager --bin imager )
+    # What the ush supervisor runs: a relay environment's pty bridge, the
+    # relay picker's asker, and the legacy VM service its app shims reach.
+    ( cd "$repo_root" && cargo build --release --locked \
+        -p tilo-relay --bin tilo-relay-environment --bin tilo-relay-offers \
+        -p legacy-vm --bin tilo-legacy )
     say "cargo build --release (compositor, no default features)"
     # `shell` also owns developer tools such as `shots` and `tilo-control`.
     # Building the package without an explicit target compiles and LTO-links
     # those large binaries even though stage-payload never ships them.
-    ( cd "$repo_root" && cargo build --release --locked -p shell --bin shell --no-default-features )
+    ( cd "$repo_root" && cargo build --release --locked -p shell --bin shell --bin tilo-runtime-mcp --no-default-features )
 fi
 
 # Cargo resolves a relative CARGO_TARGET_DIR from the repository root (the
@@ -48,9 +63,11 @@ target_dir=${CARGO_TARGET_DIR:-$repo_root/target}
 target_dir=$(realpath -m "$target_dir")
 rel=${TILO_BIN_DIR:-$target_dir/release}
 for bin in shell imager tilo-launcher tilo-unlock-helper tilo-install tilo-runtime-bundle \
-           tilo-cli-shim tilo-app-host tilo-ush tilo-model-manager tilo-model-gateway; do
+           tilo-cli-shim tilo-app-host tilo-ush tilo-model-manager tilo-model-gateway \
+           tilo-relay-environment tilo-relay-offers tilo-legacy; do
     [[ -x $rel/$bin ]] || { echo "missing $rel/$bin — run without --no-cargo" >&2; exit 1; }
 done
+(( run_cargo )) || check_rpmbuild
 
 # ---------------------------------------------------------------------------
 # 2. Stage the canonical payload.
@@ -71,20 +88,28 @@ mkdir -p "$out"/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
 # immutable system store.  The companion RPM is version-locked to the session
 # below, so `rpm-ostree update` advances compositor, launcher, runtime and
 # apps in one deployment while user-installed packages retain precedence.
-say "building the default Tilo app collection"
+say "the default Tilo app collection"
 app_release=$out/app-release
-if (( run_cargo )); then
-    app_names=$(python3 "$repo_root/tools/apps/app_release.py" --collection desktop \
-        | jq -r '.catalog[].name' | paste -sd' ' -)
-    [[ -n $app_names ]] || { echo "desktop app collection is empty" >&2; exit 1; }
-    TILO_RELEASE_APPS="$app_names" TILO_APP_RELEASE_OUT="$app_release" \
-        "$repo_root/dist/apps/package-apps.sh"
+"$repo_root/dist/rpm/app-collection.sh" "$app_release"
+
+# The env-runtime environment image ships in the same store. CI fetches the
+# published one (Cosign-verified) into $out/env-runtime before the build
+# container starts; a local build fetches it here when it can.
+env_runtime=${TILO_ENV_RUNTIME_DIR:-$out/env-runtime}
+if [[ ! -d $env_runtime ]] && command -v skopeo >/dev/null && command -v cosign >/dev/null; then
+    say "the env-runtime environment image"
+    status=0
+    "$repo_root/os/dev/fetch-env-runtime.sh" "$env_runtime" || status=$?
+    case $status in
+        0) ;;
+        1) echo "warning: no env-runtime is published for this checkout" >&2 ;;
+        *) exit "$status" ;;
+    esac
+fi
+if [[ -d $env_runtime ]]; then
+    export TILO_ENV_RUNTIME_DIR=$env_runtime
 else
-    collection=$app_release/tilo-apps-$(uname -m).tar.gz
-    [[ -f $collection ]] || {
-        echo "missing $collection — run without --no-cargo" >&2
-        exit 1
-    }
+    unset TILO_ENV_RUNTIME_DIR
 fi
 
 say "staging immutable Tilo app store"
@@ -99,6 +124,9 @@ install -pm 0755 "$rel/tilo-model-gateway" "$app_stage/bin/tilo-model-gateway"
 install -pm 0755 "$rel/tilo-cli-shim" "$app_stage/libexec/tilo-cli-shim"
 install -pm 0755 "$rel/tilo-app-host" "$app_stage/libexec/tilo-app-host"
 install -pm 0755 "$rel/tilo-ush" "$app_stage/libexec/tilo-ush"
+install -pm 0755 "$rel/tilo-relay-environment" "$app_stage/libexec/tilo-relay-environment"
+install -pm 0755 "$rel/tilo-relay-offers" "$app_stage/libexec/tilo-relay-offers"
+install -pm 0755 "$rel/tilo-legacy" "$app_stage/bin/tilo-legacy"
 install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-app-host.service" \
     "$app_stage/systemd-user/tilo-app-host.service"
 install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-models.service" \
@@ -111,7 +139,7 @@ for socket in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
     install -pm 0644 "$repo_root/os/usr/lib/systemd/user/$socket.socket" \
         "$app_stage/systemd-user/$socket.socket"
 done
-install -pm 0644 "$repo_root/os/usr/lib/user-tmpfiles.d/tilo-model-manager.conf" \
+install -pm 0644 "$repo_root/os/usr/share/user-tmpfiles.d/tilo-model-manager.conf" \
     "$app_stage/user-tmpfiles/tilo-model-manager.conf"
 mkdir -p "$app_stage/profile.d"
 install -pm 0644 "$repo_root/os/etc/profile.d/tilo-apps.sh" \
@@ -124,35 +152,12 @@ cp "$repo_root/dist/rpm/$name.spec" "$out/SPECS/"
 # ---------------------------------------------------------------------------
 # 3. rpmbuild.
 # ---------------------------------------------------------------------------
-# The host is image-based and has no rpm-build; the same container that builds
-# the workspace has it. `.build-container` is the one the cargo shim uses.
 say "rpmbuild"
-rpmbuild_cmd=(
-    rpmbuild -bb
-    --define "_topdir $out"
-    --define "tilo_version $version"
-    --define "tilo_release $release"
+"$repo_root/dist/rpm/rpmbuild.sh" -bb \
+    --define "_topdir $out" \
+    --define "tilo_version $version" \
+    --define "tilo_release $release" \
     "$out/SPECS/$name.spec"
-)
-if command -v rpmbuild >/dev/null 2>&1; then
-    "${rpmbuild_cmd[@]}"
-else
-    if [ ! -s "$repo_root/.build-container" ]; then
-        echo "rpmbuild is unavailable: install rpm-build locally or create .build-container with your distrobox name (see DEVELOPMENT.md)." >&2
-        exit 1
-    fi
-    container=$(head -n1 "$repo_root/.build-container" | tr -d '[:space:]')
-    if [ -z "$container" ]; then
-        echo ".build-container must contain a distrobox name (see DEVELOPMENT.md)." >&2
-        exit 1
-    fi
-    if ! command -v distrobox >/dev/null 2>&1; then
-        echo "distrobox is unavailable: install it or install rpm-build locally." >&2
-        exit 1
-    fi
-    printf -v quoted '%q ' "${rpmbuild_cmd[@]}"
-    distrobox enter "$container" -- bash -lc "$quoted"
-fi
 
 say "built"
 find "$out/RPMS" -name '*.rpm' -printf '%p\n'

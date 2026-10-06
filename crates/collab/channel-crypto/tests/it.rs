@@ -25,6 +25,8 @@ mod outsider_cannot_decrypt;
 mod provisioning;
 #[path = "sealed_persistence.rs"]
 mod sealed_persistence;
+#[path = "steward_store.rs"]
+mod steward_store;
 #[path = "third_member_joins.rs"]
 mod third_member_joins;
 #[path = "two_member_round_trip.rs"]

@@ -158,13 +158,13 @@ fn readiness_component_adapter_forwards_only_its_own_root_and_refuses_unavailabl
     let pending = Rc::new(Cell::new(true));
     let calls = Rc::new(Cell::new(0));
     let (_host, owned) = component(pending.clone(), calls.clone(), 182);
-    let mut adapter = BoundAppWidget { component: owned };
+    let mut adapter = BoundAppWidget::new(owned);
     assert!(
         crate::history_mode::capability::history_restore_readiness(&adapter, "document").is_err()
     );
     let other_calls = Rc::new(Cell::new(0));
     let (_other, other) = component(Rc::new(Cell::new(false)), other_calls.clone(), 183);
-    let other = BoundAppWidget { component: other };
+    let other = BoundAppWidget::new(other);
     assert!(crate::history_mode::capability::history_restore_readiness(&other, "document").is_ok());
     assert_eq!(calls.get(), 1);
     assert_eq!(other_calls.get(), 1);

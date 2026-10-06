@@ -1,6 +1,6 @@
 //! Pure image-attribute decoding and paint geometry.
 
-use qdoc::snapshot::{AttrVal, BlockView};
+use tilo_doc::snapshot::{AttrVal, BlockView};
 use vello::kurbo::{Affine, Rect};
 
 use crate::num;

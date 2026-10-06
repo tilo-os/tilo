@@ -100,6 +100,11 @@ impl WorkspaceTreeReplica {
         let mut msgs = Vec::with_capacity(rooms.len());
         for room in rooms {
             if tree.requires_native_owner(room) {
+                tracing::debug!(
+                    target: "shell::network::replica",
+                    %room,
+                    "not requesting room replication: the room's native owner replicates it"
+                );
                 continue;
             }
             let heads = tree.room_heads(room);
@@ -119,6 +124,9 @@ impl WorkspaceTreeReplica {
                 since,
                 room: room.to_string(),
                 invite_id: None,
+                nonce: getrandom::rand_core::Rng::next_u64(&mut getrandom::rand_core::UnwrapErr(
+                    getrandom::SysRng,
+                )),
             });
         }
         drop(tree);
@@ -400,6 +408,56 @@ mod tests {
     }
 
     #[test]
+    fn rejected_replies_do_not_commit_a_pending_local_rename() {
+        use automerge::transaction::Transactable as _;
+
+        let (mut tree, workspace, _) = host_with_two_rooms();
+        let room = tree.room_of(workspace).expect("room A");
+        tree.sync_room_doc(room);
+        let original_heads = tree.room_heads(room);
+        let mut rogue = tree.room_docs.get(&room).expect("room document").clone();
+        rogue
+            .put(automerge::ROOT, "owner", "rogue-owner")
+            .expect("rogue change");
+        let rogue_changes = rogue
+            .get_changes(&original_heads)
+            .into_iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect();
+        tree.desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace)
+            .expect("workspace")
+            .name = "Renamed locally".into();
+        tree.seed_doc_from_cache();
+        let tree = tree.shared();
+        let mut replica = WorkspaceTreeReplica::new(1, tree.clone());
+        for changes in [rogue_changes, vec![vec![0xff]]] {
+            replica.handle_from(
+                &PeerOrigin::hub(2),
+                &NeighbourMsg::SyncResp {
+                    changes,
+                    room: room.to_string(),
+                },
+            );
+            let mut tree = tree.write();
+            assert_eq!(tree.room_heads(room), original_heads);
+            let workspace = tree
+                .desktop
+                .workspaces
+                .iter()
+                .find(|w| w.id == workspace)
+                .expect("workspace");
+            let name = workspace.name.clone();
+            let owner = workspace.owner.clone();
+            drop(tree);
+            assert_eq!(name, "Renamed locally");
+            assert_eq!(owner.as_deref(), Some(ROOM_A_OWNER));
+        }
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -511,6 +569,7 @@ mod tests {
                     since: serde_json::to_vec(&Vec::<automerge::ChangeHash>::new()).unwrap(),
                     room: stranger_room.to_string(),
                     invite_id: None,
+                    nonce: 0,
                 },
             );
             assert!(
@@ -534,6 +593,7 @@ mod tests {
                     since: Vec::new(),
                     room: String::new(),
                     invite_id: None,
+                    nonce: 0,
                 },
             );
 
@@ -938,6 +998,46 @@ mod tests {
     }
 
     #[test]
+    fn a_delayed_reply_preserves_a_local_edit_not_yet_exported() {
+        let (tree, workspace, _) = host_with_two_rooms();
+        let room = tree.room_of(workspace).expect("room A");
+        let tree = tree.shared();
+        let old_changes = tree
+            .write()
+            .export_room_changes_since(room, &[])
+            .expect("room snapshot");
+        {
+            let mut tree = tree.write();
+            tree.desktop
+                .workspaces
+                .iter_mut()
+                .find(|w| w.id == workspace)
+                .expect("workspace")
+                .name = "Renamed locally".into();
+            tree.seed_doc_from_cache();
+        }
+        let mut replica = WorkspaceTreeReplica::new(1, tree.clone());
+        replica.handle_from(
+            &PeerOrigin::hub(2),
+            &NeighbourMsg::SyncResp {
+                changes: old_changes,
+                room: room.to_string(),
+            },
+        );
+        assert_eq!(
+            tree.read()
+                .desktop
+                .workspaces
+                .iter()
+                .find(|w| w.id == workspace)
+                .expect("workspace")
+                .name,
+            "Renamed locally",
+            "a delayed peer response must merge the local edit before projecting the room back into the cache"
+        );
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -955,6 +1055,7 @@ mod tests {
                     since: vec![1],
                     room: String::new(),
                     invite_id: None,
+                    nonce: 0,
                 });
             rep.pending_outgoing
                 .lock()
@@ -963,6 +1064,7 @@ mod tests {
                     since: vec![2],
                     room: String::new(),
                     invite_id: None,
+                    nonce: 0,
                 });
 
             let drained = rep.drain_outgoing();
@@ -1039,6 +1141,7 @@ mod tests {
                     since: since.clone(),
                     room: elsewhere.to_string(),
                     invite_id: None,
+                    nonce: 0,
                 },
             );
             assert!(
@@ -1054,6 +1157,7 @@ mod tests {
                     since: since.clone(),
                     room: room.to_string(),
                     invite_id: None,
+                    nonce: 0,
                 },
             );
             assert!(
@@ -1068,6 +1172,7 @@ mod tests {
                     since,
                     room: room.to_string(),
                     invite_id: None,
+                    nonce: 0,
                 },
             );
             assert!(
@@ -1197,6 +1302,7 @@ mod native_owner_gate_tests {
                 since: vec![],
                 room: room.to_string(),
                 invite_id: None,
+                nonce: 0,
             },
         );
         assert!(

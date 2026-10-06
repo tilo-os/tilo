@@ -287,6 +287,17 @@ pub enum Action {
         /// Milliseconds into the curve.
         at_ms: &'static [u64],
     },
+    /// Sample the maximize/restore sibling fade at fixed points along
+    /// `durations.fast` and capture each as `prefix-<ms>`.
+    ///
+    /// Same escape as [`Action::SampleMakeSpace`]: an offscreen frame
+    /// costs more wall time than the 130 ms curve, so stepping frames
+    /// only ever catches the endpoints.
+    SampleSiblingFade {
+        prefix: &'static str,
+        /// Milliseconds into the fade.
+        at_ms: &'static [u64],
+    },
     /// Sample a tab pill's reveal curve at fixed points and capture each
     /// as `prefix-<ms>`.
     ///
@@ -394,6 +405,21 @@ pub enum Action {
     ShowHostDesktopOnboarding,
     SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState),
     SetLockVisual(super::driver::LockVisualState),
+    /// Create the person's "Research" workspace on the shown device, the way
+    /// the laptop has it, and look at it.
+    SeedOwnWorkspace,
+    /// Split the "Outline" tab of the shown device's own "Research"
+    /// workspace into a window of its own.
+    SplitOwnOutline,
+    /// Hold another device of the same person (a laptop with the
+    /// "Research" workspace) in memory beside the shown one.
+    SeedOtherOwnDevice,
+    /// Bring the other device's workspace list and room content to the
+    /// shown device through the real signed list and room document, then
+    /// look at the workspace that arrived.
+    ReceiveFromOtherOwnDevice,
+    /// The other device splits its "Outline" tab into a window of its own.
+    OtherOwnDeviceSplitsOutline,
 }
 
 /// A named, ordered list of actions.
@@ -683,6 +709,11 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             resource,
         } => driver.seed_foreign_app_work_for_shots(app_id, action, resource),
         Action::SeedInvitePending => driver.seed_invite_pending_for_shots(),
+        Action::SeedOwnWorkspace => driver.seed_own_workspace_for_shots(),
+        Action::SplitOwnOutline => driver.split_own_outline_for_shots(),
+        Action::SeedOtherOwnDevice => driver.seed_other_own_device_for_shots(),
+        Action::ReceiveFromOtherOwnDevice => driver.receive_from_other_own_device_for_shots(),
+        Action::OtherOwnDeviceSplitsOutline => driver.other_own_device_splits_outline_for_shots(),
         Action::AdmitInvitedCollaborator => assert!(
             driver.admit_invited_collaborator_for_shots(),
             "scenario: collaboration journey cannot show live editing before Ada's pending invite is admitted"
@@ -833,7 +864,7 @@ fn apply_hosted_window_and_wheel_drag(driver: &mut ShellDriver, action: &Action)
             });
         }
         Action::EnableNativeAppSearch => {
-            match shell::shell::hosted_inputs::HostedTileInputs::for_host_directory(
+            match shell::shell::hosted_inputs::HostedTileInputs::for_host_directory_privately(
                 &std::env::temp_dir(),
             ) {
                 Ok(inputs) => {
@@ -994,14 +1025,45 @@ fn apply_wheel_and_reveal_samples<S: SnapshotSink>(
     }
 }
 
-/// `Action::SampleMakeSpace` and `Action::SetWindowWidths` — split out of
-/// [`apply`] to keep that dispatcher short.
+/// `Action::SampleMakeSpace`, `Action::SampleSiblingFade` and
+/// `Action::SetWindowWidths` — split out of [`apply`] to keep that
+/// dispatcher short.
 fn apply_make_space_sample_and_widths<S: SnapshotSink>(
     driver: &mut ShellDriver,
     action: &Action,
     sink: &mut S,
 ) {
     match action {
+        Action::SampleSiblingFade { prefix, at_ms } => {
+            driver.relayout();
+            let strips: Vec<_> = {
+                let st = driver.chrome();
+                let tree = st.tree();
+                tree.desktop
+                    .active_workspace()
+                    .map(|ws| ws.strips.iter().map(|s| s.id).collect())
+                    .unwrap_or_default()
+            };
+            for ms in *at_ms {
+                let mut any = false;
+                for sid in &strips {
+                    if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
+                        any |= row.hold_sibling_fade_at(std::time::Duration::from_millis(*ms));
+                    }
+                }
+                if !any {
+                    eprintln!("scenario: no sibling fade to sample at {ms} ms");
+                }
+                driver.relayout();
+                let name: &'static str = Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
+                sink.capture(driver, name);
+            }
+            for sid in &strips {
+                if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
+                    row.clear_sibling_fade_hold();
+                }
+            }
+        }
         Action::SampleMakeSpace { prefix, at_ms } => {
             // Splice the new window into the widget tree, then lay out —
             // which is the pass that measures how far each pushed group
@@ -1175,22 +1237,21 @@ fn apply_seed_wifi_and_select_group(driver: &mut ShellDriver, action: &Action) {
                     },
                 ];
                 let mut p = WifiPasswordPrompt::new("Cafe WiFi");
-                match preset {
-                    "typed" => {
-                        p.password = "hunter2pass".into();
-                        p.selection = ui::text_selection::Selection::collapsed(p.password.len());
-                    }
-                    "rejected" => {
-                        p.password = "wrongpass".into();
-                        p.selection.anchor = 0;
-                        p.selection.cursor = p.password.len();
-                        p.error = Some("Couldn't join. Check the password.".into());
-                    }
-                    _ => {}
+                if preset == "rejected" {
+                    p.error = Some("Couldn't join. Check the password.".into());
                 }
                 st.quick_settings.wifi_password = Some(p);
                 st.bump();
             });
+            match preset {
+                "typed" => driver
+                    .host_mut()
+                    .seed_wifi_password_for_tests("hunter2pass", false),
+                "rejected" => driver
+                    .host_mut()
+                    .seed_wifi_password_for_tests("wrongpass", true),
+                _ => {}
+            }
         }
         Action::SelectGroup(idx) => {
             let idx = *idx;
@@ -1255,20 +1316,17 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
             });
         }
         Action::SeedLongNotes(group_idx) => {
-            let strip_id = {
+            let target = {
                 let chrome = driver.chrome();
                 let tree = chrome.tree();
-                tree.desktop
-                    .active_workspace()
-                    .and_then(|workspace| workspace.strips.first())
-                    .map(|strip| strip.id)
+                tree.desktop.active_workspace().and_then(|workspace| {
+                    let strip = workspace.strips.first()?;
+                    let group = strip.window_groups.get(*group_idx)?;
+                    Some((strip.id, workspace.room.to_string(), group.active_tab))
+                })
             };
-            if let Some(strip_id) = strip_id
-                && let Some(host) = driver
-                    .host_mut()
-                    .group_at_for_tests(strip_id, *group_idx)
-                    .and_then(|group| group.active_host_mut())
-            {
+            let inputs = driver.chrome().hosted_inputs().clone();
+            if let Some((strip_id, room, tab)) = target {
                 let body = (1..=52)
                     .map(|line| {
                         format!(
@@ -1276,11 +1334,26 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
                         )
                     })
                     .collect::<Vec<_>>()
-                    .join("\n");
-                host.replace_content(ui::widget::TileContent::App(Box::new(
-                    shell::shell::notes_app::NotesApp::with_seed(body),
-                )));
-                driver.relayout();
+                    .join("\n\n");
+                match inputs.mount_note(&room, tab, "Complete capture.md", &body) {
+                    Some(Ok(component)) => {
+                        match tilo_desktop::resolver::app_tile(component, None, |_| {}) {
+                            Ok(app) => {
+                                if let Some(host) = driver
+                                    .host_mut()
+                                    .group_at_for_tests(strip_id, *group_idx)
+                                    .and_then(|group| group.active_host_mut())
+                                {
+                                    host.replace_content(ui::widget::TileContent::App(app));
+                                }
+                                driver.relayout();
+                            }
+                            Err(error) => eprintln!("shots: the long note did not mount: {error}"),
+                        }
+                    }
+                    Some(Err(error)) => eprintln!("shots: the long note did not mount: {error}"),
+                    None => eprintln!("shots: this host mounts no Notes"),
+                }
             }
         }
         Action::SwitchWorkspace(idx) => {
@@ -1479,6 +1552,10 @@ const REVEAL_SAMPLES: &[u64] = &[0, 20, 40, 60, 90, 130, 180];
 /// past its settle so the last one is the settled layout.
 const MAKE_SPACE_SAMPLES: &[u64] = &[0, 60, 120, 180, 240, 300, 360, 420];
 
+/// Points along the 130 ms sibling fade. Dense at the start, where
+/// ease-out does most of its travelling.
+const SIBLING_FADE_SAMPLES: &[u64] = &[0, 20, 40, 65, 100, 130];
+
 /// Frames to let the motion finish before the settled capture.
 const PLACEMENT_SETTLE_FRAMES: u32 = 8;
 
@@ -1585,15 +1662,61 @@ fn osd_preset(name: &str) -> shell::shell::osd::Osd {
 fn build_scenarios() -> Vec<Scenario> {
     vec![
         Scenario {
+            name: "personal_workspace_on_laptop",
+            description: "The person's Research workspace as the laptop that made it shows it, before and after splitting off the outline.",
+            actions: vec![
+                Action::SeedOwnWorkspace,
+                Action::Wait(20),
+                Action::Relayout,
+                Action::Snapshot("01-laptop-research"),
+                Action::SplitOwnOutline,
+                Action::Wait(120),
+                Action::Relayout,
+                Action::Snapshot("02-laptop-outline-split"),
+            ],
+        },
+        Scenario {
+            name: "personal_workspace_on_board",
+            description: "The same Research workspace arriving on the person's Orange Pi from the laptop, and following the laptop's split.",
+            actions: vec![
+                Action::Snapshot("00-board-before"),
+                Action::SeedOtherOwnDevice,
+                Action::ReceiveFromOtherOwnDevice,
+                Action::Wait(20),
+                Action::Relayout,
+                Action::Snapshot("01-board-research-arrived"),
+                Action::OtherOwnDeviceSplitsOutline,
+                Action::ReceiveFromOtherOwnDevice,
+                Action::Wait(120),
+                Action::Relayout,
+                Action::Snapshot("02-board-outline-split"),
+            ],
+        },
+        Scenario {
             name: "host_desktop_first_login",
             description: "Render the host-session identity setup exactly as the compositor shows it.",
             actions: vec![
                 Action::ShowHostDesktopOnboarding,
                 Action::Wait(4),
-                Action::Snapshot("01-identity-introduction"),
-                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::Connect),
+                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::Intro),
                 Action::Relayout,
-                Action::Snapshot("02-restore-existing"),
+                Action::Snapshot("01-identity-introduction"),
+                Action::SetOnboardingVisual(
+                    shell::onboarding_view::OnboardingVisualState::Existing,
+                ),
+                Action::Relayout,
+                Action::Snapshot("02-use-existing"),
+                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::Nearby),
+                Action::Relayout,
+                Action::Snapshot("02a-nearby-waiting"),
+                Action::SetOnboardingVisual(
+                    shell::onboarding_view::OnboardingVisualState::NearbyCode,
+                ),
+                Action::Relayout,
+                Action::Snapshot("02b-nearby-code"),
+                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::Restore),
+                Action::Relayout,
+                Action::Snapshot("02c-restore-backup"),
                 Action::SetOnboardingVisual(
                     shell::onboarding_view::OnboardingVisualState::RestoreError,
                 ),
@@ -3132,6 +3255,139 @@ fn build_scenarios() -> Vec<Scenario> {
                 },
                 Action::Wait(PLACEMENT_SETTLE_FRAMES),
                 Action::Snapshot("03-settled"),
+            ],
+        },
+        Scenario {
+            name: "window_maximize_restore_spring",
+            description: "Super+M springs the focused group between its tiled rect and the \
+                      work area; a second Super+M restores from the current position.",
+            actions: vec![
+                Action::LoneWindow(0),
+                Action::OpenWindow {
+                    app_id: "org.example.right",
+                    surface_id: 6201,
+                },
+                Action::Wait(20),
+                Action::SetWindowWidths(500),
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::SelectGroup(Some(0)),
+                Action::Wait(4),
+                Action::Snapshot("01-tiled"),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Character("m".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Snapshot("02-maximize-000"),
+                Action::SnapshotSequence {
+                    prefix: "02-maximize",
+                    frames: 8,
+                    gap_frames: 2,
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Snapshot("03-maximized"),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Character("m".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Snapshot("04-restore-000"),
+                Action::SnapshotSequence {
+                    prefix: "04-restore",
+                    frames: 8,
+                    gap_frames: 2,
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Snapshot("05-restored"),
+            ],
+        },
+        Scenario {
+            name: "window_maximize_sibling_fade",
+            description: "Super+M fades neighbour windows on the fast curve instead of \
+                      collapsing them, then Super+M again fades them back in.",
+            actions: vec![
+                Action::LoneWindow(0),
+                Action::OpenWindow {
+                    app_id: "org.example.right",
+                    surface_id: 6301,
+                },
+                Action::Wait(20),
+                Action::SetWindowWidths(500),
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::SelectGroup(Some(0)),
+                Action::Wait(4),
+                Action::Snapshot("01-tiled"),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Character("m".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::SampleSiblingFade {
+                    prefix: "02-maximize",
+                    at_ms: SIBLING_FADE_SAMPLES,
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Snapshot("03-maximized"),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Character("m".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::SampleSiblingFade {
+                    prefix: "04-restore",
+                    at_ms: SIBLING_FADE_SAMPLES,
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Snapshot("05-restored"),
+            ],
+        },
+        Scenario {
+            name: "window_width_spring",
+            description: "An opening window grows its slot from zero, a committed resize \
+                      springs to the new width, and Super+W collapses the last \
+                      frame while the slot closes.",
+            actions: vec![
+                Action::LoneWindow(0),
+                Action::OpenWindow {
+                    app_id: "org.example.right",
+                    surface_id: 6101,
+                },
+                Action::Wait(20),
+                Action::SetWindowWidths(333),
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::SelectGroup(Some(0)),
+                Action::Wait(4),
+                Action::Snapshot("01-before-open"),
+                Action::OpenWindow {
+                    app_id: "org.example.new",
+                    surface_id: 6102,
+                },
+                // Placement gives a new group the default fraction; retarget
+                // the in-flight 0→width spring to a third so the slot stays
+                // on screen next to its neighbours (and so a new input keeps
+                // the current velocity).
+                Action::SetWindowWidths(333),
+                Action::Snapshot("02-open-000"),
+                Action::SnapshotSequence {
+                    prefix: "02-open",
+                    frames: 8,
+                    gap_frames: 2,
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Snapshot("03-open-settled"),
+                Action::SetWindowWidths(500),
+                Action::Snapshot("04-resize-000"),
+                Action::SnapshotSequence {
+                    prefix: "04-resize",
+                    frames: 8,
+                    gap_frames: 2,
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Snapshot("05-resize-settled"),
+                Action::SelectGroup(Some(1)),
+                Action::Wait(2),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Character("w".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::SnapshotSequence {
+                    prefix: "06-close",
+                    frames: 8,
+                    gap_frames: 2,
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Snapshot("07-close-settled"),
             ],
         },
         Scenario {

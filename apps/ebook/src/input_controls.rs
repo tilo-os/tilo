@@ -15,6 +15,7 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use tilo_rich_text::{FieldOutcome, RichTextField, RichTextSource, RichTextSurface, SubmitKey};
+use ui::framework::Dispatcher;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
@@ -25,33 +26,27 @@ use ui::widget::{
 use crate::model::{Annotation, FontEntry, Settings};
 use crate::paint;
 use crate::reader_theme::ReaderPalette;
+use crate::resource::Ebook;
 
 /// The SDK editor a note or comment is written in, bound to the note's rich
-/// text: each keystroke is an [`EbookAction::EditNoteText`] the field
-/// dispatches, undone a word at a time. Enter asks to finish, Shift+Enter
-/// breaks the line and Escape cancels.
+/// text: each keystroke is an [`EbookAction::EditNoteText`] the library's
+/// dispatcher applies, undone a word at a time. Enter asks to finish,
+/// Shift+Enter breaks the line and Escape cancels.
 ///
 /// [`EbookAction::EditNoteText`]: crate::actions::EbookAction::EditNoteText
 pub(crate) struct NoteEditor {
     id: Uuid,
-    host: Embedded<RichTextSurface<RichTextField<crate::actions::EbookAction>>>,
+    host: Embedded<RichTextSurface<RichTextField>>,
     /// The caret has been placed at the end of the note, once it was read.
     placed: bool,
 }
 
 impl NoteEditor {
-    pub(crate) fn new(id: Uuid, body_size: f32, hint: &str) -> Self {
-        let context = tilo_actions::ActionContext::for_action(
-            "so.tilo.ebook",
-            "Ebook",
-            &crate::actions::edit_note_action(id, ""),
-        );
+    pub(crate) fn new(id: Uuid, body_size: f32, hint: &str, library: &Dispatcher<Ebook>) -> Self {
         let field = RichTextField::new(
-            crate::actions::EBOOK_ACTION_TYPE,
+            crate::actions::note_text_dispatcher(library, id),
             move |doc| crate::doc::BooksDoc::annotation_text(doc, id),
-            move |edit| crate::actions::edit_note_text_action(id, edit),
-        )
-        .with_context(context);
+        );
         let mut surface = RichTextSurface::field(field)
             .with_editor(
                 BlockEditor::new()
@@ -75,7 +70,7 @@ impl NoteEditor {
 
     /// Read the note from the document, placing the caret at its end the
     /// first time.
-    pub(crate) fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    pub(crate) fn sync(&mut self, state: &AutoCommit, root: &ObjId) {
         self.host.sync(state, root);
         if !self.placed && self.host.widget().source().revision().is_some() {
             self.placed = true;
@@ -89,16 +84,16 @@ impl NoteEditor {
     /// Route one event to the editor; returns whether the person finished
     /// (Enter) or cancelled (Escape).
     pub(crate) fn handle_event(&mut self, ctx: &mut InputEventCtx<'_>) -> Option<FieldOutcome> {
-        self.sync(ctx.state, ctx.root);
+        self.sync(ctx.state.doc(), ctx.root);
         self.host.handle_event(
             ctx.event,
             ctx.scale_factor,
             &ctx.modifiers,
-            ctx.state,
+            &mut ctx.state,
             ctx.root,
             ctx.handled,
         );
-        self.sync(ctx.state, ctx.root);
+        self.sync(ctx.state.doc(), ctx.root);
         self.host.widget_mut().take_outcome()
     }
 
@@ -126,16 +121,6 @@ impl NoteEditor {
         );
     }
 
-    /// The undo boundary the note's last edit opened, for the host.
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        ui::undo::take_committed_action(self.host.widget_mut())
-    }
-
-    /// Whether a typed word keeps its undo step open.
-    pub(crate) fn keeps_step_open(&self) -> bool {
-        ui::undo::keeps_undo_step_open(self.host.widget())
-    }
-
     pub(crate) fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         self.host.widget().accessibility()
     }
@@ -144,7 +129,7 @@ impl NoteEditor {
     pub(crate) fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) -> bool {
         self.sync(state, root);
@@ -160,7 +145,7 @@ pub(crate) struct InputEventCtx<'a> {
     pub event: &'a WindowEvent,
     pub scale_factor: f64,
     pub modifiers: Modifiers,
-    pub state: &'a mut AutoCommit,
+    pub state: ui::widget::Edits<'a>,
     pub root: &'a ObjId,
     pub node_id: NodeId,
     pub taffy: &'a TaffyTree<()>,
@@ -173,7 +158,7 @@ impl InputEventCtx<'_> {
             event: self.event,
             scale_factor: self.scale_factor,
             modifiers: self.modifiers,
-            state: self.state,
+            state: self.state.reborrow(),
             root: self.root,
             node_id: self.node_id,
             taffy: self.taffy,
@@ -283,7 +268,7 @@ impl NumberControls {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) -> Option<(NumberField, Option<f64>)> {
         let control = self
@@ -353,7 +338,7 @@ impl NumberControls {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: &ctx.modifiers,
-                    state: ctx.state,
+                    state: ctx.state.reborrow(),
                     path: ctx.root,
                     handled: &mut local_handled,
                     focus_target: &mut focus_target,
@@ -471,7 +456,7 @@ impl NoteComposer {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) -> Option<NoteSemanticOutcome> {
         let editor = self.editor.as_mut()?;
@@ -494,8 +479,8 @@ impl NoteComposer {
     }
 
     /// Open the editor on note `id`; it shows the note on the next sync.
-    pub(crate) fn open(&mut self, id: Uuid) {
-        self.editor = Some(NoteEditor::new(id, 13.5, "Write a note…"));
+    pub(crate) fn open(&mut self, id: Uuid, library: &Dispatcher<Ebook>) {
+        self.editor = Some(NoteEditor::new(id, 13.5, "Write a note…", library));
     }
 
     pub(crate) fn close(&mut self) {
@@ -514,22 +499,10 @@ impl NoteComposer {
     }
 
     /// Bring the open note's text up to date with the document.
-    pub(crate) fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    pub(crate) fn sync(&mut self, state: &AutoCommit, root: &ObjId) {
         if let Some(editor) = self.editor.as_mut() {
             editor.sync(state, root);
         }
-    }
-
-    /// The undo boundary the note's last edit opened, for the host.
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.editor.as_mut().and_then(NoteEditor::take_committed)
-    }
-
-    /// Whether a typed word keeps its undo step open.
-    pub(crate) fn keeps_step_open(&self) -> bool {
-        self.editor
-            .as_ref()
-            .is_some_and(NoteEditor::keeps_step_open)
     }
 
     pub(crate) fn hit_test(&self, point: Point) -> Option<NoteAction> {
@@ -749,10 +722,11 @@ mod tests {
             let id = note.id;
             crate::doc::BooksDoc::upsert_annotation(&mut doc, &note);
             doc.commit();
+            let library = crate::resource::library_dispatcher_for_test();
             let mut composer = NoteComposer::default();
-            composer.open(id);
+            composer.open(id, &library);
             let root = automerge::ROOT;
-            composer.sync(&mut doc, &root);
+            composer.sync(&doc, &root);
             let taffy = TaffyTree::new();
             let modifiers = Modifiers::default();
             let press = |composer: &mut NoteComposer, doc: &mut AutoCommit, key: WindowEvent| {
@@ -761,7 +735,7 @@ mod tests {
                     event: &key,
                     scale_factor: 1.0,
                     modifiers,
-                    state: doc,
+                    state: ui::widget::Edits::lend(doc),
                     root: &root,
                     node_id: NodeId::new(0),
                     taffy: &taffy,
@@ -797,17 +771,13 @@ mod tests {
                 "helloworld",
                 "Enter finishes, it does not break"
             );
-            assert!(
-                composer.take_committed().is_some(),
-                "the typing is an undo step"
-            );
         }
 
         // --- phase: note_hit_testing_keeps_card_modal_and_tap_away_saves ---
         {
             let id = Uuid::new_v4();
             let mut composer = NoteComposer::default();
-            composer.open(id);
+            composer.open(id, &crate::resource::library_dispatcher_for_test());
             composer.card = Rect::new(10.0, 10.0, 200.0, 160.0);
             composer.delete = Rect::new(20.0, 110.0, 80.0, 140.0);
             composer.save = Rect::new(110.0, 110.0, 180.0, 140.0);
@@ -954,7 +924,7 @@ impl SchemeColorSheet {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) -> Option<ColorSheetResponse> {
         let (_, picker) = self.open.as_mut()?;
@@ -1051,7 +1021,7 @@ impl SchemeColorSheet {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: &ctx.modifiers,
-                    state: ctx.state,
+                    state: ctx.state.reborrow(),
                     path: ctx.root,
                     handled: &mut local_handled,
                     focus_target: &mut focus_target,

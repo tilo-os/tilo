@@ -440,15 +440,15 @@ fi
 if grep -Fq 'published_os_source_revision:' "$workflow" \
    && grep -Fq 'PUBLISHED_OS_SOURCE_REVISION:-} =~ ^[0-9a-f]{40}$' "$workflow" \
    && grep -Fq 'git merge-base --is-ancestor "$PUBLISHED_OS_SOURCE_REVISION" "$GITHUB_SHA"' "$workflow" \
-   && grep -Fq 'ref: ${{ github.event.inputs.published_os_source_revision || github.sha }}' "$workflow" \
-   && grep -Fq 'test "$(git rev-parse HEAD)" = "$TILO_EXPECTED_OS_SOURCE_REVISION"' "$workflow" \
+   && grep -Fq 'ref: ${{ github.sha }}' "$workflow" \
+   && grep -Fq 'git merge-base --is-ancestor "$TILO_EXPECTED_OS_SOURCE_REVISION" HEAD' "$workflow" \
    && grep -Fq 'verified CI $target_profile target $target_image from source $TILO_EXPECTED_OS_SOURCE_REVISION generation ' "$workflow" \
    && grep -Fq -- '--arg build_revision "$(git rev-parse HEAD)"' "$workflow" \
-   && grep -Fq 'signed $profile target source differs from pinned installer source' \
+   && grep -Fq 'signed $profile target source differs from pinned OS source' \
       "$repo/os/dev/prepare-ci-installer-target.sh"; then
-  ok 'offline media pin main ancestry, checkout, signed target source, and medium identity to one revision'
+  ok 'offline media use descendant main installer source and pin the signed OS target revision'
 else
-  bad 'offline medium source can drift from the signed CI target revision'
+  bad 'offline medium does not bind its installer and signed OS source revisions'
 fi
 
 if grep -Fq "TILO_PCR_PREDICTION_SIGNER: \${{ startsWith(github.ref, 'refs/tags/imager-v')" "$workflow" \

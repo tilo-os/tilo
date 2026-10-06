@@ -13,6 +13,8 @@ on:
 
 jobs:
   check:
+    # Disabled: no runner serves the imager-macos-* labels yet.
+    if: false
     runs-on: imager-macos-aarch64
     timeout-minutes: 90
     steps:

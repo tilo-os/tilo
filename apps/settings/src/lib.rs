@@ -6,8 +6,8 @@
 //! `SettingsApp` (in [`settings_app`]) is the root widget: a categorized
 //! sidebar plus a content pane per category, responsive between a two-pane
 //! desktop layout and a single-pane narrow layout. The binary in `main.rs`
-//! is a thin shim that hands the widget to `ui::App` for the live event
-//! loop, or renders one offscreen frame for `--shots`.
+//! runs [`SettingsShell`] on the app framework: the live window, or one of
+//! the screenshot [`scenarios`].
 //! Release builds keep this composition app-local while service engines live
 //! in the shared runtime, preserving independently updatable settings UI.
 //!
@@ -59,90 +59,31 @@
 
 pub mod account_probe;
 pub mod accounts;
-pub mod actions;
 pub mod categories;
+pub mod resource;
+pub mod scenarios;
 pub use os_actions::codec_pack;
 mod continuity;
 mod device_fleet;
 pub mod dispatcher;
+pub mod effects;
+pub mod host;
 pub mod i18n;
 pub(crate) mod input_sources;
 pub mod panes;
 pub mod prefs;
 pub mod region;
-pub mod search_provider;
+pub mod search;
 pub mod settings_app;
-#[cfg(not(feature = "thin"))]
-pub mod shots;
 pub mod sidebar;
 pub mod speaker_setup;
 pub mod widgets;
 
 pub use settings_app::SettingsApp;
-#[cfg(not(feature = "thin"))]
-pub use shots::render_to_path;
 
-/// Ensure an Automerge `Text` object exists at `key` under `root`, returning it.
-///
-/// A `TextInput` bound via `with_on_change_path` persists typed characters by
-/// splicing into an **existing** `Text` object — it never creates one. So any
-/// field the user is meant to type into (the settings search, the add-account
-/// form, a Wi-Fi password) must have its backing object seeded first. Without
-/// this, edits update only the widget's local buffer and are silently lost on
-/// the next structure rebuild — which is exactly why those fields read as dead.
-///
-/// Idempotent: returns the existing object when one is already present, and
-/// preserves a scalar string previously parked at the key (e.g. a seeded value)
-/// by splicing it into the new object.
-pub(crate) fn ensure_text_object(
-    state: &mut automerge::AutoCommit,
-    root: &automerge::ObjId,
-    key: &str,
-) -> automerge::ObjId {
-    use automerge::{ObjType, ReadDoc, Value, transaction::Transactable};
-    if let Ok(Some((Value::Object(ObjType::Text), obj))) = state.get(root, key) {
-        return obj;
-    }
-    let existing = match state.get(root, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::Str(t) => t.to_string(),
-            _ => String::new(),
-        },
-        _ => String::new(),
-    };
-    // `put_object` only fails when `root` doesn't exist or isn't a keyed
-    // (Map/Table) object; every caller passes either the document root or a
-    // map key resolved earlier in the same synchronous `sync`, so neither
-    // case is reachable here. There is no meaningful fallback `ObjId` to
-    // return instead — `automerge::ROOT` would silently redirect the
-    // caller's later `splice_text` onto the wrong (non-Text) object.
-    #[allow(
-        clippy::expect_used,
-        reason = "root is always a live keyed object in the current transaction; see comment above"
-    )]
-    let obj = state
-        .put_object(root, key, ObjType::Text)
-        .expect("seed a Text object for an editable field");
-    if !existing.is_empty() {
-        let _ = state.splice_text(&obj, 0, 0, &existing);
-    }
-    obj
-}
+pub use resource::{Settings, SettingsShell, parse_settings_uri};
 
-/// Clear the contents of the `Text` object at `key` (seeding one if absent) so
-/// an editable field is reset to empty **without** replacing the object with a
-/// scalar — which would break the next round of typing.
-pub(crate) fn clear_text_object(
-    state: &mut automerge::AutoCommit,
-    root: &automerge::ObjId,
-    key: &str,
-) {
-    use automerge::{ReadDoc, transaction::Transactable};
-    let obj = ensure_text_object(state, root, key);
-    if let Ok(text) = state.text(&obj) {
-        let n = text.chars().count();
-        if n > 0 {
-            let _ = state.splice_text(&obj, 0, n as isize, "");
-        }
-    }
+/// The app as every host mounts it.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::framework::definition::<SettingsShell>()
 }

@@ -45,11 +45,11 @@ fn markdown_wasm() -> PathBuf {
     let wasm = here
         .parent()
         .expect("format-host crate has a parent directory")
-        .join("qdoc-codec-markdown-wasm")
+        .join("tilo-doc-codec-markdown-wasm")
         .join("target")
         .join("wasm32-unknown-unknown")
         .join("release")
-        .join("qdoc_codec_markdown_wasm.wasm");
+        .join("tilo_doc_codec_markdown_wasm.wasm");
     assert!(wasm.is_file(), "Markdown provider is missing; {BUILD_HINT}");
     wasm
 }

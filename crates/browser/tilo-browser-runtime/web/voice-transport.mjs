@@ -1,0 +1,336 @@
+/**
+ * A call's voice carrier: `moq-lite` over WebTransport at the host's
+ * `/moq/voice`, admitted by the grant's token in the carrier preface
+ * (web/moq-carrier.mjs), with `@moq/net` used through its public API only.
+ *
+ * This participation publishes `<call>/<participation>` with one `audio`
+ * track and hears every other publisher the host offers under `<call>`: the
+ * host re-checks each against the call's current roster, so a participant
+ * who joins after admission is heard in place. Objects are tilo-voice/1
+ * (web/voice-profile.mjs), as the native client (tilo-moq `client`) sends
+ * and expects: each 20 ms object leaves as one datagram carrying it and up to
+ * two earlier objects, so an isolated loss is repaired 20 ms later; without
+ * datagrams, groups of five objects. Both forms are received.
+ */
+import {createMediaQueue} from './voice-buffers.mjs';
+import {MOQ_PROTOCOL, openCarrier} from './moq-carrier.mjs';
+import {decodeVoiceBundle, encodeVoiceBundle, encodeVoiceObject} from './voice-profile.mjs';
+
+export const VOICE_PATH = '/moq/voice';
+export const AUDIO_TRACK = 'audio';
+const FRAMES_PER_GROUP = 5;
+const FRAME_DURATION_MS = 20;
+const MAX_REMOTE_PUBLISHERS = 7;
+const DATAGRAM_BUNDLE_BYTES = 1000;
+const REDUNDANCY = 2;
+const HEX64 = /^[0-9a-f]{64}$/;
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/** The grant's carrier endpoint: an exact credential-free HTTPS `/moq/voice` URL. */
+export function voiceEndpoint(value) {
+  const endpoint = new URL(value);
+  if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password
+    || endpoint.search || endpoint.hash || endpoint.pathname !== VOICE_PATH) {
+    throw new TypeError('voice endpoint must be an exact credential-free HTTPS /moq/voice URL');
+  }
+  return endpoint;
+}
+
+function hexBytes(hex) {
+  if (typeof hex !== 'string' || hex.length % 2 || !/^[0-9a-f]*$/.test(hex)) throw new TypeError('expected lowercase hex');
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let index = 0; index < bytes.length; index++) bytes[index] = parseInt(hex.slice(index * 2, index * 2 + 2), 16);
+  return bytes;
+}
+
+/**
+ * The pins for a development certificate. A browser accepts
+ * `serverCertificateHashes` only for loopback or explicit development hosts;
+ * a grant without fingerprints is verified against the system roots.
+ */
+export function certificateHashes(grant) {
+  const pins = (grant.fingerprints ?? []).filter(value => HEX64.test(value));
+  if (!pins.length) return undefined;
+  return pins.map(value => ({algorithm: 'sha-256', value: hexBytes(value)}));
+}
+
+/** Whether `grant` points at a loopback carrier (tests and local relays). */
+export const loopback = grant => LOOPBACK.has(new URL(grant.endpoint).hostname);
+
+function validateGrant(grant) {
+  if (!grant || !HEX64.test(grant.call) || !HEX64.test(grant.participation)) throw new TypeError('grant names no call or participation');
+  const token = hexBytes(grant.token ?? '');
+  if (token.byteLength === 0 || token.byteLength > 8192) throw new TypeError('grant token must be 1..8192 bytes');
+  const directions = grant.directions ?? {};
+  if (typeof directions.publish !== 'boolean' || typeof directions.subscribe !== 'boolean') throw new TypeError('grant directions are required');
+  const own = `${grant.call}/${grant.participation}`;
+  if (directions.publish && grant.publication !== own) throw new TypeError('a publishing grant names its own namespace');
+  return {token, own, directions: {...directions}};
+}
+
+/**
+ * `library` is `@moq/net` (the bundled media-moq-library.mjs by default);
+ * `carrier` opens an admitted WebTransport session (web/moq-carrier.mjs).
+ * Tests inject both.
+ */
+export function createVoiceTransport({library, carrier = openCarrier, clock = {}, onReport = () => {}, datagrams = true} = {}) {
+  const monotonicNow = clock.now ?? (() => performance.now());
+  const setTimer = clock.setTimeout ?? ((callback, delay) => globalThis.setTimeout(callback, delay));
+  const clearTimer = clock.clearTimeout ?? (handle => globalThis.clearTimeout(handle));
+  const report = value => { try { onReport(value); } catch {} };
+  let libraryPromise;
+  const load = () => libraryPromise ??= library ? Promise.resolve(library) : import('./media-moq-library.mjs');
+
+  /** Open the carrier `grant` admits. Resolves the session, or rejects when the host denies the token. */
+  async function connect({grant, signal}) {
+    signal?.throwIfAborted?.();
+    const url = voiceEndpoint(grant.endpoint);
+    const {token, own, directions} = validateGrant(grant);
+    const moq = await load();
+    const outgoing = new moq.Origin.Producer();
+    const incoming = new moq.Origin.Producer();
+    const opened = await carrier({url, grant: token, serverCertificateHashes: certificateHashes(grant), signal});
+    let connection;
+    try {
+      connection = await moq.Connection.connect({
+        url,
+        transport: opened.transport,
+        publish: directions.publish ? outgoing.consume() : undefined,
+        consume: incoming,
+        signal,
+      });
+    } catch (error) {
+      opened.close();
+      throw error;
+    }
+    if (signal?.aborted) { connection.close(); opened.close(); throw signal.reason; }
+    if (connection.version !== MOQ_PROTOCOL || connection.transport !== 'webtransport') {
+      connection.close();
+      opened.close();
+      throw new Error(`voice carrier did not negotiate ${MOQ_PROTOCOL} over WebTransport`);
+    }
+
+    let closed = false;
+    let broadcast;
+    let audioTrack;
+    let group;
+    let groupFrames = 0;
+    let groupTimer;
+    let sequence = 0n;
+    const recent = [];
+    const cleanups = new Set();
+    const stats = {mode: 'streams', sent: 0, received: 0, recovered: 0, duplicates: 0};
+    const safeClose = resource => { try { resource?.close?.(); } catch {} };
+    const finishGroup = () => {
+      if (groupTimer !== undefined) clearTimer(groupTimer);
+      groupTimer = undefined;
+      safeClose(group);
+      group = undefined;
+      groupFrames = 0;
+    };
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      signal?.removeEventListener?.('abort', close);
+      for (const cleanup of [...cleanups]) { try { cleanup(); } catch {} }
+      cleanups.clear();
+      finishGroup();
+      safeClose(audioTrack);
+      safeClose(broadcast);
+      safeClose(connection);
+      safeClose(outgoing);
+      safeClose(incoming);
+      opened.close();
+    };
+    signal?.addEventListener?.('abort', close, {once: true});
+    const closedPromise = Promise.race([Promise.resolve(connection.closed), opened.revoked]).then(() => close(), () => close());
+
+    let useDatagrams = false;
+    try {
+      if (directions.publish) {
+        broadcast = outgoing.createBroadcast(moq.Path.from(own));
+        // Late audio is dropped, never queued: 100 ms retention.
+        audioTrack = broadcast.createTrack(AUDIO_TRACK, {timescale: moq.Time.Timescale.MICRO, maxAge: 100});
+        broadcast.announce();
+        useDatagrams = datagrams === true && typeof audioTrack.appendDatagram === 'function';
+        if (useDatagrams) stats.mode = 'datagrams';
+      }
+    } catch (error) {
+      close();
+      throw error;
+    }
+
+    /** Publish one encoded 20 ms frame `{timestamp (48 kHz BigInt), duration, payload}`. */
+    function publish(frame) {
+      if (closed || !audioTrack) return false;
+      const bytes = encodeVoiceObject({sequence, timestamp: frame.timestamp, duration: frame.duration, payload: frame.payload});
+      const at = new moq.Time.Timestamp(Number(frame.timestamp * 1_000_000n / 48_000n), moq.Time.Timescale.MICRO);
+      if (useDatagrams) {
+        const objects = [bytes];
+        let size = bytes.byteLength;
+        for (let index = recent.length - 1; index >= 0 && objects.length <= REDUNDANCY; index--) {
+          if (size + recent[index].byteLength > DATAGRAM_BUNDLE_BYTES) break;
+          objects.push(recent[index]);
+          size += recent[index].byteLength;
+        }
+        recent.push(bytes);
+        if (recent.length > REDUNDANCY) recent.shift();
+        audioTrack.appendDatagram(at, encodeVoiceBundle(objects));
+      } else {
+        // Group n carries objects 5n..5n+4, as the native client sends them.
+        if (!group || sequence % BigInt(FRAMES_PER_GROUP) === 0n) {
+          finishGroup();
+          group = audioTrack.appendGroup();
+          groupTimer = setTimer(finishGroup, FRAMES_PER_GROUP * FRAME_DURATION_MS * 2);
+        }
+        group.writeFrame({payload: bytes, timestamp: at});
+        if (++groupFrames === FRAMES_PER_GROUP) finishGroup();
+      }
+      sequence++;
+      stats.sent++;
+      return true;
+    }
+
+    /**
+     * Hear the call: `onFrame({publisher, sequence, timestamp, duration,
+     * payload})` for each object of each other publisher, oldest first;
+     * `onPublisher(publisher, active)` as publishers come and go.
+     */
+    function subscribe({onFrame, onPublisher = () => {}}) {
+      if (closed) throw new Error('voice carrier closed');
+      if (!directions.subscribe) return () => {};
+      let active = true;
+      const callPath = moq.Path.from(grant.call);
+      const announcements = incoming.announced(moq.Path.Pattern.subtree(callPath));
+      const remotes = new Map();
+      const deliver = (remote, object, recovered) => {
+        const queued = remote.queue.push({key: object.sequence.toString(), receivedAtMs: monotonicNow(), durationMs: FRAME_DURATION_MS, bytes: object.payload});
+        if (!queued.accepted) {
+          if (queued.reason === 'duplicate') stats.duplicates++;
+          return;
+        }
+        remote.queue.drain();
+        stats.received++;
+        if (recovered) stats.recovered++;
+        try { onFrame({publisher: remote.publisher, ...object}); } catch (error) { report({type: 'voice-frame-error', error}); }
+      };
+      const stop = (remote, notify = true) => {
+        if (!remote.active) return;
+        remote.active = false;
+        remotes.delete(remote.publisher);
+        remote.finish();
+        safeClose(remote.track);
+        safeClose(remote.request);
+        if (notify) { try { onPublisher(remote.publisher, false); } catch {} }
+      };
+      const pumpDatagrams = async remote => {
+        try {
+          for (;;) {
+            const datagram = await remote.track.recvDatagram();
+            if (!datagram || !remote.active) return;
+            let objects;
+            try { objects = decodeVoiceBundle(datagram.payload); } catch { report({type: 'voice-receive-drop', reason: 'invalid-object'}); continue; }
+            for (let index = objects.length - 1; index >= 0; index--) deliver(remote, objects[index], index > 0);
+          }
+        } catch (error) {
+          if (remote.active) report({type: 'voice-subscription-error', error});
+        }
+      };
+      const pumpGroups = async remote => {
+        try {
+          for (;;) {
+            let next = await remote.track.recvGroup();
+            if (!next || !remote.active) return;
+            // Late audio is worthless: skip to the newest buffered group.
+            for (;;) { const newer = remote.track.tryRecvGroup(); if (!newer) break; safeClose(next); next = newer; }
+            try {
+              for (let frames = 0; frames < FRAMES_PER_GROUP; frames++) {
+                const frame = await next.readFrame();
+                if (!frame || !remote.active) break;
+                let objects;
+                try { objects = decodeVoiceBundle(frame.payload); } catch { report({type: 'voice-receive-drop', reason: 'invalid-object'}); continue; }
+                for (let index = objects.length - 1; index >= 0; index--) deliver(remote, objects[index], index > 0);
+              }
+            } finally { safeClose(next); }
+          }
+        } catch (error) {
+          if (remote.active) report({type: 'voice-subscription-error', error});
+        }
+      };
+      const start = publisher => {
+        if (!active || remotes.has(publisher)) return;
+        if (remotes.size >= MAX_REMOTE_PUBLISHERS) { report({type: 'voice-publisher-limit'}); return; }
+        let finish;
+        const finished = new Promise(resolve => {finish = resolve;});
+        const remote = {
+          publisher,
+          finish,
+          active: true,
+          request: undefined,
+          track: undefined,
+          queue: createMediaQueue({maxBytes: 10 * 4096, maxAgeMs: 200, maxFrames: 10, maxDurationMs: 200, maxDedupEntries: 32, now: monotonicNow}),
+        };
+        remotes.set(publisher, remote);
+        try { onPublisher(publisher, true); } catch {}
+        void (async () => {
+          try {
+            // Own the request before awaiting resolution so retract, leave
+            // and grant replacement can release it immediately.
+            remote.request = incoming.request(moq.Path.from(grant.call, publisher));
+            let broadcast;
+            while (remote.active && !(broadcast = remote.request.active.peek())) {
+              await Promise.race([remote.request.active.changed(), finished]);
+            }
+            if (!remote.active) return;
+            remote.track = broadcast.track(AUDIO_TRACK).subscribe({priority: 0, maxAge: 200});
+          } catch (error) {
+            if (remote.active) report({type: 'voice-subscription-error', error});
+            stop(remote);
+            return;
+          }
+          await Promise.all([pumpDatagrams(remote), pumpGroups(remote)]);
+          stop(remote);
+        })();
+      };
+      const cleanup = () => {
+        if (!active) return;
+        active = false;
+        cleanups.delete(cleanup);
+        safeClose(announcements);
+        for (const remote of [...remotes.values()]) stop(remote);
+      };
+      cleanups.add(cleanup);
+      void (async () => {
+        try {
+          while (active) {
+            const event = await announcements.next();
+            if (!event) break;
+            const publisher = moq.Path.stripPrefix(callPath, event.prefix);
+            if (!publisher || !HEX64.test(publisher) || publisher === grant.participation) continue;
+            // A renewed carrier may re-announce before the old receive
+            // loops finish. Replace its request and sequence window now.
+            const previous = remotes.get(publisher);
+            if (previous) stop(previous);
+            if (event.kind !== 'retracted') start(publisher);
+          }
+        } catch (error) {
+          if (active) report({type: 'voice-announcement-error', error});
+        } finally {
+          cleanup();
+        }
+      })();
+      return cleanup;
+    }
+
+    return {
+      participation: grant.participation,
+      directions,
+      publish,
+      subscribe,
+      stats: () => ({...stats}),
+      close,
+      closed: closedPromise,
+    };
+  }
+  return {connect};
+}

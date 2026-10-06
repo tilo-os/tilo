@@ -1,0 +1,9 @@
+# Dev image only: an OpenGL X11 client, the path games take through Xwayland,
+# opened by the VM acceptance suite (scripts/vm-acceptance).
+[Desktop Entry]
+Type=Application
+Name=glxgears (acceptance)
+Comment=OpenGL gears through Xwayland
+Exec=glxgears
+Icon=applications-games
+Categories=Development;

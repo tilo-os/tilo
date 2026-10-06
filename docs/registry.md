@@ -115,7 +115,9 @@ and the length prefix on collections. See
 GET  /registry            → RegistryHandshake         (server identity)
 GET  /health              → { "ok": true }
 GET  /entries             → SignedRegistrySnapshot
+GET  /entries?format=compact → CompactRegistrySnapshot  (the full one until it exists)
 GET  /entries/<pkg-id>    → SignedRegistrySnapshot      (404 if not present)
+GET  /indexes/<blake3>.json → RegistryVersionIndex      (named by a compact snapshot)
 POST /entries             → EntryChangeRequest body    (202/404/409/403)
 GET  /thin/<root>.tapp    → thin form of a reviewed package, by package root
 GET  /blobs/<blake3>      → one payload blob of a reviewed package
@@ -124,7 +126,8 @@ GET  /artifacts/<blake3>.tapp → a full .tapp stored with `import-artifact`
 
 `/entries` carries `Cache-Control: no-cache` and `ETag: "<snapshot hash>"`
 and answers a matching `If-None-Match` with `304`, so a returning client
-costs one small revalidation. The three content-addressed routes are
+costs one small revalidation; the compact form has its own ETag. The
+content-addressed routes are
 immutable (`Cache-Control: public, max-age=31536000, immutable`); the server
 re-checks every file against its name before serving it, and clients verify
 again. A blob that is a WebAssembly binary is served as `application/wasm`
@@ -510,6 +513,37 @@ already holds the bytes the publisher signed, and fetches only new versions.
 A submission it cannot collect completely stays pending and out of the staged
 batch; the others are staged, and the collector exits non-zero listing it.
 
+The store keeps each staged package once, as the payload blobs and thin form it
+serves for thin installs plus a record of the package root, and rebuilds and
+re-hashes the exact bytes on read. After every publish the signer deletes the
+staged packages, thin packages and blobs that no published, quarantined,
+pending or staged entry, retained history snapshot or served version index
+references, such as the versions an entry dropped. `tilo-registry-server
+prune-storage` does the same on demand; with `--dry-run` it only reports what
+it would delete.
+
+### Version retention
+
+Publishers bound their entries: each signed entry keeps the newest versions of
+every target (platform and architecture) and channel (release or pre-release),
+20 by default (`registry_types::retention`), and drops the rest when the next
+version is signed. The registry accepts a dropped version only when at least
+`MIN_RETAINED_PER_CHANNEL` (4) newer versions of its target and channel stay,
+or when the entry is at its 128-version limit and a newer version supersedes
+it, so retention never removes a target's current version or its recent
+rollback targets.
+
+A dropped version leaves the catalogue through an ordinary signed snapshot:
+the compact snapshot and version index stop listing it, `app rollback` stops
+offering it, and the rollback, fork and freeze checks are unchanged. Its
+artifacts stay while a retained history snapshot (which `rollback-snapshot`
+may restore) or the previous version index (which a client one snapshot behind
+may still fetch) lists it; the prune after that deletes them.
+
+`prune-storage --dry-run --keep-releases N --keep-prereleases M` lists the
+published versions that policy drops and what pruning deletes once they are
+gone, without changing anything.
+
 Both seed files are exactly 32 secret bytes encoded as 64 hex characters. The
 root seed exists only in the bootstrap/manual authorization environment. The
 serving process receives neither private key. The collector cannot forge a
@@ -519,9 +553,9 @@ or substitute content.
 
 Every successful signing also retains the exact signed JSON under
 `snapshots/<sequence>-<hash>.json` before advancing `published-snapshot.json`.
-These small immutable files are the channel history and should share the data
-directory's backup policy. Roll back catalogue contents by publishing a new,
-higher sequence from one of them:
+These immutable files are the channel history and share the data directory's
+backup policy. Roll back catalogue contents by publishing a new, higher
+sequence from one of them:
 
 ```text
 tilo-registry-server rollback-snapshot \
@@ -534,6 +568,80 @@ The command does not replay sequence 41. It signs sequence `current + 1`, links
 it to the current snapshot, uses the current publisher allowlist, and refuses
 to restore entries from a publisher that has since been removed. Client
 anti-rollback checkpoints therefore remain monotonic.
+
+### Bounded snapshot history
+
+Clients never read the history. Native and browser clients fetch only the
+current snapshot from `/entries` and keep a checkpoint of the last sequence
+and hash they accepted: they refuse a lower sequence (rollback), another
+snapshot at the same sequence (fork), and anything expired (freeze, bounded
+by the snapshot lifetime). These checks need nothing but the current
+snapshot, so pruning history cannot weaken them.
+
+The history serves the registry itself: `rollback-snapshot` restores from it,
+and its members stop the channel from signing a sequence twice. Each member
+is the whole catalogue, so the history is kept to the newest
+`SNAPSHOT_HISTORY_RETAINED` (16) members. Every signing command, the publisher
+and `prune-storage` compact it under the registry lock:
+
+- The members to prune, and the oldest one kept, must form one hash chain
+  from the previous compaction record (or the first member). A broken chain
+  stops compaction without deleting anything.
+- `snapshots/compacted.json` first records the highest pruned sequence and
+  its hash. The oldest member kept signs that hash as its predecessor, so the
+  signed chain still commits to every pruned snapshot, and the record can be
+  checked against it.
+- The registry refuses to archive or publish any sequence at or below the
+  record, and refuses to restart the channel at sequence 1 when the
+  published pointer is lost. Restore `published-snapshot.json` from a backup
+  instead.
+
+A client last synced at a sequence that has since been pruned still verifies
+the current snapshot: its sequence is higher and its signature, freshness and
+publisher checks hold on their own. A replay of any older snapshot, pruned or
+not, stays below the checkpoint and is refused. Snapshots older than the
+retained window can only be restored from backups.
+
+### Compact snapshots and version indexes
+
+Every entry keeps up to 128 versions, and every client fetches the snapshot
+at least daily, so the full snapshot grows with each release. Each signing
+command therefore also signs a compact form (protocol 4,
+`registry_types::compact`) with the same key, owner or channel:
+
+- Per entry it keeps only the newest release and the newest pre-release of
+  each exact target (`newest_versions`), in their original order. Any
+  client's newest installable version on either channel is among them.
+- Per entry it signs the BLAKE3 hash and size of a version index,
+  `version-indexes/<blake3>.json` served at `/indexes/<blake3>.json`: the
+  complete publisher-signed entry with every retained version. So the signed
+  snapshot still commits to every older version.
+- It signs `snapshot_hash_hex`, the hash of the full snapshot at the same
+  sequence. That hash is the snapshot's identity: the next snapshot names it
+  as predecessor and clients checkpoint it whichever form they fetched, so
+  rollback, fork and freeze checks are unchanged and a client may switch
+  forms freely.
+
+Clients fetch an index only to install or roll back to an older version
+(`app install <app> --version <v>`, `app rollback <app> [--to <v>]`).
+`verify_version_index` checks its size and hash against the signed values,
+that it is the same package, that the publisher's signature over the
+complete entry verifies, and that the entry reduces exactly to the one in
+the snapshot. A compact snapshot cannot carry publisher signatures, which
+cover complete entries; its own signature, the index check and the package's
+signature on install take their place.
+
+The server serves the compact form only while it verifies and is the form of
+the current full snapshot; otherwise `?format=compact` gets the full one.
+Publishing keeps the version indexes of the current and the previous compact
+snapshot, so a client one snapshot behind can still fetch its index.
+
+**Rollout.** `/entries` without a query keeps serving the full snapshot, so
+released clients work unchanged. The native client (Store and `app`) and the
+browser client ask for `?format=compact` and accept either form, also from
+older registries. Once released images carry those clients, the default can
+change to compact; until then the full form stays the default and remains
+available.
 
 For urgent removal, `review quarantine` immediately moves a public entry
 out of search while keeping its bytes and decision record recoverable.
@@ -703,8 +811,12 @@ data-dir/
     quarantined/
         <pkg-id>.json    # recoverable entries hidden from clients
     snapshots/
-        <sequence>-<hash>.json # immutable signed channel history
+        <sequence>-<hash>.json # newest signed channel history, bounded
+        compacted.json         # highest pruned sequence and its hash
     published-snapshot.json    # atomic current channel pointer
+    published-compact-snapshot.json # compact form of the current snapshot
+    version-indexes/
+        <blake3>.json    # complete signed entries the compact form names
     payload-blobs/
         <blake3>         # payload blobs of reviewed packages
     thin-packages/

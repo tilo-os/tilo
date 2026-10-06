@@ -23,6 +23,7 @@ pub mod session;
 pub mod testing;
 #[cfg(test)]
 mod tests;
+pub mod voice;
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();
 
@@ -307,6 +308,102 @@ impl NativeWorkspaceOwner {
     #[must_use]
     pub fn contains_room(&self, room: RoomId) -> bool {
         self.0.current.read().required.contains(&room) || self.0.store.uncertain(room)
+    }
+
+    /// Canonical task state from the current admitted owner view, never the
+    /// desktop presentation cache.
+    ///
+    /// # Errors
+    /// The room is fenced, absent, or its task-control sidecar is malformed.
+    pub fn workspace_task_snapshot(
+        &self,
+        room: RoomId,
+    ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskSnapshot, String> {
+        self.with_current(room, |view| {
+            let document = view
+                .peer()
+                .admitted_room()
+                .ok_or("native room has no admitted task document")?;
+            tilo_peer_state::workspace_task::snapshot(document)
+        })
+    }
+
+    /// Result retained by the owner for one device-scoped task invocation.
+    ///
+    /// # Errors
+    /// The room is fenced, absent, or its task-control sidecar is malformed.
+    pub fn workspace_task_result(
+        &self,
+        room: RoomId,
+        id: tilo_peer_state::workspace_task::WorkspaceTaskCommandId,
+    ) -> Result<Option<tilo_desktop_model::WorkspaceTaskMutationResult>, String> {
+        self.with_current(room, |view| {
+            let document = view
+                .peer()
+                .admitted_room()
+                .ok_or("native room has no admitted task document")?;
+            tilo_peer_state::workspace_task::result_of(document, id)
+        })
+    }
+
+    /// Serialize one ordinary agent action admission against task directions.
+    /// The current room read guard is released before `admit` runs, while the
+    /// task mutation turn remains held, so nested policy reads are safe and a
+    /// concurrent direction is ordered wholly before or after this admission.
+    ///
+    /// `applied_direction_revision` is the revision the agent actually planned
+    /// against. It must equal both the active run's acknowledgement and the
+    /// latest durable direction, preventing a delayed pre-direction action from
+    /// entering after a newer direction has been acknowledged.
+    ///
+    /// # Errors
+    /// The room is fenced, the task/run/revision lease is stale, or `admit`
+    /// refuses the ordinary invocation.
+    pub fn with_task_action_admission<T>(
+        &self,
+        room: RoomId,
+        task_id: &str,
+        agent_id: &str,
+        run_epoch: u64,
+        applied_direction_revision: u64,
+        admit: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let _turn = self.0.mutation.lock();
+        self.with_current(room, |view| {
+            let document = view
+                .peer()
+                .admitted_room()
+                .ok_or("native room has no admitted task document")?;
+            let snapshot = tilo_peer_state::workspace_task::snapshot(document)?;
+            let task = snapshot
+                .tasks
+                .iter()
+                .find(|task| task.id == task_id)
+                .ok_or("workspace task no longer exists")?;
+            let control = snapshot
+                .controls
+                .get(task_id)
+                .ok_or("workspace task has no execution control")?;
+            let run = control
+                .active_run
+                .as_ref()
+                .ok_or("workspace task has no active run")?;
+            let latest_direction = control
+                .directions
+                .last()
+                .map_or(0, |direction| direction.revision);
+            if task.status != tilo_desktop_model::WorkspaceTaskStatus::InProgress
+                || task.assigned_agent.as_deref() != Some(agent_id)
+                || run.agent_id != agent_id
+                || run.epoch != run_epoch
+                || run.applied_direction_revision != applied_direction_revision
+                || latest_direction != applied_direction_revision
+            {
+                return Err("workspace task action lease is stale".into());
+            }
+            Ok(())
+        })?;
+        admit()
     }
     /// Store availability only; room authority still requires `with_current`.
     ///

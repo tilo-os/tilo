@@ -13,6 +13,14 @@
 //! exhausted-but-empty batch triggers no fallback push, callers repeat the
 //! fetch instead.
 
+mod execution_activity;
+#[cfg(test)]
+mod execution_activity_tests;
+mod observed_launch;
+use execution_activity::{ActivityBus, ActivityTarget, ExecutionScope};
+pub use execution_activity::{ExecutionActivity, ExecutionStatus};
+#[cfg(test)]
+mod app_settings_tests;
 mod committed_document;
 mod durable_local_invocation;
 #[path = "invocation_journal.rs"]
@@ -62,7 +70,7 @@ use collab_types::{
 #[cfg(test)]
 use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
 use runtime_collab::raw::{
-    OpKind, action_catalogue_stream, action_directory, action_input, channel_handle,
+    OpKind, action_catalogue_stream, action_directory, action_input, blob_stream, channel_handle,
     collab_service, context_stream, invocation_stream, presence_event, presence_handle,
     presence_payload, presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
 };
@@ -82,7 +90,7 @@ use tilo_desktop_model::{DesktopTree, WorkspaceTaskStatus};
 struct AuthorizedDocumentRoute {
     artifact: ArtifactId,
     channel: collab_types::ChannelId,
-    payload: collab_types::WholeDocumentPayload,
+    payload: collab_types::RoutedDocumentPayload,
 }
 
 const LAUNCH_RECORD_RACE_RETRIES: u8 = 30;
@@ -425,6 +433,13 @@ impl VerifiedJoinIdentity {
             capped,
         }
     }
+
+    /// Whether `cluster_id` is this identity's own person room: the room
+    /// every device its root certified owns, and no other device enters.
+    fn owns_person_room(&self, cluster_id: &str) -> bool {
+        uuid::Uuid::parse_str(cluster_id)
+            .is_ok_and(|room| collab_types::is_person_room(&self.user_public_key, &room))
+    }
 }
 
 /// Whether a device is held to the foreign-device cap in `room`, as far as
@@ -572,6 +587,26 @@ impl AdmittedJoinIdentity {
         .from_foreign_device(foreign)
     }
 
+    /// The caller this certified identity is in `room`, from its own
+    /// device: foreign when it was held to the cap there or the host keeps
+    /// a stricter restriction for it.
+    fn certified_caller(&self, room: &str, restricted: bool) -> tilo_actions::remote::Caller {
+        let verified = &self.verified;
+        match &self.agent_id {
+            Some(agent) => tilo_actions::remote::Caller::delegated_agent(
+                agent.clone(),
+                verified.user_public_key,
+                verified.device_public_key,
+            ),
+            None => tilo_actions::remote::Caller::authenticated(
+                verified.user_public_key,
+                verified.device_public_key,
+            ),
+        }
+        .in_room(room)
+        .from_foreign_device(verified.capped || restricted)
+    }
+
     fn policy_actor(&self, workspace: &tilo_desktop_model::Workspace, now: u64) -> Actor {
         let room = workspace.room.to_string();
         if let Some(agent) = &self.agent_id {
@@ -644,12 +679,33 @@ fn admit_verified_join_at(
     verified: VerifiedJoinIdentity,
     now: u64,
 ) -> Result<AdmittedJoinIdentity, String> {
+    let principal_id = principal_id_for_root(verified.user_public_key);
+    // The person room has no roster to consult: its members are, by the
+    // room id's derivation, exactly the devices this root certified, each
+    // acting as the room's owner — a foreign device with the foreign-device
+    // cap's role, there as in any room. Any other room id is a workspace.
+    if verified.owns_person_room(&route.cluster_id) {
+        let role = if verified.capped {
+            foreign_device_role(CapRole::Owner, &[], now)
+        } else {
+            CapRole::Owner
+        };
+        return Ok(AdmittedJoinIdentity {
+            host_scope: None,
+            worker_registration: None,
+            certificate: None,
+            verified,
+            principal_id,
+            role,
+            display_handle: None,
+            agent_id: None,
+        });
+    }
     let workspace = tree
         .workspaces
         .iter()
         .find(|workspace| workspace.room.to_string() == route.cluster_id)
         .ok_or_else(|| "certified join names a workspace this session does not host".to_string())?;
-    let principal_id = principal_id_for_root(verified.user_public_key);
     let mut role = workspace
         .role_of_at(&principal_id, now)
         .ok_or_else(|| "certified collaboration identity is not a workspace member".to_string())?;
@@ -1047,7 +1103,7 @@ pub struct InvocationEnvelope {
     id: u64,
     invocation: tilo_actions::InvocationId,
     pub resource: String,
-    action: String,
+    pub action: String,
     argument: Option<String>,
     pub actor: String,
     context: Option<tilo_actions::ActionContext>,
@@ -1095,6 +1151,10 @@ pub struct InvocationJob {
 
 #[derive(Clone)]
 struct PendingInvocation {
+    /// Who it was admitted for, kept so an edit its effect submits is
+    /// admitted for them too.
+    caller: Option<ContinuingCaller>,
+    activity: Option<ActivityTarget>,
     owner: InvocationOwner,
     network_evidence: Option<tilo_relay::client::CertifiedAction>,
     original: Option<Arc<OriginalInvocationData>>,
@@ -1177,6 +1237,167 @@ impl CallerInvocation {
     }
 }
 
+impl CapnpBrokerState {
+    /// The caller of the invocation `running` that this broker delivered to
+    /// the connection `peer_id` and that still runs: who an edit its effect
+    /// submits is admitted for. `None` when the connection runs no such
+    /// invocation, or its caller was known only by certificate.
+    /// Who an invoke continuing a running invocation is admitted for: that
+    /// invocation's own caller, with their grants. `None` for any other
+    /// request; the refusal to answer with when the connection runs no such
+    /// invocation.
+    fn continued_caller(
+        &self,
+        peer_id: u64,
+        message: &tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<Result<tilo_actions::remote::Caller, Box<tilo_actions::remote::RemoteActionMessage>>>
+    {
+        let tilo_actions::remote::RemoteActionMessage::Invoke(invoke) = message else {
+            return None;
+        };
+        let running = invoke.on_behalf_of?;
+        Some(self.continuing_caller(peer_id, running).ok_or_else(|| {
+            Box::new(tilo_actions::remote::RemoteActionMessage::Receipt(
+                tilo_actions::remote::InvocationReceipt {
+                    invocation: invoke.invocation,
+                    status: tilo_actions::remote::ReceiptStatus::Rejected {
+                        error: tilo_actions::remote::ActionHostError::NotPermitted,
+                    },
+                },
+            ))
+        }))
+    }
+
+    pub(crate) fn continuing_caller(
+        &self,
+        peer_id: u64,
+        running: tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::Caller> {
+        // Doors that take the caller's own invocation id can admit two
+        // callers' invocations under one id; such an id names nobody.
+        let mut matching = self
+            .pending_invocations
+            .lock()
+            .ok()?
+            .values()
+            .filter(|pending| pending.peer_id == peer_id && pending.update.invocation() == running)
+            .map(|pending| pending.caller.clone())
+            .take(2)
+            .collect::<Vec<_>>();
+        if matching.len() != 1 {
+            return None;
+        }
+        matching.pop()??.current(self)
+    }
+}
+
+/// Who a running invocation was admitted for, however the door knew them:
+/// the caller an edit its effect submits is admitted as.
+#[derive(Clone)]
+enum ContinuingCaller {
+    /// A caller the door knew directly.
+    Caller(tilo_actions::remote::Caller),
+    /// A certified caller, its certificate checked again each time.
+    Certified {
+        caller: Box<VerifiedActionCaller>,
+        /// A stricter foreign-device restriction the host kept for them.
+        foreign_restriction: bool,
+        /// The exact caller the door admitted, with its execution, when it
+        /// knew one; it continues only while that execution is live.
+        direct: Option<tilo_actions::remote::Caller>,
+    },
+    /// A person or agent on a connection this host admitted, in a room.
+    Admitted {
+        room: String,
+        admitted: Box<AdmittedJoinIdentity>,
+    },
+}
+
+impl ContinuingCaller {
+    fn from_durable(durable: DurableContext<'_>) -> Self {
+        match durable {
+            DurableContext::Peer(caller, _) => Self::Certified {
+                caller: Box::new(caller.clone()),
+                foreign_restriction: false,
+                direct: None,
+            },
+            DurableContext::Local { caller, .. } => {
+                let (room, admitted) = caller.admitted_in();
+                Self::Admitted {
+                    room,
+                    admitted: Box::new(admitted),
+                }
+            }
+        }
+    }
+
+    fn from_origin(origin: &InvocationCaller) -> Self {
+        match origin {
+            InvocationCaller::Certified {
+                caller,
+                foreign_restriction,
+            } => Self::Certified {
+                caller: caller.clone(),
+                foreign_restriction: *foreign_restriction,
+                direct: None,
+            },
+            InvocationCaller::Local { route, admitted } => Self::Admitted {
+                room: route.cluster_id.clone(),
+                admitted: admitted.clone(),
+            },
+        }
+    }
+
+    /// Who `caller` was admitted as: certified, with the custody its door
+    /// holds, when it holds one.
+    fn admitted(
+        caller: Option<&tilo_actions::remote::Caller>,
+        durable: Option<DurableContext<'_>>,
+        origin: Option<&InvocationCaller>,
+    ) -> Option<Self> {
+        match (caller, origin) {
+            (
+                Some(direct),
+                Some(InvocationCaller::Certified {
+                    caller,
+                    foreign_restriction,
+                }),
+            ) => Some(Self::Certified {
+                caller: caller.clone(),
+                foreign_restriction: *foreign_restriction,
+                direct: Some(direct.clone()),
+            }),
+            (Some(caller), _) => Some(Self::Caller(caller.clone())),
+            (None, _) => durable
+                .map(Self::from_durable)
+                .or_else(|| origin.map(Self::from_origin)),
+        }
+    }
+
+    /// The caller as they stand now: a certified caller whose certificate
+    /// no longer verifies, who changed, or whose execution ended, is nobody.
+    /// A certified caller keeps their own device, so they stay held to the
+    /// foreign-device cap wherever that device does not govern the room.
+    fn current(&self, state: &CapnpBrokerState) -> Option<tilo_actions::remote::Caller> {
+        match self {
+            Self::Caller(caller) => Some(caller.clone()),
+            Self::Certified {
+                caller,
+                foreign_restriction,
+                direct,
+            } => {
+                let admitted = state.current_action_caller(caller).ok()?;
+                match direct {
+                    Some(direct) => (direct.execution_id().is_none() || direct.execution_is_live())
+                        .then(|| direct.clone()),
+                    None => Some(admitted.certified_caller(&caller.room, *foreign_restriction)),
+                }
+            }
+            Self::Admitted { room, admitted } => Some(admitted.caller(room)),
+        }
+    }
+}
+
 impl PendingInvocation {
     fn completion_owner(&self) -> InvocationOwner {
         self.owner.clone()
@@ -1187,6 +1408,7 @@ impl PendingInvocation {
 mod action_host;
 mod app_consent;
 mod launchable;
+mod local_action_host;
 
 pub use launchable::launchable_provider;
 #[path = "desktop_commands.rs"]
@@ -1439,6 +1661,8 @@ impl CapnpBrokerState {
             request.peer_id,
             offered,
             InvocationInputs {
+                caller: None,
+                execution: None,
                 argument: request.argument.as_deref(),
                 actor: &admitted.broker_actor(),
                 confirmation_token: confirmation,
@@ -1655,6 +1879,29 @@ enum DirectoryReply {
 }
 
 impl DirectoryReply {
+    /// The longest this asker is waited for. The shell's own surfaces ask
+    /// for a person mid-frame and keep their last results past a short
+    /// deadline. A remote caller has a deadline of its own and gives up by
+    /// dropping its answer, which ends the wait sooner; the bound here only
+    /// stops an owner that never answers from pinning the request.
+    fn patience(&self) -> Duration {
+        match self {
+            Self::Oneshot(_) => CapnpBrokerState::DIRECTORY_BRIDGE_TIMEOUT,
+            Self::Pending(_) => CapnpBrokerState::DIRECTORY_OWNER_HUNG,
+        }
+    }
+
+    /// `answer`, awaited for as long as this asker still wants it: the
+    /// owning app answers on its next turn, and a turn running a heavy
+    /// action or frame is busy, not gone. `Err(TimedOut)` once the asker's
+    /// patience ran out, `Err(Unavailable)` once it stopped asking.
+    async fn awaited<T>(
+        &self,
+        answer: impl std::future::Future<Output = T>,
+    ) -> Result<T, ActionDirectoryBridgeError> {
+        await_while_asked(self.patience(), || !self.is_closed(), answer).await
+    }
+
     fn is_closed(&self) -> bool {
         match self {
             Self::Oneshot(sender) => sender.is_closed(),
@@ -1669,6 +1916,86 @@ impl DirectoryReply {
             }
             Self::Pending(completer) => completer.complete(reply),
         }
+    }
+}
+
+/// `answer`, or why it stopped being awaited: `patience` ran out
+/// (`TimedOut`) or `asking` turned false (`Unavailable`).
+async fn await_while_asked<T>(
+    patience: Duration,
+    asking: impl Fn() -> bool,
+    answer: impl std::future::Future<Output = T>,
+) -> Result<T, ActionDirectoryBridgeError> {
+    const ASKER_CHECK: Duration = Duration::from_millis(100);
+    let deadline = tokio::time::sleep(patience);
+    tokio::pin!(answer, deadline);
+    let mut check = tokio::time::interval(ASKER_CHECK);
+    loop {
+        tokio::select! {
+            value = &mut answer => return Ok(value),
+            () = &mut deadline => return Err(ActionDirectoryBridgeError::TimedOut),
+            _ = check.tick() => {
+                if !asking() {
+                    return Err(ActionDirectoryBridgeError::Unavailable);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod directory_patience_tests {
+    use super::{
+        ActionDirectoryBridgeError, CapnpBrokerState, DirectoryReply, Duration, await_while_asked,
+    };
+
+    /// A remote caller (an agent, another device) waits for an app whose
+    /// owner thread is busy with a heavy action or frame for longer than the
+    /// shell's own surfaces do; how long is the caller's to say.
+    #[test]
+    fn a_remote_asker_outwaits_a_busy_owner_and_stops_when_it_gives_up() {
+        let (completer, answer) =
+            tilo_actions::remote::pending::<super::ActionDirectoryBridgeReply>();
+        let remote = DirectoryReply::Pending(tilo_actions::remote::pending().0);
+        let (shell, _receiver) = tokio::sync::oneshot::channel();
+        let shell = DirectoryReply::Oneshot(shell);
+        assert!(remote.patience() > shell.patience());
+        assert!(
+            CapnpBrokerState::DIRECTORY_OWNER_HUNG
+                > CapnpBrokerState::DIRECTORY_BRIDGE_TIMEOUT * 10
+        );
+        drop(remote);
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("test runtime");
+        runtime.block_on(async {
+            let busy = Duration::from_millis(300);
+            let answered = await_while_asked(Duration::from_secs(5), || true, async {
+                tokio::time::sleep(busy).await;
+                7
+            })
+            .await;
+            assert_eq!(answered, Ok(7), "a busy owner is waited for");
+
+            let hung = await_while_asked(
+                Duration::from_millis(200),
+                || true,
+                std::future::pending::<()>(),
+            )
+            .await;
+            assert_eq!(hung, Err(ActionDirectoryBridgeError::TimedOut));
+
+            let reply = DirectoryReply::Pending(completer);
+            drop(answer);
+            let abandoned = tilo_test_env::within(
+                "an abandoned asker stops the wait",
+                reply.awaited(std::future::pending::<()>()),
+            )
+            .await;
+            assert_eq!(abandoned, Err(ActionDirectoryBridgeError::Unavailable));
+        });
     }
 }
 
@@ -1715,6 +2042,8 @@ pub struct DirectoryActionTarget {
 #[derive(Clone)]
 pub struct ActionDirectoryRequestQueue {
     sender: std::sync::mpsc::SyncSender<ActionDirectoryBridgeRequest>,
+    /// Wakes the accept loop, which is the only drainer of this queue.
+    turn: std::sync::Arc<tokio::sync::Notify>,
 }
 
 impl ActionDirectoryRequestQueue {
@@ -1723,7 +2052,26 @@ impl ActionDirectoryRequestQueue {
     pub(crate) fn unavailable() -> Self {
         let (sender, receiver) = std::sync::mpsc::sync_channel(0);
         drop(receiver);
-        Self { sender }
+        Self {
+            sender,
+            turn: std::sync::Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+
+    fn deliver(
+        &self,
+        request: ActionDirectoryBridgeRequest,
+    ) -> Result<(), ActionDirectoryBridgeError> {
+        match self.sender.try_send(request) {
+            Ok(()) => {
+                self.turn.notify_one();
+                Ok(())
+            }
+            Err(std::sync::mpsc::TrySendError::Full(_)) => Err(ActionDirectoryBridgeError::Busy),
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                Err(ActionDirectoryBridgeError::Unavailable)
+            }
+        }
     }
 
     /// # Errors
@@ -1744,18 +2092,13 @@ impl ActionDirectoryRequestQueue {
         }
         let (reply, response) = tokio::sync::oneshot::channel();
         let reply = DirectoryReply::Oneshot(reply);
-        match self.sender.try_send(ActionDirectoryBridgeRequest::Query {
+        self.deliver(ActionDirectoryBridgeRequest::Query {
             actor,
             cluster_id: cluster_id.into(),
             query,
             reply,
-        }) {
-            Ok(()) => Ok(response),
-            Err(std::sync::mpsc::TrySendError::Full(_)) => Err(ActionDirectoryBridgeError::Busy),
-            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                Err(ActionDirectoryBridgeError::Unavailable)
-            }
-        }
+        })
+        .map(|()| response)
     }
 
     /// # Errors
@@ -1785,7 +2128,7 @@ impl ActionDirectoryRequestQueue {
         }
         let (reply, response) = tokio::sync::oneshot::channel();
         let reply = DirectoryReply::Oneshot(reply);
-        match self.sender.try_send(ActionDirectoryBridgeRequest::Resolve {
+        self.deliver(ActionDirectoryBridgeRequest::Resolve {
             actor,
             cluster_id,
             peer_id,
@@ -1793,13 +2136,8 @@ impl ActionDirectoryRequestQueue {
             resource,
             action,
             reply,
-        }) {
-            Ok(()) => Ok(response),
-            Err(std::sync::mpsc::TrySendError::Full(_)) => Err(ActionDirectoryBridgeError::Busy),
-            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                Err(ActionDirectoryBridgeError::Unavailable)
-            }
-        }
+        })
+        .map(|()| response)
     }
 
     /// [`Self::try_query`] answered as a remote-action pending value.
@@ -1870,13 +2208,7 @@ impl ActionDirectoryRequestQueue {
         &self,
         request: ActionDirectoryBridgeRequest,
     ) -> Result<(), ActionDirectoryBridgeError> {
-        match self.sender.try_send(request) {
-            Ok(()) => Ok(()),
-            Err(std::sync::mpsc::TrySendError::Full(_)) => Err(ActionDirectoryBridgeError::Busy),
-            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                Err(ActionDirectoryBridgeError::Unavailable)
-            }
-        }
+        self.deliver(request)
     }
 
     /// # Errors
@@ -1907,19 +2239,14 @@ impl ActionDirectoryRequestQueue {
         }
         let (reply, response) = tokio::sync::oneshot::channel();
         let reply = DirectoryReply::Oneshot(reply);
-        match self.sender.try_send(ActionDirectoryBridgeRequest::Start {
+        self.deliver(ActionDirectoryBridgeRequest::Start {
             actor,
             target,
             argument,
             confirmation,
             reply,
-        }) {
-            Ok(()) => Ok(response),
-            Err(std::sync::mpsc::TrySendError::Full(_)) => Err(ActionDirectoryBridgeError::Busy),
-            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                Err(ActionDirectoryBridgeError::Unavailable)
-            }
-        }
+        })
+        .map(|()| response)
     }
 }
 
@@ -2221,6 +2548,11 @@ struct PendingWorker {
 /// as, the one-use confirmation token it presents and its ambient context.
 /// Admission checks every field; none of them grants authority by itself.
 struct InvocationInputs<'a> {
+    /// Who the invocation is admitted for, when the door knows them as a
+    /// caller: kept with the running invocation, so an edit its effect
+    /// submits is admitted for them too.
+    caller: Option<&'a tilo_actions::remote::Caller>,
+    execution: Option<ExecutionScope>,
     argument: Option<&'a str>,
     actor: &'a BrokerActor,
     confirmation_token: Option<&'a str>,
@@ -2304,6 +2636,7 @@ pub struct CapnpBrokerState {
     /// Bumped whenever a pending or completed invocation changes, so hosts
     /// can refresh retained invocation projections exactly when needed.
     invocation_generation: AtomicU64,
+    execution_activity: ActivityBus,
     /// Admission serialization covers policy, one-use confirmation, the durable
     /// barrier and the single application delivery. Never held across awaits.
     admission_lock: Mutex<()>,
@@ -2323,8 +2656,15 @@ pub struct CapnpBrokerState {
     /// Wakes the broker loop to adopt a newly admitted local worker at once
     /// rather than on its next housekeeping tick.
     worker_admitted: tokio::sync::Notify,
+    /// Queued directory work, a test callback, or a new invocation. The
+    /// accept loop parks until one of these; a timer used to notice them.
+    local_turn: std::sync::Arc<tokio::sync::Notify>,
     /// Signed joins on actual private host-worker descriptors; never reconstructed from surfaces.
     host_workers: Mutex<HashMap<u64, AdmittedJoinIdentity>>,
+    /// Peer ids of the broker's own services on its thread's runtime.
+    service_peers: Mutex<Vec<u64>>,
+    /// How often the broker thread unwound and started again.
+    thread_restarts: AtomicU64,
     #[cfg(test)]
     thread_callbacks: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
 }
@@ -2432,6 +2772,7 @@ impl CapnpBrokerState {
 
     pub(crate) fn request_stop(&self) {
         self.accepting.store(false, Ordering::Release);
+        self.local_turn.notify_one();
     }
 
     /// Hold the broker lifecycle read side for one complete shell-facade
@@ -2487,6 +2828,7 @@ impl CapnpBrokerState {
                 }
             };
         }
+        self.execution_activity.close();
         clear!(self.host_workers);
         clear!(self.channels);
         clear!(self.surfaces);
@@ -2527,6 +2869,15 @@ impl CapnpBrokerState {
         match self.thread_callbacks.lock() {
             Ok(mut callbacks) => callbacks.push(callback),
             Err(poisoned) => poisoned.into_inner().push(callback),
+        }
+        self.local_turn.notify_one();
+    }
+
+    #[cfg(test)]
+    fn callbacks_pending(&self) -> usize {
+        match self.thread_callbacks.lock() {
+            Ok(callbacks) => callbacks.len(),
+            Err(poisoned) => poisoned.into_inner().len(),
         }
     }
 
@@ -2619,7 +2970,13 @@ impl CapnpBrokerState {
     const DIRECTORY_MAX_BYTES: u32 = 256 * 1024;
     const DIRECTORY_MAX_WORK: u32 = 4_096;
     const DIRECTORY_MAX_DEPTH: u16 = 32;
+    /// How long the shell's own surfaces (palette, search) wait for an app's
+    /// directory before keeping their last results.
     const DIRECTORY_BRIDGE_TIMEOUT: Duration = Duration::from_secs(2);
+    /// An app that has not answered its directory in this long is hung, not
+    /// busy: its asker hears it timed out. Remote askers normally give up
+    /// sooner, on their own deadline.
+    const DIRECTORY_OWNER_HUNG: Duration = Duration::from_secs(60);
 
     fn expire_stale_invocations(&self) {
         self.expire_stale_invocations_at(
@@ -2627,6 +2984,27 @@ impl CapnpBrokerState {
             Self::INVOCATION_IDLE_TIMEOUT,
             Self::CANCELLATION_GRACE,
         );
+    }
+
+    /// When the next pending invocation can expire. `None` while nothing is
+    /// in flight, so the accept loop parks instead of waking every 100 ms.
+    fn next_invocation_deadline(&self) -> Option<std::time::Instant> {
+        let pending = self.pending_invocations.lock().ok()?;
+        pending
+            .values()
+            .filter_map(|invocation| {
+                let idle_at = invocation
+                    .last_activity
+                    .checked_add(Self::INVOCATION_IDLE_TIMEOUT)?;
+                let cancel_at = invocation
+                    .cancellation_requested_at
+                    .and_then(|requested| requested.checked_add(Self::CANCELLATION_GRACE));
+                Some(match cancel_at {
+                    Some(cancel) if cancel < idle_at => cancel,
+                    _ => idle_at,
+                })
+            })
+            .min()
     }
 
     fn expire_stale_invocations_at(
@@ -2704,8 +3082,12 @@ impl CapnpBrokerState {
                 .persist_invocation(&pending, update.clone(), pending.journal_key.is_some())
                 .is_err()
             {
+                self.execution_activity
+                    .publish_status(pending.activity.as_ref(), ExecutionStatus::OutcomeUnknown);
                 continue;
             }
+            self.execution_activity
+                .publish(pending.activity.as_ref(), &update);
             self.record_completion(id, pending.completion_owner(), update.clone());
             if let Ok(mut requests) = self.cancellation_requests.lock() {
                 requests.remove(&id);
@@ -2896,6 +3278,7 @@ impl CapnpBrokerState {
     ) {
         let (bridge_tx, bridge_rx) =
             std::sync::mpsc::sync_channel(ActionDirectoryRequestQueue::CAPACITY);
+        let local_turn = std::sync::Arc::new(tokio::sync::Notify::new());
         let (peer_action_queue, peer_action_rx) = super::peer_actions::PeerActionQueue::channel();
         let journal_root = config
             .map(|config| config.journal_root.clone())
@@ -2935,7 +3318,10 @@ impl CapnpBrokerState {
                 surfaces: Mutex::new(HashMap::new()),
                 surface_generation: AtomicU64::new(0),
                 launchable: launchable::LaunchableCatalogue::new(),
-                action_directory_bridge: ActionDirectoryRequestQueue { sender: bridge_tx },
+                action_directory_bridge: ActionDirectoryRequestQueue {
+                    sender: bridge_tx,
+                    turn: std::sync::Arc::clone(&local_turn),
+                },
                 peer_action_queue,
                 peer_action_rx: Mutex::new(Some(peer_action_rx)),
                 action_directory_roots: Mutex::new(HashMap::new()),
@@ -2955,6 +3341,7 @@ impl CapnpBrokerState {
                 app_action_consent_pending: Mutex::new(std::collections::HashSet::new()),
                 step_prompts: crate::automation::StepPrompts::default(),
                 invocation_generation: AtomicU64::new(0),
+                execution_activity: ActivityBus::default(),
                 admission_lock: Mutex::new(()),
                 journal: Mutex::new(journal),
                 stable_invocation_subscribers: Mutex::new(std::collections::HashSet::new()),
@@ -2969,7 +3356,10 @@ impl CapnpBrokerState {
                 services,
                 workers: Mutex::new(Vec::new()),
                 worker_admitted: tokio::sync::Notify::new(),
+                local_turn,
                 host_workers: Mutex::new(HashMap::new()),
+                service_peers: Mutex::new(Vec::new()),
+                thread_restarts: AtomicU64::new(0),
                 #[cfg(test)]
                 thread_callbacks: Mutex::new(Vec::new()),
             }),
@@ -3028,6 +3418,7 @@ impl CapnpBrokerState {
     }
 
     /// Stand in for an application's invocation stream on `peer_id`.
+    /// The fixture receives the full envelope, including its stable invocation UUID.
     #[cfg(any(test, feature = "test-support"))]
     pub fn capture_invocations_for_test(
         &self,
@@ -3036,6 +3427,9 @@ impl CapnpBrokerState {
         let (tx, rx) = mpsc::unbounded_channel();
         if let Ok(mut subscribers) = self.invocation_subscribers.lock() {
             subscribers.insert(peer_id, tx);
+        }
+        if let Ok(mut stable) = self.stable_invocation_subscribers.lock() {
+            stable.insert(peer_id);
         }
         rx
     }
@@ -3248,24 +3642,19 @@ impl CapnpBrokerState {
                         if reply.is_closed() {
                             return;
                         }
-                        let response = tokio::time::timeout(
-                            Self::DIRECTORY_BRIDGE_TIMEOUT,
-                            state.query_action_directory_for_actor(
+                        let response = reply
+                            .awaited(state.query_action_directory_for_actor(
                                 &directories,
                                 &actor,
                                 &cluster_id,
                                 &query,
-                            ),
-                        )
-                        .await
-                        .map_or_else(
-                            |_| Err(ActionDirectoryBridgeError::TimedOut),
-                            |result| {
+                            ))
+                            .await
+                            .and_then(|result| {
                                 result
                                     .map(ActionDirectoryBridgeResponse::Page)
                                     .map_err(|_| ActionDirectoryBridgeError::Unavailable)
-                            },
-                        );
+                            });
                         reply.send(response);
                     }
                     ActionDirectoryBridgeRequest::Resolve {
@@ -3280,9 +3669,8 @@ impl CapnpBrokerState {
                         if reply.is_closed() {
                             return;
                         }
-                        let response = tokio::time::timeout(
-                            Self::DIRECTORY_BRIDGE_TIMEOUT,
-                            state.resolve_action_directory_for_actor(
+                        let response = reply
+                            .awaited(state.resolve_action_directory_for_actor(
                                 &directories,
                                 &actor,
                                 &cluster_id,
@@ -3290,17 +3678,13 @@ impl CapnpBrokerState {
                                 &revision,
                                 &resource,
                                 &action,
-                            ),
-                        )
-                        .await
-                        .map_or_else(
-                            |_| Err(ActionDirectoryBridgeError::TimedOut),
-                            |result| {
+                            ))
+                            .await
+                            .and_then(|result| {
                                 result
                                     .map(ActionDirectoryBridgeResponse::Resolution)
                                     .map_err(|_| ActionDirectoryBridgeError::Unavailable)
-                            },
-                        );
+                            });
                         reply.send(response);
                     }
                     ActionDirectoryBridgeRequest::Start {
@@ -3313,23 +3697,18 @@ impl CapnpBrokerState {
                         if reply.is_closed() {
                             return;
                         }
-                        let response = tokio::time::timeout(
-                            Self::DIRECTORY_BRIDGE_TIMEOUT,
-                            state.start_action_directory_for_actor(
+                        let response = reply
+                            .awaited(state.start_action_directory_for_actor(
                                 &directories,
                                 &actor,
                                 &target,
                                 argument.as_deref(),
                                 confirmation,
-                            ),
-                        )
-                        .await
-                        .map_or_else(
-                            |_| Err(ActionDirectoryBridgeError::TimedOut),
-                            |result| {
+                            ))
+                            .await
+                            .and_then(|result| {
                                 result.map(ActionDirectoryBridgeResponse::StartedDirectoryAction)
-                            },
-                        );
+                            });
                         reply.send(response);
                     }
                 }
@@ -3562,6 +3941,8 @@ impl CapnpBrokerState {
                 peer_id,
                 (surface, published),
                 InvocationInputs {
+                    caller: None,
+                    execution: None,
                     argument,
                     actor,
                     confirmation_token: confirmation_token.as_deref(),
@@ -4018,6 +4399,8 @@ impl CapnpBrokerState {
             resource,
             action,
             InvocationInputs {
+                caller: None,
+                execution: None,
                 argument,
                 actor: &BrokerActor::person(actor),
                 confirmation_token,
@@ -4086,11 +4469,32 @@ impl CapnpBrokerState {
         inputs: InvocationInputs<'_>,
         revision: Option<&str>,
     ) -> Result<InvocationJob, String> {
+        self.start_invocation_from_offered_origin(peer_id, offered, inputs, revision, None)
+    }
+
+    fn start_invocation_from_offered_origin(
+        &self,
+        peer_id: u64,
+        offered: (PublishedSurface, PublishedAction),
+        inputs: InvocationInputs<'_>,
+        revision: Option<&str>,
+        origin: Option<InvocationCaller>,
+    ) -> Result<InvocationJob, String> {
         let _admission = self
             .admission_lock
             .lock()
             .map_err(|_| "invocation admission unavailable")?;
-        self.dispatch_invocation_from_offered(peer_id, offered, inputs, None, revision)
+        self.dispatch_invocation_from_offered_owned(
+            peer_id,
+            offered,
+            inputs,
+            AdmissionProvenance {
+                durable: None,
+                revision,
+                origin,
+                retained_time: None,
+            },
+        )
     }
 
     fn dispatch_invocation_from_offered(
@@ -4126,6 +4530,8 @@ impl CapnpBrokerState {
         provenance: AdmissionProvenance<'_>,
     ) -> Result<InvocationJob, String> {
         let InvocationInputs {
+            caller,
+            execution,
             argument,
             actor,
             confirmation_token,
@@ -4137,6 +4543,7 @@ impl CapnpBrokerState {
             origin,
             retained_time,
         } = provenance;
+        let continuing = ContinuingCaller::admitted(caller, durable, origin.as_ref());
         let owner = durable.map_or_else(
             || InvocationOwner::Local {
                 actor: actor.id.clone(),
@@ -4145,7 +4552,31 @@ impl CapnpBrokerState {
         );
         owner.validate()?;
         // Never trust an envelope's invoker: the host sets it.
-        let context = invoker::host_set_invoker(context, actor)?;
+        let context = invoker::host_set_invoker(context, actor, execution.as_ref())?;
+        // A certified local origin retains its original registered clock and
+        // exact person/room through an asynchronous directory lookup. Never
+        // recapture a replacement origin at dispatch or accept a payload actor.
+        let original_time = if let Some(InvocationCaller::Certified { caller, .. }) = &origin {
+            let admitted = self.current_action_caller(caller)?;
+            if caller.room != offered.0.route.cluster_id
+                || actor.is_agent
+                || actor.id != admitted.principal_id
+            {
+                return Err("original caller does not match the invocation route or actor".into());
+            }
+            Some(
+                caller
+                    .policy_time
+                    .as_ref()
+                    .ok_or("original policy clock unavailable")?,
+            )
+        } else {
+            None
+        };
+        if original_time.is_some() && (durable.is_some() || retained_time.is_some()) {
+            return Err("duplicate original invocation custody".into());
+        }
+        let retained_time = original_time.or(retained_time);
         let policy_time = match (durable, retained_time) {
             (Some(context), None) => self.checked_policy_time(context.time())?.0,
             (None, Some(original)) => self.checked_policy_time(Some(original))?.0,
@@ -4210,7 +4641,7 @@ impl CapnpBrokerState {
                 &offered.1,
             )?;
         }
-        if durable.is_some()
+        if (durable.is_some() || execution.is_some())
             && !self
                 .stable_invocation_subscribers
                 .lock()
@@ -4260,7 +4691,10 @@ impl CapnpBrokerState {
             .map_err(|_| "invocation handle space exhausted")?;
         let invocation = match durable {
             Some(context) => context.invocation(),
-            None => tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
+            None => execution.as_ref().map_or_else(
+                || tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
+                ExecutionScope::invocation,
+            ),
         };
         let (tx, rx) = std::sync::mpsc::channel();
         let mut receipt_context = tilo_actions::ActionContext::for_resource(
@@ -4302,61 +4736,68 @@ impl CapnpBrokerState {
             None
         };
         drop(journal_guard);
-        self.pending_invocations
+        // Keep acceptance before an immediately completing application's first
+        // update. Sending to the unbounded app queue and bounded observation
+        // bus never waits or calls back into the broker.
+        let mut registry = self
+            .pending_invocations
             .lock()
-            .map_err(|_| "the invocation registry is unavailable".to_string())?
-            .insert(
-                id,
-                PendingInvocation {
-                    owner,
-                    network_evidence: durable.and_then(DurableContext::network),
-                    original: OriginalInvocationData::capture(
-                        ui::invocation_scope::PublishedInvocationRequest {
-                            wire_id: id,
-                            invocation,
-                            address: tilo_actions::ActionAddress {
-                                resource: offered.1.resource.clone(),
-                                action: offered.1.action.clone(),
-                            },
-                            argument: argument.map(str::to_string),
-                            actor: actor.id.clone(),
-                            participant: invoker::invoker_participant(context.as_ref()),
+            .map_err(|_| "the invocation registry is unavailable".to_string())?;
+        registry.insert(
+            id,
+            PendingInvocation {
+                caller: continuing,
+                activity: ActivityTarget::new(execution.clone(), actor, &offered.0, &offered.1),
+                owner,
+                network_evidence: durable.and_then(DurableContext::network),
+                original: OriginalInvocationData::capture(
+                    ui::invocation_scope::PublishedInvocationRequest {
+                        wire_id: id,
+                        invocation,
+                        address: tilo_actions::ActionAddress {
+                            resource: offered.1.resource.clone(),
+                            action: offered.1.action.clone(),
                         },
-                        offered.0.route.clone(),
-                        &offered.1,
-                        revision,
-                        durable.map(DurableContext::origin).or(origin),
-                        policy_time.clone(),
-                    ),
-                    policy_time,
-                    journal_key,
-                    peer_id,
-                    tx,
-                    update: tilo_actions::InvocationUpdate::Accepted { invocation },
-                    last_sequence: 0,
-                    actor: actor.id.clone(),
-                    cancellable: matches!(
-                        offered.1.contract.execution,
-                        tilo_actions::ExecutionMode::Background { cancellable: true }
-                            | tilo_actions::ExecutionMode::Streaming {
-                                cancellable: true,
-                                ..
-                            }
-                    ),
-                    retryable_on_disconnect: matches!(
-                        offered.1.contract.retry,
-                        tilo_actions::RetryPolicy::Idempotent
-                            | tilo_actions::RetryPolicy::RetryWithInvocationId
-                    ),
-                    execution: offered.1.contract.execution.clone(),
-                    result: offered.1.contract.result.clone(),
-                    operation_kind: offered.1.operation_kind,
-                    cluster_id: offered.0.route.cluster_id.clone(),
-                    context: receipt_context,
-                    last_activity: std::time::Instant::now(),
-                    cancellation_requested_at: None,
-                },
-            );
+                        argument: argument.map(str::to_string),
+                        actor: actor.id.clone(),
+                        participant: invoker::invoker_participant(context.as_ref()),
+                    },
+                    offered.0.route.clone(),
+                    &offered.1,
+                    revision,
+                    durable.map(DurableContext::origin).or(origin),
+                    policy_time.clone(),
+                    execution.as_ref().map(ExecutionScope::lease),
+                ),
+                policy_time,
+                journal_key,
+                peer_id,
+                tx,
+                update: tilo_actions::InvocationUpdate::Accepted { invocation },
+                last_sequence: 0,
+                actor: actor.id.clone(),
+                cancellable: matches!(
+                    offered.1.contract.execution,
+                    tilo_actions::ExecutionMode::Background { cancellable: true }
+                        | tilo_actions::ExecutionMode::Streaming {
+                            cancellable: true,
+                            ..
+                        }
+                ),
+                retryable_on_disconnect: matches!(
+                    offered.1.contract.retry,
+                    tilo_actions::RetryPolicy::Idempotent
+                        | tilo_actions::RetryPolicy::RetryWithInvocationId
+                ),
+                execution: offered.1.contract.execution.clone(),
+                result: offered.1.contract.result.clone(),
+                operation_kind: offered.1.operation_kind,
+                cluster_id: offered.0.route.cluster_id.clone(),
+                context: receipt_context,
+                last_activity: std::time::Instant::now(),
+                cancellation_requested_at: None,
+            },
+        );
         self.invocation_generation.fetch_add(1, Ordering::Relaxed);
         if sender
             .send(InvocationEnvelope {
@@ -4370,11 +4811,8 @@ impl CapnpBrokerState {
             })
             .is_err()
         {
-            let removed = self
-                .pending_invocations
-                .lock()
-                .ok()
-                .and_then(|mut jobs| jobs.remove(&id));
+            let removed = registry.remove(&id);
+            drop(registry);
             self.invocation_generation.fetch_add(1, Ordering::Relaxed);
             if let Some(pending) = removed {
                 let _ = self.persist_invocation(
@@ -4385,7 +4823,25 @@ impl CapnpBrokerState {
             }
             return Err("the application invocation stream closed; outcome unknown".into());
         }
+        if let Some(pending) = registry.get(&id) {
+            self.execution_activity
+                .publish(pending.activity.as_ref(), &pending.update);
+        }
+        drop(registry);
+        self.local_turn.notify_one();
         Ok(InvocationJob { id, completion: rx })
+    }
+
+    /// Observe subsequent broker execution events without scheduling app work.
+    /// The fixed 256-event buffer reports `Lagged` rather than concealing loss;
+    /// consumers must clear stale presence on lag/closure. Dropping a receiver
+    /// changes neither sessions nor app state. This is host-local provenance,
+    /// not a substitute for authenticated transport or current room authority.
+    #[must_use]
+    pub fn subscribe_execution_activity(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<Arc<ExecutionActivity>> {
+        self.execution_activity.subscribe()
     }
 
     /// Changes whenever a pending or completed invocation changes.
@@ -4544,6 +5000,10 @@ impl CapnpBrokerState {
         self.persist_cancellation(job)?;
         if job.cancellation_requested_at.is_none() {
             job.cancellation_requested_at = Some(std::time::Instant::now());
+            self.execution_activity.publish_status(
+                job.activity.as_ref(),
+                ExecutionStatus::CancellationRequested,
+            );
             self.invocation_generation.fetch_add(1, Ordering::Relaxed);
         }
         drop(pending);
@@ -4844,6 +5304,8 @@ impl CapnpBrokerState {
             resource,
             action,
             InvocationInputs {
+                caller: None,
+                execution: None,
                 argument,
                 actor: &BrokerActor::agent(run.agent_id),
                 confirmation_token: None,
@@ -4931,8 +5393,14 @@ impl CapnpBrokerState {
                         )
                         .is_err()
                     {
+                        self.execution_activity.publish_status(
+                            invocation.activity.as_ref(),
+                            ExecutionStatus::OutcomeUnknown,
+                        );
                         continue;
                     }
+                    self.execution_activity
+                        .publish(invocation.activity.as_ref(), &update);
                     self.record_completion(id, invocation.completion_owner(), update.clone());
                     if let Ok(mut requests) = self.cancellation_requests.lock() {
                         requests.remove(&id);
@@ -5056,7 +5524,7 @@ impl CapnpBrokerState {
                 "certified document operation does not match its joined route".into(),
             ));
         }
-        let payload = collab_types::validate_whole_document_payload_route(
+        let payload = collab_types::validate_document_payload_route(
             &route.app_id,
             &route.cluster_id,
             &route.record_id,
@@ -5068,12 +5536,15 @@ impl CapnpBrokerState {
             ))
         })?;
         let channel = match &payload {
-            collab_types::WholeDocumentPayload::Cleartext(_) => collab_types::document_channel_id(
-                &route.app_id,
-                &route.cluster_id,
-                &route.record_id,
-            ),
-            collab_types::WholeDocumentPayload::Encrypted { channel, .. } => *channel,
+            collab_types::RoutedDocumentPayload::Cleartext(_)
+            | collab_types::RoutedDocumentPayload::CleartextSegment(_) => {
+                collab_types::document_channel_id(
+                    &route.app_id,
+                    &route.cluster_id,
+                    &route.record_id,
+                )
+            }
+            collab_types::RoutedDocumentPayload::Encrypted { channel, .. } => *channel,
         };
         let broker_channels = self.broker_channels.lock().map_err(|_| {
             capnp::Error::failed("collaboration governance state is unavailable".into())
@@ -5084,6 +5555,21 @@ impl CapnpBrokerState {
             ));
         }
         drop(broker_channels);
+        if admitted.agent_id.is_none() && admitted.verified.owns_person_room(&route.cluster_id) {
+            // The person room's devices hold the role their admission gave
+            // them (owner, or a foreign device's cap); there is no workspace
+            // policy to narrow it further.
+            if !role_permits(admitted.role, ArtifactKind::Note, envelope.op_class) {
+                return Err(capnp::Error::failed(
+                    "this device may not perform this document action in the person room".into(),
+                ));
+            }
+            return Ok(AuthorizedDocumentRoute {
+                artifact: envelope.artifact,
+                channel,
+                payload,
+            });
+        }
         let membership = self.membership.as_ref().ok_or_else(|| {
             capnp::Error::failed("certified session lost its membership authority".into())
         })?;
@@ -5154,6 +5640,29 @@ impl CapnpBrokerState {
         self.fanout.upgrade().map_or(u64::MAX, |t| t.next_peer_id())
     }
 
+    /// A peer id for one of the broker's own services, which runs on the
+    /// broker thread's runtime and is started again with it.
+    fn next_service_peer_id(&self) -> u64 {
+        let peer_id = self.next_peer_id();
+        match self.service_peers.lock() {
+            Ok(mut peers) => peers.push(peer_id),
+            Err(poisoned) => poisoned.into_inner().push(peer_id),
+        }
+        peer_id
+    }
+
+    /// Withdraw the services a broker thread that unwound had started, as
+    /// if their connections had closed, before a new thread starts them.
+    fn forget_service_peers(&self) {
+        let peers = match self.service_peers.lock() {
+            Ok(mut peers) => std::mem::take(&mut *peers),
+            Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+        };
+        for peer_id in peers {
+            self.remove_connection(peer_id);
+        }
+    }
+
     /// Drive an event onto the subscribed queues `route` addresses,
     /// skipping `except`. Called from [`FanoutState::fanout_to_route`]
     /// Delegates to
@@ -5209,6 +5718,7 @@ impl CapnpBrokerState {
             | CollabEvent::InvocationCancellation { .. }
             | CollabEvent::ActionCatalogue { .. }
             | CollabEvent::PublishedInvocationResult { .. }
+            | CollabEvent::InstalledApplicationLaunchResult { .. }
             | CollabEvent::ActionDirectoryPage { .. }
             | CollabEvent::PublishedActionResolution { .. }
             | CollabEvent::WorkspaceControl { .. }
@@ -5222,6 +5732,7 @@ impl CapnpBrokerState {
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
             | CollabEvent::Realtime(_)
+            | CollabEvent::RecordContent { .. }
             | CollabEvent::RemoteAction { .. } => {
                 // Invocation delivery and cooperative cancellation are
                 // point-to-point and never enter route fanout.
@@ -5426,6 +5937,31 @@ impl CapnpBrokerState {
                 .push(ContextSub { peer_id, tx });
         }
         rx
+    }
+
+    /// Ask one local subscriber of every record channel in `cluster_id` for
+    /// its document snapshot, on behalf of no local connection: how another
+    /// device that just came back catches up on what it missed. Returns how
+    /// many channels were asked.
+    pub fn request_room_snapshots(&self, cluster_id: &str) -> usize {
+        let channels: Vec<String> = self
+            .channels
+            .lock()
+            .map(|channels| {
+                channels
+                    .keys()
+                    .filter(|key| {
+                        let route = CrdtRoute::from_channel_key(key);
+                        route.cluster_id == cluster_id && !route.record_id.is_empty()
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        channels
+            .iter()
+            .filter(|channel| self.request_document_snapshot(channel, u64::MAX))
+            .count()
     }
 
     /// Direct a late-join snapshot request to one established subscriber on
@@ -5726,6 +6262,59 @@ impl CapnpChannelHandle {
     }
 }
 
+/// The `AppSettings` capability of the app `route` certifies: its own
+/// entries and the shared sections, in the host's settings source, for as
+/// long as the channel stays admitted.
+fn app_settings_capability(
+    state: &Arc<CapnpBrokerState>,
+    route: CrdtRoute,
+    identity: AdmittedJoinIdentity,
+) -> Result<runtime_collab::collab_capnp::app_settings::Client, capnp::Error> {
+    if route.app_id.is_empty() {
+        return Err(capnp::Error::failed(
+            "settings belong to a certified app route".into(),
+        ));
+    }
+    let Some(source) = state.services.settings.clone() else {
+        return Err(capnp::Error::failed(
+            "this host keeps no settings for apps".into(),
+        ));
+    };
+    let app_id = route.app_id.clone();
+    let state = Arc::clone(state);
+    let revalidate: runtime_collab::settings::host::Revalidate =
+        Arc::new(move || state.revalidate_admission(&route, &identity).map(|_| ()));
+    Ok(capnp_rpc::new_client(
+        runtime_collab::settings::host::AppSettingsServer::new(app_id, source, revalidate),
+    ))
+}
+
+/// The `LiveActivity` capability of the app `route` certifies, over the
+/// host's board, for as long as the channel stays admitted.
+fn live_activity_capability(
+    state: &Arc<CapnpBrokerState>,
+    route: CrdtRoute,
+    identity: AdmittedJoinIdentity,
+) -> Result<runtime_collab::collab_capnp::live_activity::Client, capnp::Error> {
+    if route.app_id.is_empty() {
+        return Err(capnp::Error::failed(
+            "a live activity belongs to a certified app route".into(),
+        ));
+    }
+    let Some(board) = state.services.live_activities.clone() else {
+        return Err(capnp::Error::failed(
+            "this host presents no live activities".into(),
+        ));
+    };
+    let app_id = route.app_id.clone();
+    let state = Arc::clone(state);
+    let revalidate: runtime_collab::live_activity::Revalidate =
+        Arc::new(move || state.revalidate_admission(&route, &identity).map(|_| ()));
+    Ok(capnp_rpc::new_client(
+        runtime_collab::live_activity::LiveActivityServer::new(app_id, board, revalidate),
+    ))
+}
+
 fn delegate_realtime_command(
     services: &HostServices,
     context: &crate::services::RealtimeRequestContext,
@@ -5857,7 +6446,124 @@ fn reply_frame(
     }
 }
 
+impl CapnpChannelHandle {
+    /// The host's record-content service, for a channel still admitted.
+    fn record_content(
+        &self,
+    ) -> Result<(CrdtRoute, Arc<crate::record_content::RouteContent>), capnp::Error> {
+        self.state
+            .revalidate_admission(&self.route(), &self.verified_identity)?;
+        let route = self.route();
+        if route.app_id.is_empty() || route.cluster_id.is_empty() {
+            return Err(capnp::Error::failed(
+                "record content belongs to a certified app route".into(),
+            ));
+        }
+        let content = self.state.services.record_content.clone().ok_or_else(|| {
+            capnp::Error::unimplemented("this host keeps no record content".into())
+        })?;
+        Ok((route, content))
+    }
+}
+
+/// Content arriving for one channel's record, pulled one piece of content
+/// per `read`.
+struct BlobStreamServer {
+    host_guard: Option<HostWorkerReadGuard>,
+    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<crate::record_content::ContentArrival>>>,
+}
+
+impl blob_stream::Server for BlobStreamServer {
+    fn read(
+        self: Rc<Self>,
+        _params: blob_stream::ReadParams,
+        mut results: blob_stream::ReadResults,
+    ) -> Promise<(), capnp::Error> {
+        let rx = self.rx.clone();
+        Promise::from_future(async move {
+            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+            let mut guard = rx.lock().await;
+            let Some(arrival) = guard.recv().await else {
+                return Err(capnp::Error::disconnected(
+                    "record content stream closed".into(),
+                ));
+            };
+            drop(guard);
+            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+            let mut reply = results.get();
+            reply.set_hash(&arrival.hash);
+            reply.set_bytes(&arrival.bytes);
+            Ok(())
+        })
+    }
+}
+
 impl channel_handle::Server for CapnpChannelHandle {
+    fn offer_blob(
+        self: Rc<Self>,
+        params: channel_handle::OfferBlobParams,
+        _results: channel_handle::OfferBlobResults,
+    ) -> Promise<(), capnp::Error> {
+        let (route, content) = match self.record_content() {
+            Ok(found) => found,
+            Err(error) => return Promise::err(error),
+        };
+        Promise::from_future(async move {
+            let p = params.get()?;
+            let hash = p
+                .get_hash()?
+                .to_str()
+                .map_err(|e| capnp::Error::failed(format!("offerBlob hash: {e}")))?
+                .to_owned();
+            let bytes = p.get_bytes()?;
+            content
+                .offer(&route, &hash, bytes)
+                .map_err(capnp::Error::failed)
+        })
+    }
+
+    fn want_blob(
+        self: Rc<Self>,
+        params: channel_handle::WantBlobParams,
+        _results: channel_handle::WantBlobResults,
+    ) -> Promise<(), capnp::Error> {
+        let (route, content) = match self.record_content() {
+            Ok(found) => found,
+            Err(error) => return Promise::err(error),
+        };
+        Promise::from_future(async move {
+            let hash = params
+                .get()?
+                .get_hash()?
+                .to_str()
+                .map_err(|e| capnp::Error::failed(format!("wantBlob hash: {e}")))?
+                .to_owned();
+            content.want(&route, &hash);
+            Ok(())
+        })
+    }
+
+    fn subscribe_blobs(
+        self: Rc<Self>,
+        _params: channel_handle::SubscribeBlobsParams,
+        mut results: channel_handle::SubscribeBlobsResults,
+    ) -> Promise<(), capnp::Error> {
+        let (route, content) = match self.record_content() {
+            Ok(found) => found,
+            Err(error) => return Promise::err(error),
+        };
+        let client: blob_stream::Client = capnp_rpc::new_client(BlobStreamServer {
+            host_guard: HostWorkerReadGuard::for_channel(
+                &self.state,
+                self.peer_id,
+                &self.verified_identity,
+            ),
+            rx: Rc::new(AsyncMutex::new(content.subscribe(&route))),
+        });
+        results.get().set_stream(client);
+        Promise::ok(())
+    }
+
     /// The caller-side door to published actions: one remote-action request
     /// frame in, one answer out, as the caller this channel was admitted as.
     fn remote_action(
@@ -5886,19 +6592,24 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         let route = self.route();
         let person = current.caller(&route.cluster_id);
-        // A delegated agent is its own principal already; any other
-        // connection is an application, which acts as itself.
-        let caller = if current.agent_id.is_some() {
-            person.clone()
-        } else {
-            match self
-                .state
-                .app_door(&person, &route.app_id, &request.message)
-            {
-                Ok(caller) => caller,
-                Err(refusal) => return reply_frame(*refusal, results),
-            }
-        };
+        // An edit an effect submits while running for someone is theirs.
+        let caller =
+            if let Some(continued) = self.state.continued_caller(self.peer_id, &request.message) {
+                match continued {
+                    Ok(caller) => caller,
+                    Err(refused) => return reply_frame(*refused, results),
+                }
+            } else if current.agent_id.is_some() {
+                person.clone()
+            } else {
+                match self
+                    .state
+                    .app_door(&person, &route.app_id, &request.message)
+                {
+                    Ok(caller) => caller,
+                    Err(refusal) => return reply_frame(*refusal, results),
+                }
+            };
         let host = action_host::ConnectionActionHost {
             state: Arc::clone(&self.state),
             own_peer: self.peer_id,
@@ -6130,6 +6841,48 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         results.get().set_reply_json(&reply);
         Promise::ok(())
+    }
+
+    fn settings(
+        self: Rc<Self>,
+        _params: channel_handle::SettingsParams,
+        mut results: channel_handle::SettingsResults,
+    ) -> Promise<(), capnp::Error> {
+        let route = self.route();
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&route, &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        match app_settings_capability(&self.state, route, self.verified_identity.clone()) {
+            Ok(settings) => {
+                results.get().set_settings(settings);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(error),
+        }
+    }
+
+    fn live_activity(
+        self: Rc<Self>,
+        _params: channel_handle::LiveActivityParams,
+        mut results: channel_handle::LiveActivityResults,
+    ) -> Promise<(), capnp::Error> {
+        let route = self.route();
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&route, &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        match live_activity_capability(&self.state, route, self.verified_identity.clone()) {
+            Ok(activity) => {
+                results.get().set_activity(activity);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(error),
+        }
     }
 
     fn wifi_continuity_command(
@@ -7069,6 +7822,19 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "invocation subscriber registry unavailable".into(),
             ));
         }
+        // The app the launcher attested, else the one this channel names.
+        let (app, room) = self
+            .lease
+            .as_ref()
+            .and_then(|lease| lease.local_media.as_ref())
+            .map_or_else(
+                || {
+                    let route = self.route();
+                    (route.app_id, route.cluster_id)
+                },
+                |app| (app.app_id.clone(), app.workspace_id.clone()),
+            );
+        let delivered = invocation_delivery_notice(&self.state.services, app, room);
         let client: invocation_stream::Client = capnp_rpc::new_client(InvocationStreamServer {
             host_guard: HostWorkerReadGuard::for_channel(
                 &self.state,
@@ -7076,6 +7842,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 &self.verified_identity,
             ),
             rx: Rc::new(AsyncMutex::new(rx)),
+            delivered,
         });
         results.get().set_stream(client);
         Promise::ok(())
@@ -7368,6 +8135,9 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .remove(&id)
                 .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
             drop(registry);
+            state
+                .execution_activity
+                .publish(pending.activity.as_ref(), &update);
             state.record_completion(id, pending.completion_owner(), update.clone());
             if let Ok(mut requests) = state.cancellation_requests.lock() {
                 requests.remove(&id);
@@ -7623,6 +8393,8 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            caller: None,
+                            execution: None,
                             argument: argument.as_deref(),
                             actor: &actor,
                             confirmation_token: None,
@@ -7658,6 +8430,8 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            caller: None,
+                            execution: None,
                             argument: argument.as_deref(),
                             actor: &actor,
                             confirmation_token: Some(&token),
@@ -7685,6 +8459,8 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            caller: None,
+                            execution: None,
                             argument: argument.as_deref(),
                             actor: &actor,
                             confirmation_token: Some(&token),
@@ -7781,22 +8557,34 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::LaunchPublishedApplicationParams,
         mut results: channel_handle::LaunchPublishedApplicationResults,
     ) -> Promise<(), capnp::Error> {
-        let current = match self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            Ok(current) => current,
-            Err(error) => return Promise::err(error),
-        };
         let request = match params.get() {
             Ok(request) => request,
             Err(error) => return Promise::err(error),
+        };
+        let parent = match request
+            .get_on_behalf_of()
+            .and_then(observed_launch::launch_parent)
+        {
+            Ok(parent) => parent,
+            Err(error) => return Promise::err(error),
+        };
+        let actor = match self.launch_actor(parent) {
+            Ok(actor) => actor,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
         let app_id = match request.get_app_id() {
             Ok(value) => match value.to_str() {
                 Ok(value) => value.to_owned(),
                 Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
             },
+            Err(error) => return Promise::err(error),
+        };
+        let package_root = match request.get_package_root().and_then(|root| {
+            root.to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+                .and_then(observed_launch::package_root)
+        }) {
+            Ok(root) => root,
             Err(error) => return Promise::err(error),
         };
         let Some(membership) = self.state.membership.as_ref() else {
@@ -7824,7 +8612,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 Ok(now) => now / 1_000_000_000,
                 Err(error) => return Promise::err(capnp::Error::failed(error)),
             };
-            let caller = current.policy_actor(&workspace, now);
+            let caller = actor.policy_in(&workspace, now);
             if workspace.decide_at(&caller, &ResourceRef::App(app_id.clone()), Verb::Write, now)
                 != CapDecision::Allow
             {
@@ -7835,44 +8623,35 @@ impl channel_handle::Server for CapnpChannelHandle {
             workspace
         };
         let id = self.state.invocation_id.fetch_add(1, Ordering::Relaxed);
-        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
-        let update = match self
+        let now = match self.state.policy_now_ns() {
+            Ok(now) => now / 1_000_000_000,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
+        };
+        let author = observed_launch::launch_author(&actor, &workspace, now);
+        let started = self
             .state
             .services
             .launcher
             .as_ref()
             .ok_or_else(|| "application launch unsupported".to_string())
-            .and_then(|service| service.launch(&app_id, &workspace))
-        {
-            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
-            },
-            Err(error) => tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: tilo_actions::ActionFailure {
-                    code: "launch_failed".into(),
-                    message: error,
-                    details: None,
-                    retryable: false,
-                },
-            },
-        };
-        self.state.record_completion(
-            id,
-            InvocationOwner::Local {
-                actor: current.broker_actor().id,
-            },
-            update.clone(),
-        );
-        match serde_json::to_string(&update) {
-            Ok(json) => {
-                results.get().set_id(id);
-                results.get().set_update_json(&json);
-                Promise::ok(())
-            }
-            Err(error) => Promise::err(capnp::Error::failed(error.to_string())),
-        }
+            .and_then(|service| {
+                service.begin_launch(
+                    &app_id,
+                    package_root.as_deref(),
+                    &workspace,
+                    author.as_deref(),
+                )
+            });
+        let actor = actor.id().to_owned();
+        Promise::from_future(async move {
+            let outcome = observed_launch::wait_for_startup(started).await;
+            let update = self.finish_observed_launch(&app_id, actor, parent, id, outcome);
+            let json = serde_json::to_string(&update)
+                .map_err(|error| capnp::Error::failed(error.to_string()))?;
+            results.get().set_id(id);
+            results.get().set_update_json(&json);
+            Ok(())
+        })
     }
 
     fn report_continuation(
@@ -8394,7 +9173,7 @@ fn handle_signed_op_send_for_artifact(
             let mut mls_vault = None;
             if let Ok(mut ch) = state.broker_channels.lock() {
                 mls_vault.clone_from(&ch.mls_vault);
-                ch.record_history(&envelope);
+                ch.record_history(&route.cluster_id, &envelope);
                 let ch_state = ch.state_for(artifact);
                 ch_state.record_validated_op(envelope.clone());
                 if envelope.op_class == collab_types::OpClass::Compaction
@@ -8484,14 +9263,15 @@ fn handle_authorized_signed_op_send(
     debug_assert_eq!(
         authorized.channel,
         match &authorized.payload {
-            collab_types::WholeDocumentPayload::Cleartext(_) => {
+            collab_types::RoutedDocumentPayload::Cleartext(_)
+            | collab_types::RoutedDocumentPayload::CleartextSegment(_) => {
                 collab_types::document_channel_id(
                     &route.app_id,
                     &route.cluster_id,
                     &route.record_id,
                 )
             }
-            collab_types::WholeDocumentPayload::Encrypted { channel, .. } => *channel,
+            collab_types::RoutedDocumentPayload::Encrypted { channel, .. } => *channel,
         }
     );
     handle_signed_op_send_for_artifact(
@@ -8989,9 +9769,22 @@ impl realtime_stream::Server for RealtimeStreamServer {
     }
 }
 
+/// What the host is told each time an invocation is handed to `app` in
+/// `room`; nothing when no launcher hosts it.
+fn invocation_delivery_notice(
+    services: &HostServices,
+    app: String,
+    room: String,
+) -> Option<Box<dyn Fn()>> {
+    let launcher = services.launcher.clone().filter(|_| !app.is_empty())?;
+    Some(Box::new(move || launcher.note_acted_on(&app, &room)))
+}
+
 struct InvocationStreamServer {
     host_guard: Option<HostWorkerReadGuard>,
     rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<InvocationEnvelope>>>,
+    /// Told each time an invocation is handed to the app.
+    delivered: Option<Box<dyn Fn()>>,
 }
 
 struct TaskRunStreamServer {
@@ -9055,6 +9848,9 @@ impl invocation_stream::Server for InvocationStreamServer {
             })?;
             drop(guard);
             HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+            if let Some(delivered) = &self.delivered {
+                delivered();
+            }
             let mut result = results.get();
             result.set_id(invocation.id);
             result.set_invocation_uuid(invocation.invocation.0.as_bytes());
@@ -9673,12 +10469,8 @@ impl Drop for BrokerThreadShutdown {
 }
 
 #[expect(
-    clippy::too_many_lines,
-    reason = "the one broker thread constructor: every host-owned capability is injected here"
-)]
-#[expect(
     clippy::significant_drop_tightening,
-    reason = "the state handles are clones moved into the broker thread and its connection tasks"
+    reason = "the state handles are clones moved into the broker thread"
 )]
 pub(super) fn spawn_configured(
     socket_path: &Path,
@@ -9746,139 +10538,235 @@ pub(super) fn spawn_configured(
                 state: Arc::clone(&state),
                 fanout: fanout_for_thread,
             };
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    tracing::warn!("capnp broker: tokio runtime init failed: {e}");
-                    return;
-                }
-            };
-            let local = tokio::task::LocalSet::new();
-            local.block_on(&rt, async move {
-                let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
-                if let Err(error) = state.start_desktop_commands() {
-                    if let Ok(mut failure) = state.owner_commit_failure.lock() {
-                        failure.get_or_insert(error);
-                    }
-                    return;
-                }
-                if let Err(error) = state.start_document_imports() {
-                    if let Ok(mut failure) = state.owner_commit_failure.lock() {
-                        failure.get_or_insert(error);
-                    }
-                    return;
-                }
-                if let Err(error) = state.start_workspace_collaboration() {
-                    if let Ok(mut failure) = state.owner_commit_failure.lock() {
-                        failure.get_or_insert(error);
-                    }
-                    return;
-                }
-                state.start_peer_action_bridge(Rc::clone(&directories));
-                let listener = match tokio::net::UnixListener::from_std(std_listener) {
-                    Ok(l) => l,
+            let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
+            loop {
+                let listener = match std_listener.try_clone() {
+                    Ok(listener) => listener,
                     Err(e) => {
-                        tracing::warn!(
-                            "capnp broker: adopting {} into the reactor failed: {e}",
-                            socket_path_for_thread.display()
-                        );
+                        tracing::warn!("capnp broker: cannot take up its socket again: {e}");
                         return;
                     }
                 };
-                loop {
-                    #[cfg(test)]
-                    {
-                        let callbacks = match state.thread_callbacks.lock() {
-                            Ok(mut callbacks) => std::mem::take(&mut *callbacks),
-                            Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
-                        };
-                        for callback in callbacks {
-                            callback();
-                        }
-                    }
-                    let workers = state
-                        .workers
-                        .lock()
-                        .map(|mut workers| std::mem::take(&mut *workers))
-                        .unwrap_or_default();
-                    for worker in workers {
-                        let state = state.clone();
-                        let directories = directories.clone();
-                        let peer_id = state.next_peer_id();
-                        tokio::task::spawn_local(async move {
-                            let result = async {
-                                let stream = tokio::net::UnixStream::from_std(worker.stream)
-                                    .map_err(capnp::Error::from)?;
-                                drive_connection(
-                                    stream,
-                                    state,
-                                    directories,
-                                    peer_id,
-                                    Some(worker.binding),
-                                )
-                                .await
-                            }
-                            .await;
-                            if let Err(error) = result {
-                                let error_class = match error.kind {
-                                    capnp::ErrorKind::Failed => "failed",
-                                    capnp::ErrorKind::Overloaded => "overloaded",
-                                    capnp::ErrorKind::Disconnected => "disconnected",
-                                    capnp::ErrorKind::Unimplemented => "unimplemented",
-                                    _ => "protocol",
-                                };
-                                tracing::warn!(
-                                    peer_id,
-                                    phase = "local_worker_rpc",
-                                    error_class,
-                                    "capnp broker: local worker disconnected"
-                                );
-                            }
-                        });
-                    }
-                    state.drain_action_directory_bridge(&directories);
-                    if quit.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    let stream = tokio::select! {
-                        biased;
-                        () = tokio::time::sleep(Duration::from_millis(100)) => {
-                            // This cadence is also the broker's lifecycle
-                            // watchdog. Expiration must not depend on a caller
-                            // polling status: completion waiters deserve a
-                            // terminal answer even after an app goes silent.
-                            state.expire_stale_invocations();
-                            continue;
-                        },
-                        conn = listener.accept() => conn,
-                        () = state.worker_admitted.notified() => continue,
-                    };
-                    let (stream, _) = match stream {
-                        Ok(s) => s,
-                        Err(e) => {
-                            tracing::warn!("capnp broker: accept failed: {e}; retrying");
-                            continue;
-                        }
-                    };
+                let run = {
                     let state = Arc::clone(&state);
                     let directories = Rc::clone(&directories);
-                    let peer_id = state.next_peer_id();
-                    tokio::task::spawn_local(async move {
-                        if let Err(e) =
-                            drive_connection(stream, state, directories, peer_id, None).await
+                    let quit = Arc::clone(&quit);
+                    let socket_path = socket_path_for_thread.clone();
+                    tilo_rt::panic_boundary::isolate(move || {
+                        let rt = match tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
                         {
-                            tracing::warn!("capnp broker: peer-{peer_id} disconnected: {e}");
+                            Ok(rt) => rt,
+                            Err(e) => {
+                                tracing::warn!("capnp broker: tokio runtime init failed: {e}");
+                                return;
+                            }
+                        };
+                        tokio::task::LocalSet::new().block_on(
+                            &rt,
+                            serve_broker_thread(state, directories, listener, socket_path, quit),
+                        );
+                    })
+                };
+                match run {
+                    Ok(()) => return,
+                    Err(panic) => {
+                        if !state.restart_after_unwind(panic.as_ref()) {
+                            return;
                         }
-                    });
+                    }
                 }
-            });
+            }
         })?;
     fanout.attach_capnp(attached_state);
 
     Ok(thread)
+}
+
+/// Most broker threads a session starts after one unwound, before the
+/// broker stays down for the rest of the session.
+const BROKER_THREAD_RESTARTS: u64 = 5;
+
+impl CapnpBrokerState {
+    /// After the broker thread's runtime unwound: withdraw the services it
+    /// ran and say whether to start it again. Its connections closed with
+    /// the runtime; apps reconnect to the same socket.
+    fn restart_after_unwind(&self, panic: &(dyn std::any::Any + Send)) -> bool {
+        let message = tilo_rt::panic_boundary::message(panic);
+        let restarts = self
+            .thread_restarts
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        self.forget_service_peers();
+        if restarts > BROKER_THREAD_RESTARTS || self.stopped.load(Ordering::Acquire) {
+            tracing::error!(
+                restarts,
+                panic = message,
+                "capnp broker: stopped after its thread failed again; apps lose collaboration until the session restarts"
+            );
+            return false;
+        }
+        tracing::error!(
+            restarts,
+            panic = message,
+            "capnp broker: its thread failed; starting it again"
+        );
+        // A thread that fails at once again backs off rather than spin;
+        // tests restart at once.
+        if !cfg!(test) {
+            let _ = tilo_rt::sleep_thread(Duration::from_millis(
+                100_u64.saturating_mul(1 << restarts.min(5)),
+            ));
+        }
+        true
+    }
+
+    /// How often the broker thread failed and was started again.
+    #[must_use]
+    pub fn thread_restarts(&self) -> u64 {
+        self.thread_restarts.load(Ordering::Relaxed)
+    }
+}
+
+/// One run of the broker thread: start the broker's own services, then
+/// accept and drive connections until asked to quit.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the broker's turn: service start, worker admission, accept and expiry in one loop"
+)]
+#[expect(
+    clippy::future_not_send,
+    reason = "Cap'n Proto RPC and its action-directory registry are Rc-backed and run only on the broker LocalSet"
+)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the state handles are clones moved into the connection tasks"
+)]
+async fn serve_broker_thread(
+    state: Arc<CapnpBrokerState>,
+    directories: Rc<LocalActionDirectoryRegistry>,
+    std_listener: std::os::unix::net::UnixListener,
+    socket_path_for_thread: PathBuf,
+    quit: Arc<AtomicBool>,
+) {
+    if let Err(error) = state.start_desktop_commands() {
+        if let Ok(mut failure) = state.owner_commit_failure.lock() {
+            failure.get_or_insert(error);
+        }
+        return;
+    }
+    if let Err(error) = state.start_document_imports() {
+        if let Ok(mut failure) = state.owner_commit_failure.lock() {
+            failure.get_or_insert(error);
+        }
+        return;
+    }
+    if let Err(error) = state.start_workspace_collaboration() {
+        if let Ok(mut failure) = state.owner_commit_failure.lock() {
+            failure.get_or_insert(error);
+        }
+        return;
+    }
+    state.start_peer_action_bridge(Rc::clone(&directories));
+    let listener = match tokio::net::UnixListener::from_std(std_listener) {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::warn!(
+                "capnp broker: adopting {} into the reactor failed: {e}",
+                socket_path_for_thread.display()
+            );
+            return;
+        }
+    };
+    loop {
+        #[cfg(test)]
+        {
+            let callbacks = match state.thread_callbacks.lock() {
+                Ok(mut callbacks) => std::mem::take(&mut *callbacks),
+                Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+            };
+            for callback in callbacks {
+                callback();
+            }
+        }
+        let workers = state
+            .workers
+            .lock()
+            .map(|mut workers| std::mem::take(&mut *workers))
+            .unwrap_or_default();
+        for worker in workers {
+            let state = state.clone();
+            let directories = directories.clone();
+            let peer_id = state.next_peer_id();
+            tokio::task::spawn_local(async move {
+                let result = async {
+                    let stream = tokio::net::UnixStream::from_std(worker.stream)
+                        .map_err(capnp::Error::from)?;
+                    drive_connection(stream, state, directories, peer_id, Some(worker.binding))
+                        .await
+                }
+                .await;
+                if let Err(error) = result {
+                    let error_class = match error.kind {
+                        capnp::ErrorKind::Failed => "failed",
+                        capnp::ErrorKind::Overloaded => "overloaded",
+                        capnp::ErrorKind::Disconnected => "disconnected",
+                        capnp::ErrorKind::Unimplemented => "unimplemented",
+                        _ => "protocol",
+                    };
+                    tracing::warn!(
+                        peer_id,
+                        phase = "local_worker_rpc",
+                        error_class,
+                        "capnp broker: local worker disconnected"
+                    );
+                }
+            });
+        }
+        state.drain_action_directory_bridge(&directories);
+        if quit.load(Ordering::Relaxed) {
+            break;
+        }
+        let deadline = state.next_invocation_deadline();
+        // The loop is also the broker's turn: in-process door
+        // calls and connected apps progress on it. Cap it at the
+        // old cadence, and sooner when an invocation is about to
+        // expire. `local_turn` wakes it immediately for queued work.
+        let tick = deadline
+            .map_or(Duration::from_millis(100), |deadline| {
+                deadline.saturating_duration_since(std::time::Instant::now())
+            })
+            .min(Duration::from_millis(100));
+        let stream = tokio::select! {
+            biased;
+            () = tokio::time::sleep(tick) => {
+                // Expiration must not depend on a caller polling
+                // status: completion waiters deserve a terminal
+                // answer even after an app goes silent.
+                state.expire_stale_invocations();
+                continue;
+            },
+            conn = listener.accept() => conn,
+            () = state.local_turn.notified() => continue,
+            () = state.worker_admitted.notified() => continue,
+        };
+        let (stream, _) = match stream {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("capnp broker: accept failed: {e}; retrying");
+                continue;
+            }
+        };
+        let state = Arc::clone(&state);
+        let directories = Rc::clone(&directories);
+        let peer_id = state.next_peer_id();
+        tokio::task::spawn_local(async move {
+            if let Err(e) = drive_connection(stream, state, directories, peer_id, None).await {
+                tracing::warn!("capnp broker: peer-{peer_id} disconnected: {e}");
+            }
+        });
+    }
 }
 
 /// Dial the capnp socket at `path` for tests. Production apps go through
@@ -10003,10 +10891,104 @@ async fn has_collab_launch_marker(stream: &tokio::net::UnixStream) -> Result<boo
     ))
 }
 
+/// A launcher's handoff, read whole: the stream is now where the app's
+/// first Cap'n Proto message begins.
+struct LauncherHandoff {
+    handoff: CollabLaunchHandoff,
+    pid: u32,
+    media_process: Option<native_media::PeerProcess>,
+}
+
+/// Why a connection was refused before its first Cap'n Proto call.
+struct LaunchRefusal {
+    error: capnp::Error,
+    /// What the connection said it was, as far as it got: the process and
+    /// the app and room its launcher named.
+    peer: String,
+    /// The handoff was read whole, so the app can still be told the reason
+    /// over Cap'n Proto instead of seeing its connection reset.
+    answerable: bool,
+}
+
 async fn authenticate_launcher_handoff(
     stream: &mut tokio::net::UnixStream,
     services: &HostServices,
-) -> Result<Option<Arc<native_media::LocalAppConnection>>, capnp::Error> {
+) -> Result<Option<Arc<native_media::LocalAppConnection>>, LaunchRefusal> {
+    let LauncherHandoff {
+        handoff,
+        pid,
+        media_process,
+    } = match read_launcher_handoff(stream).await {
+        Ok(Some(read)) => read,
+        Ok(None) => return Ok(None),
+        Err(error) => {
+            let peer = stream.peer_cred().ok().and_then(|c| c.pid()).map_or_else(
+                || "a peer without credentials".to_owned(),
+                |pid| format!("pid {pid}"),
+            );
+            return Err(LaunchRefusal {
+                error,
+                peer,
+                answerable: false,
+            });
+        }
+    };
+    let peer = format!(
+        "pid {pid} launching {} in room {}",
+        handoff.app_id, handoff.workspace_id
+    );
+    if handoff.protocol != collab_types::local_transport::COLLAB_LAUNCH_PROTOCOL_VERSION
+        || handoff.app_id.trim().is_empty()
+        || handoff.workspace_id.trim().is_empty()
+    {
+        return Err(LaunchRefusal {
+            error: capnp::Error::failed(
+                "collaboration launch handoff has an unsupported or empty identity".into(),
+            ),
+            peer,
+            answerable: true,
+        });
+    }
+
+    // `spawn_launch` records immediately after `Command::spawn`; the child
+    // can connect first on a fast machine. Retry only this narrow registration
+    // race. A direct tilo-launcher command never obtains a record and fails
+    // closed instead of becoming a way around admin/admission checks.
+    for attempt in 0..=LAUNCH_RECORD_RACE_RETRIES {
+        if services.launcher.as_ref().is_some_and(|service| {
+            service.attest_process(pid, &handoff.app_id, &handoff.workspace_id)
+        }) {
+            return Ok(media_process.and_then(|process| {
+                native_media::LocalAppConnection::attested(
+                    handoff.app_id,
+                    handoff.workspace_id,
+                    process,
+                )
+            }));
+        }
+        if attempt < LAUNCH_RECORD_RACE_RETRIES {
+            tokio::time::sleep(LAUNCH_RECORD_RACE_DELAY).await;
+        }
+    }
+    let error = if services.launcher.is_none() {
+        "collaboration launch cannot be attested: this broker has no launcher service"
+    } else {
+        "collaboration launch is not an authenticated shell-managed process: the \
+         shell holds no live launch record for this process, app and room (an app \
+         started by hand through tilo-launcher, or one whose record expired)"
+    };
+    Err(LaunchRefusal {
+        error: capnp::Error::failed(error.into()),
+        peer,
+        answerable: true,
+    })
+}
+
+/// Read the launcher's marker and handoff off `stream`; `None` for a raw
+/// client that sent no marker.
+async fn read_launcher_handoff(
+    stream: &mut tokio::net::UnixStream,
+) -> Result<Option<LauncherHandoff>, capnp::Error> {
     if !has_collab_launch_marker(stream).await? {
         return Ok(None);
     }
@@ -10066,39 +11048,37 @@ async fn authenticate_launcher_handoff(
     let handoff: CollabLaunchHandoff = serde_json::from_slice(&bytes).map_err(|error| {
         capnp::Error::failed(format!("invalid collaboration launch handoff: {error}"))
     })?;
-    if handoff.protocol != collab_types::local_transport::COLLAB_LAUNCH_PROTOCOL_VERSION
-        || handoff.app_id.trim().is_empty()
-        || handoff.workspace_id.trim().is_empty()
-    {
-        return Err(capnp::Error::failed(
-            "collaboration launch handoff has an unsupported or empty identity".into(),
-        ));
-    }
-
-    // `spawn_launch` records immediately after `Command::spawn`; the child
-    // can connect first on a fast machine. Retry only this narrow registration
-    // race. A direct tilo-launcher command never obtains a record and fails
-    // closed instead of becoming a way around admin/admission checks.
-    for attempt in 0..=LAUNCH_RECORD_RACE_RETRIES {
-        if services.launcher.as_ref().is_some_and(|service| {
-            service.attest_process(pid, &handoff.app_id, &handoff.workspace_id)
-        }) {
-            return Ok(media_process.and_then(|process| {
-                native_media::LocalAppConnection::attested(
-                    handoff.app_id,
-                    handoff.workspace_id,
-                    process,
-                )
-            }));
-        }
-        if attempt < LAUNCH_RECORD_RACE_RETRIES {
-            tokio::time::sleep(LAUNCH_RECORD_RACE_DELAY).await;
-        }
-    }
-    Err(capnp::Error::failed(
-        "collaboration launch is not an authenticated shell-managed process".into(),
-    ))
+    Ok(Some(LauncherHandoff {
+        handoff,
+        pid,
+        media_process,
+    }))
 }
+
+/// Tell a refused app why over the protocol it speaks: every call on the
+/// service it bootstraps fails with `error`. Dropping the socket instead
+/// leaves its first message unread, and the app only sees its connection
+/// reset. Bounded, so a peer that never hangs up holds nothing for long.
+#[allow(
+    clippy::future_not_send,
+    reason = "Cap'n Proto RPC is Rc-backed and runs only on the broker LocalSet"
+)]
+async fn answer_refused_launch(stream: tokio::net::UnixStream, error: capnp::Error) {
+    let (reader, writer) = stream.into_split();
+    let network = Box::new(twoparty::VatNetwork::new(
+        futures::io::BufReader::new(reader.compat()),
+        futures::io::BufWriter::new(writer.compat_write()),
+        rpc_twoparty_capnp::Side::Server,
+        capnp::message::ReaderOptions::default(),
+    ));
+    let refused: collab_service::Client =
+        capnp_rpc::new_future_client(std::future::ready(Err(error)));
+    let rpc = RpcSystem::new(network, Some(refused.client));
+    let _ = tokio::time::timeout(REFUSED_LAUNCH_ANSWER_WINDOW, rpc).await;
+}
+
+/// How long a refused app's connection is kept open to hear why.
+const REFUSED_LAUNCH_ANSWER_WINDOW: Duration = Duration::from_secs(5);
 
 #[allow(
     clippy::future_not_send,
@@ -10118,7 +11098,23 @@ async fn drive_connection(
     };
     let mut stream = stream;
     let local_media = if worker.is_none() {
-        authenticate_launcher_handoff(&mut stream, &state.services).await?
+        match authenticate_launcher_handoff(&mut stream, &state.services).await {
+            Ok(local_media) => local_media,
+            Err(refusal) => {
+                // Error, not warning: an app the shell launched is about to
+                // exit for this, and the default session log keeps errors only.
+                tracing::error!(
+                    peer_id,
+                    peer = %refusal.peer,
+                    reason = %refusal.error,
+                    "capnp broker: refused a collaboration connection before its first call",
+                );
+                if refusal.answerable {
+                    answer_refused_launch(stream, refusal.error).await;
+                }
+                return Ok(());
+            }
+        }
     } else {
         None
     };
@@ -10371,7 +11367,7 @@ pub mod tests {
 
         fn app_presence(&self, _: String, _: String, _: collab_types::PeerPresence) {}
 
-        fn scrollback_request(&self, _: ArtifactId, _: u64, _: u16) {}
+        fn scrollback_request(&self, _: &str, _: ArtifactId, _: u64, _: u16) {}
     }
 
     #[cfg(test)]
@@ -10476,6 +11472,109 @@ pub mod tests {
             "an operation admitted before shutdown keeps its non-retryable identity"
         );
         state.stop();
+    }
+
+    /// An app whose launch the shell holds no record of (one started by hand
+    /// through tilo-launcher, or one whose record is gone) is refused. It used
+    /// to be refused by dropping its socket with its first call unread, so the
+    /// app saw only "Connection reset by peer" and the shell logged nothing it
+    /// keeps. The app must hear why, as an ordinary failed call.
+    #[test]
+    fn an_unattested_launch_is_told_why_it_was_refused() {
+        struct NoLaunchRecords;
+        impl crate::services::LauncherServices for NoLaunchRecords {
+            fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+                Vec::new()
+            }
+            fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+                Err("this broker launches nothing".into())
+            }
+            fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
+                false
+            }
+        }
+        let directory = tempfile::tempdir().expect("temporary socket directory");
+        let socket = lifecycle_socket(&directory, "unattested");
+        let config = crate::peer_actions::NativePeerBrokerConfig {
+            journal_root: directory.path().join("unattested-invocations"),
+            certificate_authority: Arc::new(LifecycleAuthority),
+        };
+        let _broker = crate::collab_broker::spawn_with_test_services(
+            socket.clone(),
+            None,
+            PeerPublisher::disabled(),
+            Some(&config),
+            HostServices {
+                launcher: Some(Arc::new(NoLaunchRecords)),
+                ..Default::default()
+            },
+            None,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::new(FanoutState::new()),
+        )
+        .expect("test broker");
+
+        // What tilo-launcher writes before handing the descriptor to the app.
+        let mut stream = std::os::unix::net::UnixStream::connect(&socket).expect("connect");
+        let handoff = serde_json::to_vec(&serde_json::json!({
+            "protocol": collab_types::local_transport::COLLAB_LAUNCH_PROTOCOL_VERSION,
+            "app_id": "so.tilo.calculator",
+            "workspace_id": "5ba25f73-87c5-447f-a5a6-880dc4249a81",
+        }))
+        .expect("handoff json");
+        std::io::Write::write_all(
+            &mut stream,
+            &collab_types::local_transport::COLLAB_LAUNCH_MAGIC,
+        )
+        .expect("marker");
+        std::io::Write::write_all(
+            &mut stream,
+            &launcher::services::COLLAB_LAUNCH_FRAMING
+                .encode(&handoff)
+                .expect("framed handoff"),
+        )
+        .expect("handoff");
+        stream.set_nonblocking(true).expect("nonblocking");
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let error = tokio::task::LocalSet::new().block_on(&runtime, async move {
+            let stream = tokio::net::UnixStream::from_std(stream).expect("tokio stream");
+            let (reader, writer) = stream.into_split();
+            let network = Box::new(twoparty::VatNetwork::new(
+                futures::io::BufReader::new(reader.compat()),
+                futures::io::BufWriter::new(writer.compat_write()),
+                rpc_twoparty_capnp::Side::Client,
+                capnp::message::ReaderOptions::default(),
+            ));
+            let mut rpc = RpcSystem::new(network, None);
+            let client = runtime_collab::CollabClient::from_raw(
+                rpc.bootstrap(rpc_twoparty_capnp::Side::Server),
+            );
+            tokio::task::spawn_local(async move {
+                let _ = rpc.await;
+            });
+            match client
+                .join_channel(
+                    "5ba25f73-87c5-447f-a5a6-880dc4249a81#app:so.tilo.calculator",
+                    b"",
+                )
+                .await
+            {
+                Ok(_) => panic!("an unattested launch joined a channel"),
+                Err(error) => error.to_string(),
+            }
+        });
+        assert!(
+            error.contains("not an authenticated shell-managed process"),
+            "the refused app must learn why, not see its connection reset: {error}",
+        );
+        assert!(
+            !error.contains("reset by peer"),
+            "the refusal arrived as a reset: {error}",
+        );
     }
 
     #[test]
@@ -10821,10 +11920,46 @@ pub mod tests {
         )
         .expect("test broker");
         let facade = broker.app_action_broker().expect("live broker facade");
-        fanout
-            .capnp_state()
-            .expect("attached broker state")
-            .enqueue_thread_callback(Box::new(|| panic!("broker-thread unwind fixture")));
+        let state = fanout.capnp_state().expect("attached broker state");
+
+        // A failing broker thread is started again on the same socket, and
+        // the session's handles to it stay live.
+        state.enqueue_thread_callback(Box::new(|| panic!("broker-thread unwind fixture")));
+        tilo_test_env::wait_until("the broker thread to start again", || {
+            state.thread_restarts() == 1
+        });
+        let (reached, answered) = std::sync::mpsc::channel();
+        state.enqueue_thread_callback(Box::new(move || {
+            let _ = reached.send(tilo_rt::panic_boundary::is_isolated());
+        }));
+        assert!(
+            tilo_test_env::recv("the restarted thread's turn", &answered),
+            "the restarted thread runs inside its panic boundary"
+        );
+        assert!(socket.exists(), "a restart keeps the socket");
+        assert!(
+            !state.stopped.load(Ordering::Acquire),
+            "a restart keeps the broker's state live"
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("client runtime");
+        tokio::task::LocalSet::new().block_on(&runtime, async {
+            let (_client, rpc) = dial_capnp_for_test(socket.clone())
+                .await
+                .expect("a client connects after the restart");
+            rpc.abort();
+        });
+
+        // One that keeps failing stays down and releases what it held.
+        for _ in 0..BROKER_THREAD_RESTARTS {
+            state.enqueue_thread_callback(Box::new(|| panic!("broker-thread unwind fixture")));
+            tilo_test_env::wait_until("the broker thread to fail", || {
+                !socket.exists() || state.callbacks_pending() == 0
+            });
+        }
+        drop(state);
 
         tilo_test_env::wait_until("the broker to remove its socket", || !socket.exists());
         assert!(!socket.exists(), "unwind releases owned socket custody");
@@ -11083,6 +12218,8 @@ pub mod tests {
     include!("reliable_resolution_tests.rs");
     #[cfg(test)]
     include!("durable_local_invocation_matrix_tests.rs");
+    #[cfg(test)]
+    include!("record_content_tests.rs");
 
     pub struct LocalDirectoryFixture {
         _fanout: Arc<FanoutState>,
@@ -11169,6 +12306,13 @@ pub mod tests {
 
         pub fn set_resolve_mode(&self, mode: DirectoryResolveMode) {
             self.directory_state.borrow_mut().resolve_mode = mode;
+        }
+
+        pub fn take_invocation_identity(&mut self) -> Option<(u64, tilo_actions::InvocationId)> {
+            self.invocation_rx
+                .try_recv()
+                .ok()
+                .map(|invocation| (invocation.id, invocation.invocation))
         }
 
         pub fn take_invocation_actor(&mut self) -> Option<String> {
@@ -11327,12 +12471,7 @@ pub mod tests {
                 },
             );
         state.refresh_action_directory_root_snapshot();
-        let (invocation_tx, invocation_rx) = tokio::sync::mpsc::unbounded_channel();
-        state
-            .invocation_subscribers
-            .lock()
-            .expect("invocation subscribers")
-            .insert(peer_id, invocation_tx);
+        let invocation_rx = state.capture_invocations_for_test(peer_id);
         fanout.attach_capnp(Arc::clone(&state));
         LocalDirectoryFixture {
             _fanout: fanout,
@@ -11508,6 +12647,60 @@ pub mod tests {
         let after_disconnect = fixture.state.action_directory_root_page(Some(128), 1);
         assert!(after_disconnect.roots.is_empty());
         assert!(after_disconnect.generation > second.generation);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn directory_fixture_preserves_scoped_uuid_through_actual_completion() {
+        use tilo_actions::remote::{
+            Caller, InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
+        };
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut fixture = local_directory_fixture();
+                let caller = Caller::local_person("fixture-owner")
+                    .in_room(fixture.cluster_id.clone())
+                    .in_new_execution();
+                let request = InvokeRequest {
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: RemoteActionTarget {
+                        provider: fixture.peer_id.to_string(),
+                        address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+                    },
+                    argument: InvokeArgument::None,
+                    context: None,
+                    confirmation: None,
+                    revision: Some("directory-r1".into()),
+                    on_behalf_of: None,
+                };
+                let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
+                let admitted = tokio::time::timeout(Duration::from_secs(2), async {
+                    loop {
+                        drain_directory_bridge(&fixture).await;
+                        if let PendingPoll::Ready(result) = pending.poll_ready() {
+                            break result;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("bounded actual directory admission");
+                admitted.expect("full-envelope consumer supports scoped invocation UUIDs");
+                let (job, delivered) = fixture.take_invocation_identity().expect("actual delivery");
+                assert_eq!(delivered, request.invocation);
+                assert_ne!(delivered.0, uuid::Uuid::from_u128(u128::from(job)));
+                fixture
+                    .complete_invocation(
+                        job,
+                        &tilo_actions::InvocationUpdate::Succeeded {
+                            invocation: delivered,
+                            output: tilo_actions::ActionOutput::default(),
+                        },
+                    )
+                    .await
+                    .expect("actual peer-bound completion accepts the delivered UUID");
+                assert!(fixture.take_invocation_identity().is_none());
+            })
+            .await;
     }
 
     #[test]
@@ -12217,7 +13410,7 @@ pub mod tests {
             .expect("broker authorizes signed clear metadata without decrypting");
         assert!(matches!(
             authorized.payload,
-            collab_types::WholeDocumentPayload::Encrypted { channel, epoch: 7 }
+            collab_types::RoutedDocumentPayload::Encrypted { channel, epoch: 7 }
                 if channel == expected_channel
         ));
         handle_signed_op_send(&state, 1, &route, &admitted, encrypted.clone());
@@ -12260,6 +13453,144 @@ pub mod tests {
                 .is_err(),
             "a signed envelope cannot be replayed through another record route"
         );
+    }
+
+    /// The person room is admitted from the joiner's own root alone, with no
+    /// workspace in the tree, and its documents reach the other local
+    /// connections on the record and the peer publisher. Nobody else's root
+    /// enters it, and nobody enters another person's room.
+    #[test]
+    fn person_room_admits_only_its_own_roots_devices_as_owner() {
+        let root = SigningKey::from_bytes(&[26; 32]);
+        let device = SigningKey::from_bytes(&[27; 32]);
+        let stranger = SigningKey::from_bytes(&[28; 32]);
+        let own_room = collab_types::person_room(&root.verifying_key().to_bytes());
+        let route = CrdtRoute::record("so.tilo.tube", own_room.to_string(), "watch-history");
+        let membership = WorkspaceTree::default().shared();
+        let own_device = VerifiedJoinIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            capped: false,
+        };
+
+        let admitted = admit_verified_join(&membership.read(), &route, own_device.clone())
+            .expect("the root's own device joins its person room");
+        assert_eq!(admitted.role, CapRole::Owner);
+        assert_eq!(
+            admitted.principal_id,
+            principal_id_for_root(root.verifying_key().to_bytes())
+        );
+        assert!(
+            admit_verified_join(&membership.read(), &route, verified_device(&stranger)).is_err(),
+            "another root's device never joins this person's room"
+        );
+        let foreign = admit_verified_join(
+            &membership.read(),
+            &route,
+            VerifiedJoinIdentity {
+                capped: true,
+                ..own_device
+            },
+        )
+        .expect("the root's foreign device joins its person room");
+        assert_eq!(
+            foreign.role,
+            CapRole::Editor,
+            "a foreign device keeps the foreign-device cap in the person room too"
+        );
+        let strangers_room = CrdtRoute::record(
+            "so.tilo.tube",
+            collab_types::person_room(&stranger.verifying_key().to_bytes()).to_string(),
+            "watch-history",
+        );
+        assert!(
+            admit_verified_join(&membership.read(), &strangers_room, own_device).is_err(),
+            "a device never joins another person's room"
+        );
+
+        let fanout = Arc::new(FanoutState::new());
+        let broker_channels = Arc::new(Mutex::new(BrokerChannels::default()));
+        let sink = Arc::new(RecordingSink::default());
+        let publisher =
+            PeerPublisher::new(sink.clone() as Arc<dyn crate::collab_outbound::PeerPublishSink>);
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &fanout,
+            Arc::clone(&broker_channels),
+            publisher,
+            Some(membership),
+            None,
+        );
+        fanout.attach_capnp(Arc::clone(&state));
+        state.ensure_channel(&route.channel_key());
+        let mut other_window = state.subscribe_ops(&route.channel_key(), 2);
+        let current = state
+            .revalidate_admission(&route, &admitted)
+            .expect("the person room stays admitted without a workspace");
+        assert_eq!(current.role, CapRole::Owner);
+
+        let mut op = SignedOp::new_unsigned(
+            DocumentMutation::Snapshot(b"watched".to_vec())
+                .encode()
+                .expect("typed snapshot"),
+            document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
+            Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
+            document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+            collab_types::OpClass::Splice,
+            SystemTime::now(),
+            1,
+        );
+        sign_op(&mut op, &device).expect("device signs document op");
+        let authorized = state
+            .authorize_certified_document(&route, &current, &op)
+            .expect("the owner writes their own records");
+        handle_authorized_signed_op_send(&state, 1, &route, &current, &authorized, op.clone());
+
+        let delivered = other_window.try_recv().expect("local fanout");
+        assert_eq!(
+            postcard::from_bytes::<SignedOp>(&delivered.op_bytes).expect("signed envelope"),
+            op
+        );
+        assert!(matches!(
+            sink.snapshot().as_slice(),
+            [Sent::Signed { cluster_id, record_id, .. }]
+                if *cluster_id == route.cluster_id && record_id == "watch-history"
+        ));
+    }
+
+    /// A device that came back is caught up by the local apps holding the
+    /// person room's records: each record channel of that room, and only of
+    /// that room, is asked for its snapshot.
+    #[test]
+    fn room_snapshot_requests_reach_only_that_rooms_record_channels() {
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            None,
+            None,
+        );
+        fanout.attach_capnp(Arc::clone(&state));
+        let person_room = collab_types::person_room(&[29; 32]).to_string();
+        let history = CrdtRoute::record("so.tilo.tube", person_room.as_str(), "watch-history");
+        let words = CrdtRoute::record("so.tilo.dict", person_room.as_str(), "learned");
+        let unscoped = CrdtRoute::cluster(person_room.as_str());
+        let shared = CrdtRoute::record("so.tilo.tube", "room-1", "watch-history");
+        let mut receivers: Vec<_> = [&history, &words, &unscoped, &shared]
+            .into_iter()
+            .zip(2_u64..)
+            .map(|(route, peer)| {
+                state.ensure_channel(&route.channel_key());
+                state.subscribe_context(&route.channel_key(), peer)
+            })
+            .collect();
+
+        assert_eq!(fanout.request_room_snapshots(&person_room), 2);
+        let asked: Vec<bool> = receivers
+            .iter_mut()
+            .map(|rx| matches!(rx.try_recv(), Ok(ContextEnvelope::SnapshotRequested)))
+            .collect();
+        assert_eq!(asked, [true, true, false, false]);
     }
 
     #[test]
@@ -13213,6 +14544,8 @@ pub mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let invocation = tilo_actions::InvocationId::new();
         let pending = PendingInvocation {
+            caller: None,
+            activity: None,
             owner: InvocationOwner::Local {
                 actor: "agent:Scribe".into(),
             },
@@ -13491,6 +14824,7 @@ pub mod tests {
                             capnp_rpc::new_client(InvocationStreamServer {
                                 host_guard: None,
                                 rx: rx.clone(),
+                                delivered: None,
                             });
                         let response = stream.read_request().send().promise.await.unwrap();
                         assert_eq!(response.get().unwrap().get_id(), wire_id);
@@ -13631,6 +14965,7 @@ pub mod tests {
                         capnp_rpc::new_client(InvocationStreamServer {
                             host_guard: None,
                             rx: rx.clone(),
+                            delivered: None,
                         });
                     let response = stream.read_request().send().promise.await.unwrap();
                     let delivered = response.get().unwrap();
@@ -13952,6 +15287,74 @@ pub mod tests {
                 );
                 assert!(fixture.invocation_rx.try_recv().is_err());
             }
+        }
+
+        /// An agent, a device admin or another device drives an app through
+        /// its actions. The host learns of each invocation the app is handed,
+        /// so a window the app closes because of it is not taken for one it
+        /// lost.
+        #[tokio::test(flavor = "current_thread")]
+        async fn the_host_learns_each_invocation_an_app_is_handed() {
+            struct Recording(Mutex<Vec<(String, String)>>);
+            impl crate::services::LauncherServices for Recording {
+                fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+                    Vec::new()
+                }
+                fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+                    Err("this host launches nothing".into())
+                }
+                fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
+                    false
+                }
+                fn note_acted_on(&self, app: &str, room: &str) {
+                    self.0.lock().unwrap().push((app.into(), room.into()));
+                }
+            }
+            tokio::task::LocalSet::new()
+                .run_until(async {
+                    let recording = Arc::new(Recording(Mutex::new(Vec::new())));
+                    let services = HostServices {
+                        launcher: Some(recording.clone()),
+                        ..Default::default()
+                    };
+                    let (tx, rx) = mpsc::unbounded_channel();
+                    let stream: invocation_stream::Client =
+                        capnp_rpc::new_client(InvocationStreamServer {
+                            host_guard: None,
+                            rx: Rc::new(AsyncMutex::new(rx)),
+                            delivered: invocation_delivery_notice(
+                                &services,
+                                "so.tilo.notes".into(),
+                                "room-7".into(),
+                            ),
+                        });
+                    assert!(recording.0.lock().unwrap().is_empty());
+                    tx.send(InvocationEnvelope {
+                        id: 1,
+                        invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(1)),
+                        resource: "window".into(),
+                        action: "close".into(),
+                        argument: None,
+                        actor: "agent:assistant".into(),
+                        context: None,
+                    })
+                    .unwrap();
+                    stream.read_request().send().promise.await.unwrap();
+                    assert_eq!(
+                        *recording.0.lock().unwrap(),
+                        vec![("so.tilo.notes".to_owned(), "room-7".to_owned())]
+                    );
+                    assert!(
+                        invocation_delivery_notice(
+                            &HostServices::default(),
+                            "a".into(),
+                            "r".into()
+                        )
+                        .is_none(),
+                        "a host without a launcher has no one to tell"
+                    );
+                })
+                .await;
         }
 
         #[tokio::test(flavor = "current_thread")]
@@ -14372,6 +15775,22 @@ fn validate_invocation_update(
 }
 
 impl CapnpBrokerState {
+    fn publish_pending_activity(
+        &self,
+        pending: &PendingInvocation,
+        update: &tilo_actions::InvocationUpdate,
+    ) {
+        if pending.cancellation_requested_at.is_some() && !update.is_terminal() {
+            self.execution_activity.publish_status(
+                pending.activity.as_ref(),
+                ExecutionStatus::CancellationRequested,
+            );
+        } else {
+            self.execution_activity
+                .publish(pending.activity.as_ref(), update);
+        }
+    }
+
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the pending entry borrows the registry until it is staged; the lint misreads the borrow"
@@ -14442,6 +15861,7 @@ impl CapnpBrokerState {
         pending.last_activity = std::time::Instant::now();
         pending.last_sequence = next_sequence;
         pending.update = update.clone();
+        state.publish_pending_activity(pending, &update);
         state.invocation_generation.fetch_add(1, Ordering::Relaxed);
         if update.is_terminal() {
             let completion = match &update {

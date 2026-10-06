@@ -1,6 +1,7 @@
 use super::{
-    Action, Arc, AtomicBool, AtomicU64, CallTarget, Client, Command, Duration, Instant, Mutex,
-    NativeWorkspaceOwner, Operation, Ordering, Reply, Ticket, Weak, devices, http, observer,
+    Arc, AtomicBool, AtomicU64, CallTarget, Client, Command, Duration, Instant, Mutex,
+    NativeWorkspaceOwner, OPEN_DEADLINE, Operation, Ordering, Reply, Ticket, Weak, authority,
+    devices, observer,
 };
 use crate::{
     network::NetCmd,
@@ -14,12 +15,12 @@ use media::voice::{
 use runtime_collab::native_media::{Inventory, Issue, State as CallState};
 use std::os::fd::AsFd;
 use tilo_moq::client::{self, Status};
+use tilo_relay_protocol::voice::HEARTBEAT;
 use tokio::sync::mpsc;
 
 pub(crate) struct Factory {
     commands: mpsc::Sender<NetCmd>,
     owner: NativeWorkspaceOwner,
-    http: http::Http,
     devices: Arc<devices::Devices>,
     runtime: tokio::runtime::Handle,
 }
@@ -29,14 +30,13 @@ impl Factory {
         owner: NativeWorkspaceOwner,
         broker: Arc<std::sync::Mutex<CaptureBroker>>,
         runtime: tokio::runtime::Handle,
-    ) -> Result<Self, String> {
-        Ok(Self {
+    ) -> Self {
+        Self {
             commands,
             owner,
-            http: http::Http::new().map_err(|_| "native HTTPS unavailable")?,
             devices: devices::Devices::start(broker, &runtime),
             runtime,
-        })
+        }
     }
 }
 impl MediaFactory for Factory {
@@ -48,7 +48,6 @@ impl MediaFactory for Factory {
     fn prepare(&self, target: CallTarget) -> Prepare {
         let commands = self.commands.clone();
         let owner = self.owner.clone();
-        let http = self.http.clone();
         let devices = self.devices.clone();
         let runtime = self.runtime.clone();
         Box::pin(async move {
@@ -70,16 +69,10 @@ impl MediaFactory for Factory {
                 let opened = command(&commands, Operation::Open { owner, target })
                     .await
                     .map_err(|_| Issue::Denied)?;
-                let Reply::Opened(ticket, work) = opened else {
+                let Reply::Opened(ticket) = opened else {
                     return Err(Issue::Unavailable);
                 };
-                let ready = drive(&commands, &http, &ticket, Reply::Work(work))
-                    .await
-                    .map_err(|_| {
-                        ticket.stop();
-                        Issue::TransportFailed
-                    })?;
-                if !matches!(ready, Reply::Grant) {
+                if ticket.granted(OPEN_DEADLINE).await.is_err() {
                     ticket.stop();
                     return Err(Issue::Denied);
                 }
@@ -90,12 +83,11 @@ impl MediaFactory for Factory {
                     cancelled: AtomicBool::new(false),
                     task: Mutex::new(None),
                     commands: commands.clone(),
-                    http: http.clone(),
                     executor: tokio::runtime::Handle::current(),
                 });
                 let controller = runtime.clone();
                 let task = tokio::spawn(async move {
-                    let result = maintain(&commands, &http, &controller).await;
+                    let result = maintain(&commands, &controller).await;
                     if !controller.cancelled.load(Ordering::Acquire) {
                         controller.ticket.stop();
                         *controller.state.lock() = result
@@ -131,12 +123,11 @@ struct Running {
     cancelled: AtomicBool,
     task: Mutex<Option<tokio::task::AbortHandle>>,
     commands: mpsc::Sender<NetCmd>,
-    http: http::Http,
     executor: tokio::runtime::Handle,
 }
 impl Running {
     fn retire(&self) {
-        self.ticket.pause();
+        self.ticket.clear_carrier();
         let client = self.client.lock().take();
         if let Some(client) = client {
             client.close();
@@ -158,96 +149,18 @@ async fn command(commands: &mpsc::Sender<NetCmd>, operation: Operation) -> Resul
     .await
     .map_err(|_| "native actor deadline".to_string())?
 }
-async fn drive(
-    commands: &mpsc::Sender<NetCmd>,
-    http: &http::Http,
-    ticket: &Arc<Ticket>,
-    mut reply: Reply,
-) -> Result<Reply, String> {
-    // Bootstrap + mutual HTTP + grant require at most eight bounded messages.
-    // No peer can manufacture an unbounded continuation chain.
-    for _ in 0..8 {
-        let Reply::Work(work) = reply else {
-            return Ok(reply);
-        };
-        ticket.completion_live()?;
-        let Ok(bytes) = http.send(&work.request).await else {
-            let _ = command(
-                commands,
-                Operation::Act {
-                    ticket: ticket.clone(),
-                    action: Action::Abandon,
-                },
-            )
-            .await;
-            return Err("native media HTTP unavailable".into());
-        };
-        reply = command(
-            commands,
-            Operation::Advance {
-                ticket: ticket.clone(),
-                serial: work.serial,
-                body: bytes,
-            },
-        )
-        .await?;
-    }
-    Err("native control continuation capacity".into())
-}
-async fn action(
-    commands: &mpsc::Sender<NetCmd>,
-    http: &http::Http,
-    ticket: &Arc<Ticket>,
-    action: Action,
-) -> Result<Reply, String> {
-    drive(
-        commands,
-        http,
-        ticket,
-        command(
-            commands,
-            Operation::Act {
-                ticket: ticket.clone(),
-                action,
-            },
-        )
-        .await?,
-    )
-    .await
-}
-async fn install_carrier(
-    commands: &mpsc::Sender<NetCmd>,
-    http: &http::Http,
-    running: &Arc<Running>,
-) -> Result<bool, String> {
+/// Start a carrier for the current grant; `false` when it admits no route.
+fn install_carrier(running: &Arc<Running>) -> Result<bool, String> {
     let ticket = &running.ticket;
-    let has_route = ticket
-        .state
-        .lock()
-        .grant
-        .as_ref()
-        .map(|grant| {
-            grant.view.directions.publish
-                || (grant.view.directions.subscribe && !grant.view.inventory.namespaces.is_empty())
-        })
-        .ok_or("native grant missing")?;
-    if !has_route {
+    let Some(connection) = ticket.next_carrier()? else {
         return Ok(false);
-    }
-    let Reply::Carrier(connection) = action(commands, http, ticket, Action::Relay).await? else {
-        return Err("native relay proof missing".into());
     };
     if running.cancelled.load(Ordering::Acquire) {
         return Err("native session closed".into());
     }
     let client =
         Arc::new(Client::start(connection, ticket.clone()).map_err(|error| error.to_string())?);
-    // The current read and listener ordering covers the brief installation gap.
-    ticket.inspect_current(|_, _| {
-        ticket.live()?;
-        ticket.stops.lock().client = Arc::downgrade(&client);
-        Ok(())
-    })?;
+    ticket.set_client(&client)?;
     *running.client.lock() = Some(client);
     Ok(true)
 }
@@ -256,23 +169,31 @@ fn later(delay: Duration) -> Instant {
     let now = Instant::now();
     now.checked_add(delay).unwrap_or(now)
 }
-async fn maintain(
-    commands: &mpsc::Sender<NetCmd>,
-    http: &http::Http,
-    running: &Arc<Running>,
-) -> Result<(), String> {
+async fn maintain(commands: &mpsc::Sender<NetCmd>, running: &Arc<Running>) -> Result<(), String> {
     let ticket = &running.ticket;
-    let mut heartbeat = later(Duration::from_secs(5));
-    let mut renew = later(Duration::from_secs(20));
+    let mut heartbeat = later(HEARTBEAT);
     let mut failures = 0_u32;
     let mut live_since = None;
     let mut retry = Instant::now();
     loop {
+        let changed = ticket.changed().notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
         if running.cancelled.load(Ordering::Acquire) {
             return Ok(());
         }
         ticket.live()?;
+        if !ticket.authorized() {
+            return Err("native participation lapsed".into());
+        }
         let now = Instant::now();
+        // A new grant with another scope (roster, directions) is followed by
+        // a new carrier; that is no failure.
+        if ticket.stale() {
+            live_since = None;
+            running.retire();
+            retry = now;
+        }
         let status = running.client.lock().as_ref().map(|client| client.status());
         match status {
             Some(Status::Live) => {
@@ -291,49 +212,32 @@ async fn maintain(
                 if failures >= 3 {
                     return Err("native carrier retry budget exhausted".into());
                 }
-                action(commands, http, ticket, Action::RetireCarrier).await?;
-                retry = now.checked_add(Duration::from_millis(200)).unwrap_or(now);
+                retry = later(Duration::from_millis(200));
             }
-            None if now >= retry => {
-                let installed = install_carrier(commands, http, running).await;
-                if installed.is_err() {
-                    failures = failures.saturating_add(1);
-                    if failures >= 3 {
-                        return Err("native carrier retry budget exhausted".into());
-                    }
-                    action(commands, http, ticket, Action::RetireCarrier).await?;
-                    retry = later(Duration::from_millis(200 << failures));
+            None if now >= retry && install_carrier(running).is_err() => {
+                running.retire();
+                failures = failures.saturating_add(1);
+                if failures >= 3 {
+                    return Err("native carrier retry budget exhausted".into());
                 }
+                retry = later(Duration::from_millis(200 << failures));
             }
             None => {}
         }
-        let bootstrap = { ticket.state.lock().bootstrap_at };
-        if now >= bootstrap {
-            running.retire();
-            let result = action(commands, http, ticket, Action::Bootstrap).await?;
-            if !matches!(result, Reply::Grant) {
-                return Err("native bootstrap renewal failed".into());
-            }
-            heartbeat = later(Duration::from_secs(5));
-            renew = later(Duration::from_secs(20));
-            retry = Instant::now();
-        } else if now >= renew {
-            if !matches!(
-                action(commands, http, ticket, Action::Renew).await?,
-                Reply::Grant
-            ) {
-                return Err("native grant renewal failed".into());
-            }
-            if running.client.lock().is_some() {
-                action(commands, http, ticket, Action::Refresh).await?;
-            }
-            renew = later(Duration::from_secs(20));
-            heartbeat = later(Duration::from_secs(5));
-        } else if now >= heartbeat {
-            action(commands, http, ticket, Action::Heartbeat).await?;
-            heartbeat = later(Duration::from_secs(5));
+        if now >= heartbeat {
+            command(
+                commands,
+                Operation::Heartbeat {
+                    ticket: ticket.clone(),
+                },
+            )
+            .await?;
+            heartbeat = later(HEARTBEAT);
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::select! {
+            () = changed => {}
+            () = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
     }
 }
 
@@ -485,10 +389,9 @@ impl Session {
                 && slot.startup.load(Ordering::SeqCst) == startup
                 && allowed()
                 && source.current()
-                && ticket.alive.load(Ordering::SeqCst)
-                && !ticket.leaving.load(Ordering::SeqCst)
-                && ticket.base.elapsed().as_nanos()
-                    < u128::from(ticket.capture_until.load(Ordering::Acquire))
+                && ticket.live().is_ok()
+                && !ticket.leaving()
+                && ticket.authorized()
         });
         // Fresh owner reads precede the independent slot lock. Owner fences
         // may hold their publication gate while synchronously stopping a slot.
@@ -578,14 +481,7 @@ impl MediaSession for Session {
                 return Ok(CallState::Reconnecting);
             }
         }
-        let generation = self
-            .runtime
-            .ticket
-            .state
-            .lock()
-            .carrier
-            .as_ref()
-            .map(|carrier| carrier.scope.carrier_generation);
+        let generation = self.runtime.ticket.carrier_generation();
         if self.decoded_generation != generation {
             for publisher in self.publishers.drain(..) {
                 self.audio.remove_publisher(&publisher);
@@ -670,7 +566,7 @@ impl MediaSession for Session {
                 .as_ref()
                 .is_some_and(|client| client.status() == Status::Live)
         {
-            self.runtime.ticket.inventory()
+            authority::inventory(&self.runtime.ticket)
         } else {
             Inventory::default()
         }
@@ -728,15 +624,17 @@ impl MediaSession for Session {
         let startup = slot.begin()?;
         intent.startup = startup;
         let weak = Arc::downgrade(&slot);
-        self.runtime.ticket.stops.lock().capture = Some(Arc::new(move |terminal| {
-            if let Some(slot) = weak.upgrade() {
-                if terminal {
-                    slot.stop();
-                } else {
-                    slot.pause();
+        self.runtime
+            .ticket
+            .set_capture_stop(Arc::new(move |terminal| {
+                if let Some(slot) = weak.upgrade() {
+                    if terminal {
+                        slot.stop();
+                    } else {
+                        slot.pause();
+                    }
                 }
-            }
-        }));
+            }));
         let devices = self.devices.clone();
         let (send, receive) = tokio::sync::oneshot::channel();
         let preparing = self.runtime.executor.spawn(async move {
@@ -801,23 +699,10 @@ impl MediaSession for Session {
         if first {
             let ticket = self.runtime.ticket.clone();
             let commands = self.runtime.commands.clone();
-            let http = self.runtime.http.clone();
+            // Best-effort leave; the local stop above never waits for the
+            // network, and the governor ends a silent participation anyway.
             self.runtime.executor.spawn(async move {
-                // Bounded best-effort remote cleanup; synchronous local stop
-                // above never waits for the network or makes cleanup authority.
-                let cleanup = async {
-                    if let Ok(reply) = command(
-                        &commands,
-                        Operation::End {
-                            ticket: ticket.clone(),
-                        },
-                    )
-                    .await
-                    {
-                        let _ = drive(&commands, &http, &ticket, reply).await;
-                    }
-                };
-                let _ = tokio::time::timeout(Duration::from_secs(9), cleanup).await;
+                let _ = command(&commands, Operation::End { ticket }).await;
             });
         }
     }

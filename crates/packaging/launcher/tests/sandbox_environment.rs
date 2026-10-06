@@ -63,6 +63,7 @@ fn manifest() -> MinimalManifest {
         version: "0.0.0".to_string(),
         kind: "app".to_string(),
         runtime: None,
+        optional_runtimes: Vec::new(),
         entrypoint: Entrypoint {
             bin: "bin/roomtest".to_string(),
             r#type: launcher::manifest::EntrypointType::Gui,
@@ -213,6 +214,7 @@ fn the_session_environment_does_not_leak_into_the_sandbox() {
             "TILO_APP_NAME".to_string(),
             "TILO_APP_ICON".to_string(),
             "TILO_APP_DIR".to_string(),
+            "TILO_PERSON_DIR".to_string(),
             "TILO_USER_HOME".to_string(),
             "TILO_USER_IDENTITY".to_string(),
             "TILO_IDENTITY_BROKER_FD".to_string(),

@@ -25,6 +25,37 @@ pub struct PackageTrust {
     pub revoked: tilo_app_package::trust::RevocationList,
 }
 
+impl PackageTrust {
+    /// Load the same independently configured app trust used by the installer.
+    /// This never adds the installed package's self-declared publisher.
+    ///
+    /// # Errors
+    /// Refuses unavailable configuration roots or malformed trust/revocation files.
+    pub fn from_user_config() -> Result<Self, String> {
+        let attestors = tilo_app_package::default_trusted_attestors_path()
+            .ok_or("application trust configuration directory is unavailable")?;
+        let revoked = tilo_app_package::default_revoked_keys_path()
+            .ok_or("application revocation configuration directory is unavailable")?;
+        Self::from_config_paths(&attestors, &revoked)
+    }
+
+    /// Load explicit host-owned paths; absent files mean no additional trust.
+    ///
+    /// # Errors
+    /// Refuses malformed or unreadable files, including a broken revocation file.
+    pub fn from_config_paths(attestors: &Path, revoked: &Path) -> Result<Self, String> {
+        Ok(Self {
+            publishers: Vec::new(),
+            attestors: tilo_app_package::trust::TrustedAttestors::load(attestors)
+                .map_err(|error| format!("application attestor configuration: {error}"))?
+                .as_slice()
+                .to_vec(),
+            revoked: tilo_app_package::trust::RevocationList::load(revoked)
+                .map_err(|error| format!("application revocation configuration: {error}"))?,
+        })
+    }
+}
+
 /// The registry row for the workspace agent installed at `payload_root`
 /// with `manifest_path` under the signed package root `package_id_hex`, as an
 /// enrolled host configures it outside the package store.
@@ -48,6 +79,7 @@ pub fn agent_package_row(
         cli_commands: Vec::new(),
         runtime: String::new(),
         source: String::new(),
+        held: false,
         system: false,
     }
 }
@@ -117,7 +149,7 @@ impl InstalledManagedPackage {
         &self,
         trust: &PackageTrust,
     ) -> Result<(MinimalManifest, tilo_app_package::BlobHash), String> {
-        let evidence = managed_record_dir(&self.data_root);
+        let evidence = self.record_dir();
         let signed = std::fs::read(evidence.join("signed-root")).map_err(|e| e.to_string())?;
         let root = tilo_app_package::SignedRoot::decode(&signed).map_err(|e| e.to_string())?;
         let manifest = std::fs::read(&self.installed.manifest_path).map_err(|e| e.to_string())?;
@@ -182,12 +214,16 @@ impl InstalledManagedPackage {
             &self.id.to_hex(),
         )
         .map_err(|e| e.to_string())?;
-        // The installer keeps a copy of the signed manifest at the payload
-        // root; it must be exactly the recorded one.
-        let installed_manifest = std::fs::read(self.installed.payload_root.join(MANIFEST_FILE))
-            .map_err(|e| e.to_string())?;
-        if installed_manifest != recorded {
-            return Err("installed manifest differs from signed evidence".into());
+        // Legacy installs copied the manifest into the payload. The current
+        // content-addressed store keeps metadata outside its signed payload
+        // tree; its authoritative manifest was checked above. Never require
+        // a new, unsigned file in that tree merely to launch a managed app.
+        let payload_manifest = self.installed.payload_root.join(MANIFEST_FILE);
+        if payload_manifest.exists() || evidence == managed_record_dir(&self.data_root) {
+            let installed_manifest = std::fs::read(payload_manifest).map_err(|e| e.to_string())?;
+            if installed_manifest != recorded {
+                return Err("installed manifest differs from signed evidence".into());
+            }
         }
         refuse_unexpected_files(&self.installed.payload_root, collection)?;
         // Parse the exact bytes already verified above, never reread a path
@@ -207,6 +243,20 @@ impl InstalledManagedPackage {
             .map(|(_, digest)| *digest)
             .ok_or("managed executable is not signed payload")?;
         Ok((manifest, digest))
+    }
+
+    fn record_dir(&self) -> PathBuf {
+        let recorded = package_store::integrity::record_dir(&self.installed);
+        if self
+            .installed
+            .manifest_path
+            .parent()
+            .is_some_and(|parent| parent == recorded)
+        {
+            recorded
+        } else {
+            managed_record_dir(&self.data_root)
+        }
     }
 }
 
@@ -291,12 +341,19 @@ fn require_managed_service(manifest: &MinimalManifest) -> Result<(), String> {
 
 /// Labels supplied by a committed host owner. These carry no launch authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ManagedLaunchScope {
+    /// A retained collaborator process, independent of any queued task.
+    AgentSession,
+    /// A process reserved for an existing owner-committed task run.
+    Task { task: String, run: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ManagedBinding {
     pub room: String,
     pub app: String,
     pub agent: String,
-    pub task: String,
-    pub run: String,
+    pub scope: ManagedLaunchScope,
     pub launch: String,
     pub generation: u64,
 }
@@ -310,9 +367,11 @@ impl ManagedBinding {
         if self.app != WORKSPACE_AGENT_PACKAGE_ID
             || self.generation == 0
             || uuid::Uuid::parse_str(&self.room).is_err()
-            || [&self.agent, &self.task, &self.run, &self.launch]
+            || [&self.agent, &self.launch]
                 .iter()
                 .any(|value| !valid_label(value))
+            || matches!(&self.scope, ManagedLaunchScope::Task { task, run }
+                if !valid_label(task) || !valid_label(run))
         {
             return Err("invalid managed binding".into());
         }
@@ -387,6 +446,59 @@ pub struct ManagedRuntime {
     pub sandbox_shim: PathBuf,
     pub bwrap: PathBuf,
 }
+impl ManagedRuntime {
+    /// Resolve the normal declared runtime against independent host trust.
+    /// Unlike an ordinary developer launch, a managed agent cannot accept an
+    /// arbitrary signed publisher or run without its declared runtime.
+    /// `sandbox_shim` and `bwrap` are selected by the owning host, not the app.
+    ///
+    /// # Errors
+    /// Refuses missing trust, policy bypasses, or an untrusted/missing runtime.
+    pub fn from_launch_options(
+        manifest: &MinimalManifest,
+        options: &crate::run::RunOptions,
+        sandbox_shim: PathBuf,
+        bwrap: PathBuf,
+    ) -> Result<Self, String> {
+        if options.allow_unsigned_runtime || options.allow_missing_runtime {
+            return Err("managed runtime cannot bypass signature or availability policy".into());
+        }
+        let publishers = crate::run::load_trusted_publisher_list().unwrap_or_default();
+        if options.require_runtime_publisher.is_none() && publishers.is_empty() {
+            return Err("managed runtime requires independently configured publisher trust".into());
+        }
+        let (bundle_root, _) = crate::run::resolve_runtime(manifest, options)
+            .map_err(|error| error.to_string())?
+            .ok_or("managed agent requires a declared runtime")?;
+        let bundle = runtime_bundle::verify_bundle_with(
+            &bundle_root,
+            &runtime_bundle::VerifyOptions {
+                require_publisher: options.require_runtime_publisher.clone(),
+                require_signature: true,
+                require_arch: Some(std::env::consts::ARCH.to_owned()),
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        let runtime_publisher = bundle.publisher_hex.ok_or("managed runtime is unsigned")?;
+        if options.require_runtime_publisher.is_none()
+            && !publishers
+                .iter()
+                .any(|publisher| publisher.eq_ignore_ascii_case(&runtime_publisher))
+        {
+            return Err("managed runtime publisher is not in host trust configuration".into());
+        }
+        let runtime = Self {
+            bundle_root,
+            runtime_publisher,
+            sandbox_shim,
+            bwrap,
+        };
+        // Also check the app's exact declared runtime name/version. Never use
+        // an explicit root override to bypass that managed launch contract.
+        verify_bundle(manifest, &runtime)?;
+        Ok(runtime)
+    }
+}
 struct RuntimeOwner {
     package: InstalledManagedPackage,
     trust: PackageTrust,
@@ -455,7 +567,7 @@ impl TreeStamp {
 }
 impl RuntimeOwner {
     fn stamp(&self) -> Option<TreeStamp> {
-        let evidence = managed_record_dir(&self.package.data_root);
+        let evidence = self.package.record_dir();
         TreeStamp::of(&[
             &self.package.installed.payload_root,
             &self.package.installed.manifest_path,
@@ -1229,6 +1341,21 @@ impl LaunchObserver {
     }
 }
 #[cfg(target_os = "linux")]
+pub(crate) fn managed_service_argv(binding: &ManagedBinding) -> Vec<String> {
+    vec![
+        "--task-runs".into(),
+        "--workspace".into(),
+        binding.room.clone(),
+        "--app".into(),
+        binding.app.clone(),
+        "--agent-id".into(),
+        binding.agent.clone(),
+        "--name".into(),
+        binding.agent.clone(),
+    ]
+}
+
+#[cfg(target_os = "linux")]
 impl ManagedLauncher {
     /// Start the permitted launch's sandboxed agent on a supervising worker.
     ///
@@ -1266,15 +1393,7 @@ impl ManagedLauncher {
             workspace_id: Some(permit.binding.room.clone()),
             app_id: Some(permit.binding.app.clone()),
             mode: crate::run::LaunchMode::Service {
-                passthrough_argv: vec![
-                    "--task-runs".into(),
-                    "--workspace".into(),
-                    permit.binding.room.clone(),
-                    "--agent-id".into(),
-                    permit.binding.agent.clone(),
-                    "--name".into(),
-                    permit.binding.agent.clone(),
-                ],
+                passthrough_argv: managed_service_argv(&permit.binding),
             },
             ..Default::default()
         };

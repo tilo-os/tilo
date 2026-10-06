@@ -16,12 +16,12 @@
 //!
 //! ## What is *not* an action
 //!
-//! * **External** — fetching / refreshing a feed over the network and parsing
-//!   its articles. Those are direct writes of network-derived content into the
-//!   store + document cache, not replayable mutations. Adding a subscription is
-//!   split accordingly: [`FeedsAction::AddSubscription`] creates the subscription
-//!   *record* (deterministic), then the app kicks a fetch to populate its real
-//!   title and articles (external).
+//! * **External** — the network fetch itself. The rows it lands in the shared
+//!   document are [`FeedsAction::UpsertFetched`], one batch per frame, so peers
+//!   replay the same articles; they are the feed's content, not anyone's edit,
+//!   so no undo takes them back. Adding a subscription stays split:
+//!   [`FeedsAction::AddSubscription`] creates the record, then the fetch fills
+//!   its title and articles through that batch action.
 //! * **Presentation** — which article is selected, scroll offsets, the active
 //!   filter, the responsive layout, and the add-subscription modal opening /
 //!   the typing inside it. Only the *commit* of the typed URL is the action.
@@ -34,25 +34,22 @@
 //! payload (an unparseable id) is a **no-op** rather than an error, so a bad
 //! replay can't wedge a peer.
 
-use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use tilo_actions::{
-    Action, ActionAddress, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider,
-    RetryPolicy,
+    Action, ActionAddress, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, Resource,
 };
+use ui::tilo_resource::Effect as _;
 
 use crate::doc::FeedsDoc;
-use crate::model::{Feed, FeedKind, Folder, Id, ReadSettings};
+use crate::model::{Article, Feed, FeedKind, Folder, Id};
 
 /// Registry `type_id` for every Feeds action.
 pub const FEEDS_ACTION_TYPE: &str = "feeds.action";
-pub const FEEDS_OPERATION_TYPE: &str = "feeds.operation";
 /// Contextual Ctrl+K snapshots stay small even for an archival-scale reader.
 /// Search retains the complete catalogue and omitted stable ids resolve via
-/// [`resolve_resource`].
+/// [`resolve_child`].
 pub const MAX_CONTEXT_FOLDER_RESOURCES: usize = 32;
 pub const MAX_CONTEXT_FEED_RESOURCES: usize = 64;
 pub const MAX_CONTEXT_ARTICLE_RESOURCES: usize = 128;
@@ -93,30 +90,6 @@ pub fn open_article_address(id: Id) -> ActionAddress {
     ActionAddress::new(article_resource_id(id), "open")
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum FeedsOperation {
-    RefreshAll,
-    ImportOpml,
-    ExportOpml,
-    RevealFeed { id: String },
-    RevealArticle { id: String },
-    RevealTag { tag: String },
-}
-
-/// Decode a Feeds-local view/effect operation, declining foreign type ids.
-///
-/// # Errors
-///
-/// Returns a message when a Feeds operation payload is malformed.
-pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<FeedsOperation>, String> {
-    if type_id != FEEDS_OPERATION_TYPE {
-        return Ok(None);
-    }
-    serde_json::from_slice(payload)
-        .map(Some)
-        .map_err(|e| e.to_string())
-}
-
 /// Guess a feed's kind from its URL scheme — the same rule the fetch worker
 /// uses so the record the action creates matches what a refresh would produce.
 pub fn guess_kind(url: &str) -> FeedKind {
@@ -132,9 +105,6 @@ pub fn guess_kind(url: &str) -> FeedKind {
 /// carrying enough payload to replay deterministically from a shared base state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FeedsAction {
-    /// Persist the reader's shared typography and paper preference. The panel
-    /// itself remains a local view, but this value is durable and replayable.
-    SetReadSettings { settings: ReadSettings },
     /// Create a subscription *record*: a feed row with a pre-minted id, the
     /// typed url, a derived site-url and placeholder title, in `folder` at
     /// `order`. Fetching its real title + articles is external and follows.
@@ -176,14 +146,26 @@ pub enum FeedsAction {
     /// filter / target feed at authoring time and carried here, so `apply`
     /// needs no lookup and two replicas land identically).
     MarkAllRead { ids: Vec<String> },
+    /// One frame of a refresh: the feed and article rows the fetch produced.
+    /// The network job stays outside the document; these rows are the shared
+    /// state, so they replay to every collaborator, but they came from the
+    /// feed rather than from anyone's edit: no undo takes them back.
+    UpsertFetched {
+        articles: Vec<Article>,
+        feeds: Vec<Feed>,
+    },
+    /// Subscribe to everything an OPML file lists that the library does not
+    /// have yet, with the folders those subscriptions go in: one step, which
+    /// one undo takes back.
+    ImportSubscriptions {
+        folders: Vec<Folder>,
+        feeds: Vec<Feed>,
+    },
 }
 
 impl Action for FeedsAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
-            FeedsAction::SetReadSettings { settings } => {
-                FeedsDoc::write_settings(doc, &settings.clamped());
-            }
             FeedsAction::AddSubscription {
                 id,
                 url,
@@ -275,6 +257,12 @@ impl Action for FeedsAction {
                     }
                 }
             }
+            FeedsAction::UpsertFetched { articles, feeds } => {
+                upsert_rows(doc, &[], feeds, articles);
+            }
+            FeedsAction::ImportSubscriptions { folders, feeds } => {
+                upsert_rows(doc, folders, feeds, &[]);
+            }
         }
         Ok(())
     }
@@ -283,14 +271,29 @@ impl Action for FeedsAction {
         ExecutionLocus::ClientLocal
     }
 
-    /// Whether an article was read is state about it, not a change to it.
+    /// Whether an article was read is state about it, not a change to it;
+    /// what a refresh fetched is content from the feed, nobody's edit.
     fn change_kind(&self) -> tilo_actions::ChangeKind {
         match self {
             FeedsAction::MarkRead { .. } | FeedsAction::MarkAllRead { .. } => {
                 tilo_actions::ChangeKind::Housekeeping
             }
+            FeedsAction::UpsertFetched { .. } => tilo_actions::ChangeKind::External,
             _ => tilo_actions::ChangeKind::Content,
         }
+    }
+}
+
+/// Write whole folder, feed and article rows, each replacing the row of its id.
+fn upsert_rows(doc: &mut Doc, folders: &[Folder], feeds: &[Feed], articles: &[Article]) {
+    for folder in folders {
+        FeedsDoc::upsert_folder(doc, folder);
+    }
+    for feed in feeds {
+        FeedsDoc::upsert_feed(doc, feed);
+    }
+    for article in articles {
+        FeedsDoc::upsert_article(doc, article);
     }
 }
 
@@ -384,12 +387,6 @@ pub fn set_folder_collapsed_action(id: Id, collapsed: bool) -> FeedsAction {
     }
 }
 
-pub fn set_read_settings_action(settings: ReadSettings) -> FeedsAction {
-    FeedsAction::SetReadSettings {
-        settings: settings.clamped(),
-    }
-}
-
 pub fn mark_read_action(id: Id, read: bool) -> FeedsAction {
     FeedsAction::MarkRead {
         id: id.to_string(),
@@ -471,8 +468,8 @@ pub struct FolderRef {
     pub collapsed: bool,
 }
 
-/// The presentation context Feeds hands [`provide_resources`]: its folders and
-/// subscriptions, plus the order a palette-created folder should take. Derived
+/// The presentation context the published library is built from: its folders and
+/// subscriptions. Derived
 /// entirely from state the document already holds; nothing is fabricated.
 #[derive(Debug, Clone, Default)]
 pub struct FeedsResourceCtx {
@@ -482,11 +479,6 @@ pub struct FeedsResourceCtx {
     /// Unread articles across the whole reader, resolved before the global
     /// action is authored so replay never depends on a peer's local filter.
     pub unread: Vec<Id>,
-    /// The order a palette-created, uncategorised subscription takes.
-    pub next_feed_order: u32,
-    /// The order a "New folder" created from the palette takes.
-    pub next_folder_order: u32,
-    pub settings: ReadSettings,
 }
 
 fn immediate_spec(id: &str, label: &str, action: &FeedsAction) -> ActionSpec {
@@ -499,16 +491,10 @@ fn immediate_spec(id: &str, label: &str, action: &FeedsAction) -> ActionSpec {
         })
 }
 
-fn view_spec(id: &str, label: &str, operation: &FeedsOperation) -> Option<ActionSpec> {
-    ActionSpec::operation(
-        id,
-        label,
-        OperationKind::View,
-        FEEDS_OPERATION_TYPE,
-        operation,
-    )
-    .ok()
-    .map(|spec| spec.retry_policy(RetryPolicy::Idempotent))
+/// Showing `item` (a feed, an article or a tag, by its resource id), as the
+/// item offers it.
+fn open_spec(item: String) -> ActionSpec {
+    crate::resource::FeedsEffect::Open { item }.bound()
 }
 
 /// A one-line label for a feed, defaulting to a placeholder when untitled.
@@ -521,144 +507,159 @@ fn feed_label(f: &FeedRef) -> String {
     }
 }
 
-/// Build the resource tree Feeds currently has open: the reader (with a "New
-/// folder" action), each folder (rename + delete), and each subscription
-/// (open + rename + move + mark-all-read + unsubscribe), and each article
-/// (open + read + star). Every document-mutating operation is exported as the
-/// same action the on-screen affordance dispatches; open is a local View.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the complete reader/folder/feed/article hierarchy stays together so its bounded canonical action inventory is auditable"
-)]
-pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
-    let mut root = Resource::new("feeds.reader", "feeds.reader", "Feeds");
-
-    // These open host-owned choosers locally; the selected path is never
-    // serialized into a collaborative action or replayed on another host.
-    for (id, label, operation) in [
-        ("import-opml", "Import OPML…", FeedsOperation::ImportOpml),
-        ("export-opml", "Export OPML…", FeedsOperation::ExportOpml),
-    ] {
-        if let Some(spec) = view_spec(id, label, &operation) {
-            root = root.with_action(spec);
-        }
-    }
-
-    if let Ok(refresh) = ActionSpec::operation(
-        "refresh-all",
-        "Refresh all subscriptions",
-        OperationKind::Effect,
-        FEEDS_OPERATION_TYPE,
-        &FeedsOperation::RefreshAll,
-    ) {
-        let refresh = refresh.with_contract(ActionContract {
-            retry: RetryPolicy::Idempotent,
-            execution: ExecutionMode::Background { cancellable: false },
-            result: tilo_actions::ResultSpec::Job,
-            tags: vec!["network".into(), "refresh".into()],
-            ..ActionContract::default()
-        });
-        root = root.with_action(if ctx.feeds.is_empty() {
-            refresh.unavailable("no_subscriptions", "There are no subscriptions to refresh")
-        } else {
-            refresh
-        });
-    }
-
-    // Reader-level durable actions. UUIDs are minted once when prompts commit
-    // and then baked into the envelope, so replay stays deterministic.
-    let feed_order = ctx.next_feed_order;
-    root = root.with_action(ActionSpec::prompted(
-        "add-subscription",
-        "Add subscription",
-        "Feed URL",
-        "https://example.com/feed.xml",
-        ExecutionLocus::ClientLocal,
-        move |url: &str| {
-            encode(&add_subscription_action(
-                Uuid::new_v4(),
-                url,
-                None,
-                feed_order,
-            ))
-        },
-    ));
-    root = root.with_action(immediate_spec(
+/// "Mark all articles as read", bound to the library's unread articles.
+pub(crate) fn mark_all_read_spec(unread: &[Id]) -> ActionSpec {
+    immediate_spec(
         "mark-all-read",
         "Mark all articles as read",
-        &mark_all_read_action(&ctx.unread),
-    ));
-    let order = ctx.next_folder_order;
-    root = root.with_action(ActionSpec::prompted(
-        "new-folder",
-        "New folder",
+        &mark_all_read_action(unread),
+    )
+}
+
+fn folder_resource(folder: &FolderRef) -> Resource {
+    let id = folder.id;
+    Resource::new(
+        format!("feeds.folder:{id}"),
+        "feeds.folder",
+        folder.name.clone(),
+    )
+    .with_action(ActionSpec::prompted(
+        "rename",
+        "Rename folder",
         "Name",
         "folder name…",
         ExecutionLocus::ClientLocal,
-        move |name: &str| encode(&add_folder_action(Uuid::new_v4(), name, order)),
-    ));
+        move |name: &str| encode(&rename_folder_action(id, name)),
+    ))
+    .with_action(
+        immediate_spec("delete", "Delete folder", &delete_folder_action(id))
+            .destructive()
+            .reversible(),
+    )
+    .with_action(immediate_spec(
+        "set-collapsed",
+        if folder.collapsed {
+            "Expand folder"
+        } else {
+            "Collapse folder"
+        },
+        &set_folder_collapsed_action(id, !folder.collapsed),
+    ))
+}
 
-    let settings = ctx.settings;
-    let mut settings_resource = Resource::new(
-        "feeds.reader-settings",
-        "feeds.reader-settings",
-        "Reading settings",
+fn tag_resource(tag: &TagRef) -> Resource {
+    let id = tag_resource_id(&tag.name);
+    Resource::new(id.clone(), "feeds.tag", format!("#{}", tag.name)).with_action(open_spec(id))
+}
+
+fn article_resource(article: &ArticleRef) -> Resource {
+    let article_id = article.id;
+    let title = if article.title.trim().is_empty() {
+        "Untitled article".to_string()
+    } else {
+        article.title.clone()
+    };
+    Resource::new(article_resource_id(article_id), "feeds.article", title)
+        .with_action(open_spec(article_resource_id(article_id)))
+        .with_action(immediate_spec(
+            "read",
+            if article.read {
+                "Mark unread"
+            } else {
+                "Mark read"
+            },
+            &mark_read_action(article_id, !article.read),
+        ))
+        .with_action(immediate_spec(
+            "star",
+            if article.starred { "Unstar" } else { "Star" },
+            &set_starred_action(article_id, !article.starred),
+        ))
+        .with_action(ActionSpec::prompted(
+            "set-tags",
+            "Set article tags",
+            "Tags",
+            "design, research, later…",
+            ExecutionLocus::ClientLocal,
+            move |value: &str| {
+                let tags = if value.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    normalize_tags(value.split(','))
+                };
+                encode(&set_article_tags_action(article_id, &tags))
+            },
+        ))
+}
+
+fn feed_resource(
+    feed: &FeedRef,
+    folder_lookup: &[(String, Id)],
+    article_budget: usize,
+) -> Resource {
+    let id = feed.id;
+    let mut child = Resource::new(feed_resource_id(id), "feeds.subscription", feed_label(feed));
+    child = child.with_action(open_spec(feed_resource_id(id)));
+    child = child.with_action(ActionSpec::prompted(
+        "rename",
+        "Rename feed",
+        "Title",
+        "feed title…",
+        ExecutionLocus::ClientLocal,
+        move |title: &str| encode(&rename_feed_action(id, title)),
+    ));
+    child = child.with_action(immediate_spec(
+        "mark-read",
+        "Mark all as read",
+        &mark_all_read_action(&feed.unread),
+    ));
+    let lookup = folder_lookup.to_vec();
+    let current_folder = feed.folder;
+    child = child.with_action(ActionSpec::prompted(
+        "move",
+        "Move to folder…",
+        "Folder",
+        "folder name (blank = none)…",
+        ExecutionLocus::ClientLocal,
+        move |name: &str| {
+            let key = name.trim().to_lowercase();
+            let folder = if key.is_empty() {
+                None
+            } else {
+                lookup
+                    .iter()
+                    .find(|(n, _)| *n == key)
+                    .map_or(current_folder, |(_, fid)| Some(*fid))
+            };
+            encode(&move_feed_action(id, folder))
+        },
+    ));
+    child = child.with_action(
+        immediate_spec(
+            "unsubscribe",
+            "Unsubscribe",
+            &remove_subscription_action(id),
+        )
+        .destructive()
+        .reversible(),
     );
-    for (id, label, next) in [
-        (
-            "font-decrease",
-            "Decrease reader text size",
-            ReadSettings {
-                font_scale: settings.font_scale - 0.1,
-                ..settings
-            }
-            .clamped(),
-        ),
-        (
-            "font-increase",
-            "Increase reader text size",
-            ReadSettings {
-                font_scale: settings.font_scale + 0.1,
-                ..settings
-            }
-            .clamped(),
-        ),
-    ] {
-        settings_resource = settings_resource.with_action(immediate_spec(
-            id,
-            label,
-            &set_read_settings_action(next),
-        ));
+    for article in feed.articles.iter().take(article_budget) {
+        child = child.with_child(article_resource(article));
     }
-    for font in crate::model::ReadFont::ALL {
-        settings_resource = settings_resource.with_action(immediate_spec(
-            font.as_str(),
-            &format!("Use {} reader font", font.label()),
-            &set_read_settings_action(ReadSettings { font, ..settings }),
-        ));
-    }
-    for theme in crate::model::ReadTheme::ALL {
-        settings_resource = settings_resource.with_action(immediate_spec(
-            theme.as_str(),
-            &format!("Use {} reader paper", theme.label()),
-            &set_read_settings_action(ReadSettings { theme, ..settings }),
-        ));
-    }
-    root = root.with_child(settings_resource);
+    child
+}
+
+/// Document-derived children for [`tilo_resource::publish`]: tags, folders,
+/// subscriptions and articles.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the complete folder/feed/article hierarchy stays together so its bounded inventory is auditable"
+)]
+pub(crate) fn publish_children(ctx: &FeedsResourceCtx) -> Vec<Resource> {
+    let mut children = Vec::new();
 
     for tag in ctx.tags.iter().take(MAX_CONTEXT_TAG_RESOURCES) {
-        let operation = FeedsOperation::RevealTag {
-            tag: tag.name.clone(),
-        };
-        let mut resource = Resource::new(
-            tag_resource_id(&tag.name),
-            "feeds.tag",
-            format!("#{}", tag.name),
-        );
-        if let Some(open) = view_spec("open", "Open tagged articles", &operation) {
-            resource = resource.with_action(open);
-        }
-        root = root.with_child(resource);
+        children.push(tag_resource(tag));
     }
 
     // Known folder names → id, so a "Move to folder…" prompt can resolve a typed
@@ -671,233 +672,171 @@ pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resou
         .collect();
 
     for folder in ctx.folders.iter().take(MAX_CONTEXT_FOLDER_RESOURCES) {
-        let id = folder.id;
-        let child = Resource::new(
-            format!("feeds.folder:{id}"),
-            "feeds.folder",
-            folder.name.clone(),
-        )
-        .with_action(ActionSpec::prompted(
-            "rename",
-            "Rename folder",
-            "Name",
-            "folder name…",
-            ExecutionLocus::ClientLocal,
-            move |name: &str| encode(&rename_folder_action(id, name)),
-        ))
-        .with_action(
-            immediate_spec("delete", "Delete folder", &delete_folder_action(id))
-                .destructive()
-                .reversible(),
-        )
-        .with_action(immediate_spec(
-            "set-collapsed",
-            if folder.collapsed {
-                "Expand folder"
-            } else {
-                "Collapse folder"
-            },
-            &set_folder_collapsed_action(id, !folder.collapsed),
-        ));
-        root = root.with_child(child);
+        children.push(folder_resource(folder));
     }
 
     let mut remaining_articles = MAX_CONTEXT_ARTICLE_RESOURCES;
     for feed in ctx.feeds.iter().take(MAX_CONTEXT_FEED_RESOURCES) {
-        let id = feed.id;
-        let mut child = Resource::new(feed_resource_id(id), "feeds.subscription", feed_label(feed));
-        if let Some(open) = view_spec(
-            "open",
-            "Open feed",
-            &FeedsOperation::RevealFeed { id: id.to_string() },
-        ) {
-            child = child.with_action(open);
-        }
-        child = child.with_action(ActionSpec::prompted(
-            "rename",
-            "Rename feed",
-            "Title",
-            "feed title…",
-            ExecutionLocus::ClientLocal,
-            move |title: &str| encode(&rename_feed_action(id, title)),
-        ));
-        child = child.with_action(immediate_spec(
-            "mark-read",
-            "Mark all as read",
-            &mark_all_read_action(&feed.unread),
-        ));
-        let lookup = folder_lookup.clone();
-        let current_folder = feed.folder;
-        child = child.with_action(ActionSpec::prompted(
-            "move",
-            "Move to folder…",
-            "Folder",
-            "folder name (blank = none)…",
-            ExecutionLocus::ClientLocal,
-            move |name: &str| {
-                let key = name.trim().to_lowercase();
-                let folder = if key.is_empty() {
-                    None
-                } else {
-                    lookup
-                        .iter()
-                        .find(|(n, _)| *n == key)
-                        .map_or(current_folder, |(_, fid)| Some(*fid))
-                };
-                encode(&move_feed_action(id, folder))
-            },
-        ));
-        child = child.with_action(
-            immediate_spec(
-                "unsubscribe",
-                "Unsubscribe",
-                &remove_subscription_action(id),
-            )
-            .destructive()
-            .reversible(),
-        );
-        for article in feed.articles.iter().take(remaining_articles) {
-            let article_id = article.id;
-            let title = if article.title.trim().is_empty() {
-                "Untitled article".to_string()
-            } else {
-                article.title.clone()
-            };
-            let mut article_node =
-                Resource::new(article_resource_id(article_id), "feeds.article", title);
-            if let Some(open) = view_spec(
-                "open",
-                "Open article",
-                &FeedsOperation::RevealArticle {
-                    id: article_id.to_string(),
-                },
-            ) {
-                article_node = article_node.with_action(open);
-            }
-            article_node = article_node
-                .with_action(immediate_spec(
-                    "read",
-                    if article.read {
-                        "Mark unread"
-                    } else {
-                        "Mark read"
-                    },
-                    &mark_read_action(article_id, !article.read),
-                ))
-                .with_action(immediate_spec(
-                    "star",
-                    if article.starred { "Unstar" } else { "Star" },
-                    &set_starred_action(article_id, !article.starred),
-                ))
-                .with_action(ActionSpec::prompted(
-                    "set-tags",
-                    "Set article tags",
-                    "Tags",
-                    "design, research, later…",
-                    ExecutionLocus::ClientLocal,
-                    move |value: &str| {
-                        let tags = if value.trim().is_empty() {
-                            Vec::new()
-                        } else {
-                            normalize_tags(value.split(','))
-                        };
-                        encode(&set_article_tags_action(article_id, &tags))
-                    },
-                ));
-            child = child.with_child(article_node);
-        }
+        let budget = remaining_articles;
+        children.push(feed_resource(feed, &folder_lookup, budget));
         remaining_articles = remaining_articles.saturating_sub(feed.articles.len());
-        root = root.with_child(child);
     }
-
-    vec![root]
+    children
 }
 
-/// Resolve one current stable id without expanding the contextual snapshot.
-/// A stale id deliberately returns `None`, so a cached search row cannot
-/// resurrect a removed subscription or article.
-pub fn resolve_resource(ctx: &FeedsResourceCtx, id: &str) -> Option<Resource> {
-    let mut scoped = FeedsResourceCtx {
-        unread: ctx.unread.clone(),
-        next_feed_order: ctx.next_feed_order,
-        next_folder_order: ctx.next_folder_order,
-        settings: ctx.settings,
-        ..FeedsResourceCtx::default()
-    };
-    if id == "feeds.reader" || id == "feeds.reader-settings" {
-        return provide_resources(&scoped, &AutoCommit::new())
+/// Build a publish context from the shared library projection.
+pub(crate) fn resource_ctx_from_library(store: &crate::model::Store) -> FeedsResourceCtx {
+    resource_ctx_from_library_with_limits(
+        store,
+        MAX_CONTEXT_FOLDER_RESOURCES,
+        MAX_CONTEXT_FEED_RESOURCES,
+        MAX_CONTEXT_ARTICLE_RESOURCES,
+        MAX_CONTEXT_TAG_RESOURCES,
+    )
+}
+
+pub(crate) fn resource_ctx_from_library_with_limits(
+    store: &crate::model::Store,
+    folder_limit: usize,
+    feed_limit: usize,
+    article_limit: usize,
+    tag_limit: usize,
+) -> FeedsResourceCtx {
+    use crate::model::Filter;
+
+    let folders = store
+        .folders_sorted()
+        .iter()
+        .take(folder_limit)
+        .map(|f| FolderRef {
+            id: f.id,
+            name: f.name.clone(),
+            collapsed: f.collapsed,
+        })
+        .collect();
+    let mut sorted_feeds = store.feeds.iter().take(feed_limit).collect::<Vec<_>>();
+    sorted_feeds.sort_by_key(|feed| feed.title.to_lowercase());
+    let mut remaining_articles = article_limit;
+    let feeds: Vec<FeedRef> = sorted_feeds
+        .into_iter()
+        .take(feed_limit)
+        .map(|f| {
+            let articles = store
+                .articles
+                .iter()
+                .filter(|article| article.feed_id == f.id)
+                .take(remaining_articles)
+                .map(|article| ArticleRef {
+                    id: article.id,
+                    title: article.title.clone(),
+                    read: article.read,
+                    starred: article.starred,
+                    tags: article.tags.clone(),
+                })
+                .collect::<Vec<_>>();
+            remaining_articles = remaining_articles.saturating_sub(articles.len());
+            FeedRef {
+                id: f.id,
+                title: f.title.clone(),
+                folder: f.folder,
+                unread: store.unread_ids_for(Filter::Feed(f.id)),
+                articles,
+            }
+        })
+        .collect();
+    FeedsResourceCtx {
+        folders,
+        feeds,
+        tags: store
+            .tags_limited(tag_limit)
             .into_iter()
-            .find_map(|root| {
-                if root.id.as_str() == id {
-                    Some(root)
-                } else {
-                    root.children
-                        .into_iter()
-                        .find(|child| child.id.as_str() == id)
-                }
-            });
+            .map(|name| TagRef { name })
+            .collect(),
+        unread: store.unread_ids_for(Filter::All),
     }
-    if let Some(raw) = id.strip_prefix("feeds.folder:") {
-        let folder_id = raw.parse::<Id>().ok()?;
-        scoped.folders.push(
-            ctx.folders
-                .iter()
-                .find(|folder| folder.id == folder_id)?
-                .clone(),
-        );
-    } else if let Some(raw) = id.strip_prefix("feeds.subscription:") {
-        let feed_id = raw.parse::<Id>().ok()?;
-        let mut feed = ctx.feeds.iter().find(|feed| feed.id == feed_id)?.clone();
-        feed.articles.clear();
-        scoped.feeds.push(feed);
-    } else if id.starts_with("feeds.tag:") {
-        scoped.tags.push(
-            ctx.tags
-                .iter()
-                .find(|tag| tag_resource_id(&tag.name) == id)?
-                .clone(),
-        );
-    } else {
-        let raw = id.strip_prefix("feeds.article:")?;
-        let article_id = raw.parse::<Id>().ok()?;
-        let feed = ctx
-            .feeds
-            .iter()
-            .find(|feed| feed.articles.iter().any(|article| article.id == article_id))?;
-        let mut feed = feed.clone();
-        feed.articles.retain(|article| article.id == article_id);
-        scoped.feeds.push(feed);
-    }
-    let root = provide_resources(&scoped, &AutoCommit::new()).pop()?;
-    root.children.into_iter().find_map(|child| {
-        if child.id.as_str() == id {
-            Some(child)
-        } else {
-            child
-                .children
-                .into_iter()
-                .find(|article| article.id.as_str() == id)
-        }
-    })
 }
 
-impl ResourceProvider for crate::app::FeedsApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&self.feeds_resource_ctx(), doc)
-    }
+/// The context that publishes exactly the library item `id` (a folder, a
+/// subscription, a tag or an article) and nothing else, so an item outside
+/// the published page still resolves without building the whole tree.
+pub(crate) fn resource_ctx_for(store: &crate::model::Store, id: &str) -> Option<FeedsResourceCtx> {
+    use crate::model::Filter;
 
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
-        resolve_resource(&self.feeds_resource_ctx_for(id)?, id)
+    let mut ctx = FeedsResourceCtx::default();
+    if let Some(raw) = id.strip_prefix("feeds.folder:") {
+        let folder = store.folder(raw.parse::<Id>().ok()?)?;
+        ctx.folders.push(FolderRef {
+            id: folder.id,
+            name: folder.name.clone(),
+            collapsed: folder.collapsed,
+        });
+    } else if let Some(raw) = id.strip_prefix("feeds.subscription:") {
+        let feed = store.feed(raw.parse::<Id>().ok()?)?;
+        ctx.feeds.push(FeedRef {
+            id: feed.id,
+            title: feed.title.clone(),
+            folder: feed.folder,
+            unread: store.unread_ids_for(Filter::Feed(feed.id)),
+            articles: Vec::new(),
+        });
+        // "Move to folder…" resolves a typed name against every folder.
+        ctx.folders
+            .extend(store.folders.iter().map(|folder| FolderRef {
+                id: folder.id,
+                name: folder.name.clone(),
+                collapsed: folder.collapsed,
+            }));
+    } else if id.starts_with("feeds.tag:") {
+        let name = tag_from_resource_id(id)?;
+        if !store.has_tag(&name) {
+            return None;
+        }
+        ctx.tags.push(TagRef { name });
+    } else {
+        let article = store.article(id.strip_prefix("feeds.article:")?.parse::<Id>().ok()?)?;
+        let feed = store.feed(article.feed_id)?;
+        ctx.feeds.push(FeedRef {
+            id: feed.id,
+            title: feed.title.clone(),
+            folder: feed.folder,
+            unread: Vec::new(),
+            articles: vec![ArticleRef {
+                id: article.id,
+                title: article.title.clone(),
+                read: article.read,
+                starred: article.starred,
+                tags: article.tags.clone(),
+            }],
+        });
     }
+    Some(ctx)
+}
+
+/// The library item `id`, resolved by id rather than from the published page.
+/// A stale id resolves to `None`, so a cached search row cannot resurrect a
+/// removed subscription or article.
+pub(crate) fn resolve_child(store: &crate::model::Store, id: &str) -> Option<Resource> {
+    fn find(resources: Vec<Resource>, id: &str) -> Option<Resource> {
+        resources.into_iter().find_map(|resource| {
+            if resource.id.as_str() == id {
+                Some(resource)
+            } else {
+                find(resource.children, id)
+            }
+        })
+    }
+    find(publish_children(&resource_ctx_for(store, id)?), id)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::FeedsApp;
-    use crate::model::Filter;
-    use tilo_actions::{ActionInput, LocalTransport};
-    use ui::widget::Widget;
+    use crate::model::{Filter, Store};
+    use crate::resource::{Feeds, FeedsState, READER_RESOURCE_ID};
+    use automerge::AutoCommit;
+    use tilo_actions::OperationKind;
+    use ui::tilo_resource::Resource as _;
+    use uuid::Uuid;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -905,340 +844,278 @@ mod tests {
         r
     }
 
-    fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
-                panic!("expected a prompted action: {}", spec.id)
-            }
+    /// The bundled sample library written into a fresh document, as the
+    /// screenshot scenarios lay it out.
+    fn seeded() -> AutoCommit {
+        let store = crate::sample::store();
+        let mut doc = AutoCommit::new();
+        FeedsAction::ImportSubscriptions {
+            folders: store.folders.clone(),
+            feeds: store.feeds.clone(),
         }
+        .apply(&mut doc)
+        .unwrap();
+        FeedsAction::UpsertFetched {
+            articles: store.articles,
+            feeds: Vec::new(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        doc.commit();
+        doc
     }
 
-    /// The published reader resource tree is complete, bounded, resolves late articles exactly and keeps tag ids lossless.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one contract test deliberately audits the complete nested reader resource tree"
-    )]
-    #[test]
-    fn reader_resource_tree_is_complete_bounded_and_exact() {
-        // --- phase: contextual_resource_tree_is_bounded_and_late_articles_resolve_exactly ---
-        {
-            let mut ctx = FeedsResourceCtx::default();
-            for feed_index in 0..(MAX_CONTEXT_FEED_RESOURCES + 2) {
-                let feed_id = Uuid::from_u128(feed_index as u128 + 1);
-                let articles = (0..3)
-                    .map(|article_index| ArticleRef {
-                        id: Uuid::from_u128(10_000 + (feed_index * 3 + article_index) as u128),
-                        title: format!("Article {feed_index}-{article_index}"),
-                        read: false,
-                        starred: false,
-                        tags: Vec::new(),
-                    })
-                    .collect::<Vec<_>>();
-                ctx.feeds.push(FeedRef {
-                    id: feed_id,
-                    title: format!("Feed {feed_index:03}"),
-                    folder: None,
-                    unread: articles.iter().map(|article| article.id).collect(),
-                    articles,
+    /// The library as the framework publishes it from `doc`.
+    fn published(doc: &AutoCommit) -> Vec<Resource> {
+        let state = Feeds::read(doc).unwrap();
+        vec![ui::tilo_resource::publish::<Feeds>(
+            READER_RESOURCE_ID,
+            "Feeds",
+            &state,
+        )]
+    }
+
+    fn library(doc: &AutoCommit) -> Store {
+        FeedsDoc::load(doc)
+    }
+
+    /// A library of `feeds` subscriptions with three articles each.
+    fn wide_library(feeds: usize) -> FeedsState {
+        let mut store = Store::new();
+        for feed_index in 0..feeds {
+            let feed_id = Uuid::from_u128(feed_index as u128 + 1);
+            store.upsert_feed(Feed {
+                id: feed_id,
+                title: format!("Feed {feed_index:03}"),
+                url: format!("https://example.test/{feed_index}.xml"),
+                site_url: String::new(),
+                folder: None,
+                order: u32::try_from(feed_index).unwrap(),
+                kind: FeedKind::Rss,
+            });
+            for article_index in 0..3 {
+                store.articles.push(Article {
+                    id: Uuid::from_u128(10_000 + (feed_index * 3 + article_index) as u128),
+                    feed_id,
+                    title: format!("Article {feed_index}-{article_index}"),
+                    author: String::new(),
+                    url: String::new(),
+                    published: 0,
+                    summary: String::new(),
+                    blocks: Vec::new(),
+                    read: false,
+                    starred: false,
+                    tags: Vec::new(),
                 });
             }
-            let late = ctx
-                .feeds
-                .last()
-                .and_then(|feed| feed.articles.last())
-                .expect("fixture has a late article")
-                .id;
-
-            let page = provide_resources(&ctx, &AutoCommit::new());
-            let root = &page[0];
-            assert!(
-                root.children
-                    .iter()
-                    .filter(|resource| resource.kind == "feeds.subscription")
-                    .count()
-                    <= MAX_CONTEXT_FEED_RESOURCES
-            );
-            assert!(
-                root.children
-                    .iter()
-                    .flat_map(|resource| &resource.children)
-                    .filter(|resource| resource.kind == "feeds.article")
-                    .count()
-                    <= MAX_CONTEXT_ARTICLE_RESOURCES
-            );
-            assert!(
-                tilo_actions::door::resolve(&page, &open_article_address(late)).is_none(),
-                "the late article is intentionally outside the contextual page"
-            );
-            let exact = resolve_resource(&ctx, &article_resource_id(late))
-                .expect("the omitted article resolves lazily");
-            assert!(
-                tilo_actions::door::resolve(&[exact], &open_article_address(late)).is_some(),
-                "lazy resolution exports the exact canonical open action"
-            );
-            assert!(
-                resolve_resource(&ctx, &article_resource_id(Uuid::new_v4())).is_none(),
-                "a stale article id is refused"
-            );
         }
-
-        // --- phase: tag_resource_ids_are_lossless_canonical_and_bounded ---
-        {
-            let tag = "design/日本語";
-            let id = tag_resource_id(tag);
-            assert_eq!(tag_from_resource_id(&id).as_deref(), Some(tag));
-            assert!(tag_from_resource_id("feeds.tag:44455349474e").is_none());
-            assert!(tag_from_resource_id("feeds.tag:0").is_none());
-            assert!(tag_from_resource_id(&format!("feeds.tag:{}", "aa".repeat(193))).is_none());
-        }
-
-        // --- phase: ctrl_k_publishes_the_reader_tree ---
-        // Ctrl+K on Feeds yields the tree: the reader with a "New folder" action, a
-        // `feeds.folder` child per folder (rename + delete), and a
-        // `feeds.subscription` child per feed (rename + mark-read + move +
-        // unsubscribe). Drives the real resource hook.
-        {
-            let (app, doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
-            let handlers: std::collections::HashSet<String> = app
-                .local_resource_operation_handlers()
-                .iter()
-                .map(|handler| (*handler).to_string())
-                .collect();
-            let violations = tilo_actions::validate_surface(&resources, &registry(), &handlers);
-            assert!(violations.is_empty(), "{violations:?}");
-            assert_eq!(resources.len(), 1, "one reader root");
-            let reader = &resources[0];
-            assert_eq!(reader.kind, "feeds.reader");
-            let reader_actions: Vec<&str> = reader.actions.iter().map(|a| a.id.as_str()).collect();
-            assert!(
-                reader_actions.contains(&"add-subscription"),
-                "{reader_actions:?}"
-            );
-            assert!(
-                reader_actions.contains(&"mark-all-read"),
-                "{reader_actions:?}"
-            );
-            assert!(reader_actions.contains(&"new-folder"), "{reader_actions:?}");
-            for id in ["import-opml", "export-opml"] {
-                let action = reader
-                    .actions
-                    .iter()
-                    .find(|action| action.id == id)
-                    .unwrap();
-                assert_eq!(action.kind, OperationKind::View);
-                assert_eq!(action.locus, ExecutionLocus::ClientLocal);
-            }
-            assert!(
-                reader_actions.contains(&"refresh-all"),
-                "{reader_actions:?}"
-            );
-            let refresh = reader
-                .actions
-                .iter()
-                .find(|a| a.id == "refresh-all")
-                .unwrap();
-            assert_eq!(
-                refresh.contract.execution,
-                tilo_actions::ExecutionMode::Background { cancellable: false }
-            );
-            assert_eq!(refresh.contract.result, tilo_actions::ResultSpec::Job);
-            assert!(
-                refresh
-                    .contract
-                    .result
-                    .validate(&tilo_actions::ActionOutput::default())
-                    .is_ok()
-            );
-            assert_eq!(refresh.kind, OperationKind::Effect);
-
-            let folder = reader
-                .children
-                .iter()
-                .find(|r| r.kind == "feeds.folder")
-                .expect("a folder resource");
-            let f_actions: Vec<&str> = folder.actions.iter().map(|a| a.id.as_str()).collect();
-            assert!(f_actions.contains(&"rename"), "{f_actions:?}");
-            assert!(f_actions.contains(&"delete"), "{f_actions:?}");
-
-            let feed = reader
-                .children
-                .iter()
-                .find(|r| r.kind == "feeds.subscription")
-                .expect("a subscription resource");
-            let s_actions: Vec<&str> = feed.actions.iter().map(|a| a.id.as_str()).collect();
-            assert!(s_actions.contains(&"rename"), "{s_actions:?}");
-            assert!(s_actions.contains(&"mark-read"), "{s_actions:?}");
-            assert!(s_actions.contains(&"move"), "{s_actions:?}");
-            assert!(s_actions.contains(&"unsubscribe"), "{s_actions:?}");
-            assert_eq!(
-                feed.actions.iter().find(|a| a.id == "open").unwrap().kind,
-                OperationKind::View
-            );
-            assert_eq!(
-                feed.actions
-                    .iter()
-                    .find(|a| a.id == "mark-read")
-                    .unwrap()
-                    .kind,
-                OperationKind::Document
-            );
-            assert_eq!(
-                feed.actions.iter().find(|a| a.id == "rename").unwrap().kind,
-                OperationKind::Document
-            );
-            assert_eq!(
-                feed.actions
-                    .iter()
-                    .find(|a| a.id == "unsubscribe")
-                    .unwrap()
-                    .contract
-                    .risk,
-                tilo_actions::RiskLevel::Destructive
-            );
-
-            let article = feed
-                .children
-                .iter()
-                .find(|resource| resource.kind == "feeds.article")
-                .expect("articles are first-class nested resources");
-            assert_eq!(
-                article
-                    .actions
-                    .iter()
-                    .find(|a| a.id == "open")
-                    .unwrap()
-                    .kind,
-                OperationKind::View
-            );
-            assert_eq!(
-                article
-                    .actions
-                    .iter()
-                    .find(|a| a.id == "read")
-                    .unwrap()
-                    .kind,
-                OperationKind::Document
-            );
-            assert_eq!(
-                article
-                    .actions
-                    .iter()
-                    .find(|a| a.id == "star")
-                    .unwrap()
-                    .kind,
-                OperationKind::Document
-            );
-
-            // The full flattened tree exports every action — the palette's Actions
-            // group is display-capped, so reachability is asserted on the flatten.
-            let flat: Vec<&str> = tilo_actions::flatten(&resources)
-                .iter()
-                .map(|f| f.action.label.as_str())
-                .collect();
-            assert!(flat.contains(&"Add subscription"), "{flat:?}");
-            assert!(flat.contains(&"Mark all articles as read"), "{flat:?}");
-            assert!(flat.contains(&"New folder"), "{flat:?}");
-            assert!(flat.contains(&"Unsubscribe"), "{flat:?}");
-            assert!(flat.contains(&"Delete folder"), "{flat:?}");
-        }
+        FeedsState { store }
     }
 
-    /// A demo reader synced into a fresh document, plus the app that owns it.
-    fn seeded() -> (FeedsApp, AutoCommit) {
-        let mut app = FeedsApp::new_demo();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-        (app, doc)
-    }
-
-    /// Reader actions add subscriptions through the replayable contract, treat a blank prompt as a no-op and delete folders without losing feeds.
+    /// The published library is bounded, every item outside the page still
+    /// resolves by id, and tag ids are lossless.
     #[test]
-    fn reader_actions_replay_and_edit_the_library() {
-        // --- phase: reader_level_add_subscription_uses_the_replayable_action_contract ---
-        {
-            let (app, mut doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
-            let add = resources[0]
-                .actions
+    fn the_published_library_is_bounded_and_resolves_the_rest_by_id() {
+        let state = wide_library(MAX_CONTEXT_FEED_RESOURCES + 2);
+        let page = vec![ui::tilo_resource::publish::<Feeds>(
+            READER_RESOURCE_ID,
+            "Feeds",
+            &state,
+        )];
+        let root = &page[0];
+        assert!(
+            root.children
                 .iter()
-                .find(|action| action.id == "add-subscription")
-                .expect("reader exports canonical add-subscription");
-            let encoded = prompted_encode(add, "https://example.test/updates.xml");
-            assert_eq!(encoded.type_id, FEEDS_ACTION_TYPE);
+                .filter(|resource| resource.kind == "feeds.subscription")
+                .count()
+                <= MAX_CONTEXT_FEED_RESOURCES
+        );
+        assert!(
+            root.children
+                .iter()
+                .flat_map(|resource| &resource.children)
+                .filter(|resource| resource.kind == "feeds.article")
+                .count()
+                <= MAX_CONTEXT_ARTICLE_RESOURCES
+        );
+        let late = state.store.articles.last().unwrap().id;
+        assert!(
+            tilo_actions::door::resolve(&page, &open_article_address(late)).is_none(),
+            "the late article is outside the published page"
+        );
+        let exact = Feeds::child(&state, &article_resource_id(late))
+            .expect("the omitted article resolves by id");
+        assert!(
+            tilo_actions::door::resolve(&[exact], &open_article_address(late)).is_some(),
+            "resolving by id offers the same open action"
+        );
+        let late_feed = state.store.feeds.last().unwrap().id;
+        let feed = Feeds::child(&state, &feed_resource_id(late_feed))
+            .expect("the omitted subscription resolves by id");
+        assert!(feed.actions.iter().any(|action| action.id == "unsubscribe"));
+        assert!(
+            Feeds::child(&state, &article_resource_id(Uuid::new_v4())).is_none(),
+            "a stale article id is refused"
+        );
 
-            let decoded = registry()
-                .decode(&encoded)
-                .expect("prompt result decodes through the Feeds registry");
-            let mut transport = LocalTransport::new();
-            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport)
-                .expect("canonical prompt result applies deterministically");
-            assert!(
-                FeedsDoc::load(&doc)
-                    .feeds
-                    .iter()
-                    .any(|feed| feed.url == "https://example.test/updates.xml")
-            );
+        let tag = "design/日本語";
+        let id = tag_resource_id(tag);
+        assert_eq!(tag_from_resource_id(&id).as_deref(), Some(tag));
+        assert!(tag_from_resource_id("feeds.tag:44455349474e").is_none());
+        assert!(tag_from_resource_id("feeds.tag:0").is_none());
+        assert!(tag_from_resource_id(&format!("feeds.tag:{}", "aa".repeat(193))).is_none());
+    }
+
+    /// Resolving one item by id builds only that item, however large the
+    /// archive, and refuses hostile ids before building anything.
+    #[test]
+    fn resolving_an_item_builds_only_that_item() {
+        let mut store = crate::sample::store();
+        let feed_template = store.feeds[0].clone();
+        let article_template = store.articles[0].clone();
+        let mut target = article_template.id;
+        for index in 0..200_u128 {
+            let mut feed = feed_template.clone();
+            feed.id = Uuid::from_u128(50_000 + index);
+            feed.title = format!("Archive feed {index}");
+            let mut article = article_template.clone();
+            article.id = Uuid::from_u128(60_000 + index);
+            article.feed_id = feed.id;
+            article.tags = vec![format!("archive-{index}")];
+            target = article.id;
+            store.feeds.push(feed);
+            store.articles.push(article);
+        }
+        let article_ctx =
+            resource_ctx_for(&store, &article_resource_id(target)).expect("late article resolves");
+        assert_eq!(article_ctx.feeds.len(), 1);
+        assert_eq!(article_ctx.feeds[0].articles.len(), 1);
+        assert_eq!(article_ctx.feeds[0].articles[0].id, target);
+        assert!(article_ctx.folders.is_empty());
+        assert!(article_ctx.tags.is_empty());
+        assert!(article_ctx.unread.is_empty());
+
+        let tag_ctx =
+            resource_ctx_for(&store, &tag_resource_id("archive-199")).expect("late tag resolves");
+        assert_eq!(tag_ctx.tags.len(), 1);
+        assert!(tag_ctx.feeds.is_empty());
+        assert!(tag_ctx.folders.is_empty());
+        assert!(
+            resource_ctx_for(&store, &format!("feeds.tag:{}", "aa".repeat(193))).is_none(),
+            "oversized hostile ids are rejected before materialization"
+        );
+    }
+
+    /// Ctrl+K on Feeds yields the library: the reader with its library-wide
+    /// actions, a `feeds.folder` child per folder, a `feeds.subscription`
+    /// child per feed and its articles beneath it.
+    #[test]
+    fn the_published_library_offers_every_item_its_actions() {
+        let doc = seeded();
+        let resources = published(&doc);
+        let handlers = std::collections::HashSet::from([
+            <crate::resource::FeedsEffect as ui::tilo_resource::Effect>::OPERATION.to_string(),
+        ]);
+        let violations = tilo_actions::validate_surface(&resources, &registry(), &handlers);
+        assert!(violations.is_empty(), "{violations:?}");
+        let reader = &resources[0];
+        assert_eq!(reader.kind, "feeds.reader");
+        let reader_actions: Vec<&str> = reader.actions.iter().map(|a| a.id.as_str()).collect();
+        for id in ["add-subscription", "mark-all-read", "new-folder"] {
+            assert!(reader_actions.contains(&id), "{reader_actions:?}");
         }
 
-        // --- phase: blank_canonical_subscription_prompt_is_a_safe_no_op ---
-        {
-            let (app, mut doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
-            let add = resources[0]
+        let folder = reader
+            .children
+            .iter()
+            .find(|r| r.kind == "feeds.folder")
+            .expect("a folder resource");
+        let f_actions: Vec<&str> = folder.actions.iter().map(|a| a.id.as_str()).collect();
+        assert!(f_actions.contains(&"rename"), "{f_actions:?}");
+        assert!(f_actions.contains(&"delete"), "{f_actions:?}");
+
+        let feed = reader
+            .children
+            .iter()
+            .find(|r| r.kind == "feeds.subscription")
+            .expect("a subscription resource");
+        let kind_of = |resource: &Resource, id: &str| {
+            resource
                 .actions
                 .iter()
-                .find(|action| action.id == "add-subscription")
-                .expect("reader exports canonical add-subscription");
-            let encoded = prompted_encode(add, "   ");
-            let decoded = registry().decode(&encoded).expect("prompt still decodes");
-            let before = FeedsDoc::load(&doc).feeds.len();
-            let mut transport = LocalTransport::new();
-            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport)
-                .expect("blank action is harmless");
-            assert_eq!(FeedsDoc::load(&doc).feeds.len(), before);
+                .find(|a| a.id == id)
+                .unwrap_or_else(|| panic!("{id} on {}", resource.id.as_str()))
+                .kind
+        };
+        assert_eq!(kind_of(feed, "open"), OperationKind::View);
+        for id in ["rename", "mark-read", "move", "unsubscribe"] {
+            assert_eq!(kind_of(feed, id), OperationKind::Document);
         }
-
-        // --- phase: delete_folder_keeps_its_feeds ---
-        // Deleting a folder through its action drops the folder but keeps its feeds,
-        // unparented to uncategorised — a subscription is never lost with its folder.
-        {
-            let (app, mut doc) = seeded();
-            let folder = app.store_folder_ids()[0];
-            let feeds_in: Vec<Id> = FeedsDoc::load(&doc)
-                .feeds
+        assert_eq!(
+            feed.actions
                 .iter()
-                .filter(|f| f.folder == Some(folder))
-                .map(|f| f.id)
-                .collect();
-            assert!(!feeds_in.is_empty(), "the folder starts with feeds");
+                .find(|a| a.id == "unsubscribe")
+                .unwrap()
+                .contract
+                .risk,
+            tilo_actions::RiskLevel::Destructive
+        );
 
-            let action = delete_folder_action(folder);
-            let encoded = encode(&action);
-            let decoded = registry().decode(&encoded).unwrap();
-            let mut tx = LocalTransport::new();
-            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        let article = reader
+            .children
+            .iter()
+            .flat_map(|feed| &feed.children)
+            .find(|resource| resource.kind == "feeds.article")
+            .expect("articles are nested resources");
+        assert_eq!(kind_of(article, "open"), OperationKind::View);
+        assert_eq!(kind_of(article, "read"), OperationKind::Document);
+        assert_eq!(kind_of(article, "star"), OperationKind::Document);
+        assert_eq!(kind_of(article, "set-tags"), OperationKind::Document);
 
-            let loaded = FeedsDoc::load(&doc);
-            assert!(loaded.folder(folder).is_none(), "the folder is gone");
-            for fid in &feeds_in {
-                let feed = loaded
-                    .feed(*fid)
-                    .expect("the feed survives the folder deletion");
-                assert_eq!(feed.folder, None, "the feed is now uncategorised");
-            }
+        // The palette's Actions group is display-capped, so reachability is
+        // asserted on the flattened tree.
+        let flat: Vec<&str> = tilo_actions::flatten(&resources)
+            .iter()
+            .map(|f| f.action.label.as_str())
+            .collect();
+        for label in [
+            "Add subscription",
+            "Mark all articles as read",
+            "New folder",
+            "Unsubscribe",
+            "Delete folder",
+        ] {
+            assert!(flat.contains(&label), "{flat:?}");
         }
     }
 
-    /// The reader a peer holding `doc` would publish: a fresh app mirrors the
-    /// document through its real sync path, exactly as the live app does on
-    /// open.
-    fn app_for(doc: &AutoCommit) -> FeedsApp {
-        let mut mirror = doc.clone();
-        let mut app = FeedsApp::new();
-        app.sync(&mut mirror, &automerge::ROOT);
-        app
+    /// Deleting a folder through its action drops the folder but keeps its
+    /// feeds, unparented — a subscription is never lost with its folder.
+    #[test]
+    fn deleting_a_folder_keeps_its_feeds() {
+        let mut doc = seeded();
+        let folder = library(&doc).folders[0].id;
+        let feeds_in: Vec<Id> = library(&doc)
+            .feeds
+            .iter()
+            .filter(|f| f.folder == Some(folder))
+            .map(|f| f.id)
+            .collect();
+        assert!(!feeds_in.is_empty(), "the folder starts with feeds");
+
+        let encoded = encode(&delete_folder_action(folder));
+        let decoded = registry().decode(&encoded).unwrap();
+        let mut tx = tilo_actions::LocalTransport::new();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+
+        let loaded = library(&doc);
+        assert!(loaded.folder(folder).is_none(), "the folder is gone");
+        for fid in &feeds_in {
+            let feed = loaded
+                .feed(*fid)
+                .expect("the feed survives the folder deletion");
+            assert_eq!(feed.folder, None, "the feed is now uncategorised");
+        }
     }
 
     /// The store id a subscription resource's address ends in.
@@ -1251,30 +1128,25 @@ mod tests {
     }
 
     ui::action_contract_tests! {
-        seed: seeded().1,
+        seed: seeded(),
         registry: registry(),
-        resources: |doc| ResourceProvider::resources(&app_for(doc), doc),
+        resources: |doc| published(doc),
         palette: ["New folder", "Rename folder", "Unsubscribe"],
         replay: [
             star_article => |doc| {
-                let unstarred = FeedsDoc::load(doc)
+                let unstarred = library(doc)
                     .articles
                     .into_iter()
                     .find(|a| !a.starred)
-                    .expect("the demo reader has an unstarred article");
+                    .expect("the sample library has an unstarred article");
                 encode(&set_starred_action(unstarred.id, true))
             },
             tag_article => |doc| encode(&set_article_tags_action(
-                app_for(doc).store_article_ids()[0],
+                library(doc).articles[0].id,
                 &["design".to_string(), "later".to_string()],
             )),
-            read_settings => |_| encode(&set_read_settings_action(ReadSettings {
-                font_scale: 1.35,
-                font: crate::model::ReadFont::Serif,
-                theme: crate::model::ReadTheme::Sepia,
-            })),
             collapse_folder => |doc| encode(&set_folder_collapsed_action(
-                app_for(doc).store_folder_ids()[0],
+                library(doc).folders[0].id,
                 true,
             )),
             add_subscription => |_| encode(&add_subscription_action(
@@ -1285,8 +1157,8 @@ mod tests {
             )),
         ],
         undo: [
-            remove_subscription => |doc| encode(&remove_subscription_action(app_for(doc).store_feed_ids()[0])),
-            delete_folder => |doc| encode(&delete_folder_action(app_for(doc).store_folder_ids()[0])),
+            remove_subscription => |doc| encode(&remove_subscription_action(library(doc).feeds[0].id)),
+            delete_folder => |doc| encode(&delete_folder_action(library(doc).folders[0].id)),
         ],
         encodes: [
             unsubscribe => ("feeds.subscription", "unsubscribe", |_, res| {
@@ -1297,7 +1169,7 @@ mod tests {
             }),
             mark_feed_read => ("feeds.subscription", "mark-read", |doc, res| {
                 encode(&mark_all_read_action(
-                    &app_for(doc).store_unread_ids(Filter::Feed(feed_id(res))),
+                    &library(doc).unread_ids_for(Filter::Feed(feed_id(res))),
                 ))
             }),
         ],

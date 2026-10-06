@@ -325,120 +325,6 @@ print(json.dumps({'signed_rootfs_id': identity}))
                 with self.subTest(overrides=overrides):
                     self.assert_rejected_before_build(self.run_builder(**(inputs | overrides)), message)
 
-    def test_wpe_cache_and_completed_artifact_selection(self):
-        with self.subTest(phase="development_wpe_cache_overrides_only_immutable_dependency_stage"):
-            inputs = self.development_pipeline_inputs()
-            self.write('os/dev/prepare-wpe-stage.py', '''import sys
-assert sys.argv[sys.argv.index('--epoch') + 1] == '0'
-assert '--public-bundle' not in sys.argv
-print('sha256:''' + '3' * 64 + '''')
-''')
-            self.commit_fixture()
-            inputs.update(TILO_WITH_BROWSER='1', WPE_BUILDROOT_REF='registry.tilo.so/tilo/tilo-wpe-buildroot@sha256:' + '4' * 64,
-                TILO_WPE_BUILD_CACHE_REF='registry.tilo.so/tilo/tilo-development-wpe-cache-aarch64',
-                TILO_WPE_SOURCE_DATE_EPOCH='0')
-            result = self.run_builder(**inputs)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            arguments = self.log.read_bytes().decode().split('\0')
-            self.assertEqual(arguments.count('wpe-builder=container-image://sha256:' + '3' * 64), 2)
-            self.assertNotIn('--cache-to', arguments)
-            self.assertEqual(arguments.count('1700000000'), 2)
-        restart_fixture(self)
-        with self.subTest(phase="completed_wpe_artifact_takes_priority_and_preserves_release_epoch"):
-            inputs = self.development_pipeline_inputs()
-            self.write('os/dev/prepare-wpe-stage.py', "raise AssertionError('must never compile WPE')\n")
-            self.write('os/dev/wpe-stage-artifact.py', """import sys
-from pathlib import Path
-assert sys.argv[1] == 'import'
-args = dict(zip(sys.argv[2::2], sys.argv[3::2]))
-assert args['--architecture'] == 'aarch64'
-assert args['--epoch'] == '0'
-assert args['--receipt'] == '/private/receipt with spaces.json'
-assert args['--wpe'] == 'registry.tilo.so/tilo/tilo-wpe-buildroot@sha256:' + '4' * 64
-assert Path(args['--assets']) == Path(args['--repo']) / 'os/external-assets/cache'
-print('sha256:' + '5' * 64)
-""")
-            self.commit_fixture()
-            inputs.update(TILO_WITH_BROWSER='1', WPE_BUILDROOT_REF='registry.tilo.so/tilo/tilo-wpe-buildroot@sha256:' + '4' * 64,
-                TILO_WPE_STAGE_RECEIPT='/private/receipt with spaces.json', TILO_WPE_SOURCE_DATE_EPOCH='0',
-                TILO_WPE_BUILD_CACHE_REF='registry.tilo.so/tilo/tilo-development-wpe-cache-aarch64')
-            result = self.run_builder(**inputs)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            arguments = self.log.read_bytes().decode().split('\0')
-            self.assertEqual(arguments.count('wpe-builder=container-image://sha256:' + '5' * 64), 2)
-            self.assertEqual(arguments.count('1700000000'), 2)
-            self.assertNotIn('--cache-to', arguments)
-        restart_fixture(self)
-        with self.subTest(phase="adopted_wpe_skips_unused_buildroot_and_preserves_release_epoch"):
-            inputs = self.development_pipeline_inputs()
-            self.write('os/dev/build-wpe-buildroot.sh', '#!/bin/bash\nexit 85\n', executable=True)
-            self.write('os/dev/adopt-development-wpe.py', """import sys
-assert sys.argv[1] == 'import-adopted'
-args = dict(zip(sys.argv[2::2], sys.argv[3::2]))
-assert args['--architecture'] == 'aarch64'
-assert args['--receipt'] == '/private/adopted receipt.json'
-assert args['--receipt-sha256'] == 'a' * 64
-assert '--epoch' not in args
-print('sha256:' + '6' * 64)
-""")
-            self.commit_fixture()
-            result = self.run_builder(**(inputs | dict(TILO_WITH_BROWSER='1',
-                TILO_WPE_ADOPTION_RECEIPT='/private/adopted receipt.json', TILO_WPE_ADOPTION_SHA256='a' * 64)))
-            self.assertEqual(result.returncode, 0, result.stderr)
-            arguments = self.log.read_bytes().decode().split('\0')
-            self.assertEqual(arguments.count('wpe-builder=container-image://sha256:' + '6' * 64), 2)
-            self.assertEqual(arguments.count('1700000000'), 2)
-
-    def test_wpe_adoption_and_import_failures_never_compile(self):
-        with self.subTest(phase="adoption_rejects_mixed_sources_and_missing_independent_pin"):
-            inputs = self.development_pipeline_inputs() | dict(TILO_WITH_BROWSER='1',
-                TILO_WPE_ADOPTION_RECEIPT='/private/adopted.json', TILO_WPE_ADOPTION_SHA256='a' * 64)
-            for overrides, message in (
-                ({'TILO_WPE_ADOPTION_SHA256': ''}, 'independently pinned'),
-                ({'TILO_WPE_STAGE_RECEIPT': '/other.json'}, 'another WPE source'),
-                ({'TILO_WPE_BUILD_CACHE_REF': 'cache'}, 'another WPE source'),
-                ({'TILO_REQUIRE_WPE_SIGNATURE': '1'}, 'release buildroot verification'),
-                ({'TILO_WITH_BROWSER': '0'}, 'fresh full-browser development build')):
-                with self.subTest(overrides=overrides):
-                    self.assert_rejected_before_build(self.run_builder(**(inputs | overrides)), message)
-        restart_fixture(self)
-        with self.subTest(phase="adoption_failure_never_enters_os_compilation"):
-            inputs = self.development_pipeline_inputs() | dict(TILO_WITH_BROWSER='1',
-                TILO_WPE_ADOPTION_RECEIPT='/private/adopted.json', TILO_WPE_ADOPTION_SHA256='a' * 64)
-            for source, status in (("raise SystemExit(82)\n", 82), ("print('mutable:tag')\n", 1)):
-                self.write('os/dev/adopt-development-wpe.py', source)
-                self.commit_fixture()
-                result = self.run_builder(**inputs)
-                self.assertEqual(result.returncode, status, result.stderr)
-                self.assertFalse(self.log.exists(), 'failed adoption reached OS compilation')
-        restart_fixture(self)
-        with self.subTest(phase="completed_wpe_import_failure_never_falls_back_to_compilation"):
-            inputs = self.development_pipeline_inputs()
-            self.write('os/dev/prepare-wpe-stage.py', "raise AssertionError('must never compile WPE')\n")
-            inputs.update(TILO_WITH_BROWSER='1', WPE_BUILDROOT_REF='registry.tilo.so/tilo/tilo-wpe-buildroot@sha256:' + '4' * 64,
-                TILO_WPE_STAGE_RECEIPT='/private/required.json', TILO_WPE_SOURCE_DATE_EPOCH='0',
-                TILO_WPE_BUILD_CACHE_REF='registry.tilo.so/tilo/tilo-development-wpe-cache-aarch64')
-            for source, status in (("raise SystemExit(82)\n", 82), ("print('mutable:tag')\n", 1)):
-                with self.subTest(source=source):
-                    self.write('os/dev/wpe-stage-artifact.py', source)
-                    self.commit_fixture()
-                    result = self.run_builder(**inputs)
-                    self.assertEqual(result.returncode, status, result.stderr)
-                    self.assertFalse(self.log.exists(), 'failed artifact import reached OS build')
-                    self.assertNotIn('must never compile WPE', result.stderr)
-        restart_fixture(self)
-        with self.subTest(phase="completed_wpe_import_requires_development_browser_and_epoch"):
-            inputs = self.development_pipeline_inputs()
-            self.assert_rejected_before_build(self.run_builder(TILO_WPE_STAGE_RECEIPT='/private/required.json'),
-                                              'WPE artifact import requires a fresh full-browser development build')
-            inputs.update(TILO_WITH_BROWSER='1', WPE_BUILDROOT_REF='registry.tilo.so/tilo/tilo-wpe-buildroot@sha256:' + '4' * 64,
-                          TILO_WPE_STAGE_RECEIPT='/private/required.json')
-            self.assert_rejected_before_build(self.run_builder(**inputs), 'WPE artifact import requires an explicit dependency epoch')
-        restart_fixture(self)
-        with self.subTest(phase="wpe_cache_is_rejected_for_production_or_browserless_build"):
-            result = self.run_builder(TILO_WPE_BUILD_CACHE_REF='registry.tilo.so/tilo/tilo-development-wpe-cache-aarch64')
-            self.assert_rejected_before_build(result, 'WPE stage caching requires a fresh full-browser development build')
-
     def write(self, relative_path, content, executable=False):
         path = self.root / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -446,6 +332,14 @@ print('sha256:' + '6' * 64)
         if executable:
             path.chmod(0o755)
         return path
+
+    def stage_alongside_bootc_inputs(self):
+        for path in (
+            "os/Containerfile.bootc-alongside-helper",
+            "os/external-assets/bootc/0001-probe-missing-partition-metadata.patch",
+            "os/external-assets/bootc-install-reseal/0002-select-mounted-esp.patch",
+        ):
+            self.write(path, (REPO / path).read_text())
 
     def run_builder(self, *arguments, **overrides):
         self.log.unlink(missing_ok=True)
@@ -572,6 +466,7 @@ print('sha256:' + '6' * 64)
                 "os/dev/build-custom-installer.sh",
                 (REPO / "os/dev/build-custom-installer.sh").read_text(),
             )
+            self.stage_alongside_bootc_inputs()
             self.write("os/Containerfile.installer", (REPO / "os/Containerfile.installer").read_text())
             for path in (
                 "os/tilo-installer", "os/dev/uki-cmdline.py",
@@ -590,9 +485,14 @@ exit 72
             self.write("bin/podman", f"""\
 #!/bin/sh
 if [ "$#" = 3 ] && [ "$1" = image ] && [ "$2" = exists ]; then
-    printf '%s\\0' "$@" > "$TILO_TEST_PROBE_LOG"
+    if [ "$3" = "$TILO_IMAGE" ]; then
+        printf '%s\\0' "$@" > "$TILO_TEST_PROBE_LOG"
+    fi
     exit 0
 fi
+if [ "$1" = create ]; then printf '%s\\n' helper-fixture; exit 0; fi
+if [ "$1" = cp ]; then printf '%s\\n' 'fixture helper' > "$3"; exit 0; fi
+if [ "$1" = rm ]; then exit 0; fi
 printf '%s\\0' "$@" > "$TILO_TEST_PODMAN_LOG"
 [ "$1" = build ] || exit 72
 exit {BUILD_INTERCEPTED}
@@ -606,6 +506,7 @@ exit {BUILD_INTERCEPTED}
         with self.subTest(phase="installer_reuses_base_binary_and_stops_before_disk_or_signing"):
             self.script = self.write("os/dev/build-custom-installer.sh",
                                      (REPO / "os/dev/build-custom-installer.sh").read_text())
+            self.stage_alongside_bootc_inputs()
             for path in ("os/dev/uki-cmdline.py", "os/etc/greetd/config.toml",
                          "os/etc/greetd/config.installer.toml"):
                 self.write(path, "fixture only\n")
@@ -617,6 +518,9 @@ exit {BUILD_INTERCEPTED}
             self.write("bin/podman", """\
 #!/bin/bash
 if [ "$1" = image ] && [ "$2" = exists ]; then exit 0; fi
+if [ "$1" = create ]; then printf '%s\\n' helper-fixture; exit 0; fi
+if [ "$1" = cp ]; then printf '%s\\n' 'fixture helper' > "$3"; exit 0; fi
+if [ "$1" = rm ]; then exit 0; fi
 [ "$1" = build ] || exit 72
 printf '%s\\0' "$@" > "$TILO_TEST_PODMAN_LOG"
 context="${@: -1}"
@@ -639,6 +543,7 @@ exit 0
         with self.subTest(phase="compact_installer_root_is_opt_in_and_capacity_bounded"):
             self.script = self.write("os/dev/build-custom-installer.sh",
                                      (REPO / "os/dev/build-custom-installer.sh").read_text())
+            self.stage_alongside_bootc_inputs()
             for path in ("os/usr/share/tilo/fixture", "os/dev/uki-cmdline.py",
                          "os/etc/greetd/config.toml", "os/etc/greetd/config.installer.toml"):
                 self.write(path, "fixture only\n")
@@ -654,6 +559,9 @@ case "$1 $2" in
   'image exists') exit 0 ;;
   'image inspect') printf '%s\\n' "$TILO_TEST_IMAGE_BYTES" ;;
   'build '*) exit 0 ;;
+  'create '*) printf '%s\\n' helper-fixture ;;
+  'cp '*) printf '%s\\n' 'fixture helper' > "$3" ;;
+  'rm '*) exit 0 ;;
   *) exit 72 ;;
 esac
 """, executable=True)

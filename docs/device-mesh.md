@@ -92,6 +92,15 @@ No new wire message was added to `tilo-relay/1`: adding an enum variant to the
 postcard protocol would make old peers reject the stream. Compute uses its own
 versioned ALPN so old relay peers keep their byte-compatible v1 stream.
 
+Device administration follows the same rule. `can_administer_devices` is a
+certificate capability like `foreign`: a certificate that grants it signs under
+its own preimage tag (`tilo-devcert-v3`) and encodes its capabilities behind a
+marker byte older verifiers refuse. Every certificate that does not grant it
+keeps its byte-identical encoding and signature, so no existing peer sees a
+change; only a machine enrolled for administration is refused by builds that
+predate it. Admin traffic travels on its own versioned ALPN,
+`tilo-device-admin/1` (docs/device-reach.md), never inside an existing stream.
+
 ## Personal device fabric
 
 `shell::device_fabric` is the common, transport-neutral policy model for the
@@ -148,6 +157,51 @@ authorization.
 - **App continuation** remains in `personal_continuity`. The fabric advertises
   capability but does not duplicate launch intents, CRDT records, topology, or
   focus state.
+- **Legacy app windows** (Wayland and X11 clients) run only on the device that
+  started them; Tilo apps run on every device against the same records, so
+  only these need a stream, and no device ever streams its desktop or chrome.
+  Rooms carry such a window as a `HostedWindow` tab naming its host. Each
+  other device of the person lists the hosted tabs it currently lays out,
+  with the tile's logical size, in a `WindowViews` action to that tab's host,
+  repeated every 2 s while it shows any and sent empty once it shows none,
+  together with what its hardware decoders take (codec and largest
+  picture).
+  The host streams just that window's surface to each listed viewer over
+  the direct media route, to those devices alone and never to other members
+  of the room. The encoder is chosen as for collaboration: hardware first,
+  AV1/VP9 only when every viewer decodes it in hardware, else H.264. Frames
+  are scaled down on the host to the lowest hardware-decode limit among the
+  viewers (one encode serves all), so a board never falls back to software
+  decoding. The window is sized for the largest viewer while no tab on the
+  host shows it,
+  and paced by its own damage up to the encode cap; a frame held back by the
+  cap is sent when due.
+  A viewer that stops refreshing lapses after 6 s. Pointer, wheel, keys and
+  input-method text come back as window-local input; the person's focus on
+  another device moves the host's keyboard to that window until the host's
+  own input is used again; the host's own cursor neither moves nor changes
+  its image, and its next input takes the pointer back. The first frame a
+  new viewer gets is a keyframe, held if it overtakes the stream start. Copy and paste ride the universal clipboard. The
+  app keeps its normal lifecycle on the host, and its encoder stops with the
+  last viewer.
+- **Staying awake and waking up.** An action from one of the person's own
+  devices (`actions invoke --device`) counts as use: it renews a 10-minute
+  suspend-only lease in the target session's inhibitor registry, so the
+  screen still blanks and locks and the lease lapses once the requests stop.
+  Each device's presence carries its wake routes (each interface's MAC as
+  the network sees it, Ethernet or Wi-Fi, whether a magic packet wakes it,
+  and the IPv4 subnet it was last seen on). Only an interface whose
+  magic-packet wake is actually enabled wakes a device; a Wi-Fi chip may
+  list WoWLAN while its machine does not wake from it, so the image enables
+  it only where that is verified. A device
+  without one cannot be woken over the network, and `device.wake` says so
+  instead of sending anything. The typed `device.wake` action
+  (provider `continuity.devices`, argument `device`: a label or device id)
+  picks a device that is awake on the target's last subnet, this one first.
+  That device sends the magic packet to UDP port 9 and probes the target
+  until it answers, then reports back. Without such a device the action
+  fails at once and names the subnet (`no awake device on 10.0.0.0/24`).
+  Waking is device administration and needs no optional continuity switch.
 - **Notifications** project only the app-authorized redacted or full payload.
   Dismiss and action replies return to the exact originating device instead of
   turning a mirrored notification into ambient remote-control authority.

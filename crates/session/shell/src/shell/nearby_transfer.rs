@@ -769,7 +769,8 @@ impl NearbyTransferStore {
         if bytes.len() > 256 * 1024 {
             return Err("nearby transfer index is too large".into());
         }
-        atomic_file::write_with_mode(&self.root.join("index.json"), &bytes, 0o600).map_err(display)
+        tilo_files::native::atomic::write_with_mode(&self.root.join("index.json"), &bytes, 0o600)
+            .map_err(display)
     }
 }
 

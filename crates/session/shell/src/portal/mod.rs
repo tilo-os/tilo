@@ -634,6 +634,8 @@ fn capability_kind_and_scope(capability: &Capability) -> Option<(CapabilityKind,
         Capability::RemoteDesktop { scope } => (CapabilityKind::RemoteDesktop, *scope),
         Capability::Print { scope } => (CapabilityKind::Print, *scope),
         Capability::Network { scope, .. } => (CapabilityKind::Network, *scope),
+        // The shell runtime keeps this decision; no portal asks for it.
+        Capability::HostShell { .. } => return None,
     })
 }
 
@@ -651,7 +653,7 @@ fn default_portal_consent_path() -> Option<PathBuf> {
 }
 
 fn persist_portal_consents(path: &Path, always: &BTreeSet<String>) -> std::io::Result<()> {
-    atomic_file::json::write_private(
+    tilo_files::native::atomic::json::write_private(
         path,
         &PortalConsentFile {
             always: always.clone(),
@@ -1096,6 +1098,7 @@ pub fn with_scope(cap: Capability, scope: GrantScope) -> Capability {
         Capability::RemoteDesktop { .. } => Capability::RemoteDesktop { scope },
         Capability::Print { .. } => Capability::Print { scope },
         Capability::Network { hosts, .. } => Capability::Network { hosts, scope },
+        Capability::HostShell { .. } => Capability::HostShell { scope },
     }
 }
 
@@ -1248,7 +1251,8 @@ pub async fn serve_with_inhibit_and_clipboard(
             clipboard::ClipboardSessionProviderHandle::new(Arc::new(input_capture_sessions)),
         ],
         clipboard_broker,
-    );
+    )
+    .with_session_wake(lifecycle.wake.clone());
     let clipboard_events = clipboard.clone();
     let shortcut_service = global_shortcuts::ShellGlobalShortcutsService::global();
     let shortcuts = GlobalShortcutsBackend::with_service(

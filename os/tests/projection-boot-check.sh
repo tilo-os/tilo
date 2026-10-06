@@ -6,9 +6,9 @@ for helper in tilo-projector tilo-doubletake tilo-fluxcast; do
 done
 
 gst-inspect-1.0 h264parse >/dev/null
+# No Python D-Bus or GObject bindings: the image forbids python3-dbus-next and
+# python3-gobject (os/scripts/verify-runtime-crypto-packages.sh).
 python3 - <<'PY'
-import dbus_next
-import gi
 import json
 import subprocess
 

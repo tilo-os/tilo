@@ -17,6 +17,7 @@ SOURCES = (
     "os/Containerfile.host",
     "os/dev/composefs/Containerfile",
     "os/containers/tilo-relay/Containerfile",
+    "os/Containerfile.env-runtime",
 )
 
 

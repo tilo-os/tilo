@@ -7,7 +7,7 @@
 use ui::time::{Duration, Instant};
 
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, Vec2};
+use vello::kurbo::{Affine, Rect};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::keyboard::{Key, NamedKey};
 
@@ -968,12 +968,12 @@ fn draw_presenter_current(ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>, area
         area.x1,
         area.y1,
     ));
-    chrome::fill_round(
+    ui::surface::shadow(
         scene,
         transform,
-        (destination + Vec2::new(0.0, 6.0)).inflate(2.0, 2.0),
+        destination,
         12.0,
-        render::with_alpha(Color::BLACK, 80),
+        &ctx.theme.tokens.elevation.e3,
     );
     if let Some(slide) = frame.slide() {
         render::draw_slide(

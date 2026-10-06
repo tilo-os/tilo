@@ -742,13 +742,22 @@ impl<W: ListenerWatch> XwaylandSupervisor<W> {
         let Some(displays) = registry.displays.as_mut() else {
             return;
         };
+        let live = live_workspaces(chrome);
+        // D-Bus-activated X11 apps inherit the session environment. Bind
+        // the active workspace's socket (satellite still starts on first
+        // connect) so DISPLAY exists before anyone clicks a host app.
+        if let Some(active) = active_workspace_room(chrome)
+            && live.contains(&active)
+            && let Ok((session, _)) = displays.session_for(&active)
+        {
+            crate::compositor::session_env::export_x11(&session.display, &session.authority);
+        }
         if displays.workspaces.is_empty()
             && displays.unavailable.is_empty()
             && self.watched.is_empty()
         {
             return;
         }
-        let live = live_workspaces(chrome);
         let wayland_socket = self.wayland_socket.clone();
         let satellite = displays.satellite.clone();
         let mut spawn = |display: &WorkspaceDisplay| match satellite.as_ref() {
@@ -870,6 +879,15 @@ fn live_workspaces(chrome: &crate::shell::chrome_state::Chrome) -> HashSet<Strin
         .iter()
         .map(|workspace| workspace.room.to_string())
         .collect()
+}
+
+fn active_workspace_room(chrome: &crate::shell::chrome_state::Chrome) -> Option<String> {
+    chrome
+        .borrow()
+        .tree()
+        .desktop
+        .active_workspace()
+        .map(|workspace| workspace.room.to_string())
 }
 
 fn announce_unavailable(chrome: &crate::shell::chrome_state::Chrome) {
@@ -1198,6 +1216,11 @@ fn publish_font_dpi(stream: UnixStream, cookie: [u8; 16]) -> Result<u32, String>
         "Xft.dpi",
         &dpi.to_string(),
     );
+    let merged = with_resource(
+        &merged,
+        "Xcursor.size",
+        &cursor_size_for_dpi(dpi).to_string(),
+    );
     conn.change_property8(
         PropMode::REPLACE,
         root,
@@ -1259,6 +1282,10 @@ fn xsettings_integer(data: &[u8], name: &str) -> Option<i32> {
         offset = offset.checked_add(value_length)?;
     }
     None
+}
+
+fn cursor_size_for_dpi(dpi: u32) -> u32 {
+    dpi.saturating_mul(24).saturating_div(96).max(24)
 }
 
 /// `resources` with `key` set to `value`, every other line kept.
@@ -1755,6 +1782,8 @@ mod tests {
 
     #[test]
     fn publishing_dpi_replaces_only_that_resource() {
+        assert_eq!(cursor_size_for_dpi(96), 24);
+        assert_eq!(cursor_size_for_dpi(192), 48);
         assert_eq!(with_resource("", "Xft.dpi", "192"), "Xft.dpi:\t192\n");
         assert_eq!(
             with_resource(

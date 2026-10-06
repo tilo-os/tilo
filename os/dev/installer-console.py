@@ -14,13 +14,17 @@ one, and secrets taken from the environment so they never reach argv.
   installer-console.py --socket S wait APP [--timeout N] [--save FILE]
   installer-console.py --socket S wait-step STEP [--timeout N] [--save FILE]
   installer-console.py --socket S state [--save FILE]
+  installer-console.py --socket S check APP [/json/pointer] [--timeout N]
   installer-console.py --socket S invoke ACTION@RESOURCE [ARGS_JSON]
                          [--secret NAME=ENVVAR ...] [--provider P]
   installer-console.py --socket S wait-install [--timeout N] [--save FILE]
   installer-console.py field FILE /json/pointer
 
-Exit status: 0 success, 1 refused/failed (reason on stderr), 2 timeout or
-unreachable, 64 usage.
+`check` asks once whether APP is answering and, given a pointer, whether that
+state field is `true` (the greeter's `/accepts_input`, for instance).
+
+Exit status: 0 success, 1 refused/failed or a false `check` (reason on
+stderr), 2 timeout or unreachable, 64 usage.
 """
 from __future__ import annotations
 
@@ -140,6 +144,10 @@ def main(argv: list[str]) -> int:
     step.add_argument("--save")
     show = sub.add_parser("state")
     show.add_argument("--save")
+    check = sub.add_parser("check")
+    check.add_argument("app")
+    check.add_argument("pointer", nargs="?")
+    check.add_argument("--timeout", type=float, default=15)
     invoke = sub.add_parser("invoke")
     invoke.add_argument("id")
     invoke.add_argument("args", nargs="?", default="{}")
@@ -167,6 +175,13 @@ def main(argv: list[str]) -> int:
             current = state(path)
             save(current, options.save)
             print(json.dumps(current))
+        elif options.command == "check":
+            current = unwrap(request(path, {"op": "state_dump"}, options.timeout), "state")
+            if current.get("app") != options.app or (
+                options.pointer is not None and pointer(current, options.pointer) is not True
+            ):
+                print(json.dumps(current), file=sys.stderr)
+                return 1
         elif options.command == "wait":
             save(poll(path, lambda s: s.get("app") == options.app, options.timeout), options.save)
         elif options.command == "wait-step":

@@ -25,8 +25,13 @@ main_tip=$(git -C "$repo_root" rev-parse HEAD)
 git -C "$isolated_repo" update-ref refs/heads/main "$main_tip"
 git -C "$isolated_repo" checkout --quiet main
 
-vello_tip=108405981ee51fd9b2c3ee7ef9c3b8b1c6a9d223
-winit_tip=b4ea19a1c6cccfe268ae2fb30f098629d926e5da
+recorded() {
+    sed -n "s/^$1=//p" "$repo_root/tools/vendor-history.sh"
+}
+vello_base=$(recorded vello_base)
+vello_tip=$(recorded vello_tip)
+winit_base=$(recorded winit_base)
+winit_tip=$(recorded winit_tip)
 git -C "$isolated_repo" update-ref \
     refs/remotes/origin/vendor-upstream/vello-0.9 "$vello_tip"
 git -C "$isolated_repo" update-ref \
@@ -37,16 +42,16 @@ git -C "$isolated_repo" update-ref \
     "$repo_root/tools/vendor-history.sh" verify
 
     # A stale local topic branch must not mask the immutable origin ref.
-    git update-ref refs/heads/vendor-upstream/vello-0.9 \
-        f21d2c703175f5387315506865343c52f69b5b39
-    git update-ref refs/heads/vendor-upstream/winit-0.30.13 \
-        967e2ec045e9485c10cfbd2323a4ede1a3751845
+    git update-ref refs/heads/vendor-upstream/vello-0.9 "$vello_base"
+    git update-ref refs/heads/vendor-upstream/winit-0.30.13 "$winit_base"
     "$repo_root/tools/vendor-history.sh" verify
     "$repo_root/tools/vendor-history.sh" export "$export_dir"
 )
 
-test "$(find "$export_dir/vello-0.9-patches" -type f -name '*.patch' | wc -l)" -eq 3
-test "$(find "$export_dir/winit-0.30.13-patches" -type f -name '*.patch' | wc -l)" -eq 6
+test "$(find "$export_dir/vello-0.9-patches" -type f -name '*.patch' | wc -l)" -eq \
+    "$(git -C "$repo_root" rev-list --count "$vello_base..$vello_tip")"
+test "$(find "$export_dir/winit-0.30.13-patches" -type f -name '*.patch' | wc -l)" -eq \
+    "$(git -C "$repo_root" rev-list --count "$winit_base..$winit_tip")"
 git bundle verify "$export_dir/vello-0.9.bundle" >/dev/null
 git bundle verify "$export_dir/winit-0.30.13.bundle" >/dev/null
 git bundle list-heads "$export_dir/vello-0.9.bundle" | rg -q "^$vello_tip "

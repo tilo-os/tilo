@@ -11,7 +11,7 @@ use crate::{
     theme::Theme,
     widget::{ActivityTimeline, Button, Column, Row, TaffyTreeExt, Text, TextInput, Widget},
 };
-use automerge::{AutoCommit, transaction::Transactable};
+use automerge::AutoCommit;
 use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
@@ -26,6 +26,7 @@ use winit::event::WindowEvent;
 #[derive(Clone, Copy)]
 enum Command {
     Live,
+    Earlier,
     Activity,
     Before,
     After,
@@ -206,11 +207,11 @@ impl HistoryHost {
             .find(|source| source.scope() == scope.key)
             .ok_or(HistoryRegistrationError::InvalidScopes)?;
 
+        // History projects when it opens; a launch only learns the frontier.
         let controller = match source {
             HistorySourceRegistration::HostDocument { resource, .. }
             | HistorySourceRegistration::OwnedDocument { resource, .. } => Some(
-                HistoryController::new(resource.clone(), &source.document(doc)?)
-                    .map_err(|_| HistoryRegistrationError::ForeignSource)?,
+                HistoryController::unprojected(resource.clone(), source.committed_heads(doc)?),
             ),
             HistorySourceRegistration::Unversioned { .. }
             | HistorySourceRegistration::CheckedFiles { .. } => None,
@@ -228,7 +229,7 @@ impl HistoryHost {
             .push(Box::new(
                 Row::new()
                     .push(Box::new(
-                        Button::new("history-open", "History", None)
+                        Button::new("history-open", "History")
                             .fit_content(32.0)
                             .on_click(move || clicked.set(true)),
                     ))
@@ -384,6 +385,30 @@ impl HistoryHost {
             .iter()
             .find(|source| source.scope() == key)
             .expect("validated scope")
+    }
+    /// The checked-file scope whose content asked to show a file's history
+    /// while another scope is shown: opening a file's history from the app
+    /// (its History command on a selected file) moves to that file's scope.
+    fn file_scope_asking_to_open(&self) -> Option<usize> {
+        if matches!(
+            self.source(),
+            HistorySourceRegistration::CheckedFiles { .. }
+        ) {
+            return None;
+        }
+        self.registration
+            .definition
+            .scopes
+            .iter()
+            .position(|scope| {
+                self.registration.sources.iter().any(|source| {
+                    matches!(
+                        source,
+                        HistorySourceRegistration::CheckedFiles { scope: key, source }
+                            if *key == scope.key && source.wants_open()
+                    )
+                })
+            })
     }
     pub(crate) fn validate(&self) -> Result<(), HistoryRegistrationError> {
         if self.invalid_owner {
@@ -793,7 +818,7 @@ impl HistoryHost {
             if widget.test_id() == Some(id) {
                 return widget.perform_action(
                     &crate::a11y::Action::Activate,
-                    &mut AutoCommit::new(),
+                    &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                     &automerge::ROOT,
                 );
             }
@@ -961,6 +986,9 @@ impl HistoryHost {
         if self.assets.has_results() {
             return true;
         }
+        if self.file_scope_asking_to_open().is_some() {
+            return true;
+        }
         if let HistorySourceRegistration::CheckedFiles { source, .. } = self.source()
             && (source.target().map(|target| target.binding) != self.observed_file_binding
                 || source.wants_open()
@@ -995,12 +1023,15 @@ impl HistoryHost {
         ) {
             return false;
         }
-        let Ok(document) = self.source().document(doc) else {
+        let Ok(heads) = self.source().committed_heads(doc) else {
             return true;
         };
-        self.controller.as_ref().is_some_and(|controller| {
-            super::sorted_heads(document.base_heads()) != controller.observed_live_heads
-        })
+        // Closed history does not consume the new frontier in refresh.
+        // Leave it pending until opening, instead of rebuilding every frame.
+        self.open
+            && self.controller.as_ref().is_some_and(|controller| {
+                super::sorted_heads(heads) != controller.observed_live_heads
+            })
     }
     pub(crate) fn review_is_open(&self) -> bool {
         self.review.is_some()
@@ -1028,8 +1059,11 @@ impl HistoryHost {
             .is_some_and(HistoryController::has_live_updates);
         let target_changed = self.reconcile_file_target();
         let mut changed = target_changed || std::mem::take(&mut self.toolbar_dirty);
+        let started = crate::time::now();
+        let mut opening = false;
         if self.open_requested.replace(false) {
             self.open = !self.open;
+            opening = self.open;
             self.returning_live = !self.open;
             if !self.open {
                 self.close_files_presentation();
@@ -1037,6 +1071,9 @@ impl HistoryHost {
             changed = true;
         }
         let requested = self.requested_entry.take().filter(|_| self.open);
+        if let Some(scope) = self.file_scope_asking_to_open() {
+            self.commands.borrow_mut().push_back(Command::Scope(scope));
+        }
         let commands: Vec<_> = self.commands.borrow_mut().drain(..).collect();
         for command in commands {
             // These callbacks were produced by the superseded presentation.
@@ -1105,6 +1142,13 @@ impl HistoryHost {
                         controller.back_to_live();
                     }
                 }
+                Command::Earlier => {
+                    if let Ok(document) = self.source().document(doc)
+                        && let Some(controller) = &mut self.controller
+                    {
+                        let _ = controller.show_earlier(&document);
+                    }
+                }
                 Command::PreviousPage | Command::NextPage => {
                     self.canvas_mut()
                         .navigate(if matches!(command, Command::NextPage) {
@@ -1139,9 +1183,11 @@ impl HistoryHost {
                         match self.source() {
                             HistorySourceRegistration::HostDocument { resource, .. }
                             | HistorySourceRegistration::OwnedDocument { resource, .. } => {
-                                if let Ok(document) = self.source().document(doc) {
-                                    self.controller =
-                                        HistoryController::new(resource.clone(), &document).ok();
+                                if let Ok(heads) = self.source().committed_heads(doc) {
+                                    self.controller = Some(HistoryController::unprojected(
+                                        resource.clone(),
+                                        heads,
+                                    ));
                                 }
                             }
                             HistorySourceRegistration::Unversioned { reason, .. } => {
@@ -1202,6 +1248,18 @@ impl HistoryHost {
                 changed = true;
             }
             self.timeline.set_entries(controller.entries().to_vec());
+            if opening {
+                // One line per opening, for gates and logs that keep History
+                // fast on long histories.
+                crate::diag!(
+                    "HISTORY-OPEN listed={} earlier={} ms={}",
+                    controller.entries().len(),
+                    controller.has_earlier(),
+                    crate::time::now()
+                        .saturating_duration_since(started)
+                        .as_millis()
+                );
+            }
             if let Some(entry) = requested
                 && self.selected == [entry]
                 && let Some(index) = self
@@ -1224,7 +1282,7 @@ impl HistoryHost {
     }
     fn command_button(&self, id: &str, label: &str, command: Command) -> Button {
         let queue = self.commands.clone();
-        Button::new(id, label, None)
+        Button::new(id, label)
             .fit_content(32.0)
             .on_click(move || queue.borrow_mut().push_back(command))
     }
@@ -1283,7 +1341,7 @@ impl HistoryHost {
                 toolbar = toolbar.push(Box::new(
                     Row::new()
                         .push(Box::new(
-                            Button::new("history-open", "history-mode-title", None)
+                            Button::new("history-open", "history-mode-title")
                                 .fit_content(32.0)
                                 .on_click(move || clicked.set(true)),
                         ))
@@ -1367,7 +1425,7 @@ impl HistoryHost {
                         self.pending_control_callbacks
                             .insert(id.clone(), callback.clone());
                         row = row.push(Box::new(
-                            Button::new(&id, label, None)
+                            Button::new(&id, label)
                                 .fit_content(32.0)
                                 .on_click(move || callback.invoke()),
                         ));
@@ -1381,7 +1439,7 @@ impl HistoryHost {
                         self.pending_control_callbacks
                             .insert(id.clone(), callback.clone());
                         row = row.push(Box::new(
-                            Button::new(&id, label, None)
+                            Button::new(&id, label)
                                 .fit_content(32.0)
                                 .on_click(move || callback.invoke()),
                         ));
@@ -1397,7 +1455,7 @@ impl HistoryHost {
                     self.pending_control_callbacks
                         .insert(cancel_id.clone(), callback.clone());
                     row = row.push(Box::new(
-                        Button::new(&cancel_id, "history-mode-cancel", None)
+                        Button::new(&cancel_id, "history-mode-cancel")
                             .fit_content(32.0)
                             .on_click(move || callback.invoke()),
                     ));
@@ -1406,6 +1464,18 @@ impl HistoryHost {
             }
             for failure in &self.pending_control_capture_failures {
                 toolbar = toolbar.push(Box::new(Text::new(failure)));
+            }
+            if self.open
+                && self
+                    .controller
+                    .as_ref()
+                    .is_some_and(HistoryController::has_earlier)
+            {
+                toolbar = toolbar.push(Box::new(self.command_button(
+                    "history-earlier",
+                    "history-mode-earlier",
+                    Command::Earlier,
+                )));
             }
         } else {
             let mut header = Row::new().push(Box::new(Text::new(title)));
@@ -1555,3 +1625,7 @@ mod review;
 mod media;
 
 mod files;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "refresh_heads_tests.rs"]
+mod refresh_heads_tests;

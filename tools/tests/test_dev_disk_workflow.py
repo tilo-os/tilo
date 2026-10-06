@@ -113,6 +113,7 @@ class DevDiskWorkflowTests(unittest.TestCase):
             self.assertIn("sparse-checkout-cone-mode: false", checkout)
             for file in (
                 "disk-image.sh",
+                "check-composefs-verity.py",
                 "export-direct-boot-bundle.sh",
                 "hold-loop-partition-nodes.py",
                 "private_disk_image.py",
@@ -161,10 +162,15 @@ class DevDiskWorkflowTests(unittest.TestCase):
         self.assertIn("validate_boot:", self.source)
         self.assertIn("auto) [[ $trust == release ]] && validate_boot=true || validate_boot=false", plan)
         self.assertIn('echo "validate_boot=$validate_boot"', plan)
-        self.assertNotIn("if:", candidate)
+        self.assertIn("if: github.event.inputs.validate_greeter != 'true'", candidate)
         self.assertIn("if: needs.plan.outputs.validate_boot == 'true'", smoke)
         self.assertIn('python3 os/dev/probe-kvm.py "$ARCH"', smoke)
-        self.assertIn("if: needs.plan.outputs.validate_boot == 'true'", validated)
+        self.assertIn("export TILO_BOOT_WAIT_ATTEMPTS=120", smoke)
+        self.assertIn("pgrep -x tilo-greeter", smoke)
+        self.assertIn(
+            "if: needs.plan.outputs.validate_boot == 'true' && github.event.inputs.validate_greeter != 'true'",
+            validated,
+        )
 
     def test_dev_disks_are_installed_booted_and_published_without_release_signing(self) -> None:
         with self.subTest(phase='disk is installed booted then published'):
@@ -239,7 +245,8 @@ class PublishScriptTests(unittest.TestCase):
                 'podman manifest push --all "$list" "docker://$index_tag"',
                 'TILO_PACKAGE_UPLOAD_WORKERS=2 "$REPO/tools/upload_immutable_packages.sh" "$uploads"',
                 '"$REPO/tools/upload_immutable_packages.sh" "$uploads"\nrm -f "$uploads"',
-                'skopeo copy --all "docker://$REPOSITORY@$target" "docker://$latest"',
+                'skopeo copy --multi-arch index-only --preserve-digests \\\n'
+                '    "docker://$REPOSITORY@$target" "docker://$latest"',
             ]
             positions = [self.source.index(marker) for marker in order]
             self.assertEqual(positions, sorted(positions))
@@ -320,6 +327,10 @@ class OsLaneGatesAndPublishesTheDevDiskTests(unittest.TestCase):
                 gate.index("native-atspi-smoke.sh lock"),
                 gate.index('./os/dev/check-dev-vm.sh --arch'),
             )
+            # The slow-frame sign-in ends the session, so it comes last.
+            slow = gate.index("./os/dev/test-slow-frame-launch.sh")
+            self.assertLess(gate.index("./os/tests/booted_app_update.sh"), slow)
+            self.assertLess(slow, gate.index("          else\n", slow))
             self.assertIn('qemu-img create -f qcow2 -F qcow2 -b "$DEV_OUTPUT/qcow2/disk.qcow2" "$TILO_DISK"', gate)
         with self.subTest(phase='the lane publishes its own architecture'):
             publish = step(self.lane, "Publish this architecture's dev image and disk")

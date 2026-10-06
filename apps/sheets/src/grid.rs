@@ -14,14 +14,16 @@ use std::collections::{HashMap, HashSet};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::{Ime, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::chart_palette::ChartPalette;
 use ui::paint::PaintCtx;
 use ui::text_edit::{EditCore, Motion};
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
+use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
 
 use crate::model::{Addr, CellFormat, CellValue, addr_to_a1, format_value};
 
@@ -87,6 +89,16 @@ pub enum GridCmd {
     Commit,
 }
 
+/// The formula bar's text and, while editing, the caret, selection and
+/// input-method composition as char indices into it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FormulaBarText {
+    pub text: String,
+    pub caret: Option<usize>,
+    pub selection: Option<(usize, usize)>,
+    pub preedit: Option<(usize, usize)>,
+}
+
 #[derive(Clone)]
 struct EditState {
     addr: Addr,
@@ -135,14 +147,43 @@ impl EditState {
     }
 
     fn apply_edit(&mut self, edit: &ui::text_edit::Edit) {
-        if edit.is_noop() {
-            return;
+        if !edit.is_noop() && edit.apply(&mut self.text) {
+            self.core.clamp_to(&self.text);
         }
-        self.text.replace_range(
-            edit.at..edit.at.saturating_add(edit.removed),
-            &edit.inserted,
-        );
-        self.core.clamp_to(&self.text);
+    }
+
+    /// The text as drawn: the committed text with any input-method
+    /// composition shown at the caret.
+    fn shown(&self) -> std::borrow::Cow<'_, str> {
+        self.core.display_text(&self.text)
+    }
+
+    /// Char index into [`Self::shown`] of display byte `byte`.
+    fn shown_chars(&self, byte: usize) -> usize {
+        self.shown()
+            .get(..byte)
+            .map_or(0, |head| head.chars().count())
+    }
+
+    /// The caret as a char index into [`Self::shown`] — inside the
+    /// composition at the input method's cursor while composing.
+    fn shown_caret(&self) -> usize {
+        self.shown_chars(self.core.display_caret(&self.text))
+    }
+
+    /// The selection as char indices into [`Self::shown`].
+    fn shown_selection(&self) -> Option<(usize, usize)> {
+        let range = self.core.selected_range()?;
+        Some((
+            self.shown_chars(self.core.to_display(&self.text, range.start)),
+            self.shown_chars(self.core.to_display(&self.text, range.end)),
+        ))
+    }
+
+    /// The composition as char indices into [`Self::shown`].
+    fn shown_preedit(&self) -> Option<(usize, usize)> {
+        let range = self.core.preedit_display_range(&self.text)?;
+        Some((self.shown_chars(range.start), self.shown_chars(range.end)))
     }
 }
 
@@ -596,7 +637,7 @@ impl Grid {
     }
 
     /// Select a rectangular range (anchor..active), replacing any existing
-    /// selection. Used by paste (to select what landed) and the shots hooks.
+    /// selection. Used by paste (to select what landed) and screenshot staging.
     pub fn select_range_public(&mut self, anchor: Addr, active: Addr) {
         let (nc, nr) = (
             self.n_cols.max(anchor.0.max(active.0) + 4),
@@ -617,7 +658,7 @@ impl Grid {
 
     /// Add a discontiguous rectangular range to the current selection,
     /// keeping the existing one(s). The new range becomes the live one.
-    /// Drives the multi-range shots hook (Ctrl+drag equivalent).
+    /// Stages a multi-range selection (Ctrl+drag equivalent).
     pub fn add_range_public(&mut self, anchor: Addr, active: Addr) {
         let (nc, nr) = (
             self.n_cols.max(anchor.0.max(active.0) + 4),
@@ -654,6 +695,32 @@ impl Grid {
             return e.text();
         }
         self.raw.get(&self.active).cloned().unwrap_or_default()
+    }
+
+    /// What the formula bar draws. While the active cell is being edited it
+    /// is the cell editor's display text, so an input-method composition shows
+    /// (and is underlined) in the bar exactly as in the cell.
+    pub fn formula_bar(&self) -> FormulaBarText {
+        let Some(e) = &self.edit else {
+            return FormulaBarText {
+                text: self.active_display_raw(),
+                ..FormulaBarText::default()
+            };
+        };
+        if e.addr != self.active {
+            return FormulaBarText {
+                text: self.active_display_raw(),
+                caret: Some(e.caret()),
+                selection: e.selection(),
+                preedit: None,
+            };
+        }
+        FormulaBarText {
+            text: e.shown().into_owned(),
+            caret: Some(e.shown_caret()),
+            selection: e.shown_selection(),
+            preedit: e.shown_preedit(),
+        }
     }
 
     /// Return the viewport-sized semantic model for screen readers. Unlike a
@@ -1060,7 +1127,7 @@ impl Grid {
     /// Drive a fill-handle drag from the current selection to `target` and
     /// release, exactly as a pointer grab + drag + release would — the
     /// production `pointer_up` path records the pending fill. Used by tests and
-    /// the `--shots` scenarios to exercise the real fill without a display.
+    /// screenshot scenarios to exercise the real fill without a display.
     pub fn start_fill_to(&mut self, target: Addr) {
         let (c0, r0, c1, r1) = self.current_range().bounds();
         self.fill_drag = Some(FillDrag {
@@ -1911,6 +1978,43 @@ impl Grid {
         }
     }
 
+    /// An input-method event while a cell is being edited: the composition
+    /// shows at the caret until it is committed into the cell like typing.
+    /// Returns whether the edit took it.
+    pub fn ime(&mut self, ime: &Ime) -> bool {
+        let Some(e) = &mut self.edit else {
+            return false;
+        };
+        match ime {
+            Ime::Preedit(text, _) if text.is_empty() => e.core.clear_preedit(),
+            Ime::Preedit(text, cursor) => e.core.set_preedit(text, *cursor),
+            Ime::Commit(text) => {
+                let edit = e.core.commit(text);
+                e.apply_edit(&edit);
+                self.point_anchor = None;
+            }
+            Ime::Disabled => e.core.clear_preedit(),
+            Ime::Enabled => return false,
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// The edit as drawn — text with any composition, and the caret's char
+    /// index into it.
+    #[cfg(test)]
+    pub(crate) fn edit_shown(&self) -> Option<(String, usize)> {
+        let e = self.edit.as_ref()?;
+        Some((e.shown().into_owned(), e.shown_caret()))
+    }
+
+    /// Where the input method's candidate window should sit: the cell being
+    /// edited.
+    pub fn ime_cell_rect(&self) -> Option<Rect> {
+        let (col, row) = self.edit.as_ref()?.addr;
+        Some(self.cell_screen_rect(col, row))
+    }
+
     fn insert_text(&mut self, s: &str) {
         if let Some(e) = &mut self.edit {
             let edit = e.core.insert(s);
@@ -1959,6 +2063,30 @@ impl Grid {
             self.point_anchor = None;
             self.dirty = true;
         }
+    }
+
+    /// Move the edit caret to char index `idx` of the text the formula bar
+    /// draws ([`Self::formula_bar`]). A click inside a composition lands at
+    /// the caret it is composed at; past it, on the committed text it shows.
+    pub fn set_edit_caret_shown(&mut self, idx: usize, extend: bool) {
+        let Some(e) = &self.edit else {
+            return;
+        };
+        if e.addr != self.active || !e.core.has_preedit() {
+            self.set_edit_caret(idx, extend);
+            return;
+        }
+        let shown = e.shown();
+        let byte = shown
+            .char_indices()
+            .nth(idx)
+            .map_or(shown.len(), |(b, _)| b);
+        let committed = e.core.from_display(&e.text, byte);
+        let idx = e
+            .text
+            .get(..committed)
+            .map_or(0, |head| head.chars().count());
+        self.set_edit_caret(idx, extend);
     }
 
     /// Select the whole edit buffer (Ctrl+A inside the formula bar / cell).
@@ -2126,7 +2254,7 @@ impl Grid {
         self.draw_grid_lines(scene, transform, theme, &cols, &rows, body);
         self.draw_active_highlight(scene, transform, theme, body);
         self.draw_fill_handle(scene, transform, theme, body);
-        self.draw_reference_highlights(scene, transform, body);
+        self.draw_reference_highlights(scene, transform, theme, body);
         scene.pop_layer();
 
         // --- headers (painted on top, never clipped by the body) ---
@@ -2363,12 +2491,18 @@ impl Grid {
     /// matching the tinted references in the formula text, so it's clear
     /// which cells feed the result (and, in point mode, which range a click
     /// just inserted).
-    fn draw_reference_highlights(&self, scene: &mut Scene, transform: Affine, body: Rect) {
+    fn draw_reference_highlights(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        body: Rect,
+    ) {
         if let Some(body_text) = self.highlight_formula_body() {
             let spans = crate::formula::references(&body_text);
             let slots = crate::formula::ref_color_slots(&spans);
             for (span, slot) in spans.iter().zip(&slots) {
-                let color = reference_color(*slot);
+                let color = reference_color(theme, *slot);
                 let tl = self.cell_screen_rect(span.tl.0, span.tl.1);
                 let br = self.cell_screen_rect(span.br.0, span.br.1);
                 let rr = Rect::new(tl.x0, tl.y0, br.x1, br.y1);
@@ -2678,7 +2812,7 @@ impl Grid {
         }
 
         let size = self.metrics.cell_size;
-        let text = e.text();
+        let text = e.shown();
         let desired = self.editor_desired_width(&text, tr, size);
 
         // Grow rightward across empty neighbours until we have enough room or
@@ -2719,7 +2853,7 @@ impl Grid {
             &edit_rect,
         );
         // Selection highlight behind the text.
-        if let Some((sel_s, sel_e)) = e.selection() {
+        if let Some((sel_s, sel_e)) = e.shown_selection() {
             let chars: Vec<char> = text.chars().collect();
             let sel_s = sel_s.min(chars.len());
             let sel_e = sel_e.min(chars.len());
@@ -2747,10 +2881,26 @@ impl Grid {
             tr,
             &text,
             size,
-            colors.text_primary,
+            theme,
             Point::new(tx, ty),
-            Some(e.caret()),
+            Some(e.shown_caret()),
         );
+        // The composition is underlined until the input method commits it.
+        if let Some((pre_s, pre_e)) = e.shown_preedit() {
+            let chars: Vec<char> = text.chars().collect();
+            let mut width = |n: usize| {
+                let head: String = chars.get(..n).unwrap_or_default().iter().collect();
+                f64::from(tr.measure(&head, size, None).0)
+            };
+            let uy = ty + self.metrics.cell_line_h;
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                colors.text_primary,
+                None,
+                &Line::new((tx + width(pre_s), uy), (tx + width(pre_e), uy)),
+            );
+        }
         scene.stroke(
             &Stroke::new(1.5),
             transform,
@@ -2763,46 +2913,38 @@ impl Grid {
     }
 }
 
-/// A distinct, saturated hue for the `slot`-th reference in a formula, so
-/// each referenced cell/range reads in its own colour both in the formula
-/// text and as an outline on the grid — the coloured-reference cue every
-/// desktop spreadsheet shows while editing a formula. Cycles for formulas
-/// with more references than palette entries. These are a fixed syntax-style
-/// palette (there is no theme token for "reference colour N") chosen to stay
-/// legible on the app surfaces.
-pub(crate) fn reference_color(slot: usize) -> Color {
-    let palette = [
-        Color::from_rgb8(0x54, 0x9b, 0xf5), // blue
-        Color::from_rgb8(0xe2, 0x5b, 0x5b), // red
-        Color::from_rgb8(0x3f, 0xbb, 0x53), // green
-        Color::from_rgb8(0xb1, 0x6c, 0xf0), // purple
-        Color::from_rgb8(0xe0, 0x8a, 0x2a), // orange
-        Color::from_rgb8(0x1f, 0xbd, 0xa8), // teal
-        Color::from_rgb8(0xe2, 0x63, 0xb0), // pink
-    ];
-    // The modulo above always keeps the index in range.
-    palette
-        .get(slot % palette.len())
-        .copied()
-        .unwrap_or(palette[0])
+/// The colour of the `slot`-th reference in a formula, so each referenced
+/// cell/range reads in its own colour both in the formula text and as an
+/// outline on the grid — the coloured-reference cue every desktop
+/// spreadsheet shows while editing a formula. The theme's chart series
+/// (accent plus semantic hues) is made legible as text on the field and
+/// cell surface both are drawn on.
+pub(crate) fn reference_color(theme: &Theme, slot: usize) -> Color {
+    let colors = &theme.tokens.colors;
+    colors.ink_on(
+        colors.surfaces.base,
+        ChartPalette::from_theme(theme).categorical(slot),
+        ON_FILL_MIN_CONTRAST,
+    )
 }
 
 /// Draw a formula string with each cell/range reference tinted its assigned
-/// colour (the rest in `base_color`), starting at `origin` (top-left of the
+/// colour (the rest in `text_primary`), starting at `origin` (top-left of the
 /// text). When `caret` is `Some`, the returned value is the caret's x in
 /// scene space so the caller can draw a matching caret; otherwise the return
 /// is the x just past the text. Only strings beginning with `=` are scanned
-/// for references — a plain value is drawn entirely in `base_color`.
+/// for references — a plain value is drawn entirely in `text_primary`.
 pub(crate) fn draw_formula_line(
     scene: &mut Scene,
     transform: Affine,
     tr: &mut TextRenderer,
     text: &str,
     size: f32,
-    base_color: Color,
+    theme: &Theme,
     origin: Point,
     caret: Option<usize>,
 ) -> f64 {
+    let base_color = theme.tokens.colors.text_primary;
     let chars: Vec<char> = text.chars().collect();
     // (start_char, end_char, colour) segments in full-text char space.
     let mut segs: Vec<(usize, usize, Color)> = Vec::new();
@@ -2817,7 +2959,7 @@ pub(crate) fn draw_formula_line(
             if s > cursor {
                 segs.push((cursor, s, base_color));
             }
-            segs.push((s, e, reference_color(*slot)));
+            segs.push((s, e, reference_color(theme, *slot)));
             cursor = e;
         }
         if cursor < chars.len() {
@@ -2887,6 +3029,26 @@ fn bounded_window(active: u32, total: u32, limit: u32) -> Vec<u32> {
 mod tests {
     use super::*;
     use crate::model::CellValue;
+
+    #[test]
+    fn formula_reference_colours_follow_the_theme() {
+        let dark = Theme::dark();
+        let other = Theme::named("Gruvbox").expect("Gruvbox is a shipped preset");
+        let first = reference_color(&dark, 0);
+        let second = reference_color(&dark, 1);
+        assert_ne!(first, second, "consecutive references stay distinct");
+        let wrap = ChartPalette::from_theme(&dark).len();
+        assert_eq!(
+            reference_color(&dark, wrap),
+            first,
+            "the series wraps with the theme palette"
+        );
+        assert_ne!(
+            first,
+            reference_color(&other, 0),
+            "the first slot is grown from the theme, not a fixed hue"
+        );
+    }
 
     /// Measured metrics and draggable scrollbar thumbs.
     #[test]

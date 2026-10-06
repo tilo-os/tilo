@@ -138,7 +138,7 @@ fn detail_pane(cx: &ViewCx<Notebook>, id: u64) -> Element {
         .with_placeholder("tree-notes-placeholder")
         .multiline(true);
     let share = cx.actions().bind_invocation(
-        Button::new("tree-share", "tree-share", None),
+        Button::new("tree-share", "tree-share"),
         Notebook::SHARE.with(id),
     );
     Box::new(ui::column![
@@ -169,7 +169,9 @@ impl ResourceApp for App {
     type Resource = Notebook;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
-    const SHOT_VIEWPORT: (u32, u32) = (1000, 640);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1000, 640)
+    }
 
     fn view(cx: &mut ViewCx<Notebook>) -> Element {
         install_catalog();

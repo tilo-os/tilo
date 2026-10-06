@@ -105,7 +105,7 @@ pub enum Command {
         after_help = "Examples:\n  tilo-vm guide\n  tilo-vm guide swapping\n  tilo-vm guide troubleshooting"
     )]
     Guide {
-        /// quickstart, concepts, swapping, kernel, driving, scenarios, images, storage, platforms, troubleshooting, fedora-loop
+        /// quickstart, concepts, swapping, kernel, driving, scenarios, images, storage, platforms, devices, troubleshooting, fedora-loop
         topic: Option<String>,
     },
     /// Manage dev VMs through the host's hypervisor.
@@ -132,8 +132,10 @@ pub enum Command {
         /// `sha:<commit>` or `ci:<tag>` (extract it from the published CI image).
         #[arg(long, default_value = "worktree")]
         from: String,
-        /// Where `--from worktree` builds: `vm` (default; syncs the worktree
-        /// into the VM) or `host` (Linux hosts only).
+        /// Where `--from worktree` builds: `vm` (syncs the worktree into the
+        /// VM), `host` (Linux hosts only) or `remote` (a builder of the
+        /// machine's architecture; the default for a device whose
+        /// architecture has one in vms.toml's `[remote_builders]`).
         #[arg(long, value_enum)]
         builder: Option<Builder>,
         /// Cargo profile for `--from worktree` builds (default: the manifest's,
@@ -228,6 +230,23 @@ pub enum Command {
     /// Cold-boot scenarios in a throwaway VM: boot components that swapping cannot replace.
     #[command(subcommand)]
     Scenario(ScenarioCommand),
+    /// Build one component in this worktree and write its layer to stdout
+    /// as framed lines (what `swap --builder remote` runs on the builder).
+    #[command(
+        hide = true,
+        after_help = "Examples:\n  tilo-vm layer-pack --component shell --profile release   # on the builder, through its cargo drop-in's run"
+    )]
+    LayerPack {
+        /// A component from os/components.toml.
+        #[arg(long)]
+        component: String,
+        /// The cargo profile to build it with.
+        #[arg(long)]
+        profile: String,
+        /// Extra cargo features, comma separated.
+        #[arg(long, value_delimiter = ',')]
+        features: Vec<String>,
+    },
     /// Delete generations and layers nothing needs any more, and evict old in-VM build dirs.
     #[command(
         after_help = "Examples:\n  tilo-vm gc --dry-run\n  tilo-vm gc --keep 2\n  tilo-vm gc --keep-targets 0   # evict every in-VM build dir not in use\n  tilo-vm gc --min-age 0        # also your own orphaned layers from the last hour\n\nUnreferenced layers younger than an hour stay by default: another agent's\nimport may still be waiting for its swap. gc names them and when they go."
@@ -306,12 +325,30 @@ pub struct InstallScenarioArgs {
     /// Account username for a retained install. Requires --credentials-stdin.
     #[arg(long, requires = "credentials_stdin")]
     pub username: Option<String>,
+    /// Installed hostname (retained and checked when resuming).
+    #[arg(long, default_value = "scenario-tilo")]
+    pub hostname: String,
+    /// Installer keyboard display name, e.g. "German (QWERTZ)". Omitted preserves the medium's choice.
+    #[arg(long)]
+    pub keyboard_layout: Option<String>,
+    /// Installed IANA timezone, e.g. Europe/Berlin. Omitted preserves the medium's choice.
+    #[arg(long)]
+    pub timezone: Option<String>,
+    /// Installed locale from the installer's catalog, e.g. de_DE.UTF-8. Omitted preserves its choice.
+    #[arg(long)]
+    pub locale: Option<String>,
     /// Read distinct `account_password` and `disk_passphrase` from one JSON object on stdin. Requires --username; unavailable for dry runs.
     #[arg(long, requires = "username", conflicts_with = "dry_run")]
     pub credentials_stdin: bool,
     /// The target disk before the install: erase (blank disk, used whole), prepared-alongside or guided-alongside (existing systems kept byte-for-byte).
     #[arg(long, value_enum, default_value = "erase")]
     pub layout: crate::scenario::Layout,
+    /// Installed root filesystem; omitted leaves the installer's default unchanged.
+    #[arg(long, value_parser = ["btrfs", "ext4", "xfs"])]
+    pub filesystem: Option<String>,
+    /// Resume verification of a completed retained Windows raw-target install in --out. Does not reinstall.
+    #[arg(long, requires_all = ["out", "target_disk", "keep"], conflicts_with = "dry_run")]
+    pub resume: bool,
     /// How the always-on disk encryption unlocks: passphrase (no TPM) or tpm-pin (software TPM; the installer offers it only for a verified boot chain).
     #[arg(long, value_enum, default_value = "passphrase")]
     pub encrypt: crate::scenario::Unlock,
@@ -340,6 +377,7 @@ pub fn writes_receipt(command: Option<&Command>) -> bool {
         command,
         None | Some(
             Command::Status { .. }
+                | Command::LayerPack { .. }
                 | Command::Doctor
                 | Command::Guide { .. }
                 | Command::Logs { .. }
@@ -383,6 +421,14 @@ pub fn parse_age(text: &str) -> Result<u64, String> {
     Ok(value.saturating_mul(scale))
 }
 
+/// `vm awake --for`: a duration like `parse_age`'s, but never zero.
+fn parse_awake_duration(text: &str) -> Result<u64, String> {
+    match parse_age(text)? {
+        0 => Err("to let it suspend now: --off".into()),
+        seconds => Ok(seconds),
+    }
+}
+
 /// `--resolution`: `WIDTHxHEIGHT`, each 320 to 16384 pixels.
 ///
 /// # Errors
@@ -407,6 +453,10 @@ pub enum Builder {
     Vm,
     /// Build on this host with its cargo (Linux only).
     Host,
+    /// Build on a remote builder of the machine's architecture
+    /// (`[remote_builders]` in vms.toml); the layer streams through this
+    /// host, never onto its disk.
+    Remote,
 }
 
 #[derive(Debug, Subcommand)]
@@ -423,8 +473,12 @@ pub enum InputCommand {
     /// Type text on a US keyboard layout.
     #[command(after_help = "Examples:\n  tilo-vm input type 'hello world'")]
     Type {
-        /// The text to type.
-        text: String,
+        /// The text to type. Use --stdin for sensitive text.
+        #[arg(required_unless_present = "stdin", conflicts_with = "stdin")]
+        text: Option<String>,
+        /// Read exact text from standard input, without recording it in argv.
+        #[arg(long, conflicts_with = "text")]
+        stdin: bool,
     },
     /// Move the pointer to desktop pixel X, Y.
     #[command(
@@ -639,6 +693,48 @@ pub enum VmCommand {
         after_help = "Checks the hypervisor and its tools, --image, the published disk and free space\nbefore it downloads or creates anything, and names the missing piece with its fix.\n\nExamples:\n  tilo-vm vm create dev                       # newest published disk (needs FORGEJO_TOKEN, or fgj/tea login)\n  tilo-vm vm create dev --tag main-1a2b3c4\n  tilo-vm vm create dev --image ~/images/tilo-vm.qcow2 --disk ~/vms/dev.qcow2\n  tilo-vm vm create try1 --image os/output/disk/disk.raw   # a raw disk from os/dev/disk-image.sh --raw\n  tilo-vm vm create esp1 --image base.raw --boot-esp override.raw   # boot a candidate ESP (os/dev/make-boot-esp.sh) first\n  tilo-vm vm create mac --hypervisor utm --template 'Tilo Dev'\n  tilo-vm vm create arm --arch aarch64 --emulated --image arm.qcow2 --disk arm-dev.qcow2\n  tilo-vm vm create 5k --heads 2 --resolution 5120x2880   # 5K first monitor, 1080p-capable second\n  tilo-vm vm create gpu --gl                   # virgl: render on the host GPU"
     )]
     Create(CreateArgs),
+    /// Register a real machine that already runs a Tilo dev image (a board or a laptop), reached over SSH, after checking what tilo-vm needs there.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm add opi --ssh root@10.0.0.108                       # root with its own key; prints the key install\n  tilo-vm vm add yoga --ssh me@10.0.0.223 --key ~/.ssh/yoga_ed25519   # the owner's account; root through sudo -n\n  tilo-vm vm add yoga --ssh me@10.0.0.223 --grant-sudo           # sudo asks for me's password once, here\n  tilo-vm vm use yoga\n  tilo-vm swap --slot device shell --from sha:1a2b3c4             # a board's own session\n\nEvery remote command runs as root: as root@ with the device's own key\n(keys/<name>_ed25519 beside vms.toml, installed once with the command vm add\nprints), or as another account through sudo -n, for a device whose SSH lets\nonly its owner in (the installer's dev SSH setup). vm add checks SSH, root,\ntilo-vmd and its protocol, the toolchain and bootc, names each fix, and\nregisters the device only once SSH, root and tilo-vmd work; rerun it after a\nfix. Nothing is installed on the device but what --grant-sudo writes\n(/etc/sudoers.d/tilo-vm-<user>). tilo-vm cannot power a device on, so vm\nrestart reboots it over SSH. Details: tilo-vm guide devices."
+    )]
+    Add(AddArgs),
+    /// Wake a sleeping device with its Wake-on-LAN magic packet (a libvirt VM through the hypervisor), then wait until tilo-vmd answers.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm wake yoga\n  tilo-vm vm wake          # the VM this worktree uses\n\nA device's MAC, hostname and wake setting are recorded whenever tilo-vm\nreaches it (vm add, vm status), so wake it once by hand if none is recorded.\nThe packet goes from this machine to 255.255.255.255 and the device's subnet\nbroadcast, port 9: this machine must be on the device's LAN. Whether the\ndevice wakes on it depends on its network interface; vm status shows what it\nreported (enabled, disabled, unsupported). Details: tilo-vm guide devices."
+    )]
+    Wake {
+        /// The VM or device (default: the one this worktree uses).
+        name: Option<String>,
+    },
+    /// Keep the machine from suspending longer than the 30 minutes every tilo-vm request holds it, or let it suspend now.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm awake               # how long it stays awake\n  tilo-vm vm awake yoga --for 2h # a long build or test run without requests\n  tilo-vm vm awake yoga --off    # done: it may suspend once idle\n\nEvery tilo-vm command that talks to tilo-vmd holds a logind sleep lock\n(tilo-vm-awake.service, `systemd-inhibit --list` shows it) until 30 minutes\nafter it, so a device does not suspend under you, and one you stopped using\ncan again. The lock blocks suspend only: the screen still blanks and locks,\nand closing the lid still suspends. --off releases it; the next tilo-vm\ncommand takes it again."
+    )]
+    Awake {
+        /// The VM or device (default: the one this worktree uses).
+        name: Option<String>,
+        /// Hold it awake this long from now: 90m, 2h, 1d.
+        #[arg(long = "for", value_name = "DURATION", value_parser = parse_awake_duration, conflicts_with = "off")]
+        hold: Option<u64>,
+        /// Release the hold now.
+        #[arg(long)]
+        off: bool,
+    },
+    /// Enrol this machine as one of the owner's devices, so tilo-vm reaches their devices over the peer network when they are not on this network.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm enrol-admin --via yoga   # yoga holds the owner's identity: it certifies this machine over SSH\n  tilo-vm vm enrol-admin              # this machine's key, and how to certify it by hand\n  tilo-vm vm enrol-admin --cert admin.cert\n\nBeyond the LAN, tilo-vm dials a device's device-admin route over the peer\nnetwork (hole-punched, relayed when it must be) once SSH and the device's\nname do not answer. The device admits only a device of its owner's identity\nwhose certificate grants administration, so this machine enrols once, like\nany other device: the owner's root certifies its key with `tilo-enroll\ncertify --capability admin`, on the device where they approve new devices,\nwhich also lists it among their devices (Settings can remove it). With --via\ntilo-vm runs that over SSH as the account it logs in with; that account must\nown the identity (an owner-account device: vm add --ssh <owner>@...).\nNeeds tilo-device-admin beside tilo-vm. Details: tilo-vm guide devices."
+    )]
+    EnrolAdmin {
+        /// A registered device that holds the owner's identity: it certifies this machine over SSH.
+        #[arg(long, conflicts_with = "cert")]
+        via: Option<String>,
+        /// A certificate the owner made for this machine's key (tilo-enroll certify --capability admin).
+        #[arg(long)]
+        cert: Option<std::path::PathBuf>,
+        /// This machine's name in the owner's device list (default: its hostname).
+        #[arg(long)]
+        label: Option<String>,
+    },
     /// Boot the VM and wait until SSH answers.
     #[command(after_help = "Examples:\n  tilo-vm vm start")]
     Start {
@@ -724,6 +820,25 @@ pub enum VmCommand {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         args: Vec<String>,
     },
+}
+
+#[derive(Debug, Args)]
+pub struct AddArgs {
+    /// The name to register the device under.
+    pub name: String,
+    /// `<user>@<host>[:<port>]`. Commands run as root: directly as root@, or
+    /// through `sudo -n` as any other user.
+    #[arg(long)]
+    pub ssh: String,
+    /// The SSH identity of a non-root user (default: ssh's own, from ~/.ssh
+    /// or the agent). As root@, vm add makes the device's own key instead.
+    #[arg(long)]
+    pub key: Option<PathBuf>,
+    /// Let the --ssh user run commands as root without a password
+    /// (/etc/sudoers.d/tilo-vm-<user> on the device, checked by visudo); sudo
+    /// asks for that user's password once, on this terminal.
+    #[arg(long)]
+    pub grant_sudo: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1242,6 +1357,33 @@ mod tests {
             assert!(help.contains("dev-overrides"), "{help}");
         }
 
+        // Phase: vm_add_takes_a_name_and_an_address.
+        {
+            let cli =
+                Cli::try_parse_from(["tilo-vm", "vm", "add", "opi", "--ssh", "root@10.0.0.108"])
+                    .unwrap();
+            assert!(
+                matches!(cli.command, Some(Command::Vm(VmCommand::Add(AddArgs { ref name, ref ssh, key: None, grant_sudo: false }))) if name == "opi" && ssh == "root@10.0.0.108")
+            );
+            assert!(Cli::try_parse_from(["tilo-vm", "vm", "add", "opi"]).is_err());
+            assert!(writes_receipt(cli.command.as_ref()));
+            let owner = Cli::try_parse_from([
+                "tilo-vm",
+                "vm",
+                "add",
+                "yoga",
+                "--ssh",
+                "me@10.0.0.223",
+                "--key",
+                "/k/yoga",
+                "--grant-sudo",
+            ])
+            .unwrap();
+            assert!(
+                matches!(owner.command, Some(Command::Vm(VmCommand::Add(AddArgs { ref key, grant_sudo: true, .. }))) if key.as_deref() == Some(std::path::Path::new("/k/yoga")))
+            );
+        }
+
         // Phase: swap_takes_an_optional_slot.
         {
             let cli = Cli::try_parse_from(["tilo-vm", "swap", "shell"]).unwrap();
@@ -1312,6 +1454,8 @@ mod tests {
                 "tpm-pin",
                 "--graphics",
                 "software",
+                "--filesystem",
+                "ext4",
                 "--skip-target-boot",
             ])
             .unwrap();
@@ -1325,6 +1469,7 @@ mod tests {
             assert_eq!(args.layout, crate::scenario::Layout::GuidedAlongside);
             assert_eq!(args.encrypt, crate::scenario::Unlock::TpmPin);
             assert_eq!(args.graphics, crate::scenario::Graphics::Software);
+            assert_eq!(args.filesystem.as_deref(), Some("ext4"));
             assert!(args.skip_target_boot);
             assert_eq!(args.install_timeout, 3600);
             let defaults = Cli::try_parse_from(["tilo-vm", "scenario", "install"]).unwrap();
@@ -1333,6 +1478,7 @@ mod tests {
             };
             assert_eq!(args.layout, crate::scenario::Layout::Erase);
             assert_eq!(args.encrypt, crate::scenario::Unlock::Passphrase);
+            assert!(args.filesystem.is_none());
             assert!(!args.skip_target_boot);
             assert!(
                 Cli::try_parse_from(["tilo-vm", "scenario", "install", "--layout", "shrink"])

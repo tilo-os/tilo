@@ -25,7 +25,7 @@ run 'Workflow dependency and supply-chain invariants' \
   bash os/tests/workflow_dependency_invariants.sh
 run 'Path-filtered package dependency triggers' \
   python3 tools/policy/check_workflow_package_paths.py \
-  --check tilo-atomic-file .forgejo/workflows/build-ci-builder.yml \
+  --check tilo-advisory-lock .forgejo/workflows/build-ci-builder.yml \
   --check tilo-crypto .forgejo/workflows/ci-development-signing.yml \
   --check tilo-fs .forgejo/workflows/ci-filesystem.yml \
   --check tilo-relay .forgejo/workflows/release-relay.yml \
@@ -54,6 +54,8 @@ run 'Dev-override features stay out of production images' \
   python3 tools/policy/check_dev_overrides_contract.py
 run 'UI host-inputs contract' python3 tools/policy/check_ui_host_inputs_contract.py
 run 'UI clock contract' python3 tools/policy/check_ui_clock_contract.py
+run 'Widgets never write the document' python3 tools/policy/check_widget_document_writes.py
+run 'App content store contract' python3 tools/policy/check_app_content_store.py
 run 'Apps and portable SDK crates hold no platform code' \
   python3 tools/policy/check_app_portability.py
 run 'Apps declare the capabilities their code uses' \

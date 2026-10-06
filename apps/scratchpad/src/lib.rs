@@ -33,7 +33,9 @@ impl ResourceApp for Scratchpad {
     type Resource = Note;
     const ID: &'static str = "so.tilo.scratchpad";
     const TITLE: &'static str = "Scratchpad";
-    const SHOT_VIEWPORT: (u32, u32) = (800, 600);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (800, 600)
+    }
 
     fn view(cx: &mut ViewCx<Note>) -> Element {
         let scroll = Rc::new(Cell::new((0.0, 0.0)));

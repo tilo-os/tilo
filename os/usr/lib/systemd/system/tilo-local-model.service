@@ -30,6 +30,7 @@ PrivateDevices=yes
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
+ProtectProc=invisible
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

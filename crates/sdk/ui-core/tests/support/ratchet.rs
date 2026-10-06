@@ -161,7 +161,8 @@ pub fn write_baseline(path: &Path, header: &[&str], counts: &Counts) {
 
 /// `(grew, stale)`: files whose count exceeds the baseline (with
 /// `message_for(pattern)` appended), and baseline entries higher than the
-/// tree — the ratchet only moves down.
+/// tree. Growth fails; a stale entry is progress and only noted
+/// ([`note_stale`]).
 pub fn ratchet_failures(
     found: &Counts,
     baseline: &Counts,
@@ -258,4 +259,26 @@ fn ratchet_reports_growth_and_stale_entries_separately() {
         stale,
         vec!["c.rs [x]: now 0, baseline still 1 — lower it to 0"]
     );
+}
+
+/// Reports baseline entries the tree has dropped below. An improvement never
+/// fails a change; the record is lowered by regenerating it with
+/// `update_var=1`, in that change or a later one.
+pub fn note_stale(baseline: &str, update_var: &str, stale: &[String]) {
+    if stale.is_empty() {
+        return;
+    }
+    let note = format!(
+        "{} entr(ies) in {baseline} are above the tree; lower them (or regenerate with \
+         {update_var}=1) to lock the progress in:\n{}\n",
+        stale.len(),
+        stale.join("\n"),
+    );
+    eprintln!("notice: {note}");
+    if let Some(summary) = std::env::var_os("GITHUB_STEP_SUMMARY") {
+        use std::io::Write as _;
+        if let Ok(mut file) = fs::OpenOptions::new().append(true).open(summary) {
+            let _ = writeln!(file, "### Ratchet progress\n\n```\n{note}```");
+        }
+    }
 }

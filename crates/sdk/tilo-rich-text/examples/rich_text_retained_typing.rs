@@ -13,8 +13,8 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use qdoc_rich_text::{RICH_TEXT_ACTION_TYPE, RichText, RichTextAction};
-use tilo_rich_text::{RichTextField, RichTextSurface};
+use tilo_document::{RichText, RichTextAction};
+use tilo_rich_text::{Draft, RichTextSurface};
 use ui::automerge::{AutoCommit, ROOT};
 use ui::bound_dispatch::BoundNodeMap;
 use ui::kurbo::{Affine, Point, Rect};
@@ -128,7 +128,7 @@ impl Retained {
 
     fn sync(&mut self) -> u64 {
         let started = Instant::now();
-        self.widget.sync(&mut self.doc, &ROOT);
+        self.widget.sync(&self.doc, &ROOT);
         micros(started)
     }
 
@@ -210,7 +210,7 @@ impl Retained {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &Modifiers::default(),
-                    state: &mut self.doc,
+                    state: ui::widget::Edits::lend(&mut self.doc),
                     path: &ROOT,
                     handled: &mut handled,
                     focus_target: &mut None,
@@ -251,19 +251,22 @@ fn block_editor(paragraphs: usize) -> Retained {
 }
 
 fn rich_text(paragraphs: usize) -> Result<Retained, String> {
-    let mut doc = AutoCommit::new();
-    RichText::initialize_under(&mut doc, &ROOT).map_err(|error| error.to_string())?;
+    let doc = AutoCommit::new();
+    // A draft holds its own text: what the editor costs, without an app's
+    // action host around it.
+    let mut draft = Draft::new();
+    let mut seed = AutoCommit::new();
+    RichText::initialize_under(&mut seed, &ROOT).map_err(|error| error.to_string())?;
     RichTextAction::ReplaceBody {
         markdown: markdown(paragraphs),
     }
-    .apply(&mut doc)
+    .apply(&mut seed)
     .map_err(|error| error.to_string())?;
-    doc.commit();
-    let field = RichTextField::new(RICH_TEXT_ACTION_TYPE, |_| Some(ROOT), |edit| edit);
+    draft.reset(&tilo_rich_text::blocks_under(&seed, &ROOT).map_err(|error| error.to_string())?);
     let mut surface =
-        RichTextSurface::field(field).with_editor(BlockEditor::new().with_wrap_lines(true));
+        RichTextSurface::over(draft).with_editor(BlockEditor::new().with_wrap_lines(true));
     // The first sync reads the document and shows it.
-    Widget::sync(&mut surface, &mut doc, &ROOT);
+    Widget::sync(&mut surface, &doc, &ROOT);
     surface.set_focus(true);
     surface.editor_mut().focus_block(0, CursorPlacement::Start);
     Ok(Retained::new(Box::new(surface), doc))

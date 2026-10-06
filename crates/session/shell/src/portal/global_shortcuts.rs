@@ -524,6 +524,7 @@ pub struct GlobalShortcutsHandle {
     state: Arc<Mutex<ShortcutState>>,
     lifecycle: PortalLifecycle,
     service: GlobalShortcutsServiceHandle,
+    wake: crate::idle_wake::IdleWake,
 }
 
 impl GlobalShortcutsHandle {
@@ -559,6 +560,8 @@ impl GlobalShortcutsHandle {
             timestamp,
             edge,
         });
+        drop(state);
+        self.wake.poke();
         true
     }
 
@@ -601,6 +604,7 @@ impl GlobalShortcutsHandle {
             state: Arc::new(Mutex::new(state)),
             lifecycle: PortalLifecycle::new(),
             service: GlobalShortcutsServiceHandle::new(Arc::new(UnavailableGlobalShortcuts)),
+            wake: crate::idle_wake::IdleWake::default(),
         }
     }
 
@@ -650,6 +654,7 @@ pub struct GlobalShortcutsBackend {
     state: Arc<Mutex<ShortcutState>>,
     service: GlobalShortcutsServiceHandle,
     lifecycle: PortalLifecycle,
+    wake: crate::idle_wake::IdleWake,
 }
 
 #[cfg(target_os = "linux")]
@@ -678,6 +683,7 @@ impl GlobalShortcutsBackend {
             state: Arc::new(Mutex::new(ShortcutState::default())),
             service,
             lifecycle,
+            wake: crate::idle_wake::IdleWake::default(),
         }
     }
 
@@ -686,6 +692,7 @@ impl GlobalShortcutsBackend {
             state: self.state.clone(),
             lifecycle: self.lifecycle.clone(),
             service: self.service.clone(),
+            wake: self.wake.clone(),
         }
     }
 
@@ -1109,10 +1116,13 @@ pub fn spawn_signal_emitter(
         let Ok(context) = SignalEmitter::new(&connection, super::OBJECT_PATH) else {
             return;
         };
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(32));
         loop {
-            interval.tick().await;
-            for activation in handle.drain_activations() {
+            let activations = handle.drain_activations();
+            if activations.is_empty() {
+                handle.wake.wait().await;
+                continue;
+            }
+            for activation in activations {
                 let Ok(session) = ObjectPath::try_from(activation.session.as_str()) else {
                     continue;
                 };
@@ -1783,6 +1793,7 @@ mod tests {
             state: Arc::new(Mutex::new(ShortcutState::default())),
             lifecycle: PortalLifecycle::new(),
             service: GlobalShortcutsServiceHandle::new(Arc::new(UnavailableGlobalShortcuts)),
+            wake: crate::idle_wake::IdleWake::default(),
         }
     }
 }

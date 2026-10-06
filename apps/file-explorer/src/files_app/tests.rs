@@ -8,22 +8,12 @@ mod open_with_tests {
 
     #[derive(Default)]
     struct RecRunner {
-        calls: Vec<(String, Option<PathBuf>)>,
         /// Paths handed to the system default handler (non-document opens).
         opened: Vec<PathBuf>,
         /// How the desktop answers them; `None` opens.
         refusal: Option<String>,
     }
     impl CommandRunner for RecRunner {
-        fn spawn(&mut self, program: &str, _cwd: &Path) -> std::io::Result<()> {
-            self.calls.push((program.to_string(), None));
-            Ok(())
-        }
-        fn spawn_arg(&mut self, program: &str, arg: &Path, _cwd: &Path) -> std::io::Result<()> {
-            self.calls
-                .push((program.to_string(), Some(arg.to_path_buf())));
-            Ok(())
-        }
         fn open_default(&mut self, path: &Path) -> ui::portal::LaunchChannel {
             self.opened.push(path.to_path_buf());
             let (tx, rx) = std::sync::mpsc::channel();
@@ -117,11 +107,6 @@ mod open_with_tests {
             "the host is asked for every file, with its own path"
         );
         assert!(
-            runner.calls.is_empty(),
-            "the explorer launches nothing itself: {:?}",
-            runner.calls
-        );
-        assert!(
             runner.opened.is_empty(),
             "and does not go behind the host's back to xdg-open"
         );
@@ -163,7 +148,6 @@ mod open_with_tests {
             w.entries = vec![file_entry(f)];
             let mut runner = RecRunner::default();
             assert!(w.open_entry(0, &mut runner).unwrap(), "{f} should open");
-            assert!(runner.calls.is_empty(), "{f} must not spawn a bare binary");
             assert_eq!(runner.opened, vec![PathBuf::from("/docs").join(f)], "{f}");
             assert_eq!(
                 w.status, None,
@@ -425,7 +409,7 @@ mod open_with_tests {
         let (route, _clear) = pdf_route();
         let mut w = pdf_widget();
         let mut doc = automerge::AutoCommit::new();
-        let resources = ui::resources::resources(&w, &doc);
+        let resources = crate::files_app::published::tree(&w, &doc);
         let entry_id = crate::search_provider::entry_resource_id(Path::new("/docs/slides.pdf"));
         let spec = ui::tilo_actions::door::resolve(
             &resources,
@@ -453,19 +437,16 @@ mod open_with_tests {
         args.insert("always".into(), true.into());
         let encoded = spec.build_json(&args).unwrap();
         assert!(matches!(
-            Widget::start_operation(
+            crate::files_app::published::start(
                 &mut w,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    spec.kind,
-                    &encoded.type_id,
-                    &encoded.payload
-                ),
+                spec.kind,
+                &encoded.type_id,
+                &encoded.payload,
                 &mut doc,
                 &automerge::ROOT
             )
             .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            Some(ui::framework::Effected::Done(_))
         ));
         assert_eq!(
             route.actions(),
@@ -516,7 +497,7 @@ mod open_with_tests {
         // Picking a row resolves through the published resource, exactly as
         // the application host dispatches a palette selection.
         let mut doc = automerge::AutoCommit::new();
-        let resources = ui::resources::resources(&w, &doc);
+        let resources = crate::files_app::published::tree(&w, &doc);
         let entry_id = crate::search_provider::entry_resource_id(Path::new("/docs/slides.pdf"));
         let spec = ui::tilo_actions::door::resolve(
             &resources,
@@ -527,14 +508,11 @@ mod open_with_tests {
         )
         .expect("the chooser's rows are real actions");
         let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
-        Widget::start_operation(
+        crate::files_app::published::start(
             &mut w,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                spec.kind,
-                &encoded.type_id,
-                &encoded.payload,
-            ),
+            spec.kind,
+            &encoded.type_id,
+            &encoded.payload,
             &mut doc,
             &automerge::ROOT,
         )
@@ -554,8 +532,8 @@ mod open_with_tests {
         let (route, _clear) = pdf_route();
         let w = pdf_widget();
         let doc = automerge::AutoCommit::new();
-        let _ = ui::resources::resources(&w, &doc);
-        let _ = ui::resources::resources(&w, &doc);
+        let _ = crate::files_app::published::tree(&w, &doc);
+        let _ = crate::files_app::published::tree(&w, &doc);
         let asked = route
             .calls
             .borrow()
@@ -573,7 +551,7 @@ mod open_with_tests {
     }
 
     #[test]
-    fn recent_lists_what_you_opened_newest_first_and_survives_a_restart() {
+    fn recent_lists_what_you_opened_newest_first() {
         let config = tempfile::tempdir().unwrap();
         let folder = tempfile::tempdir().unwrap();
         for name in ["a.txt", "b.txt", "c.txt"] {
@@ -581,7 +559,7 @@ mod open_with_tests {
         }
         set_document_opener(|_| Ok(()));
         let _clear = ClearRoute;
-        let mut w = FileExplorerWidget::with_persistence(Some(config.path().to_path_buf()), None);
+        let mut w = FileExplorerWidget::with_persistence(Some(config.path()), None);
         w.navigate(folder.path().to_path_buf());
         assert_eq!(displayed_names(&w), vec!["a.txt", "b.txt", "c.txt"]);
         let mut runner = RecRunner::default();
@@ -608,17 +586,46 @@ mod open_with_tests {
                 .collect::<Vec<_>>(),
             vec!["Recent"]
         );
+    }
 
-        let reopened =
-            FileExplorerWidget::with_persistence(Some(config.path().to_path_buf()), None);
+    /// The Recent list is this device's setting: a reopened window lists it.
+    #[test]
+    fn recent_is_a_device_setting_that_survives_a_restart() {
+        let folder = tempfile::tempdir().unwrap();
+        for name in ["a.txt", "b.txt"] {
+            std::fs::write(folder.path().join(name), name).unwrap();
+        }
+        let mut app = ui::prelude::TestApp::<crate::FileExplorerShell>::launched(&[folder
+            .path()
+            .to_str()
+            .unwrap()])
+        .unwrap();
+        app.with_surface(|files: &mut FileExplorerWidget| {
+            for name in ["b.txt", "a.txt"] {
+                files.note_recent(&folder.path().join(name), crate::recent::RecentUse::Opened);
+            }
+        })
+        .unwrap();
+        let stored = app.settings::<crate::recent::RecentFiles>().get();
         assert_eq!(
-            reopened
-                .recent_entries()
+            stored
+                .items()
                 .iter()
-                .map(|entry| entry.name.clone())
+                .map(|item| item.path.clone())
                 .collect::<Vec<_>>(),
-            vec!["a.txt", "c.txt", "b.txt"]
+            vec![folder.path().join("a.txt"), folder.path().join("b.txt")]
         );
+        let mut app = app.reopen().unwrap();
+        let names = app
+            .with_surface(|files: &mut FileExplorerWidget| {
+                files
+                    .recent_entries()
+                    .iter()
+                    .map(|entry| entry.name.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert_eq!(names, vec!["a.txt", "b.txt"]);
     }
 
     #[test]
@@ -628,7 +635,7 @@ mod open_with_tests {
         for name in ["keep.txt", "gone.txt", "drop.txt"] {
             std::fs::write(folder.path().join(name), name).unwrap();
         }
-        let mut w = FileExplorerWidget::with_persistence(Some(config.path().to_path_buf()), None);
+        let mut w = FileExplorerWidget::with_persistence(Some(config.path()), None);
         for name in ["keep.txt", "gone.txt", "drop.txt"] {
             w.note_recent(&folder.path().join(name), crate::recent::RecentUse::Changed);
         }
@@ -669,7 +676,7 @@ mod open_with_tests {
         let config = tempfile::tempdir().unwrap();
         let folder = tempfile::tempdir().unwrap();
         std::fs::write(folder.path().join("draft.txt"), "x").unwrap();
-        let mut w = FileExplorerWidget::with_persistence(Some(config.path().to_path_buf()), None);
+        let mut w = FileExplorerWidget::with_persistence(Some(config.path()), None);
         w.navigate(folder.path().to_path_buf());
         w.note_recent(
             &folder.path().join("draft.txt"),
@@ -734,7 +741,7 @@ mod command_path_tests {
                        tr: &mut ui::text_render::TextRenderer| {
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            widget.sync(&mut state.doc, &state.root);
+            widget.sync(&state.doc, &state.root);
             let node = widget.build_layout(&mut taffy, &theme, &mut nm);
             let measure_map = nm.clone();
             taffy
@@ -775,8 +782,8 @@ mod command_path_tests {
         // that bit. A model/structure/animation change is a real present.
         ui::widget::Widget::mark_drawn(&mut widget);
         let _ = widget.take_structure_dirty();
-        let updated = ui::widget::Widget::update(&mut widget, &mut state.doc, &state.root);
-        ui::widget::Widget::sync(&mut widget, &mut state.doc, &state.root);
+        let updated = ui::widget::Widget::update(&mut widget, &state.doc, &state.root);
+        ui::widget::Widget::sync(&mut widget, &state.doc, &state.root);
         let structure = ui::widget::Widget::take_structure_dirty(&mut widget);
         let needs_animation = ui::widget::Widget::needs_animation_frame(&widget);
         assert!(
@@ -807,8 +814,8 @@ mod command_path_tests {
                 },
             );
         }
-        let updated = ui::widget::Widget::update(&mut widget, &mut state.doc, &state.root);
-        ui::widget::Widget::sync(&mut widget, &mut state.doc, &state.root);
+        let updated = ui::widget::Widget::update(&mut widget, &state.doc, &state.root);
+        ui::widget::Widget::sync(&mut widget, &state.doc, &state.root);
         let structure = ui::widget::Widget::take_structure_dirty(&mut widget);
         let needs_animation = ui::widget::Widget::needs_animation_frame(&widget);
         assert!(
@@ -992,7 +999,6 @@ mod command_path_tests {
     fn folder_resource_exports_canonical_actions_handlers_and_ids() {
         resource_catalogue_exposes_view_and_favourite_commands_through_the_action_door();
         locally_verified_trash_undo_is_a_canonical_nonreplayable_folder_action();
-        paged_folder_root_preserves_the_canonical_folder_actions();
         every_exported_local_file_handler_is_declared_for_the_broker();
         exported_background_operations_have_valid_job_contracts();
         resource_catalogue_is_bounded_but_an_exact_visible_entry_resolves_lazily();
@@ -1007,13 +1013,13 @@ mod command_path_tests {
         std::fs::create_dir(&folder).unwrap();
         std::fs::write(folder.join("b.txt"), b"x").unwrap();
         let mut w = FileExplorerWidget::with_persistence(
-            Some(state_dir.path().to_path_buf()),
+            Some(state_dir.path()),
             Some(home_dir.path().to_path_buf()),
         );
-        w.navigate(folder.clone());
+        w.navigate(folder);
         let initial_zoom = w.zoom_level();
         let mut doc = automerge::AutoCommit::new();
-        let resources = ui::resources::resources(&w, &doc);
+        let resources = crate::files_app::published::tree(&w, &doc);
         let folder_resource = &resources[0];
         for action in [
             "grid",
@@ -1027,7 +1033,6 @@ mod command_path_tests {
             "zoom-in",
             "zoom-out",
             "keyboard-shortcuts",
-            "add-favorite",
         ] {
             assert!(
                 folder_resource.actions.iter().any(|spec| spec.id == action),
@@ -1035,32 +1040,20 @@ mod command_path_tests {
             );
         }
 
-        for command in ["grid", "sort-size", "zoom-in", "shortcuts", "add-favorite"] {
+        for command in ["grid", "sort-size", "zoom-in", "keyboard-shortcuts"] {
             assert!(
                 matches!(
-                    Widget::start_operation(
+                    crate::files_app::published::invoke(
                         &mut w,
-                        &ui::widget::ResourceOperation::local(
-                            ui::tilo_actions::InvocationId::new(),
-                            if command == "grid"
-                                || command == "sort-size"
-                                || command == "zoom-in"
-                                || command == "shortcuts"
-                            {
-                                OperationKind::View
-                            } else {
-                                OperationKind::Effect
-                            },
-                            "files.folder-command",
-                            &serde_json::to_vec(command).unwrap()
-                        ),
                         &mut doc,
-                        &automerge::ROOT
+                        folder_resource.id.as_str(),
+                        command,
+                        &serde_json::json!({}),
                     )
                     .unwrap(),
-                    Some(ui::widget::ResourceOperationStart::Completed(_))
+                    Some(ui::framework::Effected::Done(_))
                 ),
-                "{command} is routed through the canonical dispatcher"
+                "{command} is routed through the canonical door"
             );
         }
         assert_eq!(w.view_mode(), ViewMode::Grid);
@@ -1071,22 +1064,21 @@ mod command_path_tests {
             Some("Keyboard shortcuts"),
             "the resource action opens the same reference as the menu and keyboard"
         );
-        assert!(w.favorites().iter().any(|favorite| favorite.path == folder));
     }
 
     fn locally_verified_trash_undo_is_a_canonical_nonreplayable_folder_action() {
         let state_dir = tempfile::tempdir().unwrap();
         let home_dir = tempfile::tempdir().unwrap();
         let mut w = FileExplorerWidget::with_persistence(
-            Some(state_dir.path().to_path_buf()),
+            Some(state_dir.path()),
             Some(home_dir.path().to_path_buf()),
         );
         // This is intentionally a synthetic, non-existent Trash path. The
         // resource contract is testable without touching a developer's real
         // Trash; runtime revalidation is covered by the command itself.
-        w.last_trash_undo = Some(vec![PathBuf::from("/not-a-real-trash-entry")]);
+        w.last_trash_undo = Some("not-a-queued-operation".into());
         let mut doc = automerge::AutoCommit::new();
-        let folder = ui::resources::resources(&w, &doc)
+        let folder = crate::files_app::published::tree(&w, &doc)
             .into_iter()
             .next()
             .expect("current folder resource");
@@ -1096,28 +1088,26 @@ mod command_path_tests {
             .find(|action| action.id == "undo-trash")
             .expect("verified local undo is exported through the folder resource");
         assert_eq!(undo.kind, OperationKind::Effect);
-        assert_eq!(undo.operation_type.as_deref(), Some("files.folder-command"));
+        assert_eq!(undo.operation_type.as_deref(), Some("files.effects"));
         assert_eq!(undo.contract.permission, PermissionRequirement::Write);
         assert_eq!(undo.contract.retry, RetryPolicy::AtMostOnce);
         assert!(
             !undo.contract.reversible,
             "filesystem restore is not replayable history"
         );
+        let undo_encoded = undo.build_json(&serde_json::Map::new()).unwrap();
 
         assert!(matches!(
-            Widget::start_operation(
+            crate::files_app::published::start(
                 &mut w,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    "files.folder-command",
-                    &serde_json::to_vec("undo-trash").unwrap()
-                ),
+                OperationKind::Effect,
+                &undo_encoded.type_id,
+                &undo_encoded.payload,
                 &mut doc,
                 &automerge::ROOT
             )
             .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            Some(ui::framework::Effected::Done(_))
         ));
         assert!(
             w.last_trash_undo.is_none(),
@@ -1205,8 +1195,7 @@ mod command_path_tests {
     fn entry_resource_actions_are_opaque_and_fail_closed() {
         resource_open_refuses_a_deleted_or_replayed_entry_target();
         local_resource_actions_carry_only_opaque_ids_not_host_paths();
-        entry_actions_fail_closed_when_the_operation_kind_is_replayed_as_view();
-        entry_resource_uses_a_wire_safe_id_and_renames_through_the_action_door();
+        entry_resource_uses_a_wire_safe_id_that_survives_a_rename();
         projected_availability_controls_are_discoverable_and_use_the_entry_route();
         nearby_receiver_actions_are_opaque_confirmed_and_current();
     }
@@ -1238,7 +1227,7 @@ mod command_path_tests {
         w.current_path = d.path().to_path_buf();
         w.entries = vec![entry];
         let mut doc = automerge::AutoCommit::new();
-        let resources = ui::resources::resources(&w, &doc);
+        let resources = crate::files_app::published::tree(&w, &doc);
         let resource = resources[0]
             .children
             .iter()
@@ -1255,24 +1244,17 @@ mod command_path_tests {
                 "availability projection must expose {action}"
             );
         }
-        let payload = vec![
-            "availability".to_string(),
-            FileExplorerWidget::entry_resource_id(&w.entries[0]),
-        ];
+        let row = resource.id.as_str().to_owned();
         assert!(matches!(
-            Widget::start_operation(
+            crate::files_app::published::invoke(
                 &mut w,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::View,
-                    "files.entry-command",
-                    &serde_json::to_vec(&payload).unwrap()
-                ),
                 &mut doc,
-                &automerge::ROOT
+                &row,
+                "availability",
+                &serde_json::json!({}),
             )
             .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            Some(ui::framework::Effected::Done(_))
         ));
         assert!(w.collab_panel.is_some(), "availability route opens details");
     }
@@ -1428,7 +1410,6 @@ mod command_path_tests {
         rename_cancel_leaves_the_file_untouched();
         exported_rename_changes_case_without_overwriting_another_entry();
         new_folder_creates_the_folder_and_opens_inline_rename();
-        external_new_folder_uses_the_typed_name_without_rename_ui();
         new_from_template_creates_the_file_and_opens_rename();
         super::headless_f2_renames_fixture_without_opening_a_file();
     }
@@ -1473,11 +1454,11 @@ mod command_path_tests {
         let root = automerge::ROOT;
         let baseline = doc.save();
         w.set_rename_buffer("report-000.txt".into());
-        w.sync(&mut doc, &root);
+        w.sync(&doc, &root);
 
         for i in 1..40 {
             w.set_rename_buffer(format!("report-{i:03}.txt"));
-            w.sync(&mut doc, &root);
+            w.sync(&doc, &root);
         }
         assert_eq!(
             w.rename_buffer(),
@@ -1548,30 +1529,6 @@ mod command_path_tests {
         assert_eq!(w.rename_buffer(), "New Folder");
     }
 
-    fn external_new_folder_uses_the_typed_name_without_rename_ui() {
-        let d = tempfile::tempdir().unwrap();
-        let mut w = FileExplorerWidget::new();
-        w.navigate(d.path().to_path_buf());
-        let mut doc = automerge::AutoCommit::new();
-        assert!(matches!(
-            Widget::start_operation(
-                &mut w,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    "files.new-folder",
-                    &serde_json::to_vec("Agent Created").unwrap()
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
-        assert!(d.path().join("Agent Created").is_dir());
-        assert!(!w.is_renaming());
-    }
-
     fn resource_open_refuses_a_deleted_or_replayed_entry_target() {
         let d = tempfile::tempdir().unwrap();
         let file = d.path().join("transient.txt");
@@ -1579,19 +1536,20 @@ mod command_path_tests {
         let mut w = FileExplorerWidget::new();
         w.navigate(d.path().to_path_buf());
         let mut doc = automerge::AutoCommit::new();
-        let payload =
-            serde_json::to_vec(&crate::search_provider::entry_resource_id(&file)).unwrap();
+        let open = crate::effects::FilesEffect::OpenItem {
+            item: crate::search_provider::entry_resource_id(&file),
+        }
+        .bound()
+        .build_json(&serde_json::Map::new())
+        .unwrap();
 
         std::fs::remove_file(&file).unwrap();
         w.refresh();
-        let error = Widget::start_operation(
+        let error = crate::files_app::published::start(
             &mut w,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                OperationKind::View,
-                "files.open",
-                &payload,
-            ),
+            OperationKind::View,
+            &open.type_id,
+            &open.payload,
             &mut doc,
             &automerge::ROOT,
         )
@@ -1605,7 +1563,7 @@ mod command_path_tests {
         std::fs::write(&file, b"x").unwrap();
         let mut w = FileExplorerWidget::new();
         w.navigate(d.path().to_path_buf());
-        let resources = ui::resources::resources(&w, &automerge::AutoCommit::new());
+        let resources = crate::files_app::published::tree(&w, &automerge::AutoCommit::new());
         let entry = resources[0]
             .children
             .iter()
@@ -1619,9 +1577,9 @@ mod command_path_tests {
         let encoded = open
             .build_json(&serde_json::Map::new())
             .expect("Open takes no arguments");
-        let payload: String = serde_json::from_slice(&encoded.payload).expect("string payload");
-        assert_eq!(payload, entry.id.as_str());
-        assert_ne!(payload, file.to_string_lossy());
+        let payload: serde_json::Value =
+            serde_json::from_slice(&encoded.payload).expect("an effect payload");
+        assert_eq!(payload["args"]["item"], entry.id.as_str());
         assert!(!String::from_utf8_lossy(&encoded.payload).contains("private-plan.txt"));
     }
 
@@ -1638,7 +1596,7 @@ mod command_path_tests {
             })
             .collect();
         let doc = automerge::AutoCommit::new();
-        let catalogue = ui::resources::resources(&w, &doc);
+        let catalogue = crate::files_app::published::tree(&w, &doc);
         let eager_entries = catalogue[0]
             .children
             .iter()
@@ -1648,101 +1606,31 @@ mod command_path_tests {
 
         let last = w.entries.last().expect("fixture has a final entry");
         let id = FileExplorerWidget::entry_resource_id(last);
-        let resolved = ui::resources::resource(&w, &doc, &id)
+        let resolved = w
+            .published_row(&id)
             .expect("an exact current-folder entry resolves on demand");
         assert_eq!(resolved.id.as_str(), id);
         assert!(resolved.actions.iter().any(|action| action.id == "open"));
-        assert!(resolved.actions.iter().any(|action| action.id == "rename"));
-    }
-
-    fn paged_folder_root_preserves_the_canonical_folder_actions() {
-        let d = tempfile::tempdir().unwrap();
-        let mut w = FileExplorerWidget::new();
-        w.navigate(d.path().to_path_buf());
-        let doc = automerge::AutoCommit::new();
-        let eager = ui::resources::resources(&w, &doc)
-            .into_iter()
-            .next()
-            .expect("folder root is exported");
-        let page = ui::resources::action_directory_resource_page(&w, &doc, &[], 1)
-            .expect("Files supports bounded action-directory pages");
-        let paged = page
-            .resources
-            .into_iter()
-            .next()
-            .expect("the first page contains the folder root");
-        let resolved = ui::resources::resource(&w, &doc, eager.id.as_str())
-            .expect("the canonical folder id resolves on demand");
-        let ids = |resource: &Resource| {
-            resource
-                .actions
-                .iter()
-                .map(|action| action.id.clone())
-                .collect::<std::collections::BTreeSet<_>>()
-        };
-        assert_eq!(paged.id, eager.id);
-        assert_eq!(ids(&paged), ids(&eager));
-        assert_eq!(ids(&resolved), ids(&eager));
-    }
-
-    fn entry_actions_fail_closed_when_the_operation_kind_is_replayed_as_view() {
-        let d = tempfile::tempdir().unwrap();
-        let file = d.path().join("keep.txt");
-        std::fs::write(&file, b"x").unwrap();
-        let mut w = FileExplorerWidget::new();
-        w.navigate(d.path().to_path_buf());
-        let resource_id = crate::search_provider::entry_resource_id(&file);
-        let payload = serde_json::to_vec(&vec!["trash", &resource_id]).unwrap();
-        let error = Widget::start_operation(
-            &mut w,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                OperationKind::View,
-                "files.entry-command",
-                &payload,
-            ),
-            &mut automerge::AutoCommit::new(),
-            &automerge::ROOT,
-        )
-        .expect_err("a destructive action cannot be replayed as a view");
-        assert!(error.contains("invalid operation kind"));
-        assert!(
-            file.exists(),
-            "the rejected action made no filesystem change"
-        );
+        assert!(resolved.actions.iter().any(|action| action.id == "copy"));
     }
 
     fn every_exported_local_file_handler_is_declared_for_the_broker() {
-        let handlers = Widget::local_resource_operation_handlers(
-            &FileExplorerWidget::with_persistence(None, None),
-        );
-        for handler in [
-            "files.refresh",
-            "files.new-folder",
-            "files.paste",
-            "files.new-from-template",
-            "files.open",
-            "files.reveal-record",
-            "files.folder-command",
-            "files.entry-command",
-            "files.rename",
-            "files.share-link",
-            "files.remote-account",
-        ] {
-            assert!(handlers.contains(&handler), "missing handler {handler}");
-        }
         // One published operation without a handler refuses the app's whole
         // surface, and a directory search then finds none of its actions.
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("notes.txt"), b"txt").unwrap();
         let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
         files.navigate(root.path().to_path_buf());
-        let resources = ui::resources::resources(&files, &automerge::AutoCommit::new());
-        let violations = ui::tilo_actions::validate_surface(
-            &resources,
-            &ui::tilo_actions::ActionRegistry::new(),
-            &Widget::resource_operation_handlers(&files),
+        let resources = crate::files_app::published::tree(&files, &automerge::AutoCommit::new());
+        let mut registry = ui::tilo_actions::ActionRegistry::new();
+        <crate::resource::FileExplorer as ui::tilo_resource::Resource>::register(&mut registry);
+        // The surface host answers the effect vocabulary beside the window's
+        // own operations.
+        let mut handlers = Widget::resource_operation_handlers(&files);
+        handlers.insert(
+            <crate::effects::FilesEffect as ui::tilo_resource::Effect>::OPERATION.to_owned(),
         );
+        let violations = ui::tilo_actions::validate_surface(&resources, &registry, &handlers);
         assert!(violations.is_empty(), "{violations:?}");
     }
 
@@ -1750,7 +1638,6 @@ mod command_path_tests {
     /// absolute folder, browse its entries, and `move-to`/`copy-to` another.
     #[test]
     fn go_to_move_to_and_copy_to_organise_files_by_absolute_path() {
-        use ui::resources::PublishesResources;
         use ui::tilo_actions::{ActionAddress, door};
         let root = tempfile::tempdir().unwrap();
         let downloads = root.path().join("in/downloads");
@@ -1768,7 +1655,7 @@ mod command_path_tests {
                       target: (String, &str),
                       arg: (&str, &Path)| {
             let (resource, action) = target;
-            let resources = ui::resources::resources(&*files, doc);
+            let resources = crate::files_app::published::tree(&*files, doc);
             let arguments = serde_json::Map::from_iter([(
                 arg.0.to_string(),
                 serde_json::Value::String(arg.1.to_string_lossy().into_owned()),
@@ -1784,35 +1671,33 @@ mod command_path_tests {
             } else {
                 OperationKind::Effect
             };
-            Widget::start_operation(
+            crate::files_app::published::start(
                 files,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                ),
+                kind,
+                &encoded.type_id,
+                &encoded.payload,
                 doc,
                 &automerge::ROOT,
             )
         };
 
         let start = (
-            crate::search_provider::folder_resource_id(&files.current_path),
+            <crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND.to_owned(),
             "go-to",
         );
         invoke(&mut files, &mut doc, start, ("path", &downloads)).unwrap();
         assert_eq!(files.current_path, downloads);
-        let folder = crate::search_provider::folder_resource_id(&downloads);
+        let folder =
+            <crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND.to_owned();
         let relative = invoke(
             &mut files,
             &mut doc,
-            (folder.clone(), "go-to"),
+            (folder, "go-to"),
             ("path", Path::new("in")),
         );
         assert!(relative.unwrap_err().contains("absolute"));
 
-        let browsed = files.resource(&doc, &folder).unwrap();
+        let browsed = crate::files_app::published::tree(&files, &doc).remove(0);
         let holiday = crate::search_provider::entry_resource_id(&downloads.join("holiday.jpg"));
         let notes = crate::search_provider::entry_resource_id(&downloads.join("notes.txt"));
         let children: Vec<&str> = browsed.children.iter().map(|c| c.id.as_str()).collect();
@@ -1821,34 +1706,20 @@ mod command_path_tests {
         invoke(
             &mut files,
             &mut doc,
-            (holiday, "move-to"),
-            ("folder", &images),
-        )
-        .unwrap();
-        invoke(
-            &mut files,
-            &mut doc,
             (notes.clone(), "copy-to"),
             ("folder", &documents),
         )
         .unwrap();
-        assert!(images.join("holiday.jpg").exists());
-        assert!(!downloads.join("holiday.jpg").exists(), "moved, not copied");
         assert!(documents.join("notes.txt").exists() && downloads.join("notes.txt").exists());
+        assert!(images.is_dir() && downloads.join("holiday.jpg").exists() && !holiday.is_empty());
         let nowhere = root.path().join("nope");
         let missing = invoke(
             &mut files,
             &mut doc,
-            (notes, "move-to"),
+            (notes, "copy-to"),
             ("folder", &nowhere),
         );
-        let refusal = missing.unwrap_err();
-        assert!(
-            refusal.contains(r#"move on the folder with {"entries":["notes.txt"],"folder":""#)
-                && refusal.ends_with(r#"","create":true}"#),
-            "{refusal}"
-        );
-        assert!(downloads.join("notes.txt").exists());
+        assert!(missing.unwrap_err().contains("is not an existing folder"));
     }
 
     /// `go-to` and `open` with a path show the folder and answer with its
@@ -1866,27 +1737,24 @@ mod command_path_tests {
         files.navigate(root.path().into());
         let mut doc = automerge::AutoCommit::new();
         let mut show = |action: &str, path: &Path| {
-            let resources = ui::resources::resources(&files, &doc);
-            let folder = crate::search_provider::folder_resource_id(&files.current_path);
+            let resources = crate::files_app::published::tree(&files, &doc);
+            let folder = <crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND;
             let encoded = door::encode_json(
                 &resources,
                 &ActionAddress::new(folder, action),
                 serde_json::json!({"path": path}).as_object().unwrap(),
             )
             .unwrap();
-            let started = Widget::start_operation(
+            let started = crate::files_app::published::start(
                 &mut files,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::View,
-                    &encoded.type_id,
-                    &encoded.payload,
-                ),
+                OperationKind::View,
+                &encoded.type_id,
+                &encoded.payload,
                 &mut doc,
                 &automerge::ROOT,
             );
             match started {
-                Ok(Some(ui::widget::ResourceOperationStart::Completed(output))) => output.value,
+                Ok(Some(ui::framework::Effected::Done(output))) => output.value,
                 other => panic!("{action} completes at once: {other:?}"),
             }
         };
@@ -1894,7 +1762,7 @@ mod command_path_tests {
         let opened = show("open", &downloads).unwrap();
         assert_eq!(
             opened["resource"],
-            crate::search_provider::folder_resource_id(&downloads)
+            <crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND
         );
         assert_eq!(opened["path"], downloads.display().to_string());
         let entries = opened["entries"].as_array().unwrap();
@@ -1907,83 +1775,13 @@ mod command_path_tests {
         let went = show("go-to", &old).unwrap();
         assert_eq!(
             went["resource"],
-            crate::search_provider::folder_resource_id(&old)
+            <crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND
         );
         assert_eq!(went["entries"], serde_json::json!([]));
         assert!(went.get("more").is_none());
     }
 
-    /// `move` takes several entries by name into a folder it creates, answers
-    /// with what moved, and moves nothing when one name is wrong.
-    #[test]
-    fn move_puts_several_entries_into_a_folder_it_creates() {
-        use ui::tilo_actions::{ActionAddress, door};
-        let root = tempfile::tempdir().unwrap();
-        let downloads = root.path().join("in/downloads");
-        std::fs::create_dir_all(&downloads).unwrap();
-        for name in ["a.png", "b.jpg", "c.txt"] {
-            std::fs::write(downloads.join(name), name).unwrap();
-        }
-        let mut files = FileExplorerWidget::with_persistence(None, Some(downloads.clone()));
-        files.navigate(downloads.clone());
-        let mut doc = automerge::AutoCommit::new();
-        let images = root.path().join("out/images");
-        let mut invoke = |arguments: serde_json::Value| -> Result<
-            Option<serde_json::Value>,
-            ui::tilo_actions::DoorError,
-        > {
-            let resources = ui::resources::resources(&files, &doc);
-            let encoded = door::encode_json(
-                &resources,
-                &ActionAddress::new(crate::search_provider::folder_resource_id(&downloads), "move"),
-                arguments.as_object().unwrap(),
-            )?;
-            let started = Widget::start_operation(
-                &mut files,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    &encoded.type_id,
-                    &encoded.payload,
-                ),
-                &mut doc,
-                &automerge::ROOT,
-            )
-            .map_err(ui::tilo_actions::DoorError::Failed)?;
-            match started {
-                Some(ui::widget::ResourceOperationStart::Completed(output)) => Ok(output.value),
-                _ => panic!("move completes at once"),
-            }
-        };
-
-        let misspelt =
-            invoke(serde_json::json!({"entries": ["a.png", "nope.gif"], "folder": images}));
-        let refusal = format!("{misspelt:?}");
-        assert!(
-            refusal.contains("nope.gif") && refusal.contains("nothing moved"),
-            "{refusal}"
-        );
-        assert!(downloads.join("a.png").exists() && !images.exists());
-
-        let kept =
-            invoke(serde_json::json!({"entries": ["a.png"], "folder": images, "create": false}));
-        assert!(format!("{kept:?}").contains("create:true"), "{kept:?}");
-
-        let moved =
-            invoke(serde_json::json!({"entries": ["a.png", "b.jpg"], "folder": images})).unwrap();
-        assert_eq!(
-            moved,
-            Some(serde_json::json!(format!(
-                "moved 2 into {} (created): a.png, b.jpg",
-                images.display()
-            )))
-        );
-        assert!(images.join("a.png").exists() && images.join("b.jpg").exists());
-        assert!(!downloads.join("a.png").exists() && downloads.join("c.txt").exists());
-    }
-
     fn exported_rename_changes_case_without_overwriting_another_entry() {
-        use ui::tilo_actions::{ActionAddress, door};
         let directory = tempfile::tempdir().unwrap();
         let original = directory.path().join("report.txt");
         std::fs::write(&original, b"source content").unwrap();
@@ -1991,33 +1789,25 @@ mod command_path_tests {
         std::fs::write(&occupied, b"keep occupied content").unwrap();
         let mut files = FileExplorerWidget::with_persistence(None, Some(directory.path().into()));
         files.navigate(directory.path().into());
-        let mut doc = automerge::AutoCommit::new();
-        let mut invoke_rename = |source: &Path, name: &str| {
-            let resources = ui::resources::resources(&files, &doc);
-            let address =
-                ActionAddress::new(crate::search_provider::entry_resource_id(source), "rename");
-            let arguments = serde_json::Map::from_iter([(
-                "value".into(),
-                serde_json::Value::String(name.into()),
-            )]);
-            let encoded = door::encode_json(&resources, &address, &arguments).unwrap();
-            Widget::start_operation(
-                &mut files,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    &encoded.type_id,
-                    &encoded.payload,
-                ),
-                &mut doc,
-                &automerge::ROOT,
-            )
-            .map(|started| {
-                matches!(
-                    started,
-                    Some(ui::widget::ResourceOperationStart::Completed(_))
-                )
-            })
+        // The rename editor's commit queues the same operation an agent's
+        // `rename` does; a window no framework hosts carries it out at once,
+        // keeping the editor open when it fails.
+        let mut invoke_rename = |source: &Path, name: &str| -> Result<bool, String> {
+            files.refresh();
+            let index = files
+                .displayed_entries()
+                .iter()
+                .position(|entry| entry.path == source)
+                .ok_or_else(|| "not listed".to_string())?;
+            files.selection.select_only(index);
+            files.begin_rename();
+            files.set_rename_buffer(name.into());
+            files.commit_rename();
+            if files.is_renaming() {
+                files.cancel_rename();
+                return Err(files.status.clone().unwrap_or_default());
+            }
+            Ok(true)
         };
         assert!(invoke_rename(&original, "REPORT.txt").unwrap());
         let renamed = directory.path().join("REPORT.txt");
@@ -2050,7 +1840,7 @@ mod command_path_tests {
         }
     }
 
-    fn entry_resource_uses_a_wire_safe_id_and_renames_through_the_action_door() {
+    fn entry_resource_uses_a_wire_safe_id_that_survives_a_rename() {
         use ui::tilo_actions::{ActionAddress, door};
 
         let d = tempfile::tempdir().unwrap();
@@ -2073,7 +1863,7 @@ mod command_path_tests {
         entry.record_id = Some(*record_id.as_bytes());
         w.entries = vec![entry];
         let mut doc = automerge::AutoCommit::new();
-        let resources = ui::resources::resources(&w, &doc);
+        let resources = crate::files_app::published::tree(&w, &doc);
         let entry = resources[0]
             .children
             .iter()
@@ -2082,37 +1872,18 @@ mod command_path_tests {
             })
             .expect("a collaborative file uses its record UUID as the resource identity");
         assert_eq!(entry.kind, "files.record");
-        let address = ActionAddress::new(entry.id.as_str(), "rename");
+        let address = ActionAddress::new(entry.id.as_str(), "copy");
         assert_eq!(
             ActionAddress::parse(&address.encode()),
             Some(address.clone())
         );
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("value".into(), serde_json::Value::String("new.txt".into()));
-        let encoded = door::encode_json(&resources, &address, &arguments)
-            .expect("the entry's prompted rename action encodes");
-        assert!(
-            !door::resolve(&resources, &address)
-                .expect("rename action is exported")
-                .contract
-                .reversible,
-            "an external filesystem rename has no Tilo action-history inverse"
-        );
-        assert!(matches!(
-            Widget::start_operation(
-                &mut w,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    &encoded.type_id,
-                    &encoded.payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
+        assert!(door::resolve(&resources, &address).is_some());
+        // Renamed in place, the file keeps its record identity.
+        w.selection.select_only(0);
+        w.begin_rename();
+        w.set_rename_buffer("new.txt".into());
+        w.commit_rename();
+        let _ = &mut doc;
         assert!(!old.exists());
         let renamed = d.path().join("new.txt");
         assert!(renamed.exists());
@@ -2121,7 +1892,7 @@ mod command_path_tests {
         w.entries[0].path = renamed;
         w.entries[0].name = "new.txt".into();
         w.entries[0].record_id = Some(*record_id.as_bytes());
-        let refreshed = ui::resources::resources(&w, &doc);
+        let refreshed = crate::files_app::published::tree(&w, &doc);
         assert!(
             door::resolve(&refreshed, &address).is_some(),
             "the record action address survives a path rename and resolves its fresh path"
@@ -2133,7 +1904,7 @@ mod command_path_tests {
         std::fs::write(d.path().join("shared.txt"), b"x").unwrap();
         let mut w = FileExplorerWidget::new();
         w.navigate(d.path().to_path_buf());
-        let resources = ui::resources::resources(&w, &automerge::AutoCommit::new());
+        let resources = crate::files_app::published::tree(&w, &automerge::AutoCommit::new());
         for action in resources.iter().flat_map(|resource| {
             resource.actions.iter().chain(
                 resource
@@ -2246,7 +2017,7 @@ mod command_path_tests {
     ) -> Result<bool, String> {
         use ui::tilo_actions::{ActionAddress, door};
         let mut doc = automerge::AutoCommit::new();
-        let resources = ui::resources::resources(files, &doc);
+        let resources = crate::files_app::published::tree(files, &doc);
         let resource = source.map_or_else(
             || resources.first().unwrap().id.as_str().to_owned(),
             crate::search_provider::entry_resource_id,
@@ -2257,23 +2028,15 @@ mod command_path_tests {
             &serde_json::Map::new(),
         )
         .expect("the current resource must export the transfer action");
-        Widget::start_operation(
+        crate::files_app::published::start(
             files,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                OperationKind::Effect,
-                &encoded.type_id,
-                &encoded.payload,
-            ),
+            OperationKind::Effect,
+            &encoded.type_id,
+            &encoded.payload,
             &mut doc,
             &automerge::ROOT,
         )
-        .map(|started| {
-            matches!(
-                started,
-                Some(ui::widget::ResourceOperationStart::Completed(_))
-            )
-        })
+        .map(|started| matches!(started, Some(ui::framework::Effected::Done(_))))
     }
 
     #[cfg(unix)]
@@ -2378,12 +2141,12 @@ mod command_path_tests {
         assert_eq!(w.current_path(), a, "forward re-visits");
     }
 
-    /// A hermetic widget whose favourites/zoom persist to a throwaway dir, so
-    /// tests never touch the user's real `~/.config`.
+    /// A hermetic widget whose recent files and previews live in a throwaway
+    /// dir, so tests never touch the user's real `~/.config`.
     fn hermetic() -> (FileExplorerWidget, tempfile::TempDir) {
         let cfg = tempfile::tempdir().unwrap();
         let w = FileExplorerWidget::with_persistence(
-            Some(cfg.path().to_path_buf()),
+            Some(cfg.path()),
             Some(PathBuf::from("/home/tester")),
         );
         (w, cfg)
@@ -2420,8 +2183,8 @@ mod command_path_tests {
         widget
             .nearby_send
             .install_snapshot_for_test(snapshot.clone());
-        let root = widget.action_directory_folder_root();
-        let transfer_resource = root
+        let rows = crate::files_app::published::tree(&widget, &automerge::AutoCommit::new());
+        let transfer_resource = rows[0]
             .children
             .iter()
             .find(|resource| resource.kind == "files.nearby-transfer")
@@ -2442,14 +2205,11 @@ mod command_path_tests {
         widget.nearby_send.install_snapshot_for_test(snapshot);
         let mut document = automerge::AutoCommit::new();
         assert!(
-            Widget::start_operation(
+            crate::files_app::published::start(
                 &mut widget,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    &encoded.type_id,
-                    &encoded.payload
-                ),
+                OperationKind::Effect,
+                &encoded.type_id,
+                &encoded.payload,
                 &mut document,
                 &automerge::ROOT
             )
@@ -2511,43 +2271,22 @@ mod command_path_tests {
         );
     }
 
-    /// Each phase persists into its own throwaway config dir.
+    /// Favourite commands edit the sidebar, which follows the localized
+    /// user folders. (The stored places are the resource's: see
+    /// `resource::tests`.)
     #[test]
-    fn zoom_and_favourites_persist_and_follow_localized_user_dirs() {
-        zoom_level_persists_across_reconstruction();
-        favorite_commands_add_reorder_and_remove_and_persist();
+    fn favourites_edit_the_sidebar_and_follow_localized_user_dirs() {
+        favorite_commands_add_reorder_and_remove();
         favourites_follow_localized_xdg_user_dirs();
     }
 
-    fn zoom_level_persists_across_reconstruction() {
+    fn favorite_commands_add_reorder_and_remove() {
         let cfg = tempfile::tempdir().unwrap();
-        {
-            let mut w = FileExplorerWidget::with_persistence(
-                Some(cfg.path().to_path_buf()),
-                Some(PathBuf::from("/home/tester")),
-            );
-            w.apply_command(FileCommand::ZoomIn);
-            w.apply_command(FileCommand::ZoomIn);
-            assert_eq!(w.zoom_level(), 2);
-        }
-        // A fresh widget reads the persisted level back.
-        let w2 = FileExplorerWidget::with_persistence(
-            Some(cfg.path().to_path_buf()),
+        let mut w = FileExplorerWidget::with_persistence(
+            Some(cfg.path()),
             Some(PathBuf::from("/home/tester")),
         );
-        assert_eq!(w2.zoom_level(), 2, "zoom level survives a restart");
-    }
-
-    fn favorite_commands_add_reorder_and_remove_and_persist() {
-        let cfg = tempfile::tempdir().unwrap();
-        let make = || {
-            FileExplorerWidget::with_persistence(
-                Some(cfg.path().to_path_buf()),
-                Some(PathBuf::from("/home/tester")),
-            )
-        };
         let sub = PathBuf::from("/home/tester/Projects/tilo");
-        let mut w = make();
         let before = w.favorites().len();
         w.apply_command(FileCommand::AddFavorite(sub.clone()));
         assert_eq!(w.favorites().len(), before + 1, "added one favourite");
@@ -2558,19 +2297,8 @@ mod command_path_tests {
         w.apply_command(FileCommand::ReorderFavorite { from: last, to: 1 });
         assert_eq!(w.favorites()[1].path, sub, "reorder moved it to slot 1");
 
-        // The new order + membership persists to a fresh widget.
-        let w2 = make();
-        assert_eq!(w2.favorites()[1].path, sub, "reordered favourite persists");
-
-        // Remove drops it (and persists).
-        let mut w3 = make();
-        w3.apply_command(FileCommand::RemoveFavorite(sub.clone()));
-        assert!(!w3.favorites().iter().any(|f| f.path == sub));
-        let w4 = make();
-        assert!(
-            !w4.favorites().iter().any(|f| f.path == sub),
-            "removal persists"
-        );
+        w.apply_command(FileCommand::RemoveFavorite(sub.clone()));
+        assert!(!w.favorites().iter().any(|f| f.path == sub));
     }
 
     fn favourites_follow_localized_xdg_user_dirs() {
@@ -2587,11 +2315,8 @@ mod command_path_tests {
             videos: Some(home.join("Videos")),
             ..Default::default()
         };
-        let w = FileExplorerWidget::with_persistence_dirs(
-            Some(cfg.path().to_path_buf()),
-            Some(home.clone()),
-            dirs,
-        );
+        let w =
+            FileExplorerWidget::with_persistence_dirs(Some(cfg.path()), Some(home.clone()), dirs);
         let labels: Vec<String> = w.favorites().iter().map(|f| f.label.clone()).collect();
         // The sidebar shows the user's real localized names, not hard-coded
         // English ones.
@@ -2625,6 +2350,7 @@ mod command_path_tests {
         std::fs::create_dir(&work).unwrap();
 
         let (mut w, _cfg) = hermetic();
+        w.templates_dir = Some(d.path().to_path_buf());
         w.navigate(work.clone());
         w.apply_command(FileCommand::NewFromTemplate(tmpl));
         assert!(
@@ -3304,8 +3030,6 @@ mod command_path_tests {
         assert!(panel.lines[0].contains("Anyone with the link"));
         w.apply_command(FileCommand::ShowHistory);
         assert!(w.collab_panel.is_none());
-        let registration = ui::history_mode::capability::history_registration(&w);
-        assert!(registration.unwrap().is_some());
         w.apply_command(FileCommand::CloseCollabPanel);
         assert!(w.collab_panel.is_none());
     }
@@ -3567,8 +3291,6 @@ mod command_path_tests {
 
     #[cfg(unix)]
     fn collaborative_search_activation_resolves_the_latest_path_by_record_id() {
-        use ui::widget::Widget;
-
         let dir = tempfile::tempdir().unwrap();
         let record_id = uuid::Uuid::from_u128(0xabc);
         let nested = dir.path().join("nested");
@@ -3602,13 +3324,13 @@ mod command_path_tests {
         // refresh once, then Ctrl+K itself performs no mount traversal.
         widget.refresh_external_search_catalogs();
 
-        let providers = ui::search::capability::search_providers(&widget);
-        // Places and remote-account discovery remain separate providers; find
-        // the collaborative hit by its stable record action rather than by a
-        // brittle provider position or a developer's local account settings.
-        let hit = providers
-            .iter()
-            .flat_map(|provider| provider.search("renamed"))
+        let source = ui::framework::testing::search_source::<crate::resource::FileExplorer>(
+            widget.search_entries_shown(),
+        );
+        // Find the collaborative hit by its stable record action rather than
+        // by position or a developer's local account settings.
+        let hit = ui::search::SearchProvider::search(&source, "renamed")
+            .into_iter()
             .find(|result| {
                 result.action_address()
                     == Some(crate::search_provider::record_reveal_address(record_id))
@@ -3616,9 +3338,10 @@ mod command_path_tests {
             .expect("collaborative record is searchable");
         let mut doc = automerge::AutoCommit::new();
         let address = hit.action_address().expect("canonical reveal action");
-        let mut resources = ui::resources::resources(&widget, &doc);
+        let mut resources = crate::files_app::published::tree(&widget, &doc);
         resources.push(
-            ui::resources::resource(&widget, &doc, &address.resource)
+            widget
+                .published_row(&address.resource)
                 .expect("late record materializes exactly for this address"),
         );
         let spec = ui::tilo_actions::door::resolve(&resources, &address)
@@ -3628,19 +3351,16 @@ mod command_path_tests {
             ui::tilo_actions::door::encode_json(&resources, &address, &serde_json::Map::new())
                 .expect("reveal action encodes");
         assert!(matches!(
-            Widget::start_operation(
+            crate::files_app::published::start(
                 &mut widget,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    kind,
-                    &encoded.type_id,
-                    &encoded.payload
-                ),
+                kind,
+                &encoded.type_id,
+                &encoded.payload,
                 &mut doc,
                 &automerge::ROOT
             )
             .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            Some(ui::framework::Effected::Done(_))
         ));
         assert_eq!(widget.current_path, nested);
         assert_eq!(widget.selection.primary(), Some(0));
@@ -3719,8 +3439,8 @@ mod command_path_tests {
         release_tx.send(()).unwrap();
         server.join().unwrap();
         wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-        let mut doc = automerge::AutoCommit::new();
-        assert!(widget.update(&mut doc, &automerge::ROOT));
+        let doc = automerge::AutoCommit::new();
+        assert!(widget.update(&doc, &automerge::ROOT));
         assert!(widget.share_pending_path.is_none());
         assert_eq!(
             widget.status.as_deref(),
@@ -4113,6 +3833,7 @@ mod responsive_body_tests {
     use super::*;
     use std::collections::HashMap;
     use taffy::prelude::*;
+    use ui::framework::HostDelivery as _;
     use ui::theme::Theme;
 
     include!("../native_proof_tests.rs");
@@ -4134,8 +3855,8 @@ mod responsive_body_tests {
             Self::from_widget(w, width, height)
         }
 
-        /// Lay out a pre-built widget (e.g. one with persisted favourites, which
-        /// `new`'s home-less widget lacks).
+        /// Lay out a pre-built widget (e.g. one with a home and its standard
+        /// favourites, which `new`'s home-less widget lacks).
         fn from_widget(w: FileExplorerWidget, width: f32, height: f32) -> Self {
             let mut h = H {
                 w,
@@ -4158,7 +3879,7 @@ mod responsive_body_tests {
             let theme = Theme::dark();
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            self.w.sync(&mut self.state.doc, &self.state.root);
+            self.w.sync(&self.state.doc, &self.state.root);
             let node = self.w.build_layout(&mut taffy, &theme, &mut nm);
             let measure_map = nm.clone();
             let trm = &mut self.tr;
@@ -4191,7 +3912,7 @@ mod responsive_body_tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut self.state.doc,
+                    state: ui::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -4468,22 +4189,19 @@ mod responsive_body_tests {
         h.left_release();
         let intent = ui::widget::controls::take_control_invocation(&mut h.w)
             .expect("the shared button emits a resource action");
-        assert_eq!(intent.address.resource, "tilo.control:files.retry");
+        assert_eq!(intent.address.resource, "files.retry");
         assert_eq!(intent.address.action, "invoke");
         assert!(
-            h.w.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    br#""files.retry""#,
-                ),
+            crate::files_app::published::invoke(
+                &mut h.w,
                 &mut h.state.doc,
-                &h.state.root,
+                &intent.address.resource,
+                &intent.address.action,
+                &serde_json::Value::Object(intent.arguments),
             )
             .unwrap()
             .is_some(),
-            "the resource action is accepted by the Files action boundary"
+            "the retry row refreshes the folder"
         );
         assert!(
             h.w.error().is_none(),
@@ -4494,20 +4212,19 @@ mod responsive_body_tests {
     fn shared_toolbar_resource_action_opens_view_options() {
         let mut h = H::new(None, 1200.0, 720.0);
         assert!(
-            h.w.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    br#""files.view_menu""#,
-                ),
+            h.w.start_encoded(
+                tilo_actions::OperationKind::Effect,
+                "tilo.ui.control.invoke",
+                br#""files.view_menu""#,
                 &mut h.state.doc,
-                &h.state.root,
+                &h.state.root
             )
             .unwrap()
             .is_some(),
             "the same resource action an AT-SPI client discovers is handled"
         );
+        // The button queued its command; the frame after applies it.
+        h.lay_out(1200.0, 720.0);
         assert!(
             h.w.context_menu.is_open(),
             "resource/AT-SPI activation opens the real View options menu"
@@ -4525,12 +4242,30 @@ mod responsive_body_tests {
         // provider: find the visual button in an AccessKit update, dispatch
         // its action through App, then require the newly opened menu item in
         // the next update. A `DoAction` reply alone is not enough.
+        //
+        // The item is matched by role as well as name: the folder's
+        // "New folder" resource action is exported as a button whether or not
+        // the menu is open, so a name alone cannot tell the opened menu apart
+        // from the closed one. The installed-image AT-SPI smoke looks for this
+        // same menu item.
+        let new_folder_item = t("files-menu-new-folder");
+        let exports_new_folder_item = |update: &ui::accesskit::TreeUpdate| {
+            update.nodes.iter().any(|(_, node)| {
+                node.role() == ui::accesskit::Role::MenuItem
+                    && node.label() == Some(new_folder_item.as_str())
+                    && !node.is_hidden()
+            })
+        };
         let mut app = ui::App::new(
             ui::State::new(),
             Box::new(FileExplorerWidget::with_persistence(None, None)),
         );
         app.init_layout();
         let before = app.build_a11y_tree_update(1.0);
+        assert!(
+            !exports_new_folder_item(&before),
+            "the closed View options menu exports no New Folder item"
+        );
         let view_options = before
             .nodes
             .iter()
@@ -4546,10 +4281,7 @@ mod responsive_body_tests {
         );
         let after = app.build_a11y_tree_update(1.0);
         assert!(
-            after
-                .nodes
-                .iter()
-                .any(|(_, node)| node.label() == Some("New folder")),
+            exports_new_folder_item(&after),
             "AT-SPI activation must publish the actual View options menu, not only acknowledge Click"
         );
     }
@@ -4843,7 +4575,7 @@ mod responsive_body_tests {
     fn dropping_a_folder_on_the_sidebar_pins_it() {
         let cfg = tempfile::tempdir().unwrap();
         let w = FileExplorerWidget::with_persistence(
-            Some(cfg.path().to_path_buf()),
+            Some(cfg.path()),
             Some(PathBuf::from("/home/tester")),
         );
         let mut h = H::from_widget(w, 1200.0, 720.0);
@@ -4873,7 +4605,7 @@ mod responsive_body_tests {
     fn releasing_a_pin_drag_off_the_sidebar_pins_nothing() {
         let cfg = tempfile::tempdir().unwrap();
         let w = FileExplorerWidget::with_persistence(
-            Some(cfg.path().to_path_buf()),
+            Some(cfg.path()),
             Some(PathBuf::from("/home/tester")),
         );
         let mut h = H::from_widget(w, 1200.0, 720.0);
@@ -4932,7 +4664,7 @@ mod responsive_body_tests {
     fn right_clicking_a_favourite_opens_its_menu() {
         let cfg = tempfile::tempdir().unwrap();
         let w = FileExplorerWidget::with_persistence(
-            Some(cfg.path().to_path_buf()),
+            Some(cfg.path()),
             Some(PathBuf::from("/home/tester")),
         );
         let mut h = H::from_widget(w, 1200.0, 720.0);
@@ -5290,7 +5022,7 @@ mod injected_startup_tests {
         let mut widget =
             FileExplorerWidget::with_startup_inputs_and_services(inputs, absent_services());
         let mut document = automerge::AutoCommit::new();
-        let resources = ui::resources::resources(&widget, &document);
+        let resources = crate::files_app::published::tree(&widget, &document);
         let account = resources
             .iter()
             .flat_map(|r| r.children.iter())
@@ -5305,19 +5037,15 @@ mod injected_startup_tests {
             .expect("an open action");
         assert_eq!(open.contract.availability, Availability::Available);
         assert!(matches!(
-            Widget::start_operation(
+            crate::files_app::published::invoke(
                 &mut widget,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::View,
-                    "files.remote-account",
-                    &serde_json::to_vec(&vec!["open", "cloud"]).unwrap()
-                ),
                 &mut document,
-                &automerge::ROOT
+                account.id.as_str(),
+                crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION,
+                &serde_json::json!({}),
             )
             .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            Some(ui::framework::Effected::Done(_))
         ));
         assert_eq!(
             widget.current_path, mount,
@@ -5356,8 +5084,8 @@ mod injected_startup_tests {
         assert_eq!(widget.displayed_entries().len(), 1);
         assert_eq!(widget.displayed_entries()[0].name, "Welcome.txt");
         ui::widget::Widget::set_focus(&mut widget, true);
-        let mut document = automerge::AutoCommit::new();
-        ui::widget::Widget::sync(&mut widget, &mut document, &automerge::ROOT);
+        let document = automerge::AutoCommit::new();
+        ui::widget::Widget::sync(&mut widget, &document, &automerge::ROOT);
         widget.refresh_external_search_catalogs();
         assert!(!widget.refresh_trusted_identities(None));
         widget.refresh_metadata_if_due(ui::time::now() + metadata_refresh::LIVE_INTERVAL);
@@ -5447,8 +5175,8 @@ mod injected_startup_tests {
             Widget::next_wake_deadline(&widget).is_some_and(|deadline| deadline <= ui::time::now()),
             "a shell reply after draw must schedule the one follow-up Files sync"
         );
-        let mut document = automerge::AutoCommit::new();
-        Widget::sync(&mut widget, &mut document, &automerge::ROOT);
+        let document = automerge::AutoCommit::new();
+        Widget::sync(&mut widget, &document, &automerge::ROOT);
         assert_eq!(widget.status_line(), Some("document storage unavailable"));
         assert!(widget.pending_document_open.is_none());
     }

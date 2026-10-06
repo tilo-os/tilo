@@ -136,6 +136,7 @@ pub struct BrokerHandle {
     /// Spawned only when there's a `ShellNetwork` to pump.
     drain_thread: Option<JoinHandle<()>>,
     drain_quit: Arc<AtomicBool>,
+    drain_wake: Option<std::sync::Arc<crate::idle_wake::DrainPark>>,
     /// Trusted shell-only MLS lifecycle transaction boundary. This is never
     /// exposed through the app-facing Cap'n Proto service.
     mls_authority: Option<
@@ -231,6 +232,9 @@ impl Drop for BrokerHandle {
     fn drop(&mut self) {
         self.local_session.lifecycle().close();
         self.drain_quit.store(true, Ordering::Relaxed);
+        if let Some(wake) = &self.drain_wake {
+            wake.poke();
+        }
         if let Some(t) = self.drain_thread.take() {
             let _ = t.join();
         }
@@ -347,6 +351,30 @@ impl CertificateProvisioning {
     }
 }
 
+/// The history page a peer's scrollback request is answered with: from
+/// durable history as well as the memory window, so a member who joined on
+/// another device can page back through everything this device retained,
+/// but only when the artifact belongs to the room whose topic asked, and
+/// never for the person's own room. An artifact whose room this device never
+/// learned is answered to nobody.
+pub(crate) fn scrollback_answer(
+    net: &ShellNetwork,
+    channels: &Mutex<BrokerChannels>,
+    entry: &InboundScrollbackRequest,
+) -> Vec<collab_types::SignedOp> {
+    let Ok(mut ch) = channels.lock() else {
+        return Vec::new();
+    };
+    if !ch
+        .room_of(entry.artifact)
+        .is_some_and(|room| net.scrollback_answer_allowed(&room, entry.workspace_topic))
+    {
+        return Vec::new();
+    }
+    ch.scrollback_page(entry.artifact, entry.before_seq, entry.max)
+        .0
+}
+
 /// Inbound queues + shared fanout state the drain thread polls each
 /// cycle. Grouped into one struct so the thread closure in
 /// [`spawn_inner`] doesn't have to carry the whole per-iteration match
@@ -358,6 +386,10 @@ struct DrainQueues {
     sb_req_inbound: Arc<Mutex<Vec<InboundScrollbackRequest>>>,
     sb_resp_inbound: Arc<Mutex<Vec<InboundScrollbackResponse>>>,
     remote_actions: Arc<Mutex<Vec<crate::shell::remote_action_link::InboundRemoteAction>>>,
+    /// Other devices' requests for, and answers with, records' content.
+    record_content_inbound: Arc<Mutex<Vec<crate::shell::network::InboundRecordContent>>>,
+    /// The record-content service those reach; absent on a peer broker.
+    record_content: Option<Arc<tilo_action_broker::record_content::RouteContent>>,
     /// The action host remote requests are answered by, built once the
     /// application broker is up; its invocation ledger lives as long as
     /// the drainer so retries stay idempotent.
@@ -389,9 +421,24 @@ impl DrainQueues {
         }
         self.drain_presence(labels, announced)
             && self.drain_documents(labels, announced)
+            && self.drain_person_snapshot_requests()
             && self.drain_scrollback_requests()
             && self.drain_scrollback_responses()
             && self.drain_remote_actions()
+            && self.drain_record_content()
+    }
+
+    fn drain_record_content(&self) -> bool {
+        match &self.record_content {
+            Some(content) => {
+                crate::shell::record_content::drain(&self.record_content_inbound, content)
+            }
+            None => self
+                .record_content_inbound
+                .lock()
+                .map(|mut inbound| inbound.clear())
+                .is_ok(),
+        }
     }
 
     /// Answer remote-action requests through the same broker local callers
@@ -504,6 +551,17 @@ impl DrainQueues {
         true
     }
 
+    /// When another of this person's devices came back, ask the local apps
+    /// holding person-room records for their snapshots, which then travel to
+    /// it over the personal fabric like any other edit.
+    fn drain_person_snapshot_requests(&self) -> bool {
+        while let Some(person_room) = self.net.take_person_snapshot_request() {
+            let asked = self.table.request_room_snapshots(&person_room);
+            tracing::debug!(asked, "asked local apps to catch a returning device up");
+        }
+        true
+    }
+
     /// Drain inbound scrollback requests; publish a response only if
     /// we have matching ops, so the requester isn't spammed by every
     /// peer's "I don't have it either".
@@ -515,19 +573,12 @@ impl DrainQueues {
             std::mem::take(&mut *buf)
         };
         for entry in drained_req {
-            // Answer from durable history as well as the memory window, so a
-            // member who joined on another device can page back through
-            // everything this device retained.
-            let (ops, _exhausted) = {
-                let Ok(mut ch) = self.channels.lock() else {
-                    continue;
-                };
-                ch.scrollback_page(entry.artifact, entry.before_seq, entry.max)
-            };
+            let ops = scrollback_answer(&self.net, &self.channels, &entry);
             if !ops.is_empty() {
                 let boxed: Vec<Box<collab_types::SignedOp>> =
                     ops.into_iter().map(Box::new).collect();
-                self.net.publish_scrollback_response(entry.artifact, boxed);
+                self.net
+                    .publish_scrollback_response(entry.workspace_topic, entry.artifact, boxed);
             }
         }
         true
@@ -613,10 +664,14 @@ fn spawn_inner(
         Arc::new(Mutex::new(HashMap::new()));
 
     // Inbound-drain: when peer-sync is on, drain signed documents, presence,
-    // and cooperative scrollback requests/responses every 100ms.
+    // and cooperative scrollback. The thread parks until a frame arrives,
+    // or for a second while a channel still has governance to pump.
     // Every remote entry is routed like a local one, by the `(app_id,
     // cluster_id)` the publishing host stamped on the wire.
     let drain_quit = Arc::new(AtomicBool::new(false));
+    let record_content = peer_sync
+        .filter(|_| config.is_none())
+        .map(crate::shell::record_content::session_record_content);
     let drain_thread = peer_sync.and_then(|net| {
         let queues = DrainQueues {
             presence_inbound: net.inbound_app_presence_handle(),
@@ -624,6 +679,8 @@ fn spawn_inner(
             sb_req_inbound: net.inbound_scrollback_request_handle(),
             sb_resp_inbound: net.inbound_scrollback_response_handle(),
             remote_actions: net.inbound_remote_actions_handle(),
+            record_content_inbound: net.inbound_record_content_handle(),
+            record_content: record_content.clone(),
             action_host: std::sync::OnceLock::new(),
             table: Arc::clone(&table),
             channels: Arc::clone(&channels),
@@ -632,6 +689,7 @@ fn spawn_inner(
             channel_encryption: channel_encryption.clone(),
         };
         let quit = Arc::clone(&drain_quit);
+        let wake = std::sync::Arc::clone(&net.drain_wake);
         std::thread::Builder::new()
             .name("tilo-collab-broker-drain".into())
             .spawn(move || {
@@ -647,7 +705,12 @@ fn spawn_inner(
                     if !queues.drain_once(&mut labels, &mut announced) {
                         break;
                     }
-                    std::thread::sleep(Duration::from_millis(100));
+                    let timeout = queues
+                        .channel_encryption
+                        .as_ref()
+                        .filter(|service| service.has_live_channels())
+                        .map(|_| Duration::from_secs(1));
+                    wake.wait(timeout);
                 }
             })
             .ok()
@@ -659,6 +722,7 @@ fn spawn_inner(
     } else {
         tilo_action_broker::services::HostServices::default()
     };
+    services.record_content = record_content;
     if certificate_provisioning.uses_harness_devices() && config.is_none() {
         services.native_certificates = None;
     }
@@ -682,12 +746,14 @@ fn spawn_inner(
     if let Some(service) = native_media.as_ref() {
         if let Some(network) = peer_sync {
             let installed = network.native_owner().and_then(|owner| {
-                crate::network::native_media::Factory::new(
-                    network.cmd_tx.clone(),
-                    owner,
-                    service.capture_broker(),
-                    network.runtime_handle()?,
-                )
+                network.runtime_handle().map(|runtime| {
+                    crate::network::native_media::Factory::new(
+                        network.cmd_tx.clone(),
+                        owner,
+                        service.capture_broker(),
+                        runtime,
+                    )
+                })
             });
             match installed {
                 Ok(factory) => {
@@ -754,6 +820,7 @@ fn spawn_inner(
         realtime_fabric: realtime_fabric.map(|(_, bridge)| bridge),
         drain_thread,
         drain_quit,
+        drain_wake: peer_sync.map(|net| std::sync::Arc::clone(&net.drain_wake)),
         mls_authority,
         channel_encryption,
         peer_departures: peer_sync.map(|net| net.peer_departure_history()),
@@ -1102,7 +1169,7 @@ mod tests {
 
             assert!(matches!(
                 validate_document_route(&route, &envelope),
-                Ok(collab_types::WholeDocumentPayload::Cleartext(
+                Ok(collab_types::RoutedDocumentPayload::Cleartext(
                     DocumentMutation::Snapshot(data)
                 )) if data == b"whole document"
             ));
@@ -1141,7 +1208,7 @@ mod tests {
             );
             assert_eq!(
                 validate_document_route(&route, &envelope),
-                Ok(collab_types::WholeDocumentPayload::Encrypted {
+                Ok(collab_types::RoutedDocumentPayload::Encrypted {
                     channel: expected_channel,
                     epoch: 9,
                 })

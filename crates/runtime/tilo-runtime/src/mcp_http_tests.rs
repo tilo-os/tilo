@@ -1,4 +1,7 @@
 use super::*;
+
+#[path = "mcp_admission_tests.rs"]
+mod admission_tests;
 use hyper::HeaderMap;
 use std::sync::Mutex as StdMutex;
 use tilo_actions::InvocationUpdate;
@@ -27,11 +30,17 @@ mod schema_rows {
 
 #[derive(Clone, Default)]
 struct StubHost {
+    room: Option<String>,
     invoked: Arc<StdMutex<Vec<InvokeRequest>>>,
+    callers: Arc<StdMutex<Vec<Caller>>>,
     confirmation: tilo_actions::ConfirmationPolicy,
     /// Observations a started invocation stays accepted for before it
     /// succeeds.
     running_for: Arc<std::sync::atomic::AtomicUsize>,
+    /// What a finished invocation produced.
+    output: Arc<StdMutex<tilo_actions::ActionOutput>>,
+    /// The kind of operation the published action is.
+    kind: Arc<StdMutex<tilo_actions::OperationKind>>,
 }
 
 impl StubHost {
@@ -46,6 +55,7 @@ impl StubHost {
             .find(|descriptor| descriptor.address.action == tilo_resource::APPLY)
             .unwrap();
         descriptor.contract.confirmation = self.confirmation.clone();
+        descriptor.kind = *self.kind.lock().unwrap();
         CatalogueRow {
             provider: "71".into(),
             app_id: "so.tilo.test".into(),
@@ -77,7 +87,7 @@ impl ActionHost for StubHost {
         page.providers = vec![CatalogueProvider {
             provider: "71".into(),
             app_id: "so.tilo.test".into(),
-            room: "room".into(),
+            room: self.room.clone().unwrap_or_else(|| "room".into()),
             record_id: String::new(),
             browsable: true,
         }];
@@ -86,7 +96,7 @@ impl ActionHost for StubHost {
 
     fn invoke(
         &self,
-        _caller: &Caller,
+        caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         let invocation = request.invocation;
@@ -96,6 +106,7 @@ impl ActionHost for StubHost {
         {
             return Pending::ready(Err(ActionHostError::ConfirmationRequired));
         }
+        self.callers.lock().unwrap().push(caller.clone());
         self.invoked.lock().unwrap().push(request);
         Pending::ready(Ok(InvocationState::new(
             invocation,
@@ -127,7 +138,7 @@ impl ActionHost for StubHost {
             if started && !running {
                 InvocationUpdate::Succeeded {
                     invocation: *id,
-                    output: tilo_actions::ActionOutput::default(),
+                    output: self.output.lock().unwrap().clone(),
                 }
             } else {
                 InvocationUpdate::Accepted { invocation: *id }
@@ -325,6 +336,7 @@ fn sessions_are_created_by_initialize_and_required_after() {
 fn each_session_is_its_own_attributed_agent_run() {
     let host = StubHost::default();
     let invoked = Arc::clone(&host.invoked);
+    let callers = Arc::clone(&host.callers);
     let endpoint = endpoint(host, None);
     run(async {
         let first = open(&endpoint, "Researcher").await;
@@ -332,6 +344,52 @@ fn each_session_is_its_own_attributed_agent_run() {
         assert_ne!(first, second);
         invoke(&endpoint, &first).await;
         invoke(&endpoint, &second).await;
+        invoke(&endpoint, &first).await;
+    });
+    let groups: Vec<_> = invoked
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|request| request.context.clone().unwrap().group.unwrap())
+        .collect();
+    assert_eq!(groups.len(), 3);
+    assert_ne!(groups[0].id, groups[1].id);
+    assert_eq!(groups[0], groups[2]);
+    assert!(groups.iter().all(|group| group.kind == "agent-run"));
+    assert_eq!(groups[0].label, "Researcher");
+    assert_eq!(groups[1].label, "Writer");
+    let executions: Vec<_> = callers
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|caller| caller.execution_id().expect("admitted execution"))
+        .collect();
+    assert_ne!(executions[0], executions[1]);
+    assert_eq!(executions[0], executions[2]);
+}
+
+/// A stdio connection (one `--connect` client, as `.cursor/mcp.json` runs)
+/// is also its own agent run, named by the client at `initialize`, so its
+/// edits are attributed in history like an HTTP session's.
+#[test]
+fn each_stdio_connection_is_its_own_attributed_agent_run() {
+    let host = StubHost::default();
+    let invoked = Arc::clone(&host.invoked);
+    run(async {
+        for name in ["Painter", "Critic"] {
+            let mut server =
+                crate::mcp::McpServer::new(host.clone(), "room".into(), "owner".into());
+            server
+                .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":name,"version":"1"}}}))
+                .await
+                .unwrap();
+            tool(
+                &mut server,
+                "tilo_invoke",
+                json!({"peer_id":71,"resource":"test.note:1","action":tilo_resource::APPLY}),
+            )
+            .await;
+        }
     });
     let groups: Vec<_> = invoked
         .lock()
@@ -341,9 +399,102 @@ fn each_session_is_its_own_attributed_agent_run() {
         .collect();
     assert_eq!(groups.len(), 2);
     assert_ne!(groups[0].id, groups[1].id);
+    assert_eq!(
+        (groups[0].label.as_str(), groups[1].label.as_str()),
+        ("Painter", "Critic")
+    );
     assert!(groups.iter().all(|group| group.kind == "agent-run"));
-    assert_eq!(groups[0].label, "Researcher");
-    assert_eq!(groups[1].label, "Writer");
+}
+
+/// A client that connects again names the run its first connection was
+/// answered with, and its edits stay that one run's: undo reaches them.
+#[test]
+fn a_connection_continues_the_run_an_earlier_one_was_answered_with() {
+    let host = StubHost::default();
+    let invoked = Arc::clone(&host.invoked);
+    let endpoint = endpoint(host.clone(), None);
+    run(async {
+        let mut first = crate::mcp::McpServer::new(host.clone(), "room".into(), "owner".into());
+        let answer = first
+            .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"Painter","version":"1"}}}))
+            .await
+            .unwrap();
+        let run_id = answer["result"]["capabilities"]["experimental"]["so.tilo.mcp"]["run"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(run_id.starts_with("mcp:"), "{answer}");
+        tool(
+            &mut first,
+            "tilo_invoke",
+            json!({"peer_id":71,"resource":"test.note:1","action":tilo_resource::APPLY}),
+        )
+        .await;
+        drop(first);
+
+        let mut again = crate::mcp::McpServer::new(host.clone(), "room".into(), "owner".into());
+        let answer = again
+            .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"so.tilo.mcp":{"run":run_id}}},"clientInfo":{"name":"Painter","version":"1"}}}))
+            .await
+            .unwrap();
+        assert_eq!(
+            answer["result"]["capabilities"]["experimental"]["so.tilo.mcp"]["run"],
+            json!(run_id)
+        );
+        tool(
+            &mut again,
+            "tilo_invoke",
+            json!({"peer_id":71,"resource":"test.note:1","action":tilo_resource::APPLY}),
+        )
+        .await;
+
+        // An HTTP session continues a run the same way.
+        let request = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"so.tilo.mcp":{"run":run_id}}},"clientInfo":{"name":"Painter","version":"1"}}});
+        let response = endpoint
+            .dispatch(
+                &Method::POST,
+                "/mcp",
+                &HeaderMap::new(),
+                request.to_string().as_bytes(),
+            )
+            .await;
+        let session = response
+            .headers()
+            .get(SESSION_HEADER)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        invoke(&endpoint, &session).await;
+
+        let mut bad = crate::mcp::McpServer::new(host, "room".into(), "owner".into());
+        let refused = bad
+            .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"so.tilo.mcp":{"run":"two words"}}}}}))
+            .await
+            .unwrap();
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("run must be"),
+            "{refused}"
+        );
+    });
+    let groups: Vec<_> = invoked
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|request| request.context.clone().unwrap().group.unwrap())
+        .collect();
+    assert_eq!(groups.len(), 3);
+    assert!(
+        groups.iter().all(|group| group.id == groups[0].id),
+        "{groups:?}"
+    );
+    assert!(
+        groups.iter().all(|group| group.label == "Painter"),
+        "{groups:?}"
+    );
 }
 
 #[test]
@@ -390,13 +541,84 @@ fn beyond_loopback_needs_a_token() {
     let open = Config {
         address: "0.0.0.0:7070".parse().unwrap(),
         token: None,
+        room: None,
     };
     assert!(open.validate().is_err());
     let loopback = Config {
         address: "127.0.0.1:7070".parse().unwrap(),
         token: None,
+        room: None,
     };
     assert!(loopback.validate().is_ok());
+}
+
+#[test]
+fn explicit_mcp_room_is_only_a_canonical_room_identifier() {
+    let mut config = Config {
+        address: "127.0.0.1:7070".parse().unwrap(),
+        token: None,
+        room: None,
+    };
+    assert!(config.validate().is_ok());
+    for room in [
+        "",
+        "Writer",
+        "00000000-0000-0000-0000-000000000000",
+        "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+    ] {
+        config.room = Some(room.into());
+        assert!(config.validate().is_err());
+    }
+    config.room = Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into());
+    assert!(
+        config.validate().is_ok(),
+        "syntax validation does not grant admission"
+    );
+}
+
+#[test]
+fn client_metadata_cannot_replace_the_host_selected_mcp_audience() {
+    let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let host = StubHost {
+        room: Some(room.into()),
+        ..Default::default()
+    };
+    let endpoint = Endpoint::new(
+        host.clone(),
+        room.into(),
+        "profile-actor".into(),
+        None,
+        None,
+    );
+    run(async {
+        let request = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+            "clientInfo":{"name":"forged-room-name","room":"other"},
+            "room":"other", "actor":"forged", "capabilities":{}
+        }});
+        let response = endpoint
+            .dispatch(
+                &Method::POST,
+                "/mcp",
+                &HeaderMap::new(),
+                request.to_string().as_bytes(),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let session = response.headers()[SESSION_HEADER]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let result = invoke(&endpoint, &session).await;
+        assert_ne!(result["result"]["isError"], true, "{result}");
+        let callers = host.callers.lock().unwrap().clone();
+        assert_eq!(callers.len(), 1);
+        assert_eq!(callers[0].room(), Some(room));
+        assert_eq!(
+            callers[0].principal(),
+            &tilo_actions::remote::CallerPrincipal::Person("profile-actor".into())
+        );
+        assert!(callers[0].execution_id().is_some());
+    });
 }
 
 #[test]
@@ -722,6 +944,231 @@ fn an_invocation_answers_with_its_result_once_it_finishes() {
     assert_eq!(invoked.lock().unwrap().len(), 3);
 }
 
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\nthe-look";
+const JPEG: &[u8] = b"\xff\xd8\xff\xe0the-next-look";
+
+/// The content service as the stub app `so.tilo.test` reads it: a picture
+/// it stored and something that is not an image.
+struct StoredByTestApp;
+
+impl crate::MediaReader for StoredByTestApp {
+    fn read(&self, app_id: &str, hash: &str) -> std::io::Result<Option<Vec<u8>>> {
+        Ok(match (app_id, hash) {
+            ("so.tilo.test", "look") => Some(PNG.to_vec()),
+            ("so.tilo.test", "next-look") => Some(JPEG.to_vec()),
+            ("so.tilo.test", "notes") => Some(b"plain text".to_vec()),
+            _ => None,
+        })
+    }
+}
+
+/// An action that produced a picture is answered with the picture, as an
+/// MCP image block beside the JSON, both when it finishes within the call
+/// and when `tilo_status` reports it later; what is not an image, or not
+/// readable with the producing app's own scope, is only named.
+/// A picture the session was already shown is named, not sent again.
+#[test]
+fn an_action_that_produced_an_image_answers_with_it() {
+    use base64::Engine as _;
+    let host = StubHost::default();
+    *host.output.lock().unwrap() = tilo_actions::ActionOutput {
+        value: Some(json!({"revision":"r1","width":4,"height":3})),
+        resources: vec![
+            "tilo.content:look".into(),
+            "tilo.content:notes".into(),
+            "tilo.content:elsewhere".into(),
+        ],
+    };
+    let running_for = Arc::clone(&host.running_for);
+    let output = Arc::clone(&host.output);
+    let mut server = crate::mcp::McpServer::new(host.clone(), "room".into(), "owner".into())
+        .with_media(Some(Arc::new(StoredByTestApp)));
+    let target = json!({"peer_id":71,"resource":"test.note:1","action":tilo_resource::APPLY});
+    let images = |reply: &Value| -> Vec<Value> {
+        reply["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|block| block["type"] == "image")
+            .cloned()
+            .collect()
+    };
+    run(async {
+        let reply = tool(&mut server, "tilo_invoke", target.clone()).await;
+        assert_eq!(
+            reply["structuredContent"]["update"]["state"], "succeeded",
+            "{reply}"
+        );
+        let shown = images(&reply);
+        assert_eq!(shown.len(), 1, "{reply}");
+        assert_eq!(shown[0]["mimeType"], "image/png");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(shown[0]["data"].as_str().unwrap())
+                .unwrap(),
+            PNG
+        );
+        let text = reply["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.contains("tilo.content:look")
+                && !text.contains(shown[0]["data"].as_str().unwrap())
+        );
+        assert_eq!(
+            reply["structuredContent"]["update"]["output"]["value"]["revision"],
+            "r1"
+        );
+
+        running_for.store(usize::MAX, std::sync::atomic::Ordering::SeqCst);
+        let mut later = target.clone();
+        later["wait_ms"] = json!(0);
+        let accepted = tool(&mut server, "tilo_invoke", later).await;
+        assert!(
+            images(&accepted).is_empty(),
+            "nothing is shown before it finishes"
+        );
+        running_for.store(0, std::sync::atomic::Ordering::SeqCst);
+        let id = accepted["structuredContent"]["invocation_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let status = tool(&mut server, "tilo_status", json!({"invocation_id": id})).await;
+        assert_eq!(images(&status).len(), 1, "{status}");
+
+        output.lock().unwrap().resources = vec!["tilo.content:next-look".into()];
+        let batch = tool(
+            &mut server,
+            "tilo_invoke",
+            json!({"peer_id":71,"calls":[
+                {"resource":"test.note:1","action":tilo_resource::APPLY},
+                {"resource":"test.note:1","action":tilo_resource::APPLY}
+            ]}),
+        )
+        .await;
+        let shown = images(&batch);
+        assert_eq!(shown.len(), 1, "a new picture is shown once: {batch}");
+        assert_eq!(shown[0]["mimeType"], "image/jpeg");
+        assert!(
+            batch["structuredContent"]["results"][1]["unchanged"]
+                .as_str()
+                .is_some_and(|note| note.contains("tilo_status")),
+            "the second call made the same picture, and says so: {batch}"
+        );
+    });
+    let mut blind = crate::mcp::McpServer::new(host, "room".into(), "owner".into());
+    run(async {
+        let reply = tool(&mut blind, "tilo_invoke", target).await;
+        assert!(
+            images(&reply).is_empty(),
+            "without a content service nothing is read"
+        );
+    });
+}
+
+/// An effect's picture (an export) is an artifact, not something to look
+/// at: the answer names its address, and `tilo_status` shows it on request.
+#[test]
+fn an_effect_answers_with_its_picture_address_not_the_picture() {
+    let host = StubHost::default();
+    *host.kind.lock().unwrap() = tilo_actions::OperationKind::Effect;
+    *host.output.lock().unwrap() = tilo_actions::ActionOutput {
+        value: Some(json!({"width":4,"height":3})),
+        resources: vec!["tilo.content:look".into()],
+    };
+    let mut server = crate::mcp::McpServer::new(host, "room".into(), "owner".into())
+        .with_media(Some(Arc::new(StoredByTestApp)));
+    let images = |reply: &Value| {
+        reply["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|block| block["type"] == "image")
+            .count()
+    };
+    run(async {
+        let reply = tool(
+            &mut server,
+            "tilo_invoke",
+            json!({"peer_id":71,"resource":"test.note:1","action":tilo_resource::APPLY}),
+        )
+        .await;
+        assert_eq!(images(&reply), 0, "{reply}");
+        assert!(
+            reply["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("tilo.content:look")
+        );
+        let id = reply["structuredContent"]["invocation_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let status = tool(&mut server, "tilo_status", json!({"invocation_id": id})).await;
+        assert_eq!(images(&status), 1, "{status}");
+    });
+}
+
+/// A look at an unchanged picture costs a line, not an image: the answer
+/// names the invocation that showed it, whose `tilo_status` shows it again.
+/// Each session keeps its own record.
+#[test]
+fn a_picture_already_shown_is_named_instead_of_sent_again() {
+    let host = StubHost::default();
+    *host.output.lock().unwrap() = tilo_actions::ActionOutput {
+        value: Some(json!({"revision":"r1"})),
+        resources: vec!["tilo.content:look".into()],
+    };
+    let target = json!({"peer_id":71,"resource":"test.note:1","action":tilo_resource::APPLY});
+    let images = |reply: &Value| {
+        reply["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|block| block["type"] == "image")
+            .count()
+    };
+    let session = || {
+        crate::mcp::McpServer::new(host.clone(), "room".into(), "owner".into())
+            .with_media(Some(Arc::new(StoredByTestApp)))
+    };
+    let mut server = session();
+    run(async {
+        let first = tool(&mut server, "tilo_invoke", target.clone()).await;
+        assert_eq!(images(&first), 1, "{first}");
+        assert!(first["structuredContent"].get("unchanged").is_none());
+        let first_id = first["structuredContent"]["invocation_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let again = tool(&mut server, "tilo_invoke", target.clone()).await;
+        assert_eq!(images(&again), 0, "{again}");
+        assert!(
+            again["structuredContent"]["unchanged"]
+                .as_str()
+                .is_some_and(|note| note.contains(&first_id)),
+            "{again}"
+        );
+        assert_eq!(again["structuredContent"]["update"]["state"], "succeeded");
+
+        let status = tool(
+            &mut server,
+            "tilo_status",
+            json!({"invocation_id": first_id}),
+        )
+        .await;
+        assert_eq!(images(&status), 1, "tilo_status shows it again: {status}");
+    });
+    let mut other = session();
+    run(async {
+        let reply = tool(&mut other, "tilo_invoke", target).await;
+        assert_eq!(
+            images(&reply),
+            1,
+            "another session was never shown it: {reply}"
+        );
+    });
+}
+
 #[test]
 fn an_omitted_revision_acts_on_the_current_directory_but_an_empty_one_is_refused() {
     let host = StubHost::default();
@@ -931,3 +1378,161 @@ fn opening_a_host_application_answers_without_waiting_for_a_peer() {
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
     });
 }
+
+#[test]
+fn continued_history_and_client_names_cannot_select_execution_identity() {
+    let host = StubHost::default();
+    let callers = Arc::clone(&host.callers);
+    let invoked = Arc::clone(&host.invoked);
+    run(async {
+        let history = "mcp:11111111-1111-4111-8111-111111111111";
+        let mut executions: Vec<String> = Vec::new();
+        for _ in 0..2 {
+            let mut server = McpServer::new(host.clone(), "room".into(), "owner".into());
+            let forged_execution = executions
+                .first()
+                .map_or("11111111-1111-4111-8111-111111111111", String::as_str);
+            let init = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                "protocolVersion":"2025-06-18","clientInfo":{"name":"Same name","version":"1"},
+                "capabilities":{"experimental":{"so.tilo.mcp":{"run":history,"execution_id":forged_execution}}}
+            }});
+            let first = server.handle(init.clone()).await.unwrap();
+            let again = server.handle(init).await.unwrap();
+            let execution = first
+                .pointer("/result/capabilities/experimental/so.tilo.mcp/execution_id")
+                .and_then(Value::as_str)
+                .expect("host-issued execution id");
+            assert_eq!(
+                again
+                    .pointer("/result/capabilities/experimental/so.tilo.mcp/execution_id")
+                    .and_then(Value::as_str),
+                Some(execution)
+            );
+            assert_ne!(execution, history);
+            assert_ne!(execution, forged_execution);
+            executions.push(execution.to_owned());
+            tool(
+                &mut server,
+                "tilo_invoke",
+                json!({"peer_id":71,"resource":"test.note:1","action":tilo_resource::APPLY}),
+            )
+            .await;
+        }
+        assert_ne!(executions[0], executions[1]);
+        let callers = callers.lock().unwrap().clone();
+        assert_eq!(callers[0].principal(), callers[1].principal());
+        assert_ne!(callers[0].execution_id(), callers[1].execution_id());
+        for (caller, execution) in callers.iter().zip(executions) {
+            assert_eq!(caller.execution_id().unwrap().to_string(), execution);
+        }
+        for request in invoked.lock().unwrap().iter() {
+            assert_eq!(
+                request.context.as_ref().unwrap().group.as_ref().unwrap().id,
+                history
+            );
+        }
+    });
+}
+
+#[test]
+fn session_delete_idle_expiry_and_endpoint_drop_retire_run_lifetimes() {
+    let endpoint = endpoint(StubHost::default(), None);
+    run(async {
+        let first = open(&endpoint, "same label").await;
+        let second = open(&endpoint, "same label").await;
+        let retained = endpoint.find(&first).unwrap();
+        let first_caller = retained.lock().await.execution_caller();
+        let second_caller = endpoint
+            .find(&second)
+            .unwrap()
+            .lock()
+            .await
+            .execution_caller();
+        assert!(first_caller.execution_is_live());
+        assert!(second_caller.execution_is_live());
+        let deleted = endpoint
+            .dispatch(
+                &Method::DELETE,
+                "/mcp",
+                &headers(&[(SESSION_HEADER, &first)]),
+                b"",
+            )
+            .await;
+        assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+        assert!(
+            !first_caller.execution_is_live(),
+            "retained server cannot revive a deleted run"
+        );
+        assert!(second_caller.execution_is_live());
+        endpoint
+            .sessions
+            .lock()
+            .unwrap()
+            .get_mut(&second)
+            .unwrap()
+            .last_used = Instant::now().checked_sub(SESSION_IDLE).unwrap();
+        let third = open(&endpoint, "same label").await;
+        assert!(!second_caller.execution_is_live());
+        let third_caller = endpoint
+            .find(&third)
+            .unwrap()
+            .lock()
+            .await
+            .execution_caller();
+        assert!(third_caller.execution_is_live());
+        drop(endpoint);
+        assert!(!third_caller.execution_is_live());
+        assert_ne!(first_caller.execution_id(), third_caller.execution_id());
+    });
+}
+
+#[test]
+fn stdio_server_drop_retires_retained_caller_clones() {
+    let server = McpServer::new(StubHost::default(), "room".into(), "owner".into());
+    let caller = server.execution_caller();
+    let identity = caller.clone();
+    assert!(caller.execution_is_live());
+    drop(server);
+    assert!(!caller.execution_is_live());
+    assert_eq!(
+        caller, identity,
+        "liveness does not mutate invocation ownership keys"
+    );
+}
+
+#[test]
+fn logical_session_reconnect_stays_live_but_expired_id_cannot_renew_itself() {
+    let endpoint = endpoint(StubHost::default(), None);
+    run(async {
+        let id = open(&endpoint, "same label").await;
+        let connection = endpoint.find(&id).unwrap();
+        let caller = connection.lock().await.execution_caller();
+        drop(connection);
+        let reconnected = endpoint.find(&id).unwrap();
+        let resumed = reconnected.lock().await.execution_caller();
+        assert_eq!(caller.execution_id(), resumed.execution_id());
+        assert!(caller.execution_is_live());
+        endpoint
+            .sessions
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .unwrap()
+            .last_used = Instant::now().checked_sub(SESSION_IDLE).unwrap();
+        assert!(endpoint.find(&id).is_none());
+        assert!(!caller.execution_is_live());
+        assert!(!resumed.execution_is_live());
+        let replacement = open(&endpoint, "same label").await;
+        let fresh = endpoint
+            .find(&replacement)
+            .unwrap()
+            .lock()
+            .await
+            .execution_caller();
+        assert_ne!(fresh.execution_id(), caller.execution_id());
+        assert!(fresh.execution_is_live());
+    });
+}
+
+#[path = "mcp_retired_execution_tests.rs"]
+mod retired_execution_tests;

@@ -72,7 +72,7 @@ impl Baseline {
             entries: self.entries.clone(),
         };
         let bytes = serde_json::to_vec(&stored).map_err(io::Error::other)?;
-        atomic_file::write_creating_parent_with_mode(&self.path, &bytes, 0o600)
+        tilo_files::native::atomic::write_creating_parent_with_mode(&self.path, &bytes, 0o600)
     }
 
     /// Moves `from` and everything below it to `to`.

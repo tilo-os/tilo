@@ -1,0 +1,32 @@
+[package]
+name = "tilo-wet-media"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+# Deterministic wet-media simulation (watercolour, oil) over vector marks.
+# Kept free of the UI and GPU stacks: every collaborator re-simulates the same
+# marks into the same pixels, and a headless host can render a painting.
+
+[dependencies]
+# Presets and mark inputs are shareable data.
+serde.workspace = true
+serde_json.workspace = true
+# Per-mark seeds and raster fingerprints.
+blake3.workspace = true
+# Row-parallel simulation steps.
+rayon = "1.12.0"
+# Anti-aliased coverage of mark outlines.
+tiny-skia = "0.12"
+
+[dev-dependencies]
+# The swatches example writes what the engines paint.
+png = "0.18"
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

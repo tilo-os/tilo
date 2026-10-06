@@ -437,9 +437,13 @@ fn compositor_shortcuts_and_lock_capture_own_the_keyboard_before_clients() {
         );
         let mut doc = automerge::AutoCommit::new();
         let mut focus = None;
-        assert!(
-            frame.dispatch_event(&custom_press, &ctrl, &mut doc, &automerge::ROOT, &mut focus,)
-        );
+        assert!(frame.dispatch_event(
+            &custom_press,
+            &ctrl,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &mut focus,
+        ));
         assert!(
             !shell::compositor::client_input::route_input(
                 &mut h.state,
@@ -496,7 +500,7 @@ fn compositor_shortcuts_and_lock_capture_own_the_keyboard_before_clients() {
         assert!(frame.dispatch_event(
             &f1_press,
             &no_modifiers,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
             &mut focus,
         ));

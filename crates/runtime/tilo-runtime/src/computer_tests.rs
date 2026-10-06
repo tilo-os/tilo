@@ -36,6 +36,9 @@ impl FakeCompositor {
                 let command: Value = serde_json::from_str(&line).unwrap();
                 let reply = if command["op"] == "key" && command["key"] == "Unmapped" {
                     json!({"err":{"code":"parse_error","message":"unknown key"}})
+                } else if command["op"] == "agent_seat" {
+                    let (width, height) = size_of(&command);
+                    json!({"answer":{"viewport":[40.0, 30.0, width, height],"window":command["window"]}})
                 } else {
                     if command["op"] == "snapshot" {
                         let size = size_of(&command);
@@ -259,6 +262,36 @@ fn drags_move_the_cursor_to_their_end() {
     );
 }
 
+#[test]
+fn a_drag_with_pressure_is_drawn_with_a_pen() {
+    let fake = FakeCompositor::start((800, 600));
+    fake.computer.run(&[act("screenshot")], false).unwrap();
+    fake.ops();
+    let stroke: Action = serde_json::from_value(json!({
+        "action": "left_click_drag",
+        "start_coordinate": [10.0, 20.0],
+        "coordinate": [300.0, 400.0],
+        "pressure": [0.2, 0.9, 0.4],
+        "no_screenshot": true
+    }))
+    .unwrap();
+    let constant: Action = serde_json::from_value(json!({
+        "action": "left_click_drag",
+        "coordinate": [10.0, 20.0],
+        "pressure": 0.6,
+        "no_screenshot": true
+    }))
+    .unwrap();
+    fake.computer.run(&[stroke, constant], true).unwrap();
+    assert_eq!(
+        fake.ops(),
+        vec![
+            json!({"op":"drag","x_from":10.0,"y_from":20.0,"x_to":300.0,"y_to":400.0,"steps":48,"pressure":[0.2,0.9,0.4]}),
+            json!({"op":"drag","x_from":300.0,"y_from":400.0,"x_to":10.0,"y_to":20.0,"steps":48,"pressure":[0.6]}),
+        ]
+    );
+}
+
 fn agent(id: &str) -> Agent {
     Agent {
         id: id.into(),
@@ -362,5 +395,162 @@ fn seating_and_leaving_are_one_command_each() {
     assert!(
         fake.computer.run_as(Some(&a), &[click], false).is_err(),
         "a left: its last frame is forgotten with it"
+    );
+}
+
+/// A compositor whose canvas window is larger than a screen frame, and
+/// whose screen is ordinary.
+fn with_window() -> FakeCompositor {
+    FakeCompositor::start_sized(|command| match command["window"].as_str() {
+        Some("so.tilo.canvas") => (1600, 1000),
+        _ => (800, 600),
+    })
+}
+
+fn in_canvas(action: Action) -> Action {
+    Action {
+        app_id: Some("so.tilo.canvas".into()),
+        no_screenshot: Some(true),
+        ..action
+    }
+}
+
+#[test]
+fn a_window_is_acted_on_in_its_own_pixels_without_a_screenshot() {
+    let fake = with_window();
+    let click = in_canvas(Action {
+        coordinate: Some([1500.0, 900.0]),
+        ..act("left_click")
+    });
+    fake.computer.run(&[click], false).unwrap();
+    let window = json!("so.tilo.canvas");
+    assert_eq!(
+        fake.ops(),
+        vec![
+            json!({"op":"agent_seat","window":window}),
+            json!({"op":"pointer_move","x":1500.0,"y":900.0,"window":window}),
+            json!({"op":"pointer_button","pressed":true,"button":"left","window":window}),
+            json!({"op":"pointer_button","pressed":false,"button":"left","window":window}),
+        ],
+        "the compositor offsets a window's coordinates; this side passes them through unscaled"
+    );
+    let shot = fake
+        .computer
+        .run(
+            &[Action {
+                app_id: Some("so.tilo.canvas".into()),
+                ..act("screenshot")
+            }],
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        (&shot[0].text["width"], &shot[0].text["height"]),
+        (&json!(1600), &json!(1000)),
+        "a window frame keeps the window's pixels"
+    );
+    assert_eq!(shot[0].text["app_id"], "so.tilo.canvas");
+    let screen = fake
+        .computer
+        .run(
+            &[Action {
+                coordinate: Some([10.0, 10.0]),
+                ..act("left_click")
+            }],
+            false,
+        )
+        .err()
+        .unwrap();
+    assert!(
+        screen.contains("screenshot"),
+        "a window's frame is no frame of the screen: {screen}"
+    );
+}
+
+#[test]
+fn a_point_outside_the_window_says_how_large_it_is() {
+    let fake = with_window();
+    let click = in_canvas(Action {
+        coordinate: Some([1700.0, 10.0]),
+        ..act("left_click")
+    });
+    let error = fake.computer.run(&[click], false).err().unwrap();
+    assert!(
+        error.contains("so.tilo.canvas's window, which is 1600x1000"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_modifier_is_held_through_a_drag() {
+    let fake = with_window();
+    let drag = in_canvas(Action {
+        start_coordinate: Some([10.0, 20.0]),
+        coordinate: Some([300.0, 400.0]),
+        modifier: Some("shift".into()),
+        ..act("left_click_drag")
+    });
+    fake.computer.run(&[drag], false).unwrap();
+    let ops: Vec<String> = fake
+        .ops()
+        .iter()
+        .filter(|op| op["op"] != "agent_seat")
+        .map(|op| format!("{} {}", op["op"].as_str().unwrap(), op["key"]))
+        .collect();
+    assert_eq!(
+        ops,
+        vec!["key_down \"Shift\"", "drag null", "key_up \"Shift\"",]
+    );
+}
+
+#[test]
+fn a_screenshot_after_input_is_one_request_the_compositor_settles() {
+    let fake = with_window();
+    let click = Action {
+        app_id: Some("so.tilo.canvas".into()),
+        coordinate: Some([10.0, 10.0]),
+        ..act("left_click")
+    };
+    fake.computer.run(&[click], false).unwrap();
+    let ops: Vec<String> = fake
+        .ops()
+        .iter()
+        .filter_map(|op| op["op"].as_str().map(str::to_owned))
+        .filter(|op| op != "agent_seat")
+        .collect();
+    assert!(
+        !ops.iter().any(|op| op == "foreign_frames"),
+        "the compositor knows when the window answered; nothing is polled: {ops:?}"
+    );
+    assert_eq!(ops.last().map(String::as_str), Some("snapshot"));
+}
+
+#[test]
+fn a_key_held_down_spans_the_steps_until_it_is_let_go() {
+    let fake = with_window();
+    let key = |action: &str| {
+        in_canvas(Action {
+            text: Some("space".into()),
+            ..act(action)
+        })
+    };
+    let drag = in_canvas(Action {
+        start_coordinate: Some([10.0, 20.0]),
+        coordinate: Some([300.0, 400.0]),
+        no_screenshot: Some(true),
+        ..act("left_click_drag")
+    });
+    fake.computer
+        .run(&[key("key_down"), drag, key("key_up")], true)
+        .unwrap();
+    let ops: Vec<String> = fake
+        .ops()
+        .iter()
+        .filter(|op| !matches!(op["op"].as_str(), Some("agent_seat" | "snapshot")))
+        .map(|op| format!("{} {}", op["op"].as_str().unwrap(), op["key"]))
+        .collect();
+    assert_eq!(
+        ops,
+        vec!["key_down \"Space\"", "drag null", "key_up \"Space\""]
     );
 }

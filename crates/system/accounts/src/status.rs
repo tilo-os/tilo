@@ -258,7 +258,7 @@ impl AccountSyncStatusStore {
         }
         let json = serde_json::to_vec_pretty(self)
             .map_err(|error| std::io::Error::other(error.to_string()))?;
-        atomic_file::write(&path, &json)
+        tilo_files::native::atomic::write(&path, &json)
     }
 }
 

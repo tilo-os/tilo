@@ -123,7 +123,7 @@ fn reopen(root: &std::path::Path) -> (ManagedSender, crate::portable_storage::Po
     let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
     let scope = SenderScope::native(uuid::Uuid::from_bytes([1; 16]), [2; 32], [3; 32]).unwrap();
     let file = PrivateActionsFile::from_held(
-        atomic_file::StorageDirectory::open(root).unwrap(),
+        tilo_files::native::atomic::StorageDirectory::open(root).unwrap(),
         scope,
         &cache,
     )
@@ -293,7 +293,7 @@ fn managed_sender_lifecycle_original_committed_result_borrow_and_scope() {
 }
 #[test]
 fn managed_sender_lifecycle_uncertain_actual_barrier_sends_nothing_and_reopens_original_row() {
-    use atomic_file::test_support::{Checkpoint, with_failure};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     let (root, current, cache) = committed_test_fixture(NativeSenderOutboxV1::empty_bytes());
     let mut sender = ManagedSender::open(current).unwrap();
     let binding = binding();

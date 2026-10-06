@@ -3,9 +3,11 @@
 //! The host owns the policy which produces the export text. This component
 //! owns the transient modal state and every UI concern around presenting it.
 
+#[cfg(test)]
+use automerge::AutoCommit;
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::a11y::AccessNode;
 use ui::presence::PresenceCtx;
@@ -224,7 +226,7 @@ impl ExportDialog {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
         if !self.is_open() {
@@ -353,7 +355,7 @@ mod tests {
                 &cursor_move(),
                 1.0,
                 Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(
@@ -364,7 +366,7 @@ mod tests {
                 &escape_event(),
                 1.0,
                 Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(!dialog.is_open());
@@ -374,7 +376,7 @@ mod tests {
                 &left_click(),
                 1.0,
                 Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(!dialog.is_open());

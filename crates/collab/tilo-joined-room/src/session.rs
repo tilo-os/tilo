@@ -12,7 +12,7 @@ use std::{
 };
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostTrust};
 use tilo_identity_host::custody::HostIdentity;
-use tilo_peer_state::{NeighbourMsg, TransportOrigin, join::TransportHint};
+use tilo_peer_state::{NeighbourMsg, Reseal, TransportOrigin, join::TransportHint};
 use tilo_relay::{RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
@@ -178,19 +178,42 @@ impl Scope {
         })
     }
     /// Reconcile the owner's outgoing custody and send, once per session,
-    /// every entry it may send now.
+    /// every entry it may send now. Sealed writes that expired in custody
+    /// are not renewed: see [`Self::publish_renewing`].
     ///
     /// # Errors
     /// The session closed, its pin, the owner or custody changed, or the
     /// session refuses a frame; unsent entries stay in durable custody.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the live flag and cursor stay locked through publication so a close cannot interleave"
-    )]
     pub fn publish(
         &self,
         session: &RelayCoeditSession,
         identity: &HostIdentity,
+    ) -> Result<(), String> {
+        self.send(session, identity, None)
+    }
+    /// [`Self::publish`], first renewing this device's sealed writes that
+    /// expired in custody through `reseal`, the channels' key holder (see
+    /// [`NativeWorkspaceOwner::renew_outgoing`]).
+    ///
+    /// # Errors
+    /// As [`Self::publish`].
+    pub fn publish_renewing(
+        &self,
+        session: &RelayCoeditSession,
+        identity: &HostIdentity,
+        reseal: &mut Reseal<'_>,
+    ) -> Result<(), String> {
+        self.send(session, identity, Some(reseal))
+    }
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the live flag and cursor stay locked through publication so a close cannot interleave"
+    )]
+    fn send(
+        &self,
+        session: &RelayCoeditSession,
+        identity: &HostIdentity,
+        reseal: Option<&mut Reseal<'_>>,
     ) -> Result<(), String> {
         let live = self
             .live
@@ -211,6 +234,16 @@ impl Scope {
             std::time::SystemTime::now(),
         ) {
             tracing::debug!(%error,"native publication reconciliation blocked");
+        }
+        if let Some(reseal) = reseal
+            && let Err(error) = self.connect.owner.renew_outgoing(
+                self.connect.room,
+                &identity.device_signing_key,
+                reseal,
+                std::time::SystemTime::now(),
+            )
+        {
+            tracing::debug!(%error, "native sealed write renewal blocked");
         }
         self.connect.owner.with_outgoing(
             self.connect.room,

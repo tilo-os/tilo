@@ -19,13 +19,59 @@
 
 use ui::tokens::SpacingStep;
 
-use crate::widgets::{El, caption, card, cards, gap, rows, status_pill, value_row};
+use crate::i18n::{t, t_args};
+use crate::widgets::{
+    El, StatusTone, caption, card, cards, error_row, gap, rows, semantic_status_pill, value_row,
+};
 use collab_types::caps::{CapOverride, Effect, Expiry, Principal, Scope, Subject, Verb};
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::time::Duration;
+use ui::framework::{EffectAnswer, EffectCx, Effected};
+use ui::tilo_resource;
 use ui::widget::{Button, Row, Spacer, Text, Widget};
-use vello::peniko::Color;
+
+use crate::host::PaneCx;
+use crate::resource::Settings;
+use crate::settings_app::SettingsApp;
+
+/// Where Privacy & Security sends the person to change what it reports.
+#[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
+#[effect(operation = "settings.effect")]
+pub enum PermissionsEffect {
+    /// Open the privacy settings of the workspace that owns the grants.
+    #[effect(job, label = "Open workspace privacy")]
+    OpenWorkspacePrivacy,
+}
+
+/// Answer `effect` by opening the tool it names.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "every area answers through the effect vocabulary's one signature"
+)]
+pub(crate) fn answer(
+    app: &SettingsApp,
+    effect: PermissionsEffect,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    match effect {
+        PermissionsEffect::OpenWorkspacePrivacy => {
+            if !app.host().reaches_devices() {
+                return Err("only a window someone uses opens workspace settings".into());
+            }
+            Ok(cx.thread(
+                move |_| {
+                    os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
+                        route: os_actions::WorkspaceSettingsRoute::PrivacySecurity,
+                    })
+                },
+                |_: &mut SettingsApp, opened: Result<(), String>, _| {
+                    opened.map(|()| Effected::done())
+                },
+            ))
+        }
+    }
+}
 
 /// The compositor's persisted workspace tree, beside `settings.json`.
 fn state_path() -> Option<PathBuf> {
@@ -38,63 +84,93 @@ fn load_text() -> Option<String> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DeviceSecurity {
-    disk_encryption: &'static str,
-    secure_boot: &'static str,
-    firewall: &'static str,
+    disk_encryption: String,
+    secure_boot: String,
+    /// The firewall in force, or why that could not be read.
+    firewall: Result<String, String>,
 }
 
 fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
-    let out =
-        bounded_command::run(program, args, None, 1024 * 1024, Duration::from_secs(5)).ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    command_output(program, args).ok()
+}
+
+/// `program args…`'s trimmed standard output, or why it gave none.
+fn command_output(program: &str, args: &[&str]) -> Result<String, String> {
+    let out = bounded_command::run(program, args, None, 1024 * 1024, Duration::from_secs(5))
+        .map_err(|error| format!("{program}: {error}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let said = [stderr.trim(), stdout.trim()]
+            .into_iter()
+            .find(|text| !text.is_empty())
+            .map_or_else(|| format!("exited with {}", out.status), str::to_string);
+        Err(format!("{program}: {said}"))
+    }
 }
 
 /// `lsblk` reports every ancestor of `/`; any `crypt` layer means the live
 /// root filesystem is encrypted. An unavailable probe stays unknown rather
 /// than guessing from a partition name.
-fn disk_encryption_status() -> &'static str {
+fn disk_encryption_status() -> String {
     let Some(source) = command_stdout("findmnt", &["-no", "SOURCE", "/"]) else {
-        return "Unavailable";
+        return t("perm-unavailable");
     };
     let Some(chain) = command_stdout("lsblk", &["-s", "-n", "-o", "TYPE", &source]) else {
-        return "Unavailable";
+        return t("perm-unavailable");
     };
     if chain.lines().any(|line| line.trim() == "crypt") {
-        "Encrypted"
+        t("perm-encrypted")
     } else {
-        "Not encrypted"
+        t("perm-not-encrypted")
     }
 }
 
-fn secure_boot_status() -> &'static str {
+fn secure_boot_status() -> String {
     let Ok(entries) = std::fs::read_dir("/sys/firmware/efi/efivars") else {
-        return "Unavailable";
+        return t("perm-unavailable");
     };
     let Some(path) = entries.flatten().map(|e| e.path()).find(|p| {
         p.file_name()
             .is_some_and(|n| n.to_string_lossy().starts_with("SecureBoot-"))
     }) else {
-        return "Disabled";
+        return t("perm-disabled");
     };
     // EFI variable files start with four attribute bytes, followed by the
     // one-byte SecureBoot value.
     match std::fs::read(path).ok().and_then(|v| v.get(4).copied()) {
-        Some(1) => "Enabled",
-        Some(_) => "Disabled",
-        None => "Unavailable",
+        Some(1) => t("perm-enabled"),
+        Some(_) => t("perm-disabled"),
+        None => t("perm-unavailable"),
     }
 }
 
-fn firewall_status() -> &'static str {
-    if command_stdout("firewall-cmd", &["--state"]).as_deref() == Some("running") {
-        return "Active · firewalld";
+/// firewalld when it runs, otherwise the nftables ruleset. "Not active" is
+/// only said when the ruleset was read and is empty; a ruleset that could
+/// not be read (it needs privileges) is reported as unreadable.
+fn firewall_status() -> Result<String, String> {
+    firewall_from(command_output("firewall-cmd", &["--state"]), || {
+        command_output("nft", &["list", "ruleset"])
+    })
+}
+
+fn firewall_from(
+    firewalld: Result<String, String>,
+    nft: impl FnOnce() -> Result<String, String>,
+) -> Result<String, String> {
+    if firewalld.as_deref() == Ok("running") {
+        return Ok(t("perm-firewall-firewalld"));
     }
-    if command_stdout("nft", &["list", "ruleset"]).is_some_and(|s| !s.trim().is_empty()) {
-        return "Active · nftables";
+    match nft() {
+        Ok(ruleset) if !ruleset.trim().is_empty() => Ok(t("perm-firewall-nftables")),
+        Ok(_) => Ok(t("perm-firewall-off")),
+        Err(nft_error) => Err(match firewalld {
+            Err(firewalld_error) => format!("{firewalld_error}; {nft_error}"),
+            Ok(_) => nft_error,
+        }),
     }
-    "Not active"
 }
 
 fn device_security() -> DeviceSecurity {
@@ -105,14 +181,14 @@ fn device_security() -> DeviceSecurity {
     }
 }
 
-fn kill_label(state: os_actions::KillState, present: bool) -> &'static str {
+fn kill_label(state: os_actions::KillState, present: bool) -> String {
     use os_actions::KillState;
     match state {
-        KillState::HardwareBlocked => "Blocked by hardware",
-        KillState::SoftwareBlocked => "Blocked by software",
-        KillState::Allowed => "Available",
-        KillState::Unavailable if present => "Present · no kill switch reported",
-        KillState::Unavailable => "Not available",
+        KillState::HardwareBlocked => t("perm-kill-hw"),
+        KillState::SoftwareBlocked => t("perm-kill-sw"),
+        KillState::Allowed => t("perm-kill-allowed"),
+        KillState::Unavailable if present => t("perm-kill-present"),
+        KillState::Unavailable => t("perm-kill-missing"),
     }
 }
 
@@ -148,13 +224,11 @@ enum Tint {
 }
 
 impl Tint {
-    fn color(self, c: &ui::tokens::colors::Colors) -> Color {
+    fn tone(self) -> StatusTone {
         match self {
-            Tint::Files => c.semantic.info,
-            Tint::Camera | Tint::Microphone => c.semantic.warning,
-            Tint::Screen | Tint::AppAction => c.accent[5],
-            Tint::Remote => c.semantic.danger,
-            Tint::Network => c.semantic.success,
+            Tint::Files | Tint::Screen | Tint::AppAction => StatusTone::Accent,
+            Tint::Camera | Tint::Microphone | Tint::Remote => StatusTone::Warning,
+            Tint::Network => StatusTone::Success,
         }
     }
 }
@@ -189,6 +263,27 @@ fn expiry_label(e: Expiry) -> &'static str {
     }
 }
 
+fn expiry_shown(english: &str) -> String {
+    t(match english {
+        "Temporary" => "perm-expiry-temp",
+        "Until log out" => "perm-expiry-logout",
+        "Once" => "perm-expiry-once",
+        _ => "perm-expiry-always",
+    })
+}
+
+fn kind_shown(english: &str) -> String {
+    t(match english {
+        "Files" => "perm-kind-files",
+        "Camera" => "perm-kind-camera",
+        "Microphone" => "perm-kind-mic",
+        "Screen sharing" => "perm-kind-screen",
+        "Remote control" => "perm-kind-remote",
+        "Network" => "perm-kind-network",
+        _ => "perm-kind-action",
+    })
+}
+
 /// Project one stored capability into a display capability, or `None` when it
 /// is not an app grant this pane renders (role/room/resource overrides and
 /// restrictions are enforcement plumbing, not app permissions).
@@ -200,29 +295,25 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
     let (kind, detail, tint) = match &cap.scope {
         Scope::FsPath(p) => {
             let verb = if cap.verb.implies(Verb::Write) {
-                "read & write"
+                t("perm-verb-rw")
             } else {
-                "read-only"
+                t("perm-verb-ro")
             };
             ("Files", format!("{p}  ·  {verb}"), Tint::Files)
         }
-        Scope::Device(d) if d == "camera" => ("Camera", "Capture video".to_string(), Tint::Camera),
+        Scope::Device(d) if d == "camera" => ("Camera", t("perm-capture-video"), Tint::Camera),
         Scope::Device(d) if d == "microphone" => {
-            ("Microphone", "Capture audio".to_string(), Tint::Microphone)
+            ("Microphone", t("perm-capture-audio"), Tint::Microphone)
         }
-        Scope::Device(d) if d == "screencast" => (
-            "Screen sharing",
-            "Stream this workspace".to_string(),
-            Tint::Screen,
-        ),
-        Scope::Device(d) if d == "remote-desktop" => (
-            "Remote control",
-            "Inject pointer & keyboard".to_string(),
-            Tint::Remote,
-        ),
+        Scope::Device(d) if d == "screencast" => {
+            ("Screen sharing", t("perm-stream-workspace"), Tint::Screen)
+        }
+        Scope::Device(d) if d == "remote-desktop" => {
+            ("Remote control", t("perm-inject-input"), Tint::Remote)
+        }
         Scope::NetHost(h) => {
             let detail = if h == "*" {
-                "Any host".to_string()
+                t("perm-any-host")
             } else {
                 h.clone()
             };
@@ -232,7 +323,13 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
         // these; the workspace's own Settings lists them under App actions.
         Scope::Action { app, action } => (
             "App action",
-            format!("Use \u{201c}{action}\u{201d} in {app}"),
+            t_args(
+                "perm-action-detail",
+                &[
+                    ("action", action.as_str().into()),
+                    ("app", app.as_str().into()),
+                ],
+            ),
             Tint::AppAction,
         ),
         _ => return None,
@@ -293,99 +390,89 @@ fn grant_count(all: &[WsGrants]) -> usize {
 
 /// One capability line: a tinted kind pill, the detail, and a trailing
 /// lifetime chip. Read-only — no controls.
-fn cap_row(view: &CapView, c: &ui::tokens::colors::Colors) -> El {
+fn cap_row(view: &CapView) -> El {
+    let kind = kind_shown(view.kind);
+    let expiry = expiry_shown(view.expiry);
     Box::new(
         Row::new()
-            .push(status_pill(view.kind, view.tint.color(c)))
-            .push(Box::new(
-                Text::new(&view.detail)
-                    .with_size(12.0)
-                    .with_color(c.text_dim),
-            ))
+            .push(semantic_status_pill(&kind, view.tint.tone()))
+            .push(Box::new(Text::new(&view.detail).with_size(12.0).dimmed()))
             .push(Box::new(Spacer::new()))
-            .push(status_pill(view.expiry, c.neutral[5])),
+            .push(semantic_status_pill(&expiry, StatusTone::Neutral)),
     )
 }
 
 /// One app's block within a workspace card: the app id, then its grants.
-fn app_block(grants: &AppGrants, c: &ui::tokens::colors::Colors) -> El {
+fn app_block(grants: &AppGrants) -> El {
     let mut items: Vec<El> = Vec::new();
-    items.push(Box::new(
-        Text::new(&grants.app)
-            .with_size(13.0)
-            .with_color(c.text_primary),
-    ));
+    items.push(Box::new(Text::new(&grants.app).with_size(13.0)));
     for cap in &grants.caps {
-        items.push(cap_row(cap, c));
+        items.push(cap_row(cap));
     }
     rows(items)
 }
 
-pub fn build() -> Box<dyn Widget> {
-    build_view(load_text().as_deref())
+pub fn build(cx: &PaneCx) -> Box<dyn Widget> {
+    build_view(cx, load_text().as_deref())
 }
 
 fn privacy_hardware_card(privacy: &os_actions::PrivacyStatus) -> El {
     let microphone_present = privacy.microphone_muted.is_some();
+    let mute = match privacy.microphone_muted {
+        Some(true) => t("perm-muted"),
+        Some(false) => t("perm-listening"),
+        None => t("perm-unavailable"),
+    };
     card(
-        "Privacy hardware",
+        &t("perm-privacy-hardware"),
         rows(vec![
             value_row(
-                "Camera",
-                kill_label(privacy.camera_kill, privacy.camera_present),
+                &t("perm-camera"),
+                &kill_label(privacy.camera_kill, privacy.camera_present),
             ),
             value_row(
-                "Microphone",
-                kill_label(privacy.microphone_kill, microphone_present),
+                &t("perm-microphone"),
+                &kill_label(privacy.microphone_kill, microphone_present),
             ),
-            value_row(
-                "Microphone mute",
-                match privacy.microphone_muted {
-                    Some(true) => "Muted",
-                    Some(false) => "Listening allowed",
-                    None => "Unavailable",
-                },
-            ),
+            value_row(&t("perm-mic-mute"), &mute),
         ]),
     )
 }
 
 fn active_privacy_use_card(privacy: &os_actions::PrivacyStatus) -> El {
     let usage_rows: Vec<El> = if privacy.active_media.is_empty() {
-        vec![caption(
-            "No application is using the camera or microphone now.",
-        )]
+        vec![caption(&t("perm-no-active-use"))]
     } else {
         privacy
             .active_media
             .iter()
             .map(|usage| {
-                value_row(
-                    &usage.label,
-                    match usage.kind {
-                        os_actions::MediaKind::Camera => "Using camera",
-                        os_actions::MediaKind::Microphone => "Using microphone",
-                    },
-                )
+                let status = match usage.kind {
+                    os_actions::MediaKind::Camera => t("perm-using-camera"),
+                    os_actions::MediaKind::Microphone => t("perm-using-mic"),
+                };
+                value_row(&usage.label, &status)
             })
             .collect()
     };
-    card("Active privacy use", rows(usage_rows))
+    card(&t("perm-active-use"), rows(usage_rows))
 }
 
 fn device_security_card() -> El {
     let security = device_security();
     card(
-        "Device security",
+        &t("perm-device-security"),
         rows(vec![
-            value_row("Disk encryption", security.disk_encryption),
-            value_row("Secure Boot", security.secure_boot),
-            value_row("Firewall", security.firewall),
-            caption(
-                "Detailed firewall policy belongs in Firewall; disk recovery and \
-                 repartitioning belong in Backups and Disks. This page reports \
-                 their effective device state without copying their editors.",
-            ),
+            value_row(&t("perm-disk"), &security.disk_encryption),
+            value_row(&t("perm-secure-boot"), &security.secure_boot),
+            match &security.firewall {
+                Ok(firewall) => value_row(&t("perm-firewall"), firewall),
+                Err(error) => error_row(
+                    &t("perm-firewall"),
+                    &t_args("perm-firewall-error", &[("error", error.as_str().into())]),
+                ),
+            },
+            caption(&t("perm-security-caption")),
         ]),
     )
 }
@@ -397,44 +484,24 @@ fn device_security_card() -> El {
 /// cross-workspace overview from looking like an editor for every workspace.
 fn scope_card() -> El {
     card(
-        "This device",
+        &t("perm-this-device"),
         rows(vec![Box::new(
-            Text::new(
-                "Privacy hardware and security status apply to this device and your sign-in. \
-                 They do not change who can access a shared workspace or what an app may do there.",
-            )
-            .with_size(12.0),
+            Text::new(&t("perm-this-device-body")).with_size(12.0),
         )]),
     )
 }
 
 /// Intro card: what these grants are and where they come from.
-fn workspace_grants_intro_card() -> El {
+fn workspace_grants_intro_card(cx: &PaneCx) -> El {
+    let open = t("perm-open-workspace");
     card(
-        "Workspace access · read-only overview",
+        &t("perm-workspace-intro-title"),
         rows(vec![
-            Box::new(
-                Text::new(
-                    "App access is scoped to the workspace where the app runs. This page \
-                 only summarizes it across workspaces; it cannot grant, revoke, or \
-                 change workspace roles. Change access in that workspace's Settings, \
-                 where its people and roles are visible.",
-                )
-                .with_size(12.0),
-            ),
-            Box::new(
-                Button::new(
-                    "open-workspace-privacy",
-                    "Open current workspace access",
-                    None,
-                )
-                .with_size(248.0, 40.0)
-                .on_effect(|| {
-                    let _ = os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
-                        route: os_actions::WorkspaceSettingsRoute::PrivacySecurity,
-                    });
-                }),
-            ),
+            Box::new(Text::new(&t("perm-workspace-intro-body")).with_size(12.0)),
+            Box::new(cx.bind_invocation(
+                Button::new("open-workspace-privacy", &open).content_sized(),
+                PermissionsEffect::OpenWorkspacePrivacy,
+            )),
         ]),
     )
 }
@@ -443,22 +510,11 @@ fn workspace_grants_intro_card() -> El {
 /// app grants.
 fn no_workspace_grants_card() -> El {
     card(
-        "No workspace access grants",
+        &t("perm-no-grants-title"),
         rows(vec![
-            Box::new(
-                Text::new(
-                    "No app currently holds an out-of-sandbox grant. When you \
-                     approve one at the compositor's prompt, it appears here — \
-                     grouped by workspace and app — with the access it covers \
-                     and how long it lasts.",
-                )
-                .with_size(12.0),
-            ),
+            Box::new(Text::new(&t("perm-no-grants-body")).with_size(12.0)),
             gap(SpacingStep::S1),
-            caption(
-                "Nothing here means nothing is granted: apps see only their own \
-                 workspace until you say otherwise.",
-            ),
+            caption(&t("perm-no-grants-caption")),
         ]),
     )
 }
@@ -468,50 +524,38 @@ fn no_workspace_grants_card() -> El {
 /// failure into a claim that access is absent.
 fn workspace_grants_unavailable_card() -> El {
     card(
-        "Workspace access status unavailable",
+        &t("perm-unavailable-title"),
         rows(vec![
-            Box::new(
-                Text::new(
-                    "Tilo could not load the current workspace access record, so it cannot verify whether any app has additional access.",
-                )
-                .with_size(12.0),
-            ),
-            caption(
-                "Open current workspace access or try again after the desktop session has finished starting.",
-            ),
+            Box::new(Text::new(&t("perm-unavailable-body")).with_size(12.0)),
+            caption(&t("perm-unavailable-caption")),
         ]),
     )
 }
 
 /// A quiet summary line above the per-workspace cards, followed by one card
 /// per workspace with a grant.
-fn push_workspace_grant_cards(
-    panel: &mut Vec<El>,
-    all: &[WsGrants],
-    total: usize,
-    c: &ui::tokens::colors::Colors,
-) {
+fn push_workspace_grant_cards(panel: &mut Vec<El>, all: &[WsGrants], total: usize) {
     let ws_n = all.len();
-    let summary = format!(
-        "{total} grant{} across {ws_n} workspace{}",
-        if total == 1 { "" } else { "s" },
-        if ws_n == 1 { "" } else { "s" },
+    let grants = i64::try_from(total).unwrap_or(i64::MAX);
+    let workspaces = i64::try_from(ws_n).unwrap_or(i64::MAX);
+    let summary = t_args(
+        "perm-grants-summary",
+        &[("grants", grants.into()), ("workspaces", workspaces.into())],
     );
-    panel.push(Box::new(
-        Text::new(&summary).with_size(11.0).with_color(c.text_dim),
-    ));
+    panel.push(Box::new(Text::new(&summary).with_size(11.0).dimmed()));
 
     for ws in all {
         let mut body: Vec<El> = Vec::new();
         let last = ws.apps.len().saturating_sub(1);
         for (i, app) in ws.apps.iter().enumerate() {
-            body.push(app_block(app, c));
+            body.push(app_block(app));
             if i != last {
                 body.push(gap(SpacingStep::S3));
             }
         }
+        let unnamed = t("perm-workspace-unnamed");
         let title = if ws.name.trim().is_empty() {
-            "Workspace".to_string()
+            unnamed
         } else {
             ws.name.clone()
         };
@@ -522,21 +566,14 @@ fn push_workspace_grant_cards(
 /// Where the compositor enforces the grants.
 fn enforcement_card() -> El {
     card(
-        "Where enforcement happens",
-        rows(vec![caption(
-            "These grants are enforced by the compositor (file access, \
-             collaboration, devices) and by the FUSE mount, not by this panel. \
-             This is a read-only view of the list they apply; revoke a grant in \
-             Workspace Settings for the workspace that owns it.",
-        )]),
+        &t("perm-enforcement-title"),
+        rows(vec![caption(&t("perm-enforcement-caption"))]),
     )
 }
 
 /// Core builder, split from [`build`] so it can be exercised against an
 /// explicit state document in tests without touching the real config dir.
-fn build_view(state_json: Option<&str>) -> Box<dyn Widget> {
-    let colors = ui::Theme::dark().tokens.colors;
-    let c = &colors;
+fn build_view(cx: &PaneCx, state_json: Option<&str>) -> Box<dyn Widget> {
     let workspace_access = state_json.map(project).transpose();
 
     let mut panel: Vec<El> = Vec::new();
@@ -546,13 +583,13 @@ fn build_view(state_json: Option<&str>) -> Box<dyn Widget> {
     panel.push(privacy_hardware_card(&privacy));
     panel.push(active_privacy_use_card(&privacy));
     panel.push(device_security_card());
-    panel.push(workspace_grants_intro_card());
+    panel.push(workspace_grants_intro_card(cx));
 
     match workspace_access {
         Ok(Some(all)) if all.is_empty() => panel.push(no_workspace_grants_card()),
         Ok(Some(all)) => {
             let total = grant_count(&all);
-            push_workspace_grant_cards(&mut panel, &all, total, c);
+            push_workspace_grant_cards(&mut panel, &all, total);
         }
         Ok(None) | Err(_) => panel.push(workspace_grants_unavailable_card()),
     }
@@ -565,8 +602,43 @@ fn build_view(state_json: Option<&str>) -> Box<dyn Widget> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cx() -> PaneCx {
+        PaneCx::in_file(std::env::temp_dir().join("tilo-settings-permissions-unused.json"))
+    }
     use collab_types::caps::{CapOverride, Scope, Subject, Verb};
     use std::collections::HashMap;
+
+    /// "Not active" is only said about a ruleset that was read and is empty.
+    /// A ruleset this session may not read (nft needs privileges) and no
+    /// running firewalld is not a firewall that is off.
+    #[test]
+    fn an_unreadable_firewall_is_not_reported_as_off() {
+        let denied = || Err("nft: Operation not permitted (you must be root)".to_string());
+        assert_eq!(
+            firewall_from(Ok("running".into()), denied),
+            Ok(t("perm-firewall-firewalld"))
+        );
+        assert_eq!(
+            firewall_from(Err("firewall-cmd: not running".into()), denied),
+            Err(
+                "firewall-cmd: not running; nft: Operation not permitted (you must be root)".into()
+            )
+        );
+        assert_eq!(
+            firewall_from(
+                Err("firewall-cmd: not running".into()),
+                || Ok(String::new())
+            ),
+            Ok(t("perm-firewall-off"))
+        );
+        assert_eq!(
+            firewall_from(Err("firewall-cmd: not running".into()), || {
+                Ok("table inet filter {}".into())
+            }),
+            Ok(t("perm-firewall-nftables"))
+        );
+    }
     use taffy::{NodeId, TaffyTree};
     use ui::Theme;
 
@@ -634,7 +706,7 @@ mod tests {
             // The pane still cannot mutate state.json. Its only button asks the
             // shell to reveal the active workspace's authoritative controls.
             for json in [None, Some(sample_state().as_str())] {
-                let mut pane = build_view(json);
+                let mut pane = build_view(&cx(), json);
                 build_layout_of(&mut pane);
                 assert_eq!(count_named(pane.as_ref(), "Button"), 1);
             }
@@ -645,7 +717,7 @@ mod tests {
             // System Settings never pretends it can edit a workspace. The one
             // live control is an explicit route to the current workspace's
             // authoritative access surface.
-            let mut pane = build_view(Some(&sample_state()));
+            let mut pane = build_view(&cx(), Some(&sample_state()));
             build_layout_of(&mut pane);
             let mut labels = Vec::new();
             button_labels(pane.as_ref(), &mut labels);
@@ -709,7 +781,7 @@ mod tests {
         {
             // Two grants → the workspace card carries a kind pill + a lifetime chip
             // for each (4 badges), built from the real projection.
-            let mut pane = build_view(Some(&sample_state()));
+            let mut pane = build_view(&cx(), Some(&sample_state()));
             build_layout_of(&mut pane);
             assert_eq!(
                 count_named(pane.as_ref(), "Badge"),
@@ -750,7 +822,7 @@ mod tests {
         // Case `missing_state_never_claims_that_no_grants_exist`.
         {
             // No state document means the panel cannot make a claim about grants.
-            let mut pane = build_view(None);
+            let mut pane = build_view(&cx(), None);
             build_layout_of(&mut pane);
             assert_eq!(
                 count_named(pane.as_ref(), "Badge"),
@@ -769,7 +841,7 @@ mod tests {
 
         // Case `valid_empty_state_is_the_only_path_that_claims_no_grants`.
         {
-            let mut pane = build_view(Some(r#"{"workspaces":[]}"#));
+            let mut pane = build_view(&cx(), Some(r#"{"workspaces":[]}"#));
             build_layout_of(&mut pane);
             let mut labels = Vec::new();
             text_labels(pane.as_ref(), &mut labels);
@@ -794,7 +866,7 @@ mod tests {
         // Case `malformed_document_is_reported_as_unavailable_not_empty`.
         {
             assert!(project("not json {").is_err());
-            let mut pane = build_view(Some("not json {"));
+            let mut pane = build_view(&cx(), Some("not json {"));
             build_layout_of(&mut pane);
             assert_eq!(count_named(pane.as_ref(), "Badge"), 0);
             let mut labels = Vec::new();

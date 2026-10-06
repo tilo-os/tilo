@@ -257,7 +257,7 @@ async fn broker_queries_and_resources_are_live_and_authority_scoped() {
         assert_eq!(reply.unwrap()["result"]["isError"],true);
     }).await;
     // Phase `resources_are_live_room_scoped_and_reads_use_authority`.
-    tokio::task::LocalSet::new().run_until(async {
+    tokio::task::LocalSet::new().run_until(Box::pin(async {
         let (fixture, room, actor) = fixture();
         let mut server=McpServer::new(BrokerActionHost::new(fixture.broker.clone()),room.clone(),actor);
         let resources=server.handle(request("resources/list",&json!({}))).await.unwrap();
@@ -281,7 +281,7 @@ async fn broker_queries_and_resources_are_live_and_authority_scoped() {
         let call=denied.handle(call("tilo_invoke",&json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{}})));
         let (reply,())=tokio::join!(call,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         assert_eq!(reply.unwrap()["result"]["isError"],true);
-    }).await;
+    })).await;
     // Phase `root_identity_pagination_and_disconnect_are_exact`.
     {
         use crate::shell::collab_broker_capnp::ActionDirectoryRoot;
@@ -591,8 +591,8 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
     // Phase `the_admitted_call_is_the_confirmation_and_terminal_content_survives_the_broker`.
     // The MCP client's allow/deny decision admitted the call, so an action
     // whose contract asks for confirmation runs.
-    tokio::task::LocalSet::new().run_until(async {
-        let (fixture,room,actor)=fixture();
+    tokio::task::LocalSet::new().run_until(Box::pin(async {
+        let (mut fixture,room,actor)=fixture();
         let actor_name=actor.clone();
         let mut server=McpServer::new(BrokerActionHost::new(fixture.broker.clone()),room.clone(),actor);
         fixture.set_confirmation_required(true);
@@ -612,14 +612,18 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
         assert_eq!(invocation.0.to_string(),id,"the update speaks in the caller's invocation id");
         let job=fixture.broker.statuses(&actor_name).into_iter().map(|(job,_)|job).max().expect("the broker job behind it");
         let output=tilo_actions::ActionOutput {value:Some(json!({"content":"sha256:123","width":200})),resources:vec!["content:sha256:123".into()]};
-        // The application answers in the broker's own id for its job; the
-        // caller keeps hearing about it under the id it chose.
-        let broker_invocation=tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(job)));
-        fixture.complete_invocation(job,&tilo_actions::InvocationUpdate::Succeeded {invocation:broker_invocation,output:output.clone()}).await.unwrap();
+        // Scoped applications answer with the exact stable UUID they received.
+        let (first_job,first_invocation)=fixture.take_invocation_identity().expect("first actual delivery");
+        let (delivered_job,delivered_invocation)=fixture.take_invocation_identity().expect("second actual delivery");
+        assert_ne!(first_job,delivered_job);
+        assert_ne!(first_invocation,delivered_invocation);
+        assert_eq!(delivered_job,job);
+        assert_eq!(delivered_invocation,invocation);
+        fixture.complete_invocation(job,&tilo_actions::InvocationUpdate::Succeeded {invocation:delivered_invocation,output:output.clone()}).await.unwrap();
         let update=tilo_actions::InvocationUpdate::Succeeded {invocation,output};
         let status=server.handle(call("tilo_status",&json!({"invocation_id":id}))).await.unwrap();
         assert_eq!(status["result"]["structuredContent"],json!({"invocation_id":id,"update":update}));
         let mut other=McpServer::new(BrokerActionHost::new(fixture.broker.clone()),room,"foreign".into());
         assert_eq!(other.handle(call("tilo_status",&json!({"invocation_id":id}))).await.unwrap()["result"]["isError"],true);
-    }).await;
+    })).await;
 }

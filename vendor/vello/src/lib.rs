@@ -166,6 +166,28 @@ use wgpu::{Device, Queue, TextureView};
 #[cfg(all(feature = "wgpu", feature = "wgpu-profiler"))]
 use wgpu_profiler::{GpuProfiler, GpuProfilerSettings};
 
+/// Supplies the pixels of an image drawn with an empty blob — one whose
+/// pixels live in a texture overridden on another renderer (see
+/// [`Renderer::override_image`]) — to a renderer that has no override for
+/// it. Given the blob id, it returns the image's tightly packed pixels.
+#[cfg(feature = "wgpu")]
+pub type ExternalImageSource = fn(u64) -> Option<Vec<u8>>;
+
+#[cfg(feature = "wgpu")]
+static EXTERNAL_IMAGE_SOURCE: std::sync::OnceLock<ExternalImageSource> =
+    std::sync::OnceLock::new();
+
+/// Install the process's [`ExternalImageSource`]. The first one installed stays.
+#[cfg(feature = "wgpu")]
+pub fn set_external_image_source(source: ExternalImageSource) {
+    let _ = EXTERNAL_IMAGE_SOURCE.set(source);
+}
+
+#[cfg(feature = "wgpu")]
+pub(crate) fn external_image_pixels(id: u64) -> Option<Vec<u8>> {
+    EXTERNAL_IMAGE_SOURCE.get().and_then(|source| source(id))
+}
+
 /// Represents the anti-aliasing method to use during a render pass.
 ///
 /// Can be configured for a render operation by setting [`RenderParams::antialiasing_method`].
@@ -1622,10 +1644,85 @@ pub(crate) fn sparse_coarse_adaptive_selection(
 
 #[cfg(feature = "wgpu")]
 impl Renderer {
+    /// Run every GPU pipeline's first dispatch now, spread over this device and up to
+    /// `helpers` more opened by `open_device`, each driven from its own thread.
+    ///
+    /// Mesa's CPU Vulkan driver (lavapipe) compiles a pipeline's machine code on its first
+    /// dispatch, so a cold first frame compiles every stage one after another. It also keeps the
+    /// code in its shader disk cache, shared by every device in the process. This dispatches the
+    /// largest pipeline here while the helpers take the rest, whose code this device then reads
+    /// from the cache. When that one dispatch finds its code already compiled, the cache is warm
+    /// and the helpers stop before compiling anything.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn precompile_pipelines(
+        &self,
+        device: &Device,
+        queue: &Queue,
+        helpers: usize,
+        open_device: &(dyn Fn() -> Option<(Device, Queue)> + Sync),
+    ) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// A dispatch this quick found its code compiled already.
+        const COMPILED: std::time::Duration = std::time::Duration::from_millis(50);
+
+        let order = self.engine.precompile_order();
+        let Some((&largest, rest)) = order.split_first() else {
+            return;
+        };
+        let (use_cpu, antialiasing_support) =
+            (self.options.use_cpu, self.options.antialiasing_support);
+        let next = AtomicUsize::new(0);
+        let warm = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            for _ in 0..helpers.min(rest.len()) {
+                let (next, warm) = (&next, &warm);
+                let _ = std::thread::Builder::new()
+                    .name("vello pipeline precompile".into())
+                    .spawn_scoped(scope, move || {
+                        let Some((device, queue)) = open_device() else {
+                            return;
+                        };
+                        if warm.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        let options = RendererOptions {
+                            use_cpu,
+                            antialiasing_support,
+                            num_init_threads: NonZeroUsize::new(1),
+                            pipeline_cache: None,
+                        };
+                        let Ok(helper) = Self::new(&device, options) else {
+                            return;
+                        };
+                        // The same order as `order`: both renderers registered the same shaders.
+                        let helper_order = helper.engine.precompile_order();
+                        while !warm.load(Ordering::Relaxed)
+                            && let Some(&index) =
+                                helper_order.get(1 + next.fetch_add(1, Ordering::Relaxed))
+                        {
+                            helper.engine.dispatch_empty(&device, &queue, index);
+                        }
+                    });
+            }
+            let started = std::time::Instant::now();
+            self.engine.dispatch_empty(device, queue, largest);
+            if started.elapsed() < COMPILED {
+                warm.store(true, Ordering::Relaxed);
+            }
+        });
+    }
+
     /// Creates a new renderer for the specified device.
-    pub fn new(device: &Device, options: RendererOptions) -> Result<Self> {
+    pub fn new(device: &Device, mut options: RendererOptions) -> Result<Self> {
         let mut engine = WgpuEngine::new(options.use_cpu, options.pipeline_cache.clone());
         engine.initialize_gpu_timestamps(device);
+        // The GL backend has one context, and every pipeline compile holds
+        // its lock. Worker threads only queue on that lock, and a slow driver
+        // keeps one waiting past wgpu-hal's lock timeout, which panics.
+        if device.adapter_info().backend == wgpu::Backend::Gl {
+            options.num_init_threads = NonZeroUsize::new(1);
+        }
         // If we are running in parallel (i.e. the number of threads is not 1)
         if options.num_init_threads != NonZeroUsize::new(1) {
             #[cfg(not(target_arch = "wasm32"))]
@@ -1766,6 +1863,25 @@ impl Renderer {
     #[doc(hidden)]
     pub fn defer_bump_readback_enabled(&self) -> bool {
         !self.options.use_cpu && self.defer_bump_readback
+    }
+
+    /// Sum every tile's segments in a fixed order, so repeated renders of one
+    /// scene are bit-identical regardless of GPU scheduling. Same as
+    /// `VELLO_CANONICAL_SEGMENT_ORDER=1`; recompiles the shader set.
+    ///
+    /// # Errors
+    /// Returns an error if the shader set fails to compile.
+    #[doc(hidden)]
+    pub fn enable_canonical_segment_order(&mut self, device: &Device) -> Result<()> {
+        if self.engine.canonical_segment_order_enabled() {
+            return Ok(());
+        }
+        self.engine.enable_canonical_segment_order();
+        self.shaders = shaders::full_shaders(device, &mut self.engine, &self.options)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.engine
+            .build_shaders_if_needed(device, self.options.num_init_threads);
+        Ok(())
     }
 
     /// Override deferred synchronous bump readback for a differential oracle.
@@ -2428,19 +2544,17 @@ impl Renderer {
             *target.as_image().unwrap(),
             texture,
         )];
-        let submission = self
-            .engine
-            .run_recording_with_post_render_checked_indexed(
-                device,
-                queue,
-                &self.recording,
-                &external_resources,
-                "render_to_texture",
-                post_render,
-                before_submit,
-                #[cfg(feature = "wgpu-profiler")]
-                &mut self.profiler,
-            )?;
+        let submission = self.engine.run_recording_with_post_render_checked_indexed(
+            device,
+            queue,
+            &self.recording,
+            &external_resources,
+            "render_to_texture",
+            post_render,
+            before_submit,
+            #[cfg(feature = "wgpu-profiler")]
+            &mut self.profiler,
+        )?;
         if let Some(bump_buf) = bump_buf {
             self.budget.begin_readback(&self.engine, bump_buf);
         }
@@ -3857,6 +3971,63 @@ mod tests {
         assert_eq!(
             renderer.poll_bump_budget(&device),
             Ok(BumpBudgetPoll::Complete { overflowed: false })
+        );
+    }
+
+    /// One filled zigzag across a 512x512 target: 2000 nearly horizontal
+    /// edges, each crossing about 32 tiles, so about 64K segments from a
+    /// single path and very few lines.
+    fn zigzag_scene() -> Scene {
+        let mut path = BezPath::new();
+        path.move_to((8.0, 4.0));
+        for i in 0..2000_u32 {
+            let x = if i % 2 == 0 { 504.0 } else { 8.0 };
+            path.line_to((x, 4.0 + f64::from(i) * 0.25));
+        }
+        path.close_path();
+        let mut scene = Scene::new();
+        scene.fill(Fill::NonZero, Affine::IDENTITY, Color::WHITE, None, &path);
+        scene
+    }
+
+    /// The segments buffer holds fewer elements per byte than the counts
+    /// buffer, so a binding limit can cap it below counts that fit. That
+    /// frame must report its overflow, so the caller repaints, instead of
+    /// drawing with segments written past the end of their buffer.
+    #[test]
+    fn segments_capped_by_the_binding_limit_report_their_overflow() {
+        let (device, queue) = checked_bump_device();
+        let params = RenderParams {
+            base_color: Color::BLACK,
+            width: 512,
+            height: 512,
+            antialiasing_method: AaConfig::Area,
+        };
+        let (_texture, view) = damage_target_with_size(&device, &queue, 512, 512);
+        let scene = zigzag_scene();
+        let overflows = |renderer: &mut Renderer| {
+            renderer
+                .render_to_texture(&device, &queue, &scene, &view, &params)
+                .unwrap();
+            renderer.settle_bump_budget(&device)
+        };
+
+        let mut roomy = Renderer::new(&device, RendererOptions::default()).unwrap();
+        assert!(!overflows(&mut roomy), "the scene fits a renderer's floors");
+
+        let mut capped = Renderer::new(&device, RendererOptions::default()).unwrap();
+        capped.budget.set_device_limits(&wgpu::Limits {
+            max_storage_buffer_binding_size: 1 << 20,
+            max_buffer_size: 1 << 20,
+            ..device.limits()
+        });
+        assert!(
+            overflows(&mut capped),
+            "an overflow past the cap is reported"
+        );
+        assert!(
+            overflows(&mut capped),
+            "a cap that cannot grow keeps reporting, frame after frame"
         );
     }
 

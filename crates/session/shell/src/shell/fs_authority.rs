@@ -157,17 +157,23 @@ pub fn schedule_fs_authority_publication(acl: PathBuf) {
 
 fn run_fs_authority_publication_queue() {
     loop {
+        // Taking the last publication and retiring happen under one lock: a
+        // schedule in between would see `running` still set, leave its ACL
+        // pending and return, and the retiring worker would drop it.
         let publication = match fs_authority_publication_queue().lock() {
-            Ok(mut queue) => queue.pending.take(),
+            Ok(mut queue) => {
+                let publication = queue.pending.take();
+                if publication.is_none() {
+                    queue.running = false;
+                }
+                publication
+            }
             Err(error) => {
                 tracing::warn!(%error, "filesystem authority publication queue is poisoned");
                 return;
             }
         };
         let Some(mut publication) = publication else {
-            if let Ok(mut queue) = fs_authority_publication_queue().lock() {
-                queue.running = false;
-            }
             fs_authority_publication_retired().notify_all();
             return;
         };
@@ -270,13 +276,17 @@ fn next_retry_delay(current: std::time::Duration, publisher_missing: bool) -> st
 
 /// Block until the publication worker has retired with nothing queued, or
 /// `timeout` passes. The worker's retirement is signalled, so this returns as
-/// soon as publication settles.
+/// soon as publication settles. Exports still queued on the state writer,
+/// which schedule publications, are waited for first.
 ///
 /// # Errors
 ///
 /// On timeout, or if the queue is poisoned, returns a report of the queue
 /// state and the recent publisher attempts, including their stderr.
 pub fn wait_for_fs_authority_publication_idle(timeout: std::time::Duration) -> Result<(), String> {
+    if !crate::shell::durable_writer::global().flush_timeout(timeout) {
+        return Err("capability exports are still queued on the state writer".into());
+    }
     let Ok(queue) = fs_authority_publication_queue().lock() else {
         return Err("filesystem authority publication queue is poisoned".into());
     };

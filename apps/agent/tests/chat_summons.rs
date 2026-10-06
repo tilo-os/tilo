@@ -10,11 +10,10 @@
 use crate::typed_peer;
 use automerge::AutoCommit;
 use chat::{
-    actions::ChatAction,
-    doc::ChatDoc,
+    doc::{ChatDoc, NewMessage},
     model::{AgentRoute, AgentStepOutcome, AgentWorkState},
 };
-use tilo_actions::{Action, ActionAddress};
+use tilo_actions::ActionAddress;
 use tilo_agent::{Config, Session};
 use tilo_automerge::ApplyIncoming as _;
 use typed_peer::{TypedPeer, send};
@@ -39,27 +38,34 @@ fn config(path: std::path::PathBuf) -> Config {
         model_timeout: Duration::from_millis(10),
         await_document: Duration::ZERO,
         settle: Duration::ZERO,
-        directory: None,
         permissions: PermissionContext::from_capabilities(
             Actor::agent("Scribe"),
             vec![
                 CapOverride::grant(
                     Subject::agent("Scribe"),
-                    Scope::App("word-processor".into()),
+                    Scope::App("so.tilo.word-processor".into()),
                     Verb::Write,
                 )
                 .with_id("reviewed"),
+                // Invited to the conversation, as the launcher grants it: the
+                // agent's replies and work state are its own Chat edits.
+                CapOverride::grant(
+                    Subject::agent("Scribe"),
+                    Scope::App(CHAT.into()),
+                    Verb::Write,
+                )
+                .with_id("invited"),
             ],
         ),
         content: tilo_content::ContentStore::memory(),
     }
 }
 fn resources(doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-    word_processor::actions::provide_resources(
+    word_processor::actions::published_for(
         &word_processor::actions::WpResourceCtx {
-            caret_block: qdoc::model::open(doc, &automerge::ROOT)
+            caret_block: tilo_doc::model::open(doc, &automerge::ROOT)
                 .map(|c| {
-                    qdoc::model::materialize(doc, &c)
+                    tilo_doc::model::materialize(doc, &c)
                         .blocks
                         .first()
                         .map(|b| b.id.clone())
@@ -163,46 +169,43 @@ fn scenario_outcome(
     let mut owner_online = true;
     let mut chat = AutoCommit::new();
     ChatDoc::seed_starter(&mut chat, "human-author", "Human", "HU");
-    let request = ChatAction::SendMessage {
-        channel: "c_general".into(),
-        id: "request-1".into(),
-        author: "human-author".into(),
-        ts: 1,
-        text: text.into(),
-        parent: None,
-        attachment: None,
-        body: Vec::new(),
-        reference: wait_for_owner.then(|| {
-            tilo_reference::ResourceRef::whole(
-                "word-processor.document",
-                "word-processor.document",
-                "Owner document",
-            )
-        }),
-        mentions: mention
-            .map(|user| chat::mention::Mention {
-                user: user.into(),
-                start: 0,
-                len: 7,
-                is_agent: true,
-            })
-            .into_iter()
-            .collect(),
+    let mut request = |number: usize| {
+        ChatDoc::push_message_with_id(
+            &mut chat,
+            "c_general",
+            &format!("request-{number}"),
+            NewMessage {
+                author: "human-author".into(),
+                ts: i64::try_from(number).unwrap(),
+                text: text.into(),
+                reference: wait_for_owner.then(|| {
+                    tilo_reference::ResourceRef::whole(
+                        "tilo.rich-text",
+                        "tilo.rich-text",
+                        "Owner document",
+                    )
+                }),
+                mentions: mention
+                    .map(|user| chat::mention::Mention {
+                        user: user.into(),
+                        start: 0,
+                        len: 7,
+                        is_agent: true,
+                    })
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            },
+        )
     };
-    request.apply(&mut chat).unwrap();
-    for number in 2..=requests {
-        let mut additional = request.clone();
-        if let ChatAction::SendMessage { id, ts, .. } = &mut additional {
-            *id = format!("request-{number}");
-            *ts = i64::try_from(number).unwrap();
-        }
-        additional.apply(&mut chat).unwrap();
+    for number in 1..=requests.max(1) {
+        request(number);
     }
     let mut document = AutoCommit::new();
-    let schema = qdoc::model::init(&mut document, &automerge::ROOT);
-    let mut ids = qdoc::model::seeded_id_gen(&document, &schema);
+    let schema = tilo_doc::model::init(&mut document, &automerge::ROOT);
+    let mut ids = tilo_doc::model::seeded_id_gen(&document, &schema);
     {
-        let mut edit = qdoc::DocMut {
+        let mut edit = tilo_doc::DocMut {
             doc: &mut document,
             c: &schema,
             ids: &mut ids,
@@ -400,9 +403,9 @@ fn scenario_outcome(
         requests * usize::from(expected_reply && allowed),
         "one actual owner dispatch across restart"
     );
-    let schema = qdoc::model::open(&document, &automerge::ROOT).unwrap();
+    let schema = tilo_doc::model::open(&document, &automerge::ROOT).unwrap();
     assert_eq!(
-        qdoc::model::materialize(&document, &schema)
+        tilo_doc::model::materialize(&document, &schema)
             .blocks
             .iter()
             .filter(|b| b.kind == "cell")

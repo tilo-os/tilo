@@ -10,6 +10,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+#[path = "bus_filters.rs"]
+mod bus_filters;
 #[path = "launcher_smoke.rs"]
 mod launcher_smoke;
 #[path = "netgate_egress.rs"]

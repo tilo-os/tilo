@@ -42,9 +42,7 @@
 //! A wasm build has no processes. There [`Isolate`] only pre-checks and then
 //! applies in the page, to a copy that replaces the document on success. The
 //! browser's bound comes from where its bytes come from: publications are
-//! signed by the host, which admitted them through its workers first, and
-//! frames from other browsers are checked by the page in a Web Worker (see the
-//! browser runtime's `automerge-check-worker.mjs`).
+//! signed by the host, which admitted them through its workers first.
 
 #![cfg_attr(
     test,

@@ -45,9 +45,11 @@ pub const IMAGE_DRACUT_ARGS: &[&str] = &[
     "--omit",
     "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh",
     "--omit-drivers",
-    "ext4 xfs",
+    "amdgpu nouveau xe xfs",
+    "--add-drivers",
+    "ext4",
     "--add",
-    "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback",
+    "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock",
 ];
 
 /// Loaded in the initramfs of every kernel tilo-vmd installs: systemd-sysext
@@ -852,7 +854,15 @@ mod tests {
         {
             // Every option that takes a value has one, and the value is no option.
             for pair in IMAGE_DRACUT_ARGS.windows(2) {
-                if ["--compress", "--omit", "--omit-drivers", "--add"].contains(&pair[0]) {
+                if [
+                    "--compress",
+                    "--omit",
+                    "--omit-drivers",
+                    "--add-drivers",
+                    "--add",
+                ]
+                .contains(&pair[0])
+                {
                     assert!(!pair[1].starts_with("--"), "{pair:?}");
                 }
             }

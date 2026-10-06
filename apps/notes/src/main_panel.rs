@@ -30,6 +30,8 @@
 //! ```
 
 use std::collections::HashMap;
+#[cfg(test)]
+use ui::widget::Edits;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::AutoCommit;
@@ -40,8 +42,9 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use tilo_rich_text::{RichTextField, RichTextSurface};
+use tilo_rich_text::{RichTextField, RichTextSource, RichTextSurface};
 use ui::Widget;
+use ui::framework::Dispatcher;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
@@ -96,32 +99,80 @@ pub struct BacklinkChip {
     pub references: u32,
 }
 
-/// A page's body in the SDK rich-text editor, edited as Notes actions.
-pub type NotesEditor = RichTextSurface<RichTextField<crate::actions::NotesAction>>;
+/// A page's body in the SDK rich-text editor, edited as the notebook's
+/// actions.
+pub type NotesEditor = RichTextSurface<PageBody>;
+
+/// A page's body: the notebook's rich-text child resource, edited through
+/// its dispatcher once the app is hosted by the framework.
+pub struct PageBody {
+    field: RichTextField,
+    page: Option<PageId>,
+}
+
+impl PageBody {
+    fn attach(&mut self, notebook: &Dispatcher<crate::resource::Notebook>) {
+        if let Some(page) = self.page {
+            self.field
+                .attach(crate::actions::page_body_dispatcher(notebook, page));
+        }
+    }
+}
+
+impl RichTextSource for PageBody {
+    fn read_only(&self) -> bool {
+        self.field.read_only()
+    }
+
+    fn sync(&mut self, doc: &AutoCommit) {
+        self.field.sync(doc);
+    }
+
+    fn revision(&self) -> Option<u64> {
+        self.field.revision()
+    }
+
+    fn read_from(&mut self, doc: &AutoCommit) -> bool {
+        self.field.read_from(doc)
+    }
+
+    fn with_state<T>(&self, read: impl FnOnce(&tilo_document::RichTextState) -> T) -> Option<T> {
+        self.field.with_state(read)
+    }
+
+    fn apply(
+        &mut self,
+        edits: &mut ui::widget::Edits<'_>,
+        edit: &tilo_document::RichTextAction,
+    ) -> Result<(), ui::tilo_actions::ActionError> {
+        self.field.apply(edits, edit)
+    }
+
+    fn presence_keys(&self) -> Option<ui::widget::PresenceKeyFn> {
+        self.field.presence_keys()
+    }
+}
 
 /// Notes is a prose editor, so ordinary blocks must reflow to the available
 /// column width. Keeping construction behind one helper prevents a page bind,
 /// remote rebind, or empty-state reset from silently returning to the shared
 /// editor's single-line (code/editor) default. `page` is the page whose body
-/// it edits; without one it shows what it is given and writes nothing.
-fn notes_editor(page: Option<PageId>) -> NotesEditor {
-    let context = page.map(|page| {
-        crate::actions::history_context(&crate::actions::edit_body_action(
-            page,
-            qdoc_rich_text::RichTextAction::AppendParagraph {
-                text: String::new(),
-            },
-        ))
-    });
-    let mut field = RichTextField::new(
-        crate::actions::NOTES_ACTION_TYPE,
-        move |doc| page.and_then(|page| crate::doc::NotesDoc::page_body(doc, page)),
-        move |edit| crate::actions::edit_body_action(page.unwrap_or_default(), edit),
-    );
-    if let Some(context) = context {
-        field = field.with_context(context);
+/// it edits, through the notebook's dispatcher; without a page or a
+/// dispatcher it shows what it is given and writes nothing.
+fn notes_editor(
+    page: Option<PageId>,
+    notebook: Option<&Dispatcher<crate::resource::Notebook>>,
+) -> NotesEditor {
+    let mut body = PageBody {
+        field: RichTextField::view_only(move |doc| {
+            page.and_then(|page| crate::doc::NotesDoc::page_body(doc, page))
+        }),
+        page,
+    };
+    if let Some(notebook) = notebook {
+        body.attach(notebook);
     }
-    RichTextSurface::field(field).with_editor(
+    RichTextSurface::over(body).with_editor(
         BlockEditor::new()
             .with_wrap_lines(true)
             .with_compact_paragraph_spacing(true),
@@ -213,9 +264,9 @@ pub struct MainPanel {
     /// width, text scale, or membership changes, so large text and long tag
     /// names never collide with the first document block.
     tag_area_height: f64,
-    /// A tag chip is a local navigation control. The app drains this retained
-    /// id into `NotesOperation::OpenTag`, which validates the real canonical
-    /// tag resource before changing the local browse view.
+    /// A tag chip is a local navigation control. The app opens the tag it
+    /// names, checking the tag still exists, before changing the local browse
+    /// view.
     pending_tag_open: Option<crate::model::TagId>,
     focused_tag: Option<crate::model::TagId>,
     hovered_tag: Option<crate::model::TagId>,
@@ -234,6 +285,9 @@ pub struct MainPanel {
     /// Live editor. Always present (defaults to an empty document)
     /// so layout/draw don't need a `None` branch.
     editor: NotesEditor,
+    /// The notebook's dispatcher, once the app is hosted: page bodies are
+    /// edited through it.
+    notebook: Option<Dispatcher<crate::resource::Notebook>>,
     image_store: Option<ui::ImageStore>,
     /// Last markdown body the panel was loaded with. Used to detect
     /// whether the editor's current state still matches the loaded
@@ -317,7 +371,8 @@ impl MainPanel {
             pending_backlink_open: None,
             focused_backlink: None,
             hovered_backlink: None,
-            editor: notes_editor(None),
+            editor: notes_editor(None, None),
+            notebook: None,
             image_store: None,
             body: String::new(),
             rect: Rect::ZERO,
@@ -448,15 +503,33 @@ impl MainPanel {
         if crate::doc::NotesDoc::page_body(doc, page).is_none() {
             return Err("the page has no body".into());
         }
+        // Binding the page already open again (its record re-read, a reveal)
+        // keeps the caret where the person left it: a rebind that put it back
+        // at the start would make the next keystroke land before the last.
+        let caret = (self.page_id == Some(page))
+            .then(|| {
+                let editor = self.editor.editor();
+                let block = editor.blocks().get(editor.focused_index()?)?;
+                Some((block.id.clone(), block.line.cursor_pos()))
+            })
+            .flatten();
         let mut editor = self.fresh_editor(Some(page));
         editor
             .editor_mut()
             .set_local_author(self.local_author.clone());
         editor.present_from(doc);
         editor.set_focus(true);
-        editor
-            .editor_mut()
-            .focus_block(0, ui::widget::CursorPlacement::Start);
+        let (index, placement) = caret
+            .and_then(|(id, byte)| {
+                let index = editor
+                    .editor()
+                    .blocks()
+                    .iter()
+                    .position(|block| block.id == id)?;
+                Some((index, ui::widget::CursorPlacement::Byte(byte)))
+            })
+            .unwrap_or((0, ui::widget::CursorPlacement::Start));
+        editor.editor_mut().focus_block(index, placement);
         self.editor = editor;
         self.page_id = Some(page);
         self.dates = self.date_index.get(page);
@@ -474,6 +547,7 @@ impl MainPanel {
         workspace: &crate::Workspace,
     ) -> Result<Self, String> {
         let mut panel = Self::new();
+        panel.notebook.clone_from(&self.notebook);
         panel.set_image_store(self.image_store.clone());
         panel.set_local_author(self.local_author.clone());
         if let Some(page) = workspace.selected() {
@@ -549,7 +623,7 @@ impl MainPanel {
         self.pending_backlink_open = None;
         self.focused_backlink = None;
         self.hovered_backlink = None;
-        self.editor = notes_editor(None);
+        self.editor = self.fresh_editor(None);
         self.body = String::new();
         self.scroll_y = 0.0;
         self.empty_action_rect = Rect::ZERO;
@@ -639,13 +713,25 @@ impl MainPanel {
         self.editor.editor_mut().set_transclusion_previews(previews);
     }
 
+    /// The store the editor draws images from.
+    pub(crate) fn image_store(&self) -> Option<&ui::ImageStore> {
+        self.image_store.as_ref()
+    }
+
     pub fn set_image_store(&mut self, store: Option<ui::ImageStore>) {
         self.image_store.clone_from(&store);
         self.editor.editor_mut().set_image_store(store);
     }
 
+    /// Edit page bodies through `notebook` from now on, the one shown
+    /// included.
+    pub(crate) fn attach_notebook(&mut self, notebook: Dispatcher<crate::resource::Notebook>) {
+        self.editor.source_mut().attach(&notebook);
+        self.notebook = Some(notebook);
+    }
+
     fn fresh_editor(&self, page: Option<PageId>) -> NotesEditor {
-        let mut editor = notes_editor(page);
+        let mut editor = notes_editor(page, self.notebook.as_ref());
         editor
             .editor_mut()
             .set_image_store(self.image_store.clone());
@@ -658,6 +744,11 @@ impl MainPanel {
 
     pub fn take_external_link_open(&mut self) -> Option<String> {
         self.editor.editor_mut().take_external_link_open()
+    }
+
+    /// Images pasted into the open note since the last call.
+    pub fn take_pasted_images(&mut self) -> Vec<ui::widget::block_editor::ImagePasteRequest> {
+        self.editor.editor_mut().take_image_paste_requests()
     }
 
     pub fn set_bottom_inset(&mut self, inset: f64) {
@@ -1022,13 +1113,6 @@ impl MainPanel {
         md
     }
 
-    /// Compare content rather than paint dirtiness, which also changes on load
-    /// and focus. Used only when recovering a failed legacy disk read.
-    pub(crate) fn has_unsaved_body(&self) -> bool {
-        let specs = crate::markdown::blocks_to_specs(self.editor.editor().blocks());
-        crate::markdown::serialize(&specs) != self.body
-    }
-
     /// Currently displayed title, if any. `None` when no page is open.
     pub fn title(&self) -> Option<&str> {
         if self.page_id.is_some() {
@@ -1062,12 +1146,6 @@ impl MainPanel {
     #[must_use]
     pub fn stores_block(&self, id: &str) -> bool {
         self.editor.shows_stored(id)
-    }
-
-    /// Whether the undo step the body's last edit opened stays open for the
-    /// next letters of the word.
-    pub fn keeps_undo_step_open(&self) -> bool {
-        ui::undo::keeps_undo_step_open(&self.editor)
     }
 
     /// Modal overlays own the visible caret while retaining the underlying edit.
@@ -1190,8 +1268,8 @@ impl Widget for MainPanel {
         }
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document_ref(state, path);
         self.date_index.sync(state);
         let dates = self
             .page_id
@@ -2147,7 +2225,7 @@ impl Widget for MainPanel {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if self.page_id.is_none() && matches!(action, ui::a11y::Action::Activate) {
@@ -2164,7 +2242,7 @@ impl Widget for MainPanel {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if target == "notes.scroll-position" {
@@ -2309,7 +2387,7 @@ mod tests {
             assert!(panel.perform_semantic_action(
                 target,
                 &ui::a11y::Action::SetValue("Launch plan".into()),
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(
@@ -2331,7 +2409,11 @@ mod tests {
             assert!(node.state.focused);
 
             let mut doc = AutoCommit::new();
-            assert!(p.perform_action(&ui::a11y::Action::Activate, &mut doc, &ObjId::Root));
+            assert!(p.perform_action(
+                &ui::a11y::Action::Activate,
+                &mut Edits::lend(&mut doc),
+                &ObjId::Root
+            ));
             assert!(p.take_empty_action());
         }
 
@@ -2381,7 +2463,7 @@ mod tests {
                 assert_eq!(target, rect);
                 assert_eq!(label, panel.dates.labels()[row]);
                 assert!(
-                    label.contains("UTC"),
+                    label.contains(':'),
                     "compact metadata must expose the exact time"
                 );
             }
@@ -2556,7 +2638,7 @@ mod tests {
                 &mut panel,
                 &format!("notes.tag-chip:{tag}"),
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 &ObjId::Root,
             ));
             assert_eq!(panel.take_tag_open(), Some(tag));
@@ -2585,7 +2667,7 @@ mod tests {
                 &mut panel,
                 &format!("notes.backlink-chip:{source}"),
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 &ObjId::Root,
             ));
             assert_eq!(panel.take_backlink_open(), Some(source));

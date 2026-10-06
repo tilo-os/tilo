@@ -71,7 +71,7 @@ impl StandaloneHistoryPane {
                     Text::new("standalone-history-title").with_heading_level(2),
                 ))
                 .push(Box::new(
-                    Button::new("standalone-history-close", "standalone-history-close", None)
+                    Button::new("standalone-history-close", "standalone-history-close")
                         .on_view(move || close_intents.borrow_mut().push_back(QueuedIntent::Close)),
                 )),
             timeline: ActivityTimeline::new().on_activate_entry(move |id| {
@@ -83,17 +83,13 @@ impl StandaloneHistoryPane {
                 .with_id("standalone-history-summary")
                 .with_live(crate::a11y::Politeness::Polite),
             summary_value,
-            restore: Button::new(
-                "standalone-history-restore",
-                "standalone-history-restore",
-                None,
-            )
-            .on_view(move || {
-                restore_intents
-                    .borrow_mut()
-                    .push_back(QueuedIntent::ReviewRestore);
-            })
-            .with_enabled(false),
+            restore: Button::new("standalone-history-restore", "standalone-history-restore")
+                .on_view(move || {
+                    restore_intents
+                        .borrow_mut()
+                        .push_back(QueuedIntent::ReviewRestore);
+                })
+                .with_enabled(false),
             review: None,
             intents,
             observed_selection: None,
@@ -407,7 +403,7 @@ mod tests {
             assert!(pane.timeline.perform_semantic_action(
                 target,
                 &Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert_eq!(

@@ -88,25 +88,36 @@ where
         risk
     }
 
+    /// A gesture of one kind of edit is named as that edit is ("Move 3
+    /// marks" for a selection's moves); a mixed one keeps its own name.
+    fn history_label(&self, doc: &Doc) -> Option<String> {
+        let mut labels = self.actions.iter().map(|action| action.history_label(doc));
+        let first = labels.next()??;
+        labels
+            .all(|label| label.as_deref() == Some(first.as_str()))
+            .then_some(first)
+    }
+
     fn locus(&self) -> ExecutionLocus {
         self.actions
             .first()
             .map_or(ExecutionLocus::ClientLocal, tilo_actions::Action::locus)
     }
 
-    /// A gesture is housekeeping only when every member is; one content
-    /// change makes it content.
+    /// A gesture is someone's step when any member is: one content change
+    /// makes it content. Otherwise it is external when any member is, and
+    /// housekeeping when every member is.
     fn change_kind(&self) -> tilo_actions::ChangeKind {
-        if !self.actions.is_empty()
-            && self
-                .actions
-                .iter()
-                .all(|action| !action.change_kind().is_content())
-        {
-            tilo_actions::ChangeKind::Housekeeping
-        } else {
-            tilo_actions::ChangeKind::Content
-        }
+        use tilo_actions::ChangeKind;
+        let mut kinds = self.actions.iter().map(tilo_actions::Action::change_kind);
+        let Some(first) = kinds.next() else {
+            return ChangeKind::Content;
+        };
+        kinds.fold(first, |group, member| match (group, member) {
+            (ChangeKind::Content, _) | (_, ChangeKind::Content) => ChangeKind::Content,
+            (ChangeKind::External, _) | (_, ChangeKind::External) => ChangeKind::External,
+            (ChangeKind::Housekeeping, ChangeKind::Housekeeping) => ChangeKind::Housekeeping,
+        })
     }
 }
 
@@ -136,20 +147,26 @@ pub fn build_group<R: Resource>(
     };
     members
         .iter()
-        .map(|member| {
+        .enumerate()
+        .map(|(index, member)| {
             let id = member
                 .get("action")
                 .and_then(serde_json::Value::as_str)
-                .ok_or("each member names its `action`")?;
+                .ok_or_else(|| format!("member {index} names no `action`"))?;
             if id == GROUP {
-                return Err("a group member cannot be a group".to_owned());
+                return Err(format!("member {index}: a group member cannot be a group"));
             }
             let args = match member.get("args") {
                 None | Some(serde_json::Value::Null) => serde_json::Map::new(),
                 Some(serde_json::Value::Object(args)) => args.clone(),
-                Some(_) => return Err(format!("the arguments of `{id}` must be an object")),
+                Some(_) => {
+                    return Err(format!(
+                        "member {index}: the arguments of `{id}` must be an object"
+                    ));
+                }
             };
             crate::resource::build_action::<R>(id, &args, now_ms)
+                .map_err(|reason| format!("member {index} ({id}): {reason}"))
         })
         .collect::<Result<Vec<_>, _>>()
         .map(|actions| ActionGroup { actions })

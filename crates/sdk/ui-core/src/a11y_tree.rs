@@ -479,6 +479,18 @@ impl SemanticTree {
     /// nearest currently rendered affordance without replacing direct action
     /// invocation with simulated clicks.
     pub fn control_paths(&self, control_id: &str) -> Vec<Vec<SemanticId>> {
+        let mut paths = self.control_paths_unranked(control_id);
+        paths.sort_by(|left, right| {
+            left.len()
+                .cmp(&right.len())
+                .then_with(|| left.last().cmp(&right.last()))
+        });
+        paths
+    }
+
+    // Exact candidate enumeration shares the public path construction while
+    // leaving shortest-path ranking to callers that need that policy.
+    pub(crate) fn control_paths_unranked(&self, control_id: &str) -> Vec<Vec<SemanticId>> {
         if control_id.is_empty() {
             return Vec::new();
         }
@@ -489,8 +501,7 @@ impl SemanticTree {
             }
         }
         let marker = format!("~k:{control_id}");
-        let mut paths = self
-            .iter()
+        self.iter()
             .filter(|node| !node.id.0.starts_with("r:") && node.id.0.ends_with(&marker))
             .filter_map(|node| {
                 let mut path = vec![node.id.clone()];
@@ -502,13 +513,7 @@ impl SemanticTree {
                 path.reverse();
                 Some(path)
             })
-            .collect::<Vec<_>>();
-        paths.sort_by(|left, right| {
-            left.len()
-                .cmp(&right.len())
-                .then_with(|| left.last().cmp(&right.last()))
-        });
-        paths
+            .collect::<Vec<_>>()
     }
 
     pub fn action(&self, id: &SemanticId, name: &str) -> Option<&SemanticAction> {
@@ -1072,8 +1077,8 @@ mod tests {
         // Case `identity_is_stable_across_frames`.
         {
             let mut col = Column::new()
-                .push(Box::new(Button::new("a", "Alpha", None)))
-                .push(Box::new(Button::new("b", "Beta", None)));
+                .push(Box::new(Button::new("a", "Alpha")))
+                .push(Box::new(Button::new("b", "Beta")));
             let node_map = layout(&mut col);
 
             let mut tree = SemanticTree::new();
@@ -1146,8 +1151,8 @@ mod tests {
         // Case `durable_widget_keys_survive_layout_rebuild_and_sibling_reorder`.
         {
             let mut first = Column::new()
-                .push(Box::new(Button::new("alpha", "Alpha", None)))
-                .push(Box::new(Button::new("beta", "Beta", None)));
+                .push(Box::new(Button::new("alpha", "Alpha")))
+                .push(Box::new(Button::new("beta", "Beta")));
             let first_map = layout(&mut first);
             let mut tree = SemanticTree::new();
             tree.refresh(&first, &first_map, None, &[]);
@@ -1170,9 +1175,9 @@ mod tests {
             assert!(alpha.as_str().contains("~k:alpha"));
 
             let mut rebuilt = Column::new()
-                .push(Box::new(Button::new("unrelated", "Unrelated", None)))
-                .push(Box::new(Button::new("beta", "Beta", None)))
-                .push(Box::new(Button::new("alpha", "Alpha", None)));
+                .push(Box::new(Button::new("unrelated", "Unrelated")))
+                .push(Box::new(Button::new("beta", "Beta")))
+                .push(Box::new(Button::new("alpha", "Alpha")));
             let rebuilt_map = layout(&mut rebuilt);
             tree.refresh(&rebuilt, &rebuilt_map, None, &[]);
             assert_eq!(tree.find_by_name("Alpha").expect("alpha").id, alpha);
@@ -1187,7 +1192,7 @@ mod tests {
 
         // Case `encoded_action_keys_remain_valid_resource_ids`.
         {
-            let mut button = Button::new("settings.section:network\u{1f}open", "Network", None);
+            let mut button = Button::new("settings.section:network\u{1f}open", "Network");
             let node_map = layout(&mut button);
             let mut tree = SemanticTree::new();
             tree.refresh(&button, &node_map, None, &[]);
@@ -1209,7 +1214,7 @@ mod tests {
 
         // Case `frame_local_control_identity_is_not_exported`.
         {
-            let mut button = Button::new("go", "Go", None);
+            let mut button = Button::new("go", "Go");
             let node_map = layout(&mut button);
             let mut tree = SemanticTree::new();
             tree.refresh(&button, &node_map, None, &[]);
@@ -1223,6 +1228,63 @@ mod tests {
 
             assert!(tree.action_resources().is_empty());
         }
+
+        // Case `controls_in_a_scroll_region_are_published_only_under_a_key`.
+        {
+            let published = |scroll: crate::widget::Scrollable| {
+                let mut scroll = scroll.with_child(Box::new(Button::new("go", "Go")));
+                let node_map = layout(&mut scroll);
+                let mut tree = SemanticTree::new();
+                tree.refresh(&scroll, &node_map, None, &[]);
+                tree.action_resources()
+                    .iter()
+                    .map(|resource| resource.id.as_str().to_owned())
+                    .collect::<Vec<_>>()
+            };
+            assert!(
+                published(crate::widget::Scrollable::new_vertical()).is_empty(),
+                "an unkeyed scroll group follows its layout node"
+            );
+            let keyed =
+                published(crate::widget::Scrollable::new_vertical().with_semantic_key("pane"));
+            assert!(
+                keyed
+                    .iter()
+                    .any(|id| id.contains("pane") && id.contains("go")),
+                "a keyed scroll group keeps its controls durable, got {keyed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unranked_control_paths_preserve_public_shortest_path_order() {
+        let mut root = Column::new()
+            .push(Box::new(
+                crate::widget::Scrollable::new_vertical()
+                    .with_semantic_key("advanced")
+                    .with_child(Box::new(Button::new("save", "Deep save"))),
+            ))
+            .push(Box::new(Button::new("save", "Shallow save")));
+        let nodes = layout(&mut root);
+        let mut tree = SemanticTree::new();
+        tree.refresh(&root, &nodes, None, &[]);
+        let unranked = tree.control_paths_unranked("save");
+        assert_eq!(unranked.len(), 2);
+        let deep = tree.find_by_name("Deep save").unwrap().id.clone();
+        let shallow = tree.find_by_name("Shallow save").unwrap().id.clone();
+        assert_eq!(unranked[0].last(), Some(&deep));
+        assert_eq!(unranked[1].last(), Some(&shallow));
+        let ranked = tree.control_paths("save");
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0], vec![tree.root.clone(), shallow]);
+        assert_eq!(ranked[1].len(), 3);
+        assert_eq!(ranked[1].last(), Some(&deep));
+        assert!(unranked.contains(&ranked[0]));
+        assert!(unranked.contains(&ranked[1]));
+        assert!(tree.control_paths_unranked("missing").is_empty());
+        assert!(tree.control_paths("missing").is_empty());
+        assert!(tree.control_paths_unranked("").is_empty());
+        assert!(tree.control_paths("").is_empty());
     }
 
     #[test]
@@ -1245,7 +1307,7 @@ mod tests {
 
         // Case `button_node_affords_focus_and_activate_verbs`.
         {
-            let mut btn = Button::new("go", "Go", None);
+            let mut btn = Button::new("go", "Go");
             let node_map = layout(&mut btn);
             let mut tree = SemanticTree::new();
             tree.refresh(&btn, &node_map, None, &[]);
@@ -1294,7 +1356,7 @@ mod tests {
 
         // Case `effectful_controls_are_not_projected_without_a_domain_contract`.
         {
-            let mut button = Button::new("go", "Go", None);
+            let mut button = Button::new("go", "Go");
             let node_map = layout(&mut button);
             let mut tree = SemanticTree::new();
             tree.refresh(&button, &node_map, None, &[]);
@@ -1335,8 +1397,8 @@ mod tests {
         // Case `focus_change_updates_the_same_node`.
         {
             let mut col = Column::new()
-                .push(Box::new(Button::new("a", "Alpha", None)))
-                .push(Box::new(Button::new("b", "Beta", None)));
+                .push(Box::new(Button::new("a", "Alpha")))
+                .push(Box::new(Button::new("b", "Beta")));
             let node_map = layout(&mut col);
             let first_button_taffy = node_map
                 .iter()
@@ -1381,15 +1443,15 @@ mod tests {
         // Case `added_and_removed_nodes_surface_in_the_delta`.
         {
             let mut two = Column::new()
-                .push(Box::new(Button::new("a", "Alpha", None)))
-                .push(Box::new(Button::new("b", "Beta", None)));
+                .push(Box::new(Button::new("a", "Alpha")))
+                .push(Box::new(Button::new("b", "Beta")));
             let map2 = layout(&mut two);
             let mut tree = SemanticTree::new();
             tree.refresh(&two, &map2, None, &[]);
             let baseline: std::collections::HashSet<SemanticId> =
                 tree.iter().map(|n| n.id.clone()).collect();
 
-            let mut one = Column::new().push(Box::new(Button::new("a", "Alpha", None)));
+            let mut one = Column::new().push(Box::new(Button::new("a", "Alpha")));
             let map1 = layout(&mut one);
             let delta = tree.refresh(&one, &map1, None, &[]);
             assert!(
@@ -1410,7 +1472,7 @@ mod tests {
                 ColumnDef::new("actions", "Actions", ColumnWidth::Fixed(120.0)).with_widget(
                     |row: &RowData, _| {
                         let id = format!("edit-{}", row.id);
-                        Box::new(Button::new(&id, "Edit", None))
+                        Box::new(Button::new(&id, "Edit"))
                     },
                 ),
             ];

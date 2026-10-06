@@ -41,6 +41,20 @@ refuses 'links the diagnostic script outside the overlay' 'diagnostics script mu
 refuses 'holds a device node' 'contains a special file' \
   sh -c 'mkdir -p "$0/verity.d" && mkfifo "$0/verity.d/x.crt"'
 
+# The overlay is added without rewriting the directories it lands in: `cp -a
+# SRC/. DST/` copied the runner work directory's label onto the deployment's
+# /etc (var_t), which broke every confined service that writes there. The build
+# compares label, mode and owner of /etc and each existing parent before and
+# after, and fails on any change.
+if grep -Fq -- '--no-overwrite-dir' "$disk" \
+   && ! grep -Fq 'cp -a --no-preserve=ownership "$ETC_OVERLAY/."' "$disk" \
+   && grep -Fq 'os.getxattr(path, "security.selinux")' "$disk" \
+   && grep -Fq 'die "the validation overlay changed the label, mode or owner of an existing /etc directory"' "$disk"; then
+  ok 'the validation overlay leaves existing /etc directories, and their labels, as they were'
+else
+  bad 'the validation overlay can rewrite the label or mode of the deployment /etc'
+fi
+
 # The release gate's diagnostic service must pass the overlay policy. Use an
 # intentionally missing helper to stop at the next preflight without a build.
 allowed_overlay="$work/diagnostics-allowed"
@@ -59,6 +73,11 @@ fi
 escaped="$(python3 -c 'print("dev-" + "disk/by-id/virtio-tilo-validation".replace("-", "\\x2d").replace("/", "-") + ".device")')"
 if grep -Fxq "BindsTo=$escaped" "$access" \
    && grep -Fq -- '--image-policy=root=signed+absent:usr=absent:=unused+absent' "$access" \
+   && grep -Fq 'ExecStartPre=/usr/bin/env SYSTEMD_LOG_LEVEL=debug /usr/bin/systemd-sysext refresh' "$access" \
+   && ! grep -Fq 'Environment=SYSTEMD_LOG_LEVEL=debug' "$access" \
+   && grep -Fq 'ExecStartPre=/usr/bin/test -r /etc/verity.d/tilo-validation.crt' "$access" \
+   && grep -Fxq 'After=systemd-update-done.service' "$access" \
+   && grep -Fq 'TILO_VALIDATION_CERT_MISSING' "$access" \
    && grep -Fq 'format=raw,if=none,id=tilo-validation,readonly=on' "$vm" \
    && grep -Fq -- '-device virtio-blk-pci,drive=tilo-validation,serial=tilo-validation' "$vm" \
    && grep -Fq 'ln -sfn /dev/disk/by-id/virtio-tilo-validation /run/extensions/tilo-validation.raw' "$access"; then
@@ -76,6 +95,31 @@ if grep -Fq 'rm -f /work/validation.key' "$access" \
   ok 'the validation key is discarded and its certificate reaches only the gate disk'
 else
   bad 'the validation signing key can outlive the gate, or its trust can reach the image'
+fi
+
+# A virtio-backed raw block device can have a different backing name from the
+# symlink in /run/extensions. systemd 259 checks extension-release against that
+# backing name while reading metadata, before it merges the sysext. Ensure the
+# documented single-file filename fallback is embedded in the signed EROFS.
+if python3 - "$access" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1]).read_text()
+release = '/tree/usr/lib/extension-release.d/extension-release.$EXTENSION'
+create = source.index('} > ' + release)
+set_xattr = source.index('setfattr -n user.extension-release.strict -v 0')
+verify = source.index('getfattr --only-values -n user.extension-release.strict')
+mkfs = source.index('mkfs.erofs --quiet --file-contexts=')
+assert create < set_xattr < verify < mkfs
+assert source.count('} > ' + release) == 1
+assert '  attr cpio cryptsetup-libs erofs-utils openssl systemd-repart ' in source
+assert '--image-policy=root=signed+absent:usr=absent:=unused+absent' in source
+PY
+then
+  ok 'signed validation DDI carries the single-file extension-release fallback before EROFS sealing'
+else
+  bad 'signed validation DDI can fail extension-release lookup on a virtio block device'
 fi
 
 # Only a generic publication's gate prepares it; build-image.sh passes it only

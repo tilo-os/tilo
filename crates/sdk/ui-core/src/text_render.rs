@@ -196,13 +196,23 @@ pub fn configured_font_system() -> FontSystem {
     if let Some((locale, database)) = host {
         return crate::font_catalog::system_over(locale, database);
     }
-    let mut font_system = FontSystem::new();
-    let database = font_system.db_mut();
-    database.set_sans_serif_family(UI_SANS_FAMILY);
-    database.set_serif_family(UI_SERIF_FAMILY);
-    database.set_monospace_family(UI_MONOSPACE_FAMILY);
-    font_system
+    let (locale, database) = SYSTEM_FONT_DATABASE.get_or_init(|| {
+        let mut font_system = FontSystem::new();
+        let database = font_system.db_mut();
+        crate::font_catalog::drop_duplicate_faces(database);
+        database.set_sans_serif_family(UI_SANS_FAMILY);
+        database.set_serif_family(UI_SERIF_FAMILY);
+        database.set_monospace_family(UI_MONOSPACE_FAMILY);
+        (font_system.locale().to_owned(), font_system.db().clone())
+    });
+    FontSystem::new_with_locale_and_db(locale.clone(), database.clone())
 }
+
+/// The system's fonts, scanned once per process. A scan parses every
+/// installed font file, and each renderer would otherwise repeat it.
+#[cfg(not(test))]
+static SYSTEM_FONT_DATABASE: std::sync::OnceLock<(String, cosmic_text::fontdb::Database)> =
+    std::sync::OnceLock::new();
 
 /// The toolkit's color emoji face for engines that load their own fonts, as
 /// font data and face index.
@@ -1518,6 +1528,83 @@ fn outline_ink_bounds(
     }
 }
 
+/// One shaped glyph as geometry: see [`TextRenderer::glyph_outlines`].
+#[derive(Clone, Debug)]
+pub struct GlyphOutline {
+    /// The outline around the glyph's origin, y down, in the style's units.
+    pub path: BezPath,
+    /// The glyph's origin on its baseline, where [`TextRenderer::draw_style`]
+    /// paints it.
+    pub origin: Point,
+    /// How far the pen moves on to the next glyph.
+    pub advance: f64,
+    /// The bytes of the text the glyph shows.
+    pub cluster: std::ops::Range<usize>,
+}
+
+/// A glyph's unhinted outline at `size`, y down; `None` for a colour or
+/// bitmap glyph, which has no outline to draw.
+fn outline_path(
+    font: &Font,
+    glyph_id: u16,
+    size: f32,
+    coords: &[vello::NormalizedCoord],
+) -> Option<BezPath> {
+    use skrifa::instance::{NormalizedCoord, Size};
+    use skrifa::outline::DrawSettings;
+    use skrifa::{FontRef, GlyphId, MetadataProvider, Tag};
+    let face = FontRef::from_index(font.data.as_ref(), font.index).ok()?;
+    if [b"COLR", b"CBDT", b"sbix", b"SVG "]
+        .iter()
+        .any(|tag| face.table_data(Tag::new(tag)).is_some())
+    {
+        return None;
+    }
+    let location: Vec<_> = coords
+        .iter()
+        .map(|v| NormalizedCoord::from_bits(*v))
+        .collect();
+    let outline = face
+        .outline_glyphs()
+        .get(GlyphId::new(u32::from(glyph_id)))?;
+    let mut pen = PathPen(BezPath::new());
+    outline
+        .draw(
+            DrawSettings::unhinted(Size::new(size), location.as_slice()),
+            &mut pen,
+        )
+        .ok()?;
+    Some(pen.0)
+}
+
+/// Draws a glyph outline into a path, flipping the font's y-up to y-down.
+struct PathPen(BezPath);
+
+impl skrifa::outline::OutlinePen for PathPen {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.0.move_to((f64::from(x), -f64::from(y)));
+    }
+    fn line_to(&mut self, x: f32, y: f32) {
+        self.0.line_to((f64::from(x), -f64::from(y)));
+    }
+    fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
+        self.0.quad_to(
+            (f64::from(cx), -f64::from(cy)),
+            (f64::from(x), -f64::from(y)),
+        );
+    }
+    fn curve_to(&mut self, ax: f32, ay: f32, bx: f32, by: f32, x: f32, y: f32) {
+        self.0.curve_to(
+            (f64::from(ax), -f64::from(ay)),
+            (f64::from(bx), -f64::from(by)),
+            (f64::from(x), -f64::from(y)),
+        );
+    }
+    fn close(&mut self) {
+        self.0.close_path();
+    }
+}
+
 impl InkBoundsPen {
     fn point(&mut self, x: f32, y: f32) {
         if !x.is_finite() || !y.is_finite() {
@@ -2118,7 +2205,7 @@ impl TextRenderer {
 
     /// Word-wraps `text` to `max_width` and clamps to at most `max_lines`
     /// lines, eliding the last kept line when content overflows. Draw each
-    /// returned line on its own baseline at `line_height = size * 1.25`.
+    /// returned line at the measured line height for the same style.
     /// `max_lines == 1` degenerates to [`Self::elide_to_width`].
     pub fn clamp_to_lines(
         &mut self,
@@ -2127,24 +2214,42 @@ impl TextRenderer {
         max_width: f32,
         max_lines: usize,
     ) -> Vec<String> {
+        self.clamp_to_lines_style(text, max_width, max_lines, &TextStyle::new(size))
+    }
+
+    /// Style-aware line clamping. Wrapping and the final truncation marker
+    /// use the same font, weight and features as the text that will be drawn.
+    pub fn clamp_to_lines_style(
+        &mut self,
+        text: &str,
+        max_width: f32,
+        max_lines: usize,
+        style: &TextStyle,
+    ) -> Vec<String> {
         if max_lines == 0 || text.is_empty() || max_width <= 0.0 {
             return Vec::new();
         }
         if max_lines == 1 {
-            return vec![self.elide_to_width(text, size, max_width)];
+            return vec![self.elide_to_width_style(text, max_width, style)];
         }
-        let wrapped = self.wrap_lines(text, size, max_width);
+        let wrapped = self.wrap_lines_style(text, max_width, style);
         if wrapped.len() <= max_lines {
-            return wrapped;
+            return wrapped
+                .into_iter()
+                .map(|line| self.elide_to_width_style(&line, max_width, style))
+                .collect();
         }
         // Keep the first `max_lines - 1` whole lines, then merge the rest
         // onto the final line and elide it as the truncation marker.
         let (head, tail) = wrapped
             .split_at_checked(max_lines.saturating_sub(1))
             .unwrap_or((&wrapped, &[]));
-        let mut kept: Vec<String> = head.to_vec();
+        let mut kept: Vec<String> = head
+            .iter()
+            .map(|line| self.elide_to_width_style(line, max_width, style))
+            .collect();
         let remainder: String = tail.join(" ");
-        kept.push(self.elide_to_width(&remainder, size, max_width));
+        kept.push(self.elide_to_width_style(&remainder, max_width, style));
         kept
     }
 
@@ -2152,7 +2257,7 @@ impl TextRenderer {
     /// do not use ASCII spaces, keeps non-breaking spaces intact, and honors
     /// explicit mandatory breaks. An unbreakable segment wider than the budget
     /// stays on its own line; [`Self::clamp_to_lines`] elides it if necessary.
-    pub(crate) fn wrap_lines(&mut self, text: &str, size: f32, max_width: f32) -> Vec<String> {
+    fn wrap_lines_style(&mut self, text: &str, max_width: f32, style: &TextStyle) -> Vec<String> {
         fn collapsible_edge(character: char) -> bool {
             matches!(character, ' ' | '\t' | '\n' | '\r')
         }
@@ -2179,7 +2284,7 @@ impl TextRenderer {
                     .get(start..end)
                     .unwrap_or_default()
                     .trim_end_matches(collapsible_edge);
-                let fits = self.measure(candidate, size, None).0 <= max_width;
+                let fits = self.measure_style(candidate, None, style).0 <= max_width;
                 if fits {
                     best = Some(end);
                     if kind == LineBreakKind::Mandatory {
@@ -2314,6 +2419,27 @@ impl TextRenderer {
         let max_width = self.collapse_unused_max_width(text, max_width, style, true);
         let runs = self.shaped_runs(text, max_width, style);
         self.paint_runs(scene, &runs, style.size, color, transform);
+    }
+
+    /// How far below the origin [`Self::draw_style`], given the same
+    /// arguments, puts the first line's baseline: what places text by its
+    /// baseline rather than its line box.
+    pub fn first_baseline_style(
+        &mut self,
+        text: &str,
+        max_width: Option<f32>,
+        style: &TextStyle,
+    ) -> f32 {
+        let scaled_style = self.scaled_style(style);
+        let style = &scaled_style;
+        if text.is_empty() {
+            return style.size * 0.8;
+        }
+        let max_width = self.collapse_unused_max_width(text, max_width, style, true);
+        let runs = self.shaped_runs(text, max_width, style);
+        runs.first()
+            .and_then(|run| run.glyphs.first())
+            .map_or(style.size * 0.8, |glyph| glyph.y)
     }
 
     fn make_shape_key(&self, text: &str, max_width: Option<f32>, style: &TextStyle) -> ShapeKey {
@@ -2619,6 +2745,65 @@ impl TextRenderer {
                     run.glyphs.iter().copied(),
                 );
         }
+    }
+
+    /// `text` shaped exactly as [`Self::draw_style`] paints it, one outline
+    /// per glyph: what draws text as geometry (an outlined export, words set
+    /// along a curve) and measures its ink. Colour and bitmap glyphs, which
+    /// have no outline, are left out.
+    pub fn glyph_outlines(
+        &mut self,
+        text: &str,
+        max_width: Option<f32>,
+        style: &TextStyle,
+    ) -> Vec<GlyphOutline> {
+        if text.is_empty() {
+            return Vec::new();
+        }
+        let scaled_style = self.scaled_style(style);
+        let style = &scaled_style;
+        let max_width = self.collapse_unused_max_width(text, max_width, style, false);
+        let prepared = self.shape_buffer(text, max_width, style);
+        let variations = style.resolved_variations();
+        let line_starts: Vec<usize> = std::iter::once(0)
+            .chain(text.match_indices('\n').map(|(at, _)| at.saturating_add(1)))
+            .collect();
+        let mut placed = Vec::new();
+        for run in prepared.buffer.layout_runs() {
+            let line_start = line_starts.get(run.line_i).copied().unwrap_or(0);
+            for glyph in run.glyphs {
+                if run.text.get(glyph.start..glyph.end) == Some("\u{ad}") {
+                    continue;
+                }
+                let (x, y) = glyph_paint_origin(
+                    glyph,
+                    hanging_glyph_x(&run, glyph, style.hanging_punctuation),
+                    run.line_y,
+                );
+                placed.push((
+                    glyph.font_id,
+                    glyph.font_weight,
+                    glyph.glyph_id,
+                    glyph.font_size,
+                    Point::new(f64::from(x), f64::from(y)),
+                    f64::from(glyph.w),
+                    line_start.saturating_add(glyph.start)..line_start.saturating_add(glyph.end),
+                ));
+            }
+        }
+        placed
+            .into_iter()
+            .filter_map(|(face, weight, glyph, size, origin, advance, cluster)| {
+                let font = self.vello_font(face, weight)?;
+                let coords = self.normalized_coords(face, &variations, weight);
+                Some(GlyphOutline {
+                    path: outline_path(&font, glyph, size, &coords)?,
+                    origin,
+                    advance,
+                    cluster,
+                })
+            })
+            .collect()
     }
 
     /// Retain the exact face and shared bytes already used by shaping.
@@ -3523,7 +3708,7 @@ mod tests {
             let mut tr = crate::font_catalog::fixture_renderer();
             let text = "東京京都大阪名古屋";
             let two_glyphs = tr.measure("東京", 14.0, None).0 + 0.5;
-            let lines = tr.wrap_lines(text, 14.0, two_glyphs);
+            let lines = tr.wrap_lines_style(text, two_glyphs, &TextStyle::new(14.0));
             assert!(lines.len() > 1, "CJK text wraps without ASCII spaces");
             assert_eq!(lines.concat(), text);
             assert!(lines.iter().all(|line| !line.is_empty()));
@@ -3534,7 +3719,7 @@ mod tests {
             let mut tr = crate::font_catalog::fixture_renderer();
             let text = "10\u{a0}km away";
             let narrow = tr.measure("10", 14.0, None).0 + 1.0;
-            let lines = tr.wrap_lines(text, 14.0, narrow);
+            let lines = tr.wrap_lines_style(text, narrow, &TextStyle::new(14.0));
             assert_eq!(lines.first().map(String::as_str), Some("10\u{a0}km"));
             assert_eq!(lines.join(" "), text);
         }
@@ -3545,7 +3730,7 @@ mod tests {
             let text = "ทุกสองสัปดาห์";
             let first_word = &text[..9];
             let budget = tr.measure(first_word, 14.0, None).0 + 0.5;
-            let lines = tr.wrap_lines(text, 14.0, budget);
+            let lines = tr.wrap_lines_style(text, budget, &TextStyle::new(14.0));
             assert_eq!(lines, vec![&text[..9], &text[9..18], &text[18..]]);
             assert_eq!(lines.concat(), text);
         }
@@ -3780,6 +3965,44 @@ mod tests {
                 hl_paths > plain_paths,
                 "highlight must add a fill path: plain={plain_paths} highlighted={hl_paths}",
             );
+        }
+    }
+
+    #[test]
+    fn styled_line_clamping_keeps_drawn_weight_within_the_budget() {
+        for scale in [1.0, 2.0] {
+            with_layout_renderer(scale, |renderer| {
+                let title = "Review the launch announcement, compact navigation, translated labels, and final release checklist";
+                let style = TextStyle::new(13.0).with_weight(TextWeight::Semibold);
+                let width = 240.0;
+                assert!(renderer.measure_style(title, None, &style).0 > width);
+                let lines = renderer.clamp_to_lines_style(title, width, 2, &style);
+                assert_eq!(lines.len(), 2);
+                assert!(lines.last().is_some_and(|line| line.ends_with(ELLIPSIS)));
+                for line in &lines {
+                    let (actual_width, height) = renderer.measure_style(line, None, &style);
+                    assert!(height > 0.0, "real glyph metrics must be observable");
+                    assert!(actual_width <= width + 0.1, "{line:?} exceeds {width}");
+                }
+                assert_eq!(
+                    renderer.clamp_to_lines_style("Review", width, 2, &style),
+                    ["Review"]
+                );
+                assert!(
+                    renderer
+                        .clamp_to_lines_style(title, width, 0, &style)
+                        .is_empty()
+                );
+                assert_eq!(
+                    renderer.clamp_to_lines_style(title, width, 1, &style),
+                    [renderer.elide_to_width_style(title, width, &style)]
+                );
+                let unbreakable = "abcdefghijklmnopqrstuvwxyzzabcdefghijklmnopqrstuvwxyzz";
+                let lines = renderer.clamp_to_lines_style(unbreakable, width, 2, &style);
+                assert_eq!(lines.len(), 1);
+                assert!(lines[0].ends_with(ELLIPSIS));
+                assert!(renderer.measure_style(&lines[0], None, &style).0 <= width + 0.1);
+            });
         }
     }
 

@@ -71,6 +71,9 @@ enum Cmd {
         /// Path to the package manifest (TOML).
         #[arg(long)]
         manifest: PathBuf,
+        /// Refuse if the actual signed installation differs from this root.
+        #[arg(long)]
+        expected_package_hash: Option<String>,
         /// Directory containing the unpacked package payload.
         #[arg(long)]
         payload_root: PathBuf,
@@ -288,6 +291,7 @@ fn main() -> ExitCode {
     match cli.cmd {
         Cmd::Run {
             manifest,
+            expected_package_hash,
             payload_root,
             runtime,
             no_services,
@@ -308,6 +312,7 @@ fn main() -> ExitCode {
             rest,
         } => run_gui_command(RunCliArgs {
             manifest,
+            expected_package_hash,
             payload_root,
             runtime,
             no_services,
@@ -378,6 +383,7 @@ fn main() -> ExitCode {
 )]
 struct RunCliArgs {
     manifest: PathBuf,
+    expected_package_hash: Option<String>,
     payload_root: PathBuf,
     runtime: Option<PathBuf>,
     no_services: bool,
@@ -410,6 +416,7 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         );
     }
     let opts = RunOptions {
+        expected_package_hash: args.expected_package_hash,
         no_services: args.no_services,
         runtime_root: args.runtime,
         bwrap_bin: None,
@@ -440,8 +447,19 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         open_document: args.open,
         open_uri: args.open_uri,
     };
+    if let Some(app_id) = opts.app_id.as_deref() {
+        enter_app_scope(app_id);
+    }
     match run(&args.manifest, &args.payload_root, &opts) {
         Ok(status) => {
+            // How the app ended, said where its output goes: a signal leaves
+            // no exit code of its own, and is folded into 1 below.
+            if !status.success() {
+                eprintln!(
+                    "tilo-launcher: {} ended: {status}",
+                    opts.app_id.as_deref().unwrap_or("the app")
+                );
+            }
             if let Some(code) = status.code() {
                 exit_code(code)
             } else {
@@ -452,6 +470,17 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
             eprintln!("tilo-launcher: {e}");
             exit_code(e.to_exit_code())
         }
+    }
+}
+
+/// Move this launcher into the app's own systemd user scope before it forks
+/// the sandbox, so the app's memory, OOM handling and lifetime are its own
+/// and never the compositor's (see [`launcher::scope`]). The compositor
+/// always names the app; without a reachable user manager the app still
+/// starts, where the launcher already runs.
+fn enter_app_scope(app_id: &str) {
+    if let Err(error) = launcher::scope::join(app_id, app_id) {
+        eprintln!("tilo-launcher: {app_id} runs outside a session scope: {error}");
     }
 }
 
@@ -823,6 +852,7 @@ fn run_installed(
         );
     let opts = RunOptions {
         no_services,
+        expected_package_hash: None,
         runtime_root: None,
         bwrap_bin: None,
         sandbox_shim_bin: None,

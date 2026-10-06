@@ -45,10 +45,10 @@ const TYPED: &str = "!";
 fn seed_document() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from("ada".as_bytes()));
-    let c = qdoc::model::init(&mut doc, &automerge::ROOT);
-    let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
+    let c = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+    let mut ids = tilo_doc::model::seeded_id_gen(&doc, &c);
     {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &c,
             ids: &mut ids,
@@ -70,9 +70,9 @@ fn seed_document() -> AutoCommit {
     doc
 }
 
-fn blocks(doc: &AutoCommit) -> Vec<qdoc::BlockView> {
-    let c = qdoc::model::open(doc, &automerge::ROOT).expect("schema");
-    qdoc::model::materialize(doc, &c).blocks
+fn blocks(doc: &AutoCommit) -> Vec<tilo_doc::BlockView> {
+    let c = tilo_doc::model::open(doc, &automerge::ROOT).expect("schema");
+    tilo_doc::model::materialize(doc, &c).blocks
 }
 
 fn heading_id(doc: &AutoCommit) -> String {
@@ -88,13 +88,13 @@ fn heading_id(doc: &AutoCommit) -> String {
 fn type_one(doc: &mut AutoCommit, block: &str, ch: &str) -> Vec<u8> {
     let before = doc.get_heads();
     {
-        let c = qdoc::model::open(doc, &automerge::ROOT).expect("schema");
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).expect("schema");
         let at = blocks(doc)
             .into_iter()
             .find(|b| b.id == block)
             .map_or(0, |b| b.text.chars().count());
-        let mut ids = qdoc::model::seeded_id_gen(doc, &c);
-        let mut dm = qdoc::DocMut {
+        let mut ids = tilo_doc::model::seeded_id_gen(doc, &c);
+        let mut dm = tilo_doc::DocMut {
             doc,
             c: &c,
             ids: &mut ids,
@@ -116,7 +116,7 @@ fn granted(name: &str) -> ui::permissions::PermissionContext {
         vec![
             CapOverride::grant(
                 Subject::agent(name),
-                Scope::App("word-processor".to_string()),
+                Scope::App("so.tilo.word-processor".to_string()),
                 Verb::Write,
             )
             .with_id("invited"),
@@ -136,7 +136,7 @@ fn word_processor_resources(doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         .or_else(|| b.last())
         .map(|block| block.id.clone())
         .unwrap_or_default();
-    word_processor::actions::provide_resources(
+    word_processor::actions::published_for(
         &word_processor::actions::WpResourceCtx {
             caret_block: anchor.clone(),
             caret_offset: 0,
@@ -156,7 +156,7 @@ fn publish_word_processor_actions(peer: &mut TypedPeer, doc: &AutoCommit) {
     let actions = typed_peer::exported_actions(&resources);
     assert!(
         actions.iter().any(|action| {
-            action.resource == "word-processor.document" && action.action == "insert-table"
+            action.resource == "tilo.rich-text" && action.action == "insert-table"
         }),
         "the production Word Processor surface must export insert-table"
     );
@@ -269,7 +269,7 @@ fn assert_agent_table(replica: &AutoCommit, table_done: bool) -> Vec<(String, St
         .filter(|x| x.kind == "cell")
         .map(|x| {
             let n = |k: &str| match x.attrs.get(k) {
-                Some(qdoc::AttrVal::Int(v)) => *v,
+                Some(tilo_doc::AttrVal::Int(v)) => *v,
                 _ => -1,
             };
             (n("row"), n("col"), x.text.clone())
@@ -408,7 +408,6 @@ fn a_person_typing_and_the_agent_working_both_land() {
         // there is no half-typed line here to wait out.
         settle: Duration::ZERO,
         await_document: Duration::ZERO,
-        directory: None,
         permissions: granted("Scribe"),
         content: ContentStore::memory(),
     };

@@ -467,6 +467,12 @@ impl CaptureExecutor {
                 .map(|id| CaptureOutcome::FloatingClosed { id }),
         );
 
+        let mut app_surface_adopted = false;
+        let mirrors_before: Vec<String> = self
+            .live_mirrors
+            .iter()
+            .map(|mirror| mirror.id.clone())
+            .collect();
         for (id, region, app_id, local_region) in std::mem::take(&mut self.external_updates) {
             if let Some(mirror) = self.live_mirrors.iter_mut().find(|mirror| mirror.id == id) {
                 mirror.intent.regions = vec![region];
@@ -514,6 +520,7 @@ impl CaptureExecutor {
                     },
                 );
                 tracing::debug!(id = %request.id, ?request.role, "shell adopted live app-owned surface");
+                app_surface_adopted = true;
                 continue;
             }
             match self.adopt_floating_request(frame_builder, request, true) {
@@ -770,8 +777,24 @@ impl CaptureExecutor {
         // pass. Reconcile structural nodes now so its very first appended
         // frame has real geometry at `spawn_from` rather than Rect::ZERO.
         // This shared gate removes the blank first frame for both live PiP and
-        // frozen screenshot pins.
-        frame_builder.relayout();
+        // frozen screenshot pins. A frame that added no surface keeps the
+        // layout it already has: laying everything out a second time can size
+        // a window differently from the first pass and resize it every frame.
+        let surface_added = app_surface_adopted
+            || outcomes.iter().any(|outcome| {
+                matches!(
+                    outcome,
+                    CaptureOutcome::Pinned { .. } | CaptureOutcome::Floated { .. }
+                )
+            });
+        if surface_added
+            || self
+                .live_mirrors
+                .iter()
+                .any(|mirror| !mirrors_before.contains(&mirror.id))
+        {
+            frame_builder.relayout();
+        }
         // Previews render from the frame store and a live repaint of each
         // window, never from the presented scene, so chrome over a window
         // never shows up inside its own preview.
@@ -938,6 +961,18 @@ impl CaptureExecutor {
         let path = recording.path.clone();
         let frames = recording.frames;
         let mut output = recording.output;
+        // The encoder may still hold the last frames; a failure to drain
+        // them must not cost the frames already written.
+        match recording.encoder.finish() {
+            Ok(tail) => {
+                for unit in tail {
+                    output.write_access_unit(&unit.data)?;
+                }
+            }
+            Err(error) => {
+                tracing::warn!("capture: recording ends without its last frames: {error}");
+            }
+        }
         for track in &mut recording.audio_tracks {
             if let Ok(bytes) = track.capture.drain(true)
                 && !bytes.is_empty()
@@ -1494,12 +1529,12 @@ fn record_frame(
             fitted
         };
         let rgba = render_capture_rgba(&mut recording.renderer, &frame_scene);
-        let nalus = recording
+        let units = recording
             .encoder
             .encode(&rgba)
             .map_err(|error| format!("encode frame: {error}"))?;
-        if !nalus.is_empty() {
-            recording.output.write_access_unit(&nalus)?;
+        for unit in units {
+            recording.output.write_access_unit(&unit.data)?;
         }
         recording.frames = recording.frames.saturating_add(1);
         recording.last_frame = Instant::now();
@@ -1533,19 +1568,19 @@ fn record_replay_frame(
             fitted
         };
         let rgba = render_capture_rgba(&mut replay.renderer, &frame_scene);
-        let access_unit = replay
+        let units = replay
             .encoder
             .encode(&rgba)
             .map_err(|error| format!("encode recent frame: {error}"))?;
-        if !access_unit.is_empty() {
-            let keyframe = media::realtime::is_keyframe(replay.encoder.codec(), &access_unit);
-            replay.video_bytes = replay.video_bytes.saturating_add(access_unit.len());
+        for unit in units.into_iter().filter(|unit| !unit.data.is_empty()) {
+            let keyframe = media::realtime::is_keyframe(replay.encoder.codec(), &unit.data);
+            replay.video_bytes = replay.video_bytes.saturating_add(unit.data.len());
             replay.frames.push_back(BufferedReplayFrame {
-                access_unit,
+                access_unit: unit.data,
                 keyframe,
             });
-            trim_replay_video_frames(&mut replay.frames, &mut replay.video_bytes);
         }
+        trim_replay_video_frames(&mut replay.frames, &mut replay.video_bytes);
         replay.last_frame = Instant::now();
     }
     drain_replay_audio(replay);
@@ -2010,6 +2045,120 @@ mod tests {
     use vello::kurbo::RoundedRect;
     use vello::peniko::{Color, Fill};
 
+    /// A window whose document runs four times its own height, which it can
+    /// paint whole without scrolling: what a capture of the complete app
+    /// asks a window for.
+    #[derive(Default)]
+    struct LongDocument {
+        rect: Rect,
+    }
+
+    impl LongDocument {
+        fn paint(scene: &mut vello::Scene, transform: Affine, bounds: Rect) {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                Color::new([0.85, 0.85, 0.9, 1.0]),
+                None,
+                &bounds,
+            );
+        }
+    }
+
+    impl Widget for LongDocument {
+        ui::provides!(dyn ui::widget::CompleteContentProvider);
+
+        fn build_layout(
+            &mut self,
+            taffy: &mut taffy::TaffyTree<()>,
+            _theme: &ui::theme::Theme,
+            node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+        ) -> taffy::NodeId {
+            let node = taffy
+                .new_leaf(taffy::Style {
+                    size: taffy::Size {
+                        width: taffy::Dimension::percent(1.0),
+                        height: taffy::Dimension::percent(1.0),
+                    },
+                    ..taffy::Style::default()
+                })
+                .unwrap();
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+
+        fn apply_layout(
+            &mut self,
+            taffy: &taffy::TaffyTree<()>,
+            node: taffy::NodeId,
+            origin: Point,
+        ) {
+            let layout = taffy.layout(node).unwrap();
+            let x = origin.x + f64::from(layout.location.x);
+            let y = origin.y + f64::from(layout.location.y);
+            self.rect = Rect::new(
+                x,
+                y,
+                x + f64::from(layout.size.width),
+                y + f64::from(layout.size.height),
+            );
+        }
+
+        fn draw(
+            &mut self,
+            scene: &mut vello::Scene,
+            transform: Affine,
+            _text: &mut ui::text_render::TextRenderer,
+            _theme: &ui::theme::Theme,
+            _presence: &ui::presence::PresenceCtx,
+        ) {
+            Self::paint(scene, transform, self.rect);
+        }
+
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+
+        fn name(&self) -> &'static str {
+            "LongDocument"
+        }
+    }
+
+    impl ui::widget::CompleteContentProvider for LongDocument {
+        fn complete_content_size(&self) -> Option<vello::kurbo::Size> {
+            (self.rect.height() > 0.0)
+                .then(|| vello::kurbo::Size::new(self.rect.width(), self.rect.height() * 4.0))
+        }
+
+        fn draw_complete_content(
+            &mut self,
+            scene: &mut vello::Scene,
+            bounds: Rect,
+            transform: Affine,
+            _text: &mut ui::text_render::TextRenderer,
+            _theme: &ui::theme::Theme,
+            _presence: &ui::presence::PresenceCtx,
+        ) -> bool {
+            Self::paint(scene, transform, bounds);
+            true
+        }
+    }
+
+    impl ui::widget::AppWidget for LongDocument {
+        fn app_kind(&self) -> ui::widget::AppKind {
+            ui::widget::AppKind::Editor
+        }
+        fn app_title(&self) -> &'static str {
+            "Long document"
+        }
+        fn app_icon(&self) -> ui::widget::IconDescriptor {
+            ui::widget::IconDescriptor::Glyph("L")
+        }
+        fn permission_hint(&self) -> Option<ui::widget::AppKind> {
+            None
+        }
+    }
+
     fn two_source_cards() -> Scene {
         let mut scene = Scene::new();
         scene.fill(
@@ -2308,37 +2457,16 @@ mod tests {
             tree.desktop.set_active_group(strip_id, target_group);
 
             let mut frame_builder = FrameBuilder::with_tree(tree, (800, 600));
-            let store = frame_builder.chrome().records().clone();
-            crate::shell::tab_documents::create_scratch_tab_record(&store, target_tab).unwrap();
             let _ = frame_builder.paint();
-            let long_note = (1..=72)
-                .map(|line| {
-                    format!(
-                        "Capture foundation {line}: export the complete document without moving its live window."
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            // The record was created explicitly above by its owning action; the
-            // painted host already holds it open, so bind and write through it.
-            let checkout = crate::shell::tab_documents::scratch_tab_record(target_tab);
+            // The target window shows a document four times its own height.
             frame_builder
                 .host_mut()
                 .group_at_for_tests(strip_id, 0)
-                .expect("target Notes group")
-                .bind_tab_records(&store, crate::shell::tab_documents::scratch_tab_record);
-            store
-                .with(&checkout.id, |doc| {
-                    let mut body = crate::shell::crdt_text::CrdtTextBody::new(
-                        crate::shell::notes_app::BODY_KEY,
-                    );
-                    body.sync(doc, &automerge::ROOT);
-                    let end = body.clamp(usize::MAX);
-                    body.splice(doc, &automerge::ROOT, 0..end, &long_note);
-                })
-                .expect("capture fixture writes the canonical Notes record");
-            let mut shell_document = automerge::AutoCommit::new();
-            frame_builder.pump_apps(&mut shell_document, &automerge::ROOT);
+                .and_then(|group| group.active_host_mut())
+                .expect("target group's window")
+                .replace_content(ui::widget::TileContent::App(Box::new(
+                    LongDocument::default(),
+                )));
             frame_builder.relayout();
             let _ = frame_builder.paint();
             assert!(
@@ -2346,7 +2474,7 @@ mod tests {
                     .host_mut()
                     .group_at_for_tests(strip_id, 0)
                     .is_some_and(|group| group.complete_capture_rect().is_some()),
-                "long Notes document did not publish complete capture geometry"
+                "a long document publishes its complete capture geometry"
             );
             // Focusing the last group already eases the strip toward it on
             // the wall clock, so whether this jump still moves the strip
@@ -2375,7 +2503,7 @@ mod tests {
             let live_rect = target_group_ref.get_rect();
             let target_rect = target_group_ref
                 .complete_capture_rect()
-                .expect("long Notes document has complete capture geometry");
+                .expect("a long document has complete capture geometry");
             assert!(
                 target_rect.height() > live_rect.height(),
                 "semantic app capture must extend below its live window"

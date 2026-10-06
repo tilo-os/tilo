@@ -13,13 +13,15 @@ use thiserror::Error;
 
 use crate::shell::personal_continuity::DeviceId;
 
-pub const FABRIC_SCHEMA_VERSION: u16 = 4;
+pub const FABRIC_SCHEMA_VERSION: u16 = 6;
 pub const MAX_DEVICES: usize = 64;
+/// More network interfaces than any one device wakes through.
+pub const MAX_WAKE_ROUTES: usize = 8;
 pub const MAX_MEDIA_SESSIONS: usize = 64;
 pub const MAX_CLIPBOARD_ITEMS: usize = 50;
 pub const MAX_CLIPBOARD_ITEM_BYTES: usize = 256 * 1024;
 pub const MAX_ROAMING_SETTINGS: usize = 2048;
-pub const MAX_SETTING_BYTES: usize = 64 * 1024;
+pub const MAX_SETTING_BYTES: usize = settings_store::continuity::MAX_PERSONAL_VALUE_BYTES;
 pub const MAX_WIFI_CREDENTIALS: usize = 256;
 pub const MAX_SEALED_SECRET_BYTES: usize = 16 * 1024;
 pub const MAX_INPUT_LEASE_MS: u64 = 15 * 60 * 1000;
@@ -29,10 +31,6 @@ pub const MAX_FABRIC_ACTION_BYTES: usize = 64 * 1024;
 pub const MAX_FABRIC_ACTION_AGE_MS: u64 = 2 * 60 * 1000;
 /// Inline fast path only; larger nearby drops belong on the object stream.
 pub const MAX_NEARBY_DROP_BYTES: usize = 48 * 1024;
-pub const DISPLAY_STREAM_PROTOCOL_VERSION: u16 = 1;
-pub const MAX_DISPLAY_FRAME_BYTES: usize = 3 * 1024 * 1024;
-pub const MAX_DISPLAY_SESSIONS: usize = 4;
-pub const MAX_DISPLAY_STREAM_AGE_MS: u64 = 15_000;
 /// Versioned remote-audio wire contract. Unknown versions fail closed instead
 /// of being interpreted as raw PCM with potentially incompatible framing.
 pub const REMOTE_AUDIO_PROTOCOL_VERSION: u16 = 2;
@@ -104,6 +102,83 @@ pub struct FabricCapabilities {
     pub audio_group: bool,
 }
 
+/// The kind of network interface a device can be woken through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeInterfaceKind {
+    Ethernet,
+    WiFi,
+}
+
+/// An IPv4 network in canonical form: no host bits set beyond the prefix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct Ipv4Subnet {
+    pub network: [u8; 4],
+    pub prefix: u8,
+}
+
+impl Ipv4Subnet {
+    /// The subnet `address/prefix` lies in, or `None` for a prefix that names
+    /// no broadcast domain (wider than /8 or a single host).
+    #[must_use]
+    pub fn containing(address: std::net::Ipv4Addr, prefix: u8) -> Option<Self> {
+        if !(8..=30).contains(&prefix) {
+            return None;
+        }
+        let mask = u32::MAX.checked_shl(32_u32.checked_sub(u32::from(prefix))?)?;
+        Some(Self {
+            network: (u32::from(address) & mask).to_be_bytes(),
+            prefix,
+        })
+    }
+
+    #[must_use]
+    pub fn is_canonical(self) -> bool {
+        Self::containing(std::net::Ipv4Addr::from(self.network), self.prefix) == Some(self)
+    }
+
+    /// The subnet's directed broadcast address.
+    #[must_use]
+    pub fn broadcast(self) -> std::net::Ipv4Addr {
+        let host = u32::MAX.checked_shr(u32::from(self.prefix)).unwrap_or(0);
+        std::net::Ipv4Addr::from(u32::from_be_bytes(self.network) | host)
+    }
+}
+
+impl std::fmt::Display for Ipv4Subnet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}/{}",
+            std::net::Ipv4Addr::from(self.network),
+            self.prefix
+        )
+    }
+}
+
+/// One network interface of a device, as the network sees it: what a sibling
+/// on the same LAN needs to wake it with a magic packet. Only the person's
+/// own devices receive it, inside their certified presence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WakeRoute {
+    /// The MAC the network sees, which for Wi-Fi is the per-network one.
+    pub mac: [u8; 6],
+    pub kind: WakeInterfaceKind,
+    /// Whether the interface wakes the device on a magic packet.
+    pub magic_packet: bool,
+    /// The IPv4 subnet the interface was last seen on.
+    pub subnet: Option<Ipv4Subnet>,
+}
+
+impl WakeRoute {
+    fn valid(&self) -> bool {
+        // A unicast, non-zero MAC; a multicast one cannot address a NIC.
+        self.mac != [0; 6]
+            && self.mac.first().is_some_and(|octet| octet & 1 == 0)
+            && self.subnet.is_none_or(Ipv4Subnet::is_canonical)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DevicePresence {
     pub device: DeviceId,
@@ -112,6 +187,8 @@ pub struct DevicePresence {
     pub capabilities: FabricCapabilities,
     pub online: bool,
     pub last_seen_unix_ms: u64,
+    /// How siblings on the same LAN can wake this device.
+    pub wake_routes: Vec<WakeRoute>,
     pub stamp: FabricStamp,
 }
 
@@ -126,7 +203,13 @@ impl DevicePresence {
         {
             return Err(FabricError::InvalidLabel);
         }
-        Ok(())
+        if self.wake_routes.len() > MAX_WAKE_ROUTES {
+            return Err(FabricError::SnapshotTooLarge);
+        }
+        if !self.wake_routes.iter().all(WakeRoute::valid) {
+            return Err(FabricError::InvalidWakeRoute);
+        }
+        unique(self.wake_routes.iter().map(|route| route.mac))
     }
 }
 
@@ -484,21 +567,6 @@ pub enum PersonalFabricAction {
         request_id: [u8; 16],
         address: String,
     },
-    /// Ask one exact certified peer to receive a mirror-only full-display
-    /// stream. This never changes durable placement or grants input.
-    DisplayMirrorRequest {
-        session_id: [u8; 16],
-    },
-    /// Target-local consent bound to the exact mirror session.
-    DisplayMirrorDecision {
-        session_id: [u8; 16],
-        approved: bool,
-        profile: Option<DisplayStreamProfile>,
-    },
-    /// Revoke one exact mirror session on both peers.
-    DisplayMirrorStop {
-        session_id: [u8; 16],
-    },
     // Keep additions at the end: postcard uses declaration-order tags, and
     // inserting media outcomes beside MediaAccepted renumbers older actions.
     /// The exact destination could not open the requested session. Reasons
@@ -608,197 +676,92 @@ pub enum PersonalFabricAction {
         sweep: [u8; 16],
         hearing: crate::shell::speaker_calibration::SpeakerHearing,
     },
+    /// The legacy app windows this device shows right now, each at the size
+    /// it shows it. The device running a listed window streams that one
+    /// window here, and stops once a refresh no longer lists it or the
+    /// refreshes stop. An empty list ends every stream to this device.
+    /// `decode` is what this device's hardware decoders take, so the host
+    /// encodes nothing they would hand back to the CPU.
+    WindowViews {
+        views: Vec<WindowView>,
+        decode: Vec<HardwareDecode>,
+    },
+    /// Wake `target` with a magic packet on a LAN this device is on, then
+    /// watch for it to rejoin. The receiver reads the target's wake routes
+    /// from its own copy of the person's fabric, never from the request.
+    WakeDevice {
+        target: DeviceId,
+    },
+    /// The waker's account of one [`Self::WakeDevice`] request.
+    WakeReport {
+        target: DeviceId,
+        outcome: WakeOutcome,
+    },
+    /// The waker asking a device it woke whether it is back.
+    WakeProbe {
+        nonce: [u8; 16],
+    },
+    /// The woken device answering a [`Self::WakeProbe`].
+    WakeProbeReply {
+        nonce: [u8; 16],
+    },
 }
 
-/// Versioned, ephemeral control and data plane for a certified-device display.
-/// Unlike app surface sharing, this is shell-owned and never enters a room or
-/// the durable fabric checkpoint.
+/// What became of one request to wake a device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeOutcome {
+    /// The magic packet went out on this subnet; the waker now waits.
+    Sent { subnet: Ipv4Subnet },
+    /// The target is back on the person's device network.
+    Rejoined,
+    /// The target did not come back within the wait.
+    NotRejoined,
+    /// The waker shares no LAN with any wakeable interface of the target.
+    NotOnTargetLan,
+    /// The packet could not be sent.
+    SendFailed,
+}
+
+/// Upper bound on the windows one [`PersonalFabricAction::WindowViews`] lists:
+/// more than a person can see at once on any one screen.
+pub const MAX_WINDOW_VIEWS: usize = 32;
+/// Largest window side, in logical pixels, a viewer may ask for.
+pub const MAX_WINDOW_VIEW_SIDE: u32 = 8192;
+
+/// One legacy app window a device shows: the workspace tab holding it and the
+/// tile's size in logical pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowView {
+    pub tab: u64,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// One codec a device decodes in hardware, with the largest picture its
+/// decoder takes when it has a limit.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PersonalDisplayMessage {
-    Offer {
-        protocol_version: u16,
-        session_id: [u8; 16],
-        source: DeviceId,
-        target: DeviceId,
-        profile: DisplayStreamProfile,
-        issued_unix_ms: u64,
-    },
-    Accept {
-        protocol_version: u16,
-        session_id: [u8; 16],
-        source: DeviceId,
-        target: DeviceId,
-        profile: DisplayStreamProfile,
-    },
-    Frame {
-        session_id: [u8; 16],
-        source: DeviceId,
-        target: DeviceId,
-        sequence: u64,
-        presentation_time_us: u64,
-        keyframe: bool,
-        width: u32,
-        height: u32,
-        annex_b: Vec<u8>,
-    },
-    Feedback {
-        session_id: [u8; 16],
-        source: DeviceId,
-        target: DeviceId,
-        consumed_sequence: u64,
-        queue_pressure: u8,
-        request_keyframe: bool,
-    },
-    End {
-        session_id: [u8; 16],
-        source: DeviceId,
-        target: DeviceId,
-    },
+pub struct HardwareDecode {
+    /// The codec's stream label (`h264`, `vp9`, `av1`, `hevc-main10`).
+    pub codec: String,
+    pub max: Option<(u32, u32)>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DisplayStreamCodec {
-    H264AnnexB,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DisplayStreamProfile {
-    pub codec: DisplayStreamCodec,
-    pub max_width: u32,
-    pub max_height: u32,
-    pub max_fps: u16,
-    pub max_bitrate_kbps: u32,
-}
-
-impl DisplayStreamProfile {
-    #[must_use]
-    pub fn negotiate(self, receiver: Self) -> Option<Self> {
-        (self.codec == receiver.codec)
-            .then_some(Self {
-                codec: self.codec,
-                max_width: self.max_width.min(receiver.max_width),
-                max_height: self.max_height.min(receiver.max_height),
-                max_fps: self.max_fps.min(receiver.max_fps),
-                max_bitrate_kbps: self.max_bitrate_kbps.min(receiver.max_bitrate_kbps),
-            })
-            .filter(Self::valid)
-    }
-
+impl HardwareDecode {
     fn valid(&self) -> bool {
-        (320..=7680).contains(&self.max_width)
-            && (180..=4320).contains(&self.max_height)
-            && (1..=120).contains(&self.max_fps)
-            && (250..=100_000).contains(&self.max_bitrate_kbps)
+        media::StreamCodec::from_wire_label(&self.codec).is_some()
+            && self.max.is_none_or(|(width, height)| {
+                (2..=MAX_WINDOW_VIEW_SIDE).contains(&width)
+                    && (2..=MAX_WINDOW_VIEW_SIDE).contains(&height)
+            })
     }
 }
 
-impl PersonalDisplayMessage {
-    /// Validate only immutable wire shape and transport-bound identities.
-    /// Saved-placement authorization and session transitions are checked by
-    /// the receiver against its current fabric state.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FabricError::InvalidDisplayStream`] for unsupported,
-    /// misaddressed, stale, oversized, or otherwise malformed traffic.
-    pub fn validate_at(
-        &self,
-        transport_source: &DeviceId,
-        local_target: &DeviceId,
-        now_unix_ms: u64,
-    ) -> Result<(), FabricError> {
-        let (session_id, source, target) = match self {
-            Self::Offer {
-                session_id,
-                source,
-                target,
-                ..
-            }
-            | Self::Accept {
-                session_id,
-                source,
-                target,
-                ..
-            }
-            | Self::Frame {
-                session_id,
-                source,
-                target,
-                ..
-            }
-            | Self::Feedback {
-                session_id,
-                source,
-                target,
-                ..
-            }
-            | Self::End {
-                session_id,
-                source,
-                target,
-            } => (session_id, source, target),
-        };
-        let (expected_sender, expected_receiver) = match self {
-            Self::Offer { .. } | Self::Frame { .. } | Self::End { .. } => (source, target),
-            Self::Accept { .. } | Self::Feedback { .. } => (target, source),
-        };
-        if session_id == &[0; 16]
-            || expected_sender != transport_source
-            || expected_receiver != local_target
-            || source == target
-        {
-            return Err(FabricError::InvalidDisplayStream);
-        }
-        match self {
-            Self::Offer {
-                protocol_version,
-                profile,
-                issued_unix_ms,
-                ..
-            } => {
-                if *protocol_version != DISPLAY_STREAM_PROTOCOL_VERSION
-                    || !profile.valid()
-                    || *issued_unix_ms > now_unix_ms.saturating_add(30_000)
-                    || now_unix_ms.saturating_sub(*issued_unix_ms) > MAX_DISPLAY_STREAM_AGE_MS
-                {
-                    return Err(FabricError::InvalidDisplayStream);
-                }
-            }
-            Self::Accept {
-                protocol_version,
-                profile,
-                ..
-            } => {
-                if *protocol_version != DISPLAY_STREAM_PROTOCOL_VERSION || !profile.valid() {
-                    return Err(FabricError::InvalidDisplayStream);
-                }
-            }
-            Self::Frame {
-                sequence,
-                width,
-                height,
-                annex_b,
-                ..
-            } => {
-                if *sequence == 0
-                    || *width == 0
-                    || *height == 0
-                    || *width > 7680
-                    || *height > 4320
-                    || annex_b.is_empty()
-                    || annex_b.len() > MAX_DISPLAY_FRAME_BYTES
-                {
-                    return Err(FabricError::InvalidDisplayStream);
-                }
-            }
-            Self::Feedback { queue_pressure, .. } if *queue_pressure > 100 => {
-                return Err(FabricError::InvalidDisplayStream);
-            }
-            Self::Feedback { .. } | Self::End { .. } => {}
-        }
-        Ok(())
+impl WindowView {
+    fn valid(&self) -> bool {
+        self.tab != 0
+            && (1..=MAX_WINDOW_VIEW_SIDE).contains(&self.width)
+            && (1..=MAX_WINDOW_VIEW_SIDE).contains(&self.height)
     }
 }
 
@@ -997,6 +960,36 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
+            PersonalFabricAction::WakeDevice { target }
+            | PersonalFabricAction::WakeReport { target, .. } => {
+                // Neither end of the exchange is the device being woken.
+                if target == &self.source || target == &self.target {
+                    return Err(FabricError::InvalidAction);
+                }
+                if let PersonalFabricAction::WakeReport {
+                    outcome: WakeOutcome::Sent { subnet },
+                    ..
+                } = &self.action
+                    && !subnet.is_canonical()
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::WindowViews { views, decode } => {
+                let mut tabs = BTreeSet::new();
+                let mut codecs = BTreeSet::new();
+                if views.len() > MAX_WINDOW_VIEWS
+                    || !views
+                        .iter()
+                        .all(|view| view.valid() && tabs.insert(view.tab))
+                    || decode.len() > media::StreamCodec::ALL.len()
+                    || !decode
+                        .iter()
+                        .all(|codec| codec.valid() && codecs.insert(codec.codec.as_str()))
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
             PersonalFabricAction::SpeakerGroupDecision { group, .. }
             | PersonalFabricAction::SpeakerListenDecision { group, .. }
             | PersonalFabricAction::SpeakerGroupLeave { group } => {
@@ -1029,9 +1022,7 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::RemoteAudioCancel { session_id }
-            | PersonalFabricAction::DisplayMirrorRequest { session_id }
-            | PersonalFabricAction::DisplayMirrorStop { session_id } => {
+            PersonalFabricAction::RemoteAudioCancel { session_id } => {
                 if session_id == &[0; 16] {
                     return Err(FabricError::InvalidAction);
                 }
@@ -1051,6 +1042,8 @@ impl PersonalFabricActionEnvelope {
                 }
             }
             PersonalFabricAction::DeviceHealthProbe { nonce }
+            | PersonalFabricAction::WakeProbe { nonce }
+            | PersonalFabricAction::WakeProbeReply { nonce }
             | PersonalFabricAction::FabricClockProbe { nonce, .. }
             | PersonalFabricAction::InputLeaseRevoked { nonce } => {
                 if nonce == &[0; 16] {
@@ -1118,18 +1111,6 @@ impl PersonalFabricActionEnvelope {
                 authorization,
             } => {
                 if !valid_bluetooth_pairing_action(request_id, address, authorization) {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::DisplayMirrorDecision {
-                session_id,
-                approved,
-                profile,
-            } => {
-                if session_id == &[0; 16]
-                    || (*approved && profile.is_none_or(|profile| !profile.valid()))
-                    || (!*approved && profile.is_some())
-                {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -1578,10 +1559,6 @@ pub struct DisplayPlacement {
     pub device: DeviceId,
     pub rect: DisplayRect,
     pub scale_milli: u16,
-    /// Device explicitly authorized to supply this display's shell-owned
-    /// visual stream. `None` keeps legacy placements non-streaming.
-    #[serde(default)]
-    pub stream_source: Option<DeviceId>,
     pub stamp: FabricStamp,
 }
 
@@ -1592,7 +1569,6 @@ impl DisplayPlacement {
             || self.rect.width == 0
             || self.rect.height == 0
             || !(500..=4000).contains(&self.scale_milli)
-            || self.stream_source.as_ref() == Some(owner)
         {
             return Err(FabricError::InvalidDisplayPlacement);
         }
@@ -1697,6 +1673,9 @@ pub struct DeviceFabricSnapshot {
     pub wifi: Vec<WifiCredential>,
     pub display: Option<DisplayPlacement>,
     pub speakers: crate::shell::speaker_group::SpeakerFabricState,
+    /// Disk-unlock enrolments of this device and the owner's unlock
+    /// settings published from it.
+    pub unlock: crate::shell::device_unlock::UnlockFabricState,
 }
 
 impl DeviceFabricSnapshot {
@@ -1733,6 +1712,7 @@ impl DeviceFabricSnapshot {
             display.validate(&self.owner)?;
         }
         self.speakers.validate(&self.owner)?;
+        self.unlock.validate(&self.owner)?;
         unique(self.media.iter().map(|item| item.id.as_str()))?;
         unique(self.clipboard.iter().map(|item| item.id))?;
         unique(self.settings.iter().map(|item| item.key.as_str()))?;
@@ -1773,6 +1753,13 @@ impl DeviceFabric {
                         snapshot
                             .speakers
                             .memberships
+                            .iter()
+                            .map(|item| item.stamp.counter),
+                    )
+                    .chain(
+                        snapshot
+                            .unlock
+                            .enrolments
                             .iter()
                             .map(|item| item.stamp.counter),
                     )
@@ -1854,6 +1841,12 @@ impl DeviceFabric {
                 Ok(true)
             }
         }
+    }
+
+    /// Forget everything a device published, e.g. once it left the fleet.
+    /// Returns whether it had published anything.
+    pub fn remove_device(&mut self, device: &DeviceId) -> bool {
+        self.snapshots.remove(device).is_some()
     }
 
     pub fn online_devices(&self) -> impl Iterator<Item = &DevicePresence> {
@@ -2301,8 +2294,6 @@ pub enum FabricError {
     InvalidWifiCredential,
     #[error("invalid display placement")]
     InvalidDisplayPlacement,
-    #[error("invalid personal display stream")]
-    InvalidDisplayStream,
     #[error("invalid input lease")]
     InvalidInputLease,
     #[error("input lease has expired")]
@@ -2327,6 +2318,10 @@ pub enum FabricError {
     InvalidSpeakerGroup,
     #[error("that device cannot play in this speaker group")]
     IneligibleSpeakerMember,
+    #[error("invalid disk-unlock enrolment or setting")]
+    InvalidUnlockEnrolment,
+    #[error("invalid wake route")]
+    InvalidWakeRoute,
 }
 
 #[cfg(test)]
@@ -2359,6 +2354,7 @@ mod tests {
                 capabilities: caps,
                 online: true,
                 last_seen_unix_ms: 10,
+                wake_routes: Vec::new(),
                 stamp: stamp(device, counter),
             },
             media: Vec::new(),
@@ -2374,9 +2370,9 @@ mod tests {
                     height: 800,
                 },
                 scale_milli: 1000,
-                stream_source: None,
                 stamp: stamp(device, counter),
             }),
+            unlock: crate::shell::device_unlock::UnlockFabricState::default(),
             speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
         }
     }
@@ -2547,167 +2543,80 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn personal_display_and_mirror_wire_is_versioned_bounded_and_consented() {
-        fn personal_display_negotiation_is_versioned_and_transport_bound() {
-            let source = DeviceId::new("source").unwrap();
-            let target = DeviceId::new("target").unwrap();
-            let offered = DisplayStreamProfile {
-                codec: DisplayStreamCodec::H264AnnexB,
-                max_width: 3840,
-                max_height: 2160,
-                max_fps: 60,
-                max_bitrate_kbps: 20_000,
-            };
-            let receiver = DisplayStreamProfile {
-                codec: DisplayStreamCodec::H264AnnexB,
-                max_width: 1920,
-                max_height: 1080,
-                max_fps: 30,
-                max_bitrate_kbps: 8_000,
-            };
-            assert_eq!(
-                offered.negotiate(receiver),
-                Some(DisplayStreamProfile {
-                    codec: DisplayStreamCodec::H264AnnexB,
-                    max_width: 1920,
-                    max_height: 1080,
-                    max_fps: 30,
-                    max_bitrate_kbps: 8_000,
-                })
-            );
-            let offer = PersonalDisplayMessage::Offer {
-                protocol_version: DISPLAY_STREAM_PROTOCOL_VERSION,
-                session_id: [7; 16],
-                source: source.clone(),
-                target: target.clone(),
-                profile: offered,
-                issued_unix_ms: 10_000,
-            };
-            assert_eq!(offer.validate_at(&source, &target, 10_000), Ok(()));
-            assert_eq!(
-                offer.validate_at(&DeviceId::new("impostor").unwrap(), &target, 10_000),
-                Err(FabricError::InvalidDisplayStream)
-            );
-
-            let accept = PersonalDisplayMessage::Accept {
-                protocol_version: DISPLAY_STREAM_PROTOCOL_VERSION,
-                session_id: [7; 16],
-                source: source.clone(),
-                target: target.clone(),
-                profile: receiver,
-            };
-            assert_eq!(accept.validate_at(&target, &source, 10_000), Ok(()));
-            assert_eq!(
-                accept.validate_at(&source, &target, 10_000),
-                Err(FabricError::InvalidDisplayStream),
-                "responses must travel target-to-source, not trust logical field order"
-            );
-        }
-
-        fn personal_display_frames_are_strictly_bounded() {
-            let source = DeviceId::new("source").unwrap();
-            let target = DeviceId::new("target").unwrap();
-            let frame = |annex_b: Vec<u8>| PersonalDisplayMessage::Frame {
-                session_id: [4; 16],
-                source: source.clone(),
-                target: target.clone(),
-                sequence: 1,
-                presentation_time_us: 0,
-                keyframe: true,
-                width: 1920,
-                height: 1080,
-                annex_b,
-            };
-            assert_eq!(
-                frame(vec![0, 0, 0, 1]).validate_at(&source, &target, 1),
-                Ok(())
-            );
-            assert_eq!(
-                frame(vec![0; MAX_DISPLAY_FRAME_BYTES + 1]).validate_at(&source, &target, 1),
-                Err(FabricError::InvalidDisplayStream)
-            );
-        }
-
-        fn display_mirror_actions_require_exact_bounded_session_consent() {
-            let source = id("source");
-            let target = id("target");
-            let envelope = |action| PersonalFabricActionEnvelope {
-                request_id: [3; 16],
+    fn window_views_are_bounded_distinct_and_sized() {
+        let source = id("viewer");
+        let target = id("host");
+        let envelope =
+            |views: Vec<WindowView>, decode: Vec<HardwareDecode>| PersonalFabricActionEnvelope {
+                request_id: [5; 16],
                 source: source.clone(),
                 target: target.clone(),
                 issued_unix_ms: 10_000,
-                action,
+                action: PersonalFabricAction::WindowViews { views, decode },
             };
-            let request = envelope(PersonalFabricAction::DisplayMirrorRequest {
-                session_id: [7; 16],
-            });
-            assert!(request.validate_at(&source, &target, 10_100).is_ok());
-            assert!(
-                envelope(PersonalFabricAction::DisplayMirrorRequest {
-                    session_id: [0; 16],
-                })
-                .validate_at(&source, &target, 10_100)
-                .is_err()
-            );
-            assert!(
-                envelope(PersonalFabricAction::DisplayMirrorDecision {
-                    session_id: [7; 16],
-                    approved: true,
-                    profile: Some(DisplayStreamProfile {
-                        codec: DisplayStreamCodec::H264AnnexB,
-                        max_width: 1920,
-                        max_height: 1080,
-                        max_fps: 60,
-                        max_bitrate_kbps: 12_000,
-                    }),
-                })
-                .validate_at(&source, &target, 10_100)
+        let view = |tab, width, height| WindowView { tab, width, height };
+        let ok = |views| {
+            envelope(views, Vec::new())
+                .validate_at(&source, &target, 10_000)
                 .is_ok()
-            );
-            assert!(
-                envelope(PersonalFabricAction::DisplayMirrorDecision {
-                    session_id: [7; 16],
-                    approved: false,
-                    profile: Some(DisplayStreamProfile {
-                        codec: DisplayStreamCodec::H264AnnexB,
-                        max_width: 1920,
-                        max_height: 1080,
-                        max_fps: 60,
-                        max_bitrate_kbps: 12_000,
-                    }),
-                })
-                .validate_at(&source, &target, 10_100)
-                .is_err()
-            );
-        }
+        };
+        let decodes = |decode| {
+            envelope(vec![view(7, 1280, 800)], decode)
+                .validate_at(&source, &target, 10_000)
+                .is_ok()
+        };
+        let hw = |codec: &str, max| HardwareDecode {
+            codec: codec.into(),
+            max,
+        };
 
-        fn legacy_display_placement_bytes_decode_as_the_original_action() {
-            let action = PersonalFabricAction::SetDisplayPlacement {
-                rect: DisplayRect {
-                    x: 0,
-                    y: 0,
-                    width: 1,
-                    height: 1,
-                },
-            };
-            // The original wire tag and postcard field encoding, independent of
-            // the current enum serializer. Encoding and decoding must both agree.
-            let original = [2, 0, 0, 1, 1];
-            assert_eq!(postcard::to_allocvec(&action).unwrap(), original);
-            assert_eq!(
-                postcard::from_bytes::<PersonalFabricAction>(&original).unwrap(),
-                action
-            );
-        }
+        assert!(ok(Vec::new()), "an empty list ends every stream");
+        assert!(ok(vec![
+            view(7, 1280, 800),
+            view(8, 1, MAX_WINDOW_VIEW_SIDE)
+        ]));
+        assert!(!ok(vec![view(0, 1280, 800)]), "a tab id is never zero");
+        assert!(!ok(vec![view(7, 0, 800)]));
+        assert!(!ok(vec![view(7, 1280, MAX_WINDOW_VIEW_SIDE + 1)]));
+        assert!(
+            !ok(vec![view(7, 1280, 800), view(7, 640, 480)]),
+            "one size per tab"
+        );
+        assert!(!ok((1..=u64::try_from(MAX_WINDOW_VIEWS).unwrap() + 1)
+            .map(|tab| view(tab, 100, 100))
+            .collect()));
 
-        personal_display_negotiation_is_versioned_and_transport_bound();
-        personal_display_frames_are_strictly_bounded();
-        display_mirror_actions_require_exact_bounded_session_consent();
-        legacy_display_placement_bytes_decode_as_the_original_action();
+        // A board's decoder limit travels with the list.
+        assert!(decodes(vec![
+            hw("h264", Some((1920, 1088))),
+            hw("av1", None)
+        ]));
+        assert!(!decodes(vec![hw("mjpeg", None)]), "a codec streams use");
+        assert!(!decodes(vec![hw("h264", Some((0, 1088)))]));
+        assert!(
+            !decodes(vec![hw("h264", None), hw("h264", Some((1280, 720)))]),
+            "one limit per codec"
+        );
+    }
+
+    #[test]
+    fn display_placement_wire_encoding_is_stable() {
+        let action = PersonalFabricAction::SetDisplayPlacement {
+            rect: DisplayRect {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+        };
+        // The original wire tag and postcard field encoding, independent of
+        // the current enum serializer. Encoding and decoding must both agree.
+        let original = [2, 0, 0, 1, 1];
+        assert_eq!(postcard::to_allocvec(&action).unwrap(), original);
+        assert_eq!(
+            postcard::from_bytes::<PersonalFabricAction>(&original).unwrap(),
+            action
+        );
     }
 
     #[test]

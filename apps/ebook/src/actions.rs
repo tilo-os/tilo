@@ -14,15 +14,19 @@
 
 #[cfg(test)]
 use automerge::ActorId;
+#[cfg(test)]
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use ui::tilo_resource::{ActionDecl, Effect};
+
+use crate::resource::BooksEffect;
 use uuid::Uuid;
 
 use tilo_actions::{
     Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, ConfirmationPolicy,
-    Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
-    ResourcePresentation, ResourceProvider, ResultSpec, RetryPolicy, RiskLevel,
+    Doc, EncodedAction, ExecutionLocus, ParamType, Resource, ResourcePresentation, RetryPolicy,
+    RiskLevel,
 };
 
 use crate::doc::BooksDoc;
@@ -33,7 +37,6 @@ use crate::model::{
 
 /// Registry `type_id` for every Books action.
 pub const EBOOK_ACTION_TYPE: &str = "ebook.action";
-pub const EBOOK_OPERATION_TYPE: &str = "ebook.operation";
 
 const MAX_ID_BYTES: usize = 256;
 const MAX_LABEL_BYTES: usize = 4 * 1024;
@@ -41,134 +44,62 @@ const MAX_EXCERPT_BYTES: usize = 16 * 1024;
 const MAX_NOTE_BYTES: usize = 64 * 1024;
 const MAX_ACTION_ITEMS: usize = 2_048;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum EbookOperation {
-    PreviousPage,
-    NextPage,
-    ToggleContents,
-    ToggleNotes,
-    OpenSettings,
-    /// Reveal an existing library resource without changing the shared
-    /// document. `block` is present for annotation hits and absent for a book
-    /// or chapter row.
-    Reveal {
-        book_id: String,
-        chapter: usize,
-        page: usize,
-        block: Option<usize>,
-    },
-    /// Request a user-consented import through the host portal. Deliberately
-    /// carries no path: an action can originate from search, an agent, or a
-    /// peer and must not turn that authority into arbitrary local file access.
-    OpenBook,
-    /// Materialise the exact already-imported book into this device's shared
-    /// workspace. The operation carries only its stable content id, never a
-    /// device path or a peer's local capability grant.
-    ShareBook {
-        book_id: String,
-    },
-    /// Hydrate a book that the collaborative library already advertises from
-    /// its deterministic workspace object, then open it locally.
-    HydrateSharedBook {
-        book_id: String,
-    },
-    /// Select a passage of the open book, as a drag would, and reveal its
-    /// page. Blocks count from 0 in the chapter; a character offset counts
-    /// in its block's text, and `end_char` is exclusive (`None`: block end).
-    SelectPassage {
-        book_id: String,
-        chapter: usize,
-        start_block: usize,
-        start_char: usize,
-        end_block: usize,
-        end_char: Option<usize>,
-    },
-}
-
-pub fn operation_kind(operation: &EbookOperation) -> OperationKind {
-    match operation {
-        EbookOperation::PreviousPage
-        | EbookOperation::NextPage
-        | EbookOperation::ToggleContents
-        | EbookOperation::ToggleNotes
-        | EbookOperation::OpenSettings
-        | EbookOperation::Reveal { .. }
-        | EbookOperation::SelectPassage { .. } => OperationKind::View,
-        EbookOperation::OpenBook
-        | EbookOperation::ShareBook { .. }
-        | EbookOperation::HydrateSharedBook { .. } => OperationKind::Effect,
-    }
-}
-
+/// What invoking `effect` where it is bound sends its handler.
 #[cfg(test)]
-mod file_action_tests {
-    use super::*;
-
-    #[test]
-    fn open_action_is_background_portal_only() {
-        let spec = open_book_operation();
-        let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
-        assert_eq!(
-            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-            Some(EbookOperation::OpenBook)
-        );
-        assert!(matches!(
-            spec.contract.execution,
-            ExecutionMode::Background { .. }
-        ));
-        assert_eq!(spec.contract.result, ResultSpec::Job);
-    }
+pub(crate) fn effect_payload(effect: &BooksEffect) -> Vec<u8> {
+    effect
+        .bound()
+        .build_json(&serde_json::Map::new())
+        .map(|encoded| encoded.payload)
+        .unwrap_or_default()
 }
 
-/// Decode a presentation operation when `type_id` belongs to Books.
-///
-/// # Errors
-///
-/// Returns a descriptive JSON error when a Books payload is malformed.
-pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<EbookOperation>, String> {
-    if type_id != EBOOK_OPERATION_TYPE {
-        return Ok(None);
-    }
-    serde_json::from_slice(payload)
-        .map(Some)
-        .map_err(|error| error.to_string())
+/// Going to and selecting a passage of `book`, asking for the place; a
+/// chapter left out is `chapter`.
+fn passage_effects(book: &str, chapter: usize) -> [ActionSpec; 2] {
+    [
+        BooksEffect::SelectPassage {
+            book: book.to_owned(),
+            chapter: Some(chapter),
+            start_block: 0,
+            start_char: None,
+            end_block: None,
+            end_char: None,
+        }
+        .bound_asking(&[
+            "chapter",
+            "start_block",
+            "start_char",
+            "end_block",
+            "end_char",
+        ]),
+        BooksEffect::GoTo {
+            book: book.to_owned(),
+            chapter: Some(chapter),
+            block: None,
+        }
+        .bound_asking(&["chapter", "block"]),
+    ]
 }
 
-#[allow(
-    clippy::needless_pass_by_value,
-    clippy::expect_used,
-    reason = "the owned enum makes call sites legible and this fieldless/string-only operation schema is infallibly serializable"
-)]
-fn operation(id: &str, label: &str, kind: OperationKind, value: EbookOperation) -> ActionSpec {
-    ActionSpec::operation(id, label, kind, EBOOK_OPERATION_TYPE, &value)
-        .expect("EbookOperation is always serializable")
+/// `effect` bound to the row it acts on, under that row's own `label`.
+pub(crate) fn bound(effect: &BooksEffect, label: &str) -> ActionSpec {
+    let mut spec = effect.bound();
+    label.clone_into(&mut spec.label);
+    spec
 }
 
-#[allow(
-    clippy::expect_used,
-    reason = "EbookOperation contains only JSON-representable strings and integers"
-)]
-fn open_book_operation() -> ActionSpec {
-    ActionSpec::typed_operation(
-        "open-book",
-        "Open book",
-        "choose an EPUB through the system picker",
-        OperationKind::Effect,
-        EBOOK_OPERATION_TYPE,
-        Vec::new(),
-        |_args: &ActionArgs| {
-            let operation = EbookOperation::OpenBook;
-            EncodedAction {
-                type_id: EBOOK_OPERATION_TYPE.into(),
-                payload: serde_json::to_vec(&operation).expect("EbookOperation serializes"),
-            }
+/// The passage `annotation` sits in, opened.
+pub(crate) fn open_at(book: &str, chapter: usize, block: Option<usize>, label: &str) -> ActionSpec {
+    bound(
+        &BooksEffect::Open {
+            book: book.to_owned(),
+            chapter,
+            page: 0,
+            block,
         },
+        label,
     )
-    .with_contract(tilo_actions::ActionContract {
-        execution: ExecutionMode::Background { cancellable: true },
-        result: ResultSpec::Job,
-        ..tilo_actions::ActionContract::default()
-    })
 }
 
 /// One per-block piece of a ranged highlight. A selection that spans several
@@ -206,6 +137,17 @@ pub enum EbookAction {
         /// Full content hash of bytes kept in a host content store.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         content: Option<String>,
+    },
+    /// A book found in a folder the reader watches joins the shelf: content
+    /// from outside, which syncs like any row but is nobody's undo step.
+    /// The same row as [`Self::RestoreLibraryBook`].
+    ShelveFoundBook {
+        book_id: String,
+        shared: bool,
+        title: String,
+        author: String,
+        subject: String,
+        added: u64,
     },
     /// Replace the authored reading-preference snapshot. Every field is an
     /// absolute value, making replay independent of a receiver's UI state.
@@ -252,7 +194,7 @@ pub enum EbookAction {
     /// formatting, a new paragraph, applied to the note's rich text.
     EditNoteText {
         id: String,
-        edit: qdoc_rich_text::RichTextAction,
+        edit: tilo_document::RichTextAction,
     },
     /// Mark an annotation as finished at an author-supplied timestamp. Draft
     /// editors create their row first and then use this action on Save/Escape;
@@ -274,15 +216,6 @@ pub enum EbookAction {
         excerpt: String,
         color: String,
         text: String,
-    },
-    /// Legacy receiver-dependent bookmark toggle. Kept only so old envelopes
-    /// decode; applying it is refused because it cannot replay deterministically.
-    ToggleBookmark {
-        book_id: String,
-        id: String,
-        chapter: usize,
-        block: usize,
-        excerpt: String,
     },
     /// Set one bookmark target to an absolute authored state. `present` and
     /// every row to remove are decided before dispatch, never from a receiving
@@ -403,6 +336,23 @@ impl EbookAction {
         }
     }
 
+    fn validate_entry(
+        book_id: &str,
+        title: &str,
+        author: &str,
+        subject: &str,
+        added: u64,
+    ) -> Result<(), ActionError> {
+        Self::validate_book_id(book_id)?;
+        Self::validate_text(title, MAX_LABEL_BYTES, "book title")?;
+        Self::validate_text(author, MAX_LABEL_BYTES, "book author")?;
+        Self::validate_text(subject, MAX_LABEL_BYTES, "book subject")?;
+        if added > i64::MAX as u64 {
+            return Err(Self::refused("book timestamp is invalid"));
+        }
+        Ok(())
+    }
+
     fn validate_text(value: &str, limit: usize, field: &str) -> Result<(), ActionError> {
         if value.len() <= limit {
             Ok(())
@@ -459,13 +409,7 @@ impl EbookAction {
                 content,
                 ..
             } => {
-                Self::validate_book_id(book_id)?;
-                Self::validate_text(title, MAX_LABEL_BYTES, "book title")?;
-                Self::validate_text(author, MAX_LABEL_BYTES, "book author")?;
-                Self::validate_text(subject, MAX_LABEL_BYTES, "book subject")?;
-                if *added > i64::MAX as u64 {
-                    return Err(Self::refused("book timestamp is invalid"));
-                }
+                Self::validate_entry(book_id, title, author, subject, *added)?;
                 if let Some(content) = content {
                     let names_book = content
                         .get(..32)
@@ -475,6 +419,14 @@ impl EbookAction {
                     }
                 }
             }
+            Self::ShelveFoundBook {
+                book_id,
+                title,
+                author,
+                subject,
+                added,
+                ..
+            } => Self::validate_entry(book_id, title, author, subject, *added)?,
             Self::SetReadingSettings { before, settings } => {
                 for value in [before, settings] {
                     if !value.font_scale.is_finite()
@@ -520,7 +472,7 @@ impl EbookAction {
                     return Err(Self::refused("colour scheme id is invalid"));
                 }
             }
-            Self::SetLibraryPreferences { .. } | Self::ToggleBookmark { .. } => {}
+            Self::SetLibraryPreferences { .. } => {}
             Self::RemoveLibraryBook { book_id } => Self::validate_book_id(book_id)?,
             Self::SetProgress {
                 book_id,
@@ -745,7 +697,7 @@ impl EbookAction {
     fn apply_edit_note_text(
         doc: &mut Doc,
         id: &str,
-        edit: &qdoc_rich_text::RichTextAction,
+        edit: &tilo_document::RichTextAction,
     ) -> Result<(), ActionError> {
         let id = Self::require_live_annotation(doc, id)?;
         let root = BooksDoc::annotation_text(doc, id)
@@ -984,6 +936,28 @@ impl Action for EbookAction {
                 );
                 Ok(())
             }
+            EbookAction::ShelveFoundBook {
+                book_id,
+                shared,
+                title,
+                author,
+                subject,
+                added,
+            } => {
+                BooksDoc::restore_library_entry(
+                    doc,
+                    &LibraryEntry {
+                        id: book_id.clone(),
+                        shared: *shared,
+                        title: title.clone(),
+                        author: author.clone(),
+                        subject: subject.clone(),
+                        added: *added,
+                        content: None,
+                    },
+                );
+                Ok(())
+            }
             EbookAction::SetReadingSettings { before, settings } => {
                 BooksDoc::write_settings_delta(doc, before, settings);
                 Ok(())
@@ -1012,7 +986,7 @@ impl Action for EbookAction {
                 before,
                 preferences,
             } => {
-                BooksDoc::write_library_prefs_delta(doc, before, preferences);
+                BooksDoc::write_library_prefs_delta(doc, *before, *preferences);
                 Ok(())
             }
             EbookAction::RemoveLibraryBook { book_id } => {
@@ -1061,9 +1035,6 @@ impl Action for EbookAction {
                     text,
                 },
             ),
-            EbookAction::ToggleBookmark { .. } => Err(Self::refused(
-                "legacy bookmark toggles cannot replay deterministically",
-            )),
             EbookAction::SetBookmark {
                 book_id,
                 id,
@@ -1143,6 +1114,7 @@ impl Action for EbookAction {
     fn change_kind(&self) -> tilo_actions::ChangeKind {
         match self {
             Self::SetProgress { .. } => tilo_actions::ChangeKind::Housekeeping,
+            Self::ShelveFoundBook { .. } => tilo_actions::ChangeKind::External,
             _ => tilo_actions::ChangeKind::Content,
         }
     }
@@ -1195,6 +1167,18 @@ pub fn restore_library_book_action(entry: &LibraryEntry) -> EbookAction {
     }
 }
 
+/// The shelf row for a book found in a watched folder.
+pub fn shelve_found_book_action(entry: &LibraryEntry) -> EbookAction {
+    EbookAction::ShelveFoundBook {
+        book_id: entry.id.clone(),
+        shared: entry.shared,
+        title: entry.title.clone(),
+        author: entry.author.clone(),
+        subject: entry.subject.clone(),
+        added: entry.added,
+    }
+}
+
 pub fn set_reading_settings_action(before: Settings, settings: Settings) -> EbookAction {
     EbookAction::SetReadingSettings { before, settings }
 }
@@ -1237,11 +1221,40 @@ pub fn edit_note_action(id: Uuid, note: &str) -> EbookAction {
 }
 
 /// One edit of an annotation's note, as its SDK editor writes it.
-pub fn edit_note_text_action(id: Uuid, edit: qdoc_rich_text::RichTextAction) -> EbookAction {
+pub fn edit_note_text_action(id: Uuid, edit: tilo_document::RichTextAction) -> EbookAction {
     EbookAction::EditNoteText {
         id: id.to_string(),
         edit,
     }
+}
+
+/// Where the rich text of note (or comment) `id` is published, beneath the
+/// note: a rich-text resource of its own whose every edit is
+/// [`EbookAction::EditNoteText`].
+pub(crate) fn note_text_resource_id(id: Uuid) -> String {
+    ui::tilo_resource::child_resource_id::<crate::resource::Ebook>(&format!("note:{id}"))
+}
+
+/// The note's rich text as published in the library's tree.
+fn note_text_resource(id: Uuid, label: &str) -> Resource {
+    ui::tilo_resource::publish_child::<tilo_document::RichText, crate::resource::Ebook>(
+        &note_text_resource_id(id),
+        label,
+        None,
+        move |edit| edit_note_text_action(id, edit),
+    )
+}
+
+/// The dispatcher the note's editor writes through: each edit applies as
+/// the library's [`EbookAction::EditNoteText`], at the id the library
+/// publishes the note's text under.
+pub(crate) fn note_text_dispatcher(
+    library: &ui::framework::Dispatcher<crate::resource::Ebook>,
+    id: Uuid,
+) -> ui::framework::Dispatcher<tilo_document::RichText> {
+    library.child::<tilo_document::RichText>(&note_text_resource_id(id), move |edit| {
+        edit_note_text_action(id, edit)
+    })
 }
 
 /// Build the replayable draft-finalisation action used by both note and
@@ -1295,22 +1308,6 @@ impl NoteDraft {
             color: self.color.as_str().to_string(),
             text: self.text,
         }
-    }
-}
-
-pub fn toggle_bookmark_action(
-    book_id: &str,
-    id: Uuid,
-    chapter: usize,
-    block: usize,
-    excerpt: &str,
-) -> EbookAction {
-    EbookAction::ToggleBookmark {
-        book_id: book_id.to_string(),
-        id: id.to_string(),
-        chapter,
-        block,
-        excerpt: excerpt.to_string(),
     }
 }
 
@@ -1456,130 +1453,17 @@ pub struct BookResourceCtx {
     pub annotations: Vec<Annotation>,
 }
 
-#[allow(
-    clippy::expect_used,
-    reason = "EbookOperation contains only JSON-representable strings and integers"
-)]
-fn select_passage_operation(book_id: String, chapter: usize) -> ActionSpec {
-    let index = |name: &'static str, required: bool, description: &'static str| {
-        let param = if required {
-            ActionParam::required(name, ParamType::Integer, description)
-        } else {
-            ActionParam::optional(name, ParamType::Integer, description)
-        };
-        param.with_schema(serde_json::json!({"minimum": 0}))
-    };
-    ActionSpec::typed_operation(
-        "select-passage",
-        "Select passage",
-        "select a passage by paragraph and character",
-        OperationKind::View,
-        EBOOK_OPERATION_TYPE,
-        vec![
-            index(
-                "start_block",
-                true,
-                "Block (paragraph or heading) the selection starts in, counted from 0 in the chapter",
-            ),
-            index(
-                "start_char",
-                false,
-                "Character offset into the start block; 0 when omitted",
-            ),
-            index(
-                "end_block",
-                false,
-                "Block the selection ends in; the start block when omitted",
-            ),
-            index(
-                "end_char",
-                false,
-                "Exclusive character offset into the end block; the block's end when omitted",
-            ),
-            index(
-                "chapter",
-                false,
-                "Chapter, counted from 0; the open chapter when omitted",
-            ),
-        ],
-        move |args: &ActionArgs| {
-            let value = |name| args.integer(name).and_then(|v| usize::try_from(v).ok());
-            let start_block = value("start_block").unwrap_or(0);
-            let operation = EbookOperation::SelectPassage {
-                book_id: book_id.clone(),
-                chapter: value("chapter").unwrap_or(chapter),
-                start_block,
-                start_char: value("start_char").unwrap_or(0),
-                end_block: value("end_block").unwrap_or(start_block),
-                end_char: value("end_char"),
-            };
-            EncodedAction {
-                type_id: EBOOK_OPERATION_TYPE.into(),
-                payload: serde_json::to_vec(&operation).expect("EbookOperation serializes"),
-            }
-        },
-    )
-}
-
-/// Move this reader to a chapter and block, as revealing an annotation does:
-/// the page holding the block's start opens, nothing is selected, and any
-/// selection is cleared. Each mount keeps its own position.
-#[allow(
-    clippy::expect_used,
-    reason = "EbookOperation contains only JSON-representable strings and integers"
-)]
-fn go_to_operation(book_id: String, chapter: usize) -> ActionSpec {
-    let index = |name: &'static str, description: &'static str| {
-        ActionParam::optional(name, ParamType::Integer, description)
-            .with_schema(serde_json::json!({"minimum": 0}))
-    };
-    ActionSpec::typed_operation(
-        "go-to",
-        "Go to",
-        "open the book at a chapter and paragraph without selecting",
-        OperationKind::View,
-        EBOOK_OPERATION_TYPE,
-        vec![
-            index(
-                "chapter",
-                "Chapter, counted from 0; the open chapter when omitted",
-            ),
-            index(
-                "block",
-                "Block (paragraph or heading) to open at, counted from 0 in the chapter; its start when omitted",
-            ),
-        ],
-        move |args: &ActionArgs| {
-            let value = |name| args.integer(name).and_then(|v| usize::try_from(v).ok());
-            let operation = EbookOperation::Reveal {
-                book_id: book_id.clone(),
-                chapter: value("chapter").unwrap_or(chapter),
-                page: 0,
-                block: Some(value("block").unwrap_or(0)),
-            };
-            EncodedAction {
-                type_id: EBOOK_OPERATION_TYPE.into(),
-                payload: serde_json::to_vec(&operation).expect("EbookOperation serializes"),
-            }
-        },
-    )
-}
-
 /// The open book's annotations as resources: one per highlight (its comments
 /// beneath it), note and bookmark, with the ids search resolves, each opening
-/// its passage.
+/// its passage and carrying the Document mutations the palette/agent door
+/// must reach through [`tilo_resource::publish`].
 fn annotation_resources(annotations: &[Annotation]) -> Vec<Resource> {
     let open = |annotation: &Annotation| {
-        operation(
-            "open",
+        open_at(
+            &annotation.doc_id,
+            annotation.chapter,
+            Some(annotation.block),
             "Show in book",
-            OperationKind::View,
-            EbookOperation::Reveal {
-                book_id: annotation.doc_id.clone(),
-                chapter: annotation.chapter,
-                page: 0,
-                block: Some(annotation.block),
-            },
         )
     };
     let presentation = |annotation: &Annotation| {
@@ -1630,11 +1514,11 @@ fn annotation_resources(annotations: &[Annotation]) -> Vec<Resource> {
             existing.label = format!("{} {}", existing.label, label(annotation));
             continue;
         }
-        resources.push(
-            Resource::new(id, kind, label(annotation))
-                .with_presentation(presentation(annotation))
-                .with_action(open(annotation)),
-        );
+        let mut resource = Resource::new(id, kind, label(annotation))
+            .with_presentation(presentation(annotation))
+            .with_action(open(annotation));
+        resource = with_annotation_document_actions(resource, annotation, false);
+        resources.push(resource);
     }
     for annotation in annotations {
         if annotation.kind != AnnoKind::Note || annotation.group == annotation.id {
@@ -1645,18 +1529,116 @@ fn annotation_resources(annotations: &[Annotation]) -> Vec<Resource> {
             .iter_mut()
             .find(|resource| resource.id.as_str() == parent)
         {
-            highlight.children.push(
-                Resource::new(
-                    format!("ebook.comment:{}", annotation.id),
-                    "ebook.comment",
-                    label(annotation),
-                )
-                .with_presentation(presentation(annotation))
-                .with_action(open(annotation)),
-            );
+            let mut comment = Resource::new(
+                format!("ebook.comment:{}", annotation.id),
+                "ebook.comment",
+                label(annotation),
+            )
+            .with_presentation(presentation(annotation))
+            .with_action(open(annotation));
+            comment = with_annotation_document_actions(comment, annotation, true);
+            highlight.children.push(comment);
         }
     }
     resources
+}
+
+/// Document mutations on one annotation row (or comment). Views stay on the
+/// resource separately; this only attaches CRDT-backed ops.
+fn with_annotation_document_actions(
+    mut resource: Resource,
+    annotation: &Annotation,
+    comment: bool,
+) -> Resource {
+    match annotation.kind {
+        AnnoKind::Highlight => {
+            let group = annotation.group;
+            resource = resource.with_action(ActionSpec::prompted(
+                "change-color",
+                "Change colour",
+                "Colour",
+                "yellow, green, blue, pink, purple",
+                ExecutionLocus::ClientLocal,
+                move |name| encode(&change_color_action(group, HiColor::from_str(name.trim()))),
+            ));
+            resource = resource.with_action(encode_spec(
+                "delete-highlight",
+                "Delete highlight",
+                &delete_highlight_action(annotation.group),
+            ));
+            let book_id = annotation.doc_id.clone();
+            let anchor = AnnotationAnchor {
+                chapter: annotation.chapter,
+                block: annotation.block,
+                start: annotation.start,
+                end: annotation.end,
+                excerpt: annotation.excerpt.clone(),
+            };
+            let color = annotation.color;
+            resource = resource.with_action(ActionSpec::prompted(
+                "add-comment",
+                "Add comment",
+                "Comment",
+                "your comment…",
+                ExecutionLocus::ClientLocal,
+                move |text| {
+                    encode(
+                        &CommentDraft {
+                            group,
+                            note: NoteDraft {
+                                book_id: book_id.clone(),
+                                id: Uuid::new_v4(),
+                                anchor: anchor.clone(),
+                                color,
+                                text: text.to_string(),
+                            },
+                        }
+                        .into_action(),
+                    )
+                },
+            ));
+        }
+        AnnoKind::Bookmark => {
+            resource = resource.with_action(encode_spec(
+                "delete",
+                "Delete bookmark",
+                &delete_annotation_action(annotation.id),
+            ));
+        }
+        AnnoKind::Note => {
+            let id = annotation.id;
+            let edit_id = if comment { "edit-comment" } else { "edit" };
+            let edit_label = if comment { "Edit comment" } else { "Edit note" };
+            let delete_id = if comment { "delete-comment" } else { "delete" };
+            let delete_label = if comment {
+                "Delete comment"
+            } else {
+                "Delete note"
+            };
+            resource = resource.with_action(ActionSpec::prompted(
+                edit_id,
+                edit_label,
+                if comment { "Comment" } else { "Note" },
+                if comment {
+                    "edit the comment…"
+                } else {
+                    "edit the note…"
+                },
+                ExecutionLocus::ClientLocal,
+                move |text| encode(&edit_note_action(id, text)),
+            ));
+            resource = resource.with_action(encode_spec(
+                delete_id,
+                delete_label,
+                &delete_annotation_action(id),
+            ));
+            resource.children.push(note_text_resource(
+                id,
+                if comment { "Comment text" } else { "Note text" },
+            ));
+        }
+    }
+    resource
 }
 
 // Same infallibility as `encode` above: `ActionSpec::immediate` can only fail
@@ -1669,106 +1651,146 @@ fn encode_spec(id: &str, label: &str, action: &EbookAction) -> ActionSpec {
     ActionSpec::immediate(id, label, EBOOK_ACTION_TYPE, action).expect("encode ebook action")
 }
 
-/// Add the controls that are meaningful only for the reader's active book to
-/// an already resolved canonical book resource. This preserves the bounded
-/// directory while retaining the exact same action set as the on-page reader.
-pub(crate) fn current_book_actions(mut resource: Resource, ctx: &BookResourceCtx) -> Resource {
-    resource = resource.with_action(encode_spec(
-        "toggle-bookmark",
-        "Toggle bookmark",
-        &ctx.bookmark.clone().into_action(),
-    ));
-    if let Some(plan) = &ctx.selection_highlight {
-        resource = resource.with_action(encode_spec(
-            "highlight-selection",
-            "Highlight selection",
-            &plan.clone().into_action(),
-        ));
+/// Where the reader is in the open book, published beside the library: page
+/// chrome and passage selection, which change only this reader's view and
+/// never the library. The library's edits bound to the same place are
+/// [`reading_declarations`].
+pub(crate) fn reading_resource(ctx: &BookResourceCtx) -> Resource {
+    let mut resource = Resource::new(
+        format!("ebook.selection:{}", ctx.book_id),
+        "ebook.selection",
+        "Current reading",
+    );
+    for spec in passage_effects(&ctx.book_id, ctx.chapter) {
+        resource = resource.with_action(spec);
     }
-    if let Some(draft) = &ctx.selection_note {
-        let draft = draft.clone();
-        resource = resource.with_action(ActionSpec::prompted(
-            "note-selection",
-            "Add note to selection",
-            "Note",
-            "your note…",
-            ExecutionLocus::ClientLocal,
-            move |text| {
-                encode(
-                    &NoteDraft {
-                        id: Uuid::new_v4(),
-                        text: text.to_string(),
-                        ..draft.clone()
-                    }
-                    .into_action(),
-                )
-            },
-        ));
-    }
-    resource = resource.with_action(select_passage_operation(ctx.book_id.clone(), ctx.chapter));
-    resource = resource.with_action(go_to_operation(ctx.book_id.clone(), ctx.chapter));
-    resource.children = annotation_resources(&ctx.annotations);
-    let book_id = ctx.book_id.clone();
-    let chapter = ctx.chapter;
-    let block = ctx.bookmark_block;
-    resource = resource.with_action(ActionSpec::prompted(
-        "add-note",
-        "Add note",
-        "Note",
-        "your note…",
-        ExecutionLocus::ClientLocal,
-        move |text| {
-            encode(
-                &NoteDraft {
-                    book_id: book_id.clone(),
-                    id: Uuid::new_v4(),
-                    anchor: AnnotationAnchor {
-                        chapter,
-                        block,
-                        start: 0,
-                        end: 0,
-                        excerpt: String::new(),
-                    },
-                    color: HiColor::Yellow,
-                    text: text.to_string(),
-                }
-                .into_action(),
-            )
-        },
-    ));
-    for (id, label, value) in [
-        (
-            "previous-page",
-            "Previous page",
-            EbookOperation::PreviousPage,
-        ),
-        ("next-page", "Next page", EbookOperation::NextPage),
-        (
-            "contents",
-            "Toggle table of contents",
-            EbookOperation::ToggleContents,
-        ),
-        ("notes", "Toggle notes", EbookOperation::ToggleNotes),
-        (
-            "settings",
-            "Open reading settings",
-            EbookOperation::OpenSettings,
-        ),
+    for (effect, label) in [
+        (BooksEffect::PreviousPage, "Previous page"),
+        (BooksEffect::NextPage, "Next page"),
+        (BooksEffect::Contents, "Toggle table of contents"),
+        (BooksEffect::Notes, "Toggle notes"),
+        (BooksEffect::Settings, "Open reading settings"),
     ] {
-        resource = resource.with_action(operation(id, label, OperationKind::View, value));
+        resource = resource.with_action(bound(&effect, label));
     }
     resource
 }
 
-fn settings_resource(doc: &AutoCommit) -> Resource {
-    let settings = BooksDoc::read_settings(doc);
-    let mut root = Resource::new("ebook.settings", "ebook.settings", "Reading settings")
-        .with_action(operation(
-            "open",
-            "Open reading settings",
-            OperationKind::View,
-            EbookOperation::OpenSettings,
+/// The library's edits bound to where the reader is in the open book: the
+/// page's bookmark, a note on the page, and a highlight or note on the
+/// selection. Each builds the library's action as the on-page control does.
+pub(crate) fn reading_declarations(
+    ctx: &BookResourceCtx,
+) -> Vec<ActionDecl<crate::resource::Ebook>> {
+    let text = || ActionParam::required("text", ParamType::Text, "The note's text");
+    let note_text = |args: &ActionArgs| {
+        args.text("text")
+            .map(str::to_owned)
+            .ok_or_else(|| "a note needs its text".to_string())
+    };
+    let bookmark = ctx.bookmark.clone();
+    let mut declarations = vec![
+        ActionDecl::new(
+            "toggle-bookmark",
+            "Toggle bookmark",
+            Vec::new(),
+            move |_, _| Ok(bookmark.clone().into_action()),
+        )
+        .describe("Bookmark the page the reader is on, or remove its bookmark."),
+    ];
+    let page_note = NoteDraft {
+        book_id: ctx.book_id.clone(),
+        id: Uuid::nil(),
+        anchor: AnnotationAnchor {
+            chapter: ctx.chapter,
+            block: ctx.bookmark_block,
+            start: 0,
+            end: 0,
+            excerpt: String::new(),
+        },
+        color: HiColor::Yellow,
+        text: String::new(),
+    };
+    declarations.push(
+        ActionDecl::new("add-note", "Add note", vec![text()], move |args, _| {
+            Ok(NoteDraft {
+                id: Uuid::new_v4(),
+                text: note_text(args)?,
+                ..page_note.clone()
+            }
+            .into_action())
+        })
+        .describe("Add a note to the page the reader is on."),
+    );
+    if let Some(plan) = ctx.selection_highlight.clone() {
+        declarations.push(
+            ActionDecl::new(
+                "highlight-selection",
+                "Highlight selection",
+                Vec::new(),
+                move |_, _| Ok(plan.clone().into_action()),
+            )
+            .describe("Highlight the selected passage, or remove its highlight."),
+        );
+    }
+    if let Some(draft) = ctx.selection_note.clone() {
+        declarations.push(
+            ActionDecl::new(
+                "note-selection",
+                "Add note to selection",
+                vec![text()],
+                move |args, _| {
+                    Ok(NoteDraft {
+                        id: Uuid::new_v4(),
+                        text: note_text(args)?,
+                        ..draft.clone()
+                    }
+                    .into_action())
+                },
+            )
+            .describe("Add a note to the selected passage."),
+        );
+    }
+    declarations
+}
+
+/// Shelf Document ops whose payloads bind from live library preferences.
+pub(crate) fn bound_library_document_actions(prefs: LibraryPrefs) -> Vec<ActionSpec> {
+    let mut actions = Vec::new();
+    let mut toggled = prefs;
+    toggled.hide_read = !toggled.hide_read;
+    actions.push(encode_spec(
+        "toggle-hide-read",
+        if prefs.hide_read {
+            "Show read books"
+        } else {
+            "Hide read books"
+        },
+        &set_library_preferences_action(prefs, toggled),
+    ));
+    for sort in LibrarySort::ALL {
+        let mut next = prefs;
+        next.sort = sort;
+        actions.push(encode_spec(
+            &format!("sort-{}", sort.as_str()),
+            &format!("Sort by {}", sort.label()),
+            &set_library_preferences_action(prefs, next),
         ));
+    }
+    actions
+}
+
+/// Reading-settings Document resource (mode / composition / theme / fonts /
+/// schemes). Shared CRDT state — published under the library via
+/// [`publish_document_children`], never as a second hosted root beside
+/// [`tilo_resource::publish`].
+pub(crate) fn settings_document_resource(
+    settings: &Settings,
+    fonts: &[FontEntry],
+    schemes: &[ColorScheme],
+) -> Resource {
+    let mut root = Resource::new("ebook.settings", "ebook.settings", "Reading settings")
+        .with_action(bound(&BooksEffect::Settings, "Open reading settings"));
     for mode in ReadMode::ALL {
         let mut next = settings.clone();
         next.mode = mode;
@@ -1797,21 +1819,15 @@ fn settings_resource(doc: &AutoCommit) -> Resource {
             &set_reading_settings_action(settings.clone(), next),
         ));
     }
-
-    root = font_resources(root, doc);
-    scheme_resources(root, doc)
+    root = font_document_children(root, fonts);
+    scheme_document_children(root, schemes)
 }
 
-fn font_resources(mut root: Resource, doc: &AutoCommit) -> Resource {
-    for font in BooksDoc::read_fonts(doc) {
+fn font_document_children(mut root: Resource, fonts: &[FontEntry]) -> Resource {
+    for font in fonts {
         let id = font.id.clone();
         let mut child = Resource::new(format!("ebook.font:{id}"), "ebook.font", font.name.clone())
-            .with_action(operation(
-                "open-settings",
-                "Open font settings",
-                OperationKind::View,
-                EbookOperation::OpenSettings,
-            ));
+            .with_action(bound(&BooksEffect::Settings, "Open font settings"));
         let mut toggled = font.clone();
         toggled.shown = !toggled.shown;
         child = child.with_action(encode_spec(
@@ -1853,20 +1869,15 @@ fn font_resources(mut root: Resource, doc: &AutoCommit) -> Resource {
     root
 }
 
-fn scheme_resources(mut root: Resource, doc: &AutoCommit) -> Resource {
-    for scheme in BooksDoc::read_schemes(doc) {
+fn scheme_document_children(mut root: Resource, schemes: &[ColorScheme]) -> Resource {
+    for scheme in schemes {
         let id = scheme.id.clone();
         let mut child = Resource::new(
             format!("ebook.scheme:{id}"),
             "ebook.color-scheme",
             scheme.name.clone(),
         )
-        .with_action(operation(
-            "open-settings",
-            "Open colour settings",
-            OperationKind::View,
-            EbookOperation::OpenSettings,
-        ));
+        .with_action(bound(&BooksEffect::Settings, "Open colour settings"));
         let mut toggled = scheme.clone();
         toggled.enabled = !toggled.enabled;
         child = child.with_action(encode_spec(
@@ -1909,111 +1920,183 @@ fn scheme_resources(mut root: Resource, doc: &AutoCommit) -> Resource {
     root
 }
 
-fn library_preference_actions(mut library: Resource, doc: &AutoCommit) -> Resource {
-    let prefs = BooksDoc::read_library_prefs(doc);
-    let mut toggled = prefs;
-    toggled.hide_read = !toggled.hide_read;
-    library = library.with_action(encode_spec(
-        "toggle-hide-read",
-        if prefs.hide_read {
-            "Show read books"
-        } else {
-            "Hide read books"
-        },
-        &set_library_preferences_action(prefs, toggled),
-    ));
-    for sort in LibrarySort::ALL {
-        let mut next = prefs;
-        next.sort = sort;
-        library = library.with_action(encode_spec(
-            &format!("sort-{}", sort.as_str()),
-            &format!("Sort by {}", sort.label()),
-            &set_library_preferences_action(prefs, next),
-        ));
-    }
-    library
-}
-
-/// Build the bounded canonical directory root. Exact book, chapter, and
-/// annotation resources are deliberately lazy through [`ResourceProvider`].
-pub fn provide_resources(_books: &[crate::model::Book], doc: &AutoCommit) -> Vec<Resource> {
-    let library = Resource::new("ebook.library", "ebook.library", "Books library")
-        .with_action(open_book_operation());
-    let mut settings = settings_resource(doc);
-    settings.children.clear();
-    vec![library_preference_actions(library, doc), settings]
-}
-
-impl ResourceProvider for crate::app::BooksApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        // Directory discovery is intentionally root-only. Children are exact,
-        // lazy resources resolved through the retained provider; exporting a
-        // whole EPUB/annotation tree here would make opening Ctrl+K O(library).
-        ["ebook.library", "ebook.settings"]
-            .into_iter()
-            .filter_map(|id| self.resource(doc, id))
-            .collect()
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        if id == "ebook.library" {
-            return Some(library_preference_actions(
-                Resource::new("ebook.library", "ebook.library", "Books library")
-                    .with_action(open_book_operation()),
-                doc,
-            ));
+/// One shelf book with membership Document ops and its annotation Document
+/// children. Share / hydrate Effects stay for the palette; remove is Document.
+pub(crate) fn library_book_document_resource(
+    entry: &LibraryEntry,
+    annotations: &[Annotation],
+) -> Resource {
+    let book_id = entry.id.clone();
+    let mut resource = Resource::new(
+        format!("ebook.book:{book_id}"),
+        "ebook.book",
+        entry.title.clone(),
+    );
+    resource = resource.with_action(if entry.shared && entry.content.is_none() {
+        BooksEffect::Download {
+            book: book_id.clone(),
         }
-        if id == "ebook.settings" {
-            let mut settings = settings_resource(doc);
-            settings.children.clear();
-            return Some(settings);
+        .bound()
+    } else {
+        BooksEffect::Share {
+            book: book_id.clone(),
         }
-
-        if [
-            "ebook.book:",
-            "ebook.chapter:",
-            "ebook.location:",
-            "ebook.highlight:",
-            "ebook.bookmark:",
-            "ebook.note:",
-            "ebook.comment:",
-        ]
+        .bound()
+    });
+    resource = resource.with_action(
+        encode_spec(
+            "remove-from-library",
+            "Remove from library",
+            &remove_library_book_action(&book_id),
+        )
+        .with_contract(tilo_actions::ActionContract {
+            risk: RiskLevel::Destructive,
+            confirmation: ConfirmationPolicy::Confirm,
+            retry: RetryPolicy::Idempotent,
+            reversible: true,
+            tags: vec!["library".into(), "tombstone".into()],
+            ..tilo_actions::ActionContract::default()
+        }),
+    );
+    for spec in passage_effects(&book_id, 0) {
+        resource = resource.with_action(spec);
+    }
+    let book_annotations: Vec<Annotation> = annotations
         .iter()
-        .any(|prefix| id.starts_with(prefix))
-        {
-            let address = tilo_actions::ActionAddress::new(id, "open");
-            let resource = self.resolve_search_resource(&address)?;
-            if let Some(ctx) = self.current_book_resource_context()
-                && id == format!("ebook.book:{}", ctx.book_id)
-            {
-                return Some(current_book_actions(resource, &ctx));
+        .filter(|annotation| annotation.doc_id == book_id)
+        .cloned()
+        .collect();
+    resource.children = annotation_resources(&book_annotations);
+    resource
+}
+
+/// The annotation `id` names, with its declared document actions, when the
+/// published page of books leaves it out: a search hit on an annotation of
+/// any book in the library still edits and deletes it. Books themselves are
+/// published by the reader with its live actions, so they are not resolved
+/// here.
+pub(crate) fn document_child(
+    entries: &[LibraryEntry],
+    annotations: &[Annotation],
+    id: &str,
+) -> Option<Resource> {
+    fn find(resources: Vec<Resource>, id: &str) -> Option<Resource> {
+        resources.into_iter().find_map(|resource| {
+            if resource.id.as_str() == id {
+                return Some(resource);
             }
-            return Some(resource);
-        }
-
-        if id.strip_prefix("ebook.font:").is_some() {
-            return settings_resource(doc)
-                .children
-                .into_iter()
-                .find(|resource| resource.id.as_str() == id);
-        }
-        if id.strip_prefix("ebook.scheme:").is_some() {
-            return settings_resource(doc)
-                .children
-                .into_iter()
-                .find(|resource| resource.id.as_str() == id);
-        }
-
-        None
+            find(resource.children, id)
+        })
     }
+    let (kind, key) = id.split_once(':')?;
+    let key = key.parse::<Uuid>().ok()?;
+    let book_id = &annotations
+        .iter()
+        .find(|annotation| match kind {
+            "ebook.highlight" => annotation.group == key,
+            "ebook.bookmark" | "ebook.note" | "ebook.comment" => annotation.id == key,
+            _ => false,
+        })?
+        .doc_id;
+    let entry = entries.iter().find(|entry| &entry.id == book_id)?;
+    find(vec![library_book_document_resource(entry, annotations)], id)
+}
+
+/// Nested Document resources under the library: books (with annotations) and
+/// reading settings. The reader's live rows must not republish these.
+pub(crate) fn publish_document_children(
+    entries: &[LibraryEntry],
+    annotations: &[Annotation],
+    settings: &Settings,
+    fonts: &[FontEntry],
+    schemes: &[ColorScheme],
+) -> Vec<Resource> {
+    let mut children: Vec<Resource> = entries
+        .iter()
+        .take(64)
+        .map(|entry| library_book_document_resource(entry, annotations))
+        .collect();
+    children.push(settings_document_resource(settings, fonts, schemes));
+    children
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::BooksApp;
-    use tilo_actions::{ActionInput, ActionRegistry, LocalTransport};
+    use tilo_actions::{ActionRegistry, LocalTransport};
     use tilo_automerge::ApplyIncoming;
+
+    /// The resource `id` in a published tree.
+    fn find_resource<'a>(resources: &'a [Resource], id: &str) -> Option<&'a Resource> {
+        resources.iter().find_map(|resource| {
+            (resource.id.as_str() == id)
+                .then_some(resource)
+                .or_else(|| find_resource(&resource.children, id))
+        })
+    }
+
+    /// The library as the framework publishes it.
+    fn provide_resources(_books: &[crate::model::Book], doc: &AutoCommit) -> Vec<Resource> {
+        let state =
+            <crate::resource::Ebook as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+        vec![ui::tilo_resource::publish::<crate::resource::Ebook>(
+            crate::resource::LIBRARY_RESOURCE_ID,
+            "Books library",
+            &state,
+        )]
+    }
+
+    #[test]
+    fn an_annotation_of_any_book_offers_its_declared_edits() {
+        let (_app, doc, _book_id, group) = open_with_annotations();
+        let state =
+            <crate::resource::Ebook as ui::tilo_resource::Resource>::read(&doc).unwrap_or_default();
+        let ids = |resource: &Resource| -> Vec<String> {
+            resource
+                .actions
+                .iter()
+                .map(|action| action.id.clone())
+                .collect()
+        };
+        let highlight = document_child(
+            &state.entries,
+            &state.annotations,
+            &format!("ebook.highlight:{group}"),
+        )
+        .expect("the highlight resolves by id");
+        let highlight_actions = ids(&highlight);
+        for expected in ["open", "change-color", "delete-highlight", "add-comment"] {
+            assert!(
+                highlight_actions.iter().any(|id| id == expected),
+                "{expected} in {highlight_actions:?}"
+            );
+        }
+        let note = state
+            .annotations
+            .iter()
+            .find(|annotation| {
+                annotation.kind == AnnoKind::Note && annotation.group == annotation.id
+            })
+            .expect("the fixture has a note");
+        let note = document_child(
+            &state.entries,
+            &state.annotations,
+            &format!("ebook.note:{}", note.id),
+        )
+        .expect("the note resolves by id");
+        assert!(ids(&note).iter().any(|id| id == "edit"));
+        assert!(ids(&note).iter().any(|id| id == "delete"));
+        assert!(
+            document_child(
+                &state.entries,
+                &state.annotations,
+                "ebook.note:00000000-0000-0000-0000-000000000000"
+            )
+            .is_none(),
+            "an annotation that is gone resolves to nothing"
+        );
+    }
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -2024,13 +2107,29 @@ mod tests {
     /// A reader with a book open and one seeded highlight carrying two comments,
     /// plus a standalone note and a bookmark, in the CRDT.
     fn open_with_annotations() -> (BooksApp, AutoCommit, String, Uuid) {
-        let app = BooksApp::with_library(crate::content::load_sample_library());
+        let app = BooksApp::with_library(
+            crate::resource::library_dispatcher_for_test(),
+            crate::content::load_sample_library(),
+        );
         let book_id = app
             .open_book()
             .expect("sample library is non-empty")
             .id
             .clone();
         let mut doc = AutoCommit::new();
+        let book = app.open_book().expect("sample library is non-empty");
+        BooksDoc::upsert_library_entry(
+            &mut doc,
+            &LibraryEntry {
+                id: book.id.clone(),
+                shared: false,
+                title: book.title.clone(),
+                author: book.author.clone(),
+                subject: book.subject.clone(),
+                added: 1,
+                content: None,
+            },
+        );
         let group = Uuid::from_u128(0x1111_2222_3333_4444_5555_6666_7777_8888);
         // Highlight piece.
         let hl = Annotation {
@@ -2094,8 +2193,27 @@ mod tests {
     /// exact book and annotation resources the retained search snapshot
     /// resolves for the document's annotations.
     fn resources_for(doc: &AutoCommit) -> Vec<Resource> {
+        fn contains_id(resources: &[Resource], id: &str) -> bool {
+            resources
+                .iter()
+                .any(|resource| resource.id.as_str() == id || contains_id(&resource.children, id))
+        }
         let (app, _seed, book_id, _group) = open_with_annotations();
-        let mut resources = ui::resources::resources(&app, doc);
+        let mut resources = provide_resources(&[], doc);
+        if let Some(library) = resources.first_mut() {
+            // The reader's effects are published on the library beside it.
+            library
+                .actions
+                .extend(<crate::resource::BooksEffect as ui::tilo_resource::Effect>::specs());
+        }
+        resources.extend(
+            <crate::app::BooksApp as ui::framework::ResourceSurface<
+                crate::resource::Ebook,
+                BooksEffect,
+            >>::live_rows(&app)
+            .into_iter()
+            .map(ui::framework::LiveRow::into_resource),
+        );
         let lazy = std::iter::once(format!("ebook.book:{book_id}"))
             .chain(
                 BooksDoc::read_fonts(doc)
@@ -2108,8 +2226,22 @@ mod tests {
                     .map(|scheme| format!("ebook.scheme:{}", scheme.id)),
             );
         for id in lazy {
+            if contains_id(&resources, &id) {
+                continue;
+            }
             resources.push(
-                ui::resources::resource(&app, doc, &id).unwrap_or_else(|| panic!("{id} resolves")),
+                <crate::resource::Ebook as ui::tilo_resource::Resource>::child(
+                    &<crate::resource::Ebook as ui::tilo_resource::Resource>::read(doc).unwrap(),
+                    &id,
+                )
+                .or_else(|| {
+                    <crate::app::BooksApp as ui::framework::ResourceSurface<
+                        crate::resource::Ebook,
+                        BooksEffect,
+                    >>::live_row(&app, &id)
+                    .map(ui::framework::LiveRow::into_resource)
+                })
+                .unwrap_or_else(|| panic!("{id} resolves")),
             );
         }
         let books: Vec<crate::model::Book> = app
@@ -2133,7 +2265,7 @@ mod tests {
                 }
                 AnnoKind::Note => format!("ebook.note:{}", annotation.id),
             };
-            if !seen.insert(id.clone()) {
+            if !seen.insert(id.clone()) || contains_id(&resources, &id) {
                 continue;
             }
             resources.push(
@@ -2269,12 +2401,16 @@ mod tests {
         // the immutable search snapshot and never materialise siblings.
         {
             let (app, doc, book_id, _group) = open_with_annotations();
-            let roots = ui::resources::resources(&app, &doc);
-            assert_eq!(roots.len(), 2);
+            let roots = provide_resources(&[], &doc);
+            assert_eq!(roots.len(), 1);
             assert_eq!(roots[0].id.as_str(), "ebook.library");
-            assert!(roots[0].children.is_empty());
-            assert_eq!(roots[1].id.as_str(), "ebook.settings");
-            assert!(roots[1].children.is_empty());
+            assert!(
+                roots[0]
+                    .children
+                    .iter()
+                    .any(|child| child.id.as_str() == "ebook.settings"),
+                "reading settings ride the library door"
+            );
             let books: Vec<crate::model::Book> = app
                 .library()
                 .iter()
@@ -2296,11 +2432,13 @@ mod tests {
                     .iter()
                     .any(|action| action.id == "remove-from-library")
             );
-            let current = ui::resources::resource(&app, &doc, &format!("ebook.book:{book_id}"))
-                .expect("current exact book");
+            let reading = <crate::app::BooksApp as ui::framework::ResourceSurface<
+                crate::resource::Ebook,
+                BooksEffect,
+            >>::live_row(&app, &format!("ebook.selection:{book_id}"))
+            .expect("where the reader is")
+            .into_resource();
             for id in [
-                "toggle-bookmark",
-                "add-note",
                 "previous-page",
                 "next-page",
                 "contents",
@@ -2308,37 +2446,45 @@ mod tests {
                 "settings",
             ] {
                 assert!(
-                    current.actions.iter().any(|action| action.id == id),
-                    "missing current-book action {id}"
+                    reading.actions.iter().any(|action| action.id == id),
+                    "missing reading action {id}"
                 );
             }
-            let settings = ui::resources::resource(&app, &doc, "ebook.settings").expect("settings");
-            assert!(settings.children.is_empty());
+            let bound: Vec<&str> = app
+                .reading_declarations()
+                .iter()
+                .map(|declaration| declaration.id)
+                .collect();
+            assert_eq!(bound, ["toggle-bookmark", "add-note"]);
+            let settings = find_resource(&roots, "ebook.settings").expect("settings");
+            assert_eq!(settings.kind, "ebook.settings");
             for font in BooksDoc::read_fonts(&doc) {
-                assert!(
-                    ui::resources::resource(&app, &doc, &format!("ebook.font:{}", font.id))
-                        .is_some()
-                );
+                assert!(find_resource(&roots, &format!("ebook.font:{}", font.id)).is_some());
             }
             for scheme in BooksDoc::read_schemes(&doc) {
-                assert!(
-                    ui::resources::resource(&app, &doc, &format!("ebook.scheme:{}", scheme.id))
-                        .is_some()
-                );
+                assert!(find_resource(&roots, &format!("ebook.scheme:{}", scheme.id)).is_some());
             }
         }
 
-        // --- phase: library_open_action_is_canonical_even_without_loaded_books ---
+        // --- phase: opening_a_book_is_a_device_only_job_of_the_reader ---
         {
-            let doc = AutoCommit::new();
-            let resources = provide_resources(&[], &doc);
-            assert_eq!(resources.len(), 2);
-            let address = tilo_actions::ActionAddress::new("ebook.library", "open-book");
-            let encoded = tilo_actions::door::encode(&resources, &address, None)
-                .expect("library action resolves through the canonical tree");
-            assert_eq!(
-                decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-                Some(EbookOperation::OpenBook)
+            use ui::tilo_resource::Effect as _;
+            let open = crate::resource::BooksEffect::specs()
+                .into_iter()
+                .find(|spec| spec.id == "open-book")
+                .expect("the reader offers to open a book");
+            assert_eq!(open.label, "Open book");
+            assert_eq!(open.kind, tilo_actions::OperationKind::Effect);
+            assert!(matches!(
+                open.contract.execution,
+                tilo_actions::ExecutionMode::Background { cancellable: true }
+            ));
+            assert!(
+                open.contract
+                    .tags
+                    .iter()
+                    .any(|tag| tag == tilo_actions::LOCAL_DEVICE_ONLY),
+                "choosing a file is the person's at this device"
             );
         }
 
@@ -2365,26 +2511,34 @@ mod tests {
             );
             let resource = ui::search::SearchProvider::resolve_action_resource(
                 &provider,
-                &tilo_actions::ActionAddress::new("ebook.book:book:remote-only", "open"),
+                &tilo_actions::ActionAddress::new("ebook.book:book:remote-only", "download"),
             );
             let resource = resource.expect("remote bytes expose a typed hydrate capability");
             let open = resource
                 .actions
                 .iter()
-                .find(|action| action.id == "open")
+                .find(|action| action.id == "download")
                 .expect("download and open");
             assert_eq!(open.label, "Download and open");
-            let ActionInput::Immediate(operation) = &open.input else {
-                panic!("remote hydrate is replayable");
-            };
+            let payload = open
+                .build_json(&serde_json::Map::new())
+                .expect("a bound download takes no arguments")
+                .payload;
             assert_eq!(
-                decode_operation(&operation.type_id, &operation.payload).unwrap(),
-                Some(EbookOperation::HydrateSharedBook {
-                    book_id: "book:remote-only".into(),
-                })
+                BooksEffect::from_payload(&payload).unwrap(),
+                BooksEffect::Download {
+                    book: "book:remote-only".into(),
+                }
             );
             let roots = provide_resources(&[], &doc);
-            assert!(roots[0].children.is_empty());
+            assert_eq!(roots.len(), 1);
+            assert!(
+                roots[0]
+                    .children
+                    .iter()
+                    .any(|child| child.id.as_str() == "ebook.book:book:remote-only"),
+                "the shared book is a child of the published library"
+            );
             let resource = ui::search::SearchProvider::search(&provider, "Waiting")
                 .pop()
                 .expect("remote metadata row");
@@ -2866,22 +3020,6 @@ mod tests {
                     .collect::<Vec<_>>();
                 assert_eq!(ids, vec![concurrent]);
             }
-        }
-
-        // --- phase: legacy_bookmark_toggle_is_decoded_but_refused ---
-        {
-            let (_app, mut doc, book_id, _group) = open_with_annotations();
-            let legacy = toggle_bookmark_action(
-                &book_id,
-                Uuid::from_u128(0xB00C_0000_0000_0000_0000_0000_0000_0004),
-                0,
-                9,
-                "legacy",
-            );
-            assert!(matches!(
-                legacy.apply(&mut doc),
-                Err(ActionError::Refused(_))
-            ));
         }
 
         // --- phase: malformed_or_oversized_actions_are_atomic_refusals ---

@@ -41,6 +41,23 @@ impl App {
     }
 
     /// The screen-reader flag tracks [`Self::screen_reader_enabled`].
+    /// Apply a preference change a control asked for (see
+    /// [`Widget::take_accessibility_request`](crate::widget::Widget::take_accessibility_request)).
+    /// Returns whether one was pending.
+    pub fn apply_accessibility_request(&mut self) -> bool {
+        let Some(request) = self.root_widget.take_accessibility_request() else {
+            return false;
+        };
+        match request {
+            crate::a11y::AccessibilityRequest::TextScale(factor) => self.set_text_scale(factor),
+            crate::a11y::AccessibilityRequest::HighContrast(on) => self.set_high_contrast(on),
+            crate::a11y::AccessibilityRequest::ScreenReader(on) => {
+                self.set_screen_reader_enabled(on);
+            }
+        }
+        true
+    }
+
     pub fn a11y_settings(&self) -> crate::a11y::A11ySettings {
         let mut s = self.accessibility.a11y;
         s.screen_reader = self.accessibility.screen_reader.is_some();
@@ -357,29 +374,11 @@ impl App {
         &mut self,
         user_id: String,
         key: crate::presence::PresenceKey,
-        mut payload: crate::collaboration::PresencePayload,
+        payload: crate::collaboration::PresencePayload,
     ) {
         use crate::presence::RemotePresenceEffect;
-        // Domain actions arrive without UI coordinates by design. If this
-        // frame exposes the same address through one or more controls, bind
-        // the interaction to the preferred live semantic route before the
-        // monotonic presence store sees it. Every later phase resolves by the
-        // same address, so identity remains stable while menus/toolbars move.
-        if let crate::collaboration::PresencePayload::Interaction(update) = &mut payload
-            && matches!(&update.anchor, tilo_actions::InteractionAnchor::Resource)
-        {
-            let address = tilo_actions::ActionAddress::new(
-                update.resource.id.clone(),
-                update.action.id.clone(),
-            );
-            if let Some(route) = self.preferred_action_ui_route(&address)
-                && let Some(target) = route.path.last()
-            {
-                update.anchor = tilo_actions::InteractionAnchor::SemanticControl {
-                    id: target.as_str().to_string(),
-                };
-            }
-        }
+        // Keep canonical anchors intact. Resolve against each presented layout,
+        // never retain an arrival-time layout id across a rebuild.
         let interaction = match &payload {
             crate::collaboration::PresencePayload::Interaction(update) => Some((**update).clone()),
             _ => None,
@@ -490,14 +489,18 @@ impl App {
                     .flatten()
                 } else {
                     match request {
-                        crate::undo::UndoRequest::Undo => {
-                            self.state
-                                .undo_as(Some(&self.collaboration.local_author), None, None)
-                        }
-                        crate::undo::UndoRequest::Redo => {
-                            self.state
-                                .redo_as(Some(&self.collaboration.local_author), None, None)
-                        }
+                        crate::undo::UndoRequest::Undo => self.state.undo_as_with_registry(
+                            Some(&self.collaboration.local_author),
+                            None,
+                            None,
+                            Some(&self.actions.action_registry),
+                        ),
+                        crate::undo::UndoRequest::Redo => self.state.redo_as_with_registry(
+                            Some(&self.collaboration.local_author),
+                            None,
+                            None,
+                            Some(&self.actions.action_registry),
+                        ),
                     }
                 };
                 changed |= entry.is_some();
@@ -581,12 +584,11 @@ impl App {
         // Called after every handled event, many of which (e.g. a
         // selection-drag `CursorMoved`) mutate only ephemeral widget state,
         // not the CRDT — `changed` lets those skip persisting/syncing.
-        let context = crate::undo::take_commit_context(self.root_widget.as_mut());
         let changed = self.state.commit_action_authored_with_context(
             self.focus_history.stable_focus_idx,
             self.focus_history.stable_metadata.clone(),
             Some(self.collaboration.local_author.clone()),
-            context,
+            None,
         );
         self.focus_history.stable_focus_idx = self
             .focused_node
@@ -870,6 +872,17 @@ impl App {
         if len == 0 {
             return false;
         }
+        // Shown inside a host whose focus order continues past the app, Tab
+        // from the last control (Shift+Tab from the first) leaves the app.
+        if self.input.tab_order_continues_in_host {
+            let at = self
+                .focused_node
+                .and_then(|id| self.focusable_order.iter().position(|&n| n == id));
+            if at == Some(if shift { 0 } else { len - 1 }) {
+                self.set_focused_node(None);
+                return false;
+            }
+        }
         let Some(next_idx) =
             crate::focus_navigation::tab_index(&self.focusable_order, self.focused_node, shift)
         else {
@@ -1066,7 +1079,7 @@ impl App {
                 palette.perform_semantic_action(
                     target,
                     action,
-                    &mut self.state.doc,
+                    &mut crate::widget::Edits::lend(&mut self.state.doc),
                     &self.state.root,
                 )
             });
@@ -1091,11 +1104,21 @@ impl App {
         let handled = self
             .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
                 if let Some(target) = semantic_target.as_deref() {
-                    widget.perform_semantic_action(target, action, doc, root)
+                    widget.perform_semantic_action(
+                        target,
+                        action,
+                        &mut crate::widget::Edits::lend(doc),
+                        root,
+                    )
                 } else if synthetic {
-                    widget.perform_action_at(action, &key_path, doc, root)
+                    widget.perform_action_at(
+                        action,
+                        &key_path,
+                        &mut crate::widget::Edits::lend(doc),
+                        root,
+                    )
                 } else {
-                    widget.perform_action(action, doc, root)
+                    widget.perform_action(action, &mut crate::widget::Edits::lend(doc), root)
                 }
             })
             .ok()?;
@@ -1399,7 +1422,7 @@ impl App {
                             palette.perform_semantic_action(
                                 &semantic_target,
                                 &verb,
-                                &mut self.state.doc,
+                                &mut crate::widget::Edits::lend(&mut self.state.doc),
                                 &self.state.root,
                             )
                         });
@@ -1431,9 +1454,19 @@ impl App {
                     let handled = self
                         .dispatch_node(taffy_id, |widget, doc, root| {
                             if let Some(key_path) = keyed_path {
-                                widget.perform_action_at(&verb, &key_path, doc, root)
+                                widget.perform_action_at(
+                                    &verb,
+                                    &key_path,
+                                    &mut crate::widget::Edits::lend(doc),
+                                    root,
+                                )
                             } else {
-                                widget.perform_semantic_action(&semantic_target, &verb, doc, root)
+                                widget.perform_semantic_action(
+                                    &semantic_target,
+                                    &verb,
+                                    &mut crate::widget::Edits::lend(doc),
+                                    root,
+                                )
                             }
                         })
                         .map_err(|error| format!("component dispatch refused: {error:?}"))?;

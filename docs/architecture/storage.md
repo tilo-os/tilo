@@ -8,7 +8,7 @@ in [§22](#22-open-questions-for-the-owner) instead of guessing.
 This document replaces the storage parts of several documents that grew up
 separately: the collaborative file daemon (`crates/system/fs`), app state
 (`crates/system/app-state`, `crates/sdk/ui-core/src/{persist,record}.rs`),
-document blobs (`crates/doc/qdoc/src/blobstore.rs`) and the package store
+document blobs (`crates/doc/tilo-doc/src/blobstore.rs`) and the package store
 (`crates/packaging/app-host`). They become one system with one content store,
 one record model, one history and one permission model.
 
@@ -118,7 +118,7 @@ The pieces are strong. What is missing is one model and the performance path.
 | Content sync | A new QUIC connection and a whole-blob GET per 8 KiB chunk, sequential; push is disabled (`sync.rs:862`). About two RTTs per chunk, regardless of bandwidth: ~4 MB/s on LAN, ~50 KB/s over an 80 ms relay. | R3 |
 | Serving | Authorising one chunk scans every readable manifest while holding the namespace lock, in one serial task (`sync.rs:737-840`). | R3 |
 | App data | 44 of 54 apps keep all state in one Automerge document per `(package, room)`. Snapshots and deltas are capped at 3 MiB (`crates/collab/collab-types/src/op.rs:30-35`), and an oversized delta is dropped after the frontier has advanced (`crates/sdk/ui-core/src/collaboration.rs:3653-3661`). Room discovery is capped at 64 records (`ui-core/src/record.rs:38`). | R5, R8 |
-| Blobs | Two stores. qdoc's `BlobStore` is process-local, capped at 32 MiB per blob / 256 MiB / 8,192 entries (`crates/doc/qdoc/src/blobstore.rs:33-40`), and `BlobTransport` has no production implementation (`blobstore.rs:650-664`). The fs daemon has the other store. | R5, R6, R8 |
+| Blobs | Two stores. qdoc's `BlobStore` is process-local, capped at 32 MiB per blob / 256 MiB / 8,192 entries (`crates/doc/tilo-doc/src/blobstore.rs:33-40`), and `BlobTransport` has no production implementation (`blobstore.rs:650-664`). The fs daemon has the other store. | R5, R6, R8 |
 | Packages | A third store. `app-host` ingests every blob into its own `FsBlobStore` and eagerly unpacks a second copy (`crates/packaging/app-host/src/install.rs:1-20`, `store.rs:1-12`). `app-fs` (lazy FUSE) has no dependents. | R6, R7 |
 | History | Automerge change graphs for app state, signed versions plus a global JSON file for files, and an audit log on the relay. | R6 |
 
@@ -179,6 +179,7 @@ format, metadata persistence and transfer engine underneath it.
 | **Residency** | Per file: `Placeholder`, `Partial`, `Resident`, `Pinned`, `Dirty`, `LocalOnly`. | Replaces explicit-only eviction ([§12](#12-caching-residency-and-prefetch)). |
 | **Lease** | A time-bounded, fenced single-writer grant on one record, issued by a lease authority. | New ([§11.2](#112-leases)). |
 | **Settings** | Person-, device- or person-in-room-scoped typed values (`Settings<T>`). They follow the person or the device, never the room's members. | Formalises the split in `rooms.md`, "Not all app state is a record". |
+| **Person room, person records** | The person's own room: its id is derived from their root key, its members are by that derivation exactly the devices the root certified, and it has no roster to invite anyone into. A person record is an app's record in it — data of the person's own (watch history, learned words) that follows them across their devices and never reaches a collaborator ([§13.9](#139-person-records)). | New. Replaces app state squeezed into personal settings sections. |
 
 **Content versus settings.** Content records are room-scoped, empty in a new
 room, shared with room members and versioned in full. Settings are
@@ -1199,7 +1200,7 @@ disk would hold if the machine lost power at that instant *after* all
 completed writes. Programs that are crash-safe on one machine are built to
 recover from exactly that. That includes git (objects before refs, lockfile
 plus rename), SQLite (journal or WAL), and any program that uses the
-write-temp-fsync-rename pattern (`crates/system/atomic-file`).
+write-temp-fsync-rename pattern (`tilo_files::native::atomic`).
 
 **Guarantee V3: ordered application.** A peer applies one device's changesets
 in epoch order, and each changeset only after its causal context (other
@@ -1556,6 +1557,55 @@ file.history().versions();                                                      
 - This replaces the process-local qdoc store and its `set_store(FsBlobStore…)`
   calls (`apps/photos/src/main.rs:90-97`, `apps/chat/src/main.rs:78-83`).
 
+**What is built today: a record's content travels on the record's route.**
+A record holds a reference to its binaries — a picture's BLAKE3 hash — never
+the bytes. The bytes travel beside the record, on the same route
+`(app, room, record)` its changes take, through three verbs of the
+collaboration channel (`runtime-collab`):
+
+| Verb | Meaning |
+|---|---|
+| `offerBlob(hash, bytes)` | An app stored this content for the record: keep it where the record's readers are served from. |
+| `wantBlob(hash)` | The record references this content and the app lacks it: hand it over from this device, or ask the route's other devices. |
+| `subscribeBlobs` | A stream of `(hash, bytes)` for the record's scope — answers to `wantBlob`, and what another local app offered. |
+
+- *App side.* The framework wraps the content store the host lends a window
+  (`ui_core::collaboration::record_content::RecordContent`): `put` also offers
+  the bytes on the window's route, a read of a missing hash asks for it and
+  reads as `ContentState::Pending` until it is here, and arriving bytes are
+  verified and kept. Apps reach it as `cx.content()`. A store an app opens
+  itself (`ContentStore::for_app()`) would bypass the route, so only the
+  hosts that lend the store call it (`tools/policy/check_app_content_store.py`).
+- *Host side.* Every host that runs the broker implements the verbs with one
+  service, `tilo_action_broker::record_content::RouteContent`, over two
+  things the host supplies: its *shelf* — the device content store, read and
+  written through the record's scope `(room, app)`, the same partition the
+  app's own capability uses — and its *peers* — the record's route on the
+  network. The desktop session's shelf is the filesystem daemon's store
+  (`shell/record_content.rs`); the standalone runtime's is its profile's
+  store (`standalone/joined_content.rs`).
+- *Network.* A device asks the room's topic (`NeighbourMsg::RecordContentWant`,
+  which the room's hosts fan out with presence); a device of the room keeping
+  the content answers that device alone in pieces of at most 192 KiB
+  (`NeighbourMsg::RecordContentPiece`): over the direct plane when it is a
+  live peer, else through the room's relay (`Envelope::RecordContent`, routed
+  to the addressed device's connection only — never stored, never fanned out,
+  dropped when it cannot be delivered), else on the topic.
+- *The rules.* Possessing a hash never grants access: a device answers only a
+  peer the room admits to read, and only from content kept under that
+  record's scope. Bytes are verified, never trusted: the assembled content
+  must hash to what was asked before it is kept or handed to an app. Nothing
+  arrives unasked: pieces for content this device did not ask for on that
+  route are dropped. Each message names its sender, bound to the
+  authenticated transport before it is accepted.
+- *Limits.* A request that collects no answer is asked again after a minute.
+  One reference names at most 64 MiB; bigger content belongs in a file
+  record. Content is kept per room and app, not per record, until the
+  reverse index from content to referencing records (§14) replaces the
+  per-room reachability tags. This is the only way content moves between
+  devices: the filesystem daemon serves what this device keeps and fetches
+  nothing itself.
+
 ### 13.5 Files and format-aware files
 
 - `ctx.open_file(id)` gives a `RecordHandle<FileBody>` for a file record in the
@@ -1589,6 +1639,64 @@ is the typed accessor that `docs/architecture/distribution.md` §6 calls for
 How the existing `settings-store` desktop file and the Profile layers fold in
 is Q12.
 
+**What exists today.** `ui::storage::Settings<T>` is that accessor over the
+desktop settings document. A `SettingsSchema` type declares its `Scope`:
+
+- `Personal` lives in the `app_personal` section under the app id. The
+  continuity registry (`settings_store::continuity`) classifies that entry as
+  personal, so the device fabric carries the whole app object to the person's
+  other devices (most recent write wins, at most 64 KiB serialized).
+- `DeviceLocal` lives in `app_device_local` under the app id and never
+  leaves the device.
+- `Shared(name)` reads and writes a per-user section another owner declares
+  (`locale`, `text_assistance`); each of its keys keeps the scope the registry
+  reviewed for it.
+
+Framework views and surfaces get settings from their context
+(`cx.settings::<T>()`), kept current when another window or device writes
+them, and the app's files and secrets from the same place. A secret that
+belongs to a document item (a profile's password, a connection's passphrase)
+is `SecretStore::item(purpose, id)`: the document names the item, the secret
+stays in the device's store. PersonInRoom has no implementation yet. State of
+the person's own that is data rather than a preference — it grows, has
+history, is undone — is not a setting but a person record
+([§13.9](#139-person-records)).
+
+**The records are the source.** Every reader — the compositor, the shell,
+apps — reads one document through `settings_store::load`, which a host can
+back with a `SettingsSource`. At startup the shell installs
+`settings_store::SessionSettings`: the person's record (the leaves the
+continuity registry classifies as personal) laid over the device's record
+(every other leaf), stored beside the settings file in `records/`. A write
+lands in the record its leaf's scope names. The device fabric publishes the
+person's leaves and writes the winners it receives back through the same
+source. `settings.json` is a copy the shell rewrites after every change, for
+the processes that read the document without the source: the compositor's
+boot path, apps, the Settings app and anything that runs before the session.
+Those processes still merge sections into the copy; every writer holds the
+copy's lock across its read, merge and replace, and the session takes in each
+leaf that differs from the copy it last wrote. A copy written while no session
+ran (first boot) is taken in when the session opens. Replacing the fabric's
+settings channel with the person record's own sync is still to come.
+
+**Sandboxed apps reach the records through their channel.** A sandboxed app
+has no settings document: its sandbox holds neither the records nor the copy
+(only Settings, which owns the document, is given the copy). The collaboration
+channel the launcher hands every app carries an `AppSettings` capability
+instead (`ChannelHandle.settings`), bound to the channel's certified app. At
+launch the toolkit installs it as the app process's `SettingsSource`, so
+`Settings<T>`, `cx.settings::<T>()` and the toolkit's own readers go through
+it. The shell answers from its records with the app's view
+(`settings_store::app_scope`): the app's own `app_personal` and
+`app_device_local` entries, and the shared sections every app's toolkit reads
+(`locale`, `text_assistance`, `accessibility`, `appearance`). The app writes
+only its own two entries; a write naming another app's entry or any other
+section is refused, in the app and again in the shell. A write shows in the
+app at once, lands in the record its scope names (so a personal one roams),
+and is copied to `settings.json`; a change to the app's view, from another
+window or another of the person's devices, reaches the app within a fraction
+of a second and wakes it, so a view following a `Setting<T>` repaints.
+
 ### 13.7 Foreign apps
 
 Flatpaks, legacy binaries and Wine keep a private per-`(room, package)`
@@ -1618,6 +1726,119 @@ are single-writer. Whether an app can opt into sharing is Q13. [R8]
   one document.
 
 ---
+
+### 13.9 Person records
+
+Some of an app's state is the person's own and is still data, not a
+preference: what they watched, the pages they visited, the words they taught
+the keyboard, where they stopped reading, their signature. It grows without a
+useful bound, it has history, and an edit to it is undone like any other.
+Settings are the wrong home for it — a personal section roams as one value of
+at most 64 KiB, last writer wins, with no history — and a shared room is the
+wrong home too: a collaborator must never see what someone watched. It is a
+record, in the **person's own room**.
+
+**The person's own room is a room with no roster.** Its id is derived from
+the person's root public key (`collab_types::person_room`, a version-8 uuid
+of a domain-separated SHA-256). Every device of the person derives the same
+id without asking anyone, and the room's members are, by that derivation,
+exactly the devices the root certified. Nobody can be invited into it,
+because there is no list to add them to. This is the "your own room is not
+special" of `rooms.md` taken literally: the same kind of room, whose one
+member is the person — with membership by derivation instead of by list, so
+that sharing it is not an operation that exists.
+
+**Each point that admits room traffic enforces it.**
+
+- *Broker.* A join naming the person room is admitted, as owner — a foreign
+  device, on an operating system Tilo does not control, with the
+  foreign-device cap's role, as in any room — only from a device certified by
+  the root the room is derived from
+  (`admit_verified_join_at`); a join naming anyone else's person room fails
+  like a join to a room the session does not host.
+- *Network.* A document of the local person's room is never published on a
+  room topic, to a shared room's workspace host or to a collaborator. It
+  travels over the personal fabric to the person's other devices on their
+  authenticated same-root routes (`PersonalFabricPayload::Document`), and to
+  the person's own hosts on their continuity topic (host sessions only, never
+  gossip). An incoming one is accepted only from such a route, or kept by such
+  a host, signed by a device of the same root. A person-room document
+  arriving any other way is dropped, presence on it is never sent,
+  and the room can never become a workspace: an invite, an enrollment or a
+  continuation naming it is refused (`is_local_person_room`).
+- *History.* An artifact's scrollback is bound to the room its ops were
+  validated in, durably beside its log, and answered only on that room's own
+  topic — never for the person room, also for history stored by an earlier
+  session.
+
+**A person record is an ordinary record, opened beside the one a window
+shows.** One record per app and resource kind
+(`RecordId::derived(kind, room_default)`), the same on every device, created
+with the resource's genesis (`Resource::initialize`), so two devices that
+create it before they meet converge on one record. Its storage is one
+directory per app on the device, `<data home>/tilo-person/<package>`, which
+the launcher binds into the app's launches in every room at
+`/run/tilo/person` (`TILO_PERSON_DIR`): the same app open in two rooms reads
+one record. When another window of the app already holds the stored record,
+a window opens a replica that stores nothing on the very same route: it
+converges with that window, and what the person's other devices or host send
+there reaches it as well. A record larger than one frame travels as the
+1 MiB segments its app signs, which receivers reassemble. Without a root
+identity there is no person room; the records are kept on the device in a
+scope no route can name.
+
+**A device acting for several people routes each one's room to that
+person.** Besides the root that certified it, a device can carry workspace
+identities — other roots that certified the same device key for a workspace
+of theirs. Each has its own person room: the device joins each root's
+continuity topic presenting that root's certificate, sends a record of a
+root's room only to that root's other devices (and hosts) on that topic,
+and takes in a record only into the person room of the root that certified
+its sender. A workspace identity's route carries its person records and
+nothing else of the device fabric.
+
+**The framework opens it.** A view or surface asks for the person's record of
+a resource type — `cx.person::<WatchHistory>()` — and gets a
+`PersonRecord<P>`: its state, kept current when another window or device
+changes it, and `apply` / `invoke` of the resource's own actions through the
+replayable executor, attributed to the person, written into the record's
+history, an undo step of theirs for content (`undo` / `redo`), none for
+housekeeping or content from outside. The runtime syncs it as it syncs every
+record a window keeps: the root reports it from `Widget::record_owners`, and
+the record's route — `(app, person room, record)` — is joined, published to
+and merged from like any other, in whatever room the window is.
+
+**Devices that were apart catch up.** Each device publishes the record whole
+when it first opens it. A device that receives a whole record and is still
+ahead of it answers with its own, so two devices that meet converge in one
+round trip. When one of the person's devices reappears on an authenticated
+route, its peers ask their local windows holding person records to publish
+them whole, so what it missed while away reaches it. The person's always-on hosts
+(their home server or hosted relay) keep every person-record change too: a
+device hands it to its host sessions on the person's continuity topic — a
+workspace whose only member on the host is the person — and never to gossip;
+a device that comes online when none of the others is gets what the host
+kept, and takes it in only from a device the same root certified.
+
+**A person record's content follows the record.** What a person record
+references — the poster of something they watched — lives under the person's
+room, whichever room the window that stored it shows. The record names its
+own content store (`PersonRecord::content`), kept by the host under the
+scope `(person room, app)` and holding the bytes in the app only while it
+runs; the window sends its requests on the person record's route, never its
+own. Between devices the request and its pieces travel on the personal
+fabric (`PersonalFabricPayload::RecordContentWant` / `RecordContentPiece`)
+to the person's other devices on their authenticated same-root routes: never
+on a room topic, never through a workspace host.
+
+**Known limits.**
+
+- Only the person's own hosts keep person records: a workspace host of a
+  shared room never sees them, so a person without an always-on host of their
+  own still needs two of their devices online at once to catch up.
+- A person record larger than the collaboration transport's limit (64 MiB in
+  one mutation) is refused like any record's; one that grows toward it
+  should become a collection.
 
 ## 14. Permissions
 
@@ -1831,7 +2052,7 @@ device is clean and does not rewrite the index (tested,
 | `fs` `record_transaction.rs`, `transaction_coordinator.rs` | multi-record atomicity | also carries changesets and Record Store transactions |
 | `fs` `conflict.rs`, `conflict_merge.rs`, `checked_restore.rs`, `history_read.rs` | conflicts, merge, restore | policy by body type (§11) |
 | `fs` `rich_metadata.rs`, `thumbs.rs`, `smart.rs`, `smart_monitor.rs`, `clock.rs`, `caps_file.rs` | metadata, thumbnails, prediction gates, clock, live ACL file | limits raised; working sets added |
-| `fs` `durable_backup.rs`, `crates/system/atomic-file` | crash-safe small files | only for security stores |
+| `fs` `durable_backup.rs`, `tilo_files::native::atomic` | crash-safe small files | only for security stores |
 | `crates/collab/collab-types` | `SignedOp`, validator, roles, `FileBindingV1`, MLS | `MAX_DOCUMENT_MUTATION_BYTES` stops governing durable state |
 | `crates/collab/actions`, `channel-crypto`, `tilo-user-identity` | actions, crypto, identity | unchanged |
 | `crates/sdk/ui-core` `state/` (`UndoLog`, `DocumentFrontier`), `history_source/`, `history_mode/`, `action_host.rs` | undo, history UI, action door | a `HistorySource` over all kinds |
@@ -1871,7 +2092,7 @@ device is clean and does not rewrite the index (tested,
 | `fs` `recipient_mount.rs` (after Tier 1) | recipients materialise natively |
 | `crates/packaging/app-fs` | no dependents. Placeholders or composefs cover lazy start |
 | `crates/runtime/runtime-fs/schema/fs.capnp` `WorkspaceFs` read/write RPC | no server. Replaced by the Record Store capability with fd passing |
-| `qdoc::blobstore::BlobTransport`, the process-global store, `set_store` calls | one content store |
+| `tilo_doc::blobstore::BlobTransport`, the process-global store, `set_store` calls | one content store |
 | package-global `state.automerge` as a content store (44 apps), `LegacyLaunchInputs`, `RecordId::for_file`/`for_tab` as identities, the 3 MiB single-message snapshot path, 29 hand-written tombstone maps, inline assets in notes | wrong grain or duplicated |
 | `tilo-relay` `snapshot.automerge` / `pending/*.delta` opaque co-edit store (`tilo-relay/src/store.rs:1-20`) for app documents | hosts store record operations and segments like any replica. Live presence stays |
 | the hard caps at `record_repository.rs:24-31`, `namespace.rs:35`, `full_replica.rs:23-27`, `store.rs:56-70`, `blobstore.rs:33-40`, `record.rs:38` | replaced by compaction, streaming and quotas |
@@ -2007,7 +2228,7 @@ stopped.
 - Package-document default, legacy `RecordSet`, qdoc local store, shell
   crawl, path identities, the Automerge namespace compatibility projection,
   the relay's opaque co-edit store.
-- `LaunchSpec::new` requires a definition.
+- Every `LaunchSpec` launches a definition (done: the widget-root launch path is gone).
 - Exit: the deleted code is gone, and the B1–B12 numbers are no worse than
   after stage 6.
 

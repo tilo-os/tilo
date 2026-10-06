@@ -177,9 +177,18 @@ export async function launch({args = []} = {}) {
     tab,
     send,
     close: async () => {
+      // A browser told to close waits for its helper processes, which
+      // still write into the profile; a killed one leaves them running.
+      const exited = child.exitCode === null
+        ? new Promise(resolve => child.once('exit', resolve))
+        : Promise.resolve();
+      await Promise.race([send('Browser.close'), exited]);
+      const closed = await Promise.race([exited.then(() => true), sleep(10_000).then(() => false)]);
+      if (!closed) {
+        child.kill('SIGKILL');
+        await exited;
+      }
       ws.close();
-      child.kill();
-      await new Promise(resolve => child.once('exit', resolve));
       rmSync(profile, {recursive: true, force: true});
     },
   };

@@ -163,6 +163,9 @@ impl TextAlign {
 
 /// A laid-out block of attributed text.
 pub struct RichTextLayout {
+    /// One exact source snapshot, scoped to this layout owner. It avoids
+    /// reconstructing runs/offset maps/buffer lines for unchanged rich input.
+    prepared: Option<RichPreparation>,
     pub(crate) buffer: Buffer,
     /// Global byte offset of every cosmic-text logical line. cosmic-text
     /// cursors are `(line, byte-within-line)`; the public toolkit API uses a
@@ -189,6 +192,35 @@ pub struct RichTextLayout {
     fragmentation: crate::text_render::Fragmentation,
 }
 
+struct RichPreparation {
+    spans: Vec<RichSpan>,
+    style: crate::text_render::TextStyle,
+    width: Option<f32>,
+    align: TextAlign,
+    browser_emoji: bool,
+}
+
+impl RichPreparation {
+    fn matches(
+        &self,
+        spans: &[RichSpan],
+        style: &crate::text_render::TextStyle,
+        width: Option<f32>,
+        align: TextAlign,
+        browser_emoji: bool,
+    ) -> bool {
+        // A custom hyphenator's Arc is not an immutable revision witness.
+        !matches!(
+            style.hyphenation,
+            crate::text_render::Hyphenation::Custom(_)
+        ) && self.spans == spans
+            && self.style == *style
+            && self.width == width
+            && self.align == align
+            && self.browser_emoji == browser_emoji
+    }
+}
+
 /// Cosmic-text runs plus the byte-ranged background/baseline decoration
 /// tables built alongside them by `RichTextLayout::build_rich_runs`.
 type RichRuns<'a, 's> = (
@@ -198,6 +230,12 @@ type RichRuns<'a, 's> = (
 );
 
 impl RichTextLayout {
+    /// Revealed secret controls need geometry without an additional retained
+    /// plaintext source snapshot. They opt out before keeping the layout.
+    pub(crate) fn discard_prepared_inputs(&mut self) {
+        self.prepared = None;
+    }
+
     fn line_map(text: &str) -> (Vec<usize>, Vec<usize>) {
         let mut line_starts = vec![0];
         let mut line_lens = Vec::new();
@@ -280,6 +318,7 @@ impl RichTextLayout {
         }
         let (line_starts, line_lens) = Self::line_map(&shaping_text);
         Self {
+            prepared: None,
             buffer,
             line_starts,
             line_lens,
@@ -358,8 +397,9 @@ impl RichTextLayout {
     /// Reuse unchanged paragraphs from this renderer's previous layout.
     /// The caller must enforce the same font-system identity and generation;
     /// font replacement or locale changes require `previous = None`.
-    /// Fresh paragraph construction remains authoritative for attributes and
-    /// document offsets; only compatible cosmic shape/layout caches move over.
+    /// Exact retained inputs skip preparation; otherwise fresh paragraph
+    /// construction remains authoritative for attributes and document offsets,
+    /// and only compatible cosmic shape/layout caches move over.
     pub fn shape_styled_reusing(
         fs: &mut FontSystem,
         spans: &[RichSpan],
@@ -375,6 +415,38 @@ impl RichTextLayout {
     }
 
     pub(crate) fn shape_styled_reusing_browser(
+        fs: &mut FontSystem,
+        spans: &[RichSpan],
+        style: &crate::text_render::TextStyle,
+        max_width: Option<f32>,
+        align: TextAlign,
+        previous: Option<Self>,
+        browser_emoji: bool,
+    ) -> Self {
+        if let Some(mut retained) = previous {
+            if retained.prepared.as_ref().is_some_and(|prepared| {
+                prepared.matches(spans, style, max_width, align, browser_emoji)
+            }) {
+                // Decorations are supplied by the new call, not part of shape
+                // identity. In particular, an old IME underline must not leak.
+                retained.underlines.clear();
+                retained.strikes.clear();
+                return retained;
+            }
+            return Self::build_styled_reusing_browser(
+                fs,
+                spans,
+                style,
+                max_width,
+                align,
+                Some(retained),
+                browser_emoji,
+            );
+        }
+        Self::build_styled_reusing_browser(fs, spans, style, max_width, align, None, browser_emoji)
+    }
+
+    fn build_styled_reusing_browser(
         fs: &mut FontSystem,
         spans: &[RichSpan],
         style: &crate::text_render::TextStyle,
@@ -471,6 +543,17 @@ impl RichTextLayout {
         }
 
         Self {
+            prepared: (!matches!(
+                style.hyphenation,
+                crate::text_render::Hyphenation::Custom(_)
+            ))
+            .then(|| RichPreparation {
+                spans: spans.to_vec(),
+                style: style.clone(),
+                width: max_width,
+                align,
+                browser_emoji,
+            }),
             buffer,
             line_starts,
             line_lens,
@@ -488,13 +571,12 @@ impl RichTextLayout {
         }
     }
 
-    fn reuse_unchanged_paragraphs(buffer: &mut Buffer, previous: Buffer) {
-        // BufferLine caches do not carry their layout configuration. Moving
-        // them across a width/font/wrapping change would silently retain stale
-        // glyph geometry. All Buffer configuration that affects shaping or
-        // layout must agree, in addition to the exact per-paragraph attributes.
+    fn reuse_unchanged_paragraphs(buffer: &mut Buffer, mut previous: Buffer) {
+        // BufferLine has separate shaping and line-wrapping caches. Width
+        // changes only invalidate wrapping; retain shaping for paragraphs
+        // whose text and attributes still match. Keep all other compatibility
+        // checks conservative, including metrics and tab expansion.
         if buffer.metrics() != previous.metrics()
-            || buffer.size() != previous.size()
             || buffer.wrap() != previous.wrap()
             || buffer.ellipsize() != previous.ellipsize()
             || buffer.monospace_width() != previous.monospace_width()
@@ -502,6 +584,14 @@ impl RichTextLayout {
             || buffer.hinting() != previous.hinting()
         {
             return;
+        }
+        if buffer.size() != previous.size() {
+            // The new buffer's TEXT_SET dirty flag assumes its lines are fresh,
+            // so cosmic-text will not invalidate transferred layout caches.
+            // Explicitly discard wrapping while preserving each ShapeLine.
+            for line in &mut previous.lines {
+                line.reset_layout();
+            }
         }
         let same = |a: &BufferLine, b: &BufferLine| {
             a.text() == b.text()
@@ -524,23 +614,56 @@ impl RichTextLayout {
             .take_while(|(a, b)| same(a, b))
             .count();
         let mut old_lines = previous.lines.into_iter();
-        let mut new_lines = buffer.lines.iter_mut();
-        for (old, new) in old_lines
-            .by_ref()
-            .take(prefix)
-            .zip(new_lines.by_ref().take(prefix))
-        {
+        for (new, old) in buffer.lines.iter_mut().take(prefix).zip(old_lines.by_ref()) {
             *new = old;
         }
-        // Both iterators now exclude the common prefix, so a fully unchanged
-        // document cannot reuse a paragraph twice when walking the suffix.
-        for (old, new) in old_lines
+        for (new, old) in buffer
+            .lines
+            .iter_mut()
             .rev()
             .take(suffix)
-            .zip(new_lines.rev().take(suffix))
+            .zip(old_lines.by_ref().rev())
         {
             *new = old;
         }
+        let end = buffer.lines.len() - suffix;
+        if prefix == end || old_lines.len() == 0 {
+            return;
+        }
+        // Prefix/suffix alone miss paragraphs between separate edits or moved
+        // intact blocks. Index the remaining candidates, then verify exact text,
+        // ending, attributes and alignment before moving a cache. Consume each
+        // old paragraph once. A hash collision conservatively reshapes instead
+        // of trusting the hash or scanning an unbounded collision chain.
+        let mut candidates = std::collections::HashMap::<u64, Vec<BufferLine>>::new();
+        for old in old_lines {
+            candidates
+                .entry(Self::paragraph_fingerprint(&old))
+                .or_default()
+                .push(old);
+        }
+        for new in &mut buffer.lines[prefix..end] {
+            if let Some(bucket) = candidates.get_mut(&Self::paragraph_fingerprint(new))
+                && bucket.last().is_some_and(|old| same(new, old))
+                && let Some(old) = bucket.pop()
+            {
+                *new = old;
+            }
+        }
+    }
+
+    fn paragraph_fingerprint(line: &BufferLine) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        line.text().hash(&mut hash);
+        (line.ending() as u8).hash(&mut hash);
+        line.align().map(|align| align as u8).hash(&mut hash);
+        line.attrs_list().defaults().hash(&mut hash);
+        for (range, attrs) in line.attrs_list().spans_iter() {
+            range.hash(&mut hash);
+            attrs.hash(&mut hash);
+        }
+        hash.finish()
     }
 
     /// Build cosmic-text runs (with their `Attrs`) for `spans`, plus the
@@ -710,6 +833,25 @@ impl RichTextLayout {
             byte: position.byte.min(self.text_len),
             affinity: position.affinity,
         };
+        self.resolved_caret_geometry(position, false)
+            .unwrap_or((0.0, 0.0, self.line_height))
+    }
+
+    /// Observer caret geometry with the same per-run work limits as
+    /// [`Self::selection_rects_bounded`]. Missing stops and invalid positions
+    /// are unavailable, never the ordinary editor's origin fallback.
+    pub fn caret_geometry_bounded(&self, byte: usize) -> Option<(f32, f32, f32)> {
+        if byte > self.text_len {
+            return None;
+        }
+        self.resolved_caret_geometry(TextPosition::new(byte), true)
+    }
+
+    fn resolved_caret_geometry(
+        &self,
+        position: TextPosition,
+        bounded: bool,
+    ) -> Option<(f32, f32, f32)> {
         let mut byte_fallback = None;
         for run in self.buffer.layout_runs() {
             // A missing affinity may require a byte-only fallback. Do not
@@ -727,17 +869,20 @@ impl RichTextLayout {
             if !contains_byte {
                 continue;
             }
+            if bounded && !geometry_run_within_budget(&run) {
+                return None;
+            }
             for (x, stop) in self.caret_stops(&run) {
                 let geometry = (x, run.line_top, run.line_height);
                 if stop == position {
-                    return geometry;
+                    return Some(geometry);
                 }
                 if stop.byte == position.byte && byte_fallback.is_none() {
                     byte_fallback = Some(geometry);
                 }
             }
         }
-        byte_fallback.unwrap_or((0.0, 0.0, self.line_height))
+        byte_fallback
     }
 
     /// Caret geometry for a conventional byte-only position.
@@ -1017,6 +1162,52 @@ impl RichTextLayout {
         rects
     }
 
+    /// Selection rectangles in a vertical layout band, refusing overflow
+    /// instead of returning a partial selection. Caller byte validation is
+    /// unchanged. This bounded observer path also refuses a visible run with
+    /// more than 65,536 glyphs or summed glyph-source bytes: the shaper's
+    /// `highlight` iterator internally collects its per-run spans first.
+    /// Ordinary editing continues to use the unrestricted APIs below/above.
+    pub fn selection_rects_bounded(
+        &self,
+        range: std::ops::Range<usize>,
+        band: std::ops::Range<f32>,
+        maximum: usize,
+    ) -> Option<Vec<(f32, f32, f32, f32)>> {
+        if range.start > range.end
+            || band.start.is_nan()
+            || band.end.is_nan()
+            || band.start > band.end
+        {
+            return None;
+        }
+        let mut rects = Vec::new();
+        if range.is_empty() {
+            return Some(rects);
+        }
+        let start = self.cursor_at(range.start);
+        let end = self.cursor_at(range.end);
+        for run in self.buffer.layout_runs() {
+            if run.line_i < start.line
+                || run.line_i > end.line
+                || run.line_top + run.line_height < band.start
+                || run.line_top > band.end
+            {
+                continue;
+            }
+            if !geometry_run_within_budget(&run) {
+                return None;
+            }
+            for (x, width) in run.highlight(start, end) {
+                if rects.len() == maximum {
+                    return None;
+                }
+                rects.push((x, run.line_top, x + width, run.line_top + run.line_height));
+            }
+        }
+        Some(rects)
+    }
+
     /// [`Self::selection_rects`] for several byte ranges in one pass over the
     /// layout runs, in input order. A long paragraph is one logical line with
     /// many visual runs; the per-range form walks every run and every glyph
@@ -1136,6 +1327,32 @@ impl RichTextLayout {
     fn shaped_global(&self, cursor: Cursor) -> usize {
         self.line_starts.get(cursor.line).copied().unwrap_or(0) + cursor.index
     }
+}
+
+#[cfg(test)]
+#[path = "richtext/retained_layout_tests.rs"]
+mod retained_layout_tests;
+
+fn geometry_run_within_budget(run: &cosmic_text::LayoutRun<'_>) -> bool {
+    const MAX_RUN_WORK: usize = 65_536;
+    if run.glyphs.len() > MAX_RUN_WORK {
+        return false;
+    }
+    let mut bytes = 0usize;
+    for glyph in run.glyphs {
+        let Some(total) = glyph
+            .end
+            .checked_sub(glyph.start)
+            .and_then(|len| bytes.checked_add(len))
+        else {
+            return false;
+        };
+        bytes = total;
+        if bytes > MAX_RUN_WORK {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -1661,6 +1878,91 @@ mod tests {
             vec![],
             vec![],
         )
+    }
+
+    #[test]
+    fn bounded_selection_geometry_refuses_overflow_without_partial_rectangles() {
+        let text = "first line\nsecond line\nthird line";
+        let shaped = layout(text, 400.0);
+        let expected = shaped.selection_rects(0, text.len());
+        assert_eq!(expected.len(), 3, "fixture has three real shaped lines");
+        assert_eq!(
+            shaped.selection_rects_bounded(0..text.len(), f32::NEG_INFINITY..f32::INFINITY, 3),
+            Some(expected.clone())
+        );
+        assert!(
+            shaped
+                .selection_rects_bounded(0..text.len(), f32::NEG_INFINITY..f32::INFINITY, 2)
+                .is_none()
+        );
+        assert!(
+            shaped
+                .selection_rects_bounded(0..text.len(), f32::NEG_INFINITY..f32::INFINITY, 0)
+                .is_none()
+        );
+        let middle = expected[1];
+        assert_eq!(
+            shaped.selection_rects_bounded(0..text.len(), (middle.1 + 0.1)..(middle.3 - 0.1), 1),
+            Some(vec![middle])
+        );
+        assert_eq!(
+            shaped.selection_rects_bounded(0..text.len(), -100.0..-1.0, 0),
+            Some(vec![])
+        );
+        assert!(
+            shaped
+                .selection_rects_bounded(0..text.len(), f32::NAN..1.0, 3)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn bounded_caret_geometry_matches_real_stops_without_origin_fallback() {
+        let shaped = layout("a😀éZ", 400.0);
+        for byte in [0, 1, 5, 7, 8] {
+            assert_eq!(
+                shaped.caret_geometry_bounded(byte),
+                Some(shaped.caret_geometry(byte))
+            );
+        }
+        assert!(shaped.caret_geometry_bounded(9).is_none());
+        assert!(
+            shaped.caret_geometry_bounded(2).is_none(),
+            "a byte inside the emoji is not an observed caret stop"
+        );
+        let empty = layout("", 400.0);
+        assert_eq!(
+            empty.caret_geometry_bounded(0),
+            Some(empty.caret_geometry(0))
+        );
+    }
+
+    #[test]
+    fn bounded_geometry_refuses_oversized_shaped_runs_before_caret_allocation() {
+        let text = "a".repeat(65_537);
+        let mut fs = crate::font_catalog::fixture_font_system();
+        let shaped = RichTextLayout::shape_plain(
+            &mut fs,
+            &text,
+            &crate::text_render::TextStyle::new(18.0),
+            None,
+        );
+        let runs: Vec<_> = shaped.buffer.layout_runs().collect();
+        assert_eq!(runs.len(), 1, "fixture is one actual unwrapped run");
+        assert_eq!(runs[0].glyphs.len(), text.len());
+        CARET_STOP_RUNS.with(|count| count.set(0));
+        assert!(shaped.caret_geometry_bounded(0).is_none());
+        assert_eq!(CARET_STOP_RUNS.with(std::cell::Cell::get), 0);
+        assert!(
+            shaped
+                .selection_rects_bounded(0..text.len(), 0.0..100.0, 4096)
+                .is_none()
+        );
+        assert_eq!(
+            shaped.selection_rects_bounded(0..text.len(), -100.0..-1.0, 0),
+            Some(vec![]),
+            "offscreen runs do not allocate highlight geometry"
+        );
     }
 
     #[test]

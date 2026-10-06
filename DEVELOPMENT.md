@@ -42,14 +42,21 @@ main also moves `tilo-vm:main-ci` to its newest dev images.
 and a `release` dispatch of main.
 
 To run a main dev image on a physical x86_64 (or generic aarch64) machine, dispatch
-`Release / Dev VM disk` (`dev-disk.yml`) with `base_image` set to
+`Release / Dev VM disk` (`dev-disk.yml`) with `source_revision` set to the
+full commit SHA, `base_image` to
 `registry.tilo.so/tilo/tilo-ci:main-<sha7>-x86_64`, `dev_image` to the
 `tilo-vm@sha256:…` digest of `tilo-vm:main-<sha7>-ci-x86_64` (so the image is
 not rebuilt), `tag=main-ci` and `architectures=x86_64`. Its summary links the
 disk, `tilo-vm-candidate-x86_64.qcow2`; write it to a disk of at least 64 GB
 (`sudo qemu-img convert -p -f qcow2 -O raw tilo-vm-candidate-x86_64.qcow2 /dev/sdX`)
 and boot it. It follows `tilo-vm:main-ci`, so `sudo bootc upgrade && sudo
-systemctl reboot` moves it to main's newest dev image.
+systemctl reboot` moves it to main's newest dev image. The newest such disk from
+main stays at a fixed URL, which retention never prunes:
+
+```sh
+curl -fLO https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk-latest/x86_64/tilo-vm-candidate-x86_64.qcow2
+curl -fsSL https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk-latest/x86_64/tilo-vm-candidate-x86_64.qcow2.sha256 | sha256sum -c -
+```
 
 The [Fedora 44 disposable-VM loop](#fedora-44-disposable-vm-loop-legacy)
 (`dist/dev/fedora44-vm-iterate.sh`) is the legacy path until slots cover what it
@@ -67,13 +74,22 @@ installs the flashable disk:
 | Board | Image of one build | Moving tag (main) |
 | --- | --- | --- |
 | Lenovo Yoga Slim 7x (83ED) | `registry.tilo.so/tilo/tilo-vm:<ref>-<sha7>-lenovo-83ed` | `registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci` |
+| Orange Pi 3B v2.1 | `registry.tilo.so/tilo/tilo-vm:<ref>-<sha7>-orangepi-3b-v2-1` | `registry.tilo.so/tilo/tilo-vm:orangepi-3b-v2-1-ci` |
 
-The job's summary links the disk, `tilo-vm-candidate-aarch64.qcow2`, a 64 GB GPT
-disk. Write it to a USB drive or the internal disk of at least 64 GB, then boot it
-from the firmware boot menu:
+The moving tag moves once the aarch64 lane has sealed and pushed the image; the
+board job then installs the disk from it.
+On main, the job's summary links the disk, `tilo-vm-candidate-aarch64.qcow2`: 64 GB for the
+Lenovo, written to a USB drive or its internal disk and booted from the firmware
+boot menu; 16 GB for the Orange Pi, written to an SD card of at least 16 GB (its
+root grows on first boot):
+
+The newest disk per board stays at a fixed URL, which retention never prunes
+(`<board>` is `lenovo-83ed` or `orangepi-3b-v2-1`):
 
 ```sh
-curl -fLO <disk URL from the job summary>
+base=https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk-latest/aarch64-<board>
+curl -fLO "$base/tilo-vm-candidate-aarch64.qcow2"
+curl -fsSL "$base/tilo-vm-candidate-aarch64.qcow2.sha256" | sha256sum -c -
 sudo qemu-img convert -p -f qcow2 -O raw tilo-vm-candidate-aarch64.qcow2 /dev/sdX
 ```
 
@@ -82,8 +98,30 @@ The installed system follows the moving tag, so later builds of main arrive with
 ```sh
 sudo bootc upgrade && sudo systemctl reboot
 # or one particular build:
-sudo bootc switch registry.tilo.so/tilo/tilo-vm:main-<sha7>-lenovo-83ed && sudo systemctl reboot
+sudo bootc switch registry.tilo.so/tilo/tilo-vm:main-<sha7>-<board> && sudo systemctl reboot
 ```
+
+A board dev image carries tilo-vmd, sshd and the toolchain, so the machine is a
+`tilo-vm` target like a dev VM: register it once, then swap, roll back, take
+pictures and move it between images with the same commands (`tilo-vm guide
+devices`). Components never go onto it by hand (no `bootc usr-overlay` and
+copies into `/usr`): nothing could roll that back.
+
+```sh
+tilo-vm vm add yoga --ssh <you>@<address> --key <your key>   # checks SSH, root through sudo, tilo-vmd, toolchain, bootc
+tilo-vm vm use yoga
+tilo-vm slot create --headless && tilo-vm swap shell         # your build in your slot; tilo-vm rollback undoes it
+tilo-vm shot -o target/yoga.png                              # tilo-vm seat claim puts it on the built-in display
+tilo-vm vm upgrade --from sha:<commit>                       # that commit's image for this board, then a reboot
+```
+
+The board job checks the Lenovo image's audio stack (topology, DSP firmware,
+UCM profile: `os/tests/board_audio_contract.sh --root`), but only the laptop
+proves the sound. After booting a build that changes it, `wpctl status` lists a
+speaker sink and a microphone source for Built-in Audio, and
+`journalctl -b -k | grep -i -e q6apm -e wsa884x` shows no errors. The four
+speakers run without DSP speaker protection, as upstream ships them: test them
+at low volume.
 
 ## Routine delivery workflow
 
@@ -132,6 +170,33 @@ can still select every app; see [Preview affected applications](#preview-affecte
 for how selection and shared runtime compatibility interact. Use **Release / apps** manual
 dispatch for a development artifact, selecting the smallest applicable app and
 architecture set and leaving `publish` off unless publication is intended.
+
+For an independent Browser engine update, dispatch **Release / apps** on `main`
+with `engine_runtime_only=true`, `apps=browser` and the needed native architectures.
+This builds the digest-pinned CEF engine and the package tools, verifies native ELF
+architecture and hardening, and seals the runtime the Browser manifest names.
+`publish=true` uses the existing runtime/app signing identities and publisher OIDC;
+`publish=false` signs with disposable test identities and performs no registry write.
+The mode rejects collection qualification, coordinator and builder overrides. It
+builds neither the OS image nor the app collection. Changing engine code requires a
+new runtime version in the SDK, Browser manifest and OS recipe before publication.
+
+The explicit native pipeline proof uses no release credentials:
+
+```bash
+cargo run --locked -p runtime-bundle --example browser_runtime_release
+```
+
+Use `python3 tools/apps/browser_runtime_release.py proof-cargo` with Cargo or a
+configured Cargo-compatible native builder selected through `CARGO` or
+`--cargo-command`; repeat `--cargo-argument` for executable-specific arguments.
+Source-only builders may omit Git metadata; this launcher
+admits only a clean local commit and passes its actual commit object. The builder
+recomputes the Git tree from mirrored bytes, executable modes and symlink targets
+before compiling and sealing. The snapshot proof refuses CI events, publication
+and signing identity variables; production release jobs retain their Git guards.
+Its output is `target/browser-runtime-release-proof-<source-commit>`; archive/blob verification uses
+the same canonical tools as publication. The source must be clean and committed.
 
 The app registry is publicly reachable at `https://apps.tilo.so`. Main-branch
 app publication now submits each newly built immutable tapp to it; separate collector
@@ -446,8 +511,8 @@ Testing needs `adb` and an `x86_64` emulator image or a device.
 Use the pinned Rust MSVC toolchain, Visual Studio C++ build tools for the host
 architecture. The native
 ARM64 toolkit, Calculator, Notes, Calendar, Contacts, Sheets, Slides, Weather and
-Scratchpad, Files, Word Processor, Terminal, PDF Viewer, Books, Clocks, Image Editor,
-Photos, Hex Editor, Code Editor, API Tester, Diff and Merge, Snippets, Database
+Scratchpad, Files, Word Processor, Terminal, PDF Viewer, Books, Clocks, Photos,
+Hex Editor, Code Editor, API Tester, Diff and Merge, Snippets, Database
 Client, Git Client and Feeds have been built and run on Windows.
 Other apps are still being ported; a workspace-wide build currently includes
 Linux services and is not a Windows
@@ -612,11 +677,9 @@ cargo test --locked -p file-explorer --lib -- --test-threads=1
 cargo test --locked -p file-explorer --test it -- --test-threads=1
 ```
 
-Word Processor uses `%LOCALAPPDATA%/tilo/word-processor/recovery` for crash recovery
-unless `TILO_WP_RECOVERY_DIR` is explicitly set. Its recovery key stays stable
-when a new file is first saved and Windows starts returning a canonical verbatim
-path. Native tests cover editing, DOCX/ODT/HTML round trips, PDF/RTF/EPUB export,
-recovery cleanup and merging independently edited documents:
+Word Processor keeps every document in its framework record, so there is no
+separate crash-recovery copy. Native tests cover editing, DOCX/ODT/HTML round
+trips through a launch on the file and Save As, and PDF/RTF/EPUB export:
 
 ```powershell
 cargo test --locked -p word-processor --all-targets -- --test-threads=1
@@ -663,20 +726,6 @@ drive letters are preserved. Windows imports remain local unless an absolute
 `TILO_WORKSPACE_DIR` explicitly identifies a configured collaborative workspace.
 The installer does not provide that workspace service. Books captures accept an
 EPUB positional argument and wait for its import to finish.
-
-Image Editor is installed as **Image Editor** (`image-editor.exe`). It opens
-PNG, JPEG and WebP through the shared Windows file picker or `--open PATH`.
-Adjustments remain editable in the persisted project; Export writes
-`<source-name>-edited.png` beside the source without changing the original.
-The native verification opens a Unicode path, invokes semantic rotate,
-monochrome and export actions, checks the exported dimensions and verifies
-that the project survives a new process. Its offscreen scenarios support
-`TILO_SHOTS_THEME=dark|light|high-contrast`.
-
-```powershell
-cargo test --locked -p image-editor --all-targets
-./tools/windows/install-apps.ps1 -Apps image-editor
-```
 
 Photos uses the native file picker and keeps imported image bytes in the shared
 filesystem blob store. On Windows the default is `%LOCALAPPDATA%/tilo/blobs`,
@@ -832,17 +881,18 @@ Unchanged shared fonts are preserved during installation, so a running Tilo app
 does not prevent installing another app. If font contents change, close running
 Tilo apps before installing the update.
 
-Clocks saves private device state under `%LOCALAPPDATA%/tilo/clocks.json` on
-Windows (an absolute `XDG_STATE_HOME` overrides that location). Its live startup
-restores that state; screenshot scenarios never save or consume shell commands.
+Clocks keeps alarms, timers, cities and the stopwatch in its synced resource
+record; which clocks float and which deadlines this device has already rung stay
+in the app's device-local settings. Screenshot scenarios never ring, schedule or
+consume shell commands.
 The installer registers `so.tilo.clocks` on the Start menu shortcut and in the
 current user's notification display-name registry. The SDK's `notifications`
 feature provides Windows toast submission and app-scoped history inspection.
 Alerts obey Windows notification settings and Do Not Disturb. Clocks hands timer
 deadlines to Windows, so timers continue to notify after the app closes. Pausing
-or deleting a timer cancels its pending Windows alert. A saved receipt records
+or deleting a timer cancels its pending Windows alert. A device-local receipt records
 the accepted deadline so reopening after delivery does not submit it again.
-Each state profile durably records the timer schedules it owns before submitting
+Each profile durably records the timer schedules it owns before submitting
 them to Windows. Opening another profile cannot cancel those schedules; deleted
 timers retain ownership until cancellation succeeds, including across restarts.
 Alarms still require the app to be running; closed-app alarm scheduling remains
@@ -888,7 +938,7 @@ Its import libraries link directly; no `.lib` conversion is required. Configure
 the current PowerShell process for your installation:
 
 ```powershell
-$gstPrefix = 'C:/Users/user/msys64/clangarm64' # Replace with your installation.
+$gstPrefix = 'C:/msys64/clangarm64' # Replace with your installation.
 $env:PATH = "$gstPrefix/bin;$env:PATH"
 $env:PKG_CONFIG = "$gstPrefix/bin/pkgconf.exe"
 $env:PKG_CONFIG_PATH = "$gstPrefix/lib/pkgconfig"
@@ -1112,6 +1162,9 @@ cargo check -p shell --tests                 # before finishing
 
 ### The whole suite, as CI runs it
 
+[tools/ci/README.md](tools/ci/README.md#running-pull-request-ci-locally) lists
+the local command for each pull-request CI job.
+
 The developer image (`dist/dev/Containerfile.fedora44`) carries the suite's
 runtime — GStreamer plugins, fonts, lavapipe, PulseAudio, PDFium, the test
 subjects and `cargo-nextest` — from `dist/ci/install-build-deps.sh fedora test`.
@@ -1298,9 +1351,12 @@ dist/rpm/build-rpm.sh
 ```
 
 Builds `shell`, `tilo-launcher` and `tilo-unlock-helper` in release, stages them
-with the session entries and PAM stack, and runs `rpmbuild` (in the build
-container, since an image-based host has no `rpm-build`). Two packages land in
-`dist/rpm/build/RPMS/x86_64/`:
+with the session entries and PAM stack, and runs `rpmbuild`. Compiling always
+goes through the `cargo` on your `PATH`; on an image-based host without
+`rpm-build`, only `rpmbuild` runs in the container named by `.build-container`
+(see "If you build in a container"), found from any worktree of the checkout.
+Without either, the script stops before compiling and says what to set up. Two
+packages land in `dist/rpm/build/RPMS/x86_64/`:
 
 ```console
 $ rpm -qlp dist/rpm/build/RPMS/x86_64/tilo-session-0.1.0-1.fc43.x86_64.rpm
@@ -1346,6 +1402,11 @@ dist/rpm/host-update.sh               # build HEAD and stage it for the next boo
 dist/rpm/host-update.sh --apply-live  # also make it the running /usr; just log out
 dist/rpm/host-update.sh --no-cargo    # repackage binaries already in target/release
 ```
+
+Each step reruns on its own: after a failure, rerun the same command. The app
+collection (`dist/rpm/build/app-release`) is kept while it was built from the
+same commit and uncommitted changes, and rebuilt otherwise, `--no-cargo`
+included.
 
 `--apply-live` refuses while a Tilo session is running on the machine. Builds go
 through the `cargo` on your `PATH`, so any cargo drop-in on it is used.

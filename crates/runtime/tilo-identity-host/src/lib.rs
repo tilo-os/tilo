@@ -21,9 +21,20 @@
     )
 )]
 
+#[cfg(unix)]
 pub mod broker;
+#[cfg(unix)]
 pub mod certificates;
+#[cfg(unix)]
 pub mod custody;
+#[cfg(unix)]
 pub mod device_fleet;
+#[cfg(unix)]
 pub mod provisioning;
+#[cfg(unix)]
 pub mod registry;
+
+#[cfg(not(unix))]
+mod unsupported_host;
+#[cfg(not(unix))]
+pub use unsupported_host::{device_fleet, provisioning, registry};

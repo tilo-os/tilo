@@ -195,8 +195,20 @@ firmware_restore() {
   # installation instead of rewriting opaque foreign EFI_LOAD_OPTION data.
   verify_firmware_entries "$state" "$order" "$next"
   "$EFIBOOTMGR" -o "$order" >/dev/null || die "could not restore the original firmware BootOrder"
-  if [ -n "$next" ]; then "$EFIBOOTMGR" -n "$next" >/dev/null; else "$EFIBOOTMGR" -N >/dev/null; fi \
-    || die "could not restore the original firmware BootNext"
+  if [ -n "$next" ]; then
+    "$EFIBOOTMGR" -n "$next" >/dev/null \
+      || die "could not restore the original firmware BootNext"
+  else
+    # efibootmgr -N fails with ENOENT when BootNext is already absent. A failed
+    # install can leave it absent, so restoring an absent value must be safe to
+    # repeat without obscuring the original installer error.
+    local current
+    current="$("$EFIBOOTMGR")" || die "could not inspect firmware BootNext"
+    if grep -q '^BootNext:' <<<"$current"; then
+      "$EFIBOOTMGR" -N >/dev/null \
+        || die "could not restore the original firmware BootNext"
+    fi
+  fi
   verify_firmware_entries "$state" "$order" "$next"
 }
 

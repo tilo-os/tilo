@@ -845,6 +845,11 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     if fb.host().file_picker().is_some() {
         return true;
     }
+    // Permission and other portal sheets are the same kind of modal. Without
+    // this, a key or click lands in the window behind the sheet.
+    if fb.host().portal_dialog_open() {
+        return true;
+    }
     // Alt is held after Alt+Tab. The focused client gives up the keyboard
     // for as long as the switcher is open, so Tab, the arrows and Escape
     // reach it, and the client never sees Alt pressed and released alone

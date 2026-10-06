@@ -66,7 +66,15 @@ pub mod collab_capnp {
 }
 
 pub mod committed_document;
+#[cfg(feature = "client")]
+pub mod live_activity;
 pub mod native_media;
+#[cfg(feature = "client")]
+pub mod settings;
+#[cfg(feature = "client")]
+pub use live_activity::{LiveActivities, LiveActivityHandle};
+#[cfg(feature = "client")]
+pub use settings::{AppSettingsHandle, MAX_SETTINGS_WIRE_BYTES, SettingsView};
 
 /// Opaque capability naming MLS state held by the shell's vault provider.
 /// Bytes are useful only while registered in that provider; this type carries
@@ -1054,6 +1062,36 @@ impl ChannelHandle {
         })
     }
 
+    /// This application's settings: its own entries in the session's
+    /// records and the shared sections every app reads. The broker binds
+    /// the capability to this channel's certified app.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the broker has no settings to give or
+    /// is unavailable.
+    pub async fn settings(&self) -> Result<AppSettingsHandle, NotAvailable> {
+        let reply = self.inner.settings_request().send().promise.await?;
+        Ok(AppSettingsHandle {
+            inner: Rc::new(reply.get()?.get_settings()?),
+        })
+    }
+
+    /// This application's live activity: what it shows outside its windows
+    /// and the controls pressed on it. The broker binds the capability to
+    /// this channel's certified app.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the broker presents no live activities
+    /// or is unavailable.
+    pub async fn live_activity(&self) -> Result<LiveActivityHandle, NotAvailable> {
+        let reply = self.inner.live_activity_request().send().promise.await?;
+        Ok(LiveActivityHandle {
+            inner: Rc::new(reply.get()?.get_activity()?),
+        })
+    }
+
     /// Open the certified workspace-control capability for `target_device`.
     ///
     /// # Errors
@@ -1946,8 +1984,44 @@ impl ChannelHandle {
         app_id: &str,
         content_hash: Option<&str>,
     ) -> Result<(u64, String), NotAvailable> {
+        self.launch_installed_application(app_id, content_hash, None)
+            .await
+    }
+
+    /// Launch an exact installed package through this authenticated channel,
+    /// returning its observed startup outcome rather than a queue acceptance.
+    ///
+    /// # Errors
+    /// Returns an unavailable or malformed broker response.
+    pub async fn launch_installed_application(
+        &self,
+        app_id: &str,
+        content_hash: Option<&str>,
+        package_root: Option<&str>,
+    ) -> Result<(u64, String), NotAvailable> {
+        self.launch_installed_application_for(app_id, content_hash, package_root, None)
+            .await
+    }
+
+    /// Continue a live invocation on its original caller's behalf.
+    ///
+    /// # Errors
+    /// Returns an unavailable or malformed broker response.
+    pub async fn launch_installed_application_for(
+        &self,
+        app_id: &str,
+        content_hash: Option<&str>,
+        package_root: Option<&str>,
+        on_behalf_of: Option<[u8; 16]>,
+    ) -> Result<(u64, String), NotAvailable> {
         let mut request = self.inner.launch_published_application_request();
+        if let Some(invocation) = on_behalf_of {
+            request.get().set_on_behalf_of(&invocation);
+        }
         request.get().set_app_id(app_id);
+        request
+            .get()
+            .set_package_root(package_root.unwrap_or_default());
         request
             .get()
             .set_content_hash(content_hash.unwrap_or_default());

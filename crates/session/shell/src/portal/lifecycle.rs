@@ -50,6 +50,8 @@ struct ManagedEntry {
 pub struct PortalLifecycle {
     requests: Arc<Mutex<HashMap<String, ManagedEntry>>>,
     sessions: Arc<Mutex<HashMap<String, ManagedEntry>>>,
+    /// Poked when a session ends, so clipboard revocation does not poll.
+    pub(crate) wake: crate::idle_wake::IdleWake,
 }
 
 impl PortalLifecycle {
@@ -121,14 +123,22 @@ impl PortalLifecycle {
 
     /// Remove a session only when the authenticated frontend still owns it.
     pub fn close_session(&self, path: &str, owner: &str) -> Option<LifecycleEntry> {
-        close(&self.sessions, path, Some(owner))
+        let closed = close(&self.sessions, path, Some(owner));
+        if closed.is_some() {
+            self.wake.poke();
+        }
+        closed
     }
 
     /// Finish a session from the compositor/backend (for example, output
     /// loss). The caller should use `close_session_object` to also emit the
     /// mandated `Session.Closed` signal.
     pub fn finish_session(&self, path: &str) -> Option<LifecycleEntry> {
-        close(&self.sessions, path, None)
+        let closed = close(&self.sessions, path, None);
+        if closed.is_some() {
+            self.wake.poke();
+        }
+        closed
     }
 
     pub fn has_session(&self, path: &str, owner: &str, app_id: &str) -> bool {
@@ -145,7 +155,11 @@ impl PortalLifecycle {
     /// resource belonging to the departed authenticated frontend.
     pub fn close_owner(&self, owner: &str) -> Vec<LifecycleEntry> {
         let mut released = close_matching(&self.requests, owner);
-        released.extend(close_matching(&self.sessions, owner));
+        let sessions = close_matching(&self.sessions, owner);
+        if !sessions.is_empty() {
+            self.wake.poke();
+        }
+        released.extend(sessions);
         released
     }
 

@@ -25,8 +25,10 @@ hpke-rs-rust-crypto = { version = "0.7", default-features = false, features = ["
 chacha20poly1305.workspace = true
 # Password-derived keys.
 argon2.workspace = true
-# Key identifiers and the HKDF steps of formats this crate still reads.
+# Key identifiers, the HKDF steps of formats this crate still reads, and
+# the HKDF + AES-GCM wraps a browser computes with WebCrypto.
 hkdf = "0.13"
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
 sha2.workspace = true
 getrandom.workspace = true
 subtle = "2.6"

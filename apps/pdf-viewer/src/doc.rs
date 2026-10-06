@@ -8,16 +8,16 @@
 //! source bytes can still inspect the page plan but cannot rasterise it.
 //!
 //! **One document's markup, not the app's.** This is the schema of a
-//! *record* — the annotation-set record derived from the file being read
-//! (`PdfApp::markup_record_for`) — so page numbers, which only mean anything
-//! within one file, are only ever read against the file they came from.
-//! Opening a second document checks out that document's own markup record;
-//! nothing is cleared, because nothing is shared.
+//! *record* — the markup record a launch derives from the file being read
+//! (`PdfViewerShell::launch_record`) — so page numbers, which only mean
+//! anything within one file, are only ever read against the file they came
+//! from. A second document opens on its own markup record; nothing is
+//! cleared, because nothing is shared.
 //!
 //! ```text
 //! root
-//! ├── "meta" (Map) { title, author, seeded:bool,
-//! │                  source-hash, source-len, source-mime, imported-source }
+//! ├── "meta" (Map) { source-hash, source-len, source-mime, source-name,
+//! │                  imported-source }
 //! ├── "page-plan" (List of Map) { id, source-page, [import descriptor] }
 //! ├── "page-plan-tombstones" (Map) { <page id>: true }
 //! ├── "page-rotation" (Map) { <page id>: degrees }
@@ -234,22 +234,6 @@ impl PdfDoc {
         }
     }
 
-    pub fn is_seeded(doc: &mut AutoCommit) -> bool {
-        let Some(m) = Self::meta(doc) else {
-            return false;
-        };
-        read_bool(doc, &m, "seeded").unwrap_or(false)
-    }
-
-    pub fn set_meta(doc: &mut AutoCommit, title: &str, author: &str) {
-        let Some(m) = Self::meta(doc) else {
-            return;
-        };
-        let _ = doc.put(&m, "title", title);
-        let _ = doc.put(&m, "author", author);
-        let _ = doc.put(&m, "seeded", true);
-    }
-
     // ---- shared page plan ------------------------------------------
 
     /// Initialise the page plan exactly once from the immutable source PDF.
@@ -295,6 +279,14 @@ impl PdfDoc {
         let _ = doc.put(&meta, "page-plan-seeded", true);
     }
 
+    /// Whether the record's page plan has been created.
+    pub fn has_page_plan(doc: &AutoCommit) -> bool {
+        let Ok(Some((Value::Object(ObjType::Map), meta))) = doc.get(&ROOT, "meta") else {
+            return false;
+        };
+        read_bool(doc, &meta, "page-plan-seeded").unwrap_or(false)
+    }
+
     /// Return the canonical materialised plan. The CRDT list may contain
     /// duplicate physical maps after concurrent initialise/move operations;
     /// each durable occurrence id appears only once, chosen by Automerge's
@@ -335,24 +327,6 @@ impl PdfDoc {
         Self::list_page_plan(doc)
             .get(page.checked_sub(1)?)
             .map(|entry| entry.id.clone())
-    }
-
-    /// Upgrade ordinal-only anchors from records written before durable page
-    /// occurrences existed. This is schema hydration, not a user edit: it runs
-    /// once after the deterministic source plan is available and preserves the
-    /// page each legacy anchor originally denoted.
-    pub fn migrate_page_anchors(doc: &mut AutoCommit) {
-        for key in ["annotations", "comments", "signatures"] {
-            for entry in Self::entries(doc, key) {
-                if read_str(doc, &entry, "page-id").is_some() {
-                    continue;
-                }
-                let page = Self::get_i64(doc, &entry, "page").unwrap_or(1) as usize;
-                if let Some(page_id) = Self::page_id_for_number(doc, page) {
-                    let _ = doc.put(&entry, "page-id", page_id);
-                }
-            }
-        }
     }
 
     pub fn duplicate_page_plan(
@@ -523,9 +497,17 @@ impl PdfDoc {
         Some((hash, len, mime))
     }
 
+    /// The file name the pinned source was opened under, if it was named.
+    pub fn source_name(doc: &AutoCommit) -> Option<String> {
+        let Ok(Some((Value::Object(ObjType::Map), meta))) = doc.get(&ROOT, "meta") else {
+            return None;
+        };
+        read_str(doc, &meta, "source-name")
+    }
+
     /// Pin the source bytes by content hash. The first pin wins: a record
     /// never silently re-targets its markup at different bytes.
-    pub fn pin_source(doc: &mut AutoCommit, hash: &str, len: u64, mime: &str) {
+    pub fn pin_source(doc: &mut AutoCommit, hash: &str, len: u64, mime: &str, name: &str) {
         let valid = hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit());
         if !valid || Self::source(doc).is_some() {
             return;
@@ -536,6 +518,9 @@ impl PdfDoc {
         let _ = doc.put(&meta, "source-hash", hash.to_ascii_lowercase());
         let _ = doc.put(&meta, "source-len", i64::try_from(len).unwrap_or(i64::MAX));
         let _ = doc.put(&meta, "source-mime", mime);
+        if !name.is_empty() {
+            let _ = doc.put(&meta, "source-name", name);
+        }
         let _ = ui::record::add_blob_reference(
             doc,
             &ui::record::BlobRef {
@@ -1156,7 +1141,7 @@ impl PdfDoc {
 
     /// Write a comment or reply's text as rich text under its [`TEXT`] key,
     /// replacing what it held.
-    fn write_text(doc: &mut AutoCommit, entry: &ObjId, clips: &[qdoc_rich_text::ClipBlock]) {
+    fn write_text(doc: &mut AutoCommit, entry: &ObjId, clips: &[tilo_document::ClipBlock]) {
         if let Err(error) = tilo_rich_text::put_rich_text(doc, entry, TEXT, clips) {
             tracing::warn!(%error, "comment text not written");
         }
@@ -1166,7 +1151,7 @@ impl PdfDoc {
     fn read_text(doc: &AutoCommit, entry: &ObjId) -> (String, Vec<ui::widget::BlockContent>) {
         if let Some(root) = tilo_rich_text::rich_text_at(doc, entry, TEXT) {
             return (
-                qdoc_rich_text::RichText::plain_text_under(doc, &root).unwrap_or_default(),
+                tilo_document::RichText::plain_text_under(doc, &root).unwrap_or_default(),
                 tilo_rich_text::blocks_under(doc, &root).unwrap_or_default(),
             );
         }
@@ -1237,7 +1222,7 @@ impl PdfDoc {
     }
 
     /// Replace a comment's text with `clips` (its paragraphs as written).
-    pub fn set_comment_text(doc: &mut AutoCommit, id: &str, clips: &[qdoc_rich_text::ClipBlock]) {
+    pub fn set_comment_text(doc: &mut AutoCommit, id: &str, clips: &[tilo_document::ClipBlock]) {
         if let Some((list, i)) = Self::locate(doc, "comments", id)
             && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
         {
@@ -1257,7 +1242,7 @@ impl PdfDoc {
         doc: &mut AutoCommit,
         comment_id: &str,
         reply: &Reply,
-        clips: &[qdoc_rich_text::ClipBlock],
+        clips: &[tilo_document::ClipBlock],
     ) {
         if reply.id.trim().is_empty() {
             return;
@@ -1642,9 +1627,6 @@ mod tests {
     fn signatures_round_trip_and_deletes_cascade_only_to_anchored_comments() {
         use crate::model::SignatureInk;
         let mut doc = AutoCommit::new();
-        assert!(!PdfDoc::is_seeded(&mut doc));
-        PdfDoc::set_meta(&mut doc, "T", "A");
-        assert!(PdfDoc::is_seeded(&mut doc));
 
         let typed = signature(
             &Signature::new_id(),

@@ -25,6 +25,11 @@ use serde::{Deserialize, Serialize};
 pub const ALPN: &[u8] = b"tilo-relay/1";
 /// Authenticated one-shot discovery of direct filesystem endpoints.
 pub const DISCOVERY_ALPN: &[u8] = b"tilo-relay-discovery/2";
+
+/// ALPN of the compute session: personal-mesh compute jobs on its control
+/// stream, members' environment sessions and legacy windows on further
+/// streams ([`crate::environment`]).
+pub const COMPUTE_ALPN: &[u8] = b"tilo-personal-compute/1";
 /// Authenticated owner-only health and lifecycle management protocol.
 pub const MANAGEMENT_ALPN: &[u8] = b"tilo-home-peer-management/1";
 
@@ -87,6 +92,8 @@ pub struct HomePeerManagementResponse {
     pub files_ready: bool,
     /// Active service advertisement after capability clamping.
     pub services: crate::mesh::ServiceCapabilities,
+    /// What its workers run for environments right now.
+    pub environments: crate::home_peer::RelayEnvironments,
     /// Whether this response completed permanent decommissioning.
     pub decommissioned: bool,
 }
@@ -486,7 +493,43 @@ pub enum Envelope {
         /// The participation that ends.
         participation: [u8; 32],
     },
+
+    /// Ask for the calls of a room the host governs. Requires an accepted
+    /// `Subscribe`. Answered with [`Envelope::VoiceCallList`].
+    VoiceCalls {
+        /// Workspace id.
+        workspace_id: u64,
+    },
+
+    /// A room's calls as its governance records them, with who is in each.
+    VoiceCallList {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The calls, or why the room has none to list.
+        result: Result<Vec<crate::voice::CallSummary>, String>,
+    },
+
+    /// One piece of a record's content for exactly one device of the
+    /// workspace, which asked the room for it. Routed like
+    /// [`Envelope::RemoteAction`] — to the addressed device's live
+    /// connection, never stored, never fanned out — but never answered:
+    /// content that does not arrive is asked for again.
+    RecordContent {
+        /// Workspace id both devices are subscribed to.
+        workspace_id: u64,
+        /// The addressed device.
+        to_device_public_key: [u8; 32],
+        /// The sending device, stamped by the relay from the authenticated
+        /// connection. Whatever a sender puts here is overwritten.
+        from_device_public_key: [u8; 32],
+        /// Opaque piece, at most [`MAX_RECORD_CONTENT_FRAME_BYTES`].
+        #[serde(with = "serde_bytes")]
+        frame: Vec<u8>,
+    },
 }
+
+/// Largest [`Envelope::RecordContent`] frame a relay routes.
+pub const MAX_RECORD_CONTENT_FRAME_BYTES: usize = 256 * 1024;
 
 /// Version of the [`Envelope::RemoteAction`] kind this build routes. The
 /// relay refuses other versions as undeliverable instead of forwarding
@@ -560,6 +603,44 @@ mod tests {
         ];
         // The frame codec (length prefix) lives in `tilo-relay-client`; the
         // payload bytes it carries are these postcard encodings.
+        for (envelope, payload) in cases {
+            assert_eq!(postcard::to_stdvec(&envelope).unwrap(), payload);
+            assert_eq!(
+                postcard::from_bytes::<Envelope>(&payload).unwrap(),
+                envelope
+            );
+        }
+    }
+
+    #[test]
+    fn frozen_voice_envelope_bytes() {
+        // These exact discriminants and fields predate browser call listings.
+        let cases = [
+            (
+                Envelope::VoiceJoin {
+                    workspace_id: 7,
+                    call: [1; 32],
+                    participation: None,
+                },
+                [vec![27, 7], vec![1; 32], vec![0]].concat(),
+            ),
+            (
+                Envelope::VoiceJoin {
+                    workspace_id: 7,
+                    call: [1; 32],
+                    participation: Some([2; 32]),
+                },
+                [vec![27, 7], vec![1; 32], vec![1], vec![2; 32]].concat(),
+            ),
+            (
+                Envelope::VoiceLeave {
+                    workspace_id: 7,
+                    call: [1; 32],
+                    participation: [2; 32],
+                },
+                [vec![30, 7], vec![1; 32], vec![2; 32]].concat(),
+            ),
+        ];
         for (envelope, payload) in cases {
             assert_eq!(postcard::to_stdvec(&envelope).unwrap(), payload);
             assert_eq!(

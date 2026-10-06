@@ -159,6 +159,10 @@ struct RuntimeSource {
     requires_reboot: bool,
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent signed declaration in the catalog wire format"
+)]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ModelSource {
@@ -173,9 +177,14 @@ struct ModelSource {
     license_url: String,
     requires_acceptance: bool,
     installed_size_bytes: u64,
+    /// Signed vLLM runtimes that may serve this model. Empty, and only
+    /// empty, for a model that runs in-process (`onnx_file`).
+    #[serde(default)]
     allowed_runtimes: BTreeSet<RuntimeKind>,
     required_memory_mib: u64,
     required_accelerator_mib: u64,
+    /// Zero, or omitted, for an in-process model: it is not a chat model.
+    #[serde(default)]
     context_window: u32,
     /// Signed declaration: this exact release accepts bounded image input.
     #[serde(default)]
@@ -185,6 +194,9 @@ struct ModelSource {
     /// runtime; it is never inferred from `vision`.
     #[serde(default)]
     face_recognition: bool,
+    /// Salient-object segmentation, for an in-process model only.
+    #[serde(default)]
+    segmentation: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -250,10 +262,18 @@ fn run(cli: &Cli) -> Result<(), String> {
     let mut trust_bytes = serde_json::to_vec_pretty(&trust)
         .map_err(|error| format!("could not encode trust: {error}"))?;
     trust_bytes.push(b'\n');
-    atomic_file::write_creating_parent_with_mode(&cli.catalog_out, &catalog_bytes, 0o644)
-        .map_err(|error| format!("could not write {}: {error}", cli.catalog_out.display()))?;
-    atomic_file::write_creating_parent_with_mode(&cli.trust_out, &trust_bytes, 0o644)
-        .map_err(|error| format!("could not write {}: {error}", cli.trust_out.display()))?;
+    tilo_files::native::atomic::write_creating_parent_with_mode(
+        &cli.catalog_out,
+        &catalog_bytes,
+        0o644,
+    )
+    .map_err(|error| format!("could not write {}: {error}", cli.catalog_out.display()))?;
+    tilo_files::native::atomic::write_creating_parent_with_mode(
+        &cli.trust_out,
+        &trust_bytes,
+        0o644,
+    )
+    .map_err(|error| format!("could not write {}: {error}", cli.trust_out.display()))?;
     Ok(())
 }
 
@@ -270,8 +290,8 @@ fn compile(
         return Err(format!("unsupported source schema {}", source.schema));
     }
     validate_identifier("key id", &source.key_id)?;
-    if source.runtimes.is_empty() || source.models.is_empty() {
-        return Err("catalog needs at least one runtime and model".into());
+    if source.models.is_empty() {
+        return Err("catalog needs at least one model".into());
     }
     source
         .runtimes
@@ -342,7 +362,6 @@ fn compile(
         if model.label.trim().is_empty()
             || model.description.trim().is_empty()
             || model.license_id.trim().is_empty()
-            || model.context_window == 0
         {
             return Err(format!(
                 "model {} has incomplete release metadata",
@@ -350,11 +369,12 @@ fn compile(
             ));
         }
         validate_immutable_url(&model.license_url, source.production, Some(&model.revision))?;
-        if model.allowed_runtimes.is_empty()
-            || !model
-                .allowed_runtimes
-                .iter()
-                .all(|kind| runtime_kinds.contains(kind))
+        // An in-process model names no runtime at all; every runtime a served
+        // model names must be one this catalog signs.
+        if !model
+            .allowed_runtimes
+            .iter()
+            .all(|kind| runtime_kinds.contains(kind))
         {
             return Err(format!(
                 "model {} names a runtime kind absent from this catalog",
@@ -394,15 +414,24 @@ fn compile(
             context_window: model.context_window,
             vision: model.vision,
             face_recognition: model.face_recognition,
+            segmentation: model.segmentation,
         };
+        release
+            .validate_shape()
+            .map_err(|error| format!("invalid model {}: {error}", release.id))?;
         release
             .artifact
             .validate()
             .map_err(|error| format!("invalid model {}: {error}", release.id))?;
         models.push(release);
     }
-    if !model_ids.contains(&source.recommendation) {
-        return Err("recommended model is not present in catalog".into());
+    let has_served_models = models.iter().any(|model| !model.runs_in_process());
+    if (has_served_models || !source.recommendation.is_empty())
+        && !models
+            .iter()
+            .any(|model| model.id == source.recommendation && !model.runs_in_process())
+    {
+        return Err("recommended model is not a runtime-served model in this catalog".into());
     }
     let payload = CatalogPayload {
         schema: CATALOG_SCHEMA,
@@ -706,8 +735,136 @@ mod tests {
                 context_window: 4096,
                 vision: true,
                 face_recognition: false,
+                segmentation: false,
             }],
         }
+    }
+
+    fn in_process_source(dir: &Path) -> ModelSource {
+        let mut artifact = artifact(dir, "subject.onnx", b"deterministic onnx fixture\n");
+        let revision = hex::encode(Sha256::digest(b"deterministic onnx fixture\n"));
+        artifact.url = format!("https://release.example.invalid/subject/{revision}/subject.onnx");
+        ModelSource {
+            id: "example-subject".into(),
+            label: "Example subject selection".into(),
+            description: "Deterministic in-process test fixture".into(),
+            license_url: format!("https://release.example.invalid/subject/{revision}/LICENSE"),
+            revision,
+            artifact,
+            artifact_format: ModelArtifactFormat::OnnxFile,
+            license_id: "Apache-2.0".into(),
+            requires_acceptance: true,
+            installed_size_bytes: 64,
+            allowed_runtimes: BTreeSet::new(),
+            required_memory_mib: 512,
+            required_accelerator_mib: 0,
+            context_window: 0,
+            vision: false,
+            face_recognition: false,
+            segmentation: true,
+        }
+    }
+
+    #[test]
+    fn in_process_only_catalog_compiles_without_chat_recommendation() {
+        let key = SigningKey::from_bytes(&[5; 32]);
+        let temp = tempfile::tempdir().unwrap();
+        let mut catalog = source(temp.path());
+        catalog.models = vec![in_process_source(temp.path())];
+        catalog.runtimes.clear();
+        catalog.recommendation.clear();
+        let (signed, trust) = compile(catalog.clone(), temp.path(), &key).unwrap();
+        assert_eq!(signed.payload.models.len(), 1);
+        assert!(signed.payload.runtimes.is_empty());
+        assert!(signed.payload.recommendation.is_empty());
+        let public = hex::decode(&trust.keys["test-release-1"]).unwrap();
+        let verifying =
+            ed25519_dalek::VerifyingKey::from_bytes(&public.try_into().unwrap()).unwrap();
+        verifying
+            .verify(
+                &catalog_signing_bytes(&signed.payload).unwrap(),
+                &Signature::from_slice(&signed.signature).unwrap(),
+            )
+            .unwrap();
+
+        catalog.recommendation = "example-subject".into();
+        assert!(
+            compile(catalog, temp.path(), &key)
+                .unwrap_err()
+                .contains("runtime-served")
+        );
+        let mut served = source(temp.path());
+        served.runtimes.clear();
+        assert!(compile(served, temp.path(), &key).is_err());
+    }
+
+    /// An ONNX model compiles with no runtime and no context window, but
+    /// still cannot name a runtime, claim chat or vision, or become the chat
+    /// recommendation; and a served model still needs both.
+    #[test]
+    fn in_process_models_compile_without_a_runtime_and_keep_their_shape() {
+        let key = SigningKey::from_bytes(&[5; 32]);
+        let temp = tempfile::tempdir().unwrap();
+        let mut catalog = source(temp.path());
+        catalog.models.push(in_process_source(temp.path()));
+        let (signed, _) = compile(catalog, temp.path(), &key).unwrap();
+        let subject = signed
+            .payload
+            .models
+            .iter()
+            .find(|model| model.id == "example-subject")
+            .unwrap();
+        assert!(subject.runs_in_process());
+        assert!(subject.segmentation);
+        assert!(subject.allowed_runtimes.is_empty());
+
+        let refused = |edit: fn(&mut ModelSource)| {
+            let temp = tempfile::tempdir().unwrap();
+            let mut catalog = source(temp.path());
+            let mut model = in_process_source(temp.path());
+            edit(&mut model);
+            catalog.models.push(model);
+            compile(catalog, temp.path(), &SigningKey::from_bytes(&[5; 32])).unwrap_err()
+        };
+        assert!(
+            refused(|model| model.allowed_runtimes = BTreeSet::from([RuntimeKind::Cpu]))
+                .contains("must not name a vLLM runtime")
+        );
+        assert!(refused(|model| model.context_window = 4096).contains("cannot claim chat"));
+        assert!(refused(|model| model.vision = true).contains("cannot claim chat"));
+        assert!(refused(|model| model.segmentation = false).contains("no capability"));
+        assert!(
+            refused(|model| model.artifact.url =
+                "https://release.example.invalid/subject/u2net.onnx".into())
+            .contains("immutable revision")
+        );
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut catalog = source(temp.path());
+        catalog.models.push(in_process_source(temp.path()));
+        catalog.recommendation = "example-subject".into();
+        assert!(
+            compile(catalog, temp.path(), &key)
+                .unwrap_err()
+                .contains("runtime-served")
+        );
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut served = source(temp.path());
+        served.models[0].context_window = 0;
+        assert!(
+            compile(served, temp.path(), &key)
+                .unwrap_err()
+                .contains("context window")
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let mut served = source(temp.path());
+        served.models[0].allowed_runtimes.clear();
+        assert!(
+            compile(served, temp.path(), &key)
+                .unwrap_err()
+                .contains("no runtime")
+        );
     }
 
     /// Checked-in non-production source compiles without network resolution, output is deterministic
@@ -727,6 +884,9 @@ mod tests {
             assert_eq!(catalog.payload.recommendation, "example/tiny-model");
             assert_eq!(catalog.payload.models[0].artifact.size_bytes, 42);
             assert_eq!(catalog.payload.runtimes[0].release.artifact.size_bytes, 44);
+            let subject = &catalog.payload.models[1];
+            assert_eq!(subject.id, "example/tiny-subject");
+            assert!(subject.runs_in_process() && subject.segmentation);
             assert_eq!(trust.keys.len(), 1);
         }
 

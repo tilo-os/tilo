@@ -40,11 +40,21 @@ pub enum Label {
     KeyWrap,
     /// A Cloud host's signing secret, sealed to its machine.
     CloudHostSecret,
+    /// A user root key wrapped in a browser (passkey PRF or recovery key).
+    UserRootWrap,
+    /// One app's secret in a machine's file-backed secret store.
+    FileSecretStore,
+    /// A disk-unlock sibling half held for a device, sealed to the person's
+    /// secret-sync key.
+    UnlockSiblingHalf,
+    /// A sibling half released to one boot-time unlock request, sealed to
+    /// that request's ephemeral key.
+    UnlockRelease,
 }
 
 impl Label {
     /// Every registered label, for uniqueness checks and documentation.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 18] = [
         Self::RelayEnrollOffer,
         Self::RelayEnrollRequest,
         Self::RelayEnrollResponse,
@@ -59,6 +69,10 @@ impl Label {
         Self::ChannelKeyHistory,
         Self::KeyWrap,
         Self::CloudHostSecret,
+        Self::UserRootWrap,
+        Self::FileSecretStore,
+        Self::UnlockSiblingHalf,
+        Self::UnlockRelease,
     ];
 
     /// The stable byte string bound into the cryptography. Changing one of
@@ -79,6 +93,10 @@ impl Label {
             Self::ChannelKeyHistory => "tilo-seal/v1/channel-key-history",
             Self::KeyWrap => "tilo-seal/v1/key-wrap",
             Self::CloudHostSecret => "tilo-seal/v1/cloud-host-secret",
+            Self::UserRootWrap => "tilo-seal/v1/user-root-wrap",
+            Self::FileSecretStore => "tilo-seal/v1/file-secret-store",
+            Self::UnlockSiblingHalf => "tilo-seal/v1/unlock-sibling-half",
+            Self::UnlockRelease => "tilo-seal/v1/unlock-release",
         }
     }
 

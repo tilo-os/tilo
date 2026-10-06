@@ -12,7 +12,7 @@
 //!     (relative/absolute) for copy/paste and fill.
 //!   * [`fill`]     — the smart fill-handle engine: extend a selected pattern
 //!     (formula, numeric series, dates, month/weekday names, text+number).
-//!   * [`settings`] — the shared per-user global settings store and the
+//!   * [`settings`] — the person's shared locale defaults and the
 //!     per-document overrides that layer on top of it.
 //!   * [`doc`]      — the Automerge document model (sheets + cells live in
 //!     the CRDT, so collaboration and undo come for free).
@@ -24,8 +24,8 @@
 //!   * [`app`]      — the root widget composing the formula bar + grid +
 //!     sheet tabs + the file/format menus and settings surfaces.
 //!
-//! `app_root()` is the single integration point used by both the live event
-//! loop and the `--shots` offscreen renderer.
+//! [`SheetsShell`] is the app every host runs: the live window, screenshots
+//! and the browser desktop.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -68,22 +68,16 @@ pub mod infer;
 mod interchange_tests;
 pub mod model;
 pub mod ods;
-pub mod search_provider;
+pub mod resource;
+pub mod sample;
 pub mod settings;
 pub mod xlsx;
 
 pub use app::SheetsApp;
 
-use ui::widget::Widget;
+pub use resource::{SheetsShell, SheetsWorkbook};
 
-/// Build and return the app's root widget tree.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(SheetsApp::new())
-}
-
-/// The app as every host mounts it: the live root and its actions.
+/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::launch::LaunchSpec::new("so.tilo.sheets", app_root)
-        .component_actions(actions::register)
-        .as_definition("Sheets")
+    ui::framework::definition::<SheetsShell>()
 }

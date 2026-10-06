@@ -15,7 +15,7 @@
 //! render/selection caches, never the canonical value (which lives in the
 //! host's CRDT), matching the toolkit's CRDT-native pattern.
 
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::collections::HashMap;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
@@ -342,7 +342,7 @@ impl Widget for TriStateControl {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         let Some(index) = target
@@ -382,7 +382,21 @@ pub struct ColorSwatchPicker {
     hovered: Option<usize>,
     focused: bool,
     focus_index: usize,
+    /// Told each chosen index, as well as [`ColorSwatchPicker::take_choice`].
+    on_change: Option<Box<dyn FnMut(usize)>>,
+    /// Lay the swatches out on their own, without the raised panel and its
+    /// padding: for a palette inline in a form.
+    bare: bool,
+    /// The height of a cell, when it is not as tall as it is wide.
+    cell_height: Option<f64>,
+    /// Paints each swatch in place of its flat colour: a sample of what
+    /// choosing it gives, such as a brush's stroke.
+    painter: Option<Box<SwatchPainter>>,
 }
+
+/// Paints swatch `index` into its rect: `(scene, transform, rect, index,
+/// theme, text)`.
+pub type SwatchPainter = dyn FnMut(&mut Scene, Affine, Rect, usize, &Theme, &mut TextRenderer);
 
 /// Matches the permissions editor.
 pub const DEFAULT_PALETTE: [u32; 12] = [
@@ -417,7 +431,72 @@ impl ColorSwatchPicker {
             hovered: None,
             focused: false,
             focus_index: 0,
+            on_change: None,
+            bare: false,
+            cell_height: None,
+            painter: None,
         }
+    }
+
+    /// Cells `height` tall rather than square.
+    #[must_use]
+    pub fn with_cell_height(mut self, height: f64) -> Self {
+        self.cell_height = Some(height.max(12.0));
+        self
+    }
+
+    /// Paint each swatch with `painter` instead of its flat colour, for a
+    /// choice among samples (brush strokes, patterns) rather than colours.
+    /// The palette's colours still name the entries without labels.
+    #[must_use]
+    pub fn with_painter(
+        mut self,
+        painter: impl FnMut(&mut Scene, Affine, Rect, usize, &Theme, &mut TextRenderer) + 'static,
+    ) -> Self {
+        self.painter = Some(Box::new(painter));
+        self
+    }
+
+    fn row_height(&self) -> f64 {
+        self.cell_height.unwrap_or(self.cell)
+    }
+
+    /// Run `f` with each index the user chooses.
+    #[must_use]
+    pub fn on_change(mut self, f: impl FnMut(usize) + 'static) -> Self {
+        self.on_change = Some(Box::new(f));
+        self
+    }
+
+    /// The side of one swatch's cell, in logical px (default 30).
+    #[must_use]
+    pub fn with_cell(mut self, cell: f64) -> Self {
+        self.cell = cell.max(12.0);
+        self
+    }
+
+    /// Without the raised panel and its padding.
+    #[must_use]
+    pub fn bare(mut self) -> Self {
+        self.bare = true;
+        self
+    }
+
+    /// Show `idx` as chosen (`None`: none is), without telling `on_change`.
+    pub fn set_selected(&mut self, idx: Option<usize>) {
+        self.selected = idx.filter(|idx| *idx < self.palette.len());
+    }
+
+    fn chose(&mut self, idx: usize) {
+        self.selected = Some(idx);
+        self.choice = Some(idx);
+        if let Some(on_change) = self.on_change.as_mut() {
+            on_change(idx);
+        }
+    }
+
+    fn pad(&self) -> f64 {
+        if self.bare { 0.0 } else { 8.0 }
     }
 
     #[must_use]
@@ -456,17 +535,17 @@ impl ColorSwatchPicker {
     )]
     fn recompute_swatches(&mut self) {
         self.swatch_rects.clear();
-        let pad = 8.0;
+        let pad = self.pad();
         for i in 0..self.palette.len() {
             let r = i.checked_div(self.columns).unwrap_or(0) as f64;
             let c = i.checked_rem(self.columns).unwrap_or(0) as f64;
             let x = self.rect.x0 + pad + c * self.cell;
-            let y = self.rect.y0 + pad + r * self.cell;
+            let y = self.rect.y0 + pad + r * self.row_height();
             self.swatch_rects.push(Rect::new(
                 x + 2.0,
                 y + 2.0,
                 x + self.cell - 2.0,
-                y + self.cell - 2.0,
+                y + self.row_height() - 2.0,
             ));
         }
     }
@@ -479,10 +558,10 @@ impl ColorSwatchPicker {
                   far below f32's exact-integer range"
     )]
     fn grid_size(&self) -> (f32, f32) {
-        let pad = 8.0_f32;
+        let pad = px(self.pad());
         let cell = px(self.cell);
         let w = self.columns as f32 * cell + pad * 2.0;
-        let h = self.rows() as f32 * cell + pad * 2.0;
+        let h = self.rows() as f32 * px(self.row_height()) + pad * 2.0;
         (w, h)
     }
 }
@@ -538,7 +617,7 @@ impl Widget for ColorSwatchPicker {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        _text_renderer: &mut TextRenderer,
+        text_renderer: &mut TextRenderer,
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
@@ -546,13 +625,15 @@ impl Widget for ColorSwatchPicker {
             return;
         }
         // Panel with its derived rest edge (HIG §9.5), crisp 1 px inset.
-        crate::surface::card(
-            scene,
-            transform,
-            self.rect,
-            f64::from(theme.tokens.radii.md),
-            theme.tokens.colors.surfaces.raised,
-        );
+        if !self.bare {
+            crate::surface::card(
+                scene,
+                transform,
+                self.rect,
+                f64::from(theme.tokens.radii.md),
+                theme.tokens.colors.surfaces.raised,
+            );
+        }
 
         for (i, (&rgb, sr)) in self
             .palette
@@ -562,7 +643,18 @@ impl Widget for ColorSwatchPicker {
         {
             let shape = RoundedRect::from_rect(*sr, 6.0);
             let swatch = packed_color(rgb);
-            scene.fill(Fill::NonZero, transform, swatch, None, &shape);
+            match self.painter.as_mut() {
+                Some(painter) => painter(scene, transform, *sr, i, theme, text_renderer),
+                None => scene.fill(Fill::NonZero, transform, swatch, None, &shape),
+            }
+            // A rest edge, so a swatch the colour of the panel still shows.
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                crate::surface::edge_on(theme.tokens.colors.surfaces.raised),
+                None,
+                &crate::surface::edge_outline(*sr, 6.0),
+            );
             if self.selected == Some(i) || (self.focused && self.focus_index == i) {
                 scene.stroke(
                     &Stroke::new(2.5),
@@ -605,8 +697,7 @@ impl Widget for ColorSwatchPicker {
                     .iter()
                     .position(|r| r.contains(self.last_cursor))
                 {
-                    self.selected = Some(i);
-                    self.choice = Some(i);
+                    self.chose(i);
                     self.focused = true;
                     self.focus_index = i;
                     *ctx.focus_target = Some(ctx.node_id);
@@ -635,8 +726,7 @@ impl Widget for ColorSwatchPicker {
                     Key::Named(NamedKey::Home) => 0,
                     Key::Named(NamedKey::End) => last,
                     Key::Named(NamedKey::Enter | NamedKey::Space) => {
-                        self.selected = Some(self.focus_index);
-                        self.choice = Some(self.focus_index);
+                        self.chose(self.focus_index);
                         *ctx.handled = true;
                         return;
                     }
@@ -651,6 +741,12 @@ impl Widget for ColorSwatchPicker {
 
     fn name(&self) -> &'static str {
         "ColorSwatchPicker"
+    }
+
+    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        let labels = self.accessible_labels.as_ref()?;
+        let index = self.swatch_rects.iter().position(|r| r.contains(point))?;
+        Some((*self.swatch_rects.get(index)?, labels.get(index)?.clone()))
     }
 
     fn get_rect(&self) -> Rect {
@@ -736,7 +832,7 @@ impl Widget for ColorSwatchPicker {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         let Some(index) = target
@@ -754,8 +850,7 @@ impl Widget for ColorSwatchPicker {
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;
         }
-        self.selected = Some(index);
-        self.choice = Some(index);
+        self.chose(index);
         true
     }
 }
@@ -908,7 +1003,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut ft,
@@ -928,7 +1023,7 @@ mod tests {
                 &mut tri,
                 "segment:0",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(tri.selected(), 0);
@@ -939,7 +1034,7 @@ mod tests {
                 &mut picker,
                 "swatch:5",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(picker.take_choice(), Some(5));
@@ -983,7 +1078,7 @@ mod tests {
                 &mut picker,
                 "swatch:1",
                 &crate::a11y::Action::Focus,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert!(

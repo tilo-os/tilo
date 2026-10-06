@@ -65,11 +65,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             let events: Vec<collab_types::SignedOp> = std::fs::read_to_string(root.join("signed-document-events.jsonl"))?
                 .lines().map(serde_json::from_str).collect::<Result<_, _>>()?;
             let mut doc = reconstruct(&events, workspace_id)?;
-            let model = qdoc::model::open(&doc, &automerge::ROOT)?;
-            let materialized = qdoc::model::materialize(&doc, &model);
+            let model = tilo_doc::model::open(&doc, &automerge::ROOT)?;
+            let materialized = tilo_doc::model::materialize(&doc, &model);
             let images: Vec<_> = materialized.blocks.iter().filter(|b| b.kind == "image").collect();
             let [block] = images.as_slice() else { return Err("expected exactly one reconstructed image block".into()); };
-            for (name, expected) in [("blob", qdoc::AttrVal::Str(blob.clone())), ("width",qdoc::AttrVal::Int(32)), ("height",qdoc::AttrVal::Int(32))] {
+            for (name, expected) in [("blob", tilo_doc::AttrVal::Str(blob.clone())), ("width",tilo_doc::AttrVal::Int(32)), ("height",tilo_doc::AttrVal::Int(32))] {
                 if block.attrs.get(name) != Some(&expected) { return Err(format!("reconstructed {name} mismatch").into()); }
             }
             std::fs::write(automerge_out, doc.save())?;
@@ -192,7 +192,7 @@ mod tests {
     fn envelope() -> collab_types::SignedOp {
         let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
         let mut doc = automerge::AutoCommit::new();
-        qdoc::model::init(&mut doc, &automerge::ROOT);
+        tilo_doc::model::init(&mut doc, &automerge::ROOT);
         let mut op = collab_types::SignedOp::new_unsigned(
             collab_types::DocumentMutation::Snapshot(doc.save())
                 .encode()
@@ -214,7 +214,7 @@ mod tests {
         {
             let op = envelope();
             let doc = reconstruct(std::slice::from_ref(&op), "room").unwrap();
-            assert!(qdoc::model::open(&doc, &automerge::ROOT).is_ok());
+            assert!(tilo_doc::model::open(&doc, &automerge::ROOT).is_ok());
             assert!(reconstruct(std::slice::from_ref(&op), "another-room").is_err());
             let mut altered = op;
             altered.payload.push(0);

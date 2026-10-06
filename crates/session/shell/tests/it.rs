@@ -27,8 +27,6 @@ mod support;
 mod active_group_wireup_test;
 #[path = "advertised_globals.rs"]
 mod advertised_globals;
-#[path = "apps_integration.rs"]
-mod apps_integration;
 #[path = "blend_layer_cost.rs"]
 mod blend_layer_cost;
 #[path = "bluetooth_pairing.rs"]
@@ -59,6 +57,8 @@ mod continuity_suggestion_flow;
 mod control_socket_test;
 #[path = "controller_navigation.rs"]
 mod controller_navigation;
+#[path = "cpu_raster_parity.rs"]
+mod cpu_raster_parity;
 #[path = "cross_strip_drag.rs"]
 mod cross_strip_drag;
 #[path = "cursor_protocol.rs"]
@@ -131,6 +131,8 @@ mod interaction_test;
 mod keyboard_focus_wire;
 #[path = "leak_probe.rs"]
 mod leak_probe;
+#[path = "legacy_window_between_devices.rs"]
+mod legacy_window_between_devices;
 #[path = "lock_screen_visual.rs"]
 mod lock_screen_visual;
 #[path = "maximize_persist_wireup_test.rs"]
@@ -179,6 +181,8 @@ mod qs_actions_click_routing;
 mod real_apps_visual;
 #[path = "remote_cursors_test.rs"]
 mod remote_cursors_test;
+#[path = "remote_typing_wire.rs"]
+mod remote_typing_wire;
 #[path = "reopen_closed_tab.rs"]
 mod reopen_closed_tab;
 #[path = "runtime_daemon_process.rs"]
@@ -221,6 +225,8 @@ mod transient_sheets;
 mod two_netns_share;
 #[path = "wayland_test.rs"]
 mod wayland_test;
+#[path = "wheel_scroll_wire.rs"]
+mod wheel_scroll_wire;
 #[path = "window_previews.rs"]
 mod window_previews;
 #[path = "window_switcher.rs"]

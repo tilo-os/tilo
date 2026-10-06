@@ -2028,19 +2028,21 @@ mod tests {
                 for pixel in rgba.chunks_exact_mut(4) {
                     pixel.copy_from_slice(&[luma, 96, 180, 255]);
                 }
-                let unit = encoder
-                    .encode_unit(&rgba, frame_index * 33)
+                for unit in encoder
+                    .encode_at_ms(&rgba, frame_index * 33)
                     .expect("encode projection frame")
-                    .expect("one unit per frame");
-                pipeline
-                    .push(&VideoPacket {
-                        width: size,
-                        height: size,
-                        presentation_time_us: frame_index * 33_333,
-                        keyframe: unit.keyframe,
-                        annex_b: unit.data,
-                    })
-                    .expect("push projection frame");
+                {
+                    pipeline
+                        .push(&VideoPacket {
+                            width: size,
+                            height: size,
+                            presentation_time_us: u64::try_from(unit.pts.as_micros())
+                                .expect("a short test stream"),
+                            keyframe: unit.keyframe,
+                            annex_b: unit.data,
+                        })
+                        .expect("push projection frame");
+                }
                 std::thread::sleep(Duration::from_millis(34));
             }
             let deadline = tilo_test_env::hang_deadline();

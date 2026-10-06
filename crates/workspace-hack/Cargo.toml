@@ -184,12 +184,14 @@ socket2 = { version = "0.6", default-features = false, features = ["all"] }
 spin = { version = "0.9", features = ["std"] }
 spki = { version = "0.8", default-features = false, features = ["pem", "std"] }
 stable_deref_trait = { version = "1" }
+strict-num = { version = "0.1" }
 subtle = { version = "2", features = ["const-generics"] }
 syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 syntect = { version = "5", default-features = false, features = ["plist-load", "regex-fancy", "yaml-load"] }
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 thiserror = { version = "2" }
 time = { version = "0.3", features = ["macros", "serde-well-known"] }
+tiny-skia-path = { version = "0.12" }
 tinystr = { version = "0.8", features = ["serde", "zerovec"] }
 tls_codec = { version = "0.5", features = ["derive", "mls", "serde"] }
 tokio = { version = "1", features = ["full", "test-util", "tracing"] }
@@ -197,6 +199,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["loggin
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["codec", "compat", "io"] }
 toml_parser = { version = "1" }
+tracing = { version = "0.1" }
 tracing-core = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ttf-parser = { version = "0.25", features = ["gvar-alloc", "no-std-float"] }
@@ -214,7 +217,6 @@ wasmi_collections = { version = "1", default-features = false, features = ["std"
 wasmi_core = { version = "1", default-features = false, features = ["simd", "std"] }
 wasmi_ir = { version = "1", default-features = false, features = ["simd"] }
 wasmparser = { version = "0.239", default-features = false, features = ["features", "simd", "std", "validate"] }
-web-time = { version = "1", default-features = false, features = ["serde"] }
 winnow = { version = "0.7" }
 writeable = { version = "0.6", default-features = false, features = ["alloc", "either"] }
 yoke = { version = "0.8", features = ["derive", "serde"] }
@@ -399,6 +401,7 @@ socket2 = { version = "0.6", default-features = false, features = ["all"] }
 spin = { version = "0.9", features = ["std"] }
 spki = { version = "0.8", default-features = false, features = ["pem", "std"] }
 stable_deref_trait = { version = "1" }
+strict-num = { version = "0.1" }
 subtle = { version = "2", features = ["const-generics"] }
 syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 syntect = { version = "5", default-features = false, features = ["plist-load", "regex-fancy", "yaml-load"] }
@@ -406,6 +409,7 @@ tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 thiserror = { version = "2" }
 time = { version = "0.3", features = ["macros", "serde-well-known"] }
 time-macros = { version = "0.2", default-features = false, features = ["formatting", "parsing", "serde"] }
+tiny-skia-path = { version = "0.12" }
 tinystr = { version = "0.8", features = ["serde", "zerovec"] }
 tls_codec = { version = "0.5", features = ["derive", "mls", "serde"] }
 tokio = { version = "1", features = ["full", "test-util", "tracing"] }
@@ -413,6 +417,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["loggin
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["codec", "compat", "io"] }
 toml_parser = { version = "1" }
+tracing = { version = "0.1" }
 tracing-core = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ttf-parser = { version = "0.25", features = ["gvar-alloc", "no-std-float"] }
@@ -430,7 +435,6 @@ wasmi_collections = { version = "1", default-features = false, features = ["std"
 wasmi_core = { version = "1", default-features = false, features = ["simd", "std"] }
 wasmi_ir = { version = "1", default-features = false, features = ["simd"] }
 wasmparser = { version = "0.239", default-features = false, features = ["features", "simd", "std", "validate"] }
-web-time = { version = "1", default-features = false, features = ["serde"] }
 winnow = { version = "0.7" }
 writeable = { version = "0.6", default-features = false, features = ["alloc", "either"] }
 yoke = { version = "0.8", features = ["derive", "serde"] }
@@ -444,11 +448,13 @@ zerovec = { version = "0.11", default-features = false, features = ["alloc", "de
 zune-jpeg = { version = "0.5" }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
+ash = { version = "0.38" }
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "notification", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 brotli = { version = "8" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.5" }
+hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
 hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
@@ -468,14 +474,12 @@ rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["ev
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
 scopeguard = { version = "1" }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
-strict-num = { version = "0.1" }
 tiny-skia = { version = "0.12" }
-tiny-skia-path = { version = "0.12" }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
-tracing = { version = "0.1", features = ["log"] }
+tracing = { version = "0.1", default-features = false, features = ["log"] }
 wayland-backend = { path = "../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", default-features = false, features = ["client", "server", "staging", "unstable"] }
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
@@ -485,11 +489,13 @@ x11rb = { version = "0.13", default-features = false, features = ["dl-libxcb", "
 x11rb-protocol = { version = "0.13", default-features = false, features = ["randr", "resource_manager", "xinput", "xkb"] }
 
 [target.x86_64-unknown-linux-gnu.build-dependencies]
+ash = { version = "0.38" }
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "notification", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 brotli = { version = "8" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.5" }
+hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
 hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
@@ -509,14 +515,12 @@ rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["ev
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
 scopeguard = { version = "1" }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
-strict-num = { version = "0.1" }
 tiny-skia = { version = "0.12" }
-tiny-skia-path = { version = "0.12" }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
-tracing = { version = "0.1", features = ["log"] }
+tracing = { version = "0.1", default-features = false, features = ["log"] }
 wayland-backend = { path = "../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", default-features = false, features = ["client", "server", "staging", "unstable"] }
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
@@ -526,11 +530,13 @@ x11rb = { version = "0.13", default-features = false, features = ["dl-libxcb", "
 x11rb-protocol = { version = "0.13", default-features = false, features = ["randr", "resource_manager", "xinput", "xkb"] }
 
 [target.aarch64-unknown-linux-gnu.dependencies]
+ash = { version = "0.38" }
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "notification", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 brotli = { version = "8" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.5" }
+hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
 hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
@@ -550,14 +556,12 @@ rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["ev
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
 scopeguard = { version = "1" }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
-strict-num = { version = "0.1" }
 tiny-skia = { version = "0.12" }
-tiny-skia-path = { version = "0.12" }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
-tracing = { version = "0.1", features = ["log"] }
+tracing = { version = "0.1", default-features = false, features = ["log"] }
 wayland-backend = { path = "../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", default-features = false, features = ["client", "server", "staging", "unstable"] }
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
@@ -567,11 +571,13 @@ x11rb = { version = "0.13", default-features = false, features = ["dl-libxcb", "
 x11rb-protocol = { version = "0.13", default-features = false, features = ["randr", "resource_manager", "xinput", "xkb"] }
 
 [target.aarch64-unknown-linux-gnu.build-dependencies]
+ash = { version = "0.38" }
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "notification", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 brotli = { version = "8" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.5" }
+hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
 hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
@@ -591,14 +597,12 @@ rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["ev
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
 scopeguard = { version = "1" }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
-strict-num = { version = "0.1" }
 tiny-skia = { version = "0.12" }
-tiny-skia-path = { version = "0.12" }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
-tracing = { version = "0.1", features = ["log"] }
+tracing = { version = "0.1", default-features = false, features = ["log"] }
 wayland-backend = { path = "../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", default-features = false, features = ["client", "server", "staging", "unstable"] }
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }

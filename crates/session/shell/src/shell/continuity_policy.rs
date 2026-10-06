@@ -114,10 +114,14 @@ impl ContinuityPolicySnapshot {
     }
 
     /// Classify every fabric action at one exhaustive boundary. Adding a new
-    /// wire action therefore requires an explicit privacy decision.
+    /// wire action therefore requires an explicit privacy decision. `None`
+    /// is device administration between the person's enrolled devices,
+    /// which no optional continuity switch turns off.
     #[must_use]
-    pub const fn capability_for_action(action: &PersonalFabricAction) -> ContinuityCapability {
-        match action {
+    pub const fn capability_for_action(
+        action: &PersonalFabricAction,
+    ) -> Option<ContinuityCapability> {
+        Some(match action {
             PersonalFabricAction::ResumeMedia { .. }
             | PersonalFabricAction::MediaAccepted { .. }
             | PersonalFabricAction::MediaRejected { .. }
@@ -154,10 +158,7 @@ impl ContinuityPolicySnapshot {
             | PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
             | PersonalFabricAction::BluetoothHandoffPairingCommit { .. }
             | PersonalFabricAction::BluetoothHandoffCancel { .. } => ContinuityCapability::Media,
-            PersonalFabricAction::DisplayMirrorRequest { .. }
-            | PersonalFabricAction::DisplayMirrorDecision { .. }
-            | PersonalFabricAction::DisplayMirrorStop { .. }
-            | PersonalFabricAction::SetDisplayPlacement { .. }
+            PersonalFabricAction::SetDisplayPlacement { .. }
             | PersonalFabricAction::DeviceHealthProbe { .. }
             | PersonalFabricAction::DeviceHealthReport { .. }
             | PersonalFabricAction::InputLeaseGranted { .. }
@@ -188,12 +189,24 @@ impl ContinuityPolicySnapshot {
             | PersonalFabricAction::GamepadForwardEvent { .. }
             | PersonalFabricAction::GamepadForwardStop { .. } => ContinuityCapability::TypedGamepad,
             PersonalFabricAction::Tethering { .. } => ContinuityCapability::WifiSettings,
-        }
+            // A legacy app keeps running on the device that hosts it; the
+            // person's other devices show it through a stream of its window.
+            PersonalFabricAction::WindowViews { .. } => ContinuityCapability::AppContinuations,
+            // Waking a sleeping device is administration of the person's own
+            // machines, available like presence itself.
+            PersonalFabricAction::WakeDevice { .. }
+            | PersonalFabricAction::WakeReport { .. }
+            | PersonalFabricAction::WakeProbe { .. }
+            | PersonalFabricAction::WakeProbeReply { .. } => return None,
+        })
     }
 
     #[must_use]
     pub const fn permits_action(self, action: &PersonalFabricAction) -> bool {
-        self.permits(Self::capability_for_action(action))
+        match Self::capability_for_action(action) {
+            Some(capability) => self.permits(capability),
+            None => true,
+        }
     }
 }
 
@@ -366,15 +379,23 @@ mod tests {
         for clock in [&clock_probe, &clock_report] {
             assert_eq!(
                 ContinuityPolicySnapshot::capability_for_action(clock),
-                ContinuityCapability::Media
+                Some(ContinuityCapability::Media)
             );
         }
         for health in [&health_probe, &health_report] {
             assert_eq!(
                 ContinuityPolicySnapshot::capability_for_action(health),
-                ContinuityCapability::DisplayInput
+                Some(ContinuityCapability::DisplayInput)
             );
         }
+
+        // Waking one of the person's devices needs no optional switch.
+        let wake = PersonalFabricAction::WakeDevice {
+            target: crate::shell::personal_continuity::DeviceId::new("desk").unwrap(),
+        };
+        assert_eq!(ContinuityPolicySnapshot::capability_for_action(&wake), None);
+        assert!(policy(false, false).permits_action(&wake));
+        assert!(ContinuityPolicySnapshot::default().permits_action(&wake));
 
         let media_only = policy(true, false);
         assert!(media_only.permits_action(&clock_probe));

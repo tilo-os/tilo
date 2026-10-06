@@ -600,6 +600,40 @@ pub struct TopBarChrome {
     /// currently selected inside it for keyboard and accessibility input.
     focused: bool,
     focused_control: Option<String>,
+    /// When the time the bar shows next goes stale: the end of the current
+    /// minute for the clock, second for the monitor, day for the calendar.
+    /// Set when the bar draws and advanced by `update` once reached, so an
+    /// idle desktop still wakes to repaint the clock.
+    time_wake: Option<Instant>,
+}
+
+/// Seconds the centre band's time reading stays the same for.
+fn time_bucket_secs(activity_visible: bool, center: CenterWidget) -> u64 {
+    if activity_visible {
+        return 1;
+    }
+    match center {
+        // Clock paints `HH:MM`.
+        CenterWidget::Clock => 60,
+        // The sparkline derives from `seconds % N`.
+        CenterWidget::SystemMonitor => 1,
+        // The cache must drop at midnight.
+        CenterWidget::Calendar => 86_400,
+    }
+}
+
+/// How long from `since_epoch` (wall time) until the next whole multiple of
+/// `bucket_secs` seconds, when a reading of that grain changes.
+fn until_next_time_bucket(since_epoch: Duration, bucket_secs: u64) -> Duration {
+    let bucket = Duration::from_secs(bucket_secs.max(1));
+    let into = Duration::from_nanos(
+        since_epoch
+            .as_nanos()
+            .checked_rem(bucket.as_nanos())
+            .and_then(|into| u64::try_from(into).ok())
+            .unwrap_or_default(),
+    );
+    bucket.saturating_sub(into)
 }
 
 /// `surfaces.raised` is `#ffffff` on light, same as the bar's own
@@ -891,6 +925,7 @@ impl TopBarChrome {
             last_cursor: None,
             focused: false,
             focused_control: None,
+            time_wake: None,
         };
         this.sync_from_tree(tree);
         this
@@ -905,24 +940,9 @@ impl TopBarChrome {
         let h = fingerprint_u64(self.rect.height());
         let activity_visible = self.activity_is_visible();
         let now = self.live_clock().unix_seconds;
-        let time_bucket = if activity_visible {
-            timestamp_bucket(now)
-        } else {
-            match self.center_widget {
-                CenterWidget::Clock => {
-                    // Minute granularity: Clock paints `HH:MM`.
-                    timestamp_bucket(now) / 60
-                }
-                CenterWidget::SystemMonitor => {
-                    // Second granularity: sparkline derives from `seconds % N`.
-                    timestamp_bucket(now)
-                }
-                CenterWidget::Calendar => {
-                    // Day granularity: cache must drop at midnight.
-                    timestamp_bucket(now) / 86_400
-                }
-            }
-        };
+        let time_bucket = timestamp_bucket(now)
+            .checked_div(time_bucket_secs(activity_visible, self.center_widget))
+            .unwrap_or_default();
         CacheFingerprint {
             rect_px: (x0, y0, w, h),
             workspace_name: self.workspace_name.clone(),
@@ -995,6 +1015,26 @@ impl TopBarChrome {
             Some(c) => c.snapshot().status,
             None => self.status.clone(),
         }
+    }
+
+    /// Wake again when the time reading just drawn goes stale.
+    fn schedule_time_wake(&mut self) {
+        let since_epoch = ui::clock::SystemTime::now()
+            .duration_since(ui::clock::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default();
+        let bucket = time_bucket_secs(self.activity_is_visible(), self.center_widget);
+        self.time_wake = Instant::now().checked_add(until_next_time_bucket(since_epoch, bucket));
+    }
+
+    /// Whether the time reading went stale since the bar last drew. Moves
+    /// the wake on, so a bar that is not drawn (hidden under fullscreen, a
+    /// locked session) never holds an overdue deadline.
+    fn take_time_wake(&mut self) -> bool {
+        if self.time_wake.is_none_or(|at| Instant::now() < at) {
+            return false;
+        }
+        self.schedule_time_wake();
+        self.rect.height() > 0.0 && self.rect.width() > 0.0
     }
 
     fn live_clock(&self) -> ClockSnapshot {
@@ -1399,6 +1439,11 @@ impl TopBarChrome {
             || self.sharing_summary().0 > 0
     }
 
+    /// The empty-room Invite pill stands in for the avatar stack.
+    fn invite_visible(&self) -> bool {
+        !self.collaborators_visible() && !self.avatar_stack_rect.is_zero_area()
+    }
+
     /// `(viewers, controllers, surfaces)` from the compositor authority.
     fn sharing_summary(&self) -> (usize, usize, usize) {
         let Some(chrome) = self.chrome.as_ref() else {
@@ -1613,7 +1658,7 @@ impl TopBarChrome {
                     .then_some(Self::editor_control(widget, present))
             }));
         }
-        if self.collaborators_visible() {
+        if self.collaborators_visible() || self.invite_visible() {
             controls.push(Self::CONTROL_COLLABORATORS);
         }
         if !self.media_indicator_rect.is_zero_area() {
@@ -1694,6 +1739,7 @@ impl TopBarChrome {
             Self::CONTROL_CENTER_MONITOR => t("topbar-show-system-monitor"),
             Self::CONTROL_CENTER_CALENDAR => t("topbar-show-calendar"),
             Self::CONTROL_QUICK_SETTINGS => t("topbar-open-quick-settings"),
+            Self::CONTROL_COLLABORATORS if self.invite_visible() => t("topbar-invite"),
             Self::CONTROL_COLLABORATORS => {
                 let named = self.sharing_viewers();
                 if named.is_empty() {
@@ -4855,7 +4901,10 @@ impl Widget for TopBarChrome {
         Some(self)
     }
 
-    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+        // The time is read when drawing, so nothing else marks the bar
+        // dirty when the minute turns over on an idle desktop.
+        let time_changed = self.take_time_wake();
         if let Some(chrome) = self.chrome.clone() {
             let rev = chrome.snapshot().revision;
             if rev != self.synced_revision {
@@ -4869,7 +4918,13 @@ impl Widget for TopBarChrome {
                 return true;
             }
         }
-        false
+        time_changed
+    }
+
+    /// The end of the time reading on screen. Only a future instant: once
+    /// it passes, `update` reports the bar dirty and schedules the next one.
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.time_wake.filter(|at| Instant::now() < *at)
     }
 
     fn build_layout(
@@ -4954,6 +5009,7 @@ impl Widget for TopBarChrome {
         // Pulled here, not pushed by update, so a just-dropped battery
         // percent is drawn and counted as a change in the same pass.
         self.refresh_status_and_media_state();
+        self.schedule_time_wake();
         let fp = self.current_fingerprint();
         if fp == self.cache_fp && fp.rect_px.2 > 0 {
             out_scene.append(&self.cached, Some(out_transform));
@@ -5246,7 +5302,7 @@ impl Widget for TopBarChrome {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !matches!(
@@ -5512,6 +5568,65 @@ mod tests {
         };
         tree.active = tree.workspaces[0].id;
         TopBarChrome::from_tree(&tree)
+    }
+
+    #[test]
+    fn time_bucket_wait_runs_to_the_next_whole_bucket() {
+        let minute_in = Duration::from_secs(60 * 1_000 + 12) + Duration::from_millis(500);
+        assert_eq!(
+            until_next_time_bucket(minute_in, 60),
+            Duration::from_millis(47_500)
+        );
+        assert_eq!(
+            until_next_time_bucket(Duration::from_secs(60 * 1_000), 60),
+            Duration::from_secs(60),
+            "a reading taken on the boundary holds for the whole next minute"
+        );
+        assert_eq!(
+            until_next_time_bucket(Duration::from_millis(4_250), 1),
+            Duration::from_millis(750)
+        );
+    }
+
+    /// The clock is read only when drawing, so an idle desktop repaints it
+    /// solely through the bar's wake deadline at the end of the minute.
+    #[test]
+    fn idle_clock_wakes_and_repaints_when_the_minute_turns() {
+        let mut bar = sample_chrome();
+        assert_eq!(
+            bar.next_wake_deadline(),
+            None,
+            "nothing drawn, nothing stale"
+        );
+        assert!(!bar.update(&(), &()));
+
+        lay_out_and_draw(&mut bar, 1200.0);
+        let now = Instant::now();
+        let wake = bar
+            .next_wake_deadline()
+            .expect("a drawn clock wakes when its minute ends");
+        assert!(wake > now && wake <= now + Duration::from_secs(60));
+        assert!(!bar.update(&(), &()), "the minute has not turned yet");
+
+        let overdue = Instant::now()
+            .checked_sub(Duration::from_millis(1))
+            .expect("monotonic clock is past its origin");
+        bar.time_wake = Some(overdue);
+        assert_eq!(
+            bar.next_wake_deadline(),
+            None,
+            "an overdue wake must not hold the loop at a zero timeout"
+        );
+        assert!(
+            bar.update(&(), &()),
+            "the turned minute marks the bar dirty so the frame repaints it"
+        );
+        assert!(
+            bar.next_wake_deadline()
+                .is_some_and(|next| next > Instant::now()),
+            "the next minute is scheduled"
+        );
+        assert!(!bar.update(&(), &()), "one repaint per minute");
     }
 
     fn floating_clock() -> TopBarChrome {
@@ -5904,7 +6019,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut state,
+                state: ui::widget::Edits::lend(&mut state),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -6133,7 +6248,7 @@ mod tests {
         assert!(bar.perform_semantic_action(
             TopBarChrome::CONTROL_CENTER_CALENDAR,
             &ui::a11y::Action::ToggleCheck,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(bar.center_widget, CenterWidget::Calendar);
@@ -6753,6 +6868,31 @@ mod tests {
         bar.handle_left_click(&mut handled);
         assert!(handled);
         assert!(chrome.borrow().overlays.collaborators);
+
+        let node = bar.accessibility().expect("topbar semantics");
+        let (index, invite) = node
+            .children
+            .iter()
+            .enumerate()
+            .find(|(_, child)| child.name.as_deref() == Some("Invite"))
+            .expect("assistive technology reaches the Invite control");
+        assert_eq!(invite.role, ui::a11y::Role::Button);
+        assert_eq!(
+            bar.synthetic_accessibility_rect(&[index]),
+            Some(bar.avatar_stack_rect)
+        );
+        let target = invite.action_target.clone().expect("an action target");
+        let mut doc = AutoCommit::new();
+        assert!(bar.perform_semantic_action(
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        assert!(
+            !chrome.borrow().overlays.collaborators,
+            "activating Invite toggles the same overlay a click does",
+        );
     }
 
     #[test]

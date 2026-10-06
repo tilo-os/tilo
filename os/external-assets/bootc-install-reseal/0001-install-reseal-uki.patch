@@ -1,0 +1,63 @@
+diff --git a/crates/lib/src/bootc_composefs/boot.rs b/crates/lib/src/bootc_composefs/boot.rs
+index 72ff812..1f6bb86 100644
+--- a/crates/lib/src/bootc_composefs/boot.rs
++++ b/crates/lib/src/bootc_composefs/boot.rs
+@@ -1025,6 +1025,9 @@ fn write_pe_to_esp(
+     };
+ 
+     let mut boot_label: Option<UKIInfo> = None;
++    // BOOTC_INSTALL_RESEAL_UKI: write the UKI with the digest this install
++    // computed in its composefs= argument instead of refusing it.
++    let mut reseal: Option<(String, String)> = None;
+ 
+     // UKI Extension might not even have a cmdline
+     // TODO: UKI Addon might also have a composefs= cmdline?
+@@ -1056,12 +1059,15 @@ fn write_pe_to_esp(
+         let file_name = file_path.file_name();
+ 
+         if *composefs_cmdline != *uki_id {
+-            return Err(UKIDigestMismatch {
+-                actual: composefs_cmdline.to_hex(),
+-                expected: uki_id.to_hex(),
+-                uki_name: file_name.map(|x| x.to_string()),
++            if std::env::var_os("BOOTC_INSTALL_RESEAL_UKI").is_none() {
++                return Err(UKIDigestMismatch {
++                    actual: composefs_cmdline.to_hex(),
++                    expected: uki_id.to_hex(),
++                    uki_name: file_name.map(|x| x.to_string()),
++                }
++                .into());
+             }
+-            .into());
++            reseal = Some((composefs_cmdline.to_hex(), uki_id.to_hex()));
+         }
+ 
+         uki_reader.seek(SeekFrom::Start(0))?;
+@@ -1098,9 +1104,24 @@ fn write_pe_to_esp(
+     };
+ 
+     uki_reader.seek(SeekFrom::Start(0))?;
+-    pe_dir
+-        .atomic_replace_with(pe_name, |writer| std::io::copy(&mut uki_reader, writer))
+-        .context("Writing UKI")?;
++    if let Some((actual, expected)) = &reseal {
++        let mut bytes = Vec::new();
++        uki_reader.read_to_end(&mut bytes).context("Reading UKI")?;
++        let needle = actual.as_bytes();
++        let pos = bytes
++            .windows(needle.len())
++            .position(|w| w == needle)
++            .ok_or_else(|| anyhow::anyhow!("UKI composefs= digest not found for resealing"))?;
++        bytes[pos..pos + needle.len()].copy_from_slice(expected.as_bytes());
++        pe_dir
++            .atomic_write(pe_name, &bytes)
++            .context("Writing resealed UKI")?;
++        eprintln!("bootc: resealed UKI composefs digest: {expected}");
++    } else {
++        pe_dir
++            .atomic_replace_with(pe_name, |writer| std::io::copy(&mut uki_reader, writer))
++            .context("Writing UKI")?;
++    }
+ 
+     rustix::fs::fsync(
+         pe_dir

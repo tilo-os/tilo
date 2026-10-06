@@ -18,7 +18,7 @@ use crate::canvas;
 use crate::draw;
 use crate::geo;
 use crate::model::{LatLon, Place};
-use crate::search_box::drive_text_input;
+use crate::search_box::drive_hand_laid;
 
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(280);
 const OVERLAY_MAX: usize = 6;
@@ -173,6 +173,7 @@ impl EndpointEditor {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> Option<EndpointEffect> {
         let endpoint = self.focused?;
         if matches!(
@@ -190,7 +191,7 @@ impl EndpointEditor {
         }
         let input = self.input_mut(endpoint);
         input.set_focus(true);
-        drive_text_input(input, event, scale, modifiers);
+        drive_hand_laid(input, event, scale, modifiers, doc);
         if input.take_submit() {
             self.deadline = None;
             let query = self.query(endpoint).trim().to_string();
@@ -211,9 +212,10 @@ impl EndpointEditor {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
+        doc: &mut ui::widget::Edits<'_>,
     ) {
-        drive_text_input(&mut self.origin_input, event, scale, modifiers);
-        drive_text_input(&mut self.destination_input, event, scale, modifiers);
+        drive_hand_laid(&mut self.origin_input, event, scale, modifiers, doc);
+        drive_hand_laid(&mut self.destination_input, event, scale, modifiers, doc);
     }
 
     pub(super) fn pointer_press(
@@ -222,6 +224,7 @@ impl EndpointEditor {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> Option<EndpointEffect> {
         let hit = self.hit_at(point)?;
         match hit {
@@ -229,7 +232,7 @@ impl EndpointEditor {
                 self.focus(endpoint);
                 let input = self.input_mut(endpoint);
                 input.set_focus(true);
-                drive_text_input(input, event, scale, modifiers);
+                drive_hand_laid(input, event, scale, modifiers, doc);
                 Some(EndpointEffect::Changed {
                     endpoint,
                     text: String::new(),
@@ -293,11 +296,6 @@ impl EndpointEditor {
     #[cfg(test)]
     pub(super) fn test_results(&self, endpoint: Endpoint) -> &[Place] {
         self.results(endpoint)
-    }
-
-    #[cfg(test)]
-    pub(super) fn test_query(&self, endpoint: Endpoint) -> &str {
-        self.query(endpoint)
     }
 
     fn focus(&mut self, endpoint: Endpoint) {
@@ -455,7 +453,7 @@ impl EndpointEditor {
                 return;
             }
             let card = Rect::new(field.x0, top, field.x1, top + 34.0);
-            draw::card(scene, transform, card, 12.0, colors.surfaces.raised);
+            draw::card(scene, transform, theme, card, 12.0, colors.surfaces.raised);
             self.hits.push((card, EndpointHit::Consume));
             draw::text(
                 scene,
@@ -481,7 +479,7 @@ impl EndpointEditor {
             field.x1,
             top + pad * 2.0 + count as f64 * row_pitch - row_gap,
         );
-        draw::card(scene, transform, card, 12.0, colors.surfaces.raised);
+        draw::card(scene, transform, theme, card, 12.0, colors.surfaces.raised);
         self.hits.push((card, EndpointHit::Consume));
         let scale = text.text_scale();
         let name_h = ui::text_metrics::line_height_px(13.0, scale);

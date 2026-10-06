@@ -1,0 +1,78 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Tilo voice participant</title>
+<!-- One participant of voice_browsers.rs: the page's voice client
+     (web/voice.mjs) over the fixture's session, which joins and beats as
+     the page's own peer session does. -->
+<script type="module">
+import {createPeerVoice} from './web/voice-peer.mjs';
+import {createVoiceControls} from './web/voice-controls.mjs';
+import {createBrowserAudio} from './web/voice-audio.mjs';
+import {createVoiceTransport} from './web/voice-transport.mjs';
+
+const who = new URL(location.href).searchParams.get('who');
+const tokens = new Set();
+const room = await (await fetch('/api/room')).text();
+const api = (path, method = 'GET') => fetch(`/api/${who}/${path}`, {method, cache: 'no-store'});
+// Only the certified session crosses this fixture proxy. Call control and
+// all audio/capture/codec/transport code are the production browser modules.
+const certified = {
+  voiceJoin: (_, call) => {void api(`join/${call}`, 'POST');},
+  voiceLeave: () => {void api('leave', 'POST');},
+  voiceCalls: () => {void api('calls', 'POST');},
+};
+
+// Frames heard per publisher, and the most anyone was heard speaking.
+const received = {};
+const reports = [];
+const inner = createVoiceTransport({onReport: report => reports.push(String(report.type))});
+const transport = {
+  async connect(options) {
+    const session = await inner.connect(options);
+    const subscribe = session.subscribe;
+    session.subscribe = handlers => subscribe({...handlers, onFrame: frame => {
+      received[frame.publisher] = (received[frame.publisher] ?? 0) + 1;
+      handlers.onFrame(frame);
+    }});
+    return session;
+  },
+};
+const resources = {contexts: [], streams: [], workers: []};
+const environment = {
+  AudioContext: class extends AudioContext {constructor(options) {super(options); resources.contexts.push(this);}},
+  AudioWorkletNode, AudioEncoder, AudioDecoder, AudioData, EncodedAudioChunk,
+  Worker: class extends Worker {
+    constructor(...args) {super(...args); resources.workers.push(this);}
+    terminate() {this.stopped = true; super.terminate();}
+  },
+  navigator: {mediaDevices: {async getUserMedia(options) {
+    const stream = await navigator.mediaDevices.getUserMedia(options);
+    resources.streams.push(stream); return stream;
+  }}},
+};
+const factory = createBrowserAudio({environment, onReport: report => reports.push(`${report.stage}: ${report.error ?? report.type}`)});
+const speechCounts = {};
+const audio = {start(options) {
+  return factory.start({...options, onLevels(levels) {
+    for (const [publisher, rms] of levels.publishers) if (rms > 0.015) speechCounts[publisher] = (speechCounts[publisher] ?? 0) + 1;
+    options.onLevels(levels);
+  }});
+}};
+const peerVoice = createPeerVoice({peer: () => certified, room, transport, audio, onReport: report => reports.push(`${report.type}: ${report.error?.message ?? ''}`)});
+const voice = peerVoice.call;
+const controls = createVoiceControls({voice: peerVoice, room});
+const act = command => controls.execute({app: 'so.tilo.chat', room, record: '', instance: '1', command: {version: 1, intent: 0, command}});
+(async () => {
+  for (;;) {
+    const events = await (await api('events')).json();
+    for (const event of events) if (event.kind === 'granted') tokens.add(event.grant.token);
+    peerVoice.pump(JSON.stringify(events));
+    if (!events.length) await new Promise(resolve => setTimeout(resolve, 20));
+  }
+})();
+const heardSpeaking = new Set();
+voice.subscribe(state => {
+  for (const participant of state.participants) if (participant.speaking) heardSpeaking.add(participant.self ? 'self' : participant.namespace.split('/')[1]);
+});
+Object.assign(window, {voice, act, received, reports, heardSpeaking, speechCounts, resources, tokens, reconnect: () => api('reconnect', 'POST'), ready: true});
+</script>

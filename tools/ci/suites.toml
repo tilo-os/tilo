@@ -47,6 +47,9 @@ suites = [
   "os/kernel/tests/test-signing-identity.py",
   "os/tests/composefs_digest_parse.sh",
   "os/tests/containerfile_copy_invariants.sh",
+  "os/tests/board_session.sh",
+  "os/tests/cage_session_env.sh",
+  "os/tests/board_audio_contract.sh",
   "os/tests/disk_image_firstboot_seed.sh",
   "os/tests/disk_image_mirror_policy.sh",
   "os/tests/disk_image_mtools_esp.sh",
@@ -54,6 +57,7 @@ suites = [
   "os/tests/disk_image_user_labels.sh",
   "os/tests/rockchip_boot_gap.sh",
   "os/tests/rockchip_loader_test.py",
+  "os/tests/disk_sectors_test.py",
   "os/tests/setup_handoff_transport.sh",
   "os/tests/release_sbom_verification.sh",
   "os/tests/dracut_tilo_root_contract.sh",
@@ -81,7 +85,6 @@ suites = [
   "os/tests/sealed_extensions.sh",
   "os/tests/validation_access.sh",
   "os/tests/test-installer-cycle-runtime.py",
-  "os/tests/test_adopt_development_wpe.py",
   "os/tests/test_allocate_windows_direct_final_install.py",
   "os/tests/test_bootc_registry_wrapper.py",
   "os/tests/test_broker_signing_runner.py",
@@ -91,6 +94,7 @@ suites = [
   "os/tests/test_copy_windows_direct_final_install.py",
   "os/tests/test_create_development_disk.py",
   "os/tests/dev_base_inputs_tree.sh",
+  "os/tests/test_cargo_freshness.py",
   "os/tests/test_dev_builder_staging.py",
   "os/tests/test_development_boot.py",
   "os/tests/test_development_composefs.py",
@@ -109,11 +113,15 @@ suites = [
   "os/tests/test_identity_public_key.py",
   "os/tests/test_initramfs_module_policy.py",
   "os/tests/test_initramfs_trust.py",
+  "os/tests/test_install_dev_ssh.py",
+  "os/tests/test_install_handoff_copy.py",
   "os/tests/test_installed_development_disk.py",
   "os/tests/test_loop_partition_nodes.py",
   "os/tests/test_installer_bootc_helper.py",
   "os/tests/test_installer_cmdline_projection.py",
   "os/tests/test_installer_offline_target.py",
+  "os/tests/test_installer_dev_target_uki.py",
+  "os/tests/test_installer_code_refresh.py",
   "os/tests/test_installer_overlay.py",
   "os/tests/test_kernel_checkpoint_restore.py",
   "os/tests/test_kernel_config_values.py",
@@ -125,7 +133,6 @@ suites = [
   "os/tests/test_native_resume_admission.py",
   "os/tests/test_oci_image_diff.py",
   "os/tests/test_pack_apps_cleanup.py",
-  "os/tests/test_prepare_wpe_stage.py",
   "os/tests/test_prepare_windows_direct_source.py",
   "os/tests/test_read_fat32_efi.py",
   "os/tests/test_private_disk_image.py",
@@ -145,16 +152,20 @@ suites = [
   "os/tests/test_supervised_disk.py",
   "os/tests/test_supervised_install_lane.py",
   "os/tests/test_tls_registry_fixture.py",
+  "os/tests/test_verify_board_initramfs.py",
   "os/tests/test_verify_rpm_files.py",
   "os/tests/test_vm_bootc_copy_cache.py",
   "os/tests/test_vm_install_image_proof.py",
   "os/tests/test_probe_kvm.py",
   "os/tests/test_windows_dualboot_preflight.py",
+  "os/tests/test_windows_direct_dev_provenance.py",
+  "os/tests/test_windows_direct_dev_admission.py",
   "os/tests/test_windows_direct_provenance.py",
+  "os/tests/test_windows_provider_candidates.py",
   "os/tests/test_fetch_windows_direct_manifests.py",
+  "os/tests/test_forgejo_dev_installer_metadata.py",
+  "os/tests/test_download_dev_installer.py",
   "os/tests/windows_direct_install_orchestrator_test.py",
-  "os/tests/test_wpe_recipe_inputs.py",
-  "os/tests/test_wpe_stage_artifact.py",
   "os/tests/vm_firmware_selection.sh",
   "os/tests/vm_release_gate_invariants.sh",
   "os/tests/windows_guest_powershell_syntax.py",
@@ -166,11 +177,11 @@ name = "os-workflows"
 inputs = ["os/", ".forgejo/workflows/"]
 suites = [
   "os/containers/tilo-relay/test-contract.sh",
+  "os/containers/tilo-agent-host/test-contract.sh",
   "os/tests/rpm_snapshot_invariants.sh",
   "os/tests/test_rpm_snapshot_fingerprint.py",
   "os/tests/test_kernel_build_environment.py",
   "os/tests/test_open_snapshot_pr.py",
-  "os/tests/wpe_runtime_check.sh",
 ]
 
 [[group]]
@@ -182,6 +193,21 @@ inputs = [
   "crates/platform/tilo-media/src/audio.rs", "crates/platform/tilo-media/src/audio_runtime.rs",
 ]
 suites = ["os/tests/test_pipewire_echo_cancel.py"]
+
+[[group]]
+name = "no-cisco-openh264"
+# No Tilo image ships Cisco's OpenH264: the frozen snapshot, its gate, the
+# finished-rootfs gate, and the CI/developer environments that alone may carry it.
+inputs = ["os/", ".forgejo/workflows/build-rpms.yml", "dist/ci/install-build-deps.sh"]
+suites = ["os/tests/test_no_cisco_openh264.py"]
+
+[[group]]
+name = "mount-source-cache-keys"
+# A RUN that bind-mounts a pulled image's alias stage (the frozen RPM snapshot,
+# the kernel, a toolchain) keys its layer on that image's reference, so a local
+# Buildah build never reuses a layer installed from a previous snapshot.
+inputs = ["os/"]
+suites = ["os/tests/test_mount_source_cache_keys.py"]
 
 [[group]]
 name = "dev-feature-targets"
@@ -293,20 +319,42 @@ suites = [
   "dist/ci/tests/test_package_source_transfer.py",
   "dist/dev/tests/fedora44-vm-iterate-test.sh",
   "dist/local-models/smolvlm2-500m/contract-test.sh",
+  "dist/local-models/u2net-subject/contract-test.sh",
+  "dist/rpm/test-app-collection.sh",
   "dist/rpm/test-app-store-stage.sh",
   "dist/rpm/test-build-target-dir.sh",
   "dist/rpm/test-host-update.sh",
   "dist/rpm/test-rename-contract.sh",
+  "dist/rpm/test-rpmbuild-route.sh",
 ]
 
 [[group]]
 name = "browser-tools"
-inputs = ["scripts/browser/"]
+inputs = [
+  "scripts/browser/",
+  "os/Containerfile",
+  "os/external-assets/github-assets.tsv",
+  "apps/browser/tilo-app.toml",
+  "crates/sdk/ui-core/src/webview/chromium/runtime.rs",
+]
 suites = [
   "scripts/browser/test_build_host.py",
+  "scripts/browser/test_engine_runtime.py",
   "scripts/browser/test_frame_presentation.py",
+  "scripts/browser/test_native_fixture.py",
   "scripts/browser/test_package.py",
   "scripts/browser/test_scroll_presentation.py",
+]
+
+[[group]]
+name = "vm-acceptance"
+inputs = ["scripts/vm-acceptance/"]
+suites = [
+  "scripts/vm-acceptance/test_apps.py",
+  "scripts/vm-acceptance/test_app_startup.py",
+  "scripts/vm-acceptance/test_ci_select.py",
+  "scripts/vm-acceptance/test_frames.py",
+  "scripts/vm-acceptance/test_provenance.py",
 ]
 
 [[group]]
@@ -321,6 +369,7 @@ suites = [
   "scripts/perf/collect_settings_native_test.py",
   "scripts/perf/file_explorer_effects_test.py",
   "scripts/perf/input_latency_test.py",
+  "scripts/perf/physical_notes_latency_test.py",
   "scripts/perf/main_stages_test.py",
   "scripts/perf/native_app_capture_test.py",
   "scripts/perf/native_delivery_test.py",
@@ -337,9 +386,10 @@ suites = [
 name = "developer-scripts"
 inputs = [
   "scripts/tests/", "scripts/demo/", "scripts/app-launch-sweep.py",
-  "scripts/runtime-mcp-proof.py", "scripts/tilo-mcp-server.py",
+  "scripts/runtime-mcp-proof.py", "scripts/tilo-mcp-server.py", "scripts/agent-loop/",
 ]
 suites = [
+  "scripts/tests/test_agent_loop_usage.py",
   "scripts/tests/test_app_launch_sweep.py",
   "scripts/tests/test_demo_scripts.py",
   "scripts/tests/test_runtime_mcp_proof.py",
@@ -373,33 +423,60 @@ suites = [
 ]
 
 [[group]]
+name = "browser-compute-web"
+inputs = ["crates/browser/tilo-browser-compute/", "crates/browser/tilo-browser-runtime/scripts/build.sh", "crates/dev/tilo-app-cli/src/targets/web.rs"]
+suites = [
+  "crates/browser/tilo-browser-compute/web/compute-domains.test.mjs",
+  "crates/browser/tilo-browser-compute/scripts/artifact.test.mjs",
+  "crates/browser/tilo-browser-compute/scripts/stage.test.mjs",
+  "crates/browser/tilo-browser-compute/scripts/test_packaging.py",
+]
+
+[[group]]
 name = "browser-runtime-web"
 # The browser runtime's JavaScript: the web host, its loaders and bridges,
 # and the scripts that assemble the web core. app-installer reads the Rust
 # app catalogue.
-inputs = ["crates/browser/tilo-browser-runtime/"]
+inputs = ["crates/browser/tilo-browser-runtime/", "crates/collab/tilo-user-identity/tests/fixtures/root-envelope.json"]
 suites = [
   "crates/browser/tilo-browser-runtime/web/actions.test.mjs",
   "crates/browser/tilo-browser-runtime/web/agents.test.mjs",
   "crates/browser/tilo-browser-runtime/web/app-crash.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/channel-vault.test.mjs",
   "crates/browser/tilo-browser-runtime/web/data-loader.test.mjs",
   "crates/browser/tilo-browser-runtime/web/device-custody.test.mjs",
   "crates/browser/tilo-browser-runtime/web/durable-host.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-core-wheel.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/legacy-windows.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/node-apps.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/membership.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-cursors.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/panorama.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/semantic-presentation.test.mjs",
   "crates/browser/tilo-browser-runtime/web/peer.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/root-identity.test.mjs",
   "crates/browser/tilo-browser-runtime/web/webgpu-safety.test.mjs",
   "crates/browser/tilo-browser-runtime/scripts/web-runtime/external-workspace.test.mjs",
   "crates/browser/tilo-browser-runtime/web/asset-recovery.test.mjs",
   "crates/browser/tilo-browser-runtime/web/desktop-navigation.test.mjs",
   "crates/browser/tilo-browser-runtime/web/font-loader.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-input.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/legacy-windows.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-presence.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-speakers.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/media-voice-profile.test.mjs",
   "crates/browser/tilo-browser-runtime/web/storage-revision.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/voice-audio-codecs.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/voice-audio.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/voice-buffers.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/voice-controls.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/voice-profile.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/voice-transport.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/voice.test.mjs",
 ]
+
+[[group]]
+name = "desktop-open-times"
+inputs = ["crates/browser/tilo-web-desktop/scripts/"]
+suites = ["crates/browser/tilo-web-desktop/scripts/open-times-summary.test.mjs"]
 
 [[group]]
 name = "web-registry-client"
@@ -426,15 +503,18 @@ package = "tilo-ui"
 # The design and spacing audits ratchet every app and shell source file; the
 # launcher audit reads each app's main.rs and the framework launcher.
 # Typography visual regression #[path]-includes the shared gallery showcase
-# builder that lives with the ui-examples scenarios.
+# builder that lives with the ui-examples scenarios. The paint stream's tests
+# draw the layout snapshots and screenshot recorded for tilo-paint-stream.
 inputs = [
   "apps/*.rs", "apps/*/tilo-app.toml", "crates/session/shell/src/*.rs",
   "crates/sdk/tilo-app/src/framework/app.rs",
   "vendor/winit/src/platform_impl/quit_request.rs",
   "crates/dev/ui-examples/examples/common/gallery_scene.rs",
+  "crates/browser/paint-stream/tests/fixtures/",
 ]
 readers = [
   "crates/sdk/ui-core/src/app/close_admission.rs",
+  "crates/sdk/ui-core/src/webview/paint.rs",
   "crates/sdk/ui-core/tests/design_token_audit.rs",
   "crates/sdk/ui-core/tests/spacing_token_audit.rs",
   "crates/sdk/ui-core/tests/typography_visual_regression.rs",
@@ -457,9 +537,15 @@ readers = [
 ]
 
 [[cargo]]
+package = "greeter"
+# The greeter offers exactly the sessions the image ships.
+inputs = ["os/usr/share/wayland-sessions/*.desktop"]
+readers = ["crates/session/greeter/src/greeter_app.rs"]
+
+[[cargo]]
 package = "launcher"
-inputs = ["apps/*/tilo-app.toml", "os/usr/lib/tilo/jit-entitled.conf", "os/usr/lib/tilo/web-engine-entitled.conf"]
-readers = ["crates/packaging/launcher/src/manifest.rs", "crates/packaging/launcher/src/seccomp.rs"]
+inputs = ["apps/*/tilo-app.toml", "os/usr/lib/tilo/jit-entitled.conf", "os/usr/lib/tilo/web-engine-entitled.conf", "os/usr/share/tilo/system-interfaces.toml"]
+readers = ["crates/packaging/launcher/src/manifest.rs", "crates/packaging/launcher/src/seccomp.rs", "crates/packaging/launcher/src/services.rs"]
 
 [[cargo]]
 package = "tilo-vm"
@@ -473,8 +559,13 @@ readers = ["crates/dev/tilo-vm-protocol/src/manifest.rs"]
 
 [[cargo]]
 package = "tilo-vmd"
-inputs = ["os/components.toml", "os/scripts/install-components.py"]
-readers = ["crates/dev/tilo-vmd/tests/jobs.rs"]
+# The device session's names are checked against the board layer that installs it.
+inputs = [
+  "os/components.toml", "os/scripts/install-components.py",
+  "os/dev/install-board-layer.sh", "os/usr/lib/systemd/system/tilo-board-headless-session@.service",
+  "os/usr/libexec/tilo-seat-session",
+]
+readers = ["crates/dev/tilo-vmd/tests/jobs.rs", "crates/dev/tilo-vmd/src/systemd.rs"]
 
 [[cargo]]
 package = "tilo-app-cli"
@@ -492,11 +583,14 @@ inputs = [
   "rust-toolchain.toml", "Cargo.lock",
   # The outside-repository test builds a generated app against the checkout.
   "Cargo.toml", "crates/sdk/", "crates/platform/", "vendor/",
+  # Canonical worker builder sources and the real packaging manifest fixture.
+  "crates/browser/tilo-browser-compute/", "apps/calculator/tilo-app.toml",
 ]
 readers = [
   "crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/portability.rs",
   "crates/dev/tilo-app-cli/src/standalone.rs", "crates/dev/tilo-app-cli/tests/outside_repo.rs",
   "crates/dev/tilo-app-cli/src/capability_usage.rs",
+  "crates/dev/tilo-app-cli/src/targets/web.rs",
 ]
 
 [[cargo]]
@@ -531,6 +625,11 @@ inputs = ["os/usr/share/tilo/windows/fex-emulator.json", "os/usr/share/tilo/wind
 readers = ["crates/windows/compat-service/src/plan.rs"]
 
 [[cargo]]
+package = "legacy-vm"
+inputs = ["os/legacy-guest-snapshot.env"]
+readers = ["crates/runtime/legacy-vm/src/image.rs"]
+
+[[cargo]]
 package = "installer"
 inputs = ["os/usr/share/tilo/installer-locales.txt", "crates/system/block-devices/tests/fixtures/installer.json"]
 readers = ["crates/session/installer/src/disks.rs", "crates/session/installer/src/locales.rs"]
@@ -562,10 +661,16 @@ inputs = ["crates/system/block-devices/tests/fixtures/disks.json"]
 readers = ["apps/disks/src/probe.rs"]
 
 [[cargo]]
-package = "qdoc-codecs"
+package = "tilo-doc-codecs"
 inputs = ["crates/doc/fixtures/"]
-readers = ["crates/doc/qdoc-codecs/src/bulk_equivalence.rs", "crates/doc/qdoc-codecs/tests/office_roundtrip.rs",
-           "crates/doc/qdoc-codecs/tests/binary_inputs.rs", "crates/doc/qdoc-codecs/tests/office_fidelity.rs"]
+readers = ["crates/doc/tilo-doc-codecs/src/bulk_equivalence.rs", "crates/doc/tilo-doc-codecs/tests/office_roundtrip.rs",
+           "crates/doc/tilo-doc-codecs/tests/binary_inputs.rs", "crates/doc/tilo-doc-codecs/tests/office_fidelity.rs"]
+
+[[cargo]]
+package = "ush"
+# Native reexec proof reads the actual shipped supervisor unit.
+inputs = ["os/usr/lib/systemd/user/tilo-ush.service"]
+readers = ["crates/runtime/ush/tests/serve_handoff.rs"]
 
 [[cargo]]
 package = "tilo-font-catalog"
@@ -590,7 +695,6 @@ package = "tilo-agent-participant"
 # the browser peer's relay test support.
 inputs = ["crates/sdk/ui-core/assets/fonts/", "crates/browser/tilo-browser-peer/tests/support/"]
 readers = [
-  "crates/agent/agent-participant/tests/common/mod.rs",
   "crates/agent/agent-participant/tests/room_actions.rs",
   "crates/agent/agent-participant/tests/host_agents.rs",
   "crates/agent/agent-participant/tests/session_coverage.rs",
@@ -607,7 +711,8 @@ package = "notes"
 inputs = ["crates/sdk/ui-core/assets/fonts/", "apps/settings/shots/settings.png"]
 readers = [
   "apps/notes/src/app.rs", "apps/notes/src/shortcuts_overlay.rs",
-  "apps/notes/src/shots.rs", "apps/notes/tests/support/component.rs",
+  "apps/notes/src/scenario.rs", "apps/notes/tests/support/component.rs",
+  "apps/notes/tests/effects.rs",
 ]
 
 [[cargo]]
@@ -627,69 +732,13 @@ readers = [
   "crates/session/shell/src/linux_main.rs",
   "crates/session/shell/src/shell/fixed_chords.rs",
   "crates/session/shell/src/shell/fixture_inputs.rs",
-  "crates/session/shell/src/shell/notes_app.rs",
   "crates/session/shell/src/shell/test_support.rs",
 ]
-
-[[cargo]]
-package = "calculator"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/calculator/src/framework_history_tests.rs"]
-
-[[cargo]]
-package = "contacts"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/contacts/src/framework_history_tests.rs"]
-
-[[cargo]]
-package = "diffmerge"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/diffmerge/src/framework_history_tests.rs"]
-
-[[cargo]]
-package = "photos"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/photos/src/framework_history_tests.rs"]
-
-[[cargo]]
-package = "slides"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/slides/src/framework_history_tests.rs"]
-
-[[cargo]]
-package = "snippets"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/snippets/src/framework_history_tests.rs"]
-
-[[cargo]]
-package = "themes"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/themes/src/framework_history_tests.rs"]
-
-[[cargo]]
-package = "typst-editor"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/typst-editor/src/framework_history_tests.rs"]
-
-[[cargo]]
-package = "weather"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/weather/src/framework_history_tests.rs"]
 
 [[cargo]]
 package = "chat"
 inputs = ["crates/sdk/ui-core/assets/fonts/"]
 readers = ["apps/chat/src/component_tests.rs"]
-
-[[cargo]]
-package = "containers"
-inputs = ["crates/sdk/ui-core/assets/fonts/", "crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/containers/src/framework_history_tests.rs"]
-
-[[cargo]]
-package = "vpn"
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["apps/vpn/src/app.rs"]
 
 [[cargo]]
 package = "word-processor"
@@ -702,15 +751,17 @@ inputs = ["crates/sdk/ui-core/assets/fonts/"]
 readers = ["crates/session/desktop/src/topbar.rs"]
 
 [[cargo]]
-package = "tilo-moq"
-# The voice test checks the browser's voice profile against the native one.
-inputs = ["crates/browser/tilo-browser-runtime/web/media-voice-profile.mjs"]
-readers = ["crates/hosting/tilo-moq/tests/voice.rs"]
-
-[[cargo]]
 package = "tilo-relay-protocol"
 inputs = ["crates/hosting/tilo-relay/tests/fixtures/"]
 readers = ["crates/hosting/tilo-relay-protocol/src/config.rs"]
+
+[[cargo]]
+package = "tilo-browser-peer"
+# The actual microphone fixture serves the production web modules and pinned
+# MoQ bundle to two isolated Chromium profiles.
+inputs = ["crates/browser/tilo-browser-runtime/web/", "scripts/moq-browser/", "tools/web/chrome.mjs"]
+readers = ["crates/browser/tilo-browser-peer/tests/voice_browsers.rs"]
+scope = { inputs = ["crates/browser/tilo-browser-runtime/web/", "scripts/moq-browser/", "tools/web/chrome.mjs"], test = "voice_browsers", filter = "binary(voice_browsers)" }
 
 [[cargo-exempt]]
 file = "crates/session/shell/tests/headless_examples_smoke.rs"
@@ -729,10 +780,6 @@ by = "os/tests/imager_release_invariants.sh"
 [[covered]]
 suite = "os/containers/tilo-relay/test-base-retry.sh"
 by = "os/containers/tilo-relay/test-contract.sh"
-
-[[covered]]
-suite = "os/tests/codec-pack-e2e.sh"
-by = "tools/tests/test_codec_pack_e2e.py"
 
 [[covered]]
 suite = "os/tests/test_require_cosign_authority.py"
@@ -846,6 +893,26 @@ reason = "requires a native ARM KVM host and QEMU"
 workflow = "build-image.yml"
 
 [[unrequired]]
+suite = "os/dev/test-joined-device-startup.sh"
+reason = "boots the installed OS image in a VM and signs in"
+workflow = "build-image.yml"
+
+[[unrequired]]
+suite = "os/dev/test-nearby-pairing.sh"
+reason = "boots two VMs (KVM) from the gated dev disk; with --unlock (os/dev/nearby-unlock-phase.sh) encrypts one and reboots it through sibling unlock; --wake (os/dev/nearby-wake-phase.sh) also proves suspend, wake and link-cut reconnect"
+workflow = "build-image.yml"
+
+[[unrequired]]
+suite = "os/dev/test-device-admin-reach.sh"
+reason = "boots three VMs (KVM) from the gated dev disk on separate networks; two reach each other only through a relay the third runs"
+workflow = "build-image.yml"
+
+[[unrequired]]
+suite = "os/dev/test-slow-frame-launch.sh"
+reason = "signs in again on the booted, gated dev disk's VM and opens apps there"
+workflow = "build-image.yml"
+
+[[unrequired]]
 suite = "os/dev/test-installer-cycle.sh"
 reason = "boots VMs (KVM) from a built installer image"
 workflow = "release-imager.yml"
@@ -900,8 +967,17 @@ suite = "os/tests/boot_performance_gate.sh"
 reason = "needs a running installed image"
 
 [[unrequired]]
+suite = "os/tests/boot_units_gate.sh"
+reason = "runs inside a booted guest, as root"
+
+[[unrequired]]
 suite = "os/tests/booted_app_store.sh"
 reason = "needs a booted image (SSH into a VM)"
+
+[[unrequired]]
+suite = "os/tests/booted_app_update.sh"
+reason = "drives a booted, logged-in dev VM over SSH (the dev image gate)"
+workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/tests/build-windows-dxvk-load.sh"
@@ -957,11 +1033,6 @@ reason = "needs the disposable root native container with Podman"
 workflow = "ci-development-signing.yml"
 
 [[unrequired]]
-suite = "os/tests/development_wpe_artifact_native.py"
-reason = "needs the disposable root native container with Podman and Skopeo"
-workflow = "ci-development-signing.yml"
-
-[[unrequired]]
 suite = "os/tests/fex-assembler.sh"
 reason = "needs NASM"
 
@@ -993,6 +1064,16 @@ reason = "needs squashfs-tools, absent from the ci-fast image"
 [[unrequired]]
 suite = "os/tests/installer-render-smoke.sh"
 reason = "needs a built tilo-installer binary"
+
+[[unrequired]]
+suite = "os/tests/installed-admin-actions.sh"
+reason = "runs inside a booted guest as its device admin, after first login"
+workflow = "build-image.yml"
+
+[[unrequired]]
+suite = "os/tests/input-hotplug-check.sh"
+reason = "runs inside a booted guest's graphical session, partly as root"
+workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/tests/internal_bundle_export.sh"
@@ -1041,6 +1122,11 @@ suite = "os/tests/recovery-boot-check.sh"
 reason = "runs inside a booted guest, as root"
 
 [[unrequired]]
+suite = "os/tests/shared_disk_esp.sh"
+reason = "runs inside a booted guest, as root, and repartitions its disk"
+workflow = "dev-disk-boot-diagnostic.yml"
+
+[[unrequired]]
 suite = "os/tests/release_tools_image.sh"
 reason = "needs the built release-tools image"
 workflow = "build-release-tools.yml"
@@ -1061,6 +1147,11 @@ reason = "needs FEX sources and a guest rootfs container"
 suite = "os/tests/secureboot_vm_probe.sh"
 reason = "needs a compiled kernel, OVMF and QEMU"
 workflow = "build-kernel.yml"
+
+[[unrequired]]
+suite = "os/tests/session-context-check.sh"
+reason = "runs inside a booted guest after a greetd login"
+workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/tests/staging_helper_loop.sh"
@@ -1119,15 +1210,6 @@ suite = "os/tests/windows_vm_schema.sh"
 reason = "needs the libvirt domain RelaxNG schema as an argument"
 
 [[unrequired]]
-suite = "os/tests/wpe-webdriver-smoke.py"
-reason = "needs a built WPE browser"
-
-[[unrequired]]
-suite = "os/tests/wpe_stage_cache.py"
-reason = "needs the disposable root native container with Podman"
-workflow = "ci-development-signing.yml"
-
-[[unrequired]]
 suite = "os/usr/bin/fs-test.sh"
 reason = "runs inside the booted test image"
 
@@ -1156,10 +1238,6 @@ suite = "tools/tests/test_vendor_history.sh"
 reason = "needs the vendor-upstream refs fetched from the network"
 
 [[unrequired]]
-suite = "crates/browser/tilo-browser-runtime/web/live-client.test.mjs"
-reason = "imports media-moq-library.mjs, which scripts/moq-browser bundles from npm packages fetched over the network"
-
-[[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/web/live-fake-relay.test.mjs"
 reason = "imports media-moq-library.mjs, which scripts/moq-browser bundles from npm packages fetched over the network"
 
@@ -1186,3 +1264,22 @@ reason = "its fake persistence workers need Node 24's worker messaging; the ci-f
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/web/transfer-staging.test.mjs"
 reason = "its fake persistence workers need Node 24's worker messaging; the ci-fast image's nodejs is Node 22"
+
+[[unrequired]]
+suite = "os/tests/probe_installer_code_refresh_mounts.py"
+reason = "explicit root private-mount-namespace integration entrypoint; run with unshare -m on the development host, failing if privileges or isolation are absent; hermetic transaction and protocol cases run in test_installer_code_refresh.py"
+
+[[cargo]]
+package = "runtime-bundle"
+inputs = [
+  "tools/apps/browser_runtime_release.py",
+  "tools/apps/pack-runtime-package.sh",
+  "scripts/browser/",
+  "apps/browser/chromium/",
+  "os/dev/assert-native-arch.sh",
+  "os/scripts/verify-elf-hardening.sh",
+  "apps/browser/tilo-app.toml",
+  "crates/sdk/ui-core/src/webview/chromium/runtime.rs",
+  "os/Containerfile",
+]
+readers = ["crates/packaging/runtime-bundle/examples/browser_runtime_release.rs"]

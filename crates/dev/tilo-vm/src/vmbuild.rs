@@ -58,7 +58,7 @@ pub fn rsync_rsh(endpoint: &SshEndpoint, key: Option<&str>) -> Result<String, Cl
         tool: "rsync".into(),
         purpose: "sync worktree and image layers into a VM".into(),
     })?;
-    let ssh = remote::ssh_command(endpoint, key, &[], false);
+    let ssh = remote::ssh_transport(endpoint, key, false);
     #[cfg(windows)]
     let mut ssh = ssh;
     #[cfg(windows)]
@@ -128,7 +128,7 @@ pub fn rsync_command(
     .arg("--rsh")
     .arg(rsh)
     .arg("--rsync-path")
-    .arg(rsync_path)
+    .arg(remote::rsync_path_as_root(endpoint, &rsync_path))
     .arg(source)
     .arg(format!("{}@{}:{dest_dir}/", endpoint.user, endpoint.host)))
 }
@@ -300,25 +300,22 @@ mod tests {
         #[cfg(windows)]
         {
             assert_eq!(
-                rsync_source(Path::new(r"C:\Users\bob\tilo-tilo-main")),
-                "/c/Users/user/tilo-tilo-main"
+                rsync_source(Path::new(r"C:\Users\you\src\tilo")),
+                "/c/Users/you/src/tilo"
             );
             let mut ssh = remote::ssh_command(
                 &endpoint(),
-                Some(r"C:\Users\bob\keys\vm_ed25519"),
+                Some(r"C:\Users\you\.ssh\vm_ed25519"),
                 &[],
                 false,
             );
-            use_msys_ssh(
-                &mut ssh,
-                Path::new(r"C:\Users\bob\msys64\usr\bin\ssh.exe"),
-            );
-            assert_eq!(ssh.program, "/c/Users/user/msys64/usr/bin/ssh.exe");
+            use_msys_ssh(&mut ssh, Path::new(r"C:\msys64\usr\bin\ssh.exe"));
+            assert_eq!(ssh.program, "/c/msys64/usr/bin/ssh.exe");
             assert!(ssh.args.contains(&"-i".into()));
-            assert!(ssh.args.contains(&"/c/Users/user/keys/vm_ed25519".into()));
+            assert!(ssh.args.contains(&"/c/Users/you/.ssh/vm_ed25519".into()));
             assert!(
                 ssh.args.contains(
-                    &"UserKnownHostsFile=/c/Users/user/keys/vm_ed25519.known_hosts".into()
+                    &"UserKnownHostsFile=/c/Users/you/.ssh/vm_ed25519.known_hosts".into()
                 )
             );
         }

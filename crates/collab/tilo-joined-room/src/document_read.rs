@@ -1,15 +1,34 @@
 //! Bounded reads of an admitted document in an owner-hosted room.
 //!
 //! The committed view's live [`tilo_peer_state::StatePeer`] is never cloned
-//! or saved for a reader. A read restores the room's durable bytes into a
-//! [`tilo_peer_state::BoundedStatePeer`] under explicit limits, rechecks the
-//! reader's current membership and document Read permission there, and
-//! refuses a document that is encrypted, causally incomplete or larger than
-//! the caller can hold.
+//! or saved for a reader. A new or changed document restores the room's
+//! durable bytes into a [`tilo_peer_state::BoundedStatePeer`] under explicit
+//! limits, rechecks the reader's current membership and document Read
+//! permission there, and refuses a document that is encrypted, causally
+//! incomplete or larger than the caller can hold. A reader that already
+//! holds the admitted revision is answered from those heads, without
+//! restoring the room again.
 use crate::NativeCommittedView;
 use std::time::SystemTime;
 use tilo_peer_state::{BoundedStatePeer, PeerDocumentReadError, PeerLimits};
 use tilo_user_identity::RevocationList;
+
+#[cfg(test)]
+thread_local! {
+    static ROOM_RESTORES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times a document read restored the room. Tests use this to prove
+/// an unchanged revision does not pay that cost.
+#[cfg(test)]
+pub(crate) fn room_restores() -> usize {
+    ROOM_RESTORES.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_room_restores() {
+    ROOM_RESTORES.with(|count| count.set(0));
+}
 
 /// A document as the room last admitted it.
 pub struct CommittedDocument {
@@ -50,7 +69,22 @@ impl NativeCommittedView {
         maximum: usize,
         now: SystemTime,
     ) -> Result<DocumentRead, String> {
+        // Idle apps re-read the revision they already hold. Answer that from
+        // the admitted heads. Restoring the room is only for a document this
+        // caller does not yet have, or for a route those heads cannot vouch
+        // for (encrypted, incomplete, or absent).
+        if let Some(known) = known_revision
+            && let Some(heads) = self.peer.plaintext_complete_heads(app, record)
+        {
+            let revision = revision_of(&heads);
+            if revision == known {
+                self.peer.check_document_read(reader, app, record, now)?;
+                return Ok(DocumentRead::Unchanged(revision));
+            }
+        }
         let limits = PeerLimits::default();
+        #[cfg(test)]
+        ROOM_RESTORES.with(|count| count.set(count.get().saturating_add(1)));
         let restored = BoundedStatePeer::restore(
             &self.record.peer,
             &self.record.room.to_string(),

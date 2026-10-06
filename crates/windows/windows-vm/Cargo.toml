@@ -8,12 +8,13 @@ description = "Default-deny single Windows appliance and RemoteApp integration f
 
 [dependencies]
 tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-libvirt-domain = { path = "../../system/libvirt-domain" }
 quick-xml.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 base64.workspace = true
 bounded-command = { path = "../../system/bounded-command" }
-tilo-atomic-file = { path = "../../system/atomic-file" }
+tilo-files = { path = "../../platform/tilo-files" }
 hex.workspace = true
 launcher = { path = "../../packaging/launcher" }
 libc.workspace = true

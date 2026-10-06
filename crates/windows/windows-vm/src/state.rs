@@ -106,7 +106,7 @@ impl ProvisioningStore {
         let parent = self.path.parent().ok_or(ProvisioningError::MissingParent)?;
         fs::create_dir_all(parent)?;
         let bytes = serde_json::to_vec_pretty(state)?;
-        atomic_file::write_with_mode(&self.path, &bytes, 0o600)?;
+        tilo_files::native::atomic::write_with_mode(&self.path, &bytes, 0o600)?;
         Ok(())
     }
 }

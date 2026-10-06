@@ -61,11 +61,14 @@
 
 pub mod application;
 pub mod change;
+pub mod compact;
 pub mod entry;
 pub mod handshake;
+pub mod interfaces;
 pub mod moderation;
 pub mod namespace;
 pub mod pending;
+pub mod retention;
 pub mod snapshot;
 pub mod target;
 pub mod upload;
@@ -73,12 +76,23 @@ pub mod verify;
 pub mod version;
 
 pub use change::{EntryAction, EntryChangeRequest, sign_change_request};
+pub use compact::{
+    COMPACT_SNAPSHOT_PROTOCOL, CatalogueEntry, CatalogueSnapshot, CompactRegistryEntry,
+    CompactRegistrySnapshot, MAX_VERSION_INDEX_BYTES, RegistryVersionIndex, VERSION_INDEX_PROTOCOL,
+    VersionIndexError, VersionIndexFile, VersionIndexRef, compact_signing_message,
+    compact_snapshot, compact_snapshot_hash, newest_versions, sign_compact_snapshot,
+    verify_compact_snapshot, verify_version_index, version_index_bytes,
+};
 pub use entry::{
     ENTRY_DOMAIN, EntryValidationError, INDEX_DOMAIN, LocalizedImages, LocalizedText,
     RegistryEntry, RegistryImage, RegistryImageKind, RegistryTarget, RegistryVersion,
     entry_signing_message, index_signing_message, sign_entry, valid_language_tag,
 };
 pub use handshake::{PROTOCOL_VERSION, RegistryHandshake};
+pub use interfaces::{
+    InterfaceError, InterfaceRequirement, ProvidedInterfaces, SYSTEM_INTERFACE, Unmet,
+    describe_unmet, valid_interface_name,
+};
 pub use moderation::{
     MODERATION_DOMAIN, ModerationActorRole, ModerationCase, ModerationCaseStatus,
     ModerationDecision, ModerationEvent, ModerationEventKind, ModerationMutation,
@@ -96,9 +110,11 @@ pub use snapshot::{
 };
 pub use target::{
     ANDROID_PACKAGE_EXTENSIONS, ANDROID_PLATFORM, DESKTOP_PLATFORMS, LINUX_PLATFORM,
-    MACOS_PLATFORM, NATIVE_PLATFORMS, TILO_OS_PLATFORM, TargetError, WASM_FEATURES,
+    MACOS_PLATFORM, NATIVE_PLATFORMS, NATIVE_RUNTIME_ID_HEX_LEN, NATIVE_RUNTIME_MARKER,
+    NATIVE_RUNTIME_PACKAGE_ID, NativeRuntime, TILO_OS_PLATFORM, TargetError, WASM_FEATURES,
     WASM_ISA_BASELINE, WASM32_ARCHITECTURE, WEB_PLATFORM, WEB_RUNTIME_ID_HEX_LEN, WEB_RUNTIME_NAME,
-    WINDOWS_PLATFORM, WasmIsa, WebRuntime, canonical_wasm_isa, parse_wasm_isa, parse_web_runtime,
+    WINDOWS_PLATFORM, WasmIsa, WebRuntime, canonical_wasm_isa, is_runtime_package_id,
+    parse_native_runtime, parse_wasm_isa, parse_web_runtime,
 };
 pub use verify::{VerifyError, verify_change_request, verify_entry_signature};
 

@@ -58,15 +58,8 @@ impl LegacyAppearance {
     /// dark default the shell itself falls back to.
     pub fn from_settings_text(text: &str, reduce_motion_override: bool) -> Self {
         let document = settings_store::parse(text);
-        let theme_name = settings_store::str_at(&document, "appearance", "theme");
-        let high_contrast = settings_store::bool_at(&document, "appearance", "high_contrast")
-            .unwrap_or(false)
-            || matches!(theme_name, Some("high-contrast" | "high_contrast"));
-        let theme = if high_contrast {
-            ui::Theme::high_contrast()
-        } else {
-            ui::Theme::from_settings_json(text).unwrap_or_else(ui::Theme::dark)
-        };
+        let theme = ui::Theme::resolved_from_settings(text);
+        let high_contrast = theme.colors_are_forced();
         let background = theme.bg_app.to_rgba8();
         let luma = 0.2126 * f64::from(background.r)
             + 0.7152 * f64::from(background.g)

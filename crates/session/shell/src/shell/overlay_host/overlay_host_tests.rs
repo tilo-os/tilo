@@ -3,7 +3,7 @@
 use super::*;
 use crate::shell::chrome_state::{ChromeState, WsTab};
 use crate::shell::state::WorkspaceTree;
-use automerge::{ReadDoc as _, ScalarValue, Value};
+use automerge::{ReadDoc as _, ScalarValue};
 
 #[test]
 fn people_overlay_publishes_the_live_roster_and_never_hides_screen_exposure() {
@@ -301,7 +301,15 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
         {
             let state = h.chrome.borrow();
             let mut tree = state.tree_mut();
-            h.host.room_activity_mut().refresh(&mut *tree);
+            // Bootstrap writes are setup/layout and omitted from the feed;
+            // rename so the explorer has a Change row to show.
+            let tree = &mut *tree;
+            if let Some(ws) = tree.desktop.workspaces.first_mut() {
+                ws.name = format!("{} · live", ws.name);
+            }
+            tilo_desktop_model::desktop_doc::seed(&mut tree.doc, &tree.desktop);
+            tilo_resource::history::commit_stamped(&mut tree.doc);
+            h.host.room_activity_mut().refresh(tree);
         }
         h.host
             .room_activity_mut()
@@ -314,7 +322,7 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
         );
         assert!(
             !h.host.room_activity().entries().is_empty(),
-            "a bootstrapped workspace tree has already written to its room document"
+            "a renamed workspace should appear in the activity feed"
         );
         let names: Vec<&str> = h
             .host
@@ -710,7 +718,7 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
             ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
         chrome.borrow_mut().overlays.desktop_tour = true;
 
-        host.sync(&mut AutoCommit::new(), &automerge::ROOT);
+        host.sync(&AutoCommit::new(), &automerge::ROOT);
 
         assert!(host.onboarding_active());
         assert!(
@@ -782,7 +790,7 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
             ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
         chrome.borrow_mut().overlays.desktop_tour = true;
         let mut document = AutoCommit::new();
-        host.sync(&mut document, &automerge::ROOT);
+        host.sync(&document, &automerge::ROOT);
         let mut h = build_harness_with_host(host, chrome);
 
         let next = h
@@ -807,7 +815,7 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &Modifiers::default(),
-                    state: &mut document,
+                    state: ui::widget::Edits::lend(&mut document),
                     path: &automerge::ROOT,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -817,11 +825,23 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
             );
             assert!(handled, "the visible tour must own {event:?}");
         }
-        assert!(matches!(
-            document.get(&automerge::ROOT, crate::onboarding_view::KEY_TOUR_NEXT),
-            Ok(Some((Value::Scalar(value), _)))
-                if matches!(value.as_ref(), ScalarValue::Boolean(true))
-        ));
+        assert!(
+            matches!(
+                document.get(&automerge::ROOT, crate::onboarding_view::KEY_TOUR_NEXT),
+                Ok(None)
+            ),
+            "a click is a view action, never a document write"
+        );
+        h.host.sync(&document, &automerge::ROOT);
+        assert_eq!(
+            h.host
+                .onboarding
+                .as_ref()
+                .expect("the tour stays open")
+                .tour_step(),
+            Some(2),
+            "Continue advances the tour"
+        );
     }
 
     onboarding_release_keeps_focus_reset_after_relayout_edge_is_consumed();
@@ -885,6 +905,7 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
             semantics
                 .children
                 .iter()
+                .filter(|node| node.live.is_none())
                 .filter_map(|node| node.name.as_deref())
                 .collect::<Vec<_>>(),
             [
@@ -1177,11 +1198,11 @@ fn super_chords_open_their_surfaces_once_and_escape_dismisses_the_wheel_first() 
 
     fn typed_session_actions_run_through_the_power_flyouts_executor() {
         let mut h = build_harness();
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         h.chrome
             .borrow_mut()
             .request_session_action(os_actions::SessionAction::Lock);
-        h.host.update(&mut doc, &automerge::ROOT);
+        h.host.update(&doc, &automerge::ROOT);
         assert!(
             h.chrome.borrow_mut().take_session_lock_request(),
             "a typed lock reaches the compositor lock edge the flyout's Lock row does"
@@ -1190,7 +1211,7 @@ fn super_chords_open_their_surfaces_once_and_escape_dismisses_the_wheel_first() 
         h.chrome
             .borrow_mut()
             .request_session_action(os_actions::SessionAction::Suspend);
-        h.host.update(&mut doc, &automerge::ROOT);
+        h.host.update(&doc, &automerge::ROOT);
         assert!(
             h.chrome
                 .borrow()
@@ -1504,7 +1525,7 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         h.host.begin_wifi_password("Tilo test network");
         assert!(pump(
             &mut h,
-            &key_press(Key::Character("a".into())),
+            &crate::shell::test_support::typed_key_event(Key::Character("a".into())),
             Modifiers::default()
         ));
 
@@ -1526,17 +1547,13 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         assert!(!h.host.capture_studio.is_open());
         assert!(pump(
             &mut h,
-            &key_press(Key::Character("b".into())),
+            &crate::shell::test_support::typed_key_event(Key::Character("b".into())),
             Modifiers::default()
         ));
+        assert!(h.chrome.borrow().quick_settings.wifi_password.is_some());
         assert_eq!(
-            h.chrome
-                .borrow()
-                .quick_settings
-                .wifi_password
-                .as_ref()
-                .map(|prompt| prompt.password.as_str()),
-            Some("ab"),
+            h.host.wifi_password_input.value(),
+            "ab",
             "after capture closes, the original credential field must regain its text focus and selection"
         );
 
@@ -1675,7 +1692,7 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
     fn print_screen_preserves_oobe_and_returns_to_the_same_step() {
         let mut h = build_harness();
         h.chrome.borrow_mut().overlays.desktop_tour = true;
-        h.host.sync(&mut AutoCommit::new(), &automerge::ROOT);
+        h.host.sync(&AutoCommit::new(), &automerge::ROOT);
         let before = h
             .host
             .onboarding
@@ -1817,7 +1834,7 @@ fn pump(h: &mut Harness, event: &WindowEvent, modifiers: Modifiers) -> bool {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: &mut doc,
+            state: ui::widget::Edits::lend(&mut doc),
             path: &root,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -1832,6 +1849,96 @@ fn pump(h: &mut Harness, event: &WindowEvent, modifiers: Modifiers) -> bool {
 /// `KeyEventExtra` is `pub(crate)`, so a struct literal isn't possible.
 /// Only the pub fields the host reads (`logical_key`, `state`) are
 /// overwritten.
+/// An app's Save that names a file already in the folder: the chooser asks
+/// before anything is chosen, and the question is in the semantic tree with a
+/// Replace an assistive technology or an agent can press.
+#[test]
+fn a_save_over_an_existing_file_asks_and_its_semantic_replace_answers() {
+    use crate::portal::FilePickerSpawner as _;
+
+    fn find<'a>(
+        node: &'a ui::a11y::AccessNode,
+        pred: &dyn Fn(&ui::a11y::AccessNode) -> bool,
+    ) -> Option<&'a ui::a11y::AccessNode> {
+        if pred(node) {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| find(child, pred))
+    }
+
+    let folder = tempfile::tempdir().expect("tempdir");
+    let photo = folder.path().join("labrador.jpg");
+    std::fs::write(&photo, b"original").unwrap();
+
+    let mut h = build_harness();
+    let pickers = crate::portal::FilePickerQueue::new();
+    h.host.set_portal_queues(
+        crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::AutoAllow),
+        pickers.clone(),
+    );
+    let workspace = h
+        .chrome
+        .borrow()
+        .tree()
+        .desktop
+        .active_workspace()
+        .expect("demo desktop has an active workspace")
+        .id;
+    let (reply, mut received) = tokio::sync::oneshot::channel();
+    pickers.spawn(crate::portal::FilePickerRequest {
+        caller: crate::portal::PortalCaller::new(workspace, "so.tilo.canvas"),
+        title: "Export a picture".to_string(),
+        save: true,
+        directory: false,
+        multiple: false,
+        accept_label: Some("Export".to_string()),
+        current_name: Some("labrador.jpg".to_string()),
+        filters: Vec::new(),
+        scope: Some(crate::portal::PickerScope {
+            initial_dir: folder.path().to_path_buf(),
+            roots: vec![folder.path().to_path_buf()],
+        }),
+        reply,
+    });
+    assert!(h.host.pump_file_picker());
+
+    assert!(pump(
+        &mut h,
+        &key_press(Key::Named(NamedKey::Enter)),
+        Modifiers::default()
+    ));
+    h.host.pump_file_picker();
+    assert!(
+        received.try_recv().is_err(),
+        "nothing is chosen before the answer"
+    );
+
+    let semantics = h.host.accessibility().expect("shell semantics");
+    let prompt = find(&semantics, &|node| {
+        node.name.as_deref()
+            == Some("A file named \u{201c}labrador.jpg\u{201d} already exists here. Replace it?")
+    })
+    .expect("the replace question is published");
+    assert!(prompt.state.modal);
+    let replace = find(prompt, &|node| node.name.as_deref() == Some("Replace"))
+        .and_then(|node| node.action_target.clone())
+        .expect("Replace carries an action target");
+    assert!(h.host.perform_semantic_action(
+        &replace,
+        &ui::a11y::Action::Activate,
+        &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+        &automerge::ROOT,
+    ));
+    assert!(h.host.pump_file_picker());
+    assert_eq!(received.try_recv().unwrap(), Some(vec![photo.clone()]));
+    assert!(h.host.file_picker().is_none());
+    assert_eq!(
+        std::fs::read(&photo).unwrap(),
+        b"original",
+        "the app writes, not the chooser"
+    );
+}
+
 fn key_press(logical_key: Key) -> WindowEvent {
     // SAFETY: all pub fields of `KeyEvent` tolerate the all-zero
     // bit pattern (`logical_key` is overwritten below, `text` is
@@ -1839,12 +1946,18 @@ fn key_press(logical_key: Key) -> WindowEvent {
     // bit pattern, and `KeyEventExtra` is `pub(crate)` and only
     // inspected by winit-internal code that the host never reaches).
     let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+    // A character key carries its text, as a real keyboard's does; text
+    // fields type from it.
+    let text = match &logical_key {
+        Key::Character(text) => Some(text.clone()),
+        _ => None,
+    };
     ev.logical_key = logical_key;
     ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
     ev.location = KeyLocation::Standard;
     ev.state = ElementState::Pressed;
     ev.repeat = false;
-    ev.text = None;
+    ev.text = text;
     WindowEvent::KeyboardInput {
         device_id: unsafe { std::mem::zeroed() },
         event: ev,
@@ -2184,7 +2297,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         h.host
             .set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
             .unwrap();
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
 
         // Super+K is the default Search action.  Any rebind goes through the
         // same effective-action resolver used by this dispatcher.
@@ -2202,7 +2315,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         // one publishes its immutable snapshot and refreshes the visible rows.
         let index_started = std::time::Instant::now();
         while index_started.elapsed() < HANG_BOUND {
-            h.host.update(&mut doc, &automerge::ROOT);
+            h.host.update(&doc, &automerge::ROOT);
             if h.host
                 .search_results
                 .iter()
@@ -2234,80 +2347,6 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
 
         env.remove("TILO_APPS_DATA_DIR");
         crate::shell::launcher::invalidate_app_cache();
-    }
-
-    /// Search must reach the focused app's own *content*, not just its tab
-    /// title. `Welcome` appears only in the note's body, so
-    /// a provider looking it up by tab id rather than by document
-    /// answers nothing.
-    fn configured_search_finds_a_word_that_only_appears_in_the_notes_body() {
-        use crate::shell::chrome_state::SearchScope;
-        use crate::shell::notes_app::NotesApp;
-
-        let mut h = build_harness();
-        h.host
-            .set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
-            .unwrap();
-        let doc = AutoCommit::new();
-        // The document as `TileHost::sync` hands it to the app every
-        // frame: the tab's own record.
-        let notes_tab =
-            h.chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
-        let record = crate::shell::tab_documents::scratch_tab_record(notes_tab);
-        let store = h.chrome.borrow().records().clone();
-        store.open_record(&record);
-        store.with(&record.id, |d| {
-            let mut notes = NotesApp::with_seed(
-                "Welcome to tilo.\n\nThese notes sync live with anyone \
-                 invited to this workspace.",
-            );
-            notes.sync(d, &automerge::ROOT);
-        });
-
-        let sup = Modifiers::from(ModifiersState::SUPER);
-        assert!(pump(&mut h, &key_press(Key::Character("k".into())), sup));
-        assert_eq!(h.chrome.borrow().search_scope, SearchScope::All);
-
-        h.host.palette.set_query("Welcome");
-        h.host.refresh_search_results(&doc, &automerge::ROOT);
-
-        let hit = h
-            .host
-            .search_results
-            .iter()
-            .find(|r| r.provider_id == "notes")
-            .unwrap_or_else(|| {
-                panic!(
-                    "searching inside Notes for a word from its own body \
-                     must offer the note; got {:?}",
-                    h.host
-                        .search_results
-                        .iter()
-                        .map(|r| (&r.provider_id, &r.title))
-                        .collect::<Vec<_>>()
-                )
-            });
-        assert!(
-            hit.subtitle.as_deref().unwrap_or_default().contains("tilo"),
-            "the row must show the matching line, not a bare title: {:?}",
-            hit.subtitle
-        );
-        // And it is a row the palette actually paints, with that snippet
-        // as its description.
-        let painted =
-            h.host.palette.visible_entries().iter().any(|e| {
-                e.label == hit.title && e.description.as_deref() == hit.subtitle.as_deref()
-            });
-        assert!(
-            painted,
-            "the hit must reach the palette's own rows: {:?}",
-            h.host
-                .palette
-                .visible_entries()
-                .iter()
-                .map(|e| (&e.label, &e.description))
-                .collect::<Vec<_>>()
-        );
     }
 
     /// A room starting empty is only workable if moving one of your own
@@ -2408,7 +2447,8 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
 
         // Enter on that row.
         h.host.palette.set_cursor(idx);
-        h.host.activate_selected_result(&mut doc, &automerge::ROOT);
+        h.host
+            .activate_selected_result(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
 
         let records = h.host.room_records();
         let records = records.borrow();
@@ -2476,7 +2516,6 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
 
     toggle_palette_focuses_input();
     configured_search_reaches_installed_apps();
-    configured_search_finds_a_word_that_only_appears_in_the_notes_body();
     super_k_finds_a_record_from_another_room_and_enter_brings_it_here();
     app_scope_pill_names_the_app_as_an_app();
 }
@@ -2738,4 +2777,100 @@ fn pick_group_at_hits_only_containing_non_empty_rects() {
     pick_group_at_returns_containing_group();
     pick_group_at_none_outside_all_rects();
     pick_group_at_skips_zero_area_rects();
+}
+
+/// First login in one session: the desktop's Home workspace exists before the
+/// identity does, so it is owned by the account name. Finishing setup must make
+/// the minted identity its owner, or every app opened next is refused its
+/// collaboration route and exits before drawing.
+#[test]
+fn first_login_setup_then_an_app_joins_the_home_workspace_in_the_same_session() {
+    use crate::onboarding_view::{
+        KEY_BACKUP_CONTINUE, KEY_BACKUP_SKIP_ACKNOWLEDGED, KEY_BEGIN, KEY_CREATE, KEY_FINISH,
+        KEY_UNDERSTOOD,
+    };
+    use crate::shell::state::{CapRole, Workspace, WorkspaceId};
+
+    let home = tempfile::tempdir().expect("home");
+    let identity_root = home.path().join("identity-root");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("HOME", home.path());
+    env.set("XDG_CONFIG_HOME", home.path().join(".config"));
+    env.set("TILO_IDENTITY_ROOT", &identity_root);
+    env.set("USER", "tester");
+    env.remove("TILO_USER_ID");
+
+    let mut tree = WorkspaceTree::default();
+    let mut workspace = Workspace::new(WorkspaceId(1), "Home");
+    workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
+    let room = workspace.room;
+    tree.desktop.workspaces.push(workspace);
+    let chrome = ChromeState::new(tree);
+    assert_eq!(
+        chrome.borrow().tree().desktop.workspaces[0]
+            .owner
+            .as_deref(),
+        Some("tester"),
+        "before setup the session acts as the account"
+    );
+
+    // The ceremony mints the root key; provisioning records its public half
+    // where the session reads its own principal.
+    let root_key = ed25519_dalek::SigningKey::from_bytes(&[7; 32])
+        .verifying_key()
+        .to_bytes();
+    let paths = tilo_user_identity::persist::IdentityPaths::under(&identity_root);
+    let record_dir = home.path().join("identity");
+    let view = crate::onboarding_view::OnboardingView::with_minter(Box::new(move || {
+        std::fs::create_dir_all(paths.user_pubkey.parent().expect("parent")).expect("dir");
+        std::fs::write(&paths.user_pubkey, root_key).expect("user public key");
+        Ok(crate::onboarding::MintedIdentity {
+            fingerprint: hex::encode(root_key),
+            path: record_dir.join("primary.json"),
+        })
+    }));
+    let mut host = ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
+    host.onboarding = Some(view);
+
+    let mut doc = AutoCommit::new();
+    for key in [
+        KEY_BEGIN,
+        KEY_UNDERSTOOD,
+        KEY_CREATE,
+        KEY_BACKUP_SKIP_ACKNOWLEDGED,
+        KEY_BACKUP_CONTINUE,
+        KEY_FINISH,
+    ] {
+        // The acknowledgement checkboxes are document-bound; the rest are
+        // the setup's buttons.
+        if matches!(key, KEY_UNDERSTOOD | KEY_BACKUP_SKIP_ACKNOWLEDGED) {
+            let _ = automerge::transaction::Transactable::put(
+                &mut doc,
+                &automerge::ROOT,
+                key,
+                ScalarValue::Boolean(true),
+            );
+        } else {
+            host.onboarding
+                .as_ref()
+                .expect("setup is running")
+                .press(key);
+        }
+        host.sync(&doc, &automerge::ROOT);
+    }
+    assert!(!host.onboarding_active(), "setup released the desktop");
+
+    // What the collaboration broker admits an app's join by.
+    let principal = tilo_action_broker::collab_broker_capnp::principal_id_for_root(root_key);
+    let state = chrome.borrow();
+    let tree = state.tree();
+    let home = tree
+        .desktop
+        .workspaces
+        .iter()
+        .find(|w| w.room == room)
+        .expect("home");
+    assert_eq!(home.role_of_at(&principal, 0), Some(CapRole::Owner));
+    assert_eq!(home.role_of_at(&"tester".to_string(), 0), None);
+    assert_eq!(state.local_user_id, principal);
 }

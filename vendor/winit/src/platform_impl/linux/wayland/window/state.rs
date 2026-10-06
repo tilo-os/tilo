@@ -102,6 +102,7 @@ pub struct WindowState {
 
     /// The state of the compositor to create WlRegions.
     compositor: Arc<CompositorState>,
+    presentation: Option<Arc<super::super::types::wp_presentation::PresentationState>>,
 
     /// The current cursor grabbing mode.
     cursor_grab_mode: GrabState,
@@ -187,6 +188,7 @@ impl WindowState {
             blur: None,
             blur_manager: winit_state.kwin_blur_manager.clone(),
             compositor,
+            presentation: winit_state.presentation.clone(),
             connection,
             csd_fails: false,
             cursor_grab_mode: GrabState::new(),
@@ -223,6 +225,17 @@ impl WindowState {
         }
     }
 
+    pub fn observe_next_present(
+        &self,
+        observer: crate::platform::wayland::WaylandPresentationObserver,
+    ) -> bool {
+        let Some(presentation) = &self.presentation else {
+            return false;
+        };
+        presentation.observe(self.window.wl_surface(), &self.queue_handle, observer);
+        true
+    }
+
     /// Apply closure on the given pointer.
     fn apply_on_pointer<F: FnMut(&ThemedPointer<WinitPointerData>, &WinitPointerData)>(
         &self,
@@ -247,6 +260,13 @@ impl WindowState {
     /// Reset the frame callbacks state.
     pub fn frame_callback_reset(&mut self) {
         self.frame_callback_state = FrameCallbackState::None;
+    }
+
+    /// Ask for a frame callback for a frame drawn elsewhere, leaving the
+    /// redraw throttle alone: its `done` only marks a callback received.
+    pub fn announce_frame(&mut self) {
+        let surface = self.window.wl_surface();
+        surface.frame(&self.queue_handle, surface.clone());
     }
 
     /// Request a frame callback if we don't have one for this window in flight.

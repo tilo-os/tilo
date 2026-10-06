@@ -148,7 +148,8 @@ struct SecretServiceRegistry {
 }
 
 /// Production provider backed by the system secret store (the freedesktop
-/// Secret Service on Linux, the Keychain on macOS). Only opaque registry
+/// Secret Service on Linux, the Keychain on macOS, or the sealed file store
+/// a headless machine names with `TILO_SECRETS_DIR`). Only opaque registry
 /// identifiers and ciphertext are written to disk.
 pub struct SecretServiceMlsVault {
     root: PathBuf,
@@ -1062,7 +1063,7 @@ fn io_error(error: std::io::Error) -> MlsAuthorityError {
     MlsAuthorityError::Persistence(error.to_string())
 }
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), MlsAuthorityError> {
-    atomic_file::write_with_mode(path, bytes, 0o600).map_err(io_error)
+    tilo_files::native::atomic::write_with_mode(path, bytes, 0o600).map_err(io_error)
 }
 
 #[allow(

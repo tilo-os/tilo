@@ -102,10 +102,11 @@ RestartSec=5
 # namespacing directives such as ProtectSystem=/PrivateDevices= are unsafe here:
 # they would produce a healthy-looking mount visible only to this service.
 # Constrain the process without creating a private mount namespace instead.
+# That rules out PrivateIPC= too: it mounts a fresh /dev/mqueue, so it needs a
+# mount namespace, and the FUSE mount then never reaches the host.
 UMask=0077
 LimitCORE=0
 NoNewPrivileges=yes
-PrivateIPC=yes
 KeyringMode=private
 # CAP_SYS_ADMIN: the FUSE mount, or on Tier 1 the fanotify filesystem mark,
 # pre-content group, Btrfs snapshots and the bind mount. CAP_DAC_READ_SEARCH:

@@ -123,11 +123,17 @@ pub fn set_activation_handler(handler: impl Fn(&str) + Send + Sync + 'static) {
     }
 }
 
+/// Report that the person chose a notification carrying `uri`, for a host
+/// that shows applications' notifications itself (a desktop drawing its own
+/// banners) rather than through a platform backend. The app's
+/// [`set_activation_handler`] receives it as it would a platform click.
+pub fn report_activation(uri: &str) {
+    if valid_activation(uri) {
+        activated(uri);
+    }
+}
+
 /// A backend's report that the user clicked a notification carrying `uri`.
-#[cfg_attr(
-    not(any(target_os = "linux", target_os = "macos")),
-    allow(dead_code, reason = "only these backends report clicks")
-)]
 pub(crate) fn activated(uri: &str) {
     let handler = {
         let Ok(mut activations) = activations().lock() else {

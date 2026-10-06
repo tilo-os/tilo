@@ -1286,6 +1286,20 @@ pub struct Keystore {
     pub key_pass: String,
 }
 
+/// The signing tools read the keystore passwords from these variables of
+/// their own environment, never from argv, which other users can list.
+const STORE_PASS_ENV: &str = "TILO_ANDROID_SIGNING_STORE_PASS";
+const KEY_PASS_ENV: &str = "TILO_ANDROID_SIGNING_KEY_PASS";
+
+impl Keystore {
+    fn password_env(&self) -> [(&'static str, &str); 2] {
+        [
+            (STORE_PASS_ENV, self.store_pass.as_str()),
+            (KEY_PASS_ENV, self.key_pass.as_str()),
+        ]
+    }
+}
+
 /// Which key signs a build.
 #[derive(Debug, Clone, Default)]
 pub enum Signing {
@@ -1346,8 +1360,8 @@ fn release_keystore(tools: &Toolchain, explicit: Option<&Path>) -> Result<Keysto
             alias: env("TILO_ANDROID_KEY_ALIAS").unwrap_or_else(|| "tilo-release".to_owned()),
         });
     }
-    let dir = registry_client::key::default_path()
-        .and_then(|key| key.parent().map(Path::to_path_buf))
+    let dir = tilo_paths::config_dir()
+        .map(|config| config.join("tilo"))
         .ok_or_else(|| {
             anyhow::anyhow!("no configuration directory for the Android release keystore; set $TILO_ANDROID_KEYSTORE")
         })?;
@@ -1405,8 +1419,9 @@ fn generate_keystore(tools: &Toolchain, keystore: &Keystore, dname: &str) -> Res
             .arg("-genkeypair")
             .arg("-keystore")
             .arg(&keystore.path)
-            .args(["-storetype", "PKCS12", "-storepass", &keystore.store_pass])
-            .args(["-keypass", &keystore.key_pass, "-alias", &keystore.alias])
+            .args(["-storetype", "PKCS12", "-storepass:env", STORE_PASS_ENV])
+            .args(["-keypass:env", KEY_PASS_ENV, "-alias", &keystore.alias])
+            .envs(keystore.password_env())
             .args(["-keyalg", "RSA", "-keysize", "4096", "-validity", "10000"])
             .args(["-dname", dname]),
     )
@@ -1702,9 +1717,10 @@ fn link_apk(
             .args(["sign", "--ks"])
             .arg(&keystore.path)
             .arg("--ks-pass")
-            .arg(format!("pass:{}", keystore.store_pass))
+            .arg(format!("env:{STORE_PASS_ENV}"))
             .arg("--key-pass")
-            .arg(format!("pass:{}", keystore.key_pass))
+            .arg(format!("env:{KEY_PASS_ENV}"))
+            .envs(keystore.password_env())
             .arg("--ks-key-alias")
             .arg(&keystore.alias)
             .arg("--out")
@@ -1966,11 +1982,12 @@ fn build_bundle(
             .arg("-keystore")
             .arg(&keystore.path)
             .args([
-                "-storepass",
-                &keystore.store_pass,
-                "-keypass",
-                &keystore.key_pass,
+                "-storepass:env",
+                STORE_PASS_ENV,
+                "-keypass:env",
+                KEY_PASS_ENV,
             ])
+            .envs(keystore.password_env())
             .args([
                 "-sigalg",
                 "SHA256withRSA",
@@ -2422,7 +2439,12 @@ pub struct DeviceRequest {
     pub arch: Option<PackageArch>,
 }
 
-fn build_for_device(start: &Path, adb: &Adb, request: &DeviceRequest) -> Result<AndroidBuild> {
+fn build_for_device(
+    start: &Path,
+    adb: &Adb,
+    request: &DeviceRequest,
+    profile: &str,
+) -> Result<AndroidBuild> {
     let arch = match request.arch {
         Some(arch) => arch,
         None => adb.arch()?,
@@ -2431,7 +2453,7 @@ fn build_for_device(start: &Path, adb: &Adb, request: &DeviceRequest) -> Result<
         start,
         &BuildRequest {
             arch,
-            profile: "dev".to_owned(),
+            profile: profile.to_owned(),
             signing: Signing::Debug,
             bundle: false,
             features: Vec::new(),
@@ -2463,7 +2485,7 @@ pub fn run_on_device(start: &Path, request: &DeviceRequest) -> Result<AndroidBui
     let tools = Toolchain::discover();
     let adb = Adb::connect(&tools, request.device.as_deref())?;
     let mut logcat = adb.logcat()?;
-    let result = build_for_device(start, &adb, request);
+    let result = build_for_device(start, &adb, request, "dev");
     let build = match result {
         Ok(build) => build,
         Err(error) => {
@@ -2524,7 +2546,7 @@ pub fn dev_on_device(start: &Path, dev: &crate::DevRequest, request: &DeviceRequ
     while !super::DEV_STOP_REQUESTED.load(Ordering::Relaxed) {
         if rebuild {
             rebuild = false;
-            match build_for_device(&app_dir, &adb, request) {
+            match build_for_device(&app_dir, &adb, request, dev.profile().unwrap_or("dev")) {
                 Ok(build) => application_id = Some(build.metadata.application_id),
                 Err(error) => eprintln!("[tilo-app] {error:#}\n[tilo-app] waiting for a change"),
             }

@@ -58,7 +58,43 @@ pub enum TileContent {
         /// refusal or launch only ever starts once.
         #[serde(default)]
         note: String,
+        /// Set when this machine has no copy of the app to open: whether
+        /// one can be installed here, or why it cannot. The card offers the
+        /// install from this, never from the wording of `note`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        missing: Option<MissingApp>,
     },
+    /// A legacy (X11 / Wayland) window that runs only on the device `host`
+    /// (its hex device key), shown on every other device as that window,
+    /// never relaunched there: a legacy app's state lives in its process,
+    /// not in a record another device could open. The tab id and `host`
+    /// stay stable for the window's life, so a per-window stream from the
+    /// host can attach to this tab. On the hosting device the same tab is
+    /// its live [`Self::Foreign`] surface.
+    HostedWindow {
+        /// The wayland app-id or X11 class the window announces.
+        app_id: String,
+        /// The window's title on the hosting device.
+        label: String,
+        /// Hex device key (iroh endpoint id) of the hosting device.
+        host: String,
+        /// The hosting device's own name, as its certificate labels it.
+        #[serde(default)]
+        host_label: String,
+    },
+}
+
+/// Why a window another device has open has no instance here yet.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum MissingApp {
+    /// Not installed, and a configured registry offers it to this device:
+    /// the person may install it, which opens it in the same tab.
+    Installable {
+        /// The registry's name for the app, for the install button.
+        display_name: String,
+    },
+    /// Not installed, and nothing this device can install provides it.
+    Unavailable,
 }
 
 impl TileContent {

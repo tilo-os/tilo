@@ -64,6 +64,14 @@ attempt. The verified qcow2 and signed sidecars are retained in the work
 directory; the downloaded ZIPs are removed after verification. There is no
 raw media conversion.
 
+The v2 signed medium identity records the installer checkout as
+`build_revision` and the pinned OS source as `os_source_revision`. The imager
+can use a newer main checkout with installer fixes while consuming an older
+signed OS image; its workflow requires that OS source to be an ancestor. The
+wrapper checks the installer revision against the selected imager run and the
+OS revision against both signed OS runs. Legacy v1 media require the same
+revision for both. Both media must still share one installer checkout and run.
+
 Run `prepare` only after the realized plan has been reviewed and allocation
 has completed. The `source_raw` path may be new or may name an existing **empty**
 sparse template, provided the backend verifies its GPT, preserved samples, and
@@ -84,6 +92,18 @@ On a Windows account with the existing CurrentUser DPAPI protected install
 secrets, use `os/dev/windows-direct-credentials-stored.ps1` in place of the
 interactive Python prompt. Pipe it directly into `prepare`; do not save its
 output to a plaintext file.
+
+Windows scenarios explicitly use an ext4 root and retain their install record.
+If installation completed but first-boot verification failed, rerunning
+`prepare` resumes verification of that same encrypted target. It checks the
+original inputs, target GPT and guest image proof before booting; it does not
+repeat the installer or overwrite a different target. The finished live
+installer overlay is discarded before target boot to reclaim its temporary
+container store.
+
+For a standalone retained Windows scenario, use the original options and
+output directory with `tilo-vm scenario install --resume --keep`. Supply the
+original secrets again if the first install used `--credentials-stdin`.
 
 The prompt helper sends only the JSON through the process pipe; it creates no
 plaintext file. `prepare` prompts only if a WHPX phase still needs to run.

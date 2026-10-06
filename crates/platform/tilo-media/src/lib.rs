@@ -27,10 +27,9 @@
 //!   and a [`MediaEvent`] stream drained with [`MediaEngine::poll`]. With
 //!   `--features decode` it drives a `GStreamer` `playbin`→`appsink` pipeline
 //!   with audio output; without it a synthesized-frame fallback is used.
-//! * [`TransportState`] + [`TransportSync`] — collaborative "follow-the-host"
-//!   playback: a host publishes the transport, followers project it forward and
-//!   drift-correct. The CRDT wiring lives in [`CrdtTransport`] behind the trait
-//!   so a local-only player carries no automerge weight.
+//! * [`TransportState`] — collaborative playback: a participant publishes
+//!   the transport, the others project it forward and drift-correct
+//!   ([`MediaEngine::apply_transport`]).
 //! * [`Frame`] / [`FrameAcceptance`] — decoded pictures in the memory chosen by
 //!   the decoder. A hardware decoder's output can stay a
 //!   dmabuf on the GPU ([`FramePayload::Dmabuf`]) or arrive as planar NV12/P010
@@ -149,7 +148,7 @@ pub use encode::{
     AudioCodec, BitrateUnits, EncodeReport, EncoderKind, EncoderSpec, HwEncPolicy, Selection,
     VideoCodec,
 };
-pub use engine::{EngineConfig, MediaChapter, MediaEngine, MediaTrack, SeekMode};
+pub use engine::{EngineConfig, MediaChapter, MediaEngine, MediaTrack, SeekMode, SeekWaitError};
 pub use event::{MediaEvent, VideoFrame};
 pub use frame::{Frame, FrameAcceptance, FramePayload, PlanarFormat, PlanarImage, PlaneData};
 pub use hw::{DecoderKind, HwPolicy, HwReport, StreamCodec};
@@ -163,7 +162,4 @@ pub use realtime::{
 pub use ring::{PrefetchProgress, Prefetcher, RingBuffer};
 pub use session::{DEFAULT_FRAME_TIMEOUT, EngineSession, SessionPool};
 pub use source::{Source, WORKSPACE_ROOT};
-pub use transport::{
-    Correction, CrdtTransport, DRIFT_SEEK_THRESHOLD_MS, LocalTransport, TransportState,
-    TransportSync, correction,
-};
+pub use transport::{Correction, DRIFT_SEEK_THRESHOLD_MS, TransportState, correction};

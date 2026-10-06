@@ -103,7 +103,61 @@ impl Default for PowerPolicy {
     }
 }
 
+/// What this computer owes the rest of the person's devices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MachineDuty {
+    /// An always-on host, such as a board. Nobody is at it to wake it again,
+    /// so it never suspends on its own.
+    Host,
+    /// An ordinary computer, following its power settings.
+    Endpoint,
+}
+
+/// Marker the board image ships to select the headless host session.
+pub const HOST_IMAGE_MARKER: &str = "/usr/share/tilo/board-headless-session";
+
+/// Classify this machine. The board image is the always-on host: its image
+/// carries [`HOST_IMAGE_MARKER`] and its session runs with
+/// `TILO_BOARD_SESSION=1`.
+#[must_use]
+pub fn this_machine_duty() -> MachineDuty {
+    duty_from(
+        std::env::var_os("TILO_BOARD_SESSION").is_some_and(|value| value == "1"),
+        std::path::Path::new(HOST_IMAGE_MARKER).is_file(),
+    )
+}
+
+fn duty_from(board_session: bool, host_image: bool) -> MachineDuty {
+    if board_session || host_image {
+        MachineDuty::Host
+    } else {
+        MachineDuty::Endpoint
+    }
+}
+
 impl PowerPolicy {
+    /// The policy this machine actually runs. A host drops every automatic
+    /// suspend — idle, lid, power key and critical battery — whatever the
+    /// settings ask for; the critical-battery warning still shows. Blanking
+    /// and locking are untouched, and an explicit suspend request still works.
+    #[must_use]
+    pub fn for_duty(self, duty: MachineDuty) -> Self {
+        if duty == MachineDuty::Endpoint {
+            return self;
+        }
+        let stay_up = |action| match action {
+            PowerAction::Suspend => PowerAction::Ignore,
+            other => other,
+        };
+        Self {
+            idle_suspend: None,
+            lid_close_action: stay_up(self.lid_close_action),
+            power_key_action: stay_up(self.power_key_action),
+            critical_action: stay_up(self.critical_action),
+            ..self
+        }
+    }
+
     /// Resolve the lid-close action. `None` when the lid *opened* (no
     /// action) or the configured action is [`PowerAction::Ignore`].
     pub fn on_lid(&self, closed: bool) -> Option<PowerAction> {
@@ -174,6 +228,41 @@ mod tests {
             assert_eq!(p.on_power_key(), Some(PowerAction::Lock));
             p.power_key_action = PowerAction::Ignore;
             assert_eq!(p.on_power_key(), None);
+        }
+    }
+
+    #[test]
+    fn a_host_never_suspends_and_an_endpoint_follows_its_settings() {
+        // Phase `the_board_is_a_host`.
+        {
+            assert_eq!(duty_from(true, false), MachineDuty::Host);
+            assert_eq!(duty_from(false, true), MachineDuty::Host);
+            assert_eq!(duty_from(false, false), MachineDuty::Endpoint);
+        }
+        let configured = PowerPolicy {
+            idle_suspend: Some(Duration::from_secs(900)),
+            lid_close_action: PowerAction::Suspend,
+            power_key_action: PowerAction::Lock,
+            critical_action: PowerAction::Suspend,
+            ..PowerPolicy::default()
+        };
+        // Phase `an_endpoint_keeps_its_settings`.
+        {
+            assert_eq!(configured.for_duty(MachineDuty::Endpoint), configured);
+        }
+        // Phase `a_host_drops_every_automatic_suspend`.
+        {
+            let host = configured.for_duty(MachineDuty::Host);
+            assert_eq!(host.idle_suspend, None);
+            assert_eq!(host.lid_close_action, PowerAction::Ignore);
+            assert_eq!(host.critical_action, PowerAction::Ignore);
+            assert_eq!(host.power_key_action, PowerAction::Lock);
+            assert_eq!(host.idle_blank, configured.idle_blank);
+            assert_eq!(host.idle_lock, configured.idle_lock);
+            assert_eq!(
+                host.critical_battery_percent,
+                configured.critical_battery_percent
+            );
         }
     }
 }

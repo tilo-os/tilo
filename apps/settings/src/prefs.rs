@@ -9,7 +9,7 @@
 //! toggles wrote an ephemeral CRDT key that nothing read and nothing
 //! persisted — the control looked live but its value evaporated when the
 //! window closed. This store gives them a real home on disk, exactly the
-//! way [`crate::region::RegionSettings`] persists the locale.
+//! way the locale is a section of the same document.
 //!
 //! # The file (a format contract, not a crate dependency)
 //!
@@ -54,8 +54,6 @@
 //! clobbers another pane's — or the region store's — section.
 
 use serde::{Deserialize, Serialize};
-
-use crate::region::RegionSettings;
 
 /// Remembered default audio devices, persistent transforms and which system
 /// events make a sound.
@@ -241,6 +239,12 @@ impl Default for InputPrefs {
     }
 }
 
+/// The person's pointer and keyboard choices, and this device's touchpad
+/// and tablets, read by the compositor's input layer.
+impl ui::storage::SettingsSchema for InputPrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("input");
+}
+
 impl InputPrefs {
     /// Decode the input object while preserving the pre-split global scrolling
     /// preference. A missing document receives the independent touchpad and
@@ -414,6 +418,12 @@ pub struct PowerPrefs {
     pub critical_action: PowerActionPref,
 }
 
+/// This device's idle and button preferences, read by the compositor's
+/// idle layer.
+impl ui::storage::SettingsSchema for PowerPrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("power");
+}
+
 impl Default for PowerPrefs {
     fn default() -> Self {
         Self {
@@ -444,6 +454,11 @@ pub struct UpdatePrefs {
     pub last_checked: String,
 }
 
+/// This device's update preferences.
+impl ui::storage::SettingsSchema for UpdatePrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("updates");
+}
+
 impl Default for UpdatePrefs {
     fn default() -> Self {
         Self {
@@ -460,6 +475,10 @@ impl Default for UpdatePrefs {
 /// with the WCAG-AAA high-contrast track; `reduce_motion` and `text_scale`
 /// fold in the accessibility comforts. The compositor reads this section the
 /// same way it reads the display/input comfort sections.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent appearance switch, not one combined state"
+)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppearancePrefs {
     /// Named theme preset — one of [`AppearancePrefs::THEMES`].
@@ -499,6 +518,19 @@ pub struct AppearancePrefs {
     /// Where a newly chosen wallpaper shows: `background`, `lockscreen` or `both`.
     #[serde(default = "default_wallpaper_target")]
     pub wallpaper_target: String,
+    /// Palette, default accent and pins shipped with the OS image.
+    /// Absent on a settings file written before the layer existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distribution_defaults: Option<ui::theme::DistributionDefaults>,
+    /// Accent hint for one workspace. Accessibility can drop it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_tint: Option<ui::theme::WorkspaceTint>,
+    /// When false, [`ui::Theme::brand_accent`] refuses every app colour.
+    #[serde(default = "default_true")]
+    pub app_accents: bool,
+    /// Force theme tokens onto content surfaces, with high contrast.
+    #[serde(default)]
+    pub forced_colors: bool,
 }
 
 fn default_schedule() -> String {
@@ -545,8 +577,17 @@ impl Default for AppearancePrefs {
             sunset: default_sunset(),
             wallpaper_scope: default_wallpaper_scope(),
             wallpaper_target: default_wallpaper_target(),
+            distribution_defaults: None,
+            workspace_tint: None,
+            app_accents: true,
+            forced_colors: false,
         }
     }
+}
+
+/// The person's look, read by the compositor and every app's toolkit.
+impl ui::storage::SettingsSchema for AppearancePrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("appearance");
 }
 
 impl AppearancePrefs {
@@ -574,17 +615,23 @@ impl AppearancePrefs {
     /// real "apply" contract — a consumer that wants the user's look calls
     /// this rather than hard-coding [`ui::Theme::dark`].
     pub fn resolve_theme(&self) -> ui::Theme {
-        let base = if self.high_contrast {
-            ui::Theme::high_contrast()
-        } else {
-            self.base_theme()
-        };
-        // UI scale grows the whole system first; text scale then layers extra
-        // type growth on top. Both fold into the same theme the compositor and
-        // every app draw against.
-        base.with_ui_scale(self.ui_scale as f32)
-            .with_text_scale(self.text_scale as f32)
-            .with_reduce_motion(self.reduce_motion)
+        // The same function the compositor uses. UI scale grows the whole
+        // system first; text scale then layers extra type growth on top.
+        ui::theme::resolve_theme_layers(&ui::theme::ThemeLayerStack {
+            distribution_defaults: self.distribution_defaults.clone(),
+            user_theme: Some(self.base_theme()),
+            workspace_tint: self.workspace_tint.clone(),
+            accessibility: ui::theme::AccessibilityLayer {
+                high_contrast: self.high_contrast,
+                forced_colors: self.forced_colors,
+                text_scale: self.text_scale as f32,
+                ui_scale: self.ui_scale as f32,
+                reduce_motion: self.reduce_motion,
+                thick_caret: false,
+                ..ui::theme::AccessibilityLayer::default()
+            },
+            allow_app_accents: self.app_accents,
+        })
     }
 }
 
@@ -687,6 +734,12 @@ pub struct NotificationPrefs {
 
 fn default_true() -> bool {
     true
+}
+
+/// The person's notification policy, read by the compositor's notification
+/// layer.
+impl ui::storage::SettingsSchema for NotificationPrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("notifications");
 }
 
 impl Default for NotificationPrefs {
@@ -984,6 +1037,12 @@ impl Default for AccessibilityPrefs {
     }
 }
 
+/// The person's assists, read by the compositor's input and accessibility
+/// layer.
+impl ui::storage::SettingsSchema for AccessibilityPrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("accessibility");
+}
+
 impl AccessibilityPrefs {
     /// The offered bounce-keys windows as `(display label, milliseconds)`.
     pub const BOUNCE_DELAYS: &'static [(&'static str, u32)] = &[
@@ -1153,7 +1212,7 @@ impl SystemPrefs {
     /// Load from the shared settings path. Returns section defaults when the
     /// file is absent or unreadable.
     pub fn load() -> Self {
-        let Some(path) = RegionSettings::store_path() else {
+        let Some(path) = settings_store::settings_path() else {
             return Self::default();
         };
         match std::fs::read_to_string(&path) {
@@ -1171,13 +1230,12 @@ impl SystemPrefs {
     /// `XDG_CONFIG_HOME`), if the `tilo` config directory cannot be created,
     /// or if the settings file cannot be written.
     pub fn save(&self) -> std::io::Result<std::path::PathBuf> {
-        let path =
-            RegionSettings::store_path().ok_or_else(|| std::io::Error::other("no config dir"))?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let existing = std::fs::read_to_string(&path).unwrap_or_default();
-        std::fs::write(&path, self.to_json_merged(&existing))?;
+        let path = settings_store::settings_path()
+            .ok_or_else(|| std::io::Error::other("no config dir"))?;
+        settings_store::update_document_at(&path, |doc| {
+            let existing = serde_json::Value::Object(std::mem::take(doc)).to_string();
+            *doc = settings_store::parse(&self.to_json_merged(&existing));
+        })?;
         Ok(path)
     }
 }
@@ -1194,8 +1252,6 @@ impl SystemPrefs {
 /// so the text stack keeps its font cache instead of rebuilding it per test.
 #[cfg(test)]
 pub(crate) mod test_env {
-    use std::path::PathBuf;
-
     use crate::settings_app::SettingsApp;
 
     /// Holds the redirected environment for a test's duration.
@@ -1203,7 +1259,7 @@ pub(crate) mod test_env {
         // Field order is drop order: restore the environment before the
         // directory it points at disappears.
         _env: tilo_test_env::ScopedEnv,
-        dir: tempfile::TempDir,
+        _dir: tempfile::TempDir,
     }
 
     impl ConfigGuard {
@@ -1214,17 +1270,10 @@ pub(crate) mod test_env {
                 .expect("create test config dir");
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("XDG_CONFIG_HOME", dir.path());
-            Self { _env: env, dir }
-        }
-
-        /// The Tilo config root inside the redirected `XDG_CONFIG_HOME`.
-        pub(crate) fn config_root(&self) -> PathBuf {
-            self.dir.path().join("tilo")
-        }
-
-        /// The app over this guard's config root.
-        pub(crate) fn app(&self) -> SettingsApp {
-            SettingsApp::with_config_root(self.config_root())
+            Self {
+                _env: env,
+                _dir: dir,
+            }
         }
     }
 
@@ -1261,7 +1310,11 @@ mod tests {
     /// Every default is sensible and every owned leaf has a continuity policy.
     #[test]
     fn prefs_defaults_are_sensible_and_classified() {
-        let region = RegionSettings::default().to_json_merged("");
+        let region = serde_json::json!({
+            "locale": crate::region::Locale::default(),
+            "default_apps": crate::panes::personal_apps::DefaultApps::default(),
+        })
+        .to_string();
         let document = SystemPrefs::default().to_json_merged(&region);
         let parsed = settings_store::parse(&document);
         let missing = settings_store::continuity::unclassified_leaves(&parsed);
@@ -1545,6 +1598,22 @@ mod tests {
         // Spacing grows by the UI factor only; type by UI × text.
         assert!((theme.tokens.spacing.s3 - base_gap * 1.25).abs() < 1e-2);
         assert!((theme.tokens.typography.scale.base - base_type * 1.25 * 1.2).abs() < 1e-2);
+
+        // A pinned distribution accent wins over the named preset's accent
+        // only. The palette stays the one the pane shows.
+        let mut pinned = prefs("Light", false, false, 1.0, 1.0);
+        pinned.distribution_defaults = Some(ui::theme::DistributionDefaults {
+            accent: Some([0x0B, 0x3A, 0x82]),
+            policy: ui::theme::DistributionPolicy {
+                pins: vec![ui::theme::PIN_ACCENT.into()],
+                ..ui::theme::DistributionPolicy::default()
+            },
+            ..ui::theme::DistributionDefaults::default()
+        });
+        let pinned_theme = pinned.resolve_theme();
+        assert_eq!(pinned_theme.name, "Light");
+        let accent = pinned_theme.accent_primary.to_rgba8();
+        assert_eq!([accent.r, accent.g, accent.b], [0x0B, 0x3A, 0x82]);
     }
 
     /// Writing one section never clobbers the region store's locale, a theme

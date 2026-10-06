@@ -18,11 +18,11 @@ use tilo_automation::{
 };
 use ui::framework::{Actions, Live};
 use ui::prelude::*;
-use ui::tilo_actions::{ActionBinding, ActionParam, ParamType};
+use ui::tilo_actions::{ActionParam, ParamType};
 use ui::widget::{Actions as ActionGroup, ModalDialog, NumberInput};
 use ui::{LocalState, RemoteActions};
 
-use crate::door::{self, Door, DoorCore, DoorState, Loaded, Notice, RunStatus};
+use crate::door::{self, Door, DoorCore, DoorEffect, DoorState, Loaded, Notice, RunStatus};
 use crate::editor::{self, Choice};
 use crate::grant::{self, Permission};
 use crate::model::{Draft, INPUT_TYPES, Workbench, block_at};
@@ -50,7 +50,7 @@ impl EditorInput {
         let Some((id, draft)) = &self.draft else {
             return format!("none|{:?}|{}", self.catalogue, self.catalog.rows().len());
         };
-        let program = &draft.program.0;
+        let program = &draft.program();
         let mut shape = String::new();
         shape_of(&program.steps, &mut shape);
         format!(
@@ -151,7 +151,6 @@ struct Ui {
     picker: LocalState<Option<String>>,
     sheet: LocalState<bool>,
     running: LocalState<Option<String>>,
-    door_resource: ui::tilo_actions::Resource,
 }
 
 impl Ui {
@@ -163,16 +162,9 @@ impl Ui {
         self.actions.bind(control, action)
     }
 
-    fn door_button(
-        &self,
-        button: Button,
-        action: &str,
-        arguments: serde_json::Map<String, Value>,
-    ) -> Button {
-        match ActionBinding::static_json_for(&self.door_resource, action, arguments) {
-            Ok(binding) => button.on_action(binding),
-            Err(_) => button.with_enabled(false),
-        }
+    /// `button`, invoking one door effect.
+    fn door_button(&self, button: Button, effect: &DoorEffect) -> Button {
+        self.actions.bind_effect_invocation(button, effect)
     }
 }
 
@@ -187,14 +179,17 @@ pub(crate) fn root(cx: &ViewCx<Workbench>) -> Element {
         picker: LocalState::new(None),
         sheet: LocalState::new(false),
         running: LocalState::new(None),
-        door_resource: door::resource(),
     };
     let core = Rc::new(RefCell::new(DoorCore::new(
         RemoteActions::current(),
         ui.door.clone(),
         cx.live().clone(),
     )));
-    core.borrow_mut().refresh(None);
+    // A past version or a capture shows the door as staged, never the
+    // session's.
+    if cx.mode().is_live() {
+        core.borrow_mut().refresh(None);
+    }
     crate::samples::stage(cx, &ui.door, &ui.selected, &ui.narrow, &ui.sheet);
 
     let follow = Rc::new(RefCell::new(follow(cx.live().clone(), &ui)));
@@ -203,12 +198,22 @@ pub(crate) fn root(cx: &ViewCx<Workbench>) -> Element {
         .with_sidebar_width(360.0)
         .with_breakpoint(820.0)
         .with_narrow_screen_state(&ui.narrow);
-    let door = Door::new(Box::new(shell), Rc::clone(&core)).following(Box::new(move || {
-        if let Ok(mut follow) = follow.try_borrow_mut() {
-            follow();
-        }
-    }));
-    ui::widget::resource_actions::background(Box::new(door), door::resource(), door::handler(core))
+    let handler = Rc::clone(&core);
+    cx.effects(move |effect: DoorEffect, cx| {
+        let mut core = handler
+            .try_borrow_mut()
+            .map_err(|_| "the door is busy".to_owned())?;
+        core.perform(effect, cx.reply())?;
+        core.pump();
+        Ok(Effected::Pending)
+    });
+    Box::new(
+        Door::new(Box::new(shell), core).following(Box::new(move || {
+            if let Ok(mut follow) = follow.try_borrow_mut() {
+                follow();
+            }
+        })),
+    )
 }
 
 /// What [`follow`] last derived the editor from: the open draft, the door,
@@ -241,7 +246,7 @@ fn follow(live: Live<Workbench>, ui: &Ui) -> Box<dyn FnMut()> {
         let steps = |draft: &Option<(Id, Draft)>| {
             draft
                 .as_ref()
-                .map(|(id, draft)| (id.clone(), step_count(&draft.program.0.steps)))
+                .map(|(id, draft)| (id.clone(), step_count(&draft.program().steps)))
         };
         if let (Some((before_id, before)), Some((now_id, now))) = (
             seen.as_ref().and_then(|(draft, ..)| steps(draft)),
@@ -314,13 +319,13 @@ fn caption(text: &str) -> Text {
 
 fn library(cx: &ViewCx<Workbench>, ui: &Ui) -> Element {
     let new_draft = ui.bind(
-        Button::new("new-shortcut", "shortcuts-new", None).primary(),
+        Button::new("new-shortcut", "shortcuts-new").primary(),
         Workbench::NEW_DRAFT.map(|()| String::from("New shortcut")),
     );
-    let reload = match ActionBinding::unit_for(&ui.door_resource, door::REFRESH) {
-        Ok(binding) => Button::new("reload", "shortcuts-reload", None).on_action(binding),
-        Err(_) => Button::new("reload", "shortcuts-reload", None).with_enabled(false),
-    };
+    let reload = ui.door_button(
+        Button::new("reload", "shortcuts-reload"),
+        &DoorEffect::Refresh,
+    );
     let notice = Text::from_state(&ui.door, |door| match &door.notice {
         Some(Notice::Saved(name)) => format!("Saved “{name}”"),
         Some(Notice::Deleted(name)) => format!("Deleted “{name}”"),
@@ -350,12 +355,10 @@ fn library(cx: &ViewCx<Workbench>, ui: &Ui) -> Element {
             let open = {
                 let selected = selected.clone();
                 let narrow = narrow.clone();
-                Button::new(&format!("open-draft-{id}"), "shortcuts-edit", None).on_view(
-                    move || {
-                        selected.set(Some(id.clone()));
-                        narrow.set(NarrowScreen::Content);
-                    },
-                )
+                Button::new(&format!("open-draft-{id}"), "shortcuts-edit").on_view(move || {
+                    selected.set(Some(id.clone()));
+                    narrow.set(NarrowScreen::Content);
+                })
             };
             Box::new(
                 Row::new()
@@ -430,28 +433,11 @@ fn describe_panel(
         .with_placeholder("shortcuts-describe-placeholder")
         .multiline(true);
     let source = description.clone();
-    let ask = ui
-        .door_resource
-        .actions
-        .iter()
-        .find(|spec| spec.id == door::DESCRIBE)
-        .and_then(|spec| {
-            ActionBinding::new(&ui.door_resource, spec, move |()| {
-                serde_json::Map::from_iter([(
-                    "description".to_owned(),
-                    Value::String(source.get()),
-                )])
-            })
-            .ok()
-        })
-        .map_or_else(
-            || Button::new("draft-with-agent", "shortcuts-draft-it", None).with_enabled(false),
-            |binding| {
-                Button::new("draft-with-agent", "shortcuts-draft-it", None)
-                    .with_enabled(!matches!(drafted, Some(door::Drafting::Drafting)))
-                    .on_action(binding)
-            },
-        );
+    let ask = ui.actions.bind_effect(
+        Button::new("draft-with-agent", "shortcuts-draft-it")
+            .with_enabled(!matches!(drafted, Some(door::Drafting::Drafting))),
+        DoorEffect::DESCRIBE.map(move |()| source.get()),
+    );
     let mut column = Column::new()
         .with_intrinsic_height()
         .with_no_padding()
@@ -492,7 +478,7 @@ fn describe_panel(
             }
             let json = serde_json::to_value(&drafted.shortcut).unwrap_or(Value::Null);
             let open = ui.bind(
-                Button::new("open-drafted", "shortcuts-open-drafted", None).primary(),
+                Button::new("open-drafted", "shortcuts-open-drafted").primary(),
                 Workbench::OPEN_SHORTCUT.map(move |()| json.clone()),
             );
             column = column.push(Box::new(ActionGroup::new(open)));
@@ -571,28 +557,29 @@ fn saved_row(ui: &Ui, shortcut: &Shortcut) -> Element {
     };
     let run = if shortcut.inputs.is_empty() {
         ui.door_button(
-            Button::new(&format!("run-{id}"), "shortcuts-run", None).primary(),
-            door::RUN,
-            serde_json::Map::from_iter([("shortcut".into(), Value::String(id.clone()))]),
+            Button::new(&format!("run-{id}"), "shortcuts-run").primary(),
+            &DoorEffect::Run {
+                shortcut: id.clone(),
+                inputs: None,
+            },
         )
     } else {
         let running = ui.running.clone();
         let target = id.clone();
-        Button::new(&format!("run-{id}"), "shortcuts-run-with", None)
+        Button::new(&format!("run-{id}"), "shortcuts-run-with")
             .primary()
             .on_view(move || running.set(Some(target.clone())))
     };
     let edit = ui.bind(
-        Button::new(&format!("edit-{id}"), "shortcuts-edit", None),
+        Button::new(&format!("edit-{id}"), "shortcuts-edit"),
         Workbench::OPEN_SHORTCUT.map({
             let json = serde_json::to_value(shortcut).unwrap_or(Value::Null);
             move |()| json.clone()
         }),
     );
     let delete = ui.door_button(
-        Button::new(&format!("delete-{id}"), "shortcuts-delete", None).danger_outline(),
-        door::DELETE,
-        serde_json::Map::from_iter([("shortcut".into(), Value::String(id))]),
+        Button::new(&format!("delete-{id}"), "shortcuts-delete").danger_outline(),
+        &DoorEffect::Delete { shortcut: id },
     );
     let mut column = Column::new()
         .with_intrinsic_height()
@@ -650,30 +637,18 @@ fn run_form(ui: &Ui, shortcut: &Shortcut) -> Element {
         )));
     }
     let start_id = format!("start-{id}");
-    let arguments = move |()| {
-        let inputs: serde_json::Map<String, Value> = fields
-            .iter()
-            .map(|(input, value)| (input.name.to_string(), editor::literal(&value.get(), input)))
-            .collect();
-        serde_json::Map::from_iter([
-            ("shortcut".to_owned(), Value::String(id.clone())),
-            ("inputs".to_owned(), Value::Object(inputs)),
-        ])
-    };
-    let start = ui
-        .door_resource
-        .actions
-        .iter()
-        .find(|spec| spec.id == door::RUN)
-        .and_then(|spec| ActionBinding::new(&ui.door_resource, spec, arguments).ok())
-        .map_or_else(
-            || Button::new(&start_id, "shortcuts-run", None).with_enabled(false),
-            |binding| {
-                Button::new(&start_id, "shortcuts-run", None)
-                    .primary()
-                    .on_action(binding)
-            },
-        );
+    let start = ui.actions.bind_effect(
+        Button::new(&start_id, "shortcuts-run").primary(),
+        DoorEffect::RUN.map(move |()| {
+            let inputs: serde_json::Map<String, Value> = fields
+                .iter()
+                .map(|(input, value)| {
+                    (input.name.to_string(), editor::literal(&value.get(), input))
+                })
+                .collect();
+            (id.clone(), Some(inputs))
+        }),
+    );
     Box::new(form.push(Box::new(start)))
 }
 
@@ -746,7 +721,7 @@ fn editor_pane(ui: &Ui, follow: Rc<RefCell<Box<dyn FnMut()>>>) -> Element {
                 input.draft.as_ref().map(|(id, draft)| {
                     (
                         id.clone(),
-                        grant::least_privilege(&draft.program.0.steps, &input.catalog),
+                        grant::least_privilege(&draft.program().steps, &input.catalog),
                     )
                 }),
                 input.problems.clone(),
@@ -798,7 +773,7 @@ impl<K: PartialEq + 'static> ui::widget::Decorator for Keyed<K> {
         self.part.as_mut()
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let next = (self.key)();
         if self.current.as_ref() != Some(&next) {
             self.part = (self.build)();
@@ -838,7 +813,7 @@ impl ui::widget::Decorator for Sheet {
         &mut self.dialog
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let open = self.open.get();
         if open != self.dialog.is_open() {
             self.dialog.set_open(open);
@@ -871,12 +846,12 @@ fn build_editor(ui: &Ui, input: &EditorInput) -> Element {
     );
     let review = {
         let sheet = ui.sheet.clone();
-        Button::new("review-save", "shortcuts-review", None)
+        Button::new("review-save", "shortcuts-review")
             .primary()
             .on_view(move || sheet.set(true))
     };
     let discard = ui.bind(
-        Button::new("discard-draft", "shortcuts-discard", None).danger_outline(),
+        Button::new("discard-draft", "shortcuts-discard").danger_outline(),
         Workbench::DISCARD.map({
             let draft = draft_id.clone();
             move |()| draft.clone()
@@ -923,14 +898,9 @@ fn inputs_section(ui: &Ui, draft_id: &Id, draft: &Draft) -> Element {
         .with_no_padding()
         .with_gap(8.0)
         .push(Box::new(heading("shortcuts-inputs")));
-    for input in &draft.program.0.inputs {
+    for input in &draft.program().inputs {
         let remove = ui.bind(
-            Button::new(
-                &format!("remove-input-{}", input.name),
-                "shortcuts-remove",
-                None,
-            )
-            .ghost(),
+            Button::new(&format!("remove-input-{}", input.name), "shortcuts-remove").ghost(),
             Workbench::REMOVE_INPUT.map({
                 let draft = draft_id.clone();
                 let name = input.name.to_string();
@@ -951,7 +921,7 @@ fn inputs_section(ui: &Ui, draft_id: &Id, draft: &Draft) -> Element {
     let name = LocalState::new(String::new());
     let kind = LocalState::new(String::from("text"));
     let add = ui.bind(
-        Button::new("add-input", "shortcuts-add-input", None),
+        Button::new("add-input", "shortcuts-add-input"),
         Workbench::ADD_INPUT.map({
             let draft = draft_id.clone();
             let name = name.clone();
@@ -981,7 +951,7 @@ fn inputs_section(ui: &Ui, draft_id: &Id, draft: &Draft) -> Element {
 }
 
 fn output_section(ui: &Ui, input: &EditorInput, draft_id: &Id, draft: &Draft) -> Element {
-    let program = &draft.program.0;
+    let program = &draft.program();
     let values = values_at(
         &editor::candidate(draft, &input.catalog),
         &input.catalog,
@@ -1071,7 +1041,8 @@ fn block(
     address: &str,
     depth: usize,
 ) -> Element {
-    let steps = block_at(&draft.program.0.steps, address).unwrap_or_default();
+    let program = draft.program();
+    let steps = block_at(&program.steps, address).unwrap_or_default();
     let mut column = Column::new()
         .with_intrinsic_height()
         .with_no_padding()
@@ -1101,12 +1072,12 @@ fn add_controls(ui: &Ui, input: &EditorInput, draft_id: &Id, address: &str) -> E
     let open = {
         let picker = ui.picker.clone();
         let address = address.to_owned();
-        Button::new(&format!("add-action-{key}"), "shortcuts-add-action", None)
+        Button::new(&format!("add-action-{key}"), "shortcuts-add-action")
             .on_view(move || picker.set(Some(address.clone())))
     };
     let block_button = |suffix: &str, label: &str, step: Value| {
         ui.bind(
-            Button::new(&format!("add-{suffix}-{key}"), label, None).ghost(),
+            Button::new(&format!("add-{suffix}-{key}"), label).ghost(),
             Workbench::ADD_STEP.map({
                 let draft = draft_id.clone();
                 let address = address.to_owned();
@@ -1152,7 +1123,7 @@ fn action_picker(ui: &Ui, input: &EditorInput, draft_id: &Id, address: &str) -> 
     let key = if address.is_empty() { "top" } else { address };
     let close = {
         let picker = ui.picker.clone();
-        Button::new(&format!("close-picker-{key}"), "shortcuts-close", None)
+        Button::new(&format!("close-picker-{key}"), "shortcuts-close")
             .ghost()
             .on_view(move || picker.set(None))
     };
@@ -1187,7 +1158,6 @@ fn action_picker(ui: &Ui, input: &EditorInput, draft_id: &Id, address: &str) -> 
                     Button::new(
                         &format!("offer-{}-{}-{}", offer.app_id, offer.resource, offer.action),
                         &format!("{} · {}", offer.resource_label, offer.label),
-                        None,
                     ),
                     Workbench::ADD_STEP.map({
                         let draft = draft_id.clone();
@@ -1245,7 +1215,7 @@ fn step_card(
         .with_role(TextRole::Caption)
     };
     let up = ui.bind(
-        Button::new(&format!("step-up-{path}"), "shortcuts-move-up", None).ghost(),
+        Button::new(&format!("step-up-{path}"), "shortcuts-move-up").ghost(),
         Workbench::MOVE_STEP.map({
             let draft = draft_id.clone();
             let path = path.to_owned();
@@ -1253,7 +1223,7 @@ fn step_card(
         }),
     );
     let down = ui.bind(
-        Button::new(&format!("step-down-{path}"), "shortcuts-move-down", None).ghost(),
+        Button::new(&format!("step-down-{path}"), "shortcuts-move-down").ghost(),
         Workbench::MOVE_STEP.map({
             let draft = draft_id.clone();
             let path = path.to_owned();
@@ -1261,7 +1231,7 @@ fn step_card(
         }),
     );
     let remove = ui.bind(
-        Button::new(&format!("step-remove-{path}"), "shortcuts-remove", None).ghost(),
+        Button::new(&format!("step-remove-{path}"), "shortcuts-remove").ghost(),
         Workbench::REMOVE_STEP.map({
             let draft = draft_id.clone();
             let path = path.to_owned();
@@ -1656,7 +1626,7 @@ fn grant_body(ui: &Ui, input: &EditorInput) -> Element {
         return Box::new(Spacer::fixed(0.0));
     };
     let permissions: Vec<Permission> =
-        grant::least_privilege(&draft.program.0.steps, &input.catalog);
+        grant::least_privilege(&draft.program().steps, &input.catalog);
     let mut body = Column::new()
         .with_intrinsic_height()
         .with_no_padding()
@@ -1696,16 +1666,14 @@ fn grant_body(ui: &Ui, input: &EditorInput) -> Element {
     }
     let cancel = {
         let sheet = ui.sheet.clone();
-        Button::new("grant-cancel", "shortcuts-cancel", None).on_view(move || sheet.set(false))
+        Button::new("grant-cancel", "shortcuts-cancel").on_view(move || sheet.set(false))
     };
     let save = ui
         .door_button(
-            Button::new("grant-save", "shortcuts-save", None).primary(),
-            door::SAVE,
-            serde_json::Map::from_iter([(
-                "draft".into(),
-                Value::String(draft_id.as_str().to_owned()),
-            )]),
+            Button::new("grant-save", "shortcuts-save").primary(),
+            &DoorEffect::Save {
+                draft: draft_id.as_str().to_owned(),
+            },
         )
         .with_enabled(!blocked);
     Box::new(body.push(Box::new(ActionGroup::new(save).secondary(cancel))))

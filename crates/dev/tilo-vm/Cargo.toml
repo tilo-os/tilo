@@ -18,7 +18,7 @@ quick-xml.workspace = true
 base64.workspace = true
 chrono = { workspace = true, features = ["clock", "std"] }
 clap.workspace = true
-tilo-atomic-file = { path = "../../system/atomic-file" }
+tilo-files = { path = "../../platform/tilo-files" }
 tilo-xdg-paths = { path = "../../system/xdg-paths" }
 hex.workspace = true
 serde.workspace = true

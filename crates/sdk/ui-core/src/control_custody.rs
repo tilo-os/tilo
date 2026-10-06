@@ -996,10 +996,7 @@ mod tests {
                     Ok(LocalEmission::Suppressed)
                 );
                 *output.borrow_mut() = Some(producer);
-                Box::new(
-                    crate::widget::Button::new("passive", "Passive", None)
-                        .on_action(unit_binding()),
-                )
+                Box::new(crate::widget::Button::new("passive", "Passive").on_action(unit_binding()))
             },
         );
         crate::widget::controls::install_control_custody(
@@ -1010,12 +1007,12 @@ mod tests {
         let (lease, saved) = domain.suspend();
         assert!(saved.is_empty());
         let mut doc = automerge::AutoCommit::new();
-        view.sync(&mut doc, &automerge::ROOT);
+        view.sync(&doc, &automerge::ROOT);
         drop(lease);
         assert!(domain.drain_live().is_empty());
         assert!(view.children_mut()[0].perform_action(
             &crate::a11y::Action::Activate,
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
         let requests = domain.drain_live();
@@ -1062,11 +1059,11 @@ mod lifecycle_tests {
             CustodyAttachment::Initial,
         );
         let c = domain.producer(ControlProducerDiscipline::ReplaceOne);
-        let mut doc = automerge::AutoCommit::new();
+        let doc = automerge::AutoCommit::new();
         for revision in 0..128 {
             let want = if revision == 0 { "B0" } else { "B1" };
             *key.borrow_mut() = revision;
-            model.sync(&mut doc, &automerge::ROOT);
+            model.sync(&doc, &automerge::ROOT);
             let scope = domain.children().into_iter().next().unwrap();
             assert_eq!(domain.0.borrow().order.len(), 3, "stable A/subtree/C slots");
             assert_eq!(

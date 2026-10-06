@@ -213,7 +213,7 @@ pub fn verify_enrollment_token(
 /// Crockford base32: upper-case output without padding; decoding is
 /// case-insensitive, reads `O` as `0` and `I`/`L` as `1`, and ignores unused
 /// bits in the last symbol.
-const CROCKFORD: data_encoding::Encoding = data_encoding_macro::new_encoding! {
+pub(crate) const CROCKFORD: data_encoding::Encoding = data_encoding_macro::new_encoding! {
     symbols: "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
     translate_from: "abcdefghjkmnpqrstvwxyzOoIiLl",
     translate_to: "ABCDEFGHJKMNPQRSTVWXYZ001111",

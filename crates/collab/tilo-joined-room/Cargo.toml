@@ -12,7 +12,7 @@ test-support = ["dep:iroh-base", "dep:uuid"]
 
 [dependencies]
 # Writes the file-backed store: owner-only, crash-safe replacement.
-tilo-atomic-file = { path = "../../system/atomic-file" }
+tilo-files = { path = "../../platform/tilo-files" }
 automerge.workspace = true
 blake3.workspace = true
 collab-types = { path = "../collab-types" }
@@ -35,7 +35,10 @@ tilo-peer-state = { path = "../tilo-peer-state" }
 tilo-relay = { path = "../../hosting/tilo-relay" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-user-identity = { path = "../tilo-user-identity" }
-tokio = { workspace = true, features = ["time"] }
+# The relay voice carrier a call participation authorizes.
+tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tokio = { workspace = true, features = ["sync", "time"] }
 tracing.workspace = true
 iroh-base = { workspace = true, features = ["key"], optional = true }
 uuid = { workspace = true, optional = true }
@@ -44,9 +47,13 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 # Admits untrusted automerge bytes in isolated workers, as in production.
 tilo-automerge-isolate.workspace = true
-tilo-atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
+# Seals the writes a keyless owner keeps, as an SDK app and its key holder do.
+channel-crypto = { path = "../channel-crypto" }
 iroh-base = { workspace = true, features = ["key"] }
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 uuid.workspace = true
 
 [lints]

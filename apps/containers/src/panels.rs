@@ -20,9 +20,11 @@ use crate::app::{
     ConfirmTarget, ContainersApp, Hit, HitRegion, PromptKind, PullProgress, ViewState,
 };
 use crate::combobox;
-use crate::doc::{CreateField, DetailTab, Section, ViewDoc};
+use crate::doc::{CreateDoc, CreateField};
 use crate::draw::{self, Icon};
-use crate::model::{Container, ContainerStatus, DistroBox, Image, Stats, Volume};
+use crate::model::{
+    Container, ContainerStatus, DetailTab, DistroBox, Image, Section, Stats, Volume,
+};
 use crate::podman::{Action, ImageAction};
 use crate::presentation::{create_form_fields, create_form_geometry, draw_field_frame};
 
@@ -408,7 +410,7 @@ impl ContainersApp {
                 btn.x0 + 28.0,
                 btn.center().y + 8.0,
             ),
-            Color::WHITE,
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             1.8,
         );
         draw::text(
@@ -416,7 +418,7 @@ impl ContainersApp {
             tr,
             shown,
             theme.tokens.typography.scale.base,
-            Color::WHITE,
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             Point::new(btn.x0 + 34.0, btn.center().y - f64::from(lh) / 2.0),
             TextWeight::Semibold,
         );
@@ -727,11 +729,7 @@ impl ContainersApp {
         compact: bool,
         view: &ViewState,
     ) {
-        let rows: Vec<Container> = self
-            .visible_containers(&view.search)
-            .into_iter()
-            .cloned()
-            .collect();
+        let rows: Vec<Container> = self.visible_containers().into_iter().cloned().collect();
         let cols = Self::container_columns(rows_area, compact);
         let row_height = Self::row_height(theme);
         let content_h = rows.len() as f64 * row_height;
@@ -1848,7 +1846,7 @@ impl ContainersApp {
                 btn.x0 + 26.0,
                 btn.center().y + 8.0,
             ),
-            Color::WHITE,
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             1.5,
         );
         draw::text(
@@ -1856,7 +1854,7 @@ impl ContainersApp {
             tr,
             "Attach shell",
             theme.tokens.typography.scale.sm,
-            Color::WHITE,
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             Point::new(btn.x0 + 32.0, btn.center().y - 7.0),
             TextWeight::Semibold,
         );
@@ -1955,7 +1953,6 @@ impl ContainersApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         content: Rect,
-        view: &ViewState,
     ) {
         let primary = self
             .engine_controls_available()
@@ -1964,13 +1961,11 @@ impl ContainersApp {
         let list = Rect::new(content.x0, body_y, content.x1, content.y1);
         let banner = self.draw_images_banner(scene, tr, theme, list);
 
-        let query = view.search.clone();
         let images: Vec<usize> = self
             .engine
             .images
             .iter()
             .enumerate()
-            .filter(|(_, im)| im.matches(&query))
             .map(|(i, _)| i)
             .collect();
 
@@ -2242,7 +2237,6 @@ impl ContainersApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         content: Rect,
-        view: &ViewState,
     ) {
         let primary = self
             .engine_controls_available()
@@ -2251,14 +2245,7 @@ impl ContainersApp {
         let list = Rect::new(content.x0, body_y, content.x1, content.y1);
         let banner = self.draw_volumes_banner(scene, tr, theme, list);
 
-        let query = view.search.clone();
-        let vols: Vec<Volume> = self
-            .engine
-            .volumes
-            .iter()
-            .filter(|v| v.matches(&query))
-            .cloned()
-            .collect();
+        let vols: Vec<Volume> = self.engine.volumes.clone();
 
         let rows_area = Rect::new(list.x0, banner.y1 + 8.0, list.x1, list.y1);
         self.draw_volume_rows(scene, tr, theme, rows_area, &vols);
@@ -2460,7 +2447,6 @@ impl ContainersApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         content: Rect,
-        view: &ViewState,
     ) {
         let primary = self
             .engine_controls_available()
@@ -2483,14 +2469,7 @@ impl ContainersApp {
             list.width() - PAD * 2.0,
         );
 
-        let query = view.search.clone();
-        let boxes: Vec<DistroBox> = self
-            .engine
-            .distroboxes
-            .iter()
-            .filter(|b| b.matches(&query))
-            .cloned()
-            .collect();
+        let boxes: Vec<DistroBox> = self.engine.distroboxes.clone();
 
         // Card grid (two columns).
         let grid_top = list.y0 + 48.0;
@@ -2630,7 +2609,7 @@ impl ContainersApp {
                 btn.x0 + 26.0,
                 btn.center().y + 8.0,
             ),
-            Color::WHITE,
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             1.6,
         );
         draw::text(
@@ -2638,7 +2617,7 @@ impl ContainersApp {
             tr,
             "Enter",
             theme.tokens.typography.scale.sm,
-            Color::WHITE,
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             Point::new(btn.x0 + 30.0, btn.center().y - 7.0),
             TextWeight::Semibold,
         );
@@ -3193,7 +3172,7 @@ impl ContainersApp {
     // Interaction
     // =================================================================
 
-    pub(crate) fn on_click(&mut self, doc: &mut AutoCommit, handled: &mut bool) {
+    pub(crate) fn on_click(&mut self, doc: &mut ui::widget::Edits<'_>, handled: &mut bool) {
         // Modal layers consume clicks even outside their controls. (The confirm
         // and prompt dialogs are modal and captured upstream in `handle_event`,
         // so they are never active here.)
@@ -3235,25 +3214,17 @@ impl ContainersApp {
     }
 
     /// Apply the resolved click hit against the engine/document.
-    pub(crate) fn apply_hit(&mut self, doc: &mut AutoCommit, hit: Hit) {
+    pub(crate) fn apply_hit(&mut self, doc: &mut ui::widget::Edits<'_>, hit: Hit) {
         match hit {
-            Hit::Section(s) => {
-                ViewDoc::set_section(doc, s);
-                ViewDoc::set_selected(doc, None);
-                self.list_scroll = 0.0;
-            }
+            Hit::Section(s) => self.show_section(s),
             Hit::ToggleSidebar => {
                 self.toggle_sidebar();
                 self.structure_dirty = true;
             }
-            Hit::NewContainer => {
-                self.create_open = true;
-                self.focus_create_field(CreateField::Image);
-            }
+            Hit::NewContainer => self.open_create(),
             Hit::SelectContainer(id) => {
-                let already = ViewDoc::selected(doc).as_deref() == Some(id.as_str());
-                ViewDoc::set_selected(doc, if already { None } else { Some(&id) });
-                self.detail_scroll = 0.0;
+                let already = self.view.selected.as_deref() == Some(id.as_str());
+                self.select_container((!already).then_some(id));
             }
             Hit::SelectImage(idx) => self.apply_hit_select_image(idx),
             Hit::Action { id, action } => self.apply_hit_action(id, action),
@@ -3288,13 +3259,8 @@ impl ContainersApp {
                 self.create_open = true;
                 self.focus_create_field(CreateField::Name);
             }
-            Hit::DetailTab(tab) => {
-                ViewDoc::set_tab(doc, tab);
-                self.detail_scroll = 0.0;
-            }
-            Hit::CloseDetail => {
-                ViewDoc::set_selected(doc, None);
-            }
+            Hit::DetailTab(tab) => self.show_tab(tab),
+            Hit::CloseDetail => self.select_container(None),
             Hit::CreateField(field) => self.apply_hit_create_field(field),
             Hit::ComboToggle => {
                 self.focus_create_field(CreateField::Image);
@@ -3359,7 +3325,7 @@ impl ContainersApp {
     /// Pull whatever is typed into the create-form image field, or prompt
     /// via a quick image pull dialog when empty.
     fn apply_hit_pull_typed(&mut self, doc: &AutoCommit) {
-        let typed = ViewDoc::create_field(doc, CreateField::Image);
+        let typed = CreateDoc::read(doc).get(CreateField::Image).to_owned();
         if typed.trim().is_empty() {
             self.prompt = Some(crate::app::Prompt {
                 kind: PromptKind::NewVolume, // generic text path; handled below
@@ -3403,14 +3369,14 @@ impl ContainersApp {
         }
     }
 
-    fn apply_hit_combo_pick(&mut self, doc: &mut AutoCommit, pos: usize) {
-        let typed = ViewDoc::create_field(doc, CreateField::Image);
+    fn apply_hit_combo_pick(&mut self, doc: &mut ui::widget::Edits<'_>, pos: usize) {
+        let typed = CreateDoc::read(doc).get(CreateField::Image).to_owned();
         let options = self.engine.image_references();
         let filtered = combobox::filter_options(&options, &typed);
         if let Some(&idx) = filtered.get(pos)
             && let Some(reference) = options.get(idx)
         {
-            ViewDoc::set_create_field(doc, CreateField::Image, reference);
+            self.set_create_field(doc, CreateField::Image, reference);
         }
         self.combo.close();
     }
@@ -3474,18 +3440,18 @@ impl ContainersApp {
                 self.combo.close();
             } else if self.create_open {
                 self.create_open = false;
-            } else if ViewDoc::selected(ctx.state).is_some() {
-                ViewDoc::set_selected(ctx.state, None);
+            } else if self.view.selected.is_some() {
+                self.select_container(None);
             }
             *ctx.handled = true;
-            self.refresh_view(ctx.state);
+            self.refresh_view(&ctx.state);
             return;
         }
 
         // Create modal owns the keyboard while open.
         if self.create_open {
             self.create_modal_key(event, ctx, key);
-            self.refresh_view(ctx.state);
+            self.refresh_view(&ctx.state);
             return;
         }
 
@@ -3494,19 +3460,19 @@ impl ContainersApp {
             let s = ch.to_lowercase();
             match s.as_str() {
                 "1" => {
-                    ViewDoc::set_section(ctx.state, Section::Containers);
+                    self.show_section(Section::Containers);
                     *ctx.handled = true;
                 }
                 "2" => {
-                    ViewDoc::set_section(ctx.state, Section::Images);
+                    self.show_section(Section::Images);
                     *ctx.handled = true;
                 }
                 "3" => {
-                    ViewDoc::set_section(ctx.state, Section::Volumes);
+                    self.show_section(Section::Volumes);
                     *ctx.handled = true;
                 }
                 "4" => {
-                    ViewDoc::set_section(ctx.state, Section::Distrobox);
+                    self.show_section(Section::Distrobox);
                     *ctx.handled = true;
                 }
                 "/" => {
@@ -3526,7 +3492,7 @@ impl ContainersApp {
                 _ => {}
             }
         }
-        self.refresh_view(ctx.state);
+        self.refresh_view(&ctx.state);
     }
 
     fn create_modal_key(
@@ -3542,30 +3508,33 @@ impl ContainersApp {
         if on_image && self.combo.open {
             match &key.logical_key {
                 Key::Named(NamedKey::ArrowDown) => {
-                    let len = self.filtered_image_len(ctx.state);
+                    let len = self.filtered_image_len(&ctx.state);
                     self.combo.move_highlight(1, len);
                     *ctx.handled = true;
                     return;
                 }
                 Key::Named(NamedKey::ArrowUp) => {
-                    let len = self.filtered_image_len(ctx.state);
+                    let len = self.filtered_image_len(&ctx.state);
                     self.combo.move_highlight(-1, len);
                     *ctx.handled = true;
                     return;
                 }
                 Key::Named(NamedKey::Enter) => {
                     // Pick the highlighted suggestion, else submit.
-                    let typed = ViewDoc::create_field(ctx.state, CreateField::Image);
+                    let typed = CreateDoc::read(&ctx.state)
+                        .get(CreateField::Image)
+                        .to_owned();
                     let options = self.engine.image_references();
                     let filtered = combobox::filter_options(&options, &typed);
                     if let Some(reference) = filtered
                         .get(self.combo.highlight)
                         .and_then(|&idx| options.get(idx))
+                        .cloned()
                     {
-                        ViewDoc::set_create_field(ctx.state, CreateField::Image, reference);
+                        self.set_create_field(&mut ctx.state, CreateField::Image, &reference);
                         self.combo.close();
                     } else {
-                        self.submit_create(ctx.state);
+                        self.submit_create(&mut ctx.state);
                     }
                     *ctx.handled = true;
                     return;
@@ -3583,7 +3552,7 @@ impl ContainersApp {
                 *ctx.handled = true;
             }
             Key::Named(NamedKey::Enter) => {
-                self.submit_create(ctx.state);
+                self.submit_create(&mut ctx.state);
                 *ctx.handled = true;
             }
             _ => {
@@ -3593,11 +3562,10 @@ impl ContainersApp {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.focus_target,
                 );
-                self.after_create_input(field);
                 *ctx.handled = true;
             }
         }
@@ -3606,7 +3574,7 @@ impl ContainersApp {
     /// Number of locally-installed images matching the currently-typed image
     /// query — drives the combobox highlight clamp.
     fn filtered_image_len(&self, doc: &AutoCommit) -> usize {
-        let typed = ViewDoc::create_field(doc, CreateField::Image);
+        let typed = CreateDoc::read(doc).get(CreateField::Image).to_owned();
         let options = self.engine.image_references();
         combobox::filter_options(&options, &typed).len()
     }
@@ -3648,8 +3616,8 @@ mod row_layout_tests {
     #[test]
     fn control_custody_containers_all_five_boundaries_copy_empty_descriptors_and_offline_preserves_last()
      {
-        let (mut app, _requests, _results) = ContainersApp::history_test_runtime_root();
-        app.engine = ContainersApp::history_test_runtime_engine("controlled Podman", true);
+        let (mut app, _requests, _results) = ContainersApp::controlled_runtime_root();
+        app.engine = ContainersApp::controlled_engine("controlled Podman", true);
 
         let pending = |app: &ContainersApp| {
             let invocation = app
@@ -3758,7 +3726,7 @@ mod row_layout_tests {
 
             // The row paints its name on `cols[0] + ROW_TEXT_INSET` in both the
             // stacked and the wide layout, so the app's viewport does not matter.
-            let mut app = ContainersApp::new(false);
+            let mut app = ContainersApp::sample();
             let view = ViewState::default();
             let container = running_container();
             let row = Rect::new(

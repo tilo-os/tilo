@@ -60,7 +60,7 @@ fn fixture_with_extra_calculators(
             0 => word_processor::initialize_empty_document(doc).unwrap(),
             1 => chat::doc::ChatDoc::seed_starter(doc, "author", "Author", "AU"),
             2 => notes::notebook::initialize_empty(doc).unwrap(),
-            _ => calculator::doc::initialize_empty(doc).unwrap(),
+            _ => calculator::doc::initialize(doc).unwrap(),
         });
         if i == 0 {
             routes.insert(id, record.id.as_str().into());
@@ -88,7 +88,7 @@ fn fixture_with_extra_calculators(
         let store = owners.open(calculator_app, &room).unwrap();
         store.create_record(&record).unwrap();
         store.with(&record.id, |doc| {
-            calculator::doc::initialize_empty(doc).unwrap();
+            calculator::doc::initialize(doc).unwrap();
         });
         tabs.push(Tab {
             id,
@@ -175,7 +175,7 @@ fn workspace_activity_actions_are_local_and_select_empty_workspaces() {
         };
         let previous_view = root.activity.as_ref().map(|activity| activity.pane.view());
         root.start_operation(
-            &ui::widget::ResourceOperation::local(
+            &ui::host_operation::ResourceOperation::local(
                 tilo_actions::InvocationId::new(),
                 tilo_actions::OperationKind::View,
                 OPERATION_TYPE,
@@ -185,7 +185,7 @@ fn workspace_activity_actions_are_local_and_select_empty_workspaces() {
             &automerge::ROOT,
         )
         .unwrap()
-        .and_then(ui::widget::ResourceOperationStart::completed)
+        .and_then(ui::host_operation::ResourceOperationStart::completed)
         .unwrap();
         assert_eq!(
             root.activity.as_ref().map(|activity| activity.pane.view()),
@@ -2760,7 +2760,7 @@ fn focused_calculator_expression_clear_and_type_preserve_the_semantic_editor() {
     let history = calculator
         .store
         .read(&calculator.checkout.id, |doc| {
-            calculator::doc::load(doc).unwrap().history
+            calculator::doc::load_history(doc)
         })
         .unwrap();
     assert_eq!(history.len(), 1);
@@ -2991,7 +2991,7 @@ fn selected_calculator_enter_commits_only_its_checked_record_after_local_history
             .read(&record.checkout.id, |doc| {
                 (
                     doc.base_heads().to_vec(),
-                    calculator::doc::load(doc).unwrap().history,
+                    calculator::doc::load_history(doc),
                 )
             })
             .unwrap();
@@ -3977,6 +3977,23 @@ fn live_view_publishes_writer_focus_and_draws_a_remote_caret_without_relayout() 
     assert_eq!((start, end), (1, 1), "caret after the typed character");
     assert!(matches!(&key, ui::presence::PresenceKey::Widget { path } if path.len() == 2));
 
+    // The window's editor caret is published even without keyboard focus
+    // (focus left behind elsewhere, or an action moved the caret).
+    assert!(
+        layout
+            .window_presence
+            .iter()
+            .any(|(window_key, _)| *window_key == key),
+        "{:?}",
+        layout.window_presence
+    );
+    let unfocused = crate::live_view::snapshot_json(
+        &layout,
+        &handle.tab_records.borrow(),
+        crate::live_view::published_selection(None, &layout.window_presence),
+    );
+    assert_eq!(unfocused["selection"], snapshot["selection"]);
+
     let paths_before = frame.frame_render_input().scene.encoding().path_tags.len();
     let relayouts = frame.relayout_frames();
     let mut projection = crate::live_view::RemoteProjection::default();
@@ -4472,7 +4489,7 @@ fn global_search_real_notes_and_chat_body_hits_select_exact_admitted_tab() {
                         id: page,
                         title: "Ordinary notebook page".into(),
                         parent: None,
-                        order: 0,
+                        order: "a".into(),
                     },
                 );
                 NotesDoc::fill_page_body(
@@ -6185,7 +6202,7 @@ fn group_move_echo_is_not_applied_twice_and_speculation_is_opt_in() {
     let invoke = |root: &mut DesktopRoot, payload: &[u8]| {
         let output = root
             .start_operation(
-                &ui::widget::ResourceOperation::local(
+                &ui::host_operation::ResourceOperation::local(
                     tilo_actions::InvocationId::new(),
                     tilo_actions::OperationKind::View,
                     "tilo.desktop.request",
@@ -6195,7 +6212,7 @@ fn group_move_echo_is_not_applied_twice_and_speculation_is_opt_in() {
                 &automerge::ROOT,
             )
             .unwrap()
-            .and_then(ui::widget::ResourceOperationStart::completed)
+            .and_then(ui::host_operation::ResourceOperationStart::completed)
             .unwrap();
         output
             .value
@@ -6298,7 +6315,7 @@ fn invoke_open(root: &mut DesktopRoot, room: &str, app: &str) -> uuid::Uuid {
     .unwrap();
     let output = root
         .start_operation(
-            &ui::widget::ResourceOperation::local(
+            &ui::host_operation::ResourceOperation::local(
                 tilo_actions::InvocationId::new(),
                 tilo_actions::OperationKind::View,
                 "tilo.desktop.request",
@@ -6308,7 +6325,7 @@ fn invoke_open(root: &mut DesktopRoot, room: &str, app: &str) -> uuid::Uuid {
             &automerge::ROOT,
         )
         .unwrap()
-        .and_then(ui::widget::ResourceOperationStart::completed)
+        .and_then(ui::host_operation::ResourceOperationStart::completed)
         .unwrap();
     output.value.unwrap().as_str().unwrap().parse().unwrap()
 }

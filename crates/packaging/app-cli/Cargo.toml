@@ -24,7 +24,7 @@ dev-overrides = []
 [dependencies]
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
-tilo-atomic-file = { path = "../../system/atomic-file" }
+tilo-files = { path = "../../platform/tilo-files" }
 bounded-command = { path = "../../system/bounded-command" }
 # The registry wire format + the per-entry publisher signature check.
 registry-types = { path = "../registry-types" }
@@ -36,6 +36,8 @@ package-store = { path = "../package-store" }
 # Canonical application tapp wire-size ceiling; catalogue downloads enforce
 # the same boundary as the installer rather than duplicating a number.
 tilo-app-package = { path = "../tilo-app-package" }
+# Where an installed runtime build lives, the lookup the launcher makes.
+runtime-bundle = { path = "../runtime-bundle" }
 clap.workspace = true
 clap_complete.workspace = true
 tilo-xdg-paths = { path = "../../system/xdg-paths" }

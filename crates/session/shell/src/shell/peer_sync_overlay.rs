@@ -17,6 +17,9 @@ use ui::text_render::TextRenderer;
 use crate::shell::i18n::{t, t_args};
 use ui::theme::Theme;
 
+mod accessibility;
+pub use accessibility::is_sheet_target as is_accessibility_target;
+
 /// A transport request emitted by the overlay.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeerSyncRequest {
@@ -126,6 +129,16 @@ enum Button {
     CopyIdentity,
 }
 
+/// What one painted target says, for assistive technology.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DrawnLabel {
+    label: String,
+    /// Whose row the target acts on, when the label alone is ambiguous.
+    description: Option<String>,
+    /// For a choice, whether it is the chosen one.
+    selected: Option<bool>,
+}
+
 /// Result of routing one input event through the overlay.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventOutcome {
@@ -167,6 +180,9 @@ pub struct PeerSyncOverlay {
     remembered_invitees: Vec<RememberedInvitee>,
     rect: Rect,
     button_rects: Vec<(Button, Rect)>,
+    /// What each painted target says, in `button_rects` order: the label,
+    /// whose row it acts on, and for a choice whether it is chosen.
+    button_labels: Vec<DrawnLabel>,
     pending_offset: usize,
     enrollment: Option<u64>,
     enrollment_poll_at: Option<std::time::Instant>,
@@ -501,7 +517,8 @@ impl PeerSyncOverlay {
             Key::Named(NamedKey::Backspace)
                 if connect_open || (composer_open && !self.state.invite_review_open) =>
             {
-                self.active_input_mut(connect_open).map(String::pop);
+                self.active_input_mut(connect_open)
+                    .map(ui::delete_last_grapheme);
                 EventOutcome::consumed()
             }
             Key::Character(s)
@@ -738,6 +755,7 @@ impl PeerSyncOverlay {
         theme: &Theme,
     ) {
         self.button_rects.clear();
+        self.button_labels.clear();
         if !self.visible() {
             self.rect = Rect::ZERO;
             return;
@@ -908,6 +926,11 @@ impl PeerSyncOverlay {
                     body,
                 );
                 self.button_rects.push((button, button_rect));
+                self.button_labels.push(DrawnLabel {
+                    label,
+                    description: Some(invite.name.clone()),
+                    selected: None,
+                });
             }
             y = row.y1 + 6.0;
         }
@@ -1179,6 +1202,11 @@ impl PeerSyncOverlay {
             None,
         );
         self.button_rects.push((button, rect));
+        self.button_labels.push(DrawnLabel {
+            label: label.to_owned(),
+            description: None,
+            selected: Some(selected),
+        });
     }
 
     fn draw_buttons(&mut self, ctx: &mut PaintCtx<'_>, m: &SheetMetrics) {
@@ -1235,6 +1263,11 @@ impl PeerSyncOverlay {
             }
             ui::widget::Button::paint(scene, transform, text, theme, &face);
             self.button_rects.push((button, brect));
+            self.button_labels.push(DrawnLabel {
+                label,
+                description: None,
+                selected: None,
+            });
             bx = brect.x0 - gap;
         }
     }

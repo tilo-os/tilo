@@ -72,6 +72,35 @@ pub enum CallerPrincipal {
     App(String),
 }
 
+/// Host-owned execution lifetime. Clones share closure, never authority.
+/// Equality and hashing use the immutable minted identity, not liveness.
+#[derive(Clone, Debug)]
+pub struct ExecutionLease {
+    id: uuid::Uuid,
+    live: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+impl PartialEq for ExecutionLease {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+impl Eq for ExecutionLease {}
+impl std::hash::Hash for ExecutionLease {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+impl ExecutionLease {
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        self.live.load(std::sync::atomic::Ordering::Acquire)
+    }
+    /// Retire observation of this run. This does not cancel any app operation.
+    pub fn close(&self) {
+        self.live.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
 /// The authenticated principal behind a request.
 ///
 /// Built only by the transport that authenticated the connection — from the
@@ -85,6 +114,9 @@ pub struct Caller {
     device_public_key: Option<[u8; 32]>,
     room: Option<String>,
     foreign: bool,
+    // Transport-issued execution scope, never accepted from request context.
+    // It narrows invocation ownership without changing the policy principal.
+    execution: Option<ExecutionLease>,
 }
 
 impl Caller {
@@ -98,6 +130,7 @@ impl Caller {
             device_public_key: Some(device_public_key),
             room: None,
             foreign: false,
+            execution: None,
         }
     }
 
@@ -111,6 +144,7 @@ impl Caller {
             device_public_key: None,
             room: None,
             foreign: false,
+            execution: None,
         }
     }
 
@@ -123,6 +157,7 @@ impl Caller {
             device_public_key: None,
             room: None,
             foreign: false,
+            execution: None,
         }
     }
 
@@ -137,6 +172,7 @@ impl Caller {
             device_public_key: None,
             room: None,
             foreign: false,
+            execution: None,
         }
     }
 
@@ -156,6 +192,42 @@ impl Caller {
             device_public_key: Some(device_public_key),
             room: None,
             foreign: false,
+            execution: None,
+        }
+    }
+
+    /// Give an already admitted connection its own execution scope. The host
+    /// mints the identifier; no payload, display name or history run selects it.
+    /// This changes invocation ownership, never the caller's permissions.
+    #[must_use]
+    pub fn in_new_execution(mut self) -> Self {
+        self.execution = Some(ExecutionLease {
+            id: uuid::Uuid::new_v4(),
+            live: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        });
+        self
+    }
+
+    /// Host-issued execution identity. An identifier alone conveys no authority.
+    #[must_use]
+    pub fn execution_id(&self) -> Option<uuid::Uuid> {
+        self.execution.as_ref().map(|lease| lease.id)
+    }
+
+    #[must_use]
+    pub fn execution_lease(&self) -> Option<ExecutionLease> {
+        self.execution.clone()
+    }
+
+    #[must_use]
+    pub fn execution_is_live(&self) -> bool {
+        self.execution.as_ref().is_some_and(ExecutionLease::is_live)
+    }
+
+    /// A transport ends its own run; retained caller clones cannot reopen it.
+    pub fn retire_execution(&self) {
+        if let Some(lease) = &self.execution {
+            lease.close();
         }
     }
 
@@ -272,6 +344,11 @@ pub struct InvokeRequest {
     /// refuses a target that no longer exists at it rather than guessing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
+    /// The live invocation this request continues: an edit an effect
+    /// submits while running for someone else. The host admits it as that
+    /// invocation's original caller, with their grants, never as the app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<InvocationId>,
 }
 
 /// Explicit confirmation carried with an invocation.
@@ -326,6 +403,163 @@ pub fn application_open_target(room: &str, app_id: &str) -> RemoteActionTarget {
             APPLICATION_OPEN_ACTION,
         ),
     }
+}
+
+/// Opening another installed app into the workspace, optionally with
+/// verified content it opens read-only: Photos with a captured picture, a
+/// player with a recorded clip. An app offers it as an action on its own
+/// resources ([`ApplicationLaunch::spec`]); the host routes the admitted
+/// invocation through the workspace broker, which stages the bytes and owns
+/// the launched process. The source app never hands over a local path.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ApplicationLaunch {
+    /// The installed app to open, by its id (`so.tilo.photos`).
+    pub app_id: String,
+    /// The content address hash of what it opens; the app opens empty
+    /// without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+}
+
+impl ApplicationLaunch {
+    /// The operation type the host routes to the broker.
+    pub const TYPE: &'static str = "tilo.application.launch";
+
+    /// Open `app_id` empty.
+    #[must_use]
+    pub fn app(app_id: impl Into<String>) -> Self {
+        Self {
+            app_id: app_id.into(),
+            content_hash: None,
+        }
+    }
+
+    /// Open `app_id` with the content whose hash is `content_hash`.
+    #[must_use]
+    pub fn with_content(app_id: impl Into<String>, content_hash: impl Into<String>) -> Self {
+        Self {
+            app_id: app_id.into(),
+            content_hash: Some(content_hash.into()),
+        }
+    }
+
+    /// An app id of letters, digits, dots and dashes, and a content hash
+    /// (when given) of 64 lowercase hex digits.
+    #[must_use]
+    pub fn valid(&self) -> bool {
+        !self.app_id.is_empty()
+            && self.app_id.len() <= 128
+            && self
+                .app_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+            && self.content_hash.as_ref().is_none_or(|hash| {
+                hash.len() == 64
+                    && hash
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+    }
+
+    /// The argument the broker's application `open` takes: the content
+    /// hash as its text, or nothing.
+    #[must_use]
+    pub fn argument(&self) -> InvokeArgument {
+        self.content_hash
+            .clone()
+            .map_or(InvokeArgument::None, InvokeArgument::Text)
+    }
+
+    /// Opening `app_id` with content the caller names as the action's
+    /// `content_hash` argument: a control that hands over whatever it
+    /// shows now.
+    #[must_use]
+    pub fn content_spec(
+        app_id: &str,
+        id: &str,
+        label: &str,
+        description: &str,
+    ) -> crate::ActionSpec {
+        let app_id = app_id.to_owned();
+        crate::ActionSpec::typed_operation(
+            id,
+            label,
+            description,
+            crate::OperationKind::Effect,
+            Self::TYPE,
+            vec![crate::ActionParam::required(
+                "content_hash",
+                crate::ParamType::Text,
+                "Content address hash of what the app opens",
+            )],
+            move |args| {
+                let launch = Self::with_content(
+                    app_id.clone(),
+                    args.text("content_hash").unwrap_or_default(),
+                );
+                crate::EncodedAction::encode_operation(Self::TYPE, &launch).unwrap_or_else(|_| {
+                    crate::EncodedAction {
+                        type_id: Self::TYPE.to_owned(),
+                        payload: Vec::new(),
+                    }
+                })
+            },
+        )
+    }
+
+    /// This launch as the action `id` an app offers on a resource of its
+    /// own, taking no arguments.
+    #[must_use]
+    pub fn spec(&self, id: &str, label: &str, description: &str) -> crate::ActionSpec {
+        let encoded =
+            crate::EncodedAction::encode_operation(Self::TYPE, self).unwrap_or_else(|_| {
+                crate::EncodedAction {
+                    type_id: Self::TYPE.to_owned(),
+                    payload: Vec::new(),
+                }
+            });
+        crate::ActionSpec::typed_operation(
+            id,
+            label,
+            description,
+            crate::OperationKind::Effect,
+            Self::TYPE,
+            Vec::new(),
+            move |_| encoded.clone(),
+        )
+    }
+}
+
+/// Prefix of the provider token naming an application in a workspace
+/// whether or not it is running; see [`application_action_target`].
+pub const APPLICATION_PROVIDER: &str = "application";
+
+/// The target of the action `app_id` offers on `resource` in workspace
+/// `room`. The host delivers it to the running app, or launches the app into
+/// the workspace first and delivers it once the app offers the action; the
+/// app's own published contract admits it either way.
+#[must_use]
+pub fn application_action_target(
+    room: &str,
+    app_id: &str,
+    resource: impl Into<String>,
+    action: impl Into<String>,
+) -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: format!("{APPLICATION_PROVIDER}:{room}:{app_id}"),
+        address: ActionAddress::new(resource, action),
+    }
+}
+
+/// The room and application an [`application_action_target`] provider
+/// token names, or `None` for any other provider.
+#[must_use]
+pub fn application_provider(provider: &str) -> Option<(&str, &str)> {
+    let (room, app_id) = provider
+        .strip_prefix(APPLICATION_PROVIDER)?
+        .strip_prefix(':')?
+        .split_once(':')?;
+    (!room.is_empty() && !app_id.is_empty() && !app_id.contains(':')).then_some((room, app_id))
 }
 
 /// Where an invocation stands, as reported to its caller.
@@ -468,6 +702,11 @@ impl ActionHostError {
 /// with [`ActionHostError::InvocationConflict`]. [`InvocationLedger`]
 /// implements that rule.
 pub trait ActionHost {
+    /// End this admitted transport run without cancelling its app jobs.
+    fn retire_execution(&self, caller: &Caller) {
+        caller.retire_execution();
+    }
+
     /// One page of what `caller` is offered. An action the caller may not
     /// invoke is absent, not flagged.
     fn query(
@@ -988,12 +1227,53 @@ mod tests {
     use super::*;
     use crate::{ActionContract, ActionDescriptor, ExecutionLocus, InputSpec, OperationKind};
 
+    #[test]
+    fn execution_lifetime_is_shared_without_changing_caller_identity() {
+        let first = Caller::local_person("person:owner").in_new_execution();
+        let retained = first.clone();
+        let second = first.clone().in_new_execution();
+        let hash = |caller: &Caller| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(caller, &mut hasher);
+            std::hash::Hasher::finish(&hasher)
+        };
+        let before = hash(&first);
+        first.retire_execution();
+        assert!(!retained.execution_is_live());
+        assert!(second.execution_is_live());
+        assert_eq!(first, retained);
+        assert_eq!(hash(&first), before);
+        let reconnected = retained.in_new_execution();
+        assert!(reconnected.execution_is_live());
+        assert_ne!(reconnected.execution_id(), first.execution_id());
+    }
+
     fn alice() -> Caller {
         Caller::authenticated([1; 32], [2; 32])
     }
 
     fn mallory() -> Caller {
         Caller::authenticated([9; 32], [8; 32])
+    }
+
+    #[test]
+    fn an_application_action_target_names_its_room_and_app() {
+        let target = application_action_target("room-1", "so.tilo.chat", "chat.workspace", "call");
+        assert_eq!(
+            application_provider(&target.provider),
+            Some(("room-1", "so.tilo.chat"))
+        );
+        assert_eq!(target.address, ActionAddress::new("chat.workspace", "call"));
+        for other in [
+            "7",
+            "workspace:room-1",
+            "application:room-1",
+            "application::so.tilo.chat",
+            "application:room-1:",
+            "application:room-1:a:b",
+        ] {
+            assert_eq!(application_provider(other), None, "{other}");
+        }
     }
 
     fn descriptor(resource: &str, action: &str) -> ActionDescriptor {
@@ -1122,6 +1402,7 @@ mod tests {
 
     fn archive(invocation: InvocationId) -> InvokeRequest {
         InvokeRequest {
+            on_behalf_of: None,
             invocation,
             target: RemoteActionTarget {
                 provider: "7".into(),
@@ -1176,6 +1457,7 @@ mod tests {
                 }),
             },
             RemoteActionMessage::Invoke(InvokeRequest {
+                on_behalf_of: None,
                 argument: InvokeArgument::Json(arguments),
                 context: Some(ActionContext::for_resource(
                     "Archive",
@@ -1186,10 +1468,12 @@ mod tests {
                 ..archive(invocation)
             }),
             RemoteActionMessage::Invoke(InvokeRequest {
+                on_behalf_of: None,
                 argument: InvokeArgument::Text("hello".into()),
                 ..archive(invocation)
             }),
             RemoteActionMessage::Invoke(InvokeRequest {
+                on_behalf_of: None,
                 confirmation: Some(Confirmation::Phrase("delete it".into())),
                 ..archive(invocation)
             }),
@@ -1367,6 +1651,36 @@ mod tests {
         a_refused_invocation_is_not_remembered();
         the_ledger_forgets_oldest_invocations_past_capacity();
         a_reservation_holds_the_id_until_the_start_completes();
+    }
+
+    #[test]
+    fn admitted_executions_share_authority_but_cannot_borrow_invocations() {
+        let first = alice().in_new_execution();
+        let second = alice().in_new_execution();
+        assert_eq!(first.principal(), second.principal());
+        assert_eq!(first.room(), second.room());
+        assert_ne!(first.execution_id(), second.execution_id());
+        let host = CountingHost::new();
+        let id = InvocationId::new();
+        let admitted = now(host.invoke(&first, archive(id))).unwrap();
+        assert_eq!(now(host.invoke(&first, archive(id))).unwrap(), admitted);
+        assert_eq!(
+            now(host.invoke(&second, archive(id))),
+            Err(ActionHostError::InvocationConflict)
+        );
+        assert_eq!(host.observe(&second, &id), None);
+        assert_eq!(
+            host.cancel(&second, &id),
+            Err(ActionHostError::UnknownInvocation)
+        );
+        host.finish(&first, &id);
+        assert!(matches!(
+            now(host.invoke(&first, archive(id))).unwrap().status,
+            ReceiptStatus::Completed { .. }
+        ));
+        assert!(host.observe(&first, &id).is_some());
+        assert!(host.observe(&second, &id).is_none());
+        assert_eq!(host.runs.get(), 1);
     }
 
     fn a_retried_invocation_reports_the_original_and_runs_once() {

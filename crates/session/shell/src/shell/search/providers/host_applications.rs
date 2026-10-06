@@ -206,6 +206,29 @@ impl HostApplicationsProvider {
         }
     }
 
+    /// Wait, at most `bound`, for the index build [`Self::refresh_snapshot`]
+    /// starts, so an address resolves on a session's first request too.
+    fn settle_snapshot(&self, bound: std::time::Duration) {
+        let started = std::time::Instant::now();
+        loop {
+            self.refresh_snapshot();
+            if self.snapshot().is_some() {
+                return;
+            }
+            let Some(receiver) = self.build.borrow_mut().take() else {
+                return;
+            };
+            match receiver.recv_timeout(bound.saturating_sub(started.elapsed())) {
+                Ok(snapshot) => *self.snapshot.borrow_mut() = Some(snapshot),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    *self.build.borrow_mut() = Some(receiver);
+                    return;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+        }
+    }
+
     fn snapshot(&self) -> Option<std::cell::Ref<'_, HostAppsSnapshot>> {
         let generation = self.source_generation();
         let snapshot = self.snapshot.borrow();
@@ -410,6 +433,9 @@ impl SearchProvider for HostApplicationsProvider {
     fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
         if !ctx.wanted.contains(&ResourceKind::HostApplication) {
             return None;
+        }
+        if self.snapshot().is_none() {
+            self.settle_snapshot(crate::shell::search::RESOLVE_INDEX_WAIT);
         }
         let snapshot = self.snapshot()?;
         snapshot
@@ -962,7 +988,7 @@ mod tests {
         let row = out.first().expect("a row for the ghost app");
         assert!(c.borrow().notifications().is_empty());
         (row.on_open)(
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
             &c,
             &crate::shell::search::action_api::ActionArgs::none(),

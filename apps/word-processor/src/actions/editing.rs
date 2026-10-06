@@ -33,8 +33,10 @@ use tilo_actions::{
     Action, ActionArgs, ActionParam, ActionSpec, ContextRequirement, DoorError, EncodedAction,
     ExecutionLocus, ParamType, Resource,
 };
+#[cfg(test)]
+use ui::widget::Edits;
 
-use qdoc_rich_text::{BodyOrder, ClipAttr};
+use tilo_document::{BodyOrder, ClipAttr};
 
 use super::participant::{FindState, ParticipantView, PendingCaret, ViewPoint};
 use super::{
@@ -55,7 +57,7 @@ pub mod op {
     /// destructive, and Backspace is not a confirmed operation.
     pub const DELETE: &str = "erase-text";
     pub const TOGGLE_MARK: &str = "toggle-mark";
-    pub const SET_MARK: &str = "set-mark";
+    pub const SET_MARK: &str = "set-format";
     pub const CLEAR_MARK: &str = "clear-mark";
     pub const SET_PARAGRAPH_STYLE: &str = "set-paragraph-style";
     pub const APPLY_NAMED_STYLE: &str = "apply-named-style";
@@ -226,7 +228,7 @@ type Range3 = (String, usize, usize);
 /// block touch only that block (keystroke latency).
 struct RegionDoc<'a> {
     doc: &'a AutoCommit,
-    containers: qdoc::Containers,
+    containers: tilo_doc::Containers,
     region: RegionKind,
     /// The kept body order, in step with `doc`; used only for the body.
     body: Option<&'a BodyOrder>,
@@ -244,7 +246,7 @@ impl<'a> RegionDoc<'a> {
         region: RegionKind,
     ) -> Result<Self, EditingError> {
         let containers =
-            qdoc::model::open(doc, &automerge::ROOT).map_err(|_| EditingError::NoCaret)?;
+            tilo_doc::model::open(doc, &automerge::ROOT).map_err(|_| EditingError::NoCaret)?;
         Ok(Self {
             doc,
             containers,
@@ -256,7 +258,11 @@ impl<'a> RegionDoc<'a> {
 
     fn listed(&self) -> &[String] {
         self.listed.get_or_init(|| {
-            qdoc::model::region_blocks_in_order(self.doc, &self.containers, self.region.to_region())
+            tilo_doc::model::region_blocks_in_order(
+                self.doc,
+                &self.containers,
+                self.region.to_region(),
+            )
         })
     }
 
@@ -303,14 +309,22 @@ impl<'a> RegionDoc<'a> {
         self.block_len(block).unwrap_or(0)
     }
 
-    fn block(&self, block: &str) -> Option<qdoc::snapshot::BlockView> {
+    /// Text of a region block, reading only that block in the body.
+    fn text(&self, block: &str) -> Option<String> {
+        match self.region {
+            RegionKind::Body => tilo_doc::model::block_text(self.doc, &self.containers, block),
+            _ => self.block(block).map(|view| view.text),
+        }
+    }
+
+    fn block(&self, block: &str) -> Option<tilo_doc::snapshot::BlockView> {
         match self.region {
             RegionKind::Body => {
-                qdoc::model::materialize_blocks(self.doc, &self.containers, &[block.to_owned()])
+                tilo_doc::model::materialize_blocks(self.doc, &self.containers, &[block.to_owned()])
                     .pop()
             }
             region => {
-                qdoc::model::materialize_region(self.doc, &self.containers, region.to_region())
+                tilo_doc::model::materialize_region(self.doc, &self.containers, region.to_region())
                     .into_iter()
                     .find(|view| view.id == block)
             }
@@ -461,7 +475,7 @@ impl Resolved<'_> {
 
     fn has_mark_over_region(&self, block: &str, start: usize, end: usize, name: &str) -> bool {
         match self.rd.region {
-            RegionKind::Body => qdoc::model::has_mark_over(
+            RegionKind::Body => tilo_doc::model::has_mark_over(
                 self.rd.doc,
                 &self.rd.containers,
                 block,
@@ -548,6 +562,9 @@ impl TypeTarget {
 #[derive(Debug, Clone)]
 pub(crate) struct EraseTarget {
     typing: TypeTarget,
+    /// The caret block's text, so one keystroke erases a whole grapheme
+    /// cluster.
+    caret_text: String,
     caret_kind: String,
     /// `(block, chars)` of the region's blocks around the caret.
     window: Vec<(String, usize)>,
@@ -575,6 +592,7 @@ impl EraseTarget {
         if local {
             return Self {
                 typing: TypeTarget::new(r),
+                caret_text: r.rd.text(&r.view.caret.block).unwrap_or_default(),
                 caret_kind: String::new(),
                 window: vec![(r.view.caret.block.clone(), r.caret_len)],
                 caret_at: 0,
@@ -593,6 +611,7 @@ impl EraseTarget {
             .collect();
         Self {
             typing: TypeTarget::new(r),
+            caret_text: r.rd.text(&r.view.caret.block).unwrap_or_default(),
             caret_kind: r
                 .rd
                 .block(&r.view.caret.block)
@@ -640,16 +659,11 @@ impl EraseTarget {
             );
             return (vec![action], view.clone());
         }
-        if backward && caret.offset > 0 {
-            let action =
-                splice_text_action(region, &caret.block, caret.offset - 1, caret.offset, "");
-            let next = ViewPoint::new(&caret.block, caret.offset - 1);
+        if (backward && caret.offset > 0) || (!backward && caret.offset < len) {
+            let (start, end) = self.grapheme_at_caret(backward);
+            let action = splice_text_action(region, &caret.block, start, end, "");
+            let next = ViewPoint::new(&caret.block, start);
             return (vec![action], collapsed(view, next));
-        }
-        if !backward && caret.offset < len {
-            let action =
-                splice_text_action(region, &caret.block, caret.offset, caret.offset + 1, "");
-            return (vec![action], collapsed(view, caret.clone()));
         }
         if backward && self.caret_at > 0 {
             let Some((previous, previous_len)) = self.window.get(self.caret_at - 1) else {
@@ -667,6 +681,31 @@ impl EraseTarget {
             return (vec![action], collapsed(view, caret.clone()));
         }
         (Vec::new(), collapsed(view, caret.clone()))
+    }
+
+    /// The char range one Backspace (`backward`) or Delete removes inside the
+    /// caret block: the whole grapheme cluster, through the shared core.
+    fn grapheme_at_caret(&self, backward: bool) -> (usize, usize) {
+        let offset = self.typing.view.caret.offset;
+        let text = &self.caret_text;
+        let byte = text
+            .char_indices()
+            .nth(offset)
+            .map_or(text.len(), |(byte, _)| byte);
+        let mut core = ui::text_edit::EditCore::at(byte);
+        let edit = if backward {
+            core.delete_backward(text, false)
+        } else {
+            core.delete_forward(text, false)
+        };
+        match edit.char_splice(text) {
+            Some(splice) if splice.removed > 0 => {
+                (splice.at, splice.at.saturating_add(splice.removed))
+            }
+            // The block's text could not be read: one character, as before.
+            _ if backward => (offset.saturating_sub(1), offset),
+            _ => (offset, offset.saturating_add(1)),
+        }
     }
 
     /// Shift+Arrow `count` times, then Backspace: a paragraph boundary is one
@@ -761,7 +800,7 @@ impl MarkTarget {
                 let spans: Vec<_> = font_ranges.iter().filter(|(_, s, e)| s < e).collect();
                 !spans.is_empty()
                     && spans.iter().all(|(b, s, e)| {
-                        qdoc::model::has_mark_over(
+                        tilo_doc::model::has_mark_over(
                             r.rd.doc,
                             &r.rd.containers,
                             b,
@@ -834,7 +873,8 @@ impl StyleTarget {
             .selected_block_ids()
             .into_iter()
             .filter(|id| {
-                qdoc::model::block_kind(r.rd.doc, &r.rd.containers, id).as_deref() != Some("cell")
+                tilo_doc::model::block_kind(r.rd.doc, &r.rd.containers, id).as_deref()
+                    != Some("cell")
             })
             .collect();
         Self {
@@ -1019,7 +1059,7 @@ pub fn new_paragraph_in(
     let ordered = block
         .as_ref()
         .and_then(|entry| match entry.attrs.get("ordered") {
-            Some(qdoc::AttrVal::Bool(value)) if kind == "list_item" => Some(*value),
+            Some(tilo_doc::AttrVal::Bool(value)) if kind == "list_item" => Some(*value),
             _ => None,
         });
     let new_kind = if kind == "list_item" {
@@ -1164,7 +1204,7 @@ impl AppendTarget {
             pending: None,
             ..view.clone()
         };
-        let end = qdoc::model::open(doc, &automerge::ROOT)
+        let end = tilo_doc::model::open(doc, &automerge::ROOT)
             .ok()
             .and_then(|c| match body {
                 Some(body) => body
@@ -1402,8 +1442,9 @@ pub fn find(view: &ParticipantView, doc: &AutoCommit, query: &str) -> EditResult
         next.find = FindState::default();
         return Ok((Vec::new(), next));
     }
-    let containers = qdoc::model::open(doc, &automerge::ROOT).map_err(|_| EditingError::NoCaret)?;
-    let blocks = qdoc::model::materialize(doc, &containers).blocks;
+    let containers =
+        tilo_doc::model::open(doc, &automerge::ROOT).map_err(|_| EditingError::NoCaret)?;
+    let blocks = tilo_doc::model::materialize(doc, &containers).blocks;
     next.find = FindState::new(query, literal_matches(&blocks, query));
     if let Some(first) = next.find.hits.first().cloned() {
         next.region = RegionKind::Body;
@@ -1419,7 +1460,7 @@ pub fn find(view: &ParticipantView, doc: &AutoCommit, query: &str) -> EditResult
 
 /// The Find bar's default literal search (case-insensitive, not whole-word),
 /// stopping at the resource bound.
-fn literal_matches(blocks: &[qdoc::snapshot::BlockView], query: &str) -> Vec<SearchTarget> {
+fn literal_matches(blocks: &[tilo_doc::snapshot::BlockView], query: &str) -> Vec<SearchTarget> {
     let needle: Vec<char> = query.to_lowercase().chars().collect();
     let mut hits = Vec::new();
     if needle.is_empty() {
@@ -1476,46 +1517,31 @@ fn clip_blocks(content: &PasteContent) -> Result<Vec<ClipBlock>, EditingError> {
 }
 
 fn markdown_clip_blocks(markdown: &str) -> Result<Vec<ClipBlock>, EditingError> {
-    use qdoc_codecs::FormatProvider;
     if markdown.chars().count() > MAX_ACTION_TEXT_CHARS {
         return Err(EditingError::Invalid("pasted Markdown is too long".into()));
     }
-    let mut scratch = AutoCommit::new();
-    let containers = qdoc::model::init(&mut scratch, &automerge::ROOT);
-    let mut ids = qdoc::model::try_seeded_id_gen(&scratch, &containers)
-        .map_err(|error| EditingError::Invalid(error.to_string()))?;
-    {
-        let mut dm = qdoc::DocMut {
-            doc: &mut scratch,
-            c: &containers,
-            ids: &mut ids,
-        };
-        // Pasted Markdown references no content this document keeps.
-        qdoc_codecs::MarkdownCodec
-            .import(
-                markdown.as_bytes(),
-                &mut dm,
-                &mut tilo_content::ContentInputs::new(),
-            )
-            .map_err(|error| EditingError::Invalid(format!("Markdown: {error}")))?;
-    }
-    let snapshot = qdoc::model::materialize(&scratch, &containers);
+    // Pasted Markdown references no content this document keeps.
+    let snapshot = tilo_document::action::imported_snapshot(
+        tilo_document::action::ImportFormat::Markdown,
+        markdown.as_bytes(),
+    )
+    .map_err(|error| EditingError::Invalid(format!("Markdown: {error}")))?;
     let mut blocks: Vec<ClipBlock> = snapshot
         .blocks
         .into_iter()
         .map(|block| {
             let int = |key: &str| match block.attrs.get(key) {
-                Some(qdoc::AttrVal::Int(value)) => Some(*value),
+                Some(tilo_doc::AttrVal::Int(value)) => Some(*value),
                 _ => None,
             };
             let flag = |key: &str| match block.attrs.get(key) {
-                Some(qdoc::AttrVal::Bool(value)) => Some(*value),
+                Some(tilo_doc::AttrVal::Bool(value)) => Some(*value),
                 _ => None,
             };
             let cell = block.kind == "cell";
             let mut attrs = std::collections::BTreeMap::default();
             if cell {
-                if let Some(qdoc::AttrVal::Str(table)) = block.attrs.get("table") {
+                if let Some(tilo_doc::AttrVal::Str(table)) = block.attrs.get("table") {
                     attrs.insert("table".to_owned(), ClipAttr::Str(table.clone()));
                 }
                 for key in ["row", "col"] {
@@ -1537,7 +1563,7 @@ fn markdown_clip_blocks(markdown: &str) -> Result<Vec<ClipBlock>, EditingError> 
                     .iter()
                     .filter(|mark| {
                         mark.name != "link"
-                            || matches!(&mark.value, qdoc::document::MarkValue::Str(target) if valid_hyperlink_target(target))
+                            || matches!(&mark.value, tilo_doc::document::MarkValue::Str(target) if valid_hyperlink_target(target))
                     })
                     .cloned()
                     .collect(),
@@ -1666,8 +1692,12 @@ pub(super) fn add_operations(
         .is_some_and(|r| r.selection.is_some() && r.removed_chars() > LARGE_REMOVAL_CHARS);
     let guard = |spec: ActionSpec| spec.reversible().requires(ContextRequirement::Caret);
     let publish = |root: &mut Resource, spec: ActionSpec, handler: &'static str| {
-        root.actions
-            .push(continuation::pure(spec, handler, domain.clone()));
+        let spec = continuation::pure(spec, handler, domain.clone());
+        if let Some(existing) = root.actions.iter_mut().find(|action| action.id == spec.id) {
+            *existing = spec;
+        } else {
+            root.actions.push(spec);
+        }
     };
 
     let typing = r.as_ref().map(TypeTarget::new);
@@ -1893,7 +1923,7 @@ pub(super) fn add_operations(
                 "Set formatting on your selection whatever it has now: bold/italic/underline/strike on or off, or font, size, colour or highlight (super/sub and valued marks also the caret paragraph)",
             ),
         ),
-        "set-mark.v1",
+        "set-format.v1",
     );
 
     publish(
@@ -2148,7 +2178,7 @@ fn mark_value(name: &str, value: &str) -> Result<MarkVal, &'static str> {
 mod tests {
     use super::*;
     use crate::actions::{
-        ActionSpec, WORD_PROCESSOR_ACTION_TYPE, provide_resources, view_ops::ViewOperation,
+        ActionSpec, WORD_PROCESSOR_ACTION_TYPE, published_for, view_ops::ViewOperation,
     };
     use crate::word_processor::{Caret, WordProcessor};
     use tilo_actions::{ConfirmationPolicy, LocalTransport, OperationKind};
@@ -2158,27 +2188,28 @@ mod tests {
 
     /// A bound widget whose body holds `paragraphs`; returns the body ids.
     fn writer(paragraphs: &[&str]) -> (ui::State, crate::WordProcessorWidget, Vec<String>) {
-        let mut state = ui::State::new();
-        let mut wp = crate::WordProcessorWidget::new();
-        wp.sync(&mut state.doc, &state.root);
+        let mut state = crate::initialized_state();
+        let mut wp = crate::WordProcessorWidget::detached();
+        wp.sync(&state.doc, &state.root);
         for (index, text) in paragraphs.iter().enumerate() {
             if index > 0 {
-                wp.model_mut().enter(&mut state.doc);
+                wp.model_mut().enter(&mut Edits::lend(&mut state.doc));
             }
-            wp.model_mut().insert_str(&mut state.doc, text);
+            wp.model_mut()
+                .insert_str(&mut Edits::lend(&mut state.doc), text);
         }
         let ids = order(&state.doc);
         (state, wp, ids)
     }
 
     fn order(doc: &AutoCommit) -> Vec<String> {
-        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-        qdoc::model::blocks_in_order(doc, &c)
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::blocks_in_order(doc, &c)
     }
 
     fn texts(doc: &AutoCommit) -> Vec<String> {
-        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-        qdoc::model::materialize(doc, &c)
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::materialize(doc, &c)
             .blocks
             .into_iter()
             .map(|block| block.text)
@@ -2231,10 +2262,22 @@ mod tests {
             .collect()
     }
 
+    /// Everything published for `view`, folded into one resource for
+    /// lookup: the document's actions with the view's own operations and
+    /// rows beside them.
     fn root(view: &ParticipantView, doc: &AutoCommit) -> Resource {
-        provide_resources(&view.ctx(doc).expect("view has a caret"), doc)
-            .pop()
-            .unwrap()
+        let mut published =
+            published_for(&view.ctx(doc).expect("view has a caret"), doc).into_iter();
+        let mut root = published.next().expect("the document is published");
+        for resource in published {
+            for action in resource.actions {
+                if !root.actions.iter().any(|existing| existing.id == action.id) {
+                    root.actions.push(action);
+                }
+            }
+            root.children.extend(resource.children);
+        }
+        root
     }
 
     fn spec(root: &Resource, id: &str) -> ActionSpec {
@@ -2264,9 +2307,9 @@ mod tests {
     // pinned to what the keyboard dispatches today even while the widget is
     // being switched over to call them.
 
-    fn body_block(doc: &AutoCommit, id: &str) -> Option<qdoc::snapshot::BlockView> {
-        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-        qdoc::model::materialize(doc, &c)
+    fn body_block(doc: &AutoCommit, id: &str) -> Option<tilo_doc::snapshot::BlockView> {
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::materialize(doc, &c)
             .blocks
             .into_iter()
             .find(|block| block.id == id)
@@ -2318,7 +2361,7 @@ mod tests {
         let ordered = block
             .as_ref()
             .and_then(|entry| match entry.attrs.get("ordered") {
-                Some(qdoc::AttrVal::Bool(value)) if kind == "list_item" => Some(*value),
+                Some(tilo_doc::AttrVal::Bool(value)) if kind == "list_item" => Some(*value),
                 _ => None,
             });
         let new_kind = if kind == "list_item" {
@@ -2867,7 +2910,6 @@ mod tests {
                 "{id}"
             );
             assert!(spec.contract.validate_declaration().is_empty(), "{id}");
-            assert!(spec.has_continuation_identity(), "{id}");
             assert!(
                 spec.params()
                     .iter()
@@ -2887,7 +2929,6 @@ mod tests {
             assert!(spec.contract.is_participant_view(), "{id}");
             assert!(spec.contract.requirements().is_empty(), "{id}");
             assert!(spec.contract.validate_declaration().is_empty(), "{id}");
-            assert!(spec.has_continuation_identity(), "{id}");
             assert!(
                 spec.params()
                     .iter()
@@ -2898,135 +2939,6 @@ mod tests {
         // The old ids keep their meaning: `find` still just opens the bar.
         assert_eq!(spec(&root, "find").kind, OperationKind::View);
         assert!(spec(&root, "find").params().is_empty());
-    }
-
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one table-driven parity proof over every published editing operation"
-    )]
-    fn catalogue_schema_is_view_independent_and_covers_every_participant_tree() {
-        use tilo_actions::{ResourceProvider as _, catalogue_schema, catalogue_schema_bytes, door};
-        // Nothing published fires an unregistered envelope: a fixed encoding
-        // must be a real Writer action or operation (a sentinel would make
-        // the host drop the whole surface).
-        fn fixed_encodings_are_registered(resource: &Resource) {
-            for spec in &resource.actions {
-                if let Some(encoded) = spec.fixed_invocation_encoding() {
-                    assert_ne!(
-                        encoded.type_id,
-                        tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
-                        "{} {}",
-                        resource.id.0,
-                        spec.id
-                    );
-                }
-            }
-            for child in &resource.children {
-                fixed_encodings_are_registered(child);
-            }
-        }
-        let (mut state, mut wp, ids) = writer(&["Hello world", "hello again", "tail"]);
-        apply(
-            &mut state.doc,
-            &set_paragraph_style_action(
-                RegionKind::Body,
-                vec![ids[2].clone()],
-                "heading",
-                Some(1),
-                None,
-            ),
-        );
-        let doc = &state.doc;
-        // The published schema does not move with any caret, selection or Find.
-        let mut published = Vec::new();
-        for view in [
-            at(&ids[0], 0),
-            sel((&ids[0], 1), (&ids[1], 3)),
-            at(&ids[2], 2),
-        ] {
-            place(&mut wp, &view);
-            let schema = wp.catalogue_schema(doc);
-            published.push(catalogue_schema_bytes(&catalogue_schema(&door::survey(
-                &schema,
-            ))));
-            // No view-derived resource id is published.
-            for descriptor in door::survey(&schema) {
-                let id = descriptor.address.resource.as_str();
-                assert!(!id.starts_with("word-processor.selection:"), "{id}");
-                assert!(!id.starts_with("word-processor.search-hit:"), "{id}");
-            }
-        }
-        assert!(published.windows(2).all(|pair| pair[0] == pair[1]));
-        // Nothing published fires an unregistered envelope (see
-        // `fixed_encodings_are_registered`).
-        for resource in &crate::actions::catalogue_schema(doc) {
-            fixed_encodings_are_registered(resource);
-        }
-        let schema = door::survey(&crate::actions::catalogue_schema(doc));
-        // Every operation any participant can reach is declared identically.
-        let (_, found) = find(&at(&ids[0], 0), doc, "hello").unwrap();
-        let views = [
-            at(&ids[0], 0),
-            at(&ids[1], 5),
-            sel((&ids[0], 1), (&ids[0], 4)),
-            sel((&ids[1], 3), (&ids[0], 1)),
-            found,
-        ];
-        for view in &views {
-            for descriptor in door::survey(&[root(view, doc)]) {
-                let declared = schema
-                    .iter()
-                    .find(|entry| {
-                        entry.resource_kind == descriptor.resource_kind
-                            && entry.address.action == descriptor.address.action
-                    })
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "{} {} is missing from the schema",
-                            descriptor.resource_kind, descriptor.address.action
-                        )
-                    });
-                let what = format!("{} {}", descriptor.resource_kind, descriptor.address.action);
-                assert_eq!(declared.kind, descriptor.kind, "{what}");
-                assert_eq!(declared.contract, descriptor.contract, "{what}");
-                assert_eq!(declared.params, descriptor.params, "{what}");
-                assert_eq!(declared.input, descriptor.input, "{what}");
-                assert_eq!(declared.locus, descriptor.locus, "{what}");
-            }
-        }
-        // Context-dependent operations carry their precondition flags.
-        let requirement = |kind: &str, action: &str| {
-            schema
-                .iter()
-                .find(|entry| entry.resource_kind == kind && entry.address.action == action)
-                .map(|entry| entry.contract.requirements())
-                .unwrap()
-        };
-        assert_eq!(
-            requirement("word_processor.document", "replace-selection"),
-            [ContextRequirement::Selection]
-        );
-        assert_eq!(
-            requirement("word_processor.selection", "replace"),
-            [ContextRequirement::Selection]
-        );
-        assert_eq!(
-            requirement("word_processor.document", "set-hyperlink"),
-            [ContextRequirement::Selection]
-        );
-        assert_eq!(
-            requirement("word_processor.document", "add-comment"),
-            [ContextRequirement::Selection]
-        );
-        assert_eq!(
-            requirement("word_processor.search-hit", "go-to"),
-            [ContextRequirement::FindHits]
-        );
-        assert_eq!(
-            requirement("word_processor.document", "type-text"),
-            [ContextRequirement::Caret]
-        );
     }
 
     // ---- views, settling and streaming -------------------------------------
@@ -3072,12 +2984,14 @@ mod tests {
                 apply(doc, &action);
                 *agent = next.settle(doc);
             } else {
-                let operation = crate::actions::view_ops::decode_view_operation(
-                    &encoded.type_id,
-                    &encoded.payload,
-                )
-                .unwrap()
-                .unwrap();
+                let Some(crate::effects::ViewMove::Operation(operation)) =
+                    crate::effects::decode(&encoded)
+                        .expect("a published effect")
+                        .view_operation()
+                        .unwrap()
+                else {
+                    panic!("{id} moves the caret");
+                };
                 *agent = crate::actions::view_ops::apply(agent, doc, &operation)
                     .unwrap()
                     .1;
@@ -3219,15 +3133,6 @@ mod tests {
             );
             assert!(refused(invoke(&large, &state.doc, id, args)), "{id}");
         }
-        let child = root(&large, &state.doc)
-            .children
-            .into_iter()
-            .find(|child| child.id.0.starts_with("word-processor.selection:"))
-            .unwrap();
-        let replace = child.actions[0]
-            .build_json(serde_json::json!({"text": ""}).as_object().unwrap())
-            .unwrap();
-        assert!(refused(replace));
         // select-all + type-text "" on a large document is refused; the
         // keyboard primitive itself still erases.
         let (_, all) = select_all(&at(&ids[0], 0), &state.doc).unwrap();
@@ -3297,7 +3202,7 @@ mod tests {
         // The found view's tree offers the hits and a selection edit.
         let tree = root(&found, doc);
         assert!(
-            tree.children
+            published_for(&found.ctx(doc).unwrap(), doc)
                 .iter()
                 .any(|c| c.id.0 == "word-processor.search-results")
         );
@@ -3346,14 +3251,14 @@ mod tests {
             ),
         ] {
             let encoded = invoke(&base, doc, id, args);
-            assert_eq!(
-                encoded.type_id,
-                crate::actions::view_ops::WORD_PROCESSOR_VIEW_OPERATION_TYPE
-            );
-            let decoded =
-                crate::actions::view_ops::decode_view_operation(&encoded.type_id, &encoded.payload)
+            let Some(crate::effects::ViewMove::Operation(decoded)) =
+                crate::effects::decode(&encoded)
+                    .expect("a published effect")
+                    .view_operation()
                     .unwrap()
-                    .unwrap();
+            else {
+                panic!("{id} moves the view");
+            };
             assert_eq!(decoded, expected);
             assert!(
                 crate::actions::view_ops::apply(&base, doc, &decoded)
@@ -3365,9 +3270,12 @@ mod tests {
         let bad_point = spec(&root(&base, doc), op::MOVE_CARET)
             .build_json(serde_json::json!({"to": "point"}).as_object().unwrap())
             .unwrap();
-        assert_eq!(
-            bad_point.type_id,
-            tilo_actions::resource::INVALID_ARGUMENTS_TYPE
+        assert!(
+            crate::effects::decode(&bad_point)
+                .expect("a published effect")
+                .view_operation()
+                .is_err(),
+            "a point without a block is refused"
         );
         assert_eq!(state.doc.clone().get_heads(), heads);
     }
@@ -3426,14 +3334,14 @@ mod tests {
             .unwrap();
             apply_all(&mut state.doc, &actions);
         }
-        let c = qdoc::model::open(&state.doc, &automerge::ROOT).unwrap();
-        let blocks = qdoc::model::materialize(&state.doc, &c).blocks;
+        let c = tilo_doc::model::open(&state.doc, &automerge::ROOT).unwrap();
+        let blocks = tilo_doc::model::materialize(&state.doc, &c).blocks;
         let rows: Vec<_> = blocks
             .iter()
             .map(|block| {
                 let attr = |key: &str| match block.attrs.get(key) {
-                    Some(qdoc::AttrVal::Int(value)) => value.to_string(),
-                    Some(qdoc::AttrVal::Str(value)) => value.clone(),
+                    Some(tilo_doc::AttrVal::Int(value)) => value.to_string(),
+                    Some(tilo_doc::AttrVal::Str(value)) => value.clone(),
                     _ => String::new(),
                 };
                 (
@@ -3465,7 +3373,7 @@ mod tests {
         let tables: std::collections::BTreeSet<_> = blocks
             .iter()
             .filter_map(|block| match block.attrs.get("table") {
-                Some(qdoc::AttrVal::Str(table)) => Some(table.clone()),
+                Some(tilo_doc::AttrVal::Str(table)) => Some(table.clone()),
                 _ => None,
             })
             .collect();
@@ -3676,11 +3584,11 @@ mod tests {
     #[test]
     fn in_block_keystrokes_do_not_scan_the_whole_document() {
         let mut doc = AutoCommit::new();
-        let containers = qdoc::model::init(&mut doc, &automerge::ROOT);
-        let mut next_ids = qdoc::model::seeded_id_gen(&doc, &containers);
+        let containers = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+        let mut next_ids = tilo_doc::model::seeded_id_gen(&doc, &containers);
         let mut ids = Vec::new();
         {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut doc,
                 c: &containers,
                 ids: &mut next_ids,
@@ -3705,11 +3613,11 @@ mod tests {
         let local = started.elapsed();
         let started = ui::time::now();
         for _ in 0..20 {
-            let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-            std::hint::black_box(qdoc::model::region_blocks_in_order(
+            let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+            std::hint::black_box(tilo_doc::model::region_blocks_in_order(
                 doc,
                 &c,
-                qdoc::model::Region::Body,
+                tilo_doc::model::Region::Body,
             ));
         }
         let scans = started.elapsed();
@@ -3766,67 +3674,5 @@ mod tests {
                 .tags
                 .contains(&"tilo.incremental-text:text:type-text".to_owned())
         );
-    }
-
-    /// The catalogue schema is built on a synthetic view: resolving an
-    /// invocation against it must refuse, never encode a positional envelope.
-    #[test]
-    fn every_catalogue_schema_operation_refuses_when_invoked() {
-        fn walk(resource: &Resource, out: &mut Vec<(String, ActionSpec)>) {
-            for spec in &resource.actions {
-                out.push((resource.id.0.clone(), spec.clone()));
-            }
-            for child in &resource.children {
-                walk(child, out);
-            }
-        }
-        use tilo_actions::{ActionInput, ParamType};
-        let (mut state, _, ids) = writer(&["Hello world", "second"]);
-        apply(
-            &mut state.doc,
-            &set_paragraph_style_action(
-                RegionKind::Body,
-                vec![ids[1].clone()],
-                "heading",
-                Some(1),
-                None,
-            ),
-        );
-        let invalid = tilo_actions::resource::INVALID_ARGUMENTS_TYPE;
-        let mut specs = Vec::new();
-        for resource in &crate::actions::catalogue_schema(&state.doc) {
-            walk(resource, &mut specs);
-        }
-        assert!(specs.len() > 30);
-        for (resource, spec) in &specs {
-            let what = format!("{resource}#{}", spec.id);
-            match &spec.input {
-                ActionInput::Immediate(encoded) => panic!("{what} fires {encoded:?}"),
-                ActionInput::Deferred { build, .. } => {
-                    assert_eq!(build().type_id, invalid, "{what}");
-                }
-                ActionInput::Prompted { build, .. } => {
-                    assert_eq!(build("1").type_id, invalid, "{what}");
-                }
-            }
-            let args: serde_json::Map<String, serde_json::Value> = spec
-                .params()
-                .iter()
-                .map(|param| {
-                    let value = match param.ty {
-                        ParamType::Integer => serde_json::json!(1),
-                        ParamType::Number => serde_json::json!(1.0),
-                        ParamType::Boolean => serde_json::json!(true),
-                        _ => serde_json::json!(param.choices.first().map_or("x", |c| c.as_ref())),
-                    };
-                    (param.name.to_string(), value)
-                })
-                .collect();
-            let built = spec.build_json(&args);
-            assert!(
-                built.as_ref().is_err() || built.as_ref().is_ok_and(|e| e.type_id == invalid),
-                "{what}: {built:?}"
-            );
-        }
     }
 }

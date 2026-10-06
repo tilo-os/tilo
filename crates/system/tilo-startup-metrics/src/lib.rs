@@ -255,7 +255,7 @@ pub fn mark(name: &str) {
         "origin_epoch_ms": m.origin_epoch_ms,
         "events": *events,
     });
-    let _ = atomic_file::write_regenerable(
+    let _ = tilo_files::native::atomic::write_regenerable(
         &m.output_path,
         &serde_json::to_vec_pretty(&payload).unwrap_or_default(),
     );
@@ -279,6 +279,43 @@ pub fn dump() {
         &m.output_path,
         serde_json::to_vec_pretty(&payload).unwrap_or_default(),
     );
+}
+
+/// One line describing this process's startup so far, for a log reader:
+/// `APP-STARTUP app=<app> total_ms=<ms> phases=<mark>:<ms>,...`. `total_ms`
+/// is the time to the latest mark; each phase is the time from the previous
+/// mark to the one it names, and phases under a millisecond are left out.
+/// `None` while capture is disabled.
+pub fn summary_line(app: &str) -> Option<String> {
+    let Some(Some(m)) = METRICS.get() else {
+        return None;
+    };
+    let events = m
+        .events
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .map(|event| (event.name.clone(), event.ns))
+        .collect::<Vec<_>>();
+    Some(format_summary(app, &events))
+}
+
+fn format_summary(app: &str, events: &[(String, u128)]) -> String {
+    const MS: u128 = 1_000_000;
+    let mut previous = 0u128;
+    let mut phases = Vec::new();
+    for (name, ns) in events {
+        let elapsed = ns.saturating_sub(previous);
+        previous = previous.max(*ns);
+        if elapsed >= MS {
+            phases.push(format!("{name}:{}", elapsed / MS));
+        }
+    }
+    format!(
+        "APP-STARTUP app={app} total_ms={} phases={}",
+        previous / MS,
+        phases.join(",")
+    )
 }
 
 /// RAII guard: dumps recorded events when it goes out of scope. Instantiate at the top of
@@ -316,6 +353,21 @@ mod tests {
         // Phase `span_passes_through_return_value`.
         {
             assert_eq!(span("computation", || 40 + 2), 42);
+        }
+        // Phase `summary_names_the_slow_phases`.
+        {
+            let events = [
+                ("app-launch-start".to_owned(), 3_000),
+                ("app-construct".to_owned(), 7_500_000),
+                ("app-construct-end".to_owned(), 8_700_000_000),
+                ("primary-window-created".to_owned(), 8_700_400_000),
+                ("first-frame-presented".to_owned(), 8_842_000_000),
+            ];
+            assert_eq!(
+                format_summary("so.tilo.notes", &events),
+                "APP-STARTUP app=so.tilo.notes total_ms=8842 \
+                 phases=app-construct:7,app-construct-end:8692,first-frame-presented:141"
+            );
         }
         // Phase `same_app_launches_bind_fifo_and_present_once`.
         {

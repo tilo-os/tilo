@@ -6,7 +6,7 @@
 //! exposes its result via `pending_choice`.
 
 use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -410,29 +410,42 @@ impl<C: Widget> ModalDialog<C> {
     fn forward_to_content(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) -> bool {
         let (Some(taffy), Some(node)) = (self.content_taffy.as_ref(), self.content_node) else {
             return false;
         };
         let mut inner_handled = false;
+        let mut inner_focus = None;
         self.content.handle_event(
             event,
             &mut crate::widget::EventCtx {
-                scale_factor,
-                modifiers: &modifiers,
-                state,
-                path,
+                scale_factor: ctx.scale_factor,
+                modifiers: ctx.modifiers,
+                state: ctx.state.reborrow(),
+                path: ctx.path,
                 handled: &mut inner_handled,
-                focus_target,
+                focus_target: &mut inner_focus,
                 node_id: node,
                 taffy,
             },
         );
+        // The content is laid out for drawing in a tree of its own, so a
+        // widget in it asks for focus by that tree's node. The host knows
+        // the same widget by the node the body was registered under in its
+        // tree (`build_layout`): the same place in a tree of the same shape.
+        if let Some(inner) = inner_focus {
+            let (host_taffy, dialog) = (ctx.taffy, ctx.node_id);
+            let body = host_taffy
+                .children(dialog)
+                .ok()
+                .and_then(|children| children.first().copied());
+            if let Some(target) =
+                body.and_then(|body| same_place(taffy, node, inner, host_taffy, body))
+            {
+                *ctx.focus_target = Some(target);
+            }
+        }
         inner_handled
     }
 
@@ -448,6 +461,27 @@ impl<C: Widget> ModalDialog<C> {
     pub fn is_open(&self) -> bool {
         self.open
     }
+}
+
+/// The node of `to_tree` at the place `target` has in `from_tree` below
+/// `from`, walking down from `to`: the trees were built from the same
+/// widgets, so their shapes agree.
+fn same_place(
+    from_tree: &TaffyTree<()>,
+    from: NodeId,
+    target: NodeId,
+    to_tree: &TaffyTree<()>,
+    to: NodeId,
+) -> Option<NodeId> {
+    if from == target {
+        return Some(to);
+    }
+    let from_children = from_tree.children(from).ok()?;
+    let to_children = to_tree.children(to).ok()?;
+    from_children
+        .iter()
+        .zip(to_children.iter())
+        .find_map(|(&from, &to)| same_place(from_tree, from, target, to_tree, to))
 }
 
 /// Local to this module rather than reusing `permission_prompt::draw_button`,
@@ -469,7 +503,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
         if !self.open {
@@ -486,7 +520,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
             &mut crate::widget::EventCtx {
                 scale_factor,
                 modifiers: &modifiers,
-                state,
+                state: state.reborrow(),
                 path,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -505,7 +539,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         self.recompute_layout();
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         // The dialog holds no CRDT-backed state itself; forward so embedded
         // content widgets still get their sync pass.
         self.content.sync(state, path);
@@ -667,14 +701,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 self.pointer_inside = true;
                 // A TextInput only takes a click while hovered, and this
                 // CursorMoved is what arms it.
-                self.forward_to_content(
-                    event,
-                    ctx.scale_factor,
-                    *ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
-                    ctx.focus_target,
-                );
+                self.forward_to_content(event, ctx);
             }
             // No `CursorMoved` follows the pointer out of the window, so the
             // footer buttons' hover has to be dropped here.
@@ -704,14 +731,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                     },
                 ..
             } => {
-                let content_handled = self.forward_to_content(
-                    event,
-                    ctx.scale_factor,
-                    *ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
-                    ctx.focus_target,
-                );
+                let content_handled = self.forward_to_content(event, ctx);
                 if !content_handled && let Some(action) = self.primary_action.as_mut() {
                     (action.on_click)();
                 }
@@ -720,14 +740,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             // Text arrives from an input method (and in a browser page only
             // from one), not only as key presses.
             WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_) => {
-                self.forward_to_content(
-                    event,
-                    ctx.scale_factor,
-                    *ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
-                    ctx.focus_target,
-                );
+                self.forward_to_content(event, ctx);
                 *ctx.handled = true;
             }
             WindowEvent::MouseInput {
@@ -746,14 +759,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                         (action.on_click)();
                     }
                 } else if self.rect.contains(p) {
-                    self.forward_to_content(
-                        event,
-                        ctx.scale_factor,
-                        *ctx.modifiers,
-                        ctx.state,
-                        ctx.path,
-                        ctx.focus_target,
-                    );
+                    self.forward_to_content(event, ctx);
                 } else if let Some(cb) = self.on_dismiss.as_mut() {
                     cb();
                 }
@@ -763,14 +769,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 // Still forward in-box presses so e.g. a right-click context
                 // affordance in the content can react.
                 if self.rect.contains(self.last_cursor) {
-                    self.forward_to_content(
-                        event,
-                        ctx.scale_factor,
-                        *ctx.modifiers,
-                        ctx.state,
-                        ctx.path,
-                        ctx.focus_target,
-                    );
+                    self.forward_to_content(event, ctx);
                 }
                 *ctx.handled = true;
             }
@@ -857,7 +856,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _: &mut AppModel,
+        _: &mut crate::widget::Edits<'_>,
         _: &ModelPath,
     ) -> bool {
         if !self.open || !matches!(action, crate::a11y::Action::Activate) {
@@ -1051,14 +1050,14 @@ mod tests {
         let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
-        let mut doc = AutoCommit::new();
+        let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         d.handle_event(
             event,
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1130,11 +1129,11 @@ mod tests {
                 .action_target
                 .clone()
                 .unwrap();
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             assert!(dialog.perform_semantic_action(
                 &target,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert_eq!(fired.get(), 1);
@@ -1143,7 +1142,7 @@ mod tests {
             assert!(!dialog.perform_semantic_action(
                 &target,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             dialog.set_open(true);
@@ -1151,7 +1150,7 @@ mod tests {
             assert!(!dialog.perform_semantic_action(
                 &target,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             let callback = fired.clone();
@@ -1161,7 +1160,7 @@ mod tests {
             assert!(!replacement.perform_semantic_action(
                 &target,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             let fresh = replacement.accessibility().unwrap().children[0]
@@ -1171,7 +1170,7 @@ mod tests {
             assert!(replacement.perform_semantic_action(
                 &fresh,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert_eq!(fired.get(), 2);
@@ -1193,11 +1192,11 @@ mod tests {
                     .any(|child| child.name.as_deref() == Some("Apply")),
                 "the painted primary action must be accessible"
             );
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             assert!(dialog.perform_semantic_action(
                 "modal.primary",
                 &Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert_eq!(clicked.get(), 1);
@@ -1205,7 +1204,7 @@ mod tests {
             assert!(!dialog.perform_semantic_action(
                 "modal.primary",
                 &Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert_eq!(
@@ -1245,11 +1244,8 @@ mod tests {
             use crate::widget::Button;
             use accesskit::Role as AccessKitRole;
 
-            let mut d = ModalDialog::new(
-                "Confirm",
-                Button::new("modal-child", "Confirm action", None),
-            )
-            .open(true);
+            let mut d = ModalDialog::new("Confirm", Button::new("modal-child", "Confirm action"))
+                .open(true);
             let mut taffy = TaffyTree::<()>::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
             d.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
@@ -1347,7 +1343,7 @@ mod tests {
                 &key_press_event(NamedKey::Escape),
                 1.0,
                 Modifiers::default(),
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert!(dismissed.get());

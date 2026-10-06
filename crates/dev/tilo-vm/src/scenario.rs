@@ -226,6 +226,17 @@ pub const RECOVERY_KEY_MARKER: &str = "::tilo-recovery-key::";
 ///
 /// An I/O error walking or rewriting the directory.
 pub fn scrub(dir: &Path, secrets: &[&str]) -> std::io::Result<Vec<PathBuf>> {
+    scrub_with(dir, secrets, |_| true)
+}
+
+/// Keep large disk payloads outside the log walk. A log that exceeds the scan
+/// bound is withheld rather than loaded into memory or retained unchecked.
+pub(crate) fn scrub_with(
+    dir: &Path,
+    secrets: &[&str],
+    enter_directory: impl Fn(&Path) -> bool,
+) -> std::io::Result<Vec<PathBuf>> {
+    const MAX_LOG_BYTES: u64 = 64 * 1024 * 1024;
     let mut withheld = Vec::new();
     let mut pending = vec![dir.to_path_buf()];
     while let Some(path) = pending.pop() {
@@ -233,10 +244,17 @@ pub fn scrub(dir: &Path, secrets: &[&str]) -> std::io::Result<Vec<PathBuf>> {
             let entry = entry?;
             let kind = entry.file_type()?;
             if kind.is_dir() {
-                pending.push(entry.path());
+                if enter_directory(&entry.path()) {
+                    pending.push(entry.path());
+                }
                 continue;
             }
             if !kind.is_file() {
+                continue;
+            }
+            if entry.metadata()?.len() > MAX_LOG_BYTES {
+                std::fs::write(entry.path(), b"")?;
+                withheld.push(entry.path());
                 continue;
             }
             let mut bytes = Vec::new();
@@ -367,6 +385,18 @@ mod tests {
             let withheld = scrub(dir.path(), &["disksecret456"]).unwrap();
             assert_eq!(withheld, std::slice::from_ref(&path));
             assert!(std::fs::read(path).unwrap().is_empty());
+        }
+
+        // Phase: oversized_logs_are_withheld_without_loading_them_into_memory.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("serial.log");
+            std::fs::File::create(&path)
+                .unwrap()
+                .set_len(64 * 1024 * 1024 + 1)
+                .unwrap();
+            assert_eq!(scrub(dir.path(), &[]).unwrap(), std::slice::from_ref(&path));
+            assert_eq!(std::fs::metadata(path).unwrap().len(), 0);
         }
     }
 

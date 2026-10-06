@@ -51,7 +51,7 @@
 //! The runtime contract is consumed directly by `ui::Theme`, so Theme Studio,
 //! Settings, applications, and shell chrome cannot drift in reconstruction.
 
-use std::path::PathBuf;
+use ui::storage::SettingsDocument;
 
 use crate::model::ThemeSpec;
 
@@ -60,14 +60,8 @@ pub const SECTION: &str = "appearance";
 /// Theme Studio's private artifact below Settings' canonical appearance state.
 pub const STUDIO_KEY: &str = "studio";
 
-fn appearance() -> ui::storage::Settings {
-    ui::storage::Settings::section(SECTION)
-}
-
-/// Resolve the shared settings path. Delegating to [`ui::storage`] is what
-/// keeps this in step with the Settings app rather than by hand.
-pub fn store_path() -> Option<PathBuf> {
-    appearance().path()
+fn appearance(document: &SettingsDocument) -> ui::storage::SettingsSection {
+    ui::storage::SettingsSection::named(SECTION).in_document(document.clone())
 }
 
 /// Merge `spec` into `existing` (the current settings-document text, or
@@ -139,37 +133,48 @@ fn studio_id(appearance: &serde_json::Map<String, serde_json::Value>) -> Option<
         .map(std::string::ToString::to_string)
 }
 
-/// Merge `spec` into the settings document at `path`, preserving foreign
-/// sections and keys. The path-explicit form of [`save`], for tests that
-/// must not touch the configured settings.
+/// A custom theme that misses a contrast floor is not applied: the runtime
+/// would repair it anyway, but the person should see which pair failed and
+/// fix it here rather than get colours they did not pick. Presets are swept
+/// against the same floors in `ui`'s tests.
+fn ensure_legible(spec: &ThemeSpec) -> std::io::Result<()> {
+    if spec.builtin {
+        return Ok(());
+    }
+    let findings = spec.to_custom_spec().contrast_findings();
+    if findings.is_empty() {
+        return Ok(());
+    }
+    let pairs: Vec<String> = findings.iter().map(ToString::to_string).collect();
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("too little contrast: {}", pairs.join("; ")),
+    ))
+}
+
+/// Persist `spec` as the active OS theme in `document` (the settings
+/// document the host gave the app: the person's, or a test or capture
+/// profile's), preserving every other section and key.
 ///
 /// # Errors
 ///
-/// Returns an error if the document cannot be written.
-pub fn save_to(path: &std::path::Path, spec: &ThemeSpec) -> std::io::Result<()> {
-    appearance().in_file(path).update(appearance_values(spec))
+/// Returns an error if the theme is illegible, there is no settings document
+/// to write, or the write fails.
+pub fn save(document: &SettingsDocument, spec: &ThemeSpec) -> std::io::Result<()> {
+    ensure_legible(spec)?;
+    appearance(document).update(appearance_values(spec))
 }
 
-/// The active theme id in the settings document at `path`, if any.
-pub fn load_active_id_from(path: &std::path::Path) -> Option<String> {
-    studio_id(&appearance().in_file(path).load())
+/// The active theme's id in `document`, if any.
+pub fn load_active_id(document: &SettingsDocument) -> Option<String> {
+    studio_id(&appearance(document).load())
 }
 
-/// Persist `spec` as the active OS theme through the shared settings
-/// document (on the web, the page's profile), preserving every other
-/// section and key.
-///
-/// # Errors
-///
-/// Returns an error if there is no settings document to write, or the
-/// write fails.
-pub fn save(spec: &ThemeSpec) -> std::io::Result<()> {
-    appearance().update(appearance_values(spec))
-}
-
-/// Load the active theme's id from the shared settings document, if any.
-pub fn load_active_id() -> Option<String> {
-    studio_id(&appearance().load())
+/// The theme applied on this device, as `document` records it: the whole
+/// spec Theme Studio wrote when it was applied.
+pub fn applied(document: &SettingsDocument) -> Option<ThemeSpec> {
+    let theme = appearance(document).load().remove(STUDIO_KEY)?;
+    serde_json::from_value(theme.get("theme")?.clone()).ok()
 }
 
 #[cfg(test)]
@@ -177,6 +182,46 @@ pub fn load_active_id() -> Option<String> {
 mod tests {
     use super::*;
     use crate::model::{presets, seed_custom};
+
+    #[test]
+    fn an_illegible_custom_theme_is_refused_and_presets_and_their_copies_apply() {
+        let dir = std::env::temp_dir().join(format!("tilo-themes-contrast-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let document = SettingsDocument::File(path.clone());
+
+        // Case `a_custom_theme_under_a_contrast_floor_is_not_written`.
+        {
+            let mut murky = seed_custom();
+            murky.text_dim = murky.surface_raised;
+            let err = save(&document, &murky).expect_err("dim text on its own surface");
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+            assert!(
+                err.to_string().contains("text_dim on surface_base"),
+                "the failing pair is named: {err}"
+            );
+            assert!(!path.exists(), "nothing reached the settings file");
+        }
+
+        // Case `every_preset_and_an_editable_copy_of_it_apply`: duplicating a
+        // preset is how most custom themes start, and the copy is measured as
+        // a custom spec (derived popover and tertiary), not as the preset.
+        {
+            for (i, preset) in presets().into_iter().enumerate() {
+                save(&document, &preset).unwrap_or_else(|e| panic!("{}: {e}", preset.name));
+                let copy = crate::actions::duplicate_spec(&preset, &format!("copy-{i}"), 99);
+                assert_eq!(
+                    copy.to_custom_spec().contrast_findings(),
+                    Vec::new(),
+                    "a copy of {} must apply unchanged",
+                    preset.name
+                );
+                save(&document, &copy).unwrap_or_else(|e| panic!("{} copy: {e}", preset.name));
+            }
+            save(&document, &seed_custom()).expect("the demo custom theme is legible");
+        }
+    }
 
     /// The appearance store: merge preserving foreign keys, document and file round-trips, and garbage input.
     #[test]
@@ -260,8 +305,10 @@ mod tests {
             }
             std::fs::write(&path, r#"{"version":1,"locale":{"currency":"GBP"}}"#).unwrap();
             let spec = seed_custom();
-            save_to(&path, &spec).expect("save_to writes the settings file");
-            assert_eq!(load_active_id_from(&path).as_deref(), Some("sunset"));
+            let document = SettingsDocument::File(path.clone());
+            save(&document, &spec).expect("save writes the settings file");
+            assert_eq!(load_active_id(&document).as_deref(), Some("sunset"));
+            assert_eq!(applied(&document), Some(spec.clone()));
             let text = std::fs::read_to_string(&path).unwrap();
             assert_eq!(
                 active_spec(&text),

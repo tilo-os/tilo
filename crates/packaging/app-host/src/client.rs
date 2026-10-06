@@ -19,6 +19,14 @@ pub enum FlatpakAction {
     Remove,
 }
 
+/// Host Flatpak availability and machine-readable installation/remote rows.
+#[derive(Clone, Debug, Default)]
+pub struct FlatpakStatus {
+    pub available: bool,
+    pub installed: String,
+    pub remotes: String,
+}
+
 pub struct BlockingClient {
     runtime: tokio::runtime::Runtime,
     local: tokio::task::LocalSet,
@@ -87,6 +95,35 @@ impl BlockingClient {
         parse_id(bytes)
     }
 
+    /// Install the exact signed catalogue offer through the shared installer.
+    ///
+    /// # Errors
+    /// Returns why the selected offer, runtime or installation was refused.
+    pub fn install_offer(
+        &self,
+        registry: &str,
+        expected: &InstallExpectation,
+    ) -> Result<PackageId, String> {
+        let mut request = self.client.install_offer_request();
+        {
+            let mut params = request.get();
+            params.set_registry(registry);
+            params.set_app_id(&expected.app_id);
+            params.set_version(&expected.version);
+            params.set_expected_root(expected.package_root.as_bytes());
+            params.set_expected_publisher(&expected.publisher);
+            params.set_expected_size_bytes(expected.size_bytes);
+        }
+        let response = self.wait(request.send().promise)?;
+        parse_id(
+            response
+                .get()
+                .map_err(|error| error.to_string())?
+                .get_id()
+                .map_err(|error| error.to_string())?,
+        )
+    }
+
     /// List the packages the host service can launch: the user's, and the
     /// read-only system packages they do not shadow.
     ///
@@ -128,6 +165,7 @@ impl BlockingClient {
                 cli_commands: manifest.cli.map(|cli| cli.commands).unwrap_or_default(),
                 runtime: manifest.package.runtime.unwrap_or_default(),
                 source: String::new(),
+                held: false,
                 system: !entry.get_user_managed(),
             });
         }
@@ -224,6 +262,98 @@ impl BlockingClient {
                 .map_err(|e| e.to_string())?
                 .get_status(),
         )
+    }
+
+    /// The person's app repositories, as `app repo list --json` prints them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the host service cannot read them.
+    pub fn repositories(&self) -> Result<String, String> {
+        let request = self.client.repositories_request();
+        text_result(
+            self.wait(request.send().promise)?
+                .get()
+                .map_err(|e| e.to_string())?
+                .get_json(),
+        )
+    }
+
+    /// Read verified metadata from an enabled repository configured by this person.
+    /// The host retains the durable antirollback checkpoint outside the app sandbox.
+    ///
+    /// # Errors
+    /// Returns why the configured repository cannot be verified or read.
+    pub fn registry_catalogue(&self, registry: &str) -> Result<String, String> {
+        let mut request = self.client.registry_catalogue_request();
+        request.get().set_registry(registry);
+        let response = self.wait(request.send().promise)?;
+        let entries = text_result(
+            response
+                .get()
+                .map_err(|error| error.to_string())?
+                .get_entries(),
+        )?;
+        if entries.len() > 4 * 1024 * 1024 {
+            return Err("verified repository catalogue exceeds the response limit".into());
+        }
+        Ok(entries)
+    }
+
+    /// Read cached app metadata from one configured Flatpak repository.
+    ///
+    /// # Errors
+    /// Returns why the repository cannot be read on this device.
+    pub fn flatpak_catalogue(&self, remote: &str, user_managed: bool) -> Result<String, String> {
+        let mut request = self.client.flatpak_catalogue_request();
+        request.get().set_remote(remote);
+        request.get().set_user_managed(user_managed);
+        let response = self.wait(request.send().promise)?;
+        response
+            .get()
+            .map_err(|e| e.to_string())?
+            .get_rows()
+            .map_err(|e| e.to_string())?
+            .to_string()
+            .map_err(|e| e.to_string())
+    }
+
+    /// Install from a configured repository belonging to this account.
+    ///
+    /// # Errors
+    /// Returns why the repository or installation was refused.
+    pub fn flatpak_install_remote(
+        &self,
+        remote: &str,
+        app_id: &str,
+        branch: &str,
+    ) -> Result<String, String> {
+        let mut request = self.client.flatpak_install_remote_request();
+        request.get().set_remote(remote);
+        request.get().set_app_id(app_id);
+        request.get().set_branch(branch);
+        let response = self.wait(request.send().promise)?;
+        response
+            .get()
+            .map_err(|e| e.to_string())?
+            .get_status()
+            .map_err(|e| e.to_string())?
+            .to_string()
+            .map_err(|e| e.to_string())
+    }
+
+    /// Read host Flatpak state without executing tools in the app sandbox.
+    ///
+    /// # Errors
+    /// Returns why the host installation cannot be read.
+    pub fn flatpak_status(&self) -> Result<FlatpakStatus, String> {
+        let response = self.wait(self.client.flatpak_status_request().send().promise)?;
+        let result = response.get().map_err(|e| e.to_string())?;
+        Ok(FlatpakStatus {
+            available: result.get_available(),
+            installed: text_result(result.get_installed())?,
+            remotes: text_result(result.get_remotes())?,
+        })
     }
 
     /// Add or remove a user Flatpak remote through the host service.

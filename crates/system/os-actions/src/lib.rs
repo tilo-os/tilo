@@ -64,7 +64,6 @@ pub mod privacy;
 mod process;
 pub mod session;
 pub mod time;
-pub mod tool_intent;
 pub mod users;
 
 pub use audio::{
@@ -128,8 +127,8 @@ pub use peripheral_forwarding::{
 pub use power::{PowerProfile, available_power_profiles, get_power_profile, set_power_profile};
 pub use printing::{DiscoveredPrinter, PrintJob, PrinterQueue, QueueState, Scanner};
 pub use privacy::{
-    ActiveMediaUse, KillState, MediaKind, PrivacyStatus, active_media_uses, get_privacy_status,
-    monitor_media_usage, revoke_media_client,
+    ActiveMediaUse, DeviceGraphWatch, KillState, MediaKind, MonitorDisposition, PrivacyStatus,
+    active_media_uses, get_privacy_status, monitor_media_usage, revoke_media_client,
 };
 pub use session::{
     SessionAction, perform_session_action, request_logout, take_logout_request,
@@ -139,9 +138,12 @@ pub use time::{
     TimeSyncStatus, get_ntp, get_time_sync_status, list_timezones, now_clock, now_date, set_ntp,
     set_timezone, valid_timezone,
 };
-pub use tool_intent::{
-    BackupsRoute, DisksRoute, FirewallRoute, TOOL_CONTEXT_ENV, TOOL_PROTOCOL_VERSION, ToolIntent,
-    ToolReply, ToolRequest, VpnRoute, WorkspaceSettingsRoute, open_tool, tool_intent_from_env,
+// Typed tool requests are a sandbox service client, kept with the others in
+// runtime-portal; the shell and Settings name them through this crate.
+pub use runtime_portal::tools::{
+    BackupsRoute, ContainerEngine, DisksRoute, FirewallRoute, TOOL_CONTEXT_ENV,
+    TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest, VpnRoute, WorkspaceSettingsRoute,
+    open_tool, tool_intent_from_env,
 };
 pub use users::AccountRole;
 

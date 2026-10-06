@@ -531,6 +531,12 @@ enum PipelineState {
 struct WgpuShader {
     pipeline: PipelineState,
     bind_group_layout: BindGroupLayout,
+    /// The layout's entries, so [`WgpuEngine::dispatch_empty`] can bind stand-in resources.
+    #[cfg(not(target_arch = "wasm32"))]
+    entries: Vec<wgpu::BindGroupLayoutEntry>,
+    /// Length of the WGSL source, a proxy for how long a driver takes to compile it.
+    #[cfg(not(target_arch = "wasm32"))]
+    source_len: usize,
 }
 
 const BIND_GROUP_CACHE_LIMIT: usize = 128;
@@ -1601,9 +1607,13 @@ impl WgpuEngine {
         self.sparse_segment_row_mask_enabled = true;
     }
 
+    pub(crate) fn enable_canonical_segment_order(&mut self) {
+        self.canonical_segment_order_enabled = true;
+    }
+
     #[cfg(test)]
     pub(crate) fn enable_canonical_segment_order_fixture(&mut self) {
-        self.canonical_segment_order_enabled = true;
+        self.enable_canonical_segment_order();
     }
 
     pub fn set_sparse_fine_enabled(&mut self, enabled: bool) {
@@ -1885,6 +1895,10 @@ impl WgpuEngine {
             wgpu: Some(WgpuShader {
                 pipeline: PipelineState::Render(pipeline),
                 bind_group_layout,
+                #[cfg(not(target_arch = "wasm32"))]
+                entries,
+                #[cfg(not(target_arch = "wasm32"))]
+                source_len: 0,
             }),
             cpu: None,
             cpu_pathtag: None,
@@ -2386,14 +2400,28 @@ impl WgpuEngine {
                             },
                         );
                     } else {
-                        if image.data.is_empty() && image.width != 0 && image.height != 0 {
-                            panic!(
-                                "Tried to draw an invalid empty image (id: {}). \
-                                Maybe it was registered to a different renderer, or \
-                                unregistered before this render was submitted.",
-                                image.data.id()
-                            );
-                        }
+                        let expected = (image.width as usize)
+                            .saturating_mul(image.height as usize)
+                            .saturating_mul(block_size as usize);
+                        // An image whose pixels live in another renderer's
+                        // texture: ask the registered source for them, and
+                        // draw it transparent rather than abort when there
+                        // is none.
+                        let fetched;
+                        let data = if image.data.is_empty() && expected != 0 {
+                            fetched = crate::external_image_pixels(image.data.id())
+                                .filter(|pixels| pixels.len() >= expected)
+                                .unwrap_or_else(|| {
+                                    log::warn!(
+                                        "image {} has no pixels for this renderer; drawing it transparent",
+                                        image.data.id()
+                                    );
+                                    vec![0; expected]
+                                });
+                            fetched.as_slice()
+                        } else {
+                            image.data.data()
+                        };
                         queue.write_texture(
                             wgpu::TexelCopyTextureInfo {
                                 texture,
@@ -2401,7 +2429,7 @@ impl WgpuEngine {
                                 origin: wgpu::Origin3d { x: *x, y: *y, z: 0 },
                                 aspect: TextureAspect::All,
                             },
-                            image.data.data(),
+                            data,
                             wgpu::TexelCopyBufferLayout {
                                 offset: 0,
                                 bytes_per_row: Some(image.width * block_size),
@@ -2959,6 +2987,8 @@ impl WgpuEngine {
         entries: Vec<wgpu::BindGroupLayoutEntry>,
         cache: Option<&PipelineCache>,
     ) -> WgpuShader {
+        #[cfg(not(target_arch = "wasm32"))]
+        let source_len = wgsl.len();
         // SAFETY: We only call this with trusted shaders (written by Vello developers)
         let shader_module = unsafe {
             device.create_shader_module_trusted(
@@ -2993,6 +3023,130 @@ impl WgpuEngine {
         WgpuShader {
             pipeline: PipelineState::Compute(pipeline),
             bind_group_layout,
+            #[cfg(not(target_arch = "wasm32"))]
+            entries,
+            #[cfg(not(target_arch = "wasm32"))]
+            source_len,
+        }
+    }
+
+    /// The compute shaders [`Self::dispatch_empty`] can run, largest source first, so that
+    /// workers taking them in turn finish the longest compilations early.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn precompile_order(&self) -> Vec<usize> {
+        let mut order: Vec<(usize, usize)> = self
+            .shaders
+            .iter()
+            .enumerate()
+            .filter_map(|(index, shader)| match shader.wgpu.as_ref()? {
+                WgpuShader {
+                    pipeline: PipelineState::Compute(_),
+                    source_len,
+                    ..
+                } => Some((index, *source_len)),
+                #[cfg(feature = "debug_layers")]
+                _ => None,
+            })
+            .collect();
+        order.sort_by(|a, b| b.1.cmp(&a.1));
+        order.into_iter().map(|(index, _)| index).collect()
+    }
+
+    /// Dispatch shader `index`'s compute pipeline once over an empty grid, with stand-in
+    /// resources of its layout's types, and wait for the device to finish.
+    ///
+    /// No invocation runs. What it buys is the driver's own work for a first dispatch: Mesa's
+    /// CPU Vulkan driver compiles a pipeline's machine code then, not when the pipeline is
+    /// created, and keeps the result in its shader disk cache.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn dispatch_empty(&self, device: &Device, queue: &Queue, index: usize) {
+        let Some(WgpuShader {
+            pipeline: PipelineState::Compute(pipeline),
+            bind_group_layout,
+            entries,
+            ..
+        }) = self
+            .shaders
+            .get(index)
+            .and_then(|shader| shader.wgpu.as_ref())
+        else {
+            return;
+        };
+        let resources: Vec<BoundResource> = entries
+            .iter()
+            .map(|entry| Self::stand_in_resource(device, entry))
+            .collect();
+        let bindings: Vec<wgpu::BindGroupEntry<'_>> = resources
+            .iter()
+            .zip(entries)
+            .map(|(resource, entry)| wgpu::BindGroupEntry {
+                binding: entry.binding,
+                resource: match resource {
+                    BoundResource::Buffer(buffer, _, _) => buffer.as_entire_binding(),
+                    BoundResource::Image(view) => wgpu::BindingResource::TextureView(view),
+                },
+            })
+            .collect();
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: bind_group_layout,
+            entries: &bindings,
+        });
+        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor::default());
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(0, 0, 0);
+        }
+        queue.submit(Some(encoder.finish()));
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stand_in_resource(device: &Device, entry: &wgpu::BindGroupLayoutEntry) -> BoundResource {
+        // Large enough for any fixed-size part a Vello shader declares; never read.
+        const BUFFER_SIZE: u64 = 1 << 14;
+        let texture = |format, usage| {
+            device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: None,
+                    size: wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage,
+                    view_formats: &[],
+                })
+                .create_view(&wgpu::TextureViewDescriptor::default())
+        };
+        match entry.ty {
+            wgpu::BindingType::Buffer { ty, .. } => {
+                let usage = match ty {
+                    wgpu::BufferBindingType::Uniform => BufferUsages::UNIFORM,
+                    wgpu::BufferBindingType::Storage { .. } => BufferUsages::STORAGE,
+                };
+                let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: None,
+                    size: BUFFER_SIZE,
+                    usage,
+                    mapped_at_creation: false,
+                });
+                BoundResource::Buffer(buffer, 0, None)
+            }
+            wgpu::BindingType::StorageTexture { format, .. } => {
+                BoundResource::Image(texture(format, TextureUsages::STORAGE_BINDING))
+            }
+            // Every sampled image Vello binds is `ImageFormat::Rgba8`.
+            _ => BoundResource::Image(texture(
+                wgpu::TextureFormat::Rgba8Unorm,
+                TextureUsages::TEXTURE_BINDING,
+            )),
         }
     }
 }

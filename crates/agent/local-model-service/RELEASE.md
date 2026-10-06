@@ -35,6 +35,16 @@ after rejecting traversal, links, special files, excessive entry counts, and
 expansion beyond `installed_size_bytes`. `"vllm_gguf"` is the sole explicit
 single-file option; no model is treated as a single file by inference.
 
+`"onnx_file"` is a single ONNX graph that runs in-process in the service that
+uses it. Such a model names no `allowed_runtimes`, has `context_window` 0 (both
+may be omitted), declares an in-process capability such as
+`"segmentation": true`, and cannot claim `vision` or `face_recognition`. It is
+verified and installed like any other object, but never started, and it can
+never be the catalog's chat `recommendation`. A catalog containing only in-process
+models uses an empty `runtimes` array and `"recommendation": ""`; publishing an
+image model does not require publishing a chat runtime. Catalogs containing
+runtime-served models still require a runtime-served recommendation.
+
 The catalog signature covers:
 
 ```text
@@ -128,3 +138,52 @@ The desktop launcher, rather than this developer socket, supplies the normal
 gateway descriptor to Photos. A successful probe is evidence that the signed
 model service, vLLM runtime, provider profile, and bounded gateway all carried
 out real image inference.
+
+## U²-Net subject selection release
+
+`dist/local-models/u2net-subject/prepare-release.sh` stages the in-process
+salient-object model behind "Select subject": U²-Net's general model
+(Apache-2.0, https://github.com/xuebinqin/U-2-Net), as the ONNX conversion
+rembg publishes. `model-files.sha256` pins the 175997641-byte `u2net.onnx`
+(`8d10d2f3bb75ae3b6d527c77944fc5e7dcd94b29809d47a739a7a728a912b491`) and the
+upstream `LICENSE` at commit `ac7e1c817ecab7c7dff5ce6b1abba61cd213ff29`.
+
+The upstream asset sits under a release tag, which can move, so it is only a
+source for bytes checked against that digest. The model's revision is the
+digest itself, and both files are re-hosted unchanged at
+`<publish base>/u2net-subject/<revision>/`, so the artifact and licence URLs
+carry the immutable revision as the catalog rules require.
+
+```sh
+dist/local-models/u2net-subject/prepare-release.sh \
+  --output /secure/build/local-models/u2net-subject \
+  --publish-base-url "$TILO_RELEASE_ARTIFACT_BASE_URL"
+```
+
+Upload `artifacts/u2net.onnx` and `artifacts/LICENSE` unchanged, verify their
+published size and SHA-256, then add the generated
+`u2net-subject.model.json` to the `models` of the release's
+`local-models.json` (for example
+`jq --slurpfile m u2net-subject.model.json '.models += $m'`) before compiling
+and signing the catalog as above. `contract-test.sh` checks the recipe offline.
+
+### Production delivery
+
+The production model and license now use the immutable Forgejo package URLs in
+`dist/local-models/catalog-source.json`. The signed catalog and public trust key
+are image inputs at `os/usr/share/tilo/system-extensions/local-model-{catalog,keys}.json`.
+The OS copies this directory unchanged; model weights remain an optional download
+through Settings, with explicit license acceptance, outside Canvas's package.
+
+The dedicated key id is `tilo-local-model-release-2026-10`. Its encrypted recovery
+record and public identity are documented in the infra repository at
+`operations/local-model-release-20261005/README.md`. It is independent of the
+development, registry, OS, and runtime signing keys.
+
+Dispatch `release-local-model-catalog.yml` on protected main to reproduce and
+publish the reviewed catalog. The build job receives no model signing key. The
+publication job fetches the public weights and license, checks their pinned
+receipts, signs with `TILO_MODEL_CATALOG_SIGNING_KEY`, compares both outputs with
+the checked-in image inputs, and verifies anonymous downloads after publication.
+It never changes the catalog carried by an already-installed OS; normal image
+releases deliver that trust and catalog update.

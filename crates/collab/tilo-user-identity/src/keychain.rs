@@ -112,7 +112,7 @@ fn legacy_file(paths: &IdentityPaths) -> Result<Option<SigningKey>, PersistError
 fn remove_legacy_file(paths: &IdentityPaths) -> Result<(), PersistError> {
     fs::remove_file(&paths.device_privkey)?;
     if let Some(parent) = paths.device_privkey.parent() {
-        atomic_file::sync_directory(parent)?;
+        tilo_files::native::atomic::sync_directory(parent)?;
     }
     Ok(())
 }

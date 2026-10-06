@@ -12,14 +12,13 @@
 //! is what gives it permission checks, per-author undo, attributed history
 //! and a History mode that draws past versions with the real timeline.
 
-use automerge::{AutoCommit, ChangeHash};
-use tilo_actions::{ActionParam, EncodedAction, ParamType};
-use ui::framework::{Dispatcher, ResourceApp, ViewCx};
+use tilo_actions::{ActionParam, ActionSpec, OperationKind, ParamType};
+use ui::framework::{ResourceApp, ViewCx};
 use ui::tilo_resource::{ActionDecl, ActionRef, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
-use crate::actions::{VIDEO_EDITOR_ACTION_TYPE, VideoEditorAction};
-use crate::app::{EMPTY_CAPTURE, IMPORT_CAPTURE, ShotScenario};
+use crate::actions::{VIDEO_EDITOR_ACTION_TYPE, VideoEditorAction, VideoResourceCtx};
+use crate::app::{EMPTY_CAPTURE, NARROW_CAPTURE, ShotScenario};
 use crate::doc::VideoDoc;
 use crate::model::{Marker, Project};
 
@@ -50,9 +49,9 @@ impl Resource for VideoProject {
         Ok(VideoDoc::load_project(doc))
     }
 
-    /// View-independent named actions. The editor publishes its richer tree
-    /// (split at the playhead, trim to the playhead, per-clip grades) itself,
-    /// because those are bound to where its user is.
+    /// Named catalogue actions an agent can invoke without the playhead.
+    /// Edits bound to the playhead (split, trim and mark at it, the mix trim)
+    /// are the editor's [`crate::actions::playhead_declarations`].
     fn declarations() -> Vec<ActionDecl<Self>> {
         vec![
             ActionDecl::new(
@@ -77,20 +76,45 @@ impl Resource for VideoProject {
         ]
     }
 
+    /// Tracks, clips, media and markers, each with the actions its data
+    /// implies.
+    fn children(project: &Project) -> Vec<tilo_actions::Resource> {
+        let ctx = VideoResourceCtx {
+            project: project.clone(),
+            playhead: 0.0,
+            mix: crate::audio::MixSnapshot::default(),
+        };
+        crate::actions::project_tree(&ctx)
+            .into_iter()
+            .next()
+            .map(|root| root.children)
+            .unwrap_or_default()
+    }
+
+    /// Document actions whose payload is bound from the current project
+    /// (rename, frame size, add track/title, …).
+    fn bound_actions(project: &Project) -> Vec<ActionSpec> {
+        let ctx = VideoResourceCtx {
+            project: project.clone(),
+            playhead: 0.0,
+            mix: crate::audio::MixSnapshot::default(),
+        };
+        crate::actions::project_tree(&ctx)
+            .into_iter()
+            .next()
+            .map(|root| {
+                root.actions
+                    .into_iter()
+                    .filter(|spec| spec.kind == OperationKind::Document)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Every marker, track, clip, effect and bin source, each hit revealing
+    /// it.
     fn search(project: &Project) -> Vec<SearchEntry> {
-        let clips = project.clips.iter().map(|clip| SearchEntry {
-            anchor: Some(crate::actions::clip_resource_id(clip.id)),
-            title: project
-                .media(clip.media)
-                .map_or_else(|| "Clip".to_owned(), |media| media.name.clone()),
-            text: format!("{} s", clip.start),
-        });
-        let markers = project.markers.iter().map(|marker| SearchEntry {
-            anchor: Some(crate::actions::marker_resource_id(marker.id)),
-            title: marker.name.clone(),
-            text: marker.note.clone(),
-        });
-        clips.chain(markers).collect()
+        crate::search::project_entries(project)
     }
 }
 
@@ -102,29 +126,56 @@ impl ResourceApp for VideoEditor {
     const ID: &'static str = "so.tilo.video-editor";
     const TITLE: &'static str = "Video Editor";
     const ICON: Option<&'static str> = Some("video-editor");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    /// A media file the editor is launched on (`video-editor CLIP`) is
+    /// imported into the project and placed on the timeline, as a pick from
+    /// the import chooser is (see the surface's `attach`).
+    const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<VideoProject>) -> Element {
         cx.surface(crate::VideoEditorApp::new())
     }
 
     fn scenarios() -> &'static [&'static str] {
-        ShotScenario::ALL_NAMES
+        static SCENARIOS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
+            ShotScenario::ALL_NAMES
+                .iter()
+                .copied()
+                .chain([EMPTY_CAPTURE, NARROW_CAPTURE])
+                .collect()
+        });
+        SCENARIOS.as_slice()
     }
 
-    /// Every capture but the blank one opens the bundled demo project,
-    /// through the same typed action a script would use; the editor stages
-    /// the rest (see `VideoEditorApp::stage_capture`).
-    fn scenario(name: Option<&str>) -> Vec<Invoke<VideoProject>> {
-        if name.is_some_and(|name| name == EMPTY_CAPTURE || name.starts_with(IMPORT_CAPTURE)) {
-            return Vec::new();
+    /// The narrow capture is below the bin's collapse breakpoint, so it
+    /// shows the overlay-flap layout.
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        if scenario == Some(NARROW_CAPTURE) {
+            (720, 820)
+        } else {
+            (1280, 800)
         }
-        Invoke::apply(&crate::actions::load_project_action(
-            &crate::doc::sample_project(),
-        ))
-        .map_or_else(
+    }
+
+    /// The demo project's sources resolve to the stand-ins bundled with the
+    /// crate, so a capture reads local bytes without a workspace mount.
+    fn fixture(_fixture: &mut ui::framework::Fixture<VideoProject>) {
+        let bundled = crate::media::bundled_sample_media();
+        crate::media::serve_sample_media(bundled.exists().then_some(bundled));
+    }
+
+    /// Every capture but the blank one opens a project through the same
+    /// typed action a script would use: the bundled demo project, or the
+    /// composed one; the editor stages the rest (see
+    /// `VideoEditorApp::stage_capture`).
+    fn scenario(name: Option<&str>) -> Vec<Invoke<VideoProject>> {
+        let project = match name {
+            Some(EMPTY_CAPTURE) => return Vec::new(),
+            Some("composed") => crate::app::composed_project(),
+            _ => crate::doc::sample_project(),
+        };
+        Invoke::apply(&crate::actions::load_project_action(&project)).map_or_else(
             |error| {
-                tracing::warn!(%error, "the demo project does not encode");
+                tracing::warn!(%error, "the scenario's project does not encode");
                 Vec::new()
             },
             |invoke| vec![invoke],
@@ -140,71 +191,115 @@ impl ResourceApp for VideoEditor {
     }
 }
 
-/// Where the editor's edits go: the framework's dispatcher when the editor is
-/// a hosted surface, or the toolkit's local action host when it runs as a
-/// standalone widget (its unit tests and benchmarks).
-#[derive(Default)]
-pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<VideoProject>>,
-    last: Option<EncodedAction>,
-    /// An edit was refused before reaching the host; the optimistic local
-    /// project must be re-read from the stored one.
-    stale: bool,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::VideoEditorApp;
+    use ui::framework::ResourceSurface;
+    use ui::tilo_actions::OperationKind;
 
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<VideoProject>) {
-        self.framework = Some(dispatcher);
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.framework.is_some()
-    }
-
-    /// Submit one edit. Hosted, the host applies it after this event with
-    /// the participant's permissions, one undo step and attribution;
-    /// standalone, it applies now through the local executor.
-    pub(crate) fn dispatch(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &VideoEditorAction,
-    ) {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = Some(crate::actions::encode(action));
-                self.stale |= dispatcher.read_only();
-                dispatcher.apply(action);
-            }
-            None => self.local.dispatch(doc, type_id, action),
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario covers the published actions and the playhead-bound ones"
+    )]
+    fn the_project_publishes_its_actions_and_the_editor_binds_the_playhead_edits() {
+        let published = ui::tilo_resource::publish::<VideoProject>(
+            "video.project",
+            "Project",
+            &Project::new("Untitled"),
+        );
+        assert_eq!(published.kind, "video_editor.project");
+        let ids: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
+        for expected in [
+            "add-marker",
+            "rename-project",
+            "set-frame-size",
+            "apply",
+            "group",
+        ] {
+            assert!(
+                ids.contains(&expected),
+                "palette `{expected}` must ride publish: {ids:?}"
+            );
         }
-    }
+        let add_marker = published
+            .actions
+            .iter()
+            .find(|action| action.id == "add-marker")
+            .expect("add-marker");
+        assert_eq!(add_marker.kind, OperationKind::Document);
+        assert!(
+            !published
+                .children
+                .iter()
+                .any(|child| child.kind == "video.playhead"),
+            "playhead live extras must not ride Resource children: {:?}",
+            published
+                .children
+                .iter()
+                .map(|child| child.kind.as_str())
+                .collect::<Vec<_>>()
+        );
 
-    /// Make every edit until the returned guard drops one host action — one
-    /// undo step, one version — as one event already is on the standalone
-    /// path. Hosted surfaces hold it for each input event, so a gesture that
-    /// dispatches several edits (a linked split, a multi-clip delete, a
-    /// paste) undoes in one step.
-    pub(crate) fn gesture(&self) -> Option<ui::framework::DispatchGroup<VideoProject>> {
-        self.framework.as_ref().map(Dispatcher::begin_group)
-    }
-
-    pub(crate) fn take_stale(&mut self) -> bool {
-        std::mem::take(&mut self.stale)
-    }
-
-    /// The standalone undo boundary. A hosted edit is bracketed by the host.
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<ChangeHash>> {
-        self.local.take_committed()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
-            self.last.as_ref()
-        } else {
-            self.local.last_dispatched()
+        let mut app = VideoEditorApp::new();
+        let sample = crate::doc::sample_project();
+        let clip = sample
+            .clips
+            .first()
+            .expect("sample project carries a clip for playhead edits")
+            .clone();
+        let at = clip.start + (clip.end() - clip.start) * 0.5;
+        app.seed_unpublished_project_for_test(sample);
+        app.set_playhead_for_test(at);
+        let bound =
+            ResourceSurface::<VideoProject, crate::actions::VideoEditorEffect>::bound_declarations(
+                &app,
+            );
+        let ids: Vec<&str> = bound.iter().map(|decl| decl.id).collect();
+        for expected in [
+            "mark-in",
+            "mark-out",
+            "add-marker-here",
+            "split-clip",
+            "trim-in-clip",
+            "trim-out-clip",
+        ] {
+            assert!(
+                ids.contains(&expected),
+                "`{expected}` is bound to the playhead: {ids:?}"
+            );
         }
+        let split = bound
+            .iter()
+            .find(|decl| decl.id == "split-clip")
+            .expect("split-clip");
+        let args = tilo_actions::ActionArgs::bind_json(
+            &split.params,
+            &serde_json::Map::from_iter([(
+                "clip".to_owned(),
+                serde_json::json!(clip.id.to_string()),
+            )]),
+        )
+        .expect("the clip binds");
+        assert!(
+            matches!(
+                (split.build)(&args, 0),
+                Ok(VideoEditorAction::SplitClip { .. } | VideoEditorAction::UpsertClips { .. })
+            ),
+            "splitting the clip under the playhead cuts it"
+        );
+        let elsewhere = tilo_actions::ActionArgs::bind_json(
+            &split.params,
+            &serde_json::Map::from_iter([
+                ("clip".to_owned(), serde_json::json!(clip.id.to_string())),
+                ("at".to_owned(), serde_json::json!(clip.end() + 100.0)),
+            ]),
+        )
+        .expect("the clip and time bind");
+        assert!(
+            (split.build)(&elsewhere, 0).is_err(),
+            "a time the clip does not cover is refused"
+        );
     }
 }

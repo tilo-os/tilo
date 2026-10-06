@@ -1,6 +1,6 @@
 //! The deck's typed operations, driven the way an agent drives them: through
-//! the tree `provide_resources` / `resolve_resource` publish and the shared
-//! action door, against a deck held as a headless participant holds it.
+//! the tree the deck publishes (and resolves by id) and the shared action
+//! door, against a deck held as a headless participant holds it.
 
 #![allow(
     clippy::float_cmp,
@@ -12,7 +12,8 @@ use serde_json::{Value, json};
 use tilo_actions::{ActionAddress, ActionRegistry, DoorError, LocalTransport, Resource};
 
 use crate::actions::{
-    self, ADD_ELEMENT, DELETE_ELEMENT, MOVE_ELEMENT, MOVE_SLIDE, RESTYLE_ELEMENT, SlidesResourceCtx,
+    self, ADD_ELEMENT, ADD_SLIDE, DELETE_ELEMENT, MOVE_ELEMENT, MOVE_SLIDE, RESTYLE_ELEMENT,
+    SlidesResourceCtx,
 };
 use crate::doc::SlidesDoc;
 use crate::model::{Deck, ElementKind, TextAlign, seed_deck};
@@ -40,7 +41,7 @@ impl Participant {
     }
 
     fn resources(&self) -> Vec<Resource> {
-        actions::provide_resources(&SlidesResourceCtx::from_deck(&self.deck()), &self.doc)
+        vec![published(&SlidesResourceCtx::from_deck(&self.deck()))]
     }
 
     fn invoke(&mut self, action: &str, args: &Value) -> Result<(), DoorError> {
@@ -83,6 +84,16 @@ impl Participant {
     }
 }
 
+/// The deck as its resource publishes it.
+fn published(ctx: &SlidesResourceCtx) -> Resource {
+    ui::tilo_resource::publish::<actions::SlidesDeck>("slides.deck", "Deck", ctx)
+}
+
+/// The published resource `id`, resolved by id as an agent's request is.
+fn resolved(ctx: &SlidesResourceCtx, id: &str) -> Option<Resource> {
+    <actions::SlidesDeck as ui::tilo_resource::Resource>::child(ctx, id)
+}
+
 fn action_ids(resource: &Resource) -> Vec<&str> {
     resource.actions.iter().map(|a| a.id.as_str()).collect()
 }
@@ -91,9 +102,9 @@ fn action_ids(resource: &Resource) -> Vec<&str> {
 fn the_deck_publishes_its_typed_operations_eagerly_and_by_id() {
     let participant = Participant::new();
     let ctx = SlidesResourceCtx::from_deck(&participant.deck());
-    let eager = actions::provide_resources(&ctx, &participant.doc);
-    let resolved = actions::resolve_resource(&ctx, "slides.deck").expect("the deck resolves");
-    for deck in [&eager[0], &resolved] {
+    let eager = vec![published(&ctx)];
+    {
+        let deck = &eager[0];
         let ids = action_ids(deck);
         for id in [
             ADD_ELEMENT,
@@ -103,10 +114,9 @@ fn the_deck_publishes_its_typed_operations_eagerly_and_by_id() {
             MOVE_SLIDE,
             ui::tilo_resource::APPLY,
             ui::tilo_resource::GROUP,
-            // The existing tree is still there beside them.
-            "add-slide",
+            // Bound document ops ride publish via bound_actions.
+            ADD_SLIDE,
             "theme-emerald",
-            "present",
         ] {
             assert!(ids.contains(&id), "`{id}` is published: {ids:?}");
         }
@@ -187,7 +197,7 @@ fn add_element_creates_it_on_top_with_a_minted_id() {
     assert_eq!(added.id.len(), 20, "the id comes from the action's context");
     // The element is addressable in the tree that is published next.
     assert!(
-        actions::resolve_resource(
+        resolved(
             &SlidesResourceCtx::from_deck(&after),
             &actions::element_resource_id(&added.id),
         )

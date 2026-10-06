@@ -25,6 +25,8 @@ pub enum ConfigError {
     DuplicateName(String),
     #[error("registry '{0}' is not configured")]
     NotFound(String),
+    #[error("'{0}' is the last repository; disable it instead (`app repo disable '{0}'`)")]
+    LastRegistry(String),
     #[error("the registry URL must be credential-free HTTPS (or loopback HTTP for development)")]
     InvalidUrl,
     #[error("a non-placeholder owner key of 64 hexadecimal characters is required")]
@@ -178,18 +180,26 @@ pub fn load_registries() -> RegistriesFile {
         return RegistriesFile::seeded();
     };
     let path = dir.join("registries.toml");
+    // A file listing no registry at all is the seed of a reader that could
+    // not see the image's trust anchor, not a choice: the way to stop using
+    // a registry is to disable it, which keeps its row.
     if let Ok(text) = fs::read_to_string(&path)
         && let Ok(mut parsed) = toml::from_str::<RegistriesFile>(&text)
+        && !parsed.registries.is_empty()
     {
         if refresh_official_pin(&mut parsed)
             && let Ok(updated) = toml::to_string_pretty(&parsed)
         {
-            let _ = atomic_file::write(&path, updated.as_bytes());
+            let _ = tilo_files::native::atomic::write(&path, updated.as_bytes());
         }
         return parsed;
     }
     let seeded = RegistriesFile::seeded();
-    if let Ok(text) = toml::to_string_pretty(&seeded) {
+    // Without the trust anchor there is nothing to write down; the next
+    // reader that can see it seeds the file.
+    if !seeded.registries.is_empty()
+        && let Ok(text) = toml::to_string_pretty(&seeded)
+    {
         let _ = fs::create_dir_all(&dir);
         let _ = fs::write(&path, text);
     }
@@ -224,7 +234,7 @@ fn refresh_official_pin(registries: &mut RegistriesFile) -> bool {
 pub fn save_registries(registries: &RegistriesFile) -> Result<(), ConfigError> {
     let path = registries_path().ok_or(ConfigError::NoConfigDir)?;
     let text = toml::to_string_pretty(registries)?;
-    atomic_file::write_creating_parent(&path, text.as_bytes())?;
+    tilo_files::native::atomic::write_creating_parent(&path, text.as_bytes())?;
     Ok(())
 }
 
@@ -281,11 +291,15 @@ pub fn add_registry(
 ///
 /// Returns [`ConfigError::NotFound`] when there is no exact name match.
 pub fn remove_registry(registries: &mut RegistriesFile, name: &str) -> Result<(), ConfigError> {
-    let before = registries.registries.len();
-    registries.registries.retain(|r| r.name != name);
-    if registries.registries.len() == before {
+    if !registries.registries.iter().any(|r| r.name == name) {
         return Err(ConfigError::NotFound(name.to_string()));
     }
+    // An empty list reads as unconfigured and seeds the official registry
+    // again, so the last row is switched off rather than removed.
+    if registries.registries.len() == 1 {
+        return Err(ConfigError::LastRegistry(name.to_string()));
+    }
+    registries.registries.retain(|r| r.name != name);
     Ok(())
 }
 
@@ -424,6 +438,31 @@ mod tests {
                 "a disabled registry is not consulted"
             );
         }
+        // Phase `an_empty_list_is_seeded_and_no_trust_writes_nothing`.
+        // A sandboxed reader that could not see the trust anchor once wrote
+        // `registry = []`; that file is the unconfigured state, not a choice.
+        {
+            let td = TempDir::new().unwrap();
+            let _g = scoped_dir(&td);
+            std::fs::write(td.path().join("registries.toml"), "registry = []\n").unwrap();
+            let regs = load_registries();
+            assert_eq!(regs.registries.len(), 1);
+            assert_eq!(regs.registries[0].name, "Tilo main");
+            let written = std::fs::read_to_string(td.path().join("registries.toml")).unwrap();
+            assert!(written.contains("Tilo main"), "{written}");
+
+            let bare = TempDir::new().unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_STORE_CONFIG_DIR", bare.path()).set(
+                "TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH",
+                bare.path().join("missing.pub"),
+            );
+            assert!(load_registries().registries.is_empty());
+            assert!(
+                !bare.path().join("registries.toml").exists(),
+                "without the trust anchor no empty list is written down"
+            );
+        }
         // Phase `no_seed_read_never_writes_a_file`.
         // The compositor's read must not materialise a config file — a
         // background timer that writes `~/.config` is a side effect the
@@ -469,8 +508,19 @@ mod tests {
             set_registry_enabled(&mut regs, "team", false).unwrap();
             save_registries(&regs).unwrap();
             assert_eq!(load_registries(), regs);
+            assert!(matches!(
+                remove_registry(&mut regs, "team"),
+                Err(ConfigError::LastRegistry(_))
+            ));
+            add_registry(
+                &mut regs,
+                "mirror",
+                "https://mirror.example",
+                &"cd".repeat(32),
+            )
+            .unwrap();
             remove_registry(&mut regs, "team").unwrap();
-            assert!(regs.registries.is_empty());
+            assert_eq!(regs.registries.len(), 1);
         }
         // Phase `registry_mutations_reject_ambiguous_input`.
         {

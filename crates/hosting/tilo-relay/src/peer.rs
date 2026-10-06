@@ -223,8 +223,8 @@ pub struct PeerContext {
     /// Answers remote-action frames addressed to this relay. `None` unless
     /// the host supplied one and advertises `app_serving`.
     pub app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
-    /// Also hands validated live frames to the browser live relay, when the
-    /// host serves browsers.
+    /// Also hands validated live frames and devices' presence to the
+    /// browser plane, when the host serves browsers.
     pub live_bridge: Option<LiveBridge>,
     /// Agent devices this host was told about, see [`AgentRegistry`].
     pub agents: AgentRegistry,
@@ -236,8 +236,16 @@ pub struct PeerContext {
     pub compactor: Option<crate::compaction::Compactor>,
 }
 
-/// Receives every validated live frame: workspace, stamped sender, frame.
-pub type LiveBridge = Arc<dyn Fn(u64, [u8; 32], &[u8]) + Send + Sync>;
+/// The host's browser plane, as the relay's sessions feed it.
+pub trait BrowserBridge: Send + Sync {
+    /// A validated live frame: workspace, stamped sender, frame.
+    fn live(&self, workspace_id: u64, from: [u8; 32], frame: &[u8]);
+    /// The presence payload a subscribed device (`from`, of `user`) sent.
+    fn presence(&self, workspace_id: u64, from: [u8; 32], user: [u8; 32], payload: &[u8]);
+}
+
+/// Receives what sessions hand the browser plane, see [`BrowserBridge`].
+pub type LiveBridge = Arc<dyn BrowserBridge>;
 
 /// Agent devices by device key: their verified delegation, or `None` once
 /// the agent was withdrawn. An agent device is confined to its delegated
@@ -1750,6 +1758,10 @@ async fn handle_envelope(
             frame,
         )
         .await),
+        env @ Envelope::RecordContent { .. } => {
+            route_record_content(peer, session, subscribed, env).await;
+            Ok(None)
+        }
         env @ Envelope::Commit { .. } => handle_commit(peer, session, subscribed, env).await,
         Envelope::LiveJoin { workspace_id } => {
             handle_live_join(peer, session, subscribed, workspace_id).await
@@ -1768,7 +1780,8 @@ async fn handle_envelope(
         }
         env @ (Envelope::VoiceCall { .. }
         | Envelope::VoiceJoin { .. }
-        | Envelope::VoiceLeave { .. }) => handle_voice(peer, session, subscribed, env).await,
+        | Envelope::VoiceLeave { .. }
+        | Envelope::VoiceCalls { .. }) => handle_voice(peer, session, subscribed, env).await,
         // Envelopes the relay only *sends*, never receives; ignore
         // silently so a peer bug doesn't wedge the connection.
         Envelope::CompactRequest { .. }
@@ -1783,7 +1796,8 @@ async fn handle_envelope(
         | Envelope::Position { .. }
         | Envelope::VoiceCallResult { .. }
         | Envelope::VoiceGranted { .. }
-        | Envelope::VoiceRefused { .. } => Ok(None),
+        | Envelope::VoiceRefused { .. }
+        | Envelope::VoiceCallList { .. } => Ok(None),
     }
 }
 
@@ -5104,9 +5118,11 @@ async fn handle_commit(
     if !subscribed.contains(&workspace_id) {
         return refused("commit sent before subscribing to workspace");
     }
-    if peer.role != crate::auth::PeerRole::Device
-        || author_device_public_key != peer.device_public_key
-    {
+    // The relay's own device takes part in its rooms' channels like any
+    // other member: its self-connection commits as that device.
+    let device =
+        peer.role == crate::auth::PeerRole::Device || &peer.cert == session.own_device_cert;
+    if !device || author_device_public_key != peer.device_public_key {
         return refused("author does not match authenticated device");
     }
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
@@ -5279,7 +5295,8 @@ async fn handle_voice(
     let workspace_id = match &env {
         Envelope::VoiceCall { workspace_id, .. }
         | Envelope::VoiceJoin { workspace_id, .. }
-        | Envelope::VoiceLeave { workspace_id, .. } => *workspace_id,
+        | Envelope::VoiceLeave { workspace_id, .. }
+        | Envelope::VoiceCalls { workspace_id } => *workspace_id,
         _ => return Ok(None),
     };
     let authority = if subscribed.contains(&workspace_id) {
@@ -5344,6 +5361,13 @@ async fn handle_voice(
             }
             None
         }
+        Envelope::VoiceCalls { .. } => Some(Envelope::VoiceCallList {
+            workspace_id,
+            result: match &rooms {
+                Some((rooms, room)) => rooms.voice_calls(room, peer).await,
+                None => Err(refusal.into()),
+            },
+        }),
         _ => None,
     })
 }
@@ -5381,17 +5405,18 @@ async fn handle_live(
     if !subscribed.contains(&workspace_id) {
         return Ok(None);
     }
-    let Ok(decoded) = crate::live::LiveFrame::decode(&frame) else {
+    // Only a sealed frame is relayed; its content is never read here.
+    let Ok(sealed) = crate::live::SealedLiveFrame::decode(&frame) else {
         return Ok(None);
     };
-    let presence = matches!(decoded, crate::live::LiveFrame::Presence(_));
+    let presence = sealed.kind == crate::live::LiveKind::Presence;
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return Ok(None);
     };
     if let Some(bridge) = session.live_bridge
         && ws.lock().await.is_live_member(&peer.device_public_key)
     {
-        bridge(workspace_id, peer.device_public_key, &frame);
+        bridge.live(workspace_id, peer.device_public_key, &frame);
     }
     let stamped = Envelope::Live {
         workspace_id,
@@ -5534,7 +5559,30 @@ async fn handle_presence(
         let map = session.workspaces.lock().await;
         map.get(&workspace_id).cloned()
     };
+    let mut legacy_writer = false;
     if let Some(ws) = ws {
+        if session.live_bridge.is_some() {
+            let authority = {
+                let runtime = ws.lock().await;
+                if runtime.has_subscriber(&peer.device_public_key)
+                    && session_peer_authorized(peer, session)
+                {
+                    legacy_writer = true;
+                }
+                runtime.room_authority.clone()
+            };
+            if let Some(authority) = authority {
+                legacy_writer &= match authority.rooms() {
+                    Some(rooms) => matches!(
+                        rooms
+                            .legacy_writer_role(authority.room(), peer.device_public_key)
+                            .await,
+                        Some(collab_types::Role::Owner | collab_types::Role::Editor)
+                    ),
+                    None => false,
+                };
+            }
+        }
         let mut wr = ws.lock().await;
         // A device sends presence only to say hello, to ask for a baseline
         // (`SyncReq`) or after rejecting a checkpoint — each means it needs the
@@ -5544,6 +5592,17 @@ async fn handle_presence(
             wr.request_checkpoint(&peer.device_public_key);
         }
         wr.fanout_presence(&peer.device_public_key, peer.role, &env);
+    }
+    if legacy_writer
+        && let (Some(bridge), crate::auth::PeerRole::Device, Envelope::Presence { payload, .. }) =
+            (session.live_bridge, peer.role, &env)
+    {
+        bridge.presence(
+            workspace_id,
+            peer.device_public_key,
+            peer.user_public_key,
+            payload,
+        );
     }
     Ok(None)
 }
@@ -5620,6 +5679,42 @@ async fn handle_remote_action(
     } else {
         undeliverable("addressed device is not connected to the workspace")
     }
+}
+
+/// Hand a piece of a record's content to the one device it is addressed
+/// to, stamped with the authenticated sender. Never stored, never fanned
+/// out, never answered: a piece that cannot be delivered is dropped, and
+/// the device that wanted it asks again.
+async fn route_record_content(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    envelope: Envelope,
+) {
+    let Envelope::RecordContent {
+        workspace_id,
+        to_device_public_key: to,
+        frame,
+        ..
+    } = envelope
+    else {
+        return;
+    };
+    if !subscribed.contains(&workspace_id)
+        || frame.len() > crate::transport::MAX_RECORD_CONTENT_FRAME_BYTES
+    {
+        return;
+    }
+    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
+        return;
+    };
+    let stamped = Envelope::RecordContent {
+        workspace_id,
+        to_device_public_key: to,
+        from_device_public_key: peer.device_public_key,
+        frame,
+    };
+    ws.lock().await.route_lossy(&to, stamped);
 }
 
 /// Answer a frame addressed to this relay through its app-serving plane,

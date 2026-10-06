@@ -154,6 +154,9 @@ pub enum KeyProtection {
     HardwareBacked,
     /// Legacy schema; migration has not completed yet.
     LegacyPlaintext,
+    /// No share of the identity's key is on this device: a device joined to
+    /// the identity acts through its root-signed device certificate.
+    DeviceCertificate,
     /// Metadata names a backend this session cannot safely resolve.
     Unavailable,
 }
@@ -165,6 +168,9 @@ impl KeyProtection {
             Self::BrokerFile => "Private session file + app-scoped signing broker",
             Self::HardwareBacked => "Hardware-backed + app-scoped signing broker",
             Self::LegacyPlaintext => "Migration required",
+            Self::DeviceCertificate => {
+                "No identity key here; this device signs with its certificate"
+            }
             Self::Unavailable => "Protection provider unavailable",
         }
     }
@@ -212,8 +218,8 @@ const MAX_RECORD_BYTES: u64 = 1024 * 1024;
 /// failure phase. Lifecycle callers admit the identity namespace and hold its
 /// lock; provisioning that parent durably is a separate responsibility.
 fn write_private_atomic(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
-    atomic_file::replace(path, bytes, atomic_file::Privacy::OwnerOnly)
-        .map_err(atomic_file::PublicationError::into_io_error)
+    tilo_files::native::atomic::replace(path, bytes, tilo_files::native::atomic::Privacy::OwnerOnly)
+        .map_err(tilo_files::native::atomic::PublicationError::into_io_error)
 }
 
 /// Resolve the per-login-user identity directory using XDG rules.
@@ -291,19 +297,12 @@ impl IdentityLock {
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(dir.join(LOCK_FILE))?;
-        let mut meta = file.metadata()?;
+        let meta = file.metadata()?;
         if !meta.file_type().is_file() || meta.uid() != unsafe { libc::geteuid() } {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "identity lifecycle lock must be a private user-owned regular file",
             ));
-        }
-        // Older releases created this non-secret advisory file under a
-        // shared-group umask. Tighten an otherwise valid, user-owned lock in
-        // place so the security check does not strand upgraded identities.
-        if meta.permissions().mode() & 0o077 != 0 {
-            file.set_permissions(fs::Permissions::from_mode(0o600))?;
-            meta = file.metadata()?;
         }
         if meta.permissions().mode() & 0o077 != 0 {
             return Err(io::Error::new(
@@ -354,12 +353,26 @@ fn read_private_selector(path: &std::path::Path) -> io::Result<String> {
 
 /// Inspect all valid records without exposing their signing shares.
 ///
+/// Listing never writes: it takes no lock and creates or re-modes nothing.
+/// Every writer replaces a record by rename, so each record is read whole. A
+/// store that does not exist yet lists nothing.
+///
 /// # Errors
 ///
-/// Returns an error if the lifecycle lock can't be acquired, or `dir` can't
-/// be read.
+/// Returns an error if `dir` is not a real directory owned by this user, or
+/// can't be read.
 pub fn list_identities(dir: &std::path::Path) -> io::Result<Vec<IdentitySummary>> {
-    let _lock = IdentityLock::acquire(dir)?;
+    let meta = match fs::symlink_metadata(dir) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    if !meta.file_type().is_dir() || meta.uid() != unsafe { libc::geteuid() } {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "identity root must be a real directory owned by the current user",
+        ));
+    }
     list_identities_unlocked(dir)
 }
 
@@ -468,8 +481,9 @@ fn import_identity_unlocked(
         ));
     }
     // Stage the legacy bytes only after validation, then immediately migrate
-    // under the same lock. A crash leaves a valid v1 record that the next
-    // launch can retry; it never leaves half a v2 record.
+    // under the same lock. A crash leaves a valid v1 record that sign-in or
+    // Settings secures (a launch refuses it); it never leaves half a v2
+    // record.
     write_private_atomic(&path, bytes)?;
     let secured = match provider {
         Some(provider) => secure_record_with_provider_unlocked(dir, &path, provider),
@@ -481,8 +495,8 @@ fn import_identity_unlocked(
         // errors arise only before metadata publication (read, validation,
         // provider access or serialization), so the staged v1 may be removed.
         if matches!(
-            atomic_file::publication_state(&error),
-            None | Some(atomic_file::PublicationState::NotPublished)
+            tilo_files::native::atomic::publication_state(&error),
+            None | Some(tilo_files::native::atomic::PublicationState::NotPublished)
         ) {
             let _ = fs::remove_file(&path);
         }
@@ -491,8 +505,9 @@ fn import_identity_unlocked(
     Ok(path)
 }
 
-/// Migrate one legacy identity into broker-only storage. Idempotent and safe
-/// to call at every launch.
+/// Move one record's inline key into its secret provider. Idempotent. Only
+/// provisioning and Settings secure records; an app launch reads them through
+/// [`load_for_launch`] and never writes the store.
 ///
 /// # Errors
 ///
@@ -527,6 +542,9 @@ fn secure_record_unlocked(
     path: &std::path::Path,
 ) -> io::Result<KeyProtection> {
     let record = read_record(path)?;
+    if is_public_member_projection(&record) {
+        return Ok(KeyProtection::DeviceCertificate);
+    }
     #[cfg(not(test))]
     let preferred = secure_store::preferred_provider(dir);
     #[cfg(test)]
@@ -539,12 +557,6 @@ fn secure_record_unlocked(
             )
         })?;
         let provider = secure_store::provider_for(dir, reference)?;
-        if !secure_store::FILE_FALLBACK
-            && provider.protection() == KeyProtection::BrokerFile
-            && preferred.protection() == KeyProtection::SecretService
-        {
-            return move_secret_unlocked(dir, path, provider.as_ref(), preferred.as_ref());
-        }
         let secret = provider.load(&reference.locator)?;
         identity_from_record(record, Some(secret.as_slice()))
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
@@ -557,8 +569,8 @@ fn secure_record_unlocked(
             if secure_store::FILE_FALLBACK
                 && preferred.protection() == KeyProtection::SecretService
                 && matches!(
-                    atomic_file::publication_state(&preferred_error),
-                    None | Some(atomic_file::PublicationState::NotPublished)
+                    tilo_files::native::atomic::publication_state(&preferred_error),
+                    None | Some(tilo_files::native::atomic::PublicationState::NotPublished)
                 ) =>
         {
             // Errors without a publication phase occur before this attempt's
@@ -575,7 +587,7 @@ fn secure_record_unlocked(
 fn tracing_warning_for_secret_service(error: &io::Error) {
     // This crate deliberately has no tracing dependency. Keep the fallback
     // observable to Settings via KeyProtection rather than writing a possibly
-    // sensitive backend error to stderr from every app launch.
+    // sensitive backend error to stderr from every sign-in.
     let _ = error;
 }
 
@@ -585,6 +597,12 @@ fn secure_record_with_provider_unlocked(
     provider: &dyn SecretProvider,
 ) -> io::Result<KeyProtection> {
     let mut record = read_record(path)?;
+    // A joined device's public projection has no secret to move into a
+    // provider; giving it an empty one would leave a reference that never
+    // loads.
+    if is_public_member_projection(&record) {
+        return Ok(KeyProtection::DeviceCertificate);
+    }
     if record.schema_version == 2 {
         let reference = record.secret_ref.as_ref().ok_or_else(|| {
             io::Error::new(
@@ -638,8 +656,8 @@ fn secure_record_with_provider_unlocked(
     let metadata = serde_json::to_vec_pretty(&record)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     if let Err(error) = write_private_atomic(path, &metadata) {
-        if atomic_file::publication_state(&error)
-            == Some(atomic_file::PublicationState::NotPublished)
+        if tilo_files::native::atomic::publication_state(&error)
+            == Some(tilo_files::native::atomic::PublicationState::NotPublished)
             && let Some(reference) = record.secret_ref.as_ref()
         {
             let _ = provider.remove(&reference.locator);
@@ -647,48 +665,6 @@ fn secure_record_with_provider_unlocked(
         return Err(error);
     }
     Ok(provider.protection())
-}
-
-/// Move a secured record's secret from `from` into `to`, once: stored there
-/// and read back, the record republished to reference it, and only then
-/// removed from `from`, unless another record still references it there.
-/// Any failure leaves the record on `from`, and is returned.
-fn move_secret_unlocked(
-    dir: &std::path::Path,
-    path: &std::path::Path,
-    from: &dyn SecretProvider,
-    to: &dyn SecretProvider,
-) -> io::Result<KeyProtection> {
-    let mut record = read_record(path)?;
-    let old = record.secret_ref.clone().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "secured identity has no secret reference",
-        )
-    })?;
-    let secret = from.load(&old.locator)?;
-    identity_from_record(read_record(path)?, Some(secret.as_slice()))
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    to.store(&old.locator, secret.as_slice())?;
-    record.secret_ref = Some(SecretReference {
-        backend: to.backend_id().to_string(),
-        locator: old.locator.clone(),
-    });
-    let metadata = serde_json::to_vec_pretty(&record)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    write_private_atomic(path, &metadata)?;
-    let shared = list_identities_unlocked(dir)?.iter().any(|other| {
-        identity_path(dir, &other.id)
-            .ok()
-            .filter(|other_path| other_path != path)
-            .and_then(|other_path| read_record(&other_path).ok())
-            .and_then(|other_record| other_record.secret_ref)
-            .is_some_and(|other_ref| other_ref == old)
-    });
-    if !shared {
-        from.remove(&old.locator)?;
-    }
-    Ok(to.protection())
 }
 
 /// Select which identity the launcher brokers into newly started apps.
@@ -802,6 +778,9 @@ mod ondisk {
 
     impl IdentityRecord {
         pub fn protection(&self) -> KeyProtection {
+            if super::is_public_member_projection(self) {
+                return KeyProtection::DeviceCertificate;
+            }
             match self
                 .secret_ref
                 .as_ref()
@@ -903,6 +882,9 @@ enum LoadFailure {
     JsonMalformed(serde_json::Error),
     UnknownSchemaVersion(u32),
     SecuredRecordNeedsProvider,
+    /// A store record still carries its signing key inline: it was never
+    /// secured by provisioning.
+    KeyNotSecured,
     SecretSizeMismatch {
         got: usize,
     },
@@ -924,6 +906,11 @@ impl std::fmt::Display for LoadFailure {
             Self::SecuredRecordNeedsProvider => {
                 write!(f, "secured identity record needs its host secret provider")
             }
+            Self::KeyNotSecured => write!(
+                f,
+                "this identity's signing key is not secured yet, so apps cannot use it; \
+                 choose \"Protect now\" for it in Settings > Users, then open the app again"
+            ),
             Self::SecretSizeMismatch { got } => {
                 write!(f, "identity secret_bytes must be 32 bytes, got {got}")
             }
@@ -951,6 +938,7 @@ impl LoadFailure {
             LoadFailure::JsonMalformed(_)
             | LoadFailure::UnknownSchemaVersion(_)
             | LoadFailure::SecuredRecordNeedsProvider
+            | LoadFailure::KeyNotSecured
             | LoadFailure::SecretSizeMismatch { .. }
             | LoadFailure::PublicKeyMismatch { .. } => io::ErrorKind::InvalidData,
         };
@@ -1198,6 +1186,30 @@ impl SigningIdentity {
         }
     }
 
+    /// The person's secret-sync key: an X25519 key derived from the root,
+    /// which secrets every device of the person must open (disk-unlock
+    /// sibling halves) are sealed to. Only a single-device root held by
+    /// this process derives it; the root itself never leaves.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable::ConnectionFailed`] for a threshold share or a
+    /// broker connection, which hold no root to derive from.
+    pub fn secret_sync_key(&self) -> Result<tilo_seal::SecretKey, NotAvailable> {
+        match &self.source {
+            SigningSource::Local(Some(sk)) => {
+                let seed = Zeroizing::new(sk.to_bytes());
+                let derived =
+                    Zeroizing::new(blake3::derive_key("tilo secret-sync key v1", seed.as_ref()));
+                Ok(tilo_seal::SecretKey::from_bytes(*derived))
+            }
+            _ => Err(NotAvailable::ConnectionFailed(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "the secret-sync key needs the person's root on this device",
+            ))),
+        }
+    }
+
     /// Ask the workspace identity broker to sign one named app action. The
     /// shell binds the package and workspace before the app inherits this
     /// connection, then evaluates the exact action capability.
@@ -1380,6 +1392,35 @@ pub fn load() -> Result<SigningIdentity, NotAvailable> {
     load_from_path(PathBuf::from(path_str))
 }
 
+/// The public fields of the identity [`load`] would return. A record named
+/// by [`IDENTITY_ENV_VAR`] is read without contacting its secret provider,
+/// so a caller that only shows who this is never waits on (or prompts for)
+/// the system secret store.
+///
+/// # Errors
+///
+/// As [`load`].
+pub fn load_metadata() -> Result<IdentityMetadata, NotAvailable> {
+    if runtime_portal::service_fd(IDENTITY_SERVICE).is_none()
+        && std::env::var_os(broker::BROKER_ENV_VAR).is_none()
+    {
+        let path = env::var(IDENTITY_ENV_VAR).map_err(|_| NotAvailable::ServiceFdMissing)?;
+        if path.is_empty() {
+            return Err(NotAvailable::ServiceFdMissing);
+        }
+        return load_metadata_from_path(std::path::Path::new(&path));
+    }
+    let identity = load()?;
+    Ok(IdentityMetadata {
+        display_name: identity.display_name().to_owned(),
+        avatar_color: identity.avatar_color(),
+        group_public_key: identity.group_public_key(),
+        threshold: identity.threshold(),
+        total_shares: identity.total_shares(),
+        share_index: identity.share_index(),
+    })
+}
+
 fn load_from_service(fd: std::os::fd::RawFd) -> Result<SigningIdentity, NotAvailable> {
     let identity = shared_service_connection(fd)?;
     Ok(SigningIdentity {
@@ -1446,7 +1487,13 @@ fn shared_service_connection(
 pub fn load_from_path(path: PathBuf) -> Result<SigningIdentity, NotAvailable> {
     let bytes =
         read_record_bytes(&path).map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
-    let record = parse_record(&bytes)?;
+    load_record(&path, parse_record(&bytes)?)
+}
+
+fn load_record(
+    path: &std::path::Path,
+    record: ondisk::IdentityRecord,
+) -> Result<SigningIdentity, NotAvailable> {
     if record.schema_version == 1 {
         return identity_from_record(record, None);
     }
@@ -1470,6 +1517,28 @@ pub fn load_from_path(path: PathBuf) -> Result<SigningIdentity, NotAvailable> {
         .load(&reference.locator)
         .map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
     identity_from_record(record, Some(secret.as_slice()))
+}
+
+/// Load a record from the identity store for an app launch, strictly
+/// read-only.
+///
+/// The record must already be in the form provisioning leaves it: a secured
+/// record whose key its secret provider holds, or a joined device's public
+/// record. One still carrying its key inline is refused, never rewritten:
+/// securing it belongs to provisioning and Settings, not to a launch.
+///
+/// # Errors
+///
+/// As [`load_from_path`], and [`NotAvailable::ConnectionFailed`] naming
+/// Settings when the record's key is not secured.
+pub fn load_for_launch(path: &std::path::Path) -> Result<SigningIdentity, NotAvailable> {
+    let bytes =
+        read_record_bytes(path).map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
+    let record = parse_record(&bytes)?;
+    if record.protection() == KeyProtection::LegacyPlaintext {
+        return Err(LoadFailure::KeyNotSecured.into_not_available());
+    }
+    load_record(path, record)
 }
 
 /// Read the public presentation and quorum fields of a private identity
@@ -1852,26 +1921,26 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn identity_files_stay_owner_only() {
-        // phase: legacy_group_writable_lifecycle_lock_is_tightened
+        // phase: a_shared_lifecycle_lock_is_refused_and_listing_takes_none
         {
             let dir = tempfile::tempdir().expect("identity directory");
             let lock = dir.path().join(LOCK_FILE);
-            fs::write(&lock, []).expect("legacy lock");
-            fs::set_permissions(&lock, fs::Permissions::from_mode(0o660)).expect("legacy mode");
+            fs::write(&lock, []).expect("shared lock");
+            fs::set_permissions(&lock, fs::Permissions::from_mode(0o660)).expect("shared mode");
 
+            assert!(import_identity(dir.path(), "personal", &record_bytes("Ada", 25)).is_err());
+            assert_eq!(list_identities(dir.path()).expect("list").len(), 0);
+            assert_eq!(
+                fs::metadata(&lock).expect("lock").permissions().mode() & 0o777,
+                0o660,
+                "listing never touches the lock"
+            );
             assert!(
-                list_identities(dir.path())
-                    .expect("upgrade lock")
+                list_identities(&dir.path().join("missing"))
+                    .unwrap()
                     .is_empty()
             );
-            assert_eq!(
-                fs::metadata(lock)
-                    .expect("lock metadata")
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
-            );
+            assert!(!dir.path().join("missing").exists());
         }
         // phase: imported_secrets_and_selector_are_private
         {
@@ -1975,6 +2044,57 @@ mod tests {
             .remove(IDENTITY_ENV_VAR)
             .remove(broker::BROKER_ENV_VAR);
         scoped
+    }
+
+    /// The compositor's broker thread asked who this person is for every
+    /// presence frame an app sent. For an identity kept in a desktop's
+    /// Secret Service that loaded the signing secret over D-Bus from inside
+    /// the broker's runtime, which aborted the session.
+    #[test]
+    #[serial_test::serial(identity_env)]
+    fn who_this_is_never_reaches_for_the_signing_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let in_store = secure_store::SecretServiceProvider::with_store(
+            tilo_secrets::SecretStore::memory("so.tilo.identity"),
+        );
+        let path = import_identity_with_provider(
+            dir.path(),
+            "personal",
+            &record_bytes("Ada", 31),
+            &in_store,
+        )
+        .unwrap();
+        let record = read_record(&path).unwrap();
+        assert_eq!(
+            record
+                .secret_ref
+                .as_ref()
+                .map(|reference| reference.backend.as_str()),
+            Some("secret-service-v1"),
+            "the record names the Secret Service, as on a desktop that has one"
+        );
+
+        let mut env = clear_env();
+        env.set(IDENTITY_ENV_VAR, &path).set(
+            "DBUS_SESSION_BUS_ADDRESS",
+            format!("unix:path={}", dir.path().join("no-bus").display()),
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (metadata, full) = runtime.block_on(async { (load_metadata(), load()) });
+        let metadata = metadata.expect("the public fields answer without the store");
+        assert_eq!(metadata.display_name, "Ada");
+        assert_eq!(
+            metadata.group_public_key,
+            SigningKey::from_bytes(&[31; 32]).verifying_key().to_bytes()
+        );
+        assert!(
+            full.is_err(),
+            "the signing secret needs the (absent) store, and says so"
+        );
+        drop(env);
     }
 
     #[test]
@@ -2395,8 +2515,8 @@ mod tests {
 
     #[test]
     fn secure_record_publication_cleanup_preserves_published_secret() {
-        use atomic_file::PublicationState;
-        use atomic_file::test_support::{Checkpoint, with_failure};
+        use tilo_files::native::atomic::PublicationState;
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
 
         for (checkpoint, expected) in [
             (
@@ -2416,61 +2536,18 @@ mod tests {
                 secure_identity_with_provider(dir.path(), "personal", &provider)
             })
             .expect_err("the real metadata writer must report the injected failure");
-            assert_eq!(atomic_file::publication_state(&error), Some(expected));
+            assert_eq!(
+                tilo_files::native::atomic::publication_state(&error),
+                Some(expected)
+            );
             assert_published_identity_keeps_secret(&path, &provider, 71);
         }
     }
 
     #[test]
-    fn a_broker_file_secret_moves_into_the_system_store_once_or_not_at_all() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("personal.json");
-        let file = BrokerFileProvider::new(dir.path());
-        write_private_atomic(&path, &record_bytes("Ada", 74)).unwrap();
-        secure_identity_with_provider(dir.path(), "personal", &file).unwrap();
-        let locator = hex::encode(SigningKey::from_bytes(&[74; 32]).verifying_key().to_bytes());
-
-        let refusing = SecretServiceFixture::new(dir.path(), true);
-        assert!(move_secret_unlocked(dir.path(), &path, &file, &refusing).is_err());
-        assert_published_identity_keeps_secret(&path, &file, 74);
-
-        let keyring = SecretServiceFixture::new(dir.path(), false);
-        assert_eq!(
-            move_secret_unlocked(dir.path(), &path, &file, &keyring).unwrap(),
-            KeyProtection::SecretService
-        );
-        assert_published_identity_keeps_secret(&path, &keyring, 74);
-        assert_eq!(
-            file.load(&locator).unwrap_err().kind(),
-            io::ErrorKind::NotFound,
-            "the broker file stayed behind"
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_moves_broker_file_identities_into_the_keychain_when_secured() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("personal.json");
-        let file = BrokerFileProvider::new(dir.path());
-        write_private_atomic(&path, &record_bytes("Ada", 75)).unwrap();
-        secure_identity_with_provider(dir.path(), "personal", &file).unwrap();
-        assert_eq!(
-            with_preferred_secret_service(false, || secure_identity(dir.path(), "personal"))
-                .unwrap(),
-            KeyProtection::SecretService
-        );
-        assert_published_identity_keeps_secret(
-            &path,
-            &SecretServiceFixture::new(dir.path(), false),
-            75,
-        );
-    }
-
-    #[test]
     fn secure_record_publication_cleanup_before_publish_removes_new_secret() {
-        use atomic_file::PublicationState;
-        use atomic_file::test_support::{Checkpoint, with_failure};
+        use tilo_files::native::atomic::PublicationState;
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("personal.json");
@@ -2482,7 +2559,7 @@ mod tests {
         })
         .expect_err("the real metadata writer must report the injected failure");
         assert_eq!(
-            atomic_file::publication_state(&error),
+            tilo_files::native::atomic::publication_state(&error),
             Some(PublicationState::NotPublished)
         );
         assert_eq!(fs::read(&path).unwrap(), original);
@@ -2495,8 +2572,10 @@ mod tests {
 
     #[test]
     fn import_publication_cleanup_preserves_second_write_and_secret() {
-        use atomic_file::PublicationState;
-        use atomic_file::test_support::{Checkpoint, with_failure_on_nth, with_observer};
+        use tilo_files::native::atomic::PublicationState;
+        use tilo_files::native::atomic::test_support::{
+            Checkpoint, with_failure_on_nth, with_observer,
+        };
         for (checkpoint, expected) in [
             (
                 Checkpoint::AfterPublish,
@@ -2530,7 +2609,10 @@ mod tests {
             )
             .expect_err("v2 publication must report the injected failure");
             assert_eq!(completed.get(), 1, "v1 must commit before v2 fails");
-            assert_eq!(atomic_file::publication_state(&error), Some(expected));
+            assert_eq!(
+                tilo_files::native::atomic::publication_state(&error),
+                Some(expected)
+            );
             assert_published_identity_keeps_secret(
                 &dir.path().join("personal.json"),
                 &provider,
@@ -2541,8 +2623,8 @@ mod tests {
 
     #[test]
     fn import_publication_cleanup_before_second_publish_removes_record_and_secret() {
-        use atomic_file::PublicationState;
-        use atomic_file::test_support::{Checkpoint, with_failure_on_nth};
+        use tilo_files::native::atomic::PublicationState;
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
         let dir = tempfile::tempdir().unwrap();
         let provider = BrokerFileProvider::new(dir.path());
         let error = with_failure_on_nth(Checkpoint::BeforePublish, 2, || {
@@ -2555,7 +2637,7 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(
-            atomic_file::publication_state(&error),
+            tilo_files::native::atomic::publication_state(&error),
             Some(PublicationState::NotPublished)
         );
         assert!(!dir.path().join("personal.json").exists());
@@ -2568,8 +2650,8 @@ mod tests {
 
     #[test]
     fn import_publication_cleanup_unknown_before_rename_preserves_record_and_secret() {
-        use atomic_file::PublicationState;
-        use atomic_file::test_support::{Checkpoint, with_failure_on_nth};
+        use tilo_files::native::atomic::PublicationState;
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
         let dir = tempfile::tempdir().unwrap();
         let provider = BrokerFileProvider::new(dir.path());
         let original = record_bytes("Ada", 75);
@@ -2578,7 +2660,7 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(
-            atomic_file::publication_state(&error),
+            tilo_files::native::atomic::publication_state(&error),
             Some(PublicationState::PublicationUnknown)
         );
         assert_eq!(
@@ -2591,8 +2673,8 @@ mod tests {
 
     #[test]
     fn import_publication_cleanup_preferred_provider_does_not_fallback_after_publication() {
-        use atomic_file::PublicationState;
-        use atomic_file::test_support::{Checkpoint, with_failure_on_nth};
+        use tilo_files::native::atomic::PublicationState;
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
         for (checkpoint, expected) in [
             (
                 Checkpoint::AfterPublish,
@@ -2610,7 +2692,10 @@ mod tests {
                 })
             })
             .expect_err("fallback must not hide an uncertain metadata publication");
-            assert_eq!(atomic_file::publication_state(&error), Some(expected));
+            assert_eq!(
+                tilo_files::native::atomic::publication_state(&error),
+                Some(expected)
+            );
             assert_published_identity_keeps_secret(
                 &dir.path().join("personal.json"),
                 &SecretServiceFixture::new(dir.path(), false),
@@ -2633,7 +2718,7 @@ mod tests {
 
     #[test]
     fn import_publication_cleanup_preferred_provider_may_fallback_before_publication() {
-        use atomic_file::test_support::{Checkpoint, with_failure_on_nth};
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
         let dir = tempfile::tempdir().unwrap();
         let imported = with_preferred_secret_service(false, || {
             with_failure_on_nth(Checkpoint::BeforePublish, 2, || {
@@ -2666,7 +2751,7 @@ mod tests {
             &SecretServiceFixture::new(dir.path(), true),
         )
         .unwrap_err();
-        assert!(atomic_file::publication_state(&error).is_none());
+        assert!(tilo_files::native::atomic::publication_state(&error).is_none());
         assert!(!dir.path().join("personal.json").exists());
 
         let imported = with_preferred_secret_service(true, || {
@@ -2678,6 +2763,28 @@ mod tests {
         }
         let path = imported.unwrap();
         assert_published_identity_keeps_secret(&path, &BrokerFileProvider::new(dir.path()), 78);
+    }
+
+    #[test]
+    fn a_launch_refuses_an_unsecured_record_without_rewriting_it() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_private_dir(dir.path()).unwrap();
+        let bytes = record_bytes("Ada", 27);
+        let path = dir.path().join("primary.json");
+        write_private_atomic(&path, &bytes).unwrap();
+
+        let Err(error) = load_for_launch(&path) else {
+            panic!("an inline key must be refused");
+        };
+        assert!(error.to_string().contains("Settings > Users"), "{error}");
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert!(!dir.path().join("secrets").exists());
+        assert!(!dir.path().join(LOCK_FILE).exists());
+
+        // Once secured, the same record launches.
+        secure_identity_with_provider(dir.path(), "primary", &BrokerFileProvider::new(dir.path()))
+            .unwrap();
+        assert!(load_for_launch(&path).unwrap().sign(b"secured").is_ok());
     }
 
     #[test]
@@ -2729,6 +2836,33 @@ mod tests {
             let identity = load_from_path(path).unwrap();
             assert_eq!(identity.group_public_key(), [9; 32]);
             assert!(identity.sign(b"must stay public-only").is_err());
+        }
+        // phase: a_joined_public_projection_is_left_as_written_when_secured
+        {
+            let dir = tempfile::tempdir().unwrap();
+            ensure_private_dir(dir.path()).unwrap();
+            let bytes = public_member_record("Member", [1, 2, 3], [9; 32]).unwrap();
+            let path = dir.path().join("identity-joined.json");
+            write_private_atomic(&path, &bytes).unwrap();
+
+            // Sign-in and Settings may secure the selected record again.
+            for _ in 0..2 {
+                assert_eq!(
+                    secure_identity(dir.path(), "identity-joined").unwrap(),
+                    KeyProtection::DeviceCertificate
+                );
+            }
+
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                bytes,
+                "a public projection must not gain a reference to an empty secret"
+            );
+            assert_eq!(load_from_path(path).unwrap().group_public_key(), [9; 32]);
+            assert_eq!(
+                list_identities(dir.path()).unwrap()[0].protection,
+                KeyProtection::DeviceCertificate
+            );
         }
         // phase: schema_two_missing_reference_rejects_private_or_malformed_shapes
         {

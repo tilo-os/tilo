@@ -42,7 +42,7 @@ class TiloVm:
         self.log = log
 
     def run(self, *args: str, timeout: float = 120, check: bool = True,
-            slot: bool = True) -> str:
+            slot: bool = True, cwd: Path | None = None) -> str:
         env = dict(os.environ, TILO_VM=self.vm)
         if slot:
             env["TILO_VM_SLOT"] = self.slot
@@ -50,15 +50,17 @@ class TiloVm:
         started = time.monotonic()
         try:
             proc = subprocess.run(cmd, env=env, capture_output=True, text=True,
-                                  timeout=timeout)
+                                  timeout=timeout, cwd=cwd)
         except subprocess.TimeoutExpired as exc:
             self._log(cmd, None, time.monotonic() - started, "", str(exc))
             raise VmError(f"timed out after {timeout}s: {shlex.join(args)}") from exc
         self._log(cmd, proc.returncode, time.monotonic() - started,
                   proc.stdout, proc.stderr)
         if check and proc.returncode != 0:
-            raise VmError(f"`tilo-vm {shlex.join(args)[:200]}` exited {proc.returncode}: "
-                          f"{(proc.stderr or proc.stdout).strip()[:600]}")
+            said = (proc.stderr or proc.stdout).strip()
+            if len(said) > 1200:
+                said = said[:300] + " […] " + said[-900:]
+            raise VmError(f"`tilo-vm {shlex.join(args)[:200]}` exited {proc.returncode}: {said}")
         return proc.stdout
 
     def _log(self, cmd, code, elapsed, out, err):
@@ -66,7 +68,11 @@ class TiloVm:
             f.write(f"$ {shlex.join(cmd)}  # exit={code} {elapsed:.2f}s\n")
             for chunk in (out, err):
                 if chunk:
-                    f.write(chunk[:4000].rstrip() + "\n")
+                    # A failure explains itself at the end (a build's error after
+                    # its progress lines), so a long output keeps its head and tail.
+                    if len(chunk) > 8000:
+                        chunk = chunk[:2000] + "\n[…]\n" + chunk[-6000:]
+                    f.write(chunk.rstrip() + "\n")
 
     # -- control socket, semantic half --------------------------------------
 
@@ -126,8 +132,8 @@ class TiloVm:
                         timeout=timeout, check=check)
 
     def root_exec(self, script: str, timeout: float = 120) -> str:
-        """Run a read-only POSIX sh script as root in the VM. The compositor is not dumpable
-        and /proc is hidepid=invisible, so only root sees it; slot exec cannot."""
+        """Run a POSIX sh script as root in the VM: reads of the compositor's /proc entries
+        (it is not dumpable, so slot exec cannot), or a check's setup of this throwaway VM."""
         return self.vm_cmd("ssh", "--", "sh -c " + shlex.quote(script), timeout=timeout)
 
     def slot_uid(self) -> int:

@@ -35,6 +35,7 @@ from ci.workspace_graph import (
     cargo_metadata, changed_files, closure, comparison_merge_base, file_at,
     lockfile_change, owner_for, package_maps, reverse_dependencies, run,
 )
+from ci import runner_labels
 from ci import suites as path_suites
 
 
@@ -72,6 +73,7 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/check_lock_update.py": "tools/tests/test_lock_update.py",
     "tools/ci/measure.sh": "tools/tests/test_ci_measure.py",
     "tools/ci/affected_packages.py": "tools/tests/test_ci_select.py",
+    "tools/ci/app_sdk_affected.py": "tools/tests/test_app_sdk_affected.py",
     "tools/ci/recheck_base.py": "tools/tests/test_recheck_base.py",
     "tools/ci/workspace_graph.py": "tools/tests/test_ci_select.py",
     "tools/ci/recorded_test_time.json": "tools/tests/test_ci_select.py",
@@ -79,12 +81,10 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/timing_report.py": "tools/tests/test_ci_timing_report.py",
     "tools/ci/nextest_report.py": "tools/tests/test_nextest_report.py",
     "tools/ci/run_scoped_tests.py": "tools/tests/test_ci_scoped_tests.py",
-    "tools/ci/merge_pr.py": "tools/tests/test_ci_merge_pr.py",
     "tools/ci/builder_workflow_plan.py": "tools/tests/test_builder_workflow_plan.py",
     "tools/ci/resolve_promoted_builder.py": "tools/tests/test_resolve_promoted_builder.py",
     "tools/ci/native-mold-linker.sh": "tools/tests/test_ci_native_mold.py",
     "tools/ci/verify-native-mold.sh": "tools/tests/test_ci_native_mold.py",
-    "tools/ci/dispatch_merge.py": "tools/tests/test_ci_merge_dispatch.py",
     "tools/ci/suites.py": "tools/tests/test_suites.py",
     "tools/ci/suites.toml": "tools/tests/test_suites.py",
     "tools/policy/run.sh": "tools/tests/test_ci_select.py",
@@ -94,6 +94,7 @@ QUALITY_ONLY_HELPERS = {
     "tools/policy/check_workflow_package_paths.py": "tools/tests/test_workflow_package_paths.py",
     "tools/policy/check_workflow_timeouts.py": "tools/tests/test_workflow_timeouts.py",
     "tools/policy/check_ui_clock_contract.py": "tools/tests/test_ui_clock_contract.py",
+    "tools/policy/check_app_content_store.py": "tools/tests/test_app_content_store.py",
     "tools/policy/check_document_engine_boundary.py": "tools/tests/test_document_engine_boundary.py",
 }
 # Control-plane files are validated by tests that read or execute the production
@@ -138,12 +139,7 @@ QUALITY_ONLY_CONTROL_INPUTS = {
         "os/tests/workflow_dependency_invariants.sh",
     ),
 }
-NATIVE_RUNNERS = {"x86_64": "runner", "aarch64": "runner-arm64"}
-# A tilo-ui lib-test link has repeatedly exceeded 5 GiB RSS by itself. Its
-# affected shard also links shell and other test targets, so the general 10 GiB
-# envelope can OOM even when the source is valid. ARM has no large label and is
-# already serialized by the workflow.
-LARGE_X86_TEST_PACKAGES = {"tilo-ui"}
+NATIVE_RUNNERS = runner_labels.NATIVE
 GLOBAL_FILES = {
     "Cargo.toml",
     "Cargo.lock",
@@ -772,15 +768,11 @@ def make_plan(
         shard_names = set(shard["packages"].split()[1::2])
         test_names = sorted(tested & shard_names)
         scoped_names = sorted(scoped_tests.keys() & shard_names)
-        selected_runner = (
-            "runner-large"
-            if arch == "x86_64"
-            and LARGE_X86_TEST_PACKAGES.intersection(test_names + scoped_names)
-            else runner
-        )
         scoped = [{"package": name, "test": scoped_tests[name].test,
                    "filter": scoped_tests[name].filter} for name in scoped_names]
-        return {**shard, "arch": arch, "runner": selected_runner, "check_runner": runner,
+        # check_runner: a pull request runs its own check.yml against this
+        # planner from the merged tree; older branches' check.yml reads it.
+        return {**shard, "arch": arch, "runner": runner, "check_runner": runner,
                 "test_packages": " ".join(f"-p {name}" for name in test_names),
                 "scoped_tests": json.dumps(scoped, separators=(",", ":")) if scoped else ""}
 

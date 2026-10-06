@@ -12,42 +12,35 @@
 //!
 //! ## What is (and is not) an action here
 //!
-//! The migrated collaborative doc mutations are the **saved places**, committed
-//! **searches/history**, accepted **geocodes/routes/transit**,
-//! and the **offline regions** (the manageable rows of what has been downloaded).
-//! Camera movement, a focused text caret, status text, and ranked search/POI
-//! caches remain presentation or external work. A committed search records its
-//! intent in the document; each client resolves that intent locally.
+//! The collaborative doc mutations are the **saved places**, committed
+//! **searches/history**, and accepted **geocodes/routes/transit**. Camera
+//! movement, a focused text caret, status text, and ranked search/POI caches
+//! remain presentation or external work. A committed search records its intent
+//! in the document; each client resolves that intent locally. The areas a
+//! device downloaded for offline use are that device's
+//! ([`crate::offline_areas`]), not the shared map's.
 //!
-//! External, non-deterministic work stays out of `apply` too. Tile downloads,
-//! geocoding, and routing computation are done by the app off the wire; only the
-//! resulting metadata *row* crosses the executor. Mirroring how the app's
-//! `delete_region` keeps tiles a neighbouring area still needs, [`MapsAction`]
-//! only ever touches the **row** — [`DeleteRegion`](MapsAction::DeleteRegion)
-//! removes the record, and the app deletes the now-unreferenced tiles as an
-//! external side effect. Likewise a route is *stored* as the persisted result of
-//! an external OSRM/MOTIS/geocoder result is accepted through a typed action
-//! payload; only fetching it stays outside `apply`.
+//! External, non-deterministic work stays out of `apply` too. Geocoding and
+//! routing computation are done by the app off the wire; a route is *stored*
+//! as the accepted result of an external OSRM/MOTIS/geocoder request carried
+//! in a typed action payload; only fetching it stays outside `apply`.
 //!
 //! ## Determinism contract
 //!
-//! Ids (a region's) are minted at *authoring* time and carried in the payload;
+//! Ids are minted at *authoring* time and carried in the payload;
 //! [`Action::apply`] never touches the RNG or the wall-clock, and a payload that
 //! names no existing row is a **no-op** rather than an error, so a bad replay
 //! can't wedge a peer.
 
-use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
     Action, ActionContract, ActionError, ActionRegistry, ActionSpec, ConfirmationPolicy, Doc,
-    EncodedAction, ExecutionLocus, Resource, ResourceProvider, RetryPolicy, RiskLevel,
+    EncodedAction, ExecutionLocus, Resource, RetryPolicy, RiskLevel,
 };
 
 use crate::doc::MapsDoc;
-use crate::model::{
-    DownloadedRegion, LatLon, MapModel, Place, Route, TransitJourney, TransitTime, TravelMode,
-};
+use crate::model::{LatLon, MapModel, Place, Route, TransitJourney, TransitTime, TravelMode};
 
 /// Registry `type_id` for every Maps action.
 pub const MAPS_ACTION_TYPE: &str = "maps.action";
@@ -56,7 +49,12 @@ pub const MAPS_ACTION_TYPE: &str = "maps.action";
 ///
 /// Each variant carries enough payload to replay deterministically against its
 /// addressed native CRDT record.
+///
+/// The value is tagged by name (`{"action": "clear-route"}`), so every edit
+/// — a unit one included — is the JSON object the resource's typed door
+/// takes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "kebab-case")]
 pub enum MapsAction {
     /// Accept geocoded places into the durable place collection. Search overlays
     /// may stay local, but a result that becomes a map resource always crosses
@@ -103,18 +101,6 @@ pub enum MapsAction {
     },
     /// Clear accepted transit options without affecting a road route.
     ClearTransit,
-    /// Record a downloaded area as a manageable offline region. Re-downloading
-    /// the exact same footprint updates the record in place rather than stacking
-    /// a duplicate. The tiles themselves are fetched externally; this is only the
-    /// row. Every field (id, name, bounds, zoom range, tile count) is resolved at
-    /// authoring time and carried here so `apply` is a pure write.
-    AddRegion(DownloadedRegion),
-    /// Remove one offline region row by id. The tiles no other area needs are
-    /// deleted by the app as an external side effect; the action is the row.
-    DeleteRegion { id: String },
-    /// Remove every offline region row (the "clear offline areas" control). The
-    /// on-disk tile cache is cleared by the app externally.
-    ClearRegions,
 }
 
 impl Action for MapsAction {
@@ -155,9 +141,6 @@ impl Action for MapsAction {
                 MapsDoc::set_active_transit(doc, transit, *origin, origin_name, *dest, dest_name);
             }
             MapsAction::ClearTransit => MapsDoc::clear_transit(doc),
-            MapsAction::AddRegion(region) => MapsDoc::add_region(doc, region),
-            MapsAction::DeleteRegion { id } => MapsDoc::delete_region(doc, id),
-            MapsAction::ClearRegions => MapsDoc::clear_regions(doc),
         }
         Ok(())
     }
@@ -228,32 +211,8 @@ impl MapsAction {
                 model.mode = crate::model::TravelMode::Transit;
             }
             MapsAction::ClearTransit => model.transit.clear(),
-            MapsAction::AddRegion(region) => {
-                // Same footprint (bounds + zoom range) → update in place rather
-                // than stack a duplicate row.
-                model.regions.retain(|r| !same_footprint(r, region));
-                model.regions.push(region.clone());
-            }
-            MapsAction::DeleteRegion { id } => {
-                model.regions.retain(|r| &r.id != id);
-            }
-            MapsAction::ClearRegions => {
-                model.regions.clear();
-            }
         }
     }
-}
-
-/// Whether two region records cover the identical footprint (bounds + zoom
-/// range) — the dedupe key for [`MapsAction::AddRegion`].
-fn same_footprint(a: &DownloadedRegion, b: &DownloadedRegion) -> bool {
-    const EPS: f64 = 1e-6;
-    a.z0 == b.z0
-        && a.z1 == b.z1
-        && (a.min.lat - b.min.lat).abs() < EPS
-        && (a.min.lon - b.min.lon).abs() < EPS
-        && (a.max.lat - b.max.lat).abs() < EPS
-        && (a.max.lon - b.max.lon).abs() < EPS
 }
 
 /// Register Maps' action decoder for palette execution + remote replay.
@@ -281,9 +240,7 @@ pub fn encode(action: &MapsAction) -> EncodedAction {
 // Resource tree
 // ===========================================================================
 
-/// Per-collection ceiling for the contextual Ctrl+K snapshot. Exact canonical
-/// ids still resolve through [`ResourceProvider::resource`], so a large map
-/// library remains agent-addressable without rebuilding every row each frame.
+/// Per-collection ceiling for the contextual Ctrl+K snapshot.
 const EAGER_PER_KIND_LIMIT: usize = 12;
 
 fn immediate(id: &str, label: impl Into<String>, action: &MapsAction) -> ActionSpec {
@@ -296,22 +253,8 @@ fn immediate(id: &str, label: impl Into<String>, action: &MapsAction) -> ActionS
             ActionSpec::immediate_encoded(id, label, action.locus(), encode(action))
         })
         .with_contract(ActionContract {
-            risk: if matches!(
-                action,
-                MapsAction::DeleteRegion { .. } | MapsAction::ClearRegions
-            ) {
-                RiskLevel::Destructive
-            } else {
-                RiskLevel::Low
-            },
-            confirmation: if matches!(
-                action,
-                MapsAction::DeleteRegion { .. } | MapsAction::ClearRegions
-            ) {
-                ConfirmationPolicy::Confirm
-            } else {
-                ConfirmationPolicy::None
-            },
+            risk: RiskLevel::Low,
+            confirmation: ConfirmationPolicy::None,
             retry: RetryPolicy::Idempotent,
             reversible: true,
             tags: vec!["maps".into(), "workspace".into()],
@@ -329,30 +272,18 @@ fn route_label(model: &MapModel) -> String {
     }
 }
 
-/// A one-line label for an offline region: its human name plus the covered zoom
-/// range, so the palette row is self-describing.
-fn region_label(r: &DownloadedRegion) -> String {
-    format!("{} · z{}–{}", r.name, r.z0, r.z1)
-}
-
+/// A recent search. Searching again is the window's
+/// ([`crate::resource::MapsEffect::Search`]), joined to this row by id.
 fn history_resource(query: &str) -> Resource {
-    let mut resource = Resource::new(
+    Resource::new(
         format!("maps.search-history:{query}"),
         "maps.search-history",
         query,
-    );
-    if let Ok(action) = ActionSpec::operation(
-        "search-again",
-        "Search again",
-        tilo_actions::OperationKind::View,
-        "maps.search",
-        &query.to_string(),
-    ) {
-        resource = resource.with_action(action.with_contract(ActionContract::view()));
-    }
-    resource
+    )
 }
 
+/// A saved place. Opening it and asking for directions are the window's,
+/// joined to this row by id.
 fn saved_place_resource(place: &crate::model::Place) -> Resource {
     Resource::new(
         format!("maps.place:{}", place.id),
@@ -428,148 +359,66 @@ fn plan_settings_resource(model: &MapModel) -> Resource {
     resource
 }
 
-fn region_resource(region: &DownloadedRegion) -> Resource {
-    Resource::new(
-        format!("maps.region:{}", region.id),
-        "maps.region",
-        region_label(region),
-    )
-    .with_action(immediate(
-        "delete",
-        "Delete region",
-        &MapsAction::DeleteRegion {
-            id: region.id.clone(),
-        },
-    ))
-}
-
-/// Build the resource tree Maps currently has open: the workspace, its saved
-/// places (each exporting an un-save action), the active route (a clear action),
-/// and its offline regions (each a delete action) — every document-mutating
-/// operation exported as the same action the on-screen affordance dispatches.
-///
-/// The shared state lives in the document, so this reads the model straight from
-/// `doc` (an unseeded document publishes nothing). Presentation — the selected
-/// place, the camera, the search box — is read for labelling only and never
-/// becomes an action.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the resource tree is deliberately declared in one stable, searchable hierarchy; extracting each resource kind would obscure the shared action contract"
-)]
-pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
-    let Some(model) = MapsDoc::load(doc) else {
-        return Vec::new();
-    };
-
-    let mut root = Resource::new("maps.workspace", "maps.workspace", "Maps");
-
-    // Workspace-level: clear every offline area, only when some exist.
-    if !model.regions.is_empty() {
-        root = root.with_action(immediate(
-            "clear-regions",
-            "Clear offline areas",
-            &MapsAction::ClearRegions,
-        ));
-    }
-
-    // Search is a local brokered operation: result ranking/geocoding is not a
-    // shared document command, so another window never navigates unexpectedly.
-    root = root.with_action(ActionSpec::prompted_operation(
-        "search",
-        "Search maps",
-        "Place, address, or category",
-        "e.g. museum near me",
-        tilo_actions::OperationKind::View,
-        "maps.search",
-        |query| {
-            EncodedAction::encode_operation("maps.search", &query.trim().to_string())
-                .unwrap_or_else(|_| EncodedAction {
-                    type_id: "maps.search".into(),
-                    payload: Vec::new(),
-                })
-        },
-    ));
-
+/// Document-bound workspace actions for [`tilo_resource::publish`].
+pub(crate) fn document_bound_actions(model: &MapModel) -> Vec<ActionSpec> {
+    let mut actions = Vec::new();
     if !model.recents.is_empty() {
-        root = root.with_action(immediate(
+        actions.push(immediate(
             "clear-search-history",
             "Clear search history",
             &MapsAction::ClearRecents,
         ));
     }
+    actions
+}
 
+/// Collaborative children for [`tilo_resource::publish`]: history, saved
+/// places, active route/transit, and plan settings.
+pub(crate) fn document_children(model: &MapModel) -> Vec<Resource> {
+    let mut children = Vec::new();
     for query in model.recents.iter().take(EAGER_PER_KIND_LIMIT) {
-        root = root.with_child(history_resource(query));
+        children.push(history_resource(query));
     }
-
-    // Saved places → a resource each, exporting the un-save action.
     for place in model
         .places
         .iter()
         .filter(|place| place.saved)
         .take(EAGER_PER_KIND_LIMIT)
     {
-        root = root.with_child(saved_place_resource(place));
+        children.push(saved_place_resource(place));
     }
-
-    // Active route → a resource exporting the clear action.
     if model.route.is_some() {
-        root = root.with_child(route_resource(&model));
+        children.push(route_resource(model));
     }
     if !model.transit.is_empty() {
-        root = root.with_child(transit_resource(&model));
+        children.push(transit_resource(model));
     }
-
-    // Offline regions → a resource each, exporting the delete action.
-    for region in model.regions.iter().take(EAGER_PER_KIND_LIMIT) {
-        root = root.with_child(region_resource(region));
-    }
-    root = root.with_child(plan_settings_resource(&model));
-
-    vec![root]
+    children.push(plan_settings_resource(model));
+    children
 }
 
-impl ResourceProvider for crate::app::MapsApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        let model = MapsDoc::load(doc)?;
-        if id == "maps.workspace" {
-            return provide_resources(doc).into_iter().next();
-        }
-        if id == "maps.route:active" {
-            return model.route.is_some().then(|| route_resource(&model));
-        }
-        if id == "maps.transit:active" {
-            return (!model.transit.is_empty()).then(|| transit_resource(&model));
-        }
-        if id == "maps.plan-settings" {
-            return Some(plan_settings_resource(&model));
-        }
-        if let Some(query) = id.strip_prefix("maps.search-history:") {
-            return model
-                .recents
-                .iter()
-                .find(|candidate| candidate.as_str() == query)
-                .map(|candidate| history_resource(candidate));
-        }
-        if let Some(place_id) = id.strip_prefix("maps.place:") {
-            return model
+/// The document child `id`, beyond the bounded page [`document_children`]
+/// publishes.
+pub(crate) fn document_child(model: &MapModel, id: &str) -> Option<Resource> {
+    match id {
+        "maps.route:active" => model.route.is_some().then(|| route_resource(model)),
+        "maps.transit:active" => (!model.transit.is_empty()).then(|| transit_resource(model)),
+        "maps.plan-settings" => Some(plan_settings_resource(model)),
+        _ => {
+            if let Some(query) = id.strip_prefix("maps.search-history:") {
+                return model
+                    .recents
+                    .iter()
+                    .find(|recent| recent.as_str() == query)
+                    .map(|recent| history_resource(recent));
+            }
+            let place_id = id.strip_prefix("maps.place:")?;
+            model
                 .places
                 .iter()
                 .find(|place| place.saved && place.id == place_id)
-                .map(saved_place_resource);
+                .map(saved_place_resource)
         }
-        if let Some(region_id) = id.strip_prefix("maps.region:") {
-            return model
-                .regions
-                .iter()
-                .find(|region| region.id == region_id)
-                .map(region_resource);
-        }
-        None
     }
 }
 
@@ -577,9 +426,10 @@ impl ResourceProvider for crate::app::MapsApp {
 mod tests {
     use super::*;
     use crate::model::{Category, LatLon, Place, Route, TravelMode};
-    use automerge::ActorId;
-    use tilo_actions::ActionInput;
+    use crate::resource::Maps;
+    use automerge::{ActorId, AutoCommit};
     use tilo_automerge::ApplyIncoming;
+    use ui::tilo_resource::Resource as _;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -587,20 +437,17 @@ mod tests {
         r
     }
 
-    fn region(id: &str, name: &str) -> DownloadedRegion {
-        DownloadedRegion {
-            id: id.to_string(),
-            name: name.to_string(),
-            min: LatLon::new(48.10, 11.55),
-            max: LatLon::new(48.18, 11.62),
-            z0: 14,
-            z1: 16,
-            tiles: 42,
-        }
+    /// The workspace tree the framework publishes for `doc`; nothing for
+    /// a document no map action wrote.
+    fn published(doc: &AutoCommit) -> Vec<Resource> {
+        MapsDoc::load(doc)
+            .map(|model| ui::tilo_resource::publish::<Maps>("maps.workspace", "Maps", &model))
+            .into_iter()
+            .collect()
     }
 
-    /// A model carrying one saved place, an active route, and one offline region
-    /// — enough to exercise every resource kind and every action variant.
+    /// A model carrying one saved place and an active route — enough to
+    /// exercise every resource kind and every action variant.
     fn full_model() -> MapModel {
         let mut m = MapModel::default();
         let mut p = Place::new(
@@ -623,7 +470,6 @@ mod tests {
             from: LatLon::new(48.13, 11.57),
             to: LatLon::new(48.14, 11.58),
         });
-        m.regions.push(region("r1", "Altstadt"));
         m
     }
 
@@ -651,24 +497,21 @@ mod tests {
     ui::action_contract_tests! {
         seed: contract_seed_doc(),
         registry: registry(),
-        resources: |doc| provide_resources(doc),
-        palette: ["Delete region", "Clear route", "Remove from saved", "Clear search history"],
+        resources: |doc| published(doc),
+        palette: ["Clear route", "Remove from saved", "Clear search history"],
         replay: [
             unsave_place => |_| encode(&MapsAction::SetPlaceSaved {
                 id: "marienplatz".to_string(),
                 saved: false,
             }),
-            add_region => |_| encode(&MapsAction::AddRegion(region("r2", "Schwabing"))),
+            commit_search => |_| encode(&MapsAction::CommitSearch {
+                query: "Schwabing".to_string(),
+            }),
         ],
         undo: [
-            delete_region => |_| encode(&MapsAction::DeleteRegion { id: "r1".to_string() }),
+            clear_recents => |_| encode(&MapsAction::ClearRecents),
         ],
         encodes: [
-            delete_region => ("maps.region", "delete", |_, res| {
-                encode(&MapsAction::DeleteRegion {
-                    id: resource_key(res, "maps.region:").to_string(),
-                })
-            }),
             unsave_place => ("maps.place", "unsave", |_, res| {
                 encode(&MapsAction::SetPlaceSaved {
                     id: resource_key(res, "maps.place:").to_string(),
@@ -687,48 +530,44 @@ mod tests {
     fn workspace_resources_publish_bounded_exact_trees() {
         // Phase `ctrl_k_publishes_the_workspace_tree`.
         // Ctrl+K on Maps yields the workspace tree: a `maps.place` child per saved
-        // place (un-save), a `maps.route` child for the active route (clear), and a
-        // `maps.region` child per offline area (delete), plus the workspace-level
-        // clear-offline action. Drives the real resource path.
+        // place (un-save) and a `maps.route` child for the active route (clear),
+        // beside the declared map edits. Drives the real resource path.
         {
             let mut model = full_model();
-            model.places.push({
-                let mut p = Place::new(
-                    "viktualienmarkt",
-                    "Viktualienmarkt",
-                    Category::Shop,
-                    "",
-                    LatLon::new(48.135, 11.576),
-                );
-                p.saved = false;
-                p
-            });
+            model.places.push(Place::new(
+                "viktualienmarkt",
+                "Viktualienmarkt",
+                Category::Shop,
+                "",
+                LatLon::new(48.135, 11.576),
+            ));
             let doc = seeded(&model);
 
-            let resources = provide_resources(&doc);
+            let resources = published(&doc);
             assert_eq!(resources.len(), 1, "one workspace root");
             let root = &resources[0];
             assert_eq!(root.kind, "maps.workspace");
-
             let root_actions: Vec<&str> = root.actions.iter().map(|a| a.id.as_str()).collect();
-            assert!(root_actions.contains(&"clear-regions"), "{root_actions:?}");
-            assert_eq!(
-                root.actions
-                    .iter()
-                    .find(|action| action.id == "clear-regions")
-                    .expect("clear regions action")
-                    .contract
-                    .risk,
-                RiskLevel::Destructive
-            );
+            for declared in [
+                "save-place",
+                "set-travel-mode",
+                "clear-route",
+                "clear-transit",
+            ] {
+                assert!(
+                    root_actions.contains(&declared),
+                    "{declared}: {root_actions:?}"
+                );
+            }
 
-            let place = root
+            let places: Vec<_> = root
                 .children
                 .iter()
-                .find(|r| r.kind == "maps.place")
-                .expect("a saved-place resource");
+                .filter(|r| r.kind == "maps.place")
+                .collect();
+            assert_eq!(places.len(), 1, "only the saved place is a child");
             assert!(
-                place.actions.iter().any(|a| a.id == "unsave"),
+                places[0].actions.iter().any(|a| a.id == "unsave"),
                 "saved place exports un-save"
             );
             let route = root
@@ -740,85 +579,50 @@ mod tests {
                 route.actions.iter().any(|a| a.id == "clear"),
                 "route exports clear"
             );
-            let reg = root
-                .children
-                .iter()
-                .find(|r| r.kind == "maps.region")
-                .expect("a region resource");
             assert!(
-                reg.actions.iter().any(|a| a.id == "delete"),
-                "region exports delete"
-            );
-            assert_eq!(
-                reg.actions[0].contract.confirmation,
-                ConfirmationPolicy::Confirm
+                root.children.iter().all(|r| r.kind != "maps.region"),
+                "offline areas are this device's, not the shared map's"
             );
         }
 
         // Phase `empty_doc_publishes_nothing`.
-        // An unseeded document publishes nothing (no fabricated tree).
         {
             let doc = AutoCommit::new();
-            assert!(provide_resources(&doc).is_empty());
+            assert!(published(&doc).is_empty());
         }
 
-        // Phase `search_results_and_history_publish_as_resources`.
+        // Phase `search_history_publishes_as_resources`.
         // Search intent/history are shared and agent-addressable; the ranked
         // result list itself is an intentionally local derived cache.
         {
             let mut model = full_model();
-            let result = Place::new(
-                "pinakothek",
-                "Alte Pinakothek",
-                Category::Museum,
-                "Barer Straße 27",
-                LatLon::new(48.1484, 11.5707),
-            );
-            model.places.push(result);
-            let _ = result;
             model.push_recent("art museum");
             let doc = seeded(&model);
 
-            let root = &provide_resources(&doc)[0];
-            let search = root
-                .actions
-                .iter()
-                .find(|action| action.id == "search")
-                .expect("prompted Search maps action");
-            assert!(matches!(search.input, ActionInput::Prompted { .. }));
+            let root = &published(&doc)[0];
             assert!(
                 root.actions
                     .iter()
                     .any(|action| action.id == "clear-search-history")
             );
-
             assert!(
                 root.children
                     .iter()
                     .all(|resource| resource.kind != "maps.search-result"),
                 "ranked search results are local derived cache, not shared resources"
             );
-
             let history = root
                 .children
                 .iter()
                 .find(|resource| resource.kind == "maps.search-history")
                 .expect("search history resource");
             assert_eq!(history.label, "art museum");
-            assert!(
-                history
-                    .actions
-                    .iter()
-                    .any(|action| action.id == "search-again")
-            );
         }
 
         // Phase `large_collections_are_bounded_eagerly_and_resolve_exactly`.
         {
             let mut model = full_model();
-            model.results.clear();
             model.places.clear();
-            model.regions.clear();
             model.recents = (0..20).map(|index| format!("query-{index}")).collect();
             for index in 0..20 {
                 let mut place = Place::new(
@@ -830,14 +634,10 @@ mod tests {
                 );
                 place.saved = true;
                 model.places.push(place);
-                model.regions.push(region(
-                    &format!("region-{index}"),
-                    &format!("Region {index}"),
-                ));
             }
             let doc = seeded(&model);
-            let root = &provide_resources(&doc)[0];
-            for kind in ["maps.search-history", "maps.place", "maps.region"] {
+            let root = &published(&doc)[0];
+            for kind in ["maps.search-history", "maps.place"] {
                 assert_eq!(
                     root.children
                         .iter()
@@ -848,17 +648,33 @@ mod tests {
                 );
             }
 
-            let app = crate::app::MapsApp::offline();
+            let state = Maps::read(&doc).unwrap();
+            let published_place = root
+                .children
+                .iter()
+                .find(|resource| resource.id.as_str() == "maps.place:place-0")
+                .expect("the first saved place is on the published page");
+            let looked_up =
+                Maps::child(&state, "maps.place:place-0").expect("an eager saved place resolves");
+            assert_eq!(
+                looked_up
+                    .actions
+                    .iter()
+                    .map(|action| action.id.as_str())
+                    .collect::<Vec<_>>(),
+                published_place
+                    .actions
+                    .iter()
+                    .map(|action| action.id.as_str())
+                    .collect::<Vec<_>>(),
+                "an eager saved place is the published row"
+            );
             assert!(
-                ResourceProvider::resource(&app, &doc, "maps.place:place-19").is_some(),
+                Maps::child(&state, "maps.place:place-19").is_some(),
                 "an omitted saved place remains exactly addressable"
             );
             assert!(
-                ResourceProvider::resource(&app, &doc, "maps.region:region-19").is_some(),
-                "an omitted offline region remains exactly addressable"
-            );
-            assert!(
-                ResourceProvider::resource(&app, &doc, "maps.search-history:query-19").is_some(),
+                Maps::child(&state, "maps.search-history:query-19").is_some(),
                 "an omitted history item remains exactly addressable"
             );
         }

@@ -33,10 +33,19 @@ pub struct ApplicationDefinition {
     pub required: Vec<PermissionScope>,
     pub optional: Vec<PermissionScope>,
     /// Media types (`type/subtype`, lowercase) the component opens when a host
-    /// hands it a file ([`HostContext::take_open_file`]).
+    /// hands it a file ([`HostContext::take_open_file`]); [`ANY_MEDIA_TYPE`]
+    /// for a component that opens every file (a hex editor).
     pub opens: &'static [&'static str],
+    /// The app keeps one record per room, the room's own (a conversation
+    /// everyone in the room shares), rather than a record per window: every
+    /// window of the app in the room opens it, and the first creates it.
+    pub room_record: bool,
     pub create: ComponentFactory,
 }
+
+/// The entry of [`ApplicationDefinition::opens`] that opens files of every
+/// type.
+pub const ANY_MEDIA_TYPE: &str = "*/*";
 #[non_exhaustive]
 pub enum LaunchTarget {
     New,
@@ -90,7 +99,70 @@ pub struct HostContext {
     retirement: Option<crate::semantic_document_read::retirement::MountRetirement>,
     content: Option<tilo_content::ContentStore>,
     open_file: Option<OpenFile>,
+    capture: Option<Capture>,
+    settings: crate::storage::SettingsDocument,
+    /// Where the app keeps the person's own records on this device, when
+    /// the host keeps them ([`Self::provide_person_records`]).
+    person: Option<crate::record::person::PersonRecords>,
+    /// The file areas the host gave it ([`Self::provide_files`]); the
+    /// person's own otherwise.
+    files: Option<crate::storage::AppFiles>,
+    /// The component the app built to show another record in this one's
+    /// place, waiting for the host to swap it in ([`Reopener`]).
+    replacement: Rc<RefCell<Option<PendingReplacement>>>,
+    launch_arguments: Vec<String>,
+    handoff: Option<PlaybackHandoff>,
+    launch_options: Vec<LaunchOption>,
+    private: bool,
+    lent: Vec<Box<dyn std::any::Any>>,
 }
+
+/// Where playback stood on the device or app that handed the launch's media
+/// over: the launch continues it from there. The media itself is what the
+/// launch names (its argument or file); this is the transport and the name
+/// it played under.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PlaybackHandoff {
+    /// The position to continue from.
+    pub position_ms: u64,
+    /// Whether playback was running and continues running here.
+    pub resume_playing: bool,
+    /// What the media was called where it played, when the launch's
+    /// argument alone does not say (a stream's URL).
+    pub title: Option<String>,
+}
+
+/// One of an app's own command-line options a launch named: `--purpose
+/// number` carries a value, a switch such as `--debug-hit-areas` none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaunchOption {
+    /// The option as written, with its dashes: `--purpose`.
+    pub name: String,
+    /// Its value; `None` for a switch.
+    pub value: Option<String>,
+}
+
+/// What a host prepares an instance for when it renders a screenshot
+/// (`--shots`, `--shots-dir`, `--responsive-matrix`) rather than a window
+/// someone uses: the app shows a deterministic scene from fixtures and
+/// starts nothing that reaches outside the process.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Capture {
+    scenario: Option<String>,
+}
+
+impl Capture {
+    /// A capture of the named scenario; `None` is a plain `--shots`.
+    pub fn new(scenario: Option<String>) -> Self {
+        Self { scenario }
+    }
+
+    /// The scenario captured; `None` for a plain `--shots`.
+    pub fn scenario(&self) -> Option<&str> {
+        self.scenario.as_deref()
+    }
+}
+
 /// Presentation owned by a runner. Authority comes only from the component context.
 pub struct ComponentRunnerInputs {
     /// Effective snapshot, with scale metadata describing its baked values, as when
@@ -118,7 +190,251 @@ pub struct PreparedComponentInputs {
     pub runner_inputs: ComponentRunnerInputs,
 }
 
+/// A component an app built to show another record in the place of the one
+/// it shows now, and the launch that names that record (the path a person
+/// chose to open). The host closes the current component and mounts this
+/// one in the same window ([`AppComponent::take_replacement`]), then answers
+/// the request ([`Self::into_parts`]).
+pub struct ComponentReplacement {
+    pub component: AppComponent,
+    pub arguments: Vec<String>,
+    outcome: ReplacementOutcome,
+}
+
+impl ComponentReplacement {
+    /// `component`, opened on the launch naming `arguments`.
+    pub fn new(component: AppComponent, arguments: Vec<String>) -> Self {
+        Self {
+            component,
+            arguments,
+            outcome: ReplacementOutcome::default(),
+        }
+    }
+
+    /// The component to mount, and where the host answers whether the
+    /// window shows it now.
+    pub fn into_parts(self) -> (AppComponent, ReplacementOutcome) {
+        (self.component, self.outcome)
+    }
+}
+
+/// What became of a request to show another record in a window: nothing
+/// yet, shown, or refused with the reason. The host answers before it
+/// closes the asking component and polls the operation that asked, so that
+/// operation can be answered from it; a refusal leaves the component open to
+/// tell the person on its next frame.
+#[derive(Clone, Default)]
+pub struct ReplacementOutcome(Rc<RefCell<Option<Result<(), String>>>>);
+
+impl ReplacementOutcome {
+    /// The answer, once there is one.
+    pub fn get(&self) -> Option<Result<(), String>> {
+        self.0.borrow().clone()
+    }
+
+    /// Answer the request.
+    pub fn answer(&self, result: Result<(), String>) {
+        *self.0.borrow_mut() = Some(result);
+    }
+
+    /// Withdraw a request the host has not taken yet (the operation that
+    /// asked was cancelled): the host then neither builds nor shows the
+    /// record. Whether it was withdrawn in time.
+    pub fn withdraw(&self) -> bool {
+        let mut answer = self.0.borrow_mut();
+        if answer.is_some() {
+            return false;
+        }
+        *answer = Some(Err(WITHDRAWN.into()));
+        true
+    }
+
+    fn withdrawn(&self) -> bool {
+        matches!(self.0.borrow().as_ref(), Some(Err(reason)) if reason == WITHDRAWN)
+    }
+}
+
+/// The answer of a request its asker withdrew.
+const WITHDRAWN: &str = "the open was cancelled";
+
+/// A replacement asked for, built now or when the host takes it.
+enum PendingReplacement {
+    Built(ComponentReplacement),
+    /// Built when the host takes it, outside the frame that asked: the
+    /// record store the request opens is busy while the asking component
+    /// handles an event or an operation.
+    Deferred(
+        Box<dyn FnOnce() -> Result<ComponentReplacement, LaunchError>>,
+        ReplacementOutcome,
+    ),
+}
+
+impl PendingReplacement {
+    fn take(self) -> Option<ComponentReplacement> {
+        match self {
+            Self::Built(replacement) if replacement.outcome.withdrawn() => {
+                let (mut component, _) = replacement.into_parts();
+                let _ = component.close();
+                None
+            }
+            Self::Built(replacement) => Some(replacement),
+            Self::Deferred(_, outcome) if outcome.withdrawn() => None,
+            Self::Deferred(build, outcome) => match build() {
+                Ok(mut replacement) => {
+                    replacement.outcome = outcome;
+                    Some(replacement)
+                }
+                Err(error) => {
+                    outcome.answer(Err(error.to_string()));
+                    None
+                }
+            },
+        }
+    }
+
+    fn discard(self) {
+        match self {
+            Self::Built(replacement) => {
+                let (mut component, outcome) = replacement.into_parts();
+                let _ = component.close();
+                outcome.answer(Err("another record was asked for instead".into()));
+            }
+            Self::Deferred(_, outcome) => {
+                outcome.answer(Err("another record was asked for instead".into()));
+            }
+        }
+    }
+}
+
+/// What a component needs to open another record of its app in its own
+/// window: the same store, identity, authority and services as the record
+/// it shows, for another record. Taken from the [`HostContext`] before the
+/// factory consumes it ([`HostContext::reopener`]).
+#[derive(Clone)]
+pub struct Reopener {
+    records: RecordStore,
+    views: Rc<InstanceViewStore>,
+    device_id: String,
+    instance_id: InstanceId,
+    permissions: Rc<RefCell<PermissionContext>>,
+    author: UserId,
+    action_context: tilo_actions::ActionContext,
+    writes_as_author: bool,
+    services: crate::host::HostServices,
+    content: Option<tilo_content::ContentStore>,
+    settings: crate::storage::SettingsDocument,
+    person: Option<crate::record::person::PersonRecords>,
+    files: Option<crate::storage::AppFiles>,
+    private: bool,
+    replacement: Rc<RefCell<Option<PendingReplacement>>>,
+}
+
+impl Reopener {
+    /// A context for `record` of `definition`'s kind, opened when it exists
+    /// and reserved when it does not, with the target the factory builds it
+    /// for.
+    ///
+    /// # Errors
+    /// Rejects foreign kinds, contested writers, corrupt records and denied
+    /// authority.
+    pub fn prepare(
+        &self,
+        definition: &ApplicationDefinition,
+        record: RecordId,
+    ) -> Result<(HostContext, LaunchTarget), LaunchError> {
+        let checkout = RecordCheckout::new(record.clone(), definition.record_kind.clone());
+        let (target, new_record) = match self.records.try_open_record(&checkout) {
+            Ok(_) => (
+                LaunchTarget::Record {
+                    checkout,
+                    reveal: None,
+                },
+                None,
+            ),
+            Err(crate::record::RecordOpenError::MissingRecord) => (LaunchTarget::New, Some(record)),
+            Err(error) => return Err(LaunchError::Record(error)),
+        };
+        let mut context = HostContext::prepare_scoped(
+            definition,
+            HostContextInputs {
+                records: self.records.clone(),
+                views: Rc::clone(&self.views),
+                device_id: self.device_id.clone(),
+                instance_id: self.instance_id,
+                permissions: Rc::clone(&self.permissions),
+                author: self.author.clone(),
+                action_context: self.action_context.clone(),
+            },
+            &target,
+            new_record,
+        )?;
+        context.writes_as_author = self.writes_as_author;
+        context.services = self.services.clone();
+        context.content.clone_from(&self.content);
+        context.settings = self.settings.clone();
+        context.person.clone_from(&self.person);
+        context.files.clone_from(&self.files);
+        context.private = self.private;
+        Ok((context, target))
+    }
+
+    /// Ask the host to show `component` in this one's place. A request the
+    /// host has not taken yet is replaced, and its component closed.
+    pub fn replace(&self, component: AppComponent, arguments: Vec<String>) -> ReplacementOutcome {
+        let replacement = ComponentReplacement::new(component, arguments);
+        let outcome = replacement.outcome.clone();
+        self.request(PendingReplacement::Built(replacement));
+        outcome
+    }
+
+    /// Ask the host to show the component `build` makes in this one's
+    /// place, built when the host takes the request: what a component asks
+    /// while it handles an event or an operation, when the store its own
+    /// record lives in is busy.
+    pub fn replace_with(
+        &self,
+        build: impl FnOnce(&Self) -> Result<ComponentReplacement, LaunchError> + 'static,
+    ) -> ReplacementOutcome {
+        let reopener = self.clone();
+        let outcome = ReplacementOutcome::default();
+        self.request(PendingReplacement::Deferred(
+            Box::new(move || build(&reopener)),
+            outcome.clone(),
+        ));
+        outcome
+    }
+
+    fn request(&self, pending: PendingReplacement) {
+        let previous = self.replacement.borrow_mut().replace(pending);
+        if let Some(previous) = previous {
+            previous.discard();
+        }
+    }
+}
+
 impl HostContext {
+    /// What the component needs to open another record of its app in its
+    /// window later ([`Reopener`]).
+    pub fn reopener(&self) -> Reopener {
+        Reopener {
+            records: self.records.clone(),
+            views: Rc::clone(&self.views),
+            device_id: self.device_id.clone(),
+            instance_id: self.instance_id,
+            permissions: Rc::clone(&self.permissions),
+            author: self.author.clone(),
+            action_context: self.action_context.clone(),
+            writes_as_author: self.writes_as_author,
+            services: self.services.clone(),
+            content: self.content.clone(),
+            settings: self.settings.clone(),
+            person: self.person.clone(),
+            files: self.files.clone(),
+            private: self.private,
+            replacement: Rc::clone(&self.replacement),
+        }
+    }
+
     fn retire_semantic_mount(&self) {
         if let Some(retirement) = &self.retirement {
             retirement.retire();
@@ -260,6 +576,16 @@ impl HostContext {
             retirement: None,
             content: None,
             open_file: None,
+            capture: None,
+            settings: crate::storage::SettingsDocument::Session,
+            person: None,
+            files: None,
+            replacement: Rc::default(),
+            launch_arguments: Vec::new(),
+            handoff: None,
+            launch_options: Vec::new(),
+            private: false,
+            lent: Vec::new(),
         })
     }
     /// Commit this instance's edits to its record under an actor of its
@@ -276,6 +602,9 @@ impl HostContext {
     /// opaque bytes addressed by hash that outlive the component and that
     /// other components of the same scope read too.
     pub fn provide_content(&mut self, store: tilo_content::ContentStore) {
+        // The window's code finds it wherever it runs: an action applying,
+        // an action's arguments being built.
+        tilo_resource::content::register(&self.wake_scope.handle(), store.clone());
         self.content = Some(store);
     }
     /// The content store the host lent, if any.
@@ -290,6 +619,65 @@ impl HostContext {
     /// The file the host handed over to open, once.
     pub fn take_open_file(&mut self) -> Option<OpenFile> {
         self.open_file.take()
+    }
+    /// Prepare the instance for a screenshot of `capture` instead of a
+    /// window someone uses.
+    pub fn provide_capture(&mut self, capture: Capture) {
+        self.capture = Some(capture);
+    }
+    /// The screenshot this instance is prepared for, if it is one.
+    pub fn capture(&self) -> Option<&Capture> {
+        self.capture.as_ref()
+    }
+    /// Hand the component what its launch named besides a file: the
+    /// arguments of a command line or an "open with" (paths, URLs), in order.
+    /// The host has already checked how many the component accepts.
+    pub fn provide_launch_arguments(&mut self, arguments: Vec<String>) {
+        self.launch_arguments = arguments;
+    }
+    /// The launch arguments the host handed over, once.
+    pub fn take_launch_arguments(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.launch_arguments)
+    }
+    /// Hand the component the playback another device or app handed over
+    /// with the media its launch names.
+    pub fn provide_handoff(&mut self, handoff: PlaybackHandoff) {
+        self.handoff = Some(handoff);
+    }
+    /// The playback handoff the host handed over, once.
+    pub fn take_handoff(&mut self) -> Option<PlaybackHandoff> {
+        self.handoff.take()
+    }
+    /// Lend the component a service of the host that mounts it in its own
+    /// process: a connection to the session's process supervisor for a
+    /// terminal the shell hosts. The component takes it by type; a host
+    /// that lends nothing leaves the app on its own services.
+    pub fn lend<T: std::any::Any>(&mut self, service: T) {
+        self.lent.push(Box::new(service));
+    }
+    /// The services the host lent, once.
+    pub fn take_lent(&mut self) -> Vec<Box<dyn std::any::Any>> {
+        std::mem::take(&mut self.lent)
+    }
+    /// Hand the component the options of its own that its launch named
+    /// (`--purpose number`). The host has already checked that the
+    /// component takes each of them.
+    pub fn provide_launch_options(&mut self, options: Vec<LaunchOption>) {
+        self.launch_options = options;
+    }
+    /// The launch options the host handed over, once.
+    pub fn take_launch_options(&mut self) -> Vec<LaunchOption> {
+        std::mem::take(&mut self.launch_options)
+    }
+    /// Prepare the instance as a private window: its profile is thrown away
+    /// with the process, and nothing it shows reaches the person's other
+    /// windows, devices or collaborators.
+    pub fn provide_private(&mut self) {
+        self.private = true;
+    }
+    /// Whether the instance is a private window.
+    pub fn is_private(&self) -> bool {
+        self.private
     }
     /// Explicit owner-bound producer capability, available before factory work.
     pub fn control_domain(&self) -> crate::ControlDomain {
@@ -347,12 +735,45 @@ impl HostContext {
     /// per-user directories natively, the origin-private file system in a
     /// page. See [`crate::storage`] for what belongs where.
     pub fn files(&self) -> crate::storage::AppFiles {
-        crate::storage::AppFiles::for_app(&self.app_id)
+        self.files
+            .clone()
+            .unwrap_or_else(|| crate::storage::AppFiles::for_app(&self.app_id))
     }
-    /// This app's preferences: its own section of the desktop settings
-    /// document, named by the app id.
-    pub fn settings(&self) -> crate::storage::Settings {
-        crate::storage::Settings::for_app(&self.app_id)
+    /// This app's typed settings of type `T`, in the settings document the
+    /// host gave it ([`Self::provide_settings`]); `T` declares how far they
+    /// travel.
+    pub fn settings<T: crate::storage::SettingsSchema>(&self) -> crate::storage::Settings<T> {
+        self.storage().settings()
+    }
+    /// This app's files, secrets and settings in one handle, as framework
+    /// views and surfaces receive them.
+    pub fn storage(&self) -> crate::storage::AppStorage {
+        crate::storage::AppStorage::new(&self.app_id, self.secrets(), self.settings.clone())
+            .with_files(self.files())
+    }
+    /// Give the component this settings document instead of the person's
+    /// session document: a test or capture profile's own.
+    pub fn provide_settings(&mut self, document: crate::storage::SettingsDocument) {
+        self.settings = document;
+    }
+    /// Give the component these file areas instead of the person's: a test
+    /// or capture profile's own, so nothing it writes lands in theirs.
+    pub fn provide_files(&mut self, files: crate::storage::AppFiles) {
+        self.files = Some(files);
+    }
+    /// Give the component the person's own records of this app
+    /// ([`crate::record::person`]), kept beside the record it shows.
+    pub fn provide_person_records(&mut self, records: crate::record::person::PersonRecords) {
+        self.person = Some(records);
+    }
+    /// This device, as the host names it: stable across launches of the app
+    /// on it, distinct on each of the person's devices.
+    pub fn device_id(&self) -> &str {
+        &self.device_id
+    }
+    /// The person's own records of this app, when the host keeps them.
+    pub fn person_records(&self) -> Option<&crate::record::person::PersonRecords> {
+        self.person.as_ref()
     }
     /// Read/project an existing or initialized document. No untracked sync mutation.
     /// # Errors
@@ -365,6 +786,15 @@ impl HostContext {
             .read(&self.record.id, read)
             .ok_or(RecordOpenError::MissingRecord)
     }
+    /// Merge another participant's copy of the record, as their changes
+    /// arriving over sync are merged: validated first, attributed to them in
+    /// history, and never on this participant's undo stack. Returns whether
+    /// anything changed.
+    /// # Errors
+    /// The document is not a valid copy of this record, or it is not open.
+    pub fn merge_peer_document(&self, document: Vec<u8>) -> Result<bool, String> {
+        self.records.merge_peer_document(&self.record, document)
+    }
     /// The unique owner transition from Reserved to Ready. Existing is never initialized.
     /// # Errors
     /// Refuses repeated initialization and preserves the reservation on schema/storage failure.
@@ -374,6 +804,23 @@ impl HostContext {
     ) -> Result<(), RecordOpenError> {
         let reservation = self.reservation.as_mut().ok_or(RecordOpenError::Busy)?;
         reservation.initialize(initialize)?;
+        self.reservation = None;
+        Ok(())
+    }
+    /// [`Self::initialize_new_record`], then `seed` the record as this
+    /// author on this device. The genesis `initialize` writes is the same on
+    /// every device; the seed is what depends on who creates the record or
+    /// where, and is nobody's undo step. See
+    /// [`RecordReservation::initialize_seeded`].
+    /// # Errors
+    /// As [`Self::initialize_new_record`]; a failing seed fails it too.
+    pub fn initialize_new_record_seeded(
+        &mut self,
+        initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+        seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+    ) -> Result<(), RecordOpenError> {
+        let reservation = self.reservation.as_mut().ok_or(RecordOpenError::Busy)?;
+        reservation.initialize_seeded(initialize, seed)?;
         self.reservation = None;
         Ok(())
     }
@@ -436,11 +883,10 @@ impl Drop for HostContext {
     }
 }
 impl ApplicationDefinition {
-    /// Whether the app keeps one record per room, its package primary
-    /// (Chat's conversation), rather than a record per window. Definitions
-    /// do not declare this; Chat's record kind names it.
+    /// Whether the app keeps one record per room, its package primary,
+    /// rather than a record per window ([`Self::room_record`]).
     pub fn keeps_room_record(&self) -> bool {
-        self.record_kind.as_str() == "chat.workspace"
+        self.room_record
     }
 
     /// The launch target of an instance with no saved record: a new record
@@ -462,9 +908,13 @@ impl ApplicationDefinition {
     }
 
     /// Whether the component opens files of `media_type` (parameters and case ignored).
+    /// [`ANY_MEDIA_TYPE`] among [`Self::opens`] opens every file.
     pub fn opens_media_type(&self, media_type: &str) -> bool {
-        open_file::media_type_essence(media_type)
-            .is_some_and(|essence| self.opens.contains(&essence.as_str()))
+        open_file::media_type_essence(media_type).is_some_and(|essence| {
+            self.opens
+                .iter()
+                .any(|opens| *opens == ANY_MEDIA_TYPE || *opens == essence.as_str())
+        })
     }
     /// Validate, invoke the one factory under its lifetime, then restore presentation only.
     /// The factory projects through `HostContext::read_record`; no mutable `Widget::sync`
@@ -573,8 +1023,61 @@ impl ApplicationDefinition {
     }
 }
 
+/// How the window hosting a component treats its tree. Part of the
+/// component, so every host that runs it applies the same behaviour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ComponentBehaviour {
+    /// After a structural rebuild, focus the first focusable field again so a
+    /// filter that rebuilds the tree keeps its caret.
+    pub autofocus_on_structure_change: bool,
+    /// Apply the tree's [`crate::widget::Widget::appearance_intent`] live:
+    /// scale, theme, contrast and motion follow it each tick.
+    pub appearance_reconcile: bool,
+    /// Withhold the window from screenshots, recordings, screen sharing and
+    /// remote viewers, as [`crate::App::set_capture_protected`] does: for
+    /// apps that show secrets, such as a password manager.
+    pub capture_protected: bool,
+    /// What the window is to the session: an ordinary app window, or the
+    /// session's on-screen input surface.
+    pub window: WindowRole,
+}
+
+/// What a component's window is to the session.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WindowRole {
+    /// An app window a person opens, arranges and closes.
+    #[default]
+    Ordinary,
+    /// The session's on-screen input surface, such as an on-screen keyboard.
+    /// Its window announces the component's own app id, by which the
+    /// compositor (on the private display it launched the surface on) floats
+    /// it outside the workspace and shows it only while a text field is
+    /// focused. It is a session service started without a room, so it
+    /// attaches to no workspace runtime. Its controls type into other apps'
+    /// fields, so no headless drive may operate it.
+    InputSurface,
+}
+
+impl ComponentBehaviour {
+    /// Every behaviour off; a component spells out only what it turns on,
+    /// `ComponentBehaviour { capture_protected: true, ..ComponentBehaviour::DEFAULT }`.
+    pub const DEFAULT: Self = Self {
+        autofocus_on_structure_change: false,
+        appearance_reconcile: false,
+        capture_protected: false,
+        window: WindowRole::Ordinary,
+    };
+}
+
+impl Default for ComponentBehaviour {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 /// Real app content and its lifetime; hosts cannot extract an unbound root.
 pub struct AppComponent {
+    pub(crate) behaviour: ComponentBehaviour,
     pub(crate) history: Option<crate::history_mode::HistoryRegistration>,
     context: HostContext,
     pub(crate) root: Option<Box<dyn AppWidget>>,
@@ -588,8 +1091,65 @@ pub struct AppComponent {
     report_drained: bool,
     registry_owner: Rc<()>,
     providers: Rc<RefCell<ProviderPayloads>>,
+    /// The record durability last delivered to the root, and when it was
+    /// sampled.
+    record_save: Option<(crate::record::RecordSaveStatus, crate::time::Instant)>,
+    /// Whether a change to the delivered durability has yet to be presented.
+    save_status_changed: bool,
 }
+
+/// How soon a component whose record is still being written samples its
+/// durability again. The writer settles off the event loop and nothing wakes
+/// the window when it does, so a "Saving…" would otherwise stay on screen,
+/// and in the accessibility tree, until the next unrelated event.
+const SAVING_RESAMPLE: crate::time::Duration = crate::time::Duration::from_millis(100);
+
 impl AppComponent {
+    /// The component the app built to show another record in this one's
+    /// place, once: the host closes this component and mounts that one.
+    pub fn take_replacement(&mut self) -> Option<ComponentReplacement> {
+        let pending = self.context.replacement.borrow_mut().take()?;
+        pending.take()
+    }
+    /// What this component's app would open another record with.
+    #[cfg(test)]
+    pub(crate) fn reopener(&self) -> Reopener {
+        self.context.reopener()
+    }
+    /// Set how the hosting window treats this component's tree.
+    pub const fn set_behaviour(&mut self, behaviour: ComponentBehaviour) {
+        self.behaviour = behaviour;
+    }
+    /// The id of the application this component is an instance of.
+    pub fn app_id(&self) -> &str {
+        self.context.app_id()
+    }
+    /// A collaboration manager for this component's record, reached through
+    /// the host's `connector` as an app the host launched: what a host
+    /// showing the component inside its own process hands the App it runs
+    /// it in, so the component publishes and is invoked through the session
+    /// broker as a launched app is. `None` when the component's records have
+    /// no route the broker could acknowledge.
+    #[cfg(all(unix, feature = "broker-transport"))]
+    pub fn collaborate_through(
+        &self,
+        connector: crate::collaboration::HostSessionConnector,
+    ) -> Option<crate::collaboration::CollaborationManager> {
+        let binding = self.callback_binding();
+        let route = binding
+            .broker_route()
+            .or_else(|| binding.admission_route())?;
+        // Built inside the component's wake scope, so the broker's traffic
+        // wakes whoever the component wakes.
+        let _entry = self.context.wake_scope.enter();
+        Some(
+            crate::collaboration::CollaborationManager::for_route_host_in_background(
+                connector,
+                route,
+                Some(binding.checkout.kind.as_str().to_owned()),
+            ),
+        )
+    }
     pub(crate) fn take_root_retirement(
         &mut self,
     ) -> Option<crate::semantic_document_read::retirement::RootRetirementPrelude> {
@@ -606,6 +1166,26 @@ impl AppComponent {
     pub fn register_document_history(
         &mut self,
         definition: &'static crate::history_mode::HistoryDefinition,
+    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
+        self.register_history_of(definition, None)
+    }
+    /// Register presentation for this component's document, as
+    /// [`Self::register_document_history`], and for the files of the mounted
+    /// filesystem it shows: every checked-file scope reads the file `files`
+    /// names.
+    /// # Errors
+    /// As [`Self::register_document_history`].
+    pub fn register_document_and_file_history(
+        &mut self,
+        definition: &'static crate::history_mode::HistoryDefinition,
+        files: crate::history_mode::checked_files::FileHistorySource,
+    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
+        self.register_history_of(definition, Some(files))
+    }
+    fn register_history_of(
+        &mut self,
+        definition: &'static crate::history_mode::HistoryDefinition,
+        files: Option<crate::history_mode::checked_files::FileHistorySource>,
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
         use crate::history_mode::{
             HistoryOwner, HistoryPresentation, HistoryRegistration, HistorySourceRegistration,
@@ -625,9 +1205,13 @@ impl AppComponent {
                         reason,
                     })
                 }
-                HistoryPresentation::CheckedFiles { .. } => {
-                    Err(crate::history_mode::HistoryRegistrationError::UnsupportedOwner)
-                }
+                HistoryPresentation::CheckedFiles { .. } => match &files {
+                    Some(source) => Ok(HistorySourceRegistration::CheckedFiles {
+                        scope: scope.key,
+                        source: source.clone(),
+                    }),
+                    None => Err(crate::history_mode::HistoryRegistrationError::UnsupportedOwner),
+                },
             })
             .collect::<Result<Vec<_>, _>>()?;
         self.history = Some(HistoryRegistration::new(definition, sources)?);
@@ -698,11 +1282,47 @@ impl AppComponent {
     /// The same checked callback lifetime owns both the sample and the hook.
     pub(crate) fn project_record_save_status(&mut self) {
         let captured = self.callback_binding();
-        let _ = self.with_live_component(&captured, |binding, root, _registry| {
-            if let Ok(status) = binding.records.save_status(&binding.checkout.id) {
-                root.record_save_status(status);
+        let sampled = self
+            .with_live_component(&captured, |binding, root, _registry| {
+                let status = binding.records.save_status(&binding.checkout.id).ok()?;
+                root.record_save_status(status.clone());
+                Some(status)
+            })
+            .ok()
+            .flatten();
+        let Some(status) = sampled else {
+            return;
+        };
+        let changed = self
+            .record_save
+            .as_ref()
+            .is_some_and(|(previous, _)| *previous != status);
+        self.record_save = Some((status, crate::time::now()));
+        if changed {
+            // The root synced before it was handed the new state; a frame of
+            // its own, with a sync of its own, shows it.
+            self.save_status_changed = true;
+            self.context.wake_handle().wake();
+        }
+    }
+
+    /// When the window must sync again without input: shortly after the
+    /// last sample while the record is still being written, so the moment
+    /// it becomes durable is shown. The deadline is fixed to the sample: one
+    /// computed from the time it is asked for would never come due.
+    pub(crate) fn save_status_wake_deadline(&self) -> Option<crate::time::Instant> {
+        match &self.record_save {
+            Some((crate::record::RecordSaveStatus::Saving, sampled)) => {
+                sampled.checked_add(SAVING_RESAMPLE)
             }
-        });
+            _ => None,
+        }
+    }
+
+    /// Whether the delivered durability changed since this was last asked,
+    /// so the window presents the new state instead of keeping the old one.
+    pub(crate) fn take_save_status_changed(&mut self) -> bool {
+        std::mem::take(&mut self.save_status_changed)
     }
 
     pub fn new(
@@ -725,6 +1345,7 @@ impl AppComponent {
         let registry_owner = context.construction.clone();
         construction.disarm();
         Self {
+            behaviour: ComponentBehaviour::default(),
             history: None,
             context,
             root: Some(root),
@@ -742,7 +1363,18 @@ impl AppComponent {
                 payloads: HashMap::new(),
             })),
             registry_owner,
+            record_save: None,
+            save_status_changed: false,
         }
+    }
+
+    /// Take the view and action decoders of newly loaded code in place of
+    /// the running ones. The document stays: the new view reads it, and edits
+    /// the new view encodes are decoded and applied by the new code.
+    #[cfg(feature = "native")]
+    pub(crate) fn install_reloaded(&mut self, root: crate::app::DevRoot) {
+        self.root = Some(root.view);
+        self.registry = Some(root.registry);
     }
 
     /// Return only weak proxies; payload ownership remains with this component.
@@ -1386,7 +2018,7 @@ mod bound_lifetime_tests {
     use taffy::{NodeId, TaffyTree};
     struct Root(Column);
     impl Widget for Root {
-        fn sync(&mut self, doc: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        fn sync(&mut self, doc: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
             self.0.sync(doc, path);
         }
         fn build_layout(
@@ -1475,6 +2107,7 @@ mod bound_lifetime_tests {
             required: vec![],
             optional: vec![],
             opens: &[],
+            room_record: false,
             create: factory,
         };
         let supplied = RecordId::for_tab(55);
@@ -1521,6 +2154,7 @@ mod bound_lifetime_tests {
             required: vec![],
             optional: vec![],
             opens: &[],
+            room_record: false,
             create: factory,
         };
         let prepare = |checkout| {
@@ -1581,6 +2215,7 @@ mod bound_lifetime_tests {
                 required: vec![],
                 optional: vec![],
                 opens: &[],
+                room_record: false,
                 create: factory,
             };
             let prepare = |target: &LaunchTarget| {
@@ -1668,6 +2303,7 @@ mod bound_lifetime_tests {
                 required: vec![],
                 optional: vec![],
                 opens: &[],
+                room_record: false,
                 create: factory,
             };
             let context = HostContext::prepare(

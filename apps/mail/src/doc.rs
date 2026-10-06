@@ -6,12 +6,21 @@
 //! ```text
 //! root
 //! ├── "flags"   (Map)  per-message mutable state, keyed by message-id string
-//! │     └── <id> (Map) { read: bool, starred: bool, folder: Str }
-//! ├── "messages" (Map)  externally-ingested ids `{ present, purged }`
+//! │     └── <id> (Map) { read: bool, starred: bool, folder: Str, labels: List }
+//! │           └── "server" (Map) { read, starred, folder } as the server has them
+//! ├── "messages" (Map)  externally-ingested ids
+//! │     └── <id> (Map) { present, purged, account, locator, server_removed }
 //! └── "draft"   (Map)  the message currently being composed
 //!       ├── to, cc, bcc, subject, body, html_body, … (Str) as last saved
 //!       └── "rich_body" (Map) the body being written: qdoc rich text
 //! ```
+//!
+//! A message fetched from a mail server also records where it lives there
+//! (`account`, the `Message-ID` `locator`) and the flags and folder the server
+//! last reported or confirmed. Where the document and the server differ, the
+//! server has not been told yet: every device with the account brings the
+//! server up to date ([`MailDoc::server_updates`]), whoever made the change —
+//! a click, the palette, an agent, a collaborator or an undo.
 //!
 //! The immutable message corpus (headers/bodies/attachments) is *not* stored
 //! here — it's hydrated from the server (or the sample corpus) into the
@@ -23,17 +32,31 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use ui::doc::{read_bool, read_str};
 
-use qdoc_rich_text::RichText;
+use tilo_document::RichText;
 use ui::widget::{BlockContent, BlockKind};
 
-use crate::actions::DraftBodySeed;
+use crate::actions::{DraftBodySeed, IngestBaseline, Outgoing, ServerUpdate};
 use crate::attachment_store;
-use crate::model::{Draft, DraftAttachment, Folder, Mailbox, Message};
+use crate::model::{Draft, DraftAttachment, Folder, Mailbox};
 
 /// The draft's key holding the body being written.
 const RICH_BODY: &str = "rich_body";
 
+/// A message's flag entry key holding what its server has.
+const SERVER: &str = "server";
+const OUTBOX: &str = "outbox";
+
 pub struct MailDoc;
+
+/// Per-message collaborative flags projected from the document for publish.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MessageFlags {
+    pub id: String,
+    pub folder: Folder,
+    pub read: bool,
+    pub starred: bool,
+    pub labels: Vec<String>,
+}
 
 impl MailDoc {
     // ---- generic scalar helpers ----
@@ -61,24 +84,171 @@ impl MailDoc {
         Self::map(doc, &ROOT, "flags")
     }
 
-    /// Seed previously-unseen flag fields from an externally-ingested message.
-    ///
-    /// This is intentionally *not* a user mutation path. Existing CRDT values
-    /// win field-by-field, so a delayed IMAP fetch cannot overwrite a local or
-    /// remote `MailAction`; server flags merely establish the first baseline
-    /// for a newly hydrated message.
-    pub fn ingest_message_flags(doc: &mut AutoCommit, msg: &Message) {
-        Self::register_message(doc, &msg.id.to_string());
-        let key = msg.id.to_string();
-        if Self::get_read(doc, &key).is_none() {
-            Self::set_read(doc, &key, msg.read);
+    /// Register a message and record what its source reports. Fields the
+    /// document has no value for yet take the reported one; existing values
+    /// win, so a delayed fetch cannot overwrite a `MailAction`. A message
+    /// fetched from a server (`account` and `locator`) also records the
+    /// server's flags, and a flag the server changed since it last reported
+    /// it — another mail client read the message — is adopted.
+    pub fn ingest_baseline(doc: &mut AutoCommit, baseline: &IngestBaseline) {
+        let id = baseline.id.as_str();
+        if id.is_empty() {
+            return;
         }
-        if Self::get_starred(doc, &key).is_none() {
-            Self::set_starred(doc, &key, msg.starred);
+        Self::register_message(doc, id);
+        let folder = baseline.folder.as_deref().and_then(Folder::from_key);
+        let (Some(account), Some(locator)) = (&baseline.account, &baseline.locator) else {
+            if let Some(read) = baseline.read
+                && Self::get_read(doc, id).is_none()
+            {
+                Self::set_read(doc, id, read);
+            }
+            if let Some(starred) = baseline.starred
+                && Self::get_starred(doc, id).is_none()
+            {
+                Self::set_starred(doc, id, starred);
+            }
+            if let Some(folder) = folder
+                && Self::get_folder_for(doc, id).is_none()
+            {
+                Self::set_folder_for(doc, id, folder);
+            }
+            return;
+        };
+        let messages = Self::messages_map(doc);
+        let entry = Self::map(doc, &messages, id);
+        ui::doc::put_if_changed(doc, &entry, "account", account.as_str());
+        ui::doc::put_if_changed(doc, &entry, "locator", locator.as_str());
+        let flags = Self::flag_entry(doc, id);
+        let server = Self::map(doc, &flags, SERVER);
+        for (key, reported) in [("read", baseline.read), ("starred", baseline.starred)] {
+            let Some(reported) = reported else { continue };
+            let known = read_bool(doc, &server, key);
+            if known == Some(reported) {
+                continue;
+            }
+            ui::doc::put_if_changed(doc, &server, key, reported);
+            if known.is_some() || read_bool(doc, &flags, key).is_none() {
+                ui::doc::put_if_changed(doc, &flags, key, reported);
+            }
         }
-        if Self::get_folder_for(doc, &key).is_none() {
-            Self::set_folder_for(doc, &key, msg.folder);
+        if let Some(reported) = folder {
+            let known = read_str(doc, &server, "folder").and_then(|key| folder_from_key(&key));
+            if known != Some(reported) {
+                ui::doc::put_if_changed(doc, &server, "folder", folder_key(reported));
+                if known.is_some() || Self::get_folder_for(doc, id).is_none() {
+                    Self::set_folder_for(doc, id, reported);
+                }
+            }
         }
+    }
+
+    /// Record that the server now holds what `update` asked of it.
+    pub fn server_applied(doc: &mut AutoCommit, update: &ServerUpdate) {
+        let id = update.id();
+        if Self::server_entry(doc, id).is_none() {
+            return;
+        }
+        match update {
+            ServerUpdate::Flags { read, starred, .. } => {
+                let flags = Self::flag_entry(doc, id);
+                let server = Self::map(doc, &flags, SERVER);
+                ui::doc::put_if_changed(doc, &server, "read", *read);
+                ui::doc::put_if_changed(doc, &server, "starred", *starred);
+            }
+            ServerUpdate::Move { to, .. } => {
+                let flags = Self::flag_entry(doc, id);
+                let server = Self::map(doc, &flags, SERVER);
+                ui::doc::put_if_changed(doc, &server, "folder", folder_key(*to));
+            }
+            ServerUpdate::Remove { .. } => {
+                let messages = Self::messages_map(doc);
+                let entry = Self::map(doc, &messages, id);
+                ui::doc::put_if_changed(doc, &entry, "server_removed", true);
+            }
+        }
+    }
+
+    /// Where a fetched message lives on its server: `(account, locator)`.
+    fn server_entry(doc: &AutoCommit, id: &str) -> Option<(String, String)> {
+        let Ok(Some((Value::Object(ObjType::Map), messages))) = doc.get(&ROOT, "messages") else {
+            return None;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&messages, id) else {
+            return None;
+        };
+        Some((
+            read_str(doc, &entry, "account")?,
+            read_str(doc, &entry, "locator")?,
+        ))
+    }
+
+    /// What every fetched message's server still has to be told: the
+    /// document's flags, folder and permanent deletions where the server
+    /// differs, in the order a server applies them (flags in the folder the
+    /// message is in, then the move).
+    pub fn server_updates(doc: &AutoCommit) -> Vec<ServerUpdate> {
+        let Ok(Some((Value::Object(ObjType::Map), messages))) = doc.get(&ROOT, "messages") else {
+            return Vec::new();
+        };
+        let mut updates = Vec::new();
+        for id in doc.keys(&messages) {
+            let Some((account, locator)) = Self::server_entry(doc, &id) else {
+                continue;
+            };
+            let Some(flags) = Self::flag_entry_ref(doc, &id) else {
+                continue;
+            };
+            let Ok(Some((Value::Object(ObjType::Map), server))) = doc.get(&flags, SERVER) else {
+                continue;
+            };
+            let Some(at) = read_str(doc, &server, "folder").and_then(|key| folder_from_key(&key))
+            else {
+                continue;
+            };
+            if Self::is_message_purged(doc, &id) {
+                let removed = doc
+                    .get(&messages, id.as_str())
+                    .ok()
+                    .flatten()
+                    .and_then(|(_, entry)| read_bool(doc, &entry, "server_removed"));
+                if removed != Some(true) {
+                    updates.push(ServerUpdate::Remove {
+                        id,
+                        account,
+                        locator,
+                        folder: at,
+                    });
+                }
+                continue;
+            }
+            let read = read_bool(doc, &flags, "read");
+            let starred = read_bool(doc, &flags, "starred");
+            let server_read = read_bool(doc, &server, "read");
+            let server_starred = read_bool(doc, &server, "starred");
+            if read != server_read || starred != server_starred {
+                updates.push(ServerUpdate::Flags {
+                    id: id.clone(),
+                    account: account.clone(),
+                    locator: locator.clone(),
+                    folder: at,
+                    read: read.or(server_read).unwrap_or(false),
+                    starred: starred.or(server_starred).unwrap_or(false),
+                });
+            }
+            if let Some(to) = Self::get_folder_for(doc, &id)
+                && to != at
+            {
+                updates.push(ServerUpdate::Move {
+                    id,
+                    account,
+                    locator,
+                    from: at,
+                    to,
+                });
+            }
+        }
+        updates
     }
 
     /// Overlay any persisted flags from the CRDT onto an in-memory mailbox.
@@ -198,7 +368,7 @@ impl MailDoc {
         if let Some(html) = seed.html.as_deref().filter(|html| !html.trim().is_empty()) {
             // Mail bodies carry no inline images; any the HTML embeds are left out.
             let mut images = tilo_content::ContentInputs::new();
-            qdoc_codecs::html::import_html_under(doc, &body, html, &mut images);
+            tilo_doc_codecs::html::import_html_under(doc, &body, html, &mut images);
             return;
         }
         if RichText::initialize_under(doc, &body).is_err() {
@@ -239,6 +409,61 @@ impl MailDoc {
                 let _ = doc.delete(&d, key);
             }
         }
+    }
+
+    // ---- outbox ----------------------------------------------------------
+    //
+    // Messages sent but not yet delivered, each under its id: the message as
+    // JSON, and the reason its server refused it once it did.
+
+    /// Queue `outgoing` in the outbox.
+    pub fn queue_outgoing(doc: &mut AutoCommit, outgoing: &Outgoing) {
+        let Ok(message) = serde_json::to_string(outgoing) else {
+            return;
+        };
+        let outbox = Self::map(doc, &ROOT, OUTBOX);
+        let entry = Self::map(doc, &outbox, &outgoing.id);
+        ui::doc::put_if_changed(doc, &entry, "message", message.as_str());
+        if doc.get(&entry, "failed").ok().flatten().is_some() {
+            let _ = doc.delete(&entry, "failed");
+        }
+    }
+
+    /// Take message `id` out of the outbox.
+    pub fn remove_outgoing(doc: &mut AutoCommit, id: &str) {
+        if let Ok(Some((Value::Object(ObjType::Map), outbox))) = doc.get(&ROOT, OUTBOX)
+            && doc.get(&outbox, id).ok().flatten().is_some()
+        {
+            let _ = doc.delete(&outbox, id);
+        }
+    }
+
+    /// Record why message `id`'s server refused it.
+    pub fn fail_outgoing(doc: &mut AutoCommit, id: &str, reason: &str) {
+        if let Ok(Some((Value::Object(ObjType::Map), outbox))) = doc.get(&ROOT, OUTBOX)
+            && let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&outbox, id)
+        {
+            ui::doc::put_if_changed(doc, &entry, "failed", reason);
+        }
+    }
+
+    /// Every message in the outbox, with the reason its server refused it
+    /// if it did.
+    pub fn outbox(doc: &AutoCommit) -> Vec<(Outgoing, Option<String>)> {
+        let Ok(Some((Value::Object(ObjType::Map), outbox))) = doc.get(&ROOT, OUTBOX) else {
+            return Vec::new();
+        };
+        doc.keys(&outbox)
+            .filter_map(|id| {
+                let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&outbox, id.as_str())
+                else {
+                    return None;
+                };
+                let outgoing: Outgoing =
+                    serde_json::from_str(&read_str(doc, &entry, "message")?).ok()?;
+                (outgoing.id == id).then(|| (outgoing, read_str(doc, &entry, "failed")))
+            })
+            .collect()
     }
 
     // ---- known message registry -----------------------------------------
@@ -410,6 +635,28 @@ impl MailDoc {
         read_str_list(doc, &list)
     }
 
+    /// Collaborative flag projection for every non-purged message id. The
+    /// immutable corpus (subject, body, attachments) stays outside Automerge;
+    /// Document ops only need ids and flag/label/folder state.
+    pub fn list_message_flags(doc: &AutoCommit) -> Vec<MessageFlags> {
+        let Ok(Some((Value::Object(ObjType::Map), flags))) = doc.get(&ROOT, "flags") else {
+            return Vec::new();
+        };
+        let mut out: Vec<MessageFlags> = doc
+            .keys(&flags)
+            .filter(|id| !Self::is_message_purged(doc, id))
+            .map(|id| MessageFlags {
+                id: id.clone(),
+                folder: Self::get_folder_for(doc, &id).unwrap_or(Folder::Inbox),
+                read: Self::get_read(doc, &id).unwrap_or(false),
+                starred: Self::get_starred(doc, &id).unwrap_or(false),
+                labels: Self::get_labels(doc, &id),
+            })
+            .collect();
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        out
+    }
+
     /// Add a label to a message. A no-op when the label is already present, so
     /// the operation is deterministic and the list stays a set.
     pub fn add_label(doc: &mut AutoCommit, id: &str, label: &str) {
@@ -527,7 +774,7 @@ mod tests {
             mb.mark_read(id, true);
             mb.toggle_star(id);
             let starred = mb.get(id).unwrap().starred;
-            MailDoc::ingest_message_flags(&mut doc, mb.get(id).unwrap());
+            MailDoc::ingest_baseline(&mut doc, &IngestBaseline::from_message(mb.get(id).unwrap()));
 
             // Fresh corpus with default flags; overlay should restore them.
             let mut mb2 = sample_mailbox();
@@ -540,7 +787,7 @@ mod tests {
                 m.read = false;
                 m.starred = false;
             }
-            MailDoc::ingest_message_flags(&mut doc, mb.get(id).unwrap());
+            MailDoc::ingest_baseline(&mut doc, &IngestBaseline::from_message(mb.get(id).unwrap()));
             MailDoc::apply_flags(&doc, &mut mb3);
             assert_eq!(mb3.get(id).unwrap().starred, starred);
             assert!(mb3.get(id).unwrap().read);
@@ -552,12 +799,12 @@ mod tests {
             let mut mailbox = sample_mailbox();
             let id = *mailbox.messages.keys().next().expect("sample message");
             let fetched = mailbox.get(id).expect("sample message").clone();
-            MailDoc::ingest_message_flags(&mut doc, &fetched);
+            MailDoc::ingest_baseline(&mut doc, &IngestBaseline::from_message(&fetched));
             MailDoc::set_read(&mut doc, &id.to_string(), true);
 
             let mut stale_fetch = fetched;
             stale_fetch.read = false;
-            MailDoc::ingest_message_flags(&mut doc, &stale_fetch);
+            MailDoc::ingest_baseline(&mut doc, &IngestBaseline::from_message(&stale_fetch));
             assert_eq!(MailDoc::get_read(&doc, &id.to_string()), Some(true));
 
             MailDoc::apply_flags(&doc, &mut mailbox);
@@ -569,7 +816,10 @@ mod tests {
             let mut doc = AutoCommit::new();
             let mut mailbox = sample_mailbox();
             let id = *mailbox.messages.keys().next().expect("sample message");
-            MailDoc::ingest_message_flags(&mut doc, mailbox.get(id).expect("message"));
+            MailDoc::ingest_baseline(
+                &mut doc,
+                &IngestBaseline::from_message(mailbox.get(id).expect("message")),
+            );
             MailDoc::mark_message_purged(&mut doc, &id.to_string());
 
             MailDoc::apply_flags(&doc, &mut mailbox);
@@ -716,5 +966,113 @@ mod tests {
                 "re-storing an unchanged draft grew the document {a} -> {b}"
             );
         }
+    }
+
+    /// A message fetched from `account` as its server has it.
+    fn fetched(id: &str, read: bool, folder: Folder) -> IngestBaseline {
+        IngestBaseline {
+            id: id.into(),
+            read: Some(read),
+            starred: Some(false),
+            folder: Some(folder.as_key().into()),
+            account: Some("you@example.test".into()),
+            locator: Some(format!("{id}@example.test")),
+        }
+    }
+
+    /// Where the document and the server differ, the server has to be told;
+    /// once it confirms, nothing is left. A change taken back before then
+    /// leaves nothing to tell, and a message that exists only here never
+    /// goes to a server.
+    #[test]
+    fn server_updates_follow_the_document_until_the_server_confirms() {
+        let mut doc = AutoCommit::new();
+        MailDoc::ingest_baseline(&mut doc, &fetched("m1", false, Folder::Inbox));
+        assert!(MailDoc::server_updates(&doc).is_empty(), "nothing changed");
+
+        MailDoc::set_read(&mut doc, "m1", true);
+        let flags = ServerUpdate::Flags {
+            id: "m1".into(),
+            account: "you@example.test".into(),
+            locator: "m1@example.test".into(),
+            folder: Folder::Inbox,
+            read: true,
+            starred: false,
+        };
+        assert_eq!(MailDoc::server_updates(&doc), std::slice::from_ref(&flags));
+        MailDoc::server_applied(&mut doc, &flags);
+        assert!(MailDoc::server_updates(&doc).is_empty());
+
+        MailDoc::set_read(&mut doc, "m1", false);
+        MailDoc::set_read(&mut doc, "m1", true);
+        assert!(
+            MailDoc::server_updates(&doc).is_empty(),
+            "a change taken back leaves nothing to tell"
+        );
+
+        MailDoc::set_folder_for(&mut doc, "m1", Folder::Trash);
+        let moved = ServerUpdate::Move {
+            id: "m1".into(),
+            account: "you@example.test".into(),
+            locator: "m1@example.test".into(),
+            from: Folder::Inbox,
+            to: Folder::Trash,
+        };
+        assert_eq!(MailDoc::server_updates(&doc), std::slice::from_ref(&moved));
+        MailDoc::server_applied(&mut doc, &moved);
+        assert!(MailDoc::server_updates(&doc).is_empty());
+
+        MailDoc::mark_message_purged(&mut doc, "m1");
+        let removed = ServerUpdate::Remove {
+            id: "m1".into(),
+            account: "you@example.test".into(),
+            locator: "m1@example.test".into(),
+            folder: Folder::Trash,
+        };
+        assert_eq!(
+            MailDoc::server_updates(&doc),
+            std::slice::from_ref(&removed)
+        );
+        MailDoc::server_applied(&mut doc, &removed);
+        assert!(MailDoc::server_updates(&doc).is_empty());
+
+        let mut local = IngestBaseline::from_message(
+            &sample_mailbox().messages.values().next().cloned().unwrap(),
+        );
+        local.id = "draft".into();
+        MailDoc::ingest_baseline(&mut doc, &local);
+        MailDoc::set_starred(&mut doc, "draft", true);
+        assert!(
+            MailDoc::server_updates(&doc).is_empty(),
+            "a local message stays local"
+        );
+    }
+
+    /// A flag the server changed since it last reported it (another mail
+    /// client read the message) is adopted; one it reports unchanged never
+    /// overwrites a change still on its way to it.
+    #[test]
+    fn a_fetch_adopts_server_changes_and_keeps_changes_on_their_way() {
+        let mut doc = AutoCommit::new();
+        MailDoc::ingest_baseline(&mut doc, &fetched("m1", false, Folder::Inbox));
+        MailDoc::ingest_baseline(&mut doc, &fetched("m1", true, Folder::Inbox));
+        assert_eq!(MailDoc::get_read(&doc, "m1"), Some(true));
+        assert!(MailDoc::server_updates(&doc).is_empty());
+
+        MailDoc::set_starred(&mut doc, "m1", true);
+        MailDoc::ingest_baseline(&mut doc, &fetched("m1", true, Folder::Inbox));
+        assert_eq!(MailDoc::get_starred(&doc, "m1"), Some(true));
+        assert_eq!(
+            MailDoc::server_updates(&doc).len(),
+            1,
+            "the star still has to go"
+        );
+
+        MailDoc::ingest_baseline(&mut doc, &fetched("m1", true, Folder::Archive));
+        assert_eq!(
+            MailDoc::get_folder_for(&doc, "m1"),
+            Some(Folder::Archive),
+            "a move made elsewhere is adopted"
+        );
     }
 }

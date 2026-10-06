@@ -49,7 +49,12 @@ pub fn derive_model(input: TokenStream) -> TokenStream {
 /// refuses those it cannot describe (`flatten`, `untagged`, `with`), so the
 /// schema never differs from what serde reads. Doc comments become
 /// descriptions. Every field's type must implement `JsonSchema` too.
-#[proc_macro_derive(JsonSchema, attributes(serde))]
+///
+/// `#[schema(range(min = 1, max = 100))]` on a numeric field narrows its
+/// bounds (either side may be left out): the range is published in the
+/// schema and binding refuses a value outside it, so a `u8` that means
+/// 1 to 100 does not read as `0..255`.
+#[proc_macro_derive(JsonSchema, attributes(serde, schema))]
 pub fn derive_json_schema(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match schema::derive(&input) {
@@ -59,6 +64,32 @@ pub fn derive_json_schema(input: TokenStream) -> TokenStream {
 }
 
 mod schema;
+
+/// Derive `Effect`: an enum's variants become the app's published effects —
+/// work with no document delta, invoked by buttons, the palette, agents and
+/// scripts alike. See `tilo_resource::effect`.
+///
+/// `#[effect(operation = "app.effects")]` names the vocabulary's operation
+/// type; `device_only` beside it marks every effect device-only. Each variant is unit or has named fields (the effect's typed
+/// parameters, `#[param("…")]` describing one); its id is the variant name in
+/// kebab case and its label the first doc line. Variant options:
+/// `#[effect(label = "...", view, row, job, cancellable, returns,
+/// destructive, privileged, idempotent, device_only, programmatic, untrusted, risk = "path", permission = "read")]`.
+/// A `device_only` effect reaches the files, hardware or services of the
+/// device it runs on: only the person at that device may invoke it. In a
+/// vocabulary marked `device_only`, `#[effect(device_only = false)]` exempts
+/// one effect that reaches nothing of the device (a personal setting). Generates `impl Effect` and one `ActionRef`
+/// constant per variant (`Backups::RESTORE`) for binding controls.
+#[proc_macro_derive(Effect, attributes(effect, param))]
+pub fn derive_effect(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match effect::derive(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
+mod effect;
 
 #[derive(Default)]
 struct FieldOptions {
@@ -453,6 +484,7 @@ struct ActionOptions {
     permission: Option<String>,
     destructive: bool,
     housekeeping: bool,
+    external: bool,
     item: Option<String>,
 }
 
@@ -462,6 +494,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
         permission: None,
         destructive: false,
         housekeeping: false,
+        external: false,
         item: None,
     };
     if matches!(attr.meta, Meta::Path(_)) {
@@ -476,11 +509,17 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.destructive = true;
         } else if meta.path.is_ident("housekeeping") {
             options.housekeeping = true;
+        } else if meta.path.is_ident("external") {
+            options.external = true;
         } else if meta.path.is_ident("item") {
             options.item = Some(meta.value()?.parse::<syn::LitStr>()?.value());
         } else {
-            return Err(meta
-                .error("expected `label`, `permission`, `destructive`, `housekeeping` or `item`"));
+            return Err(meta.error(
+                "expected `label`, `permission`, `destructive`, `housekeeping`, `external` or `item`",
+            ));
+        }
+        if options.housekeeping && options.external {
+            return Err(meta.error("an action is `housekeeping` or `external`, not both"));
         }
         Ok(())
     })?;
@@ -571,7 +610,9 @@ fn is_action_cx(ty: &Type) -> bool {
 /// operation reached through the generic `apply` action, so either path asks
 /// for the same confirmation; `housekeeping` declares a change about the
 /// record rather than to it, such as a read marker, which workspace activity
-/// leaves out);
+/// leaves out; `external` declares content that came from outside rather than
+/// from anyone's edit, such as fetched rows, which syncs like any content but
+/// is nobody's undo step);
 /// `#[resource(search = path, children = path)]` override search entries and
 /// nested resources.
 #[proc_macro_attribute]
@@ -603,7 +644,10 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
     let mut variants = Vec::new();
     let mut arms = Vec::new();
     let mut risks = Vec::new();
-    let mut housekeeping = Vec::new();
+    let mut permissions = Vec::new();
+    // The least any action asks, ranked from none to administering.
+    let mut least: Option<(u8, proc_macro2::TokenStream)> = None;
+    let mut change_kinds = Vec::new();
     let mut consts = Vec::new();
     let mut decls = Vec::new();
     let mut item_actions = Vec::new();
@@ -754,8 +798,13 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
             });
         }
         if action.housekeeping {
-            housekeeping.push(quote! {
+            change_kinds.push(quote! {
                 Self::#variant { .. } => #krate::__private::ChangeKind::Housekeeping,
+            });
+        }
+        if action.external {
+            change_kinds.push(quote! {
+                Self::#variant { .. } => #krate::__private::ChangeKind::External,
             });
         }
         let const_ident = format_ident!("{}", method_name.to_uppercase());
@@ -806,6 +855,20 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
         } else {
             quote!(.describe(#description))
         };
+        let rank = match action.permission.as_deref() {
+            Some("none") => 0,
+            Some("read") => 1,
+            Some("comment") => 2,
+            None | Some("write") => 3,
+            Some("invite") => 4,
+            _ => 5,
+        };
+        if least.as_ref().is_none_or(|(least, _)| rank < *least) {
+            least = Some((rank, permission.clone()));
+        }
+        permissions.push(quote! {
+            #action_enum::#variant { .. } => #krate::__private::PermissionRequirement::#permission,
+        });
         decls.push(quote! {
             #krate::ActionDecl::new(
                 #id,
@@ -869,17 +932,40 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
             }
         }
     };
-    let change_kind = if housekeeping.is_empty() {
+    let change_kind = if change_kinds.is_empty() {
         quote!()
     } else {
         quote! {
             fn change_kind(&self) -> #krate::__private::ChangeKind {
                 #[allow(unreachable_patterns, reason = "every other operation changes content")]
                 match self {
-                    #(#housekeeping)*
+                    #(#change_kinds)*
                     _ => #krate::__private::ChangeKind::Content,
                 }
             }
+        }
+    };
+    // An action declared at another level than writing is applied at that
+    // level too, whichever door it comes through.
+    let least_fn = match least {
+        Some((rank, least)) if rank != 3 => quote! {
+            fn least_permission() -> #krate::__private::PermissionRequirement {
+                #krate::__private::PermissionRequirement::#least
+            }
+        },
+        _ => quote!(),
+    };
+    let permission_fn = if permissions.is_empty() {
+        quote!()
+    } else {
+        quote! {
+            fn permission(action: &Self::Action) -> #krate::__private::PermissionRequirement {
+                match &action.operation {
+                    #(#permissions)*
+                }
+            }
+
+            #least_fn
         }
     };
     let body = if arms.is_empty() {
@@ -945,6 +1031,8 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
             fn declarations() -> ::std::vec::Vec<#krate::ActionDecl<Self>> {
                 ::std::vec![#(#decls),*]
             }
+
+            #permission_fn
 
             fn children(state: &Self) -> ::std::vec::Vec<#krate::__private::Resource> {
                 let _ = state;

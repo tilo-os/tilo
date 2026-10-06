@@ -1,4 +1,5 @@
 pub mod colors;
+pub mod contrast;
 pub mod elevation;
 pub mod metrics;
 pub mod motion;
@@ -41,6 +42,14 @@ pub struct Tokens {
     pub terminal_palette: TerminalPalette,
     /// The one syntax-highlighting palette every code surface paints with.
     pub syntax: SyntaxPalette,
+    /// How far glass carries the accent. `0` is the stock film. Draw sites
+    /// mix toward the accent at read time, so a material pin and a palette
+    /// pin compose instead of baking one layer's film onto the other's ground.
+    pub material_tint: f32,
+    /// Authored UI-spring character. `1` is stock. Stored beside the springs
+    /// it produces, because calm and lively are not separable from stiffness
+    /// alone.
+    pub motion_character: f32,
 }
 
 impl Tokens {
@@ -60,6 +69,8 @@ impl Tokens {
             font_size_base,
             terminal_palette: TerminalPalette::dark(),
             syntax: SyntaxPalette::dark(),
+            material_tint: 0.0,
+            motion_character: 1.0,
         }
     }
     pub fn light() -> Self {
@@ -78,6 +89,8 @@ impl Tokens {
             font_size_base,
             terminal_palette: TerminalPalette::light(),
             syntax: SyntaxPalette::light(),
+            material_tint: 0.0,
+            motion_character: 1.0,
         }
     }
 }

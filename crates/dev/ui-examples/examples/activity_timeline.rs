@@ -43,12 +43,12 @@ use vello::kurbo::{Affine, Point};
 fn collaborated_document() -> Result<AutoCommit, AutomergeError> {
     let mut alice = AutoCommit::new();
     alice.set_actor(ActorId::from("alice".as_bytes()));
-    let c = qdoc::model::init(&mut alice, &ROOT);
-    let mut alice_ids = qdoc::IdGen::new(alice.get_actor().to_hex_string());
+    let c = tilo_doc::model::init(&mut alice, &ROOT);
+    let mut alice_ids = tilo_doc::IdGen::new(alice.get_actor().to_hex_string());
     tilo_resource::history::commit_stamped(&mut alice);
 
     let title = {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut alice,
             c: &c,
             ids: &mut alice_ids,
@@ -60,7 +60,7 @@ fn collaborated_document() -> Result<AutoCommit, AutomergeError> {
     tilo_resource::history::commit_stamped(&mut alice);
 
     let body = {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut alice,
             c: &c,
             ids: &mut alice_ids,
@@ -75,8 +75,8 @@ fn collaborated_document() -> Result<AutoCommit, AutomergeError> {
     let mut bob = alice.fork();
     bob.set_actor(ActorId::from("bob".as_bytes()));
     {
-        let mut bob_ids = qdoc::IdGen::new(bob.get_actor().to_hex_string());
-        let mut dm = qdoc::DocMut {
+        let mut bob_ids = tilo_doc::IdGen::new(bob.get_actor().to_hex_string());
+        let mut dm = tilo_doc::DocMut {
             doc: &mut bob,
             c: &c,
             ids: &mut bob_ids,
@@ -88,7 +88,7 @@ fn collaborated_document() -> Result<AutoCommit, AutomergeError> {
 
     // Alice renames the heading, adds a scratch note, then deletes it.
     {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut alice,
             c: &c,
             ids: &mut alice_ids,
@@ -98,7 +98,7 @@ fn collaborated_document() -> Result<AutoCommit, AutomergeError> {
     tilo_resource::history::commit_stamped(&mut alice);
 
     let scratch = {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut alice,
             c: &c,
             ids: &mut alice_ids,
@@ -110,7 +110,7 @@ fn collaborated_document() -> Result<AutoCommit, AutomergeError> {
     tilo_resource::history::commit_stamped(&mut alice);
 
     {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut alice,
             c: &c,
             ids: &mut alice_ids,
@@ -194,7 +194,7 @@ pub fn run(args: &[String]) {
 )]
 fn render_shot(mut widget: Box<dyn Widget>, viewport: (u32, u32), out: &Path) {
     let (w, h) = viewport;
-    let mut state = State::new();
+    let state = State::new();
     let theme = std::env::var("TILO_SHOTS_THEME")
         .ok()
         .and_then(|name| Theme::named(&name))
@@ -205,7 +205,7 @@ fn render_shot(mut widget: Box<dyn Widget>, viewport: (u32, u32), out: &Path) {
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
-    widget.sync(&mut state.doc, &state.root);
+    widget.sync(&state.doc, &state.root);
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
     let root = match taffy.new_with_children(
         Style {

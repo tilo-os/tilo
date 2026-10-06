@@ -81,6 +81,12 @@ pub enum NeighbourMsg {
         /// the authenticated transport identity to that invite's role.
         #[serde(default)]
         invite_id: Option<[u8; 32]>,
+        /// Fresh per request. Gossip transports deduplicate by content, so
+        /// without it a repeated anti-entropy request for unchanged heads
+        /// is discarded as already seen and a room that missed its first
+        /// answer never catches up.
+        #[serde(default)]
+        nonce: u64,
     },
     /// Response: a batch of opaque Automerge change blobs for `room`. The blobs
     /// carry the room identity too; the receiver checks the two agree before
@@ -165,6 +171,12 @@ pub enum NeighbourMsg {
         /// serde default accepts pre-field postcard payloads.
         #[serde(default)]
         app_id: String,
+        /// The workspace tab holding the window, the same id on every device
+        /// of the room, so a viewer shows the stream in exactly that tab
+        /// even when several windows of one app are open. `0` when the
+        /// sender does not name one.
+        #[serde(default)]
+        tab: u64,
     },
     /// Explicit end-of-stream (owner tore down the share, or the surface
     /// unmapped). Receivers drop their `PeerView` + decoder on receipt, instead of
@@ -368,6 +380,44 @@ pub enum NeighbourMsg {
         /// ignore it.
         delivery: u64,
     },
+    /// The person's workspace directory as one of their devices holds it:
+    /// a device-signed Automerge snapshot of which workspaces the person
+    /// has and which room carries each. Travels only on the person's own
+    /// topic; the receiver merges it only when the authenticated transport
+    /// certificate and the update's author are devices of
+    /// `user_public_key`. Appended to preserve every existing Postcard
+    /// discriminant.
+    PersonalWorkspaces {
+        user_public_key: [u8; 32],
+        update: Box<tilo_user_identity::DirectoryUpdate>,
+    },
+    /// A device asking the room for one piece of content a record of
+    /// `app_id` in room `cluster_id` refers to, by its BLAKE3 `hash`. Rides
+    /// the room's topic, so only peers admitted to read the room see it;
+    /// any of them holding the content answers with
+    /// [`Self::RecordContentPiece`]. Appended to preserve every existing
+    /// Postcard discriminant.
+    RecordContentWant {
+        requester: PeerId,
+        app_id: String,
+        cluster_id: String,
+        hash: String,
+    },
+    /// One bounded piece of a record's content, answering `requester`'s
+    /// [`Self::RecordContentWant`]: `bytes` start at `offset` of the
+    /// `total`-byte content named by `hash`. The receiver keeps the content
+    /// only once every piece arrived and the bytes hash to `hash`. Appended
+    /// to preserve every existing Postcard discriminant.
+    RecordContentPiece {
+        responder: PeerId,
+        requester: PeerId,
+        app_id: String,
+        cluster_id: String,
+        hash: String,
+        total: u64,
+        offset: u64,
+        bytes: Vec<u8>,
+    },
 }
 
 #[cfg(test)]
@@ -501,6 +551,7 @@ mod tests {
                     since: vec![1, 2, 3],
                     room: ROOM.into(),
                     invite_id: Some([9; 32]),
+                    nonce: 7,
                 },
             ),
             (
@@ -550,6 +601,7 @@ mod tests {
                     colorimetry: None,
                     hdr_static_metadata: None,
                     bit_depth: 0,
+                    tab: 0,
                 },
             ),
             (
@@ -566,6 +618,7 @@ mod tests {
                     colorimetry: Some(Colorimetry::hdr10()),
                     hdr_static_metadata: Some(Hdr10Metadata::reference_bt2020()),
                     bit_depth: 10,
+                    tab: 0,
                 },
             ),
             (
@@ -648,6 +701,18 @@ mod tests {
                 },
             ),
             (
+                "personal workspaces",
+                NeighbourMsg::PersonalWorkspaces {
+                    user_public_key: [7; 32],
+                    update: Box::new(tilo_user_identity::DirectoryUpdate {
+                        author_device_public_key: [2; 32],
+                        authored_at_ns: 10,
+                        delta: vec![1, 2, 3],
+                        signature: [3; 64],
+                    }),
+                },
+            ),
+            (
                 "remote action",
                 NeighbourMsg::RemoteAction {
                     frame: b"{}".to_vec(),
@@ -690,6 +755,28 @@ mod tests {
                         key: vec![4, 5],
                         payload: PeerPresencePayload::Selection { start: 3, end: 8 },
                     },
+                },
+            ),
+            (
+                "record content want",
+                NeighbourMsg::RecordContentWant {
+                    requester: 0x00AB_CDEF,
+                    app_id: "so.tilo.slides".into(),
+                    cluster_id: "room".into(),
+                    hash: "ab".into(),
+                },
+            ),
+            (
+                "record content piece",
+                NeighbourMsg::RecordContentPiece {
+                    responder: 0x123_456,
+                    requester: 0x00AB_CDEF,
+                    app_id: "so.tilo.slides".into(),
+                    cluster_id: "room".into(),
+                    hash: "ab".into(),
+                    total: 3,
+                    offset: 0,
+                    bytes: vec![1, 2, 3],
                 },
             ),
             (
@@ -760,10 +847,13 @@ mod tests {
             NeighbourMsg::MlsGovernance { .. } => "MlsGovernance",
             NeighbourMsg::MlsAccessRequest { .. } => "MlsAccessRequest",
             NeighbourMsg::MlsGovernanceAck { .. } => "MlsGovernanceAck",
+            NeighbourMsg::PersonalWorkspaces { .. } => "PersonalWorkspaces",
+            NeighbourMsg::RecordContentWant { .. } => "RecordContentWant",
+            NeighbourMsg::RecordContentPiece { .. } => "RecordContentPiece",
         }
     }
 
-    const VARIANT_COUNT: usize = 25;
+    const VARIANT_COUNT: usize = 28;
 
     fn hex(bytes: &[u8]) -> String {
         use std::fmt::Write;
@@ -781,7 +871,7 @@ mod tests {
             concat!(
                 "00030102032436623366396131302d303030302d343030302d383030302d3030",
                 "3030303030303030306301090909090909090909090909090909090909090909",
-                "0909090909090909090909",
+                "090909090909090909090907",
             ),
         ),
         (
@@ -804,7 +894,7 @@ mod tests {
             "SDR stream start",
             concat!(
                 "0507cdd702800ad005046832363482e2cfaa0682e2cfaa06000000126f72672e",
-                "6578616d706c652e456469746f72",
+                "6578616d706c652e456469746f7200",
             ),
         ),
         (
@@ -812,7 +902,7 @@ mod tests {
             concat!(
                 "0508cdd702800fb8080b686576632d6d61696e313083e2cfaa0683e2cfaa0601",
                 "0101010001c894028872b442aab7029633fc11937ac2800180ade204f4030000",
-                "0a156f72672e6578616d706c652e486472456469746f72",
+                "0a156f72672e6578616d706c652e486472456469746f7200",
             ),
         ),
         ("stream end", "0607cdd70284e2cfaa06"),
@@ -866,6 +956,16 @@ mod tests {
                 "07ef9baf0503010203",
             ),
         ),
+        (
+            "personal workspaces",
+            concat!(
+                "1907070707070707070707070707070707070707070707070707070707070707",
+                "0702020202020202020202020202020202020202020202020202020202020202",
+                "020a030102034003030303030303030303030303030303030303030303030303",
+                "0303030303030303030303030303030303030303030303030303030303030303",
+                "03030303030303",
+            ),
+        ),
         ("remote action", "14027b7d"),
         (
             "media capabilities",
@@ -892,6 +992,14 @@ mod tests {
                 "0def9baf05056e6f7465732436623366396131302d303030302d343030302d38",
                 "3030302d303030303030303030303063020405020308",
             ),
+        ),
+        (
+            "record content want",
+            "1aef9baf050e736f2e74696c6f2e736c6964657304726f6f6d026162",
+        ),
+        (
+            "record content piece",
+            "1bd6e848ef9baf050e736f2e74696c6f2e736c6964657304726f6f6d026162030003010203",
         ),
         (
             "scrollback request",

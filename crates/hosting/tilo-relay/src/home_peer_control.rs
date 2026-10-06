@@ -40,21 +40,6 @@ enum BrokerCommand {
         #[arg(long)]
         expected_service: Option<String>,
     },
-    /// Receive an existing identity on this new personal device.
-    PairDevice {
-        #[arg(long)]
-        identity_root: PathBuf,
-        #[arg(long)]
-        identity_dir: PathBuf,
-        #[arg(long)]
-        label: String,
-        #[arg(long)]
-        status_file: PathBuf,
-        #[arg(long)]
-        requester_pid: u32,
-        #[arg(long)]
-        requester_start_time: u64,
-    },
     /// Approve an ordinary nearby personal device.
     ApproveDevice {
         #[arg(long)]
@@ -310,7 +295,7 @@ fn apply_services(config: &RelayConfig) -> anyhow::Result<()> {
 
 fn restore(path: &Path, previous: Option<&[u8]>) -> anyhow::Result<()> {
     match previous {
-        Some(bytes) => atomic_file::write(path, bytes).map_err(Into::into),
+        Some(bytes) => tilo_files::native::atomic::write(path, bytes).map_err(Into::into),
         None if path.exists() => std::fs::remove_file(path).map_err(Into::into),
         None => Ok(()),
     }
@@ -325,9 +310,9 @@ fn commit_transaction(
 ) -> anyhow::Result<()> {
     let previous = std::fs::read(relay_path).ok();
     let previous_home = std::fs::read(home_path).ok();
-    atomic_file::write(relay_path, relay_bytes)?;
+    tilo_files::native::atomic::write(relay_path, relay_bytes)?;
     if let Some(bytes) = home_bytes
-        && let Err(error) = atomic_file::write(home_path, bytes)
+        && let Err(error) = tilo_files::native::atomic::write(home_path, bytes)
     {
         restore(relay_path, previous.as_deref())?;
         return Err(error.into());
@@ -393,6 +378,7 @@ fn invoking_uid() -> anyhow::Result<u32> {
 
 #[derive(Debug, PartialEq, Eq)]
 struct Account {
+    name: String,
     gid: u32,
     home: PathBuf,
 }
@@ -400,13 +386,14 @@ struct Account {
 fn account_from_passwd(passwd: &str, uid: u32) -> Option<Account> {
     passwd.lines().find_map(|line| {
         let mut fields = line.split(':');
-        let _name = fields.next()?;
+        let name = fields.next()?;
         let _password = fields.next()?;
         let record_uid = fields.next()?.parse::<u32>().ok()?;
         let gid = fields.next()?.parse::<u32>().ok()?;
         let _gecos = fields.next()?;
         let home = fields.next()?;
         (record_uid == uid).then(|| Account {
+            name: name.to_owned(),
             gid,
             home: PathBuf::from(home),
         })
@@ -434,6 +421,70 @@ fn run_enrollment_as_identity_owner(
         // the privileged helper's ambient root groups.
         command.gid(gid).uid(uid);
     }
+}
+
+/// Every group `account` belongs to, the way a login gives them to it.
+fn account_groups(account: &Account) -> anyhow::Result<Vec<libc::gid_t>> {
+    let name = std::ffi::CString::new(account.name.as_str())?;
+    let mut capacity: libc::c_int = 64;
+    loop {
+        let mut groups = vec![0; usize::try_from(capacity)?];
+        let mut count = capacity;
+        // SAFETY: `name` is NUL-terminated and `groups` has room for `count`
+        // entries; getgrouplist writes at most that many and reports the
+        // number it needs in `count`.
+        let found = unsafe {
+            libc::getgrouplist(
+                name.as_ptr(),
+                account.gid,
+                groups.as_mut_ptr(),
+                &raw mut count,
+            )
+        };
+        if found >= 0 {
+            groups.truncate(usize::try_from(count)?);
+            return Ok(groups);
+        }
+        if count <= capacity || count > 65_536 {
+            bail!("requesting user's groups could not be listed");
+        }
+        capacity = count;
+    }
+}
+
+/// Run `command` with the invoking person's own credentials: their uid,
+/// primary group and supplementary groups, and the session directories their
+/// secret store answers on. Approving a device signs with the person's
+/// identity record, which only its owner can open.
+fn run_as_invoking_person(
+    command: &mut Command,
+    uid: u32,
+    account: &Account,
+) -> anyhow::Result<()> {
+    let groups = account_groups(account)?;
+    let gid = account.gid;
+    let runtime_dir = PathBuf::from(format!("/run/user/{uid}"));
+    command
+        .env("HOME", &account.home)
+        .env("XDG_RUNTIME_DIR", &runtime_dir)
+        .env(
+            "DBUS_SESSION_BUS_ADDRESS",
+            format!("unix:path={}", runtime_dir.join("bus").display()),
+        );
+    // SAFETY: the closure runs in the forked child before exec and calls only
+    // async-signal-safe credential syscalls on data prepared before the fork.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::setgroups(groups.len(), groups.as_ptr()) != 0
+                || libc::setgid(gid) != 0
+                || libc::setuid(uid) != 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(())
 }
 
 fn validate_identity_root(identity_root: &Path, uid: u32, home: &Path) -> anyhow::Result<PathBuf> {
@@ -540,11 +591,11 @@ fn enrollment_command_result(
     bail!("{incomplete}: {detail}")
 }
 
-fn personal_device_command(
-    operation: &str,
+fn approve_personal_device(
     identity_root: &Path,
     identity_dir: &Path,
-    extra: impl FnOnce(&mut Command),
+    expected_device: &str,
+    expected_service: &str,
 ) -> anyhow::Result<()> {
     let uid = invoking_uid()?;
     let account = account_for_uid(uid)?;
@@ -552,13 +603,23 @@ fn personal_device_command(
     let identity_dir = validate_identity_dir(identity_dir, uid, &account.home)?;
     let mut command = Command::new("/usr/bin/tilo-enroll");
     command
-        .arg(operation)
+        .arg("approve-device")
         .arg("--identity-root")
         .arg(&identity_root)
         .arg("--identity-dir")
-        .arg(identity_dir);
-    extra(&mut command);
-    run_enrollment_as_identity_owner(&mut command, &identity_root, uid, account.gid);
+        .arg(identity_dir)
+        .args(["--expected-device", expected_device])
+        .args(["--expected-service", expected_service]);
+    // A seed under the identity root is opened by whoever owns that root, as
+    // before. Without one the approval signs with the person's record.
+    if tilo_user_identity::IdentityPaths::under(&identity_root)
+        .user_privkey
+        .exists()
+    {
+        run_enrollment_as_identity_owner(&mut command, &identity_root, uid, account.gid);
+    } else {
+        run_as_invoking_person(&mut command, uid, &account)?;
+    }
     let output =
         bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(600))?;
     enrollment_command_result(&output, "personal-device enrollment was not completed")
@@ -587,33 +648,6 @@ fn run() -> anyhow::Result<()> {
             expected_device,
             expected_service,
         ),
-        BrokerCommand::PairDevice {
-            identity_root,
-            identity_dir,
-            label,
-            status_file,
-            requester_pid,
-            requester_start_time,
-        } => {
-            let status_parent = status_file.parent().context("status file has no parent")?;
-            if status_parent != identity_dir {
-                bail!("pairing status must be stored in the identity directory");
-            }
-            let requester =
-                tilo_relay::ProcessLease::from_parts(requester_pid, requester_start_time);
-            requester
-                .validate_owner(invoking_uid()?)
-                .context("pairing requester is no longer the invoking user process")?;
-            personal_device_command("pair-device", &identity_root, &identity_dir, |command| {
-                command
-                    .args(["--label", &label, "--status-file"])
-                    .arg(status_file)
-                    .arg("--requester-pid")
-                    .arg(requester_pid.to_string())
-                    .arg("--requester-start-time")
-                    .arg(requester_start_time.to_string());
-            })
-        }
         BrokerCommand::ApproveDevice {
             identity_root,
             identity_dir,
@@ -621,11 +655,12 @@ fn run() -> anyhow::Result<()> {
             expected_service,
         } => {
             validate_peer_ids(&expected_device, &expected_service)?;
-            personal_device_command("approve-device", &identity_root, &identity_dir, |command| {
-                command
-                    .args(["--expected-device", &expected_device])
-                    .args(["--expected-service", &expected_service]);
-            })
+            approve_personal_device(
+                &identity_root,
+                &identity_dir,
+                &expected_device,
+                &expected_service,
+            )
         }
     }
 }
@@ -643,6 +678,7 @@ mod tests {
             assert_eq!(
                 account_from_passwd(passwd, 42_424),
                 Some(Account {
+                    name: "tilouser".into(),
                     gid: 31_337,
                     home: PathBuf::from("/home/tilouser"),
                 })
@@ -744,9 +780,9 @@ mod tests {
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("relay.toml");
-            atomic_file::write(&path, b"old").unwrap();
+            tilo_files::native::atomic::write(&path, b"old").unwrap();
             let home = dir.path().join("home.toml");
-            atomic_file::write(&home, b"old-home").unwrap();
+            tilo_files::native::atomic::write(&home, b"old-home").unwrap();
             let result = commit_transaction(&path, b"new", &home, Some(b"new-home"), || {
                 bail!("reload failed")
             });
@@ -822,7 +858,7 @@ mod tests {
                 }],
             };
             let original = toml::to_string_pretty(&bundle).unwrap();
-            atomic_file::write(&home, original.as_bytes()).unwrap();
+            tilo_files::native::atomic::write(&home, original.as_bytes()).unwrap();
             let continuity =
                 tilo_relay::personal_continuity_workspace_id(&governor.verifying_key().to_bytes());
 

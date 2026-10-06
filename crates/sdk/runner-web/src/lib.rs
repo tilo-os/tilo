@@ -16,7 +16,7 @@ use ui_core::launch::{LaunchError, LaunchSpec};
 ///
 /// Never fails today; the signature matches the native runner's.
 pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
-    registry::register(spec.as_definition(spec.app_id()));
+    registry::register(spec.definition());
     Ok(())
 }
 

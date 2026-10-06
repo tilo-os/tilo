@@ -727,7 +727,7 @@ pub fn draw_markers(
                 t,
                 Point::new(p.x, p.y + 1.0),
                 6.5,
-                Color::from_rgba8(0, 0, 0, 60),
+                theme.tokens.elevation.e2.color,
             );
             draw::fill_circle(scene, t, p, 6.0, theme.tokens.colors.surfaces.base);
             draw::stroke_circle(scene, t, p, 6.0, 3.0, theme.accent_primary);
@@ -750,6 +750,7 @@ pub fn draw_markers(
             p,
             category_color(theme, place.category),
             pal,
+            theme,
             false,
         );
     }
@@ -757,7 +758,15 @@ pub fn draw_markers(
     if let Some(sel) = model.selected_place() {
         let p = proj.project(sel.pos);
         if clip.contains(p) {
-            draw_pin(scene, t, p, category_color(theme, sel.category), pal, true);
+            draw_pin(
+                scene,
+                t,
+                p,
+                category_color(theme, sel.category),
+                pal,
+                theme,
+                true,
+            );
             // Floating label above the selected pin.
             let label = &sel.name;
             let pad = 7.0;
@@ -771,7 +780,14 @@ pub fn draw_markers(
             // would be sliced at the drawer/panel edge into an unreadable
             // fragment. The pin still shows; the drawer already names the place.
             if rect.x0 >= clip.x0 && rect.x1 <= clip.x1 {
-                draw::card(scene, t, rect, 6.0, theme.tokens.colors.surfaces.raised);
+                draw::card(
+                    scene,
+                    t,
+                    theme,
+                    rect,
+                    6.0,
+                    theme.tokens.colors.surfaces.raised,
+                );
                 PaintCtx::new(scene, t, tr, theme).text(
                     label,
                     &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
@@ -851,7 +867,7 @@ fn draw_poi_dot(ctx: &mut PaintCtx<'_>, view: MapView<'_>, poi: &Poi, selected: 
         t,
         Point::new(p.x, p.y + 0.9),
         r + 1.3,
-        draw::alpha(Color::BLACK, 0.32),
+        theme.tokens.elevation.e2.color,
     );
     draw::fill_circle(scene, t, p, r, col);
     draw::stroke_circle(
@@ -1188,6 +1204,7 @@ fn draw_pin(
     anchor: Point,
     color: Color,
     pal: &MapPalette,
+    theme: &Theme,
     selected: bool,
 ) {
     let r = if selected { 11.0 } else { 8.0 };
@@ -1200,7 +1217,7 @@ fn draw_pin(
     scene.fill(
         vello::peniko::Fill::NonZero,
         t,
-        draw::alpha(Color::BLACK, 0.28),
+        theme.tokens.elevation.e2.color,
         None,
         &shadow,
     );

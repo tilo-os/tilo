@@ -230,15 +230,16 @@ impl Widget for Probe {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut automerge::AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(crate::widget::OperationRequest { type_id, .. }) = op.unscoped() else {
+        let Some(crate::host_operation::OperationRequest { type_id, .. }) = op.unscoped() else {
             return Ok(None);
         };
         if type_id == "bound.view" {
             if COMPOUND_MODE.get() == 1 {
-                self.actions.dispatch(doc, "bound.apply", &FollowUp);
+                self.actions
+                    .dispatch(doc.document_mut(), "bound.apply", &FollowUp);
             }
             Self::capture("bound-view");
             return Ok(Some(crate::widget::ResourceOperationStart::Completed(
@@ -253,12 +254,12 @@ impl Widget for Probe {
         );
         let mode = COMPOUND_MODE.get();
         if matches!(mode, 3 | 4 | 6) {
-            doc.put(ROOT, "raw-before", true).unwrap();
+            doc.document_mut().put(ROOT, "raw-before", true).unwrap();
         }
         match mode {
             2 | 3 => {}
             7 => self.actions.dispatch_with_context(
-                doc,
+                doc.document_mut(),
                 "bound.apply",
                 &FollowUp,
                 tilo_actions::ActionContext::for_resource(
@@ -269,27 +270,33 @@ impl Widget for Probe {
                 ),
             ),
             8 => {
-                let mut queue = tilo_actions::OptimisticQueue::new(doc);
+                let mut queue = tilo_actions::OptimisticQueue::new(doc.document_mut());
                 self.actions
-                    .dispatch_optimistic(doc, &mut queue, "bound.apply", &FollowUp)
+                    .dispatch_optimistic(doc.document_mut(), &mut queue, "bound.apply", &FollowUp)
                     .unwrap();
             }
             9 | 10 => {
                 assert_eq!(
                     self.actions
-                        .try_dispatch(doc, "bound.empty", &EmptyFollowUp { refuse: mode == 10 })
+                        .try_dispatch(
+                            doc.document_mut(),
+                            "bound.empty",
+                            &EmptyFollowUp { refuse: mode == 10 }
+                        )
                         .is_err(),
                     mode == 10
                 );
             }
             11 => {
-                doc.put(ROOT, "raw-unwind", true).unwrap();
+                doc.document_mut().put(ROOT, "raw-unwind", true).unwrap();
                 panic!("controlled compound unwind");
             }
-            _ => self.actions.dispatch(doc, "bound.apply", &FollowUp),
+            _ => self
+                .actions
+                .dispatch(doc.document_mut(), "bound.apply", &FollowUp),
         }
         if matches!(mode, 5 | 6) {
-            doc.put(ROOT, "raw-after", true).unwrap();
+            doc.document_mut().put(ROOT, "raw-after", true).unwrap();
         }
         Self::capture("mutable-operation");
         Ok(Some(crate::widget::ResourceOperationStart::Accepted))
@@ -318,8 +325,8 @@ impl Widget for Probe {
         })
     }
 
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
-        let (doc, _) = crate::doc::document(doc, path);
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
+        let (doc, _) = crate::doc::document_ref(doc, path);
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some("child")
@@ -390,7 +397,7 @@ impl Widget for Probe {
     fn perform_action(
         &mut self,
         _: &crate::a11y::Action,
-        doc: &mut AppModel,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (doc, _) = crate::doc::document(doc, path);
@@ -398,7 +405,7 @@ impl Widget for Probe {
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some("child")
         );
-        doc.put(ROOT, "action", true).unwrap();
+        doc.document_mut().put(ROOT, "action", true).unwrap();
         Self::capture("action");
         true
     }
@@ -413,10 +420,15 @@ impl crate::search::capability::SearchSource for Probe {
             strict: self.strict,
         })]
     }
-    fn activate_search_result(&mut self, id: &str, doc: &mut AppModel, path: &ModelPath) {
+    fn activate_search_result(
+        &mut self,
+        id: &str,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &ModelPath,
+    ) {
         let (doc, _) = crate::doc::document(doc, path);
         assert_eq!(id, "opaque");
-        doc.put(ROOT, "navigation", true).unwrap();
+        doc.document_mut().put(ROOT, "navigation", true).unwrap();
     }
 }
 
@@ -591,6 +603,7 @@ fn bound_components_keep_child_binding_and_focused_document_history() {
             required: vec![],
             optional: vec![],
             opens: &[],
+            room_record: false,
             create: factory,
         };
         let context = HostContext::prepare(
@@ -896,6 +909,7 @@ impl ActionFixture {
                 required: vec![],
                 optional: vec![],
                 opens: &[],
+                room_record: false,
                 create,
             };
             let target = if shared && !bindings.is_empty() {
@@ -963,6 +977,8 @@ impl ActionFixture {
 }
 
 include!("directory_permission_tests.rs");
+
+include!("invocation_locus_tests.rs");
 
 include!("owner_publication_tests.rs");
 
@@ -2362,5 +2378,68 @@ fn collaboration_walk_enters_bound_owner_and_refuses_closing_lifetime() {
     assert!(
         !wake_handles.borrow()[0].is_active(),
         "callback captured the component lifetime, not detached execution"
+    );
+}
+
+fn behaviour_probe_factory(
+    context: HostContext,
+    target: LaunchTarget,
+    restore: RestoreInput,
+) -> Result<AppComponent, crate::launch::LaunchError> {
+    let mut component = collaboration_probe_factory(context, target, restore)?;
+    component.set_behaviour(crate::application::ComponentBehaviour {
+        autofocus_on_structure_change: true,
+        appearance_reconcile: true,
+        capture_protected: true,
+        window: crate::application::WindowRole::InputSurface,
+    });
+    Ok(component)
+}
+
+fn hosted_behaviour(
+    create: crate::application::ComponentFactory,
+) -> crate::application::ComponentBehaviour {
+    let host = crate::application_test_support::ProbeHost::new();
+    let definition = crate::application_test_support::definition(create);
+    let target = LaunchTarget::New;
+    let context = host
+        .prepare_with_permissions(
+            &definition,
+            92,
+            &target,
+            crate::application_test_support::runner_permissions(),
+        )
+        .unwrap();
+    let component = definition
+        .instantiate(context, target, RestoreInput::None)
+        .unwrap();
+    let app =
+        App::from_component(component, crate::application_test_support::runner_inputs()).unwrap();
+    crate::application::ComponentBehaviour {
+        autofocus_on_structure_change: app.autofocus_on_structure_change,
+        appearance_reconcile: app.appearance_reconcile,
+        capture_protected: app.capture_protected(),
+        window: if app.window.app_id.is_some() {
+            crate::application::WindowRole::InputSurface
+        } else {
+            crate::application::WindowRole::Ordinary
+        },
+    }
+}
+
+#[test]
+fn the_hosting_window_takes_the_components_behaviour() {
+    assert_eq!(
+        hosted_behaviour(collaboration_probe_factory),
+        crate::application::ComponentBehaviour::default()
+    );
+    assert_eq!(
+        hosted_behaviour(behaviour_probe_factory),
+        crate::application::ComponentBehaviour {
+            autofocus_on_structure_change: true,
+            appearance_reconcile: true,
+            capture_protected: true,
+            window: crate::application::WindowRole::InputSurface,
+        }
     );
 }

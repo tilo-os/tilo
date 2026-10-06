@@ -17,8 +17,15 @@
 //! | [`SUPERVISOR_RESOURCE`] | [`REQUEST_GRANT_ACTION`] | [`GrantRequest`] JSON | `{grant, pairingCode}` |
 //! | [`SUPERVISOR_RESOURCE`] | [`SPAWN_ACTION`] | `{grant, task, room?}` | `{agentId, taskId}` |
 //! | `agent:<id>` | [`MESSAGE_ACTION`] | text | `{taskId}` |
+//! | `agent:<id>` | [`CANCEL_TASK_ACTION`] | task id | `{}` |
 //! | `agent:<id>` | [`PAUSE_ACTION`], [`RESUME_ACTION`], [`STOP_ACTION`] | none | `{}` |
 //! | `agent:<id>` | [`REVOKE_ACTION`] | none | `{}` |
+//!
+//! Every request is an invocation with the caller's own id. The supervisor
+//! retains the last 1024 invocations (including status polls) in its shared
+//! in-memory ledger. While retained, a resent spawn or message returns the
+//! first answer and conflicting input is refused. Eviction or host restart
+//! ends that retry window; this is not a durable exactly-once guarantee.
 //!
 //! A grant is requested by a person in the page and approved on a
 //! root-holding device in one step: the host queues a certification request
@@ -51,6 +58,8 @@ pub const PAUSE_ACTION: &str = "pause";
 pub const RESUME_ACTION: &str = "resume";
 /// End the agent's current task and every queued one.
 pub const STOP_ACTION: &str = "stop";
+/// Cancel one queued or running task; the agent goes on with the next.
+pub const CANCEL_TASK_ACTION: &str = "cancel-task";
 /// Ask the user's approver for a new agent grant.
 pub const REQUEST_GRANT_ACTION: &str = "request-grant";
 /// Withdraw a grant: its agent stops and the host refuses its device.
@@ -552,6 +561,9 @@ pub struct AgentGrant {
 pub struct AgentsStatus {
     /// Always 1.
     pub version: u8,
+    /// Whether the supervisor implements individual task cancellation.
+    #[serde(default)]
+    pub cancel_task: bool,
     /// Every agent the caller may see.
     pub agents: Vec<AgentInfo>,
     /// Delegations an agent may be spawned under.
@@ -637,6 +649,7 @@ mod tests {
     fn status_uses_the_browser_spelling() {
         let status = AgentsStatus {
             version: 1,
+            cancel_task: true,
             agents: vec![AgentInfo {
                 id: "writer".into(),
                 label: "Writer helper".into(),
@@ -658,6 +671,14 @@ mod tests {
             grants: Vec::new(),
         };
         let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["cancelTask"], true);
+        let mut legacy = json.clone();
+        legacy.as_object_mut().unwrap().remove("cancelTask");
+        assert!(
+            !serde_json::from_value::<AgentsStatus>(legacy)
+                .unwrap()
+                .cancel_task
+        );
         assert_eq!(json["agents"][0]["status"], "running");
         assert_eq!(json["agents"][0]["color"], "#7c3aed");
         assert_eq!(json["agents"][0]["tasks"][0]["state"], "running");

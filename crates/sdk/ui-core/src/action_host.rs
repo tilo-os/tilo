@@ -37,6 +37,12 @@ pub struct ActionHost {
     /// [`ActionSpec`](tilo_actions::ActionSpec) build the byte-identical
     /// action.
     last_dispatched: Option<EncodedAction>,
+    /// Compensating document action for outside-consequence undo, computed
+    /// by [`Action::inverse_before`](tilo_actions::Action::inverse_before)
+    /// before the forward action ran. Cleared with [`Self::take_committed`].
+    pending_undo_via: Option<EncodedAction>,
+    /// The forward action paired with [`Self::pending_undo_via`], for redo.
+    pending_redo_via: Option<EncodedAction>,
     ambient_context: Option<ActionContext>,
 }
 
@@ -157,6 +163,13 @@ impl ActionHost {
         A: Action + serde::Serialize,
     {
         let encoded = EncodedAction::encode(type_id, action)?;
+        // Capture the compensating action against the pre-apply document so a
+        // delete can still read the row it removes.
+        let undo_via = action.inverse_encoded(doc).or_else(|| {
+            action
+                .inverse_before(doc)
+                .and_then(|inverse| EncodedAction::encode(type_id, &inverse).ok())
+        });
         let observed_before = crate::bound_dispatch::typed_action_before(doc);
         let before = observed_before.clone().unwrap_or_else(|| doc.get_heads());
         let mut transport = tilo_actions::LocalTransport::new();
@@ -165,7 +178,8 @@ impl ActionHost {
             (Some(context), Some(ambient)) => Some(context.enriched_by(ambient)),
             (None, Some(ambient)) => Some(ambient.clone()),
             (context, None) => context,
-        };
+        }
+        .map(|context| context.with_args_from_payload(&encoded.payload));
         let result = match context {
             Some(context) => tilo_actions::dispatch_by_with_context(
                 doc,
@@ -184,12 +198,21 @@ impl ActionHost {
             ),
         };
         result?;
+        // Content from outside (fetched rows, a process's output) is nobody's
+        // undo step: it opens no bracket and is left out of the open one.
+        let step = action.change_kind().is_step();
         if let Some(before) = observed_before {
             let after = doc.get_heads();
-            crate::bound_dispatch::report_typed_action(doc, before, after);
+            crate::bound_dispatch::report_typed_action(doc, before, after, step);
         }
-        if self.commit_before.is_none() {
+        if step && self.commit_before.is_none() {
             self.commit_before = Some(before);
+        }
+        // One outside-consequence action per bracket: a later pure CRDT edit
+        // in the same event must not erase a pending compensating undo.
+        if step && undo_via.is_some() && self.pending_undo_via.is_none() {
+            self.pending_undo_via = undo_via;
+            self.pending_redo_via = Some(encoded.clone());
         }
         self.last_dispatched = Some(encoded);
         Ok(())
@@ -227,11 +250,12 @@ impl ActionHost {
         let observed_before = crate::bound_dispatch::typed_action_before(doc);
         let before = observed_before.clone().unwrap_or_else(|| doc.get_heads());
         let envelope = queue.submit(doc, action, encoded.clone())?;
+        let step = action.change_kind().is_step();
         if let Some(before) = observed_before {
             let after = doc.get_heads();
-            crate::bound_dispatch::report_typed_action(doc, before, after);
+            crate::bound_dispatch::report_typed_action(doc, before, after, step);
         }
-        if self.commit_before.is_none() {
+        if step && self.commit_before.is_none() {
             self.commit_before = Some(before);
         }
         self.last_dispatched = Some(encoded);
@@ -245,8 +269,30 @@ impl ActionHost {
         self.commit_before.take()
     }
 
+    /// Rising-edge pair for outside-consequence undo: `(undo_via, redo_via)`.
+    /// Cleared with the commit bracket so a host records them on the same
+    /// [`UndoEntry`](crate::state::UndoEntry).
+    pub fn take_action_revert(&mut self) -> Option<(EncodedAction, EncodedAction)> {
+        match (self.pending_undo_via.take(), self.pending_redo_via.take()) {
+            (Some(undo), Some(redo)) => Some((undo, redo)),
+            (undo, redo) => {
+                self.pending_undo_via = undo;
+                self.pending_redo_via = redo;
+                None
+            }
+        }
+    }
+
     pub fn last_dispatched(&self) -> Option<&EncodedAction> {
         self.last_dispatched.as_ref()
+    }
+
+    /// Drop any recorded dispatch without applying a new action. Used when an
+    /// outside-consequence path deliberately emits no collaborative write
+    /// (e.g. VPN local credential setup) so observers do not confuse a prior
+    /// seed publish with this operation.
+    pub fn clear_last_dispatched(&mut self) {
+        self.last_dispatched = None;
     }
 }
 

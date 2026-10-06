@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tilo_vm_protocol::display::format_outputs;
 use tilo_vm_protocol::{
-    ComponentInfo, Lease, OutputSpec, Owner, SlotKind, VM_SLOT, valid_slot_name,
+    ComponentInfo, DEVICE_SLOT, Lease, OutputSpec, Owner, SlotKind, VM_SLOT, valid_slot_name,
 };
 
 use crate::error::DaemonError;
@@ -44,6 +44,59 @@ pub struct SlotRecord {
     /// one output at the compositor's defaults.
     #[serde(default)]
     pub outputs: Vec<OutputSpec>,
+    /// The `device` slot only: the machine's own session, as found when
+    /// the slot was last loaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<DeviceSession>,
+}
+
+/// The machine's own session, which the `device` slot swaps into: the
+/// session a board image runs for its account without a greeter, or on a
+/// laptop the owner's Tilo login through greetd on seat0.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceSession {
+    /// The unit that runs it: the board session's system unit, e.g.
+    /// `tilo-board-headless-session@tester.service`; the login's
+    /// `session-<id>.scope`; or `greetd.service` while the owner is logged
+    /// out.
+    pub unit: String,
+    /// The account it runs as.
+    pub account: String,
+    /// Units `unit` starts for the session's own processes; they get the
+    /// slot's layers too.
+    #[serde(default)]
+    pub units: Vec<String>,
+    /// The compositor's control socket (`TILO_TEST_CONTROL`).
+    pub control_socket: PathBuf,
+    /// Set for a greetd login: its layers merge system-wide with
+    /// `systemd-sysext`, and a swap restarts its desktop in place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<Login>,
+}
+
+/// The owner's greetd login a laptop's `device` slot is.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Login {
+    /// The logind session; `None` while the owner is logged out.
+    #[serde(default)]
+    pub session: Option<String>,
+    /// The session's `tilo-session`, which restarts the compositor on
+    /// SIGUSR1; `None` while the owner is logged out.
+    #[serde(default)]
+    pub wrapper: Option<u32>,
+}
+
+impl DeviceSession {
+    /// This login as it is while the owner is logged out: the layers still
+    /// apply, and reach the next login.
+    #[must_use]
+    pub fn logged_out(mut self) -> Self {
+        if self.login.is_some() {
+            self.unit = crate::apply::GREETER_UNIT.into();
+            self.login = Some(Login::default());
+        }
+        self
+    }
 }
 
 impl SlotRecord {
@@ -54,8 +107,14 @@ impl SlotRecord {
 }
 
 impl SlotRecord {
+    /// The user the slot's session runs as: `tds-<slot>`, the device
+    /// session's account, or none for the `vm` slot.
     pub fn user(&self) -> Option<String> {
-        (self.kind != SlotKind::Vm).then(|| format!("tds-{}", self.name))
+        match self.kind {
+            SlotKind::Vm => None,
+            SlotKind::Device => self.device.as_ref().map(|d| d.account.clone()),
+            SlotKind::Headful | SlotKind::Headless => Some(format!("tds-{}", self.name)),
+        }
     }
 }
 
@@ -126,6 +185,9 @@ impl SlotStore {
         if name == VM_SLOT || kind == SlotKind::Vm {
             return Err(DaemonError::ReservedName(name.to_owned()));
         }
+        if name == DEVICE_SLOT || kind == SlotKind::Device {
+            return Err(DaemonError::DeviceSlot("created".into()));
+        }
         Self::check_name(name)?;
         if !outputs.is_empty() {
             if kind != SlotKind::Headful {
@@ -162,17 +224,49 @@ impl SlotStore {
             seat: None,
             seat0: None,
             outputs: outputs.to_vec(),
+            device: None,
         };
         self.save(&record)?;
         Ok((record, true))
     }
 
-    /// Load a slot; the `vm` pseudo-slot always exists.
+    /// Load a slot; the `vm` pseudo-slot always exists, and the `device`
+    /// pseudo-slot exists wherever `device` (the machine's own session) is
+    /// given, with that session recorded in it.
     ///
     /// # Errors
-    /// [`DaemonError::SlotNotFound`] and I/O failures.
-    pub fn load(&self, name: &str) -> Result<SlotRecord, DaemonError> {
+    /// [`DaemonError::SlotNotFound`], [`DaemonError::NoDeviceSession`] and
+    /// I/O failures.
+    pub fn load_with(
+        &self,
+        name: &str,
+        device: Option<DeviceSession>,
+    ) -> Result<SlotRecord, DaemonError> {
         Self::check_name(name)?;
+        if name == DEVICE_SLOT {
+            let stored = self.try_load(name)?;
+            // A laptop's slot outlives the owner's login, so a swap that
+            // broke the desktop can still be rolled back from the greeter.
+            let device = device
+                .or_else(|| {
+                    let device = stored.as_ref()?.device.clone()?;
+                    device.login.is_some().then(|| device.logged_out())
+                })
+                .ok_or(DaemonError::NoDeviceSession)?;
+            let mut record = stored.unwrap_or_else(|| SlotRecord {
+                name: DEVICE_SLOT.into(),
+                kind: SlotKind::Device,
+                owner: Owner::default(),
+                created_at: now(),
+                current: 0,
+                seat: None,
+                seat0: None,
+                outputs: Vec::new(),
+                device: None,
+            });
+            record.device = Some(device);
+            return Ok(record);
+        }
         if let Some(record) = self.try_load(name)? {
             return Ok(record);
         }
@@ -186,9 +280,26 @@ impl SlotStore {
                 seat: None,
                 seat0: None,
                 outputs: Vec::new(),
+                device: None,
             });
         }
         Err(DaemonError::SlotNotFound(name.to_owned()))
+    }
+
+    /// [`Self::load_with`] for a machine without a session of its own.
+    ///
+    /// # Errors
+    /// As [`Self::load_with`].
+    pub fn load(&self, name: &str) -> Result<SlotRecord, DaemonError> {
+        self.load_with(name, None)
+    }
+
+    /// The slot as recorded on disk, if it is.
+    ///
+    /// # Errors
+    /// I/O failures.
+    pub fn stored(&self, name: &str) -> Result<Option<SlotRecord>, DaemonError> {
+        self.try_load(name)
     }
 
     fn try_load(&self, name: &str) -> Result<Option<SlotRecord>, DaemonError> {
@@ -612,6 +723,48 @@ mod tests {
             store.set_current(&mut record, 0).unwrap();
             assert_eq!(store.pending("a"), None);
         }
+    }
+
+    /// A laptop's device slot outlives the owner's login, so a swap that
+    /// broke the desktop is rolled back from the login screen; a board's
+    /// slot exists only while its session does.
+    #[test]
+    fn a_logins_device_slot_stays_while_the_owner_is_logged_out() {
+        let root = tempfile::tempdir().unwrap();
+        let store = SlotStore::new(root.path());
+        let login = DeviceSession {
+            unit: "session-3.scope".into(),
+            account: "tester".into(),
+            units: Vec::new(),
+            control_socket: PathBuf::from("/run/user/1000/tilo-session/test-control.sock"),
+            login: Some(Login {
+                session: Some("3".into()),
+                wrapper: Some(4242),
+            }),
+        };
+        assert!(matches!(
+            store.load_with(DEVICE_SLOT, None),
+            Err(DaemonError::NoDeviceSession)
+        ));
+        let record = store.load_with(DEVICE_SLOT, Some(login.clone())).unwrap();
+        store.save(&record).unwrap();
+        let out = store.load_with(DEVICE_SLOT, None).unwrap();
+        let device = out.device.unwrap();
+        assert_eq!(device.unit, crate::apply::GREETER_UNIT);
+        assert_eq!(device.login, Some(Login::default()));
+        assert_eq!(device.account, "tester");
+
+        let board = DeviceSession {
+            login: None,
+            unit: "tilo-board-headless-session@tester.service".into(),
+            ..login
+        };
+        let record = store.load_with(DEVICE_SLOT, Some(board)).unwrap();
+        store.save(&record).unwrap();
+        assert!(matches!(
+            store.load_with(DEVICE_SLOT, None),
+            Err(DaemonError::NoDeviceSession)
+        ));
     }
 
     #[test]

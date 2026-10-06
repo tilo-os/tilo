@@ -21,6 +21,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
+#[cfg(test)]
+use ui::widget::Edits;
 
 use ui::icons::Icon;
 use ui::presence::PresenceKey;
@@ -752,7 +754,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut AutoCommit::new(),
+                state: Edits::lend(&mut AutoCommit::new()),
                 path: &ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -961,11 +963,11 @@ mod tests {
                     .map(|target| (target.key, target.placement)),
                 Some((target_key, DropPlacement::Inside))
             );
-            let mut doc = AutoCommit::new();
-            tree.update(&mut doc, &ObjId::Root);
+            let doc = AutoCommit::new();
+            tree.update(&doc, &ObjId::Root);
             assert!(!tree.is_expanded(target_key), "no spring before the dwell");
             std::thread::sleep(std::time::Duration::from_millis(700));
-            tree.update(&mut doc, &ObjId::Root);
+            tree.update(&doc, &ObjId::Root);
             assert!(tree.is_expanded(target_key), "the dwell opens the branch");
         }
 
@@ -983,10 +985,10 @@ mod tests {
             event(&mut tree, &button(ElementState::Pressed));
             event(&mut tree, &moved(Point::new(start.x, 299.0)));
             assert!(tree.is_dragging());
-            let mut doc = AutoCommit::new();
-            tree.update(&mut doc, &ObjId::Root);
+            let doc = AutoCommit::new();
+            tree.update(&doc, &ObjId::Root);
             std::thread::sleep(std::time::Duration::from_millis(30));
-            tree.update(&mut doc, &ObjId::Root);
+            tree.update(&doc, &ObjId::Root);
             assert!(
                 tree.scroll_offset() > 0.0,
                 "edge dragging reveals lower drop targets without ending the gesture"
@@ -1068,7 +1070,7 @@ mod tests {
                 tree.tree_mut(),
                 &target,
                 &ui::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut Edits::lend(&mut AutoCommit::new()),
                 &ObjId::Root
             ));
             assert!(tree.take_events().is_empty());
@@ -1103,7 +1105,7 @@ mod tests {
                 tree.tree_mut(),
                 &copy,
                 &ui::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut Edits::lend(&mut AutoCommit::new()),
                 &ObjId::Root
             ));
             assert_eq!(tree.take_transfer(), Some(SidebarTransfer::CopyLink(page)));
@@ -1179,7 +1181,7 @@ mod tests {
                 tree.tree_mut(),
                 &target,
                 &ui::a11y::Action::Increment,
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 &ObjId::Root
             ));
             assert!(tree.take_events().is_empty());
@@ -1187,7 +1189,7 @@ mod tests {
                 tree.tree_mut(),
                 &target,
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 &ObjId::Root
             ));
             assert!(matches!(tree.take_events().as_slice(), [OutEvent::Delete(id)] if *id == page));
@@ -1201,7 +1203,7 @@ mod tests {
                     tree.tree_mut(),
                     &target,
                     &ui::a11y::Action::Activate,
-                    &mut doc,
+                    &mut Edits::lend(&mut doc),
                     &ObjId::Root
                 ),
                 "closed menu target is stale"

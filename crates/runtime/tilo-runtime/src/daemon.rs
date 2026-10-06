@@ -671,6 +671,13 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
         S::start_reporting(profile, &mut stage)?
     };
     let host = session.action_host()?;
+    let mcp = crate::mcp_http::Config::from_env()?
+        .map(|config| {
+            session
+                .mcp_room(config.room.as_deref())
+                .map(|room| (config, room))
+        })
+        .transpose()?;
     let search = crate::os_search::start(host.clone(), session.room(), session.actor())?;
     let computer = crate::computer::Computer::from_env(profile)?.map(Arc::new);
     let path = profile.join("native.sock");
@@ -690,17 +697,28 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
     stages.enter("binding the native endpoint");
     let listener = UnixListener::bind(&path)?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    if let Some(config) = crate::mcp_http::Config::from_env()? {
+    if let Some((config, room)) = mcp {
         stages.enter("binding the MCP HTTP endpoint");
-        let viewer = crate::viewer::start_from_env(profile)?;
+        // Computer, viewer and media are scoped to this profile's private
+        // desktop. A shared-room endpoint has only the semantic action door.
+        let private = room == session.room();
+        let viewer = if private {
+            crate::viewer::start_from_env(profile)?
+        } else {
+            None
+        };
         let endpoint = crate::mcp_http::Endpoint::with_viewer(
-            host.clone(),
-            session.room().to_owned(),
+            host,
+            room.clone(),
             session.actor().to_owned(),
             config.token.clone(),
-            computer.clone(),
+            private.then(|| computer.clone()).flatten(),
             viewer,
         );
+        endpoint.serve_sessions(session.mcp_session_factory(&room)?)?;
+        if private {
+            endpoint.serve_media(session.media());
+        }
         let bound = crate::mcp_http::spawn(&config, endpoint)?;
         tracing::info!(%bound, "MCP HTTP endpoint listening");
     }
@@ -712,27 +730,26 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
         room: session.room().to_owned(),
     };
     let endpoint = Endpoint {
-        host,
-        room: session.room().to_owned(),
-        actor: session.actor().to_owned(),
+        session_factory: session.mcp_session_factory(session.room())?,
         status,
         computer,
         joiner: session.joiner(),
         search,
+        media: session.media(),
     };
     endpoint.accept(&listener)
 }
 
 /// What every native connection is served with.
 struct Endpoint<H> {
-    host: H,
-    room: String,
-    actor: String,
+    session_factory: crate::mcp::SessionFactory<H>,
     status: Status,
     computer: Option<Arc<crate::computer::Computer>>,
     joiner: Option<crate::Joiner>,
     /// Opens the host search results another process was handed.
     search: Arc<tilo_os_search::OsSearch>,
+    /// Where answers read the content actions produced.
+    media: Option<Arc<dyn crate::MediaReader>>,
 }
 
 impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
@@ -745,13 +762,12 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                 drop(stream);
                 continue;
             }
-            let host = self.host.clone();
-            let room = self.room.clone();
-            let actor = self.actor.clone();
+            let factory = Arc::clone(&self.session_factory);
             let status = self.status.clone();
             let computer = self.computer.clone();
             let joiner = self.joiner.clone();
             let search = Arc::clone(&self.search);
+            let media = self.media.clone();
             let active = Arc::clone(&active);
             active.fetch_add(1, Ordering::Relaxed);
             let slot = ConnectionSlot(active);
@@ -759,15 +775,22 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                 .name("tilo-native-mcp".into())
                 .spawn(move || {
                     let _slot = slot;
-                    if let Err(error) = serve_connection(
-                        stream,
-                        McpServer::new(host, room, actor).with_computer(computer),
-                        &status,
-                        joiner.as_ref(),
-                        &search,
-                    ) {
+                    let mut server = match factory() {
+                        Ok(server) => server.with_computer(computer).with_media(media),
+                        Err(error) => {
+                            tracing::debug!(%error, "native MCP session admission unavailable");
+                            return;
+                        }
+                    };
+                    if let Err(error) =
+                        serve_connection(stream, &mut server, &status, joiner.as_ref(), &search)
+                    {
                         tracing::debug!(%error, "native runtime client disconnected");
                     }
+                    // The connection was one agent run: what it still holds
+                    // on the compositor's seat, and the strip it worked in,
+                    // are released with it.
+                    server.leave_computer();
                 })?;
         }
         Ok(())
@@ -782,7 +805,7 @@ impl Drop for ConnectionSlot {
 
 fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync>(
     mut stream: UnixStream,
-    mut server: McpServer<H>,
+    server: &mut McpServer<H>,
     status: &Status,
     joiner: Option<&crate::Joiner>,
     search: &tilo_os_search::OsSearch,
@@ -896,12 +919,32 @@ pub fn connect(profile: &Path) -> io::Result<()> {
     std::thread::Builder::new()
         .name("tilo-mcp-proxy-stdin".into())
         .spawn(move || {
-            let result = io::copy(&mut io::stdin().lock(), &mut writer);
+            let result = relay(&mut io::stdin().lock(), &mut writer);
             let _ = writer.shutdown(std::net::Shutdown::Write);
             result
         })?;
-    io::copy(&mut stream, &mut io::stdout().lock())?;
+    relay(&mut stream, &mut io::stdout().lock())?;
     Ok(())
+}
+
+/// Copy `from` to `to`, flushing after every read. A client waits for each
+/// reply before it sends the next request, so a reply must not sit in a
+/// buffer until more arrives: `io::copy` into a buffered stdout fills its
+/// buffer and writes only when it is full or the stream ends.
+pub(crate) fn relay(from: &mut impl io::Read, to: &mut impl io::Write) -> io::Result<u64> {
+    let mut buffer = [0_u8; 16 * 1024];
+    let mut total = 0_u64;
+    loop {
+        let read = match from.read(&mut buffer) {
+            Ok(0) => return Ok(total),
+            Ok(read) => read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        to.write_all(buffer.get(..read).unwrap_or_default())?;
+        to.flush()?;
+        total = total.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
+    }
 }
 
 /// Attach connected service descriptors and replace this host with the app.

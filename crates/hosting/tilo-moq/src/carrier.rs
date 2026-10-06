@@ -534,6 +534,21 @@ pub fn listener(
     chain: Vec<CertificateDer<'static>>,
     key: rustls::pki_types::PrivateKeyDer<'static>,
 ) -> Result<quinn::Endpoint, String> {
+    let socket = std::net::UdpSocket::bind(address).map_err(|error| error.to_string())?;
+    listener_on(socket, chain, key)
+}
+
+/// [`listener`] on an already bound UDP socket.
+///
+/// # Errors
+///
+/// Returns a message when the TLS identity is unusable or the socket cannot
+/// be used.
+pub fn listener_on(
+    socket: std::net::UdpSocket,
+    chain: Vec<CertificateDer<'static>>,
+    key: rustls::pki_types::PrivateKeyDer<'static>,
+) -> Result<quinn::Endpoint, String> {
     let mut tls = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
@@ -556,7 +571,14 @@ pub fn listener(
         ))
         .keep_alive_interval(Some(KEEP_ALIVE));
     config.transport_config(std::sync::Arc::new(transport));
-    quinn::Endpoint::server(config, address).map_err(|error| error.to_string())
+    let runtime = quinn::default_runtime().ok_or("no async runtime for the QUIC listener")?;
+    quinn::Endpoint::new(
+        quinn::EndpointConfig::default(),
+        Some(config),
+        socket,
+        runtime,
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// Accept WebTransport sessions for exactly one of `paths` on `endpoint` and

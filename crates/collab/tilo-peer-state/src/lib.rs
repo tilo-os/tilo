@@ -20,7 +20,7 @@ pub use state::{
     BoundedPeerError, BoundedPeerInvalid, BoundedStatePeer, DocumentRow, GovernedAccess,
     GovernedMember, LocalRecoveryReservation, NativePublicationCut, PeerDeliveryPolicy,
     PeerDeliveryPolicyError, PeerDocumentRead, PeerDocumentReadError, PeerLimits, PeerMediaCall,
-    PeerMember, PeerPolicyBasis, PeerRead, PeerRevocations, PeerRoomAccess, ReceiveOutcome,
+    PeerMember, PeerPolicyBasis, PeerRead, PeerRevocations, PeerRoomAccess, ReceiveOutcome, Reseal,
     SealCheckpoint, SeedDocument, SeedState, StatePeer, TransportOrigin,
     VerifiedSecurityMetadataOnly, peer_handle, seed_room,
 };
@@ -43,6 +43,7 @@ pub mod topology;
 pub mod desktop_command;
 pub mod document_import;
 pub mod owner_commit;
+pub mod workspace_task;
 
 pub mod retained_proof;
 

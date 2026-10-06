@@ -31,6 +31,16 @@ fn scheme(theme: winit::window::Theme) -> Scheme {
     }
 }
 
+/// The launcher named the session `settings.json` for this process.
+/// That document is the theme the shell chrome already paints from. An
+/// unset host portal must not replace it: the Settings sandbox clears
+/// `XDG_CURRENT_DESKTOP` and is not granted the Settings portal, so the
+/// host reading stays "no scheme" and would paint the dark default back
+/// over every session-file change.
+pub(crate) fn session_document_owns_appearance() -> bool {
+    crate::host::environment().session_settings.is_some()
+}
+
 /// Whether the host, not the Tilo shell, owns this process's appearance.
 /// `desktop` is `XDG_CURRENT_DESKTOP`, a colon-separated list.
 pub(crate) fn host_owns_appearance(desktop: Option<&str>) -> bool {
@@ -53,9 +63,14 @@ pub(crate) struct Source {
 }
 
 impl Source {
-    /// `None` inside Tilo OS. Start it under the app's wake scope: a platform
-    /// that reports changes itself wakes the event loop through it.
+    /// `None` when the session settings document owns appearance, and when
+    /// the desktop is already Tilo. Otherwise the host portal owns it.
+    /// Start it under the app's wake scope: a platform that reports changes
+    /// itself wakes the event loop through it.
     pub fn start() -> Option<Self> {
+        if session_document_owns_appearance() {
+            return None;
+        }
         let environment = crate::host::environment();
         host_owns_appearance(environment.desktop.as_deref()).then(|| Self {
             window_scheme: None,
@@ -155,6 +170,24 @@ mod tests {
         assert!(!host_owns_appearance(Some("GNOME:Tilo")));
         assert!(host_owns_appearance(Some("GNOME")));
         assert!(host_owns_appearance(None));
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_named_session_document_owns_appearance_and_an_absent_one_does_not() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove(settings_store::SESSION_SETTINGS_ENV);
+        assert!(!session_document_owns_appearance());
+        env.set(
+            settings_store::SESSION_SETTINGS_ENV,
+            "/run/tilo/app/.config/tilo/settings.json",
+        );
+        assert!(session_document_owns_appearance());
+        env.set(settings_store::SESSION_SETTINGS_ENV, "");
+        assert!(
+            !session_document_owns_appearance(),
+            "an empty path is not a session document"
+        );
     }
 
     /// A source with no desktop reading: winit and the launcher only.

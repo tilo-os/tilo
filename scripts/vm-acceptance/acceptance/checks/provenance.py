@@ -13,6 +13,18 @@ def commit(ctx, res):
     res.metrics.update(p)
     expect(p.get("record"), p.get("why", "no provenance record for this disk"))
     expect(not p.get("mismatch"), p.get("mismatch", ""))
+    swap = p.get("swap")
+    if not swap:
+        return
+    # Base image plus components swapped in from a ref: say so, and pass only when every
+    # requested swap is the layer its slot runs. Anything else is a mixed image nobody asked for.
+    base = (p["record"].get("commit") or "?")[:12]
+    done = [c for c in swap["components"] if not c.get("error") and (c.get("layer") or c["component"].startswith("app:"))]
+    res.detail = (f"base {base} + {', '.join(c['component'] for c in done) or 'nothing'} "
+                  f"swapped from {swap['ref']} ({swap['commit'][:12]})")
+    failed = [f"{c['component']}: {c.get('error') or 'not a layer of slot ' + c['slot'] + ' after the swap'}"
+              for c in swap["components"] if c not in done]
+    expect(not failed, "not swapped: " + "; ".join(failed))
 
 
 @check("P02", AREA, "A headful slot with two outputs is up")
@@ -22,9 +34,18 @@ def session(ctx, res):
     res.metrics["displays"] = [(d["monitor"], d["width"], d["height"]) for d in displays]
     res.metrics["identity"] = st["chrome"].get("local_user_id")
     want = ctx.config["outputs"]
-    got = [f"{int(d['width'])}x{int(d['height'])}" for d in displays]
+    # Displays are laid out in logical pixels: a mode at scale S spans mode / S.
+    got = [f"{round(d['width'])}x{round(d['height'])}" for d in sorted(displays, key=lambda d: (d["x"], d["y"]))]
+    logical = [_logical(w) for w in want]
     expect(len(displays) == len(want), f"{len(want)} outputs requested, {len(displays)} present")
-    expect(all(w.split("@")[0] == g for w, g in zip(want, got)), f"output modes {got}, requested {want}")
+    expect(got == logical, f"outputs {got} in logical pixels, requested {want} (that is {logical})")
+
+
+def _logical(spec: str) -> str:
+    mode, _, scale = spec.partition("@")
+    w, h = (int(v) for v in mode.split("x"))
+    s = float(scale or 1)
+    return f"{round(w / s)}x{round(h / s)}"
 
 
 def _this_boot_restarts(journal: str) -> dict[str, int]:

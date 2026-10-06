@@ -1,115 +1,222 @@
-use super::{
-    ActionContract, ActionSpec, Availability, DiscoveryScope, ExecutionMode, MapsApp,
-    OperationKind, PermissionRequirement, Resource, ResultSpec, RetryPolicy,
-};
+//! What a maps window answers and shows beside the shared map: its effects,
+//! with their availability now, and the live rows it publishes.
+
+use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
+
+use super::MapsApp;
+use crate::resource::{Maps, MapsEffect};
+
+/// How many rows of one kind a published page holds; the rest resolve by id.
+const ROWS_PER_KIND: usize = 12;
 
 impl MapsApp {
-    /// Add operations whose availability depends on this live app instance to
-    /// both eager and lazily resolved resources. Durable mutations stay on the
-    /// encoded `MapsAction` path in `actions`; these are presentation/external
-    /// effects and therefore use local operation handlers.
-    pub(super) fn decorate_live_resource(&self, resource: &mut Resource) {
-        if resource.kind == "maps.workspace" {
-            if let Ok(spec) = ActionSpec::operation(
-                "locate",
-                "Use my location",
-                OperationKind::Effect,
-                "maps.locate",
-                &"",
-            ) {
-                resource.actions.push(spec.with_contract(ActionContract {
-                    availability: if !self.online {
-                        Availability::Unavailable {
-                            code: "location_service_offline".into(),
-                            reason: "The location service is unavailable in this session".into(),
-                        }
-                    } else if self.location_rx.is_none() {
-                        Availability::Available
-                    } else {
-                        Availability::Unavailable {
-                            code: "request_in_progress".into(),
-                            reason: "A location request is already in progress".into(),
-                        }
-                    },
-                    permission: PermissionRequirement::Read,
-                    retry: RetryPolicy::AtMostOnce,
-                    execution: ExecutionMode::Background { cancellable: false },
-                    discovery: DiscoveryScope::Launchable,
-                    result: ResultSpec::Job,
-                    ..ActionContract::default()
-                }));
+    /// Answer `effect`, from a control, the palette, an agent or a script.
+    pub(crate) fn answer_effect(
+        &mut self,
+        effect: MapsEffect,
+        cx: &mut EffectCx<Maps, Self>,
+    ) -> EffectAnswer {
+        match effect {
+            MapsEffect::Search { query } => {
+                self.model.query = query;
+                self.run_search(false);
             }
-            if let Ok(spec) = ActionSpec::operation(
-                "toggle-traffic",
-                if self.map_controls.traffic_enabled() {
-                    "Hide traffic"
-                } else {
-                    "Show traffic"
-                },
-                OperationKind::View,
-                "maps.toggle-traffic",
-                &"",
-            ) {
-                resource
-                    .actions
-                    .push(spec.with_contract(ActionContract::view()));
-            }
-        }
-
-        let prefix = match resource.kind.as_str() {
-            "maps.place" => Some("maps.place:"),
-            "maps.search-result" => Some("maps.search-result:"),
-            _ => None,
-        };
-        if let Some(prefix) = prefix
-            && let Some(place_id) = resource.id.as_str().strip_prefix(prefix)
-            && self.model.place(place_id).is_some()
-        {
-            // Saved places expose a local presentation-only opener.
-            if resource.kind == "maps.place"
-                && let Ok(spec) = ActionSpec::operation(
-                    "open",
-                    "Open place",
-                    OperationKind::View,
-                    "maps.open-place",
-                    &place_id,
-                )
-            {
-                resource
-                    .actions
-                    .insert(0, spec.with_contract(ActionContract::view()));
-            }
-            if let Ok(spec) = ActionSpec::operation(
-                "directions",
-                "Get directions",
-                OperationKind::View,
-                "maps.directions",
-                &place_id,
-            ) {
-                resource
-                    .actions
-                    .insert(0, spec.with_contract(ActionContract::view()));
-            }
-        }
-        if resource.kind == "maps.poi"
-            && let Some(poi_id) = resource.id.as_str().strip_prefix("maps.poi:")
-            && self.pois.iter().any(|poi| poi.id == poi_id)
-        {
-            for (id, label, type_id) in [
-                ("open", "Open place", "maps.open-poi"),
-                ("directions", "Get directions", "maps.directions-poi"),
-            ] {
-                if let Ok(spec) =
-                    ActionSpec::operation(id, label, OperationKind::View, type_id, &poi_id)
-                {
-                    resource
-                        .actions
-                        .push(spec.with_contract(ActionContract::view()));
+            MapsEffect::Locate => {
+                if let Some(reason) = self.locate_unavailable() {
+                    return Err(reason.1.into());
                 }
+                self.location_reply = Some(cx.reply());
+                self.use_my_location();
+                return Ok(Effected::Pending);
             }
+            MapsEffect::ToggleTraffic => {
+                self.set_traffic(!self.map_controls.traffic_enabled());
+            }
+            MapsEffect::OpenPlace { place } | MapsEffect::Directions { place }
+                if self.model.place(&place).is_none() =>
+            {
+                return Err("Map place is no longer available".into());
+            }
+            MapsEffect::OpenPlace { place } => self.select_place(&place),
+            MapsEffect::Directions { place } => {
+                self.select_place(&place);
+                self.enter_directions();
+            }
+            MapsEffect::OpenPoi { poi } | MapsEffect::PoiDirections { poi }
+                if !self.pois.iter().any(|known| known.id == poi) =>
+            {
+                return Err("Map point of interest is no longer in this viewport".into());
+            }
+            MapsEffect::OpenPoi { poi } => self.select_poi(&poi),
+            MapsEffect::PoiDirections { poi } => {
+                self.select_poi(&poi);
+                self.poi_directions();
+            }
+            MapsEffect::DeleteOfflineArea { area } => self.delete_region(&area)?,
+            MapsEffect::ClearOfflineAreas => self.clear_offline_areas(),
         }
-        for child in &mut resource.children {
-            self.decorate_live_resource(child);
+        Ok(Effected::done())
+    }
+
+    /// Why the location can't be asked for now, as a code and a reason.
+    fn locate_unavailable(&self) -> Option<(&'static str, &'static str)> {
+        if !self.online {
+            Some((
+                "location_service_offline",
+                "The location service is unavailable in this session",
+            ))
+        } else if self.location_rx.is_some() || self.location_reply.is_some() {
+            Some((
+                "request_in_progress",
+                "A location request is already in progress",
+            ))
+        } else {
+            None
         }
     }
+
+    /// The effects that differ from their declaration now.
+    pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
+        let mut statuses = Vec::new();
+        if let Some((code, reason)) = self.locate_unavailable() {
+            statuses.push(EffectStatus::unavailable(MapsEffect::LOCATE, code, reason));
+        }
+        if self.map_controls.traffic_enabled() {
+            statuses.push(EffectStatus::labelled(
+                MapsEffect::TOGGLE_TRAFFIC,
+                "Hide traffic",
+            ));
+        }
+        statuses
+    }
+
+    /// The rows the window publishes now, a bounded page of each kind.
+    pub(crate) fn published_rows(&self) -> Vec<LiveRow> {
+        let mut rows = Vec::new();
+        rows.extend(
+            self.model
+                .results
+                .iter()
+                .take(ROWS_PER_KIND)
+                .map(|place| search_result_row(&place.id, &place.name)),
+        );
+        rows.extend(
+            self.nearby_pois()
+                .into_iter()
+                .take(ROWS_PER_KIND)
+                .map(|poi| poi_row(&poi.id, &poi.name)),
+        );
+        rows.extend(
+            self.model
+                .places
+                .iter()
+                .filter(|place| place.saved)
+                .take(ROWS_PER_KIND)
+                .map(|place| saved_place_row(&place.id, &place.name)),
+        );
+        rows.extend(
+            self.model
+                .recents
+                .iter()
+                .take(ROWS_PER_KIND)
+                .map(|query| history_row(query)),
+        );
+        rows.extend(self.model.regions.iter().take(ROWS_PER_KIND).map(|area| {
+            area_row(
+                &area.id,
+                &format!("{} · z{}–{}", area.name, area.z0, area.z1),
+            )
+        }));
+        rows
+    }
+
+    /// The row `id`, wherever it falls in the window's state.
+    pub(crate) fn published_row(&self, id: &str) -> Option<LiveRow> {
+        if let Some(place_id) = id.strip_prefix("maps.search-result:") {
+            return self
+                .model
+                .results
+                .iter()
+                .find(|place| place.id == place_id)
+                .map(|place| search_result_row(&place.id, &place.name));
+        }
+        if let Some(poi_id) = id.strip_prefix("maps.poi:") {
+            return self
+                .pois
+                .iter()
+                .find(|poi| poi.id == poi_id)
+                .map(|poi| poi_row(&poi.id, &poi.name));
+        }
+        if let Some(place_id) = id.strip_prefix("maps.place:") {
+            return self
+                .model
+                .places
+                .iter()
+                .find(|place| place.saved && place.id == place_id)
+                .map(|place| saved_place_row(&place.id, &place.name));
+        }
+        if let Some(query) = id.strip_prefix("maps.search-history:") {
+            return self
+                .model
+                .recents
+                .iter()
+                .find(|recent| recent.as_str() == query)
+                .map(|recent| history_row(recent));
+        }
+        if let Some(area_id) = id.strip_prefix("maps.region:") {
+            return self
+                .model
+                .regions
+                .iter()
+                .find(|area| area.id == area_id)
+                .map(|area| {
+                    area_row(
+                        &area.id,
+                        &format!("{} · z{}–{}", area.name, area.z0, area.z1),
+                    )
+                });
+        }
+        None
+    }
+}
+
+fn search_result_row(id: &str, name: &str) -> LiveRow {
+    LiveRow::new(
+        format!("maps.search-result:{id}"),
+        "maps.search-result",
+        name,
+    )
+    .effect(&MapsEffect::OpenPlace { place: id.into() })
+    .effect(&MapsEffect::Directions { place: id.into() })
+}
+
+fn poi_row(id: &str, name: &str) -> LiveRow {
+    LiveRow::new(format!("maps.poi:{id}"), "maps.poi", name)
+        .effect(&MapsEffect::OpenPoi { poi: id.into() })
+        .effect(&MapsEffect::PoiDirections { poi: id.into() })
+}
+
+/// Opening a saved place joins the document's row of the same id, which
+/// carries removing it from the saved places.
+fn saved_place_row(id: &str, name: &str) -> LiveRow {
+    LiveRow::new(format!("maps.place:{id}"), "maps.place", name)
+        .effect(&MapsEffect::OpenPlace { place: id.into() })
+        .effect(&MapsEffect::Directions { place: id.into() })
+}
+
+/// Searching again joins the document's row of the same recent search.
+fn history_row(query: &str) -> LiveRow {
+    LiveRow::new(
+        format!("maps.search-history:{query}"),
+        "maps.search-history",
+        query,
+    )
+    .effect(&MapsEffect::Search {
+        query: query.into(),
+    })
+}
+
+fn area_row(id: &str, label: &str) -> LiveRow {
+    LiveRow::new(format!("maps.region:{id}"), "maps.region", label)
+        .effect(&MapsEffect::DeleteOfflineArea { area: id.into() })
 }

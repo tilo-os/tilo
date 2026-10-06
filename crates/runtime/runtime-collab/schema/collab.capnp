@@ -202,7 +202,9 @@ interface ChannelHandle {
   cancelPublishedInvocation @23 (id :UInt64) -> (updateJson :Text);
   # Optional content-addressed object to stage read-only for the launched app.
   # Empty keeps the ordinary app-launch behavior.
-  launchPublishedApplication @24 (appId :Text, contentHash :Text)
+  # Optional exact signed installed package root. Empty selects the normal
+  # application; a supplied root must match both its catalogue row and app id.
+  launchPublishedApplication @24 (appId :Text, contentHash :Text, packageRoot :Text, onBehalfOf :Data)
       -> (id :UInt64, updateJson :Text);
 
   # Ask this session to open the "say something about this" surface.
@@ -379,6 +381,17 @@ interface ChannelHandle {
   # the opaque ids the shell publishes; PipeWire identities are not
   # representable.
   speakerCommand @52 (appId :Text, commandJson :Data) -> (replyJson :Data);
+
+  # This application's settings in the session's records: its own
+  # `app_personal` and `app_device_local` entries and the shared sections
+  # every app reads. The app is the certified route's; there is no way to
+  # name another.
+  settings @54 () -> (settings :AppSettings);
+
+  # This application's live activity: what it keeps showing outside its
+  # windows (a running timer), which the shell presents and whose controls
+  # it hands back. The app is the certified route's.
+  liveActivity @55 () -> (activity :LiveActivity);
 
 }
 
@@ -852,4 +865,25 @@ struct ScrollbackBatch {
 # Independently versioned enrolled envelope; legacy TaskRunStream is unchanged.
 interface EnrolledTaskStream {
   read @0 () -> (taskJson :Text);
+}
+
+# One application's view of the session's settings, from `settings`.
+# Documents are JSON objects of sections, at most 1 MiB.
+interface LiveActivity {
+  # Show `activityJson`, a JSON object, as the app's live activity in place
+  # of the one shown; empty bytes end it.
+  show @0 (activityJson :Data) -> ();
+  # The controls pressed on the app's live activity after `after`, once
+  # there is one: a JSON array of the controls, and the serial of the last.
+  controls @1 (after :UInt64) -> (serial :UInt64, controlsJson :Data);
+}
+
+interface AppSettings {
+  # The view once its revision differs from `after`; at once for 0. A
+  # caller follows changes by passing back the revision it was given.
+  read @0 (after :UInt64) -> (revision :UInt64, documentJson :Data);
+  # Merge `valuesJson`, `{"<app id>": {...}}`, into the app's entry in
+  # `section` (`app_personal` or `app_device_local`), answering the view
+  # after the write. Any other section or entry is refused.
+  update @1 (section :Text, valuesJson :Data) -> (revision :UInt64, documentJson :Data);
 }

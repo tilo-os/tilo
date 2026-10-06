@@ -201,6 +201,8 @@ pub fn pump(relay: &mut MemoryRelay) {
                 }
             }
             CollabRequest::WorkspaceControlInput { .. }
+            | CollabRequest::OfferContent { .. }
+            | CollabRequest::WantContent { .. }
             | CollabRequest::CloseWorkspaceControl { .. }
             | CollabRequest::NearbyTransferCommand { .. }
             | CollabRequest::NativeMediaCommand { .. }
@@ -222,6 +224,7 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::PublishedInvocationStatus { .. }
             | CollabRequest::CancelPublishedInvocation { .. }
             | CollabRequest::LaunchPublishedApplication { .. }
+            | CollabRequest::LaunchInstalledApplication { .. }
             | CollabRequest::SubscribeEnrolledTasks { .. }
             | CollabRequest::AcceptEnrolledTask { .. }
             | CollabRequest::ReportEnrolledTask { .. }

@@ -621,6 +621,8 @@ fn invoke_checked(
                 peer,
                 offered,
                 InvocationInputs {
+                    caller: None,
+                    execution: None,
                     argument: argument.as_deref(),
                     actor: &actor,
                     confirmation_token: token.as_deref(),

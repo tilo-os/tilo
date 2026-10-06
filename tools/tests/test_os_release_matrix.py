@@ -20,7 +20,7 @@ WORKFLOW = ROOT / ".forgejo/workflows/build-image.yml"
 def matrix_script() -> str:
     workflow = WORKFLOW.read_text()
     marker = "      - name: Select validation or native publication lanes\n"
-    block = workflow.split(marker, 1)[1].split("\n\n  signing-preflight:", 1)[0]
+    block = workflow.split(marker, 1)[1].split("\n      - name:", 1)[0].split("\n\n  signing-preflight:", 1)[0]
     return textwrap.dedent(block.split("        run: |\n", 1)[1])
 
 
@@ -78,8 +78,6 @@ class OsReleaseMatrixTests(unittest.TestCase):
                 [
                     {"arch": "x86_64", "runner": "imager-linux-x86_64"},
                     {"arch": "aarch64", "runner": "imager-linux-aarch64"},
-                    {"arch": "x86_64", "runner": "imager-linux-x86_64", "role": "reproduce"},
-                    {"arch": "aarch64", "runner": "imager-linux-aarch64", "role": "reproduce"},
                 ],
             )
         with self.subTest(phase='protected manual main publish uses the release class'):
@@ -90,8 +88,6 @@ class OsReleaseMatrixTests(unittest.TestCase):
                 [
                     {"arch": "x86_64", "runner": "runner-release"},
                     {"arch": "aarch64", "runner": "runner-release-arm64"},
-                    {"arch": "x86_64", "runner": "runner-release", "role": "reproduce"},
-                    {"arch": "aarch64", "runner": "runner-release-arm64", "role": "reproduce"},
                 ],
             )
         with self.subTest(phase='manual nonpublication builds both native integration lanes'):
@@ -110,8 +106,6 @@ class OsReleaseMatrixTests(unittest.TestCase):
                 [
                     {"arch": "x86_64", "runner": "runner-release"},
                     {"arch": "aarch64", "runner": "runner-release-arm64"},
-                    {"arch": "x86_64", "runner": "runner-release", "role": "reproduce"},
-                    {"arch": "aarch64", "runner": "runner-release-arm64", "role": "reproduce"},
                 ],
             )
 
@@ -177,7 +171,13 @@ class OsReleaseMatrixTests(unittest.TestCase):
                     if publish:
                         self.assertEqual(group, "tilo-os-image-series-2")
                     else:
-                        self.assertEqual(group, f"tilo-os-image-validate-{ref}")
+                        self.assertEqual(group, "tilo-os-image-validate-2")
+        with self.subTest(phase='full branch proofs share a queue without cancelling another owner'):
+            branches = ("refs/heads/feature-a", "refs/heads/feature-b")
+            groups = [concurrency_group(ref, "workflow_dispatch", "false") for ref in branches]
+            self.assertEqual(groups, ["tilo-os-image-validate-2"] * 2)
+            self.assertNotEqual(groups[0], concurrency_group(branches[0], "workflow_call", ""))
+            self.assertIn("cancel-in-progress: ${{ github.event_name == 'workflow_call' && github.ref != 'refs/heads/main' }}", WORKFLOW.read_text())
         with self.subTest(phase='Lenovo publication has a source-specific lock'):
             self.assertEqual(
                 concurrency_group("refs/heads/main", "workflow_dispatch", "true", "lenovo-83ed"),
@@ -215,6 +215,11 @@ class OsDevLaneTests(unittest.TestCase):
                 "tilo-os-dev-refs/pull/12/head",
             )
             self.assertIn("cancel-in-progress: ${{ github.event_name == 'workflow_call' && github.ref != 'refs/heads/main' }}", WORKFLOW.read_text())
+        with self.subTest(phase='each main commit builds on its own'):
+            self.assertEqual(
+                concurrency_group("refs/heads/main", "workflow_call", ""),
+                "tilo-os-dev-" + SHA,
+            )
         with self.subTest(phase='main pushes and image pull requests call it'):
             caller = (ROOT / ".forgejo/workflows/os-dev.yml").read_text()
             self.assertIn("name: Build / OS dev", caller)
@@ -247,7 +252,7 @@ class OsDevLaneTests(unittest.TestCase):
         self.assertIn('git diff --quiet "$COLLECTION_SOURCE" "$GITHUB_SHA" -- "${inputs[@]}"', step)
         self.assertIn(".forgejo/workflows/release-apps.yml", step)
         self.assertIn("index.json | jq -r '.source // empty'", step)
-        self.assertLess(step.index("[[ $source == \"$COLLECTION_SOURCE\" ]]"),
+        self.assertLess(step.index("[[ $source != \"$COLLECTION_SOURCE\" ]]"),
                         step.index("echo 'TILO_PREBUILT_APPS=1'"))
         self.assertLess(workflow.index("echo 'TILO_PREBUILT_APPS=0' >> \"$GITHUB_ENV\""),
                         workflow.index("      - name: Materialize the pinned app collection\n"))
@@ -257,7 +262,10 @@ class OsDevLaneTests(unittest.TestCase):
         step = workflow.split("      - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)\n", 1)[1]
         step = step.split("\n      - name:", 1)[0]
         self.assertIn("DEV_BUILD: ${{ github.event_name == 'workflow_call' }}", step)
-        self.assertIn('for ref in "$BASE_REF" "$RPMS_REF" "$KERNEL_RPMS_REF"; do', step)
+        self.assertIn('for ref in "$BASE_REF" "$RPMS_REF"; do', step)
+        # The kernel snapshot changes several times a day; in the epoch it
+        # invalidated every rootfs layer.
+        self.assertNotIn("KERNEL_RPMS_REF", step.split("if [[ $DEV_BUILD == true ]]", 1)[1])
         # image.created keeps the commit time either way.
         self.assertLess(step.index("SOURCE_DATE_ISO="), step.index("if [[ $DEV_BUILD == true ]]"))
 
@@ -479,7 +487,8 @@ def concurrency_group(
         ("startsWith(github.ref, 'refs/tags/v')", "ref.startswith('refs/tags/v')"),
         ("format('tilo-os-image-lenovo-{0}', github.sha)", "('tilo-os-image-lenovo-' + sha)"),
         ("format('tilo-os-image-validate-{0}', github.ref)", "('tilo-os-image-validate-' + ref)"),
-        ("format('tilo-os-dev-{0}', github.ref)", "('tilo-os-dev-' + ref)"),
+        ("format('tilo-os-dev-{0}', github.ref == 'refs/heads/main' && github.sha || github.ref)",
+         "('tilo-os-dev-' + (sha if ref == 'refs/heads/main' else ref))"),
         ("github.event.inputs.hardware_profile", "profile"),
         ("github.event.inputs.release", "requested"),
         ("github.event_name", "event"),

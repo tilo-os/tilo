@@ -736,15 +736,33 @@ struct ForeignEntry {
     /// is applied. Publishing earlier would expose pending state as current.
     #[cfg(any(test, target_os = "linux"))]
     ready_captures: HashMap<u64, ReadyCapture>,
+    /// Shm commits queued for the capture worker, and the latest it is done
+    /// with. The worker keeps only a surface's newest job, so it can finish
+    /// fewer than were queued; the newest one finished is what counts.
+    shm_queued: u64,
+    shm_done: u64,
+    activated_capture: Option<u64>,
     /// The image description the client attached (`wp_color_management`),
     /// read when a 10-bit or YUV buffer is converted for display.
     colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
     /// The current frame at full precision when it carries an HDR signal;
     /// `rgba` is then its tone-mapped SDR rendition.
     hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
+    /// The current frame when it stayed on the GPU; `rgba` is then empty and
+    /// read back only on demand.
+    gpu: Option<Arc<crate::shell::gpu_frames::GpuFrame>>,
 }
 
 impl ForeignEntry {
+    /// A committed buffer whose pixels are not this entry's yet.
+    fn capturing(&self) -> bool {
+        #[cfg(any(test, target_os = "linux"))]
+        if !self.capture_tokens.is_empty() {
+            return true;
+        }
+        self.shm_queued > self.shm_done
+    }
+
     fn new() -> Self {
         Self {
             rgba: Vec::new(),
@@ -764,10 +782,14 @@ impl ForeignEntry {
             presented: false,
             colorimetry: None,
             hdr: None,
+            gpu: None,
             #[cfg(any(test, target_os = "linux"))]
             capture_tokens: VecDeque::new(),
             #[cfg(any(test, target_os = "linux"))]
             ready_captures: HashMap::new(),
+            shm_queued: 0,
+            shm_done: 0,
+            activated_capture: None,
         }
     }
 }
@@ -890,7 +912,20 @@ pub struct FrameSnapshot {
     pub hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
 }
 
-fn composite_child_rgba(root: &mut FrameSnapshot, child: &ForeignEntry, x: i32, y: i32) {
+/// A subsurface's pixels, tightly packed RGBA.
+struct ChildPixels<'a> {
+    rgba: &'a [u8],
+    width: u32,
+    height: u32,
+}
+
+/// Where a subsurface's pixels are.
+enum ChildSource {
+    Cpu(Vec<u8>),
+    Gpu(Arc<crate::shell::gpu_frames::GpuFrame>),
+}
+
+fn composite_child_rgba(root: &mut FrameSnapshot, child: &ChildPixels<'_>, x: i32, y: i32) {
     if child.rgba.is_empty() || child.width == 0 || child.height == 0 {
         return;
     }
@@ -968,6 +1003,8 @@ pub struct ChildFrame {
 #[derive(Default)]
 pub struct ForeignFrameStore {
     entries: Mutex<HashMap<SurfaceId, ForeignEntry>>,
+    painted_frames: Mutex<HashMap<SurfaceId, u64>>,
+    presentation_viewport: Mutex<Option<Rect>>,
     children: Mutex<HashMap<SurfaceId, Vec<ChildFrame>>>,
     /// Transient toplevels drawn on their parent's tile, bottom to top.
     sheets: Mutex<Vec<SheetLink>>,
@@ -980,6 +1017,9 @@ pub struct ForeignFrameStore {
     /// Which surfaces a capture must draw as a placeholder — see
     /// [`crate::shell::capture_protection`].
     capture_protection: Mutex<CaptureProtection>,
+    /// The size, in logical pixels, other devices of the person show each
+    /// streamed window at. A window not shown here is configured to it.
+    remote_extents: Mutex<HashMap<SurfaceId, (i32, i32)>>,
 }
 
 /// Capture-protection requests, kept beside the frames they withhold.
@@ -1008,6 +1048,9 @@ pub enum DmabufRoute {
     Gpu,
     /// The plane fd was CPU-mapped directly — only linear, CPU-visible buffers, but needs no GL context.
     CpuMmap,
+    /// Imported on the presenting GPU and copied into a compositor-owned
+    /// texture; no pixel crossed the CPU.
+    Shared,
 }
 
 /// Which capture route a commit took, for logging + tests.
@@ -1044,6 +1087,8 @@ type DmabufJob = CaptureJob<Dmabuf>;
 #[cfg(target_os = "linux")]
 struct ShmJob {
     surface: SurfaceId,
+    /// The surface's shm capture count when this job was queued.
+    generation: u64,
     payload: OwnedShmFrame,
 }
 
@@ -1053,6 +1098,8 @@ struct ReadyCapture {
     rgba: Vec<u8>,
     /// The frame at full precision, when it carries an HDR signal.
     hdr: Option<crate::shell::hdr_surface::HdrPlane>,
+    /// The frame, when it stayed on the GPU; `rgba` is then empty.
+    gpu: Option<Arc<crate::shell::gpu_frames::GpuFrame>>,
     result: Result<(u32, u32, CaptureRoute), String>,
 }
 
@@ -1171,12 +1218,17 @@ impl AsyncDmabufCapture {
                             *rgba = previous;
                         }
                         let colorimetry = store().colorimetry(job.surface);
-                        let mut hdr = None;
-                        let result = decode_dmabuf(&job.payload, rgba, colorimetry, &mut hdr).map(
-                            |(width, height, route)| (width, height, CaptureRoute::Dmabuf(route)),
-                        );
-                        let accepted =
-                            store().stage_dmabuf_capture(job.surface, job.token, result, rgba, hdr);
+                        let accepted = if let Some(frame) = share_dmabuf(&job.payload, job.surface)
+                        {
+                            store().stage_gpu_capture(job.surface, job.token, frame)
+                        } else {
+                            let mut hdr = None;
+                            let result = decode_dmabuf(&job.payload, rgba, colorimetry, &mut hdr)
+                                .map(|(width, height, route)| {
+                                    (width, height, CaptureRoute::Dmabuf(route))
+                                });
+                            store().stage_dmabuf_capture(job.surface, job.token, result, rgba, hdr)
+                        };
                         if !accepted {
                             // The toplevel was destroyed while this import was
                             // in flight. Do not retain a full framebuffer in
@@ -1293,6 +1345,7 @@ impl AsyncShmCapture {
                                 store().note_failure(job.surface, error.to_string());
                             }
                         }
+                        store().note_shm_done(job.surface, job.generation);
                         SHM_FRAMES_PUBLISHED.store(true, std::sync::atomic::Ordering::Release);
                         if let Some(ping) = worker_completion_ping
                             .lock()
@@ -1386,6 +1439,34 @@ fn recycle_dmabuf_pixels(surface: SurfaceId, rgba: Vec<u8>) {
     #[cfg(target_os = "linux")]
     if let Some(Ok(worker)) = ASYNC_DMABUF_CAPTURE.get() {
         worker.recycle_pixels(surface, rgba);
+    }
+}
+
+/// Keep an SDR client frame on the GPU: import it on the presenting device
+/// and copy it into a compositor-owned texture. `None` sends it down the
+/// readback route instead (no presenting GPU yet, a 10-bit, half-float or
+/// YUV buffer, or a layout the import cannot describe), reported once per
+/// reason. An 8-bit buffer is shown as it is on either route.
+#[cfg(target_os = "linux")]
+fn share_dmabuf(
+    dmabuf: &Dmabuf,
+    surface: SurfaceId,
+) -> Option<Arc<crate::shell::gpu_frames::GpuFrame>> {
+    static REPORTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    match crate::shell::gpu_frames::import_dmabuf(dmabuf, surface) {
+        Ok(frame) => Some(frame),
+        Err(reason) => {
+            let mut reported = REPORTED
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !reported.contains(&reason) && reported.len() < 32 {
+                eprintln!(
+                    "tilo compositor: client frame read back through the CPU, not shared on the GPU: {reason}"
+                );
+                reported.push(reason);
+            }
+            None
+        }
     }
 }
 
@@ -1492,6 +1573,91 @@ impl ForeignFrameStore {
     }
 
     /// Buffer imports since process start, across every surface/route — read by the repaint-cost test (see the field's doc for why it must not track paints).
+    /// The shm capture worker finished the job queued as `generation`.
+    #[cfg(target_os = "linux")]
+    fn note_shm_done(&self, id: SurfaceId, generation: u64) {
+        let mut guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = guard.get_mut(&id) {
+            entry.shm_done = entry.shm_done.max(generation);
+        }
+    }
+
+    /// Whether a buffer some surface of the client `client_index` committed
+    /// is still being captured, so its pixels are not yet what a screenshot
+    /// shows. `client_index` is the high half of a [`SurfaceId`].
+    pub fn capturing_for_client(&self, client_index: u32) -> bool {
+        let guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard
+            .iter()
+            .any(|(id, entry)| id.wrapping_shr(32) == u64::from(client_index) && entry.capturing())
+    }
+
+    pub fn capture_seq_for_token(&self, id: SurfaceId, token: u64) -> Option<u64> {
+        let entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = entries.get(&id)?;
+        let result = (entry.activated_capture == Some(token) && entry.last_error.is_none())
+            .then_some(entry.seq);
+        drop(entries);
+        result
+    }
+
+    /// Exact completed pixel generation; pending/superseded captures are not proof.
+    pub fn presentation_pixels(&self, id: SurfaceId) -> Option<(u64, u64)> {
+        let entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = entries.get(&id)?;
+        let result =
+            (!entry.capturing() && entry.last_error.is_none() && entry.mapped && entry.seq != 0)
+                .then_some((entry.seq, entry.shm_done));
+        drop(entries);
+        result
+    }
+
+    pub fn begin_presentation_frame(&self, viewport: Rect) {
+        *self
+            .presentation_viewport
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(viewport);
+        self.painted_frames
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+
+    pub fn take_painted_frames(&self) -> HashMap<SurfaceId, u64> {
+        std::mem::take(
+            &mut *self
+                .painted_frames
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    fn note_painted_frame(&self, id: SurfaceId, seq: u64, bounds: Rect) {
+        let visible = self
+            .presentation_viewport
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some_and(|viewport| bounds.intersect(viewport).area() > 0.0);
+        if visible && !crate::shell::capture_protection::painting_for_capture() {
+            self.painted_frames
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(id, seq);
+        }
+    }
+
     pub fn import_count(&self) -> u64 {
         self.imports.load(Ordering::Relaxed)
     }
@@ -1513,6 +1679,7 @@ impl ForeignFrameStore {
         buffer: &WlBuffer,
         capture_token: Option<u64>,
     ) -> CaptureOutcome {
+        note_client_pump();
         if let Some(token) = capture_token {
             self.with_entry(id, |entry| entry.mapped = true);
             return self
@@ -1529,6 +1696,7 @@ impl ForeignFrameStore {
             match r {
                 Ok((w, h)) => {
                     e.hdr = None;
+                    e.gpu = None;
                     e.width = w;
                     e.height = h;
                     e.seq = e.seq.wrapping_add(1);
@@ -1614,19 +1782,24 @@ impl ForeignFrameStore {
     }
 
     #[cfg(target_os = "linux")]
-    pub fn prepare_shm_capture(&self, id: SurfaceId, frame: OwnedShmFrame) -> bool {
+    pub fn prepare_shm_capture(&self, id: SurfaceId, frame: OwnedShmFrame) -> Option<u64> {
         let worker = ASYNC_SHM_CAPTURE.get_or_init(AsyncShmCapture::spawn);
         match worker {
             Ok(worker) => {
+                let generation = self.with_entry(id, |entry| {
+                    entry.shm_queued = entry.shm_queued.wrapping_add(1);
+                    entry.shm_queued
+                });
                 worker.enqueue(ShmJob {
                     surface: id,
+                    generation,
                     payload: frame,
                 });
-                true
+                Some(generation)
             }
             Err(reason) => {
                 self.note_failure(id, reason.clone());
-                false
+                None
             }
         }
     }
@@ -1657,7 +1830,40 @@ impl ForeignFrameStore {
             ReadyCapture {
                 rgba: captured,
                 hdr,
+                gpu: None,
                 result,
+            },
+        );
+        drop(guard);
+        true
+    }
+
+    /// Stage a frame that stayed on the GPU for the commit `token` belongs to.
+    #[cfg(target_os = "linux")]
+    fn stage_gpu_capture(
+        &self,
+        id: SurfaceId,
+        token: u64,
+        frame: Arc<crate::shell::gpu_frames::GpuFrame>,
+    ) -> bool {
+        let mut guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(entry) = guard.get_mut(&id) else {
+            return false;
+        };
+        if !entry.capture_tokens.contains(&token) {
+            return false;
+        }
+        let size = (frame.width(), frame.height());
+        entry.ready_captures.insert(
+            token,
+            ReadyCapture {
+                rgba: Vec::new(),
+                hdr: None,
+                gpu: Some(frame),
+                result: Ok((size.0, size.1, CaptureRoute::Dmabuf(DmabufRoute::Shared))),
             },
         );
         drop(guard);
@@ -1685,9 +1891,11 @@ impl ForeignFrameStore {
             Ok((width, height, route)) => {
                 let previous = std::mem::replace(&mut entry.rgba, ready.rgba);
                 entry.hdr = ready.hdr.map(Arc::new);
+                entry.gpu = ready.gpu;
                 entry.width = width;
                 entry.height = height;
                 entry.seq = entry.seq.wrapping_add(1);
+                entry.activated_capture = Some(token);
                 entry.last_error = None;
                 let outcome = match route {
                     CaptureRoute::Dmabuf(route) => CaptureOutcome::Dmabuf {
@@ -1701,6 +1909,7 @@ impl ForeignFrameStore {
             Err(reason) => {
                 entry.rgba.clear();
                 entry.hdr = None;
+                entry.gpu = None;
                 entry.width = 0;
                 entry.height = 0;
                 entry.seq = entry.seq.wrapping_add(1);
@@ -1750,6 +1959,7 @@ impl ForeignFrameStore {
         self.with_entry(id, |e| {
             e.mapped = true;
             e.hdr = hdr;
+            e.gpu = None;
             e.rgba.clear();
             e.rgba.extend_from_slice(rgba);
             e.width = width;
@@ -1768,6 +1978,7 @@ impl ForeignFrameStore {
             e.rgba.clear();
             e.rgba.shrink_to_fit();
             e.hdr = None;
+            e.gpu = None;
             e.width = 0;
             e.height = 0;
             e.seq = e.seq.wrapping_add(1);
@@ -1779,11 +1990,13 @@ impl ForeignFrameStore {
     /// frame, while keeping placement bookkeeping until the toplevel is
     /// destroyed.
     pub fn clear_frame(&self, id: SurfaceId) {
+        note_client_pump();
         self.with_entry(id, |e| {
             e.mapped = false;
             e.rgba.clear();
             e.rgba.shrink_to_fit();
             e.hdr = None;
+            e.gpu = None;
             e.width = 0;
             e.height = 0;
             e.seq = e.seq.wrapping_add(1);
@@ -1853,6 +2066,7 @@ impl ForeignFrameStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.remove(&id);
         drop(guard);
+        crate::shell::gpu_frames::forget_surface(id);
         let mut children = self
             .children
             .lock()
@@ -1914,19 +2128,30 @@ impl ForeignFrameStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let e = guard.get(&id)?;
         let content = e.content();
-        let snapshot = if e.rgba.is_empty() || e.width == 0 || e.height == 0 {
-            None
+        if e.width == 0 || e.height == 0 {
+            return None;
+        }
+        let gpu = if e.rgba.is_empty() {
+            Some(e.gpu.clone()?)
         } else {
-            Some(FrameSnapshot {
-                rgba: e.rgba.clone(),
-                width: e.width,
-                height: e.height,
-                seq: e.seq,
-                hdr: e.hdr.clone(),
-            })
+            None
+        };
+        let mut snapshot = FrameSnapshot {
+            rgba: if gpu.is_some() {
+                Vec::new()
+            } else {
+                e.rgba.clone()
+            },
+            width: e.width,
+            height: e.height,
+            seq: e.seq,
+            hdr: e.hdr.clone(),
         };
         drop(guard);
-        let mut snapshot = snapshot?;
+        // A frame that stayed on the GPU is read back here, on demand.
+        if let Some(gpu) = gpu {
+            snapshot.rgba.clone_from(gpu.rgba()?.as_ref());
+        }
         let children = self
             .children
             .lock()
@@ -1938,19 +2163,50 @@ impl ForeignFrameStore {
             .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for child in children {
-            let Some(frame) = guard.get(&child.surface) else {
+        let child_frames: Vec<_> = children
+            .iter()
+            .filter_map(|child| {
+                let frame = guard.get(&child.surface)?;
+                let pixels = if frame.rgba.is_empty() {
+                    frame.gpu.clone().map(ChildSource::Gpu)
+                } else {
+                    Some(ChildSource::Cpu(frame.rgba.clone()))
+                };
+                Some((
+                    child.x,
+                    child.y,
+                    frame.width,
+                    frame.height,
+                    frame.seq,
+                    pixels,
+                ))
+            })
+            .collect();
+        drop(guard);
+        for (x, y, width, height, seq, pixels) in child_frames {
+            let pixels = match pixels {
+                Some(ChildSource::Cpu(rgba)) => Some(rgba),
+                Some(ChildSource::Gpu(gpu)) => gpu.rgba().map(|rgba| rgba.as_ref().clone()),
+                None => None,
+            };
+            snapshot.seq = snapshot.seq.wrapping_add(seq);
+            let Some(rgba) = pixels.filter(|rgba| !rgba.is_empty()) else {
                 continue;
             };
-            composite_child_rgba(&mut snapshot, frame, child.x, child.y);
-            snapshot.seq = snapshot.seq.wrapping_add(frame.seq);
+            composite_child_rgba(
+                &mut snapshot,
+                &ChildPixels {
+                    rgba: &rgba,
+                    width,
+                    height,
+                },
+                x,
+                y,
+            );
             // Subsurfaces live only in the SDR rendition; a window with any
             // is shown through it.
-            if !frame.rgba.is_empty() {
-                snapshot.hdr = None;
-            }
+            snapshot.hdr = None;
         }
-        drop(guard);
         // Subsurfaces are positioned against the whole buffer, so the window
         // is cut out only after they are composited onto it.
         if content != (0, 0, snapshot.width, snapshot.height) {
@@ -1963,6 +2219,59 @@ impl ForeignFrameStore {
             snapshot.height = content.3;
         }
         Some(snapshot)
+    }
+
+    /// The image a tile draws for `id`: straight from the GPU texture when the
+    /// frame stayed there and nothing is composited onto it on the CPU,
+    /// otherwise from [`Self::snapshot`]. Also the frame's HDR plane, if any.
+    pub fn frame_image(
+        &self,
+        id: SurfaceId,
+    ) -> Option<(ImageData, Option<Arc<crate::shell::hdr_surface::HdrPlane>>)> {
+        let has_children = self
+            .children
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&id)
+            .is_some_and(|children| !children.is_empty());
+        if !has_children {
+            let shared = {
+                let guard = self
+                    .entries
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                guard.get(&id).and_then(|e| {
+                    let gpu = e.gpu.clone().filter(|_| e.rgba.is_empty())?;
+                    Some((gpu, e.content()))
+                })
+            };
+            if let Some((gpu, content)) = shared {
+                if content.2 == 0 || content.3 == 0 {
+                    return None;
+                }
+                return Some((gpu.image(content), None));
+            }
+        }
+        let snapshot = self.snapshot(id)?;
+        let hdr = snapshot.hdr.clone();
+        Some((frame_image(snapshot), hdr))
+    }
+
+    /// `rgba`, a `width`×`height` buffer `id` committed, cut to the window
+    /// its client declared (no shadow or resize border), as tiles show it.
+    /// Unchanged without a declared geometry.
+    pub fn crop_to_window(&self, id: SurfaceId, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
+        let crop = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&id)
+            .and_then(|e| e.geometry)
+            .and_then(|geometry| geometry.crop(width, height));
+        match crop {
+            Some(content) => crop_rgba(&rgba, width, content),
+            None => rgba,
+        }
     }
 
     /// Record the client's declared window geometry (`None` clears it), read
@@ -2198,6 +2507,44 @@ impl ForeignFrameStore {
             let logical = (
                 honour_size_limits(logical.0, e.min_size.0, e.max_size.0),
                 honour_size_limits(logical.1, e.min_size.1, e.max_size.1),
+            );
+            e.configured_extent = Some((f64::from(logical.0), f64::from(logical.1)));
+            if e.configured == Some(logical) {
+                return None;
+            }
+            e.configured = Some(logical);
+            Some(logical)
+        })
+    }
+
+    /// Replace the sizes the person's other devices show streamed windows at.
+    pub fn set_remote_extents(&self, extents: HashMap<SurfaceId, (i32, i32)>) {
+        *self
+            .remote_extents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = extents;
+    }
+
+    /// The size another device shows `id` at, if it is streamed to one.
+    pub fn remote_extent(&self, id: SurfaceId) -> Option<(i32, i32)> {
+        self.remote_extents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&id)
+            .copied()
+    }
+
+    /// [`Self::take_pending_configure`] for a window only other devices
+    /// show: the size they show it at, within the client's limits, iff it
+    /// differs from the last sent.
+    pub fn take_remote_configure(&self, id: SurfaceId, extent: (i32, i32)) -> Option<(i32, i32)> {
+        self.with_entry(id, |e| {
+            if extent.0 <= 0 || extent.1 <= 0 {
+                return None;
+            }
+            let logical = (
+                honour_size_limits(extent.0, e.min_size.0, e.max_size.0),
+                honour_size_limits(extent.1, e.min_size.1, e.max_size.1),
             );
             e.configured_extent = Some((f64::from(logical.0), f64::from(logical.1)));
             if e.configured == Some(logical) {
@@ -2480,13 +2827,17 @@ impl ForeignSurfaceWidget {
             return false;
         }
         self.cached_seq = seq;
-        let snapshot = store().snapshot(self.surface_id);
-        self.cached_hdr = snapshot.as_ref().and_then(|frame| frame.hdr.clone());
-        self.cached = snapshot.map(frame_image);
+        let frame = store().frame_image(self.surface_id);
+        if store().frame_seq(self.surface_id) != seq {
+            self.cached_seq = 0;
+            return false;
+        }
+        self.cached_hdr = frame.as_ref().and_then(|(_, hdr)| hdr.clone());
+        self.cached = frame.map(|(image, _)| image);
         self.sheet_images = store()
             .sheets_over(self.surface_id)
             .into_iter()
-            .filter_map(|link| Some((link, frame_image(store().snapshot(link.surface)?))))
+            .filter_map(|link| Some((link, store().frame_image(link.surface)?.0)))
             .collect();
         true
     }
@@ -2651,17 +3002,11 @@ pub fn paint_output_presentation_surface(
     // transparent margins while loading, but projector pixels must never
     // reveal the presenter's desktop behind the slide.
     scene.fill(Fill::NonZero, Affine::IDENTITY, theme.bg_app, None, &rect);
-    let Some(frame) = store().snapshot(surface_id) else {
+    let Some((image, _)) = store().frame_image(surface_id) else {
         return;
     };
-    let image = ImageData {
-        data: Blob::new(std::sync::Arc::new(frame.rgba)),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::AlphaPremultiplied,
-        width: frame.width,
-        height: frame.height,
-    };
-    if image.width == 0 || image.height == 0 {
+    let (width, height) = (image.width, image.height);
+    if width == 0 || height == 0 {
         return;
     }
     let transform = translated_and_scaled(
@@ -2677,7 +3022,7 @@ pub fn paint_output_presentation_surface(
         transform,
         &brush,
         None,
-        &Rect::new(0.0, 0.0, f64::from(frame.width), f64::from(frame.height)),
+        &Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
     );
 }
 
@@ -2753,6 +3098,11 @@ impl Widget for ForeignSurfaceWidget {
         if let Some(image) = self.cached.clone()
             && let Some(dst) = self.fit_rect(image.width, image.height)
         {
+            store().note_painted_frame(
+                self.surface_id,
+                self.cached_seq,
+                transform.transform_rect_bbox(self.rect),
+            );
             let sx = dst.width() / f64::from(image.width);
             let sy = dst.height() / f64::from(image.height);
             let brush_transform = translated_and_scaled(transform, dst.x0, dst.y0, sx, sy);
@@ -3152,11 +3502,24 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
             });
         store().note_size_limits(id, min, max);
         let tiled = !state.is_floating_toplevel(id);
+        let scale = state.surface_scale(id);
         if fullscreen == Some(id) && toplevel.is_initial_configure_sent() {
             continue;
         }
+        // A window only the person's other devices show renders at the
+        // size they show it, not at its hidden tab's.
+        if toplevel.is_initial_configure_sent()
+            && let Some(extent) = store().remote_extent(id)
+            && !is_visible_tab(&state.workspace_tree.read(), id)
+        {
+            if let Some((w, h)) = store().take_remote_configure(id, extent) {
+                configure_to(&toplevel, id, (w, h), scale, tiled);
+                sent = sent.saturating_add(1);
+            }
+            continue;
+        }
         if let Some((w, h)) = store().take_pending_configure(id) {
-            configure_to(&toplevel, w, h, tiled);
+            configure_to(&toplevel, id, (w, h), scale, tiled);
             sent = sent.saturating_add(1);
             tracing::debug!(
                 target: "shell::compositor::foreign",
@@ -3174,7 +3537,7 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
             continue;
         }
         let (w, h) = fallback;
-        configure_to(&toplevel, w, h, tiled);
+        configure_to(&toplevel, id, (w, h), scale, tiled);
         sent = sent.saturating_add(1);
         tracing::warn!(
             target: "shell::compositor::foreign",
@@ -3193,8 +3556,30 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
 /// writes the pending state into the configure, so the size must be
 /// staged before the send, letting any other pending change (decoration mode) ride the same event.
 #[cfg(target_os = "linux")]
-fn configure_to(toplevel: &ToplevelSurface, w: i32, h: i32, tiled: bool) {
+fn configure_to(
+    toplevel: &ToplevelSurface,
+    id: SurfaceId,
+    size: (i32, i32),
+    scale: f64,
+    tiled: bool,
+) {
     use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as Xdg;
+    let (w, h) = within_client_texture_limit(size, scale);
+    if (w, h) != size {
+        // Whatever laid the tab out this large is a defect: say so, but
+        // still send a size the client can render, since past the limit it
+        // loses its drawing surface and closes the window.
+        tracing::error!(
+            target: "shell::compositor::foreign",
+            surface_id = id,
+            requested_width = size.0,
+            requested_height = size.1,
+            width = w,
+            height = h,
+            scale,
+            "a tab was laid out larger than a client can render; configuring it to the largest size it can draw",
+        );
+    }
     toplevel.with_pending_state(|pending| {
         pending.size = Some((w, h).into());
         // A tile has a neighbour or the screen edge on every side. Saying so
@@ -3214,6 +3599,29 @@ fn configure_to(toplevel: &ToplevelSurface, w: i32, h: i32, tiled: bool) {
         }
     });
     toplevel.send_configure();
+}
+
+/// Widest and tallest buffer, in physical pixels, a client is asked to
+/// render: the 2D texture limit every GPU guarantees (WebGPU's default
+/// `max_texture_dimension_2d`). A toolkit sized past it cannot create its
+/// drawing surface at all.
+pub const CLIENT_TEXTURE_LIMIT_PX: i32 = 8192;
+
+/// `size` (logical pixels) kept within [`CLIENT_TEXTURE_LIMIT_PX`] once the
+/// client renders it at `scale`.
+#[must_use]
+pub fn within_client_texture_limit(size: (i32, i32), scale: f64) -> (i32, i32) {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the limit over a positive scale is at most the limit itself, well inside i32"
+    )]
+    let limit = ((f64::from(CLIENT_TEXTURE_LIMIT_PX) / scale).floor() as i32).max(1);
+    (size.0.min(limit), size.1.min(limit))
 }
 
 /// The size to configure an opening toplevel to when its tab was never
@@ -3246,18 +3654,16 @@ fn opening_fallback_size(state: &crate::compositor::state::State) -> (i32, i32) 
 /// their next buffer; without this pass a client renders one frame and
 /// freezes forever. Callbacks fire only for the *visible* tab of each group, also keeping a background client from burning CPU unseen,
 /// and for a window the compositor asked to close, whose tab is already gone.
+/// A window's subsurfaces and popups are drawn with it, so they are answered
+/// with it: a toolkit that draws its menu on its own swapchain waits on that
+/// surface's callback before it draws anything else.
 ///
 /// Returns the number of surfaces signalled.
 #[cfg(target_os = "linux")]
 pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> usize {
-    let toplevels: Vec<_> = state.xdg_shell_state.toplevel_surfaces().to_vec();
     let mut signalled: usize = 0;
-    for toplevel in toplevels {
-        let surface = toplevel.wl_surface();
-        if !frame_throttle_releases(state, surface) {
-            continue;
-        }
-        if state.release_frame_callbacks(surface) {
+    for surface in throttled_surfaces(state) {
+        if state.release_frame_callbacks(&surface) {
             signalled = signalled.saturating_add(1);
         }
     }
@@ -3265,31 +3671,129 @@ pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> us
 }
 
 /// Whether a surface [`release_frame_throttle`] serves is waiting for
-/// `wl_surface.frame`. The loop must paint for it: a callback can arrive
-/// on a commit without a new buffer (a configure ack, a title), which
-/// changes nothing on screen, and the client draws nothing until it fires.
+/// `wl_surface.frame`. A callback can arrive on a commit without a new
+/// buffer (a configure ack, a title). Nothing on screen changes, so the
+/// loop must not build a frame for it; [`release_idle_frame_callbacks`]
+/// fires it instead. A FIFO client draws nothing until the callback fires.
 #[cfg(target_os = "linux")]
 pub fn frame_callbacks_waiting(state: &crate::compositor::state::State) -> bool {
+    throttled_surfaces(state).iter().any(|surface| {
+        smithay::wayland::compositor::with_states(surface, |states| {
+            !states
+                .cached_state
+                .get::<smithay::wayland::compositor::SurfaceAttributes>()
+                .current()
+                .frame_callbacks
+                .is_empty()
+        })
+    })
+}
+
+/// Every surface whose frame callbacks [`release_frame_throttle`] answers:
+/// each shown toplevel with its subsurfaces, and the popups (and their
+/// subsurfaces) of a shown toplevel.
+#[cfg(target_os = "linux")]
+fn throttled_surfaces(
+    state: &crate::compositor::state::State,
+) -> Vec<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface> {
+    use smithay::desktop::{PopupKind, find_popup_root_surface};
+    let mut surfaces = Vec::new();
+    for toplevel in state.xdg_shell_state.toplevel_surfaces() {
+        let surface = toplevel.wl_surface();
+        if frame_throttle_releases(state, surface) {
+            push_surface_tree(surface, &mut surfaces);
+        }
+    }
+    for popup in state.xdg_popups() {
+        let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else {
+            continue;
+        };
+        if frame_throttle_releases(state, &root) {
+            push_surface_tree(popup.wl_surface(), &mut surfaces);
+        }
+    }
+    surfaces
+}
+
+/// The toplevels shown on screen: each group's visible tab, the on-screen
+/// keyboard, floating windows.
+#[cfg(target_os = "linux")]
+pub fn shown_toplevel_surfaces(
+    state: &crate::compositor::state::State,
+) -> Vec<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface> {
     state
         .xdg_shell_state
         .toplevel_surfaces()
         .iter()
         .map(ToplevelSurface::wl_surface)
         .filter(|surface| frame_throttle_releases(state, surface))
-        .any(|surface| {
-            smithay::wayland::compositor::with_states(surface, |states| {
-                !states
-                    .cached_state
-                    .get::<smithay::wayland::compositor::SurfaceAttributes>()
-                    .current()
-                    .frame_callbacks
-                    .is_empty()
-            })
-        })
+        .cloned()
+        .collect()
+}
+
+/// The toplevel whose surface is `id`.
+#[cfg(target_os = "linux")]
+pub fn toplevel_surface(
+    state: &crate::compositor::state::State,
+    id: SurfaceId,
+) -> Option<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface> {
+    state
+        .xdg_shell_state
+        .toplevel_surfaces()
+        .iter()
+        .map(ToplevelSurface::wl_surface)
+        .find(|surface| crate::compositor::state::surface_id(surface) == id)
+        .cloned()
+}
+
+/// `surface` and its subsurfaces, parents first.
+#[cfg(target_os = "linux")]
+fn push_surface_tree(
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    out: &mut Vec<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
+) {
+    use smithay::wayland::compositor::{TraversalAction, with_surface_tree_downward};
+    with_surface_tree_downward(
+        surface,
+        (),
+        |_, _, ()| TraversalAction::DoChildren(()),
+        |surface, _, ()| out.push(surface.clone()),
+        |_, _, ()| true,
+    );
+}
+
+/// Fire frame callbacks when this tick will not present.
+///
+/// The callback still has to run, or a FIFO swapchain waits forever and
+/// takes every later sync with it. Building a scene only to release it
+/// kept the shell busy while the apps sat still: the tree, the layout
+/// and any animation had not changed.
+///
+/// Returns whether any callback was released.
+#[cfg(target_os = "linux")]
+pub fn release_idle_frame_callbacks(state: &mut crate::compositor::state::State) -> bool {
+    if !frame_callbacks_waiting(state) {
+        return false;
+    }
+    release_frame_throttle(state) > 0
+}
+
+/// Bumped when a client commit changes something the frame pump must see
+/// (a buffer, a title, a new toplevel). A `wl_surface.frame` on its own does
+/// not: answering it must not schedule another shell tick.
+static CLIENT_PUMP_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+pub fn note_client_pump() {
+    CLIENT_PUMP_EPOCH.fetch_add(1, Ordering::Release);
+}
+
+pub fn client_pump_epoch() -> u64 {
+    CLIENT_PUMP_EPOCH.load(Ordering::Acquire)
 }
 
 /// Callbacks fire only for the visible tab of each group, the on-screen
-/// keyboard, floating windows and windows asked to close.
+/// keyboard, floating windows, windows asked to close and windows streamed
+/// to a viewer.
 #[cfg(target_os = "linux")]
 fn frame_throttle_releases(
     state: &crate::compositor::state::State,
@@ -3300,10 +3804,13 @@ fn frame_throttle_releases(
         let tree = state.workspace_tree.read();
         is_visible_tab(&tree, store().sheet_root(id))
     };
+    // A window streamed to another device paints there, so it keeps its
+    // frame clock even while no tab here shows it.
     visible_tab
         || state.osk_surface == Some(id)
         || state.is_floating_toplevel(id)
         || state.is_closing_toplevel(id)
+        || state.active_sessions.contains_key(&id)
 }
 
 #[cfg(test)]
@@ -4049,7 +4556,15 @@ mod tests {
             }
         }
 
+        // A shared window's stream is cut the same way from the buffer it commits.
+        assert_eq!(
+            store().crop_to_window(id, rgba.clone(), w, h),
+            frame.rgba,
+            "the stream shows what the tile shows"
+        );
+
         store().note_window_geometry(id, None);
+        assert_eq!(store().crop_to_window(id, rgba.clone(), w, h), rgba);
         let whole = store().snapshot(id).expect("frame");
         assert_eq!(
             (whole.width, whole.height),
@@ -4171,6 +4686,35 @@ mod tests {
 
             store().note_placement(id, Rect::new(0.0, 0.0, 600.0, 400.0));
             assert_eq!(store().take_pending_configure(id), Some((600, 400)));
+            store().forget(id);
+        }
+
+        fn a_window_shown_only_elsewhere_takes_the_size_shown_there() {
+            let id = sid(5);
+            store().forget(id);
+            store().note_placement(id, Rect::new(0.0, 0.0, 600.0, 400.0));
+            assert_eq!(store().take_pending_configure(id), Some((600, 400)));
+
+            assert_eq!(
+                store().take_remote_configure(id, (1280, 720)),
+                Some((1280, 720))
+            );
+            assert_eq!(store().take_remote_configure(id, (1280, 720)), None);
+            store().note_size_limits(id, (0, 0), (1000, 0));
+            assert_eq!(
+                store().take_remote_configure(id, (1440, 900)),
+                Some((1000, 900)),
+                "the client's own limits still bound it"
+            );
+            // Shown here again, it goes back to its tab's size.
+            assert_eq!(store().take_pending_configure(id), Some((600, 400)));
+
+            let mut extents = HashMap::new();
+            extents.insert(id, (800, 600));
+            store().set_remote_extents(extents);
+            assert_eq!(store().remote_extent(id), Some((800, 600)));
+            store().set_remote_extents(HashMap::new());
+            assert_eq!(store().remote_extent(id), None);
             store().forget(id);
         }
 
@@ -4296,6 +4840,7 @@ mod tests {
         }
 
         pending_configure_fires_once_per_size_change();
+        a_window_shown_only_elsewhere_takes_the_size_shown_there();
         widget_asks_for_frames_until_it_has_drawn_then_only_for_a_pending_one();
         widget_fit_rect_letterboxes_preserving_aspect();
         painted_frame_origin_matches_the_origin_input_is_mapped_with();
@@ -4335,7 +4880,9 @@ mod tests {
         store().forget(id);
         let _ = take_published_shm_frames();
         assert!(
-            store().prepare_shm_capture(id, OwnedShmFrame::argb8888(vec![0, 0, 255, 255], 1, 1))
+            store()
+                .prepare_shm_capture(id, OwnedShmFrame::argb8888(vec![0, 0, 255, 255], 1, 1))
+                .is_some()
         );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !take_published_shm_frames() {
@@ -4899,7 +5446,7 @@ mod tests {
                 .apply_changes(&bootstrap)
                 .expect("rendered tree accepts its shared baseline");
             rendered.persist_path = Some(state_path.clone());
-            rendered.flush_to_disk();
+            rendered.queue_save();
 
             // This is the durable close route used by both the close button and
             // Super+W after their event handlers resolve the exact tab.
@@ -4954,7 +5501,7 @@ mod tests {
             // A state round-trip may not revive the closed group; live Wayland
             // surfaces intentionally do not survive a compositor restart because
             // their surface ids belong to the old process.
-            rendered.flush_to_disk();
+            rendered.queue_save();
             let restarted = crate::shell::persist::load_tree_from(&state_path)
                 .expect("the post-revision layout restarts cleanly");
             assert!(
@@ -5185,7 +5732,7 @@ mod tests {
                 "closing an external client must not remove the hosted sibling"
             );
 
-            rendered.flush_to_disk();
+            rendered.queue_save();
             let restarted = crate::shell::persist::load_tree_from(&state_path)
                 .expect("interleaved layout remains restartable");
             assert_eq!(tabs_for_surface(&restarted, surface), 0);

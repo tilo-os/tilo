@@ -21,7 +21,7 @@
 //! offsets are its text's. A block the page ends inside closes with `…`;
 //! the next page continues it.
 
-use qdoc::document::{MarkSpan, MarkValue};
+use tilo_doc::document::{MarkSpan, MarkValue};
 
 use super::Segment;
 
@@ -178,7 +178,7 @@ fn table(out: &mut String, cells: &[Segment]) {
 mod tests {
     use super::super::{Segment, Shape};
     use super::render;
-    use qdoc::document::{MarkSpan, MarkValue};
+    use tilo_doc::document::{MarkSpan, MarkValue};
 
     fn block(id: &str, kind: &str, text: &str, shape: Shape) -> Segment {
         Segment {

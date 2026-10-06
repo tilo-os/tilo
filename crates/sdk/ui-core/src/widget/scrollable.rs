@@ -115,6 +115,7 @@ pub struct Scrollable {
     /// in one flow and should not reserve a large empty viewport for the
     /// short page.
     max_height: Option<f32>,
+    height_limit_dirty: bool,
     /// Absorbs the parent's remaining flex height instead of claiming
     /// `percent(1.0)`. `fixed_height` wins if both are set.
     fill_parent_height: bool,
@@ -187,6 +188,10 @@ pub struct Scrollable {
     /// compact or shorter. Long-form setup pages use it to end their initial
     /// frame between blocks without wasting space on a normal-height dialog.
     compact_bottom_content_inset: Option<(f32, f32)>,
+    /// Stable semantic key for the scroll group. Without one the group's id
+    /// follows its layout node, so no control inside it has a durable
+    /// identity and none is published as an action resource.
+    semantic_key: Option<String>,
 }
 
 impl Scrollable {
@@ -213,6 +218,7 @@ impl Scrollable {
             child_node: None,
             rect: Rect::ZERO,
             scroll_dirty: false,
+            height_limit_dirty: false,
             show_scrollbar: true,
             sequential_focus: true,
             last_cursor: Point::ZERO,
@@ -234,6 +240,7 @@ impl Scrollable {
             content_gutter: 0.0,
             bottom_content_inset: 0.0,
             compact_bottom_content_inset: None,
+            semantic_key: None,
         }
     }
     pub fn new_vertical() -> Self {
@@ -267,6 +274,14 @@ impl Scrollable {
             }
             self.content_min_viewport_height = Some(minimum);
         }
+        self
+    }
+
+    /// Give the scroll group a stable semantic key, so the controls it
+    /// scrolls keep durable identities and stay reachable as actions.
+    #[must_use]
+    pub fn with_semantic_key(mut self, key: impl Into<String>) -> Self {
+        self.semantic_key = Some(key.into());
         self
     }
 
@@ -316,6 +331,17 @@ impl Scrollable {
     pub fn with_max_height(mut self, px: f32) -> Self {
         self.max_height = Some(px.max(0.0));
         self
+    }
+
+    /// Resize a content-sized viewport without replacing its child/editor.
+    /// The shared measured solver updates the retained node's constraint.
+    pub fn set_max_height(&mut self, px: f32) {
+        let height = Some(px.max(0.0));
+        if self.max_height != height {
+            self.max_height = height;
+            self.height_limit_dirty = true;
+            self.scroll_dirty = true;
+        }
     }
 
     #[must_use]
@@ -1180,7 +1206,7 @@ impl Widget for Scrollable {
     fn child_clip_rect(&self) -> Option<Rect> {
         Some(self.content_viewport_rect())
     }
-    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
+    fn sync(&mut self, s: &AppModel, p: &ModelPath) {
         // Drives click-and-hold auto-repeat while the host pumps frames.
         if self.hold.is_some() {
             self.advance_hold(crate::time::now());
@@ -1190,7 +1216,7 @@ impl Widget for Scrollable {
         }
     }
 
-    fn update(&mut self, s: &mut AppModel, p: &ModelPath) -> bool {
+    fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
         let ticking = self.momentum_speed() > 0.0;
         if ticking {
             self.tick(1.0 / 60.0);
@@ -1205,6 +1231,7 @@ impl Widget for Scrollable {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.height_limit_dirty = false;
         self.child_node = self
             .child
             .as_mut()
@@ -1256,15 +1283,32 @@ impl Widget for Scrollable {
     }
 
     fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let mut changed = false;
+        if self.height_limit_dirty {
+            let Ok(mut style) = taffy.style(node).cloned() else {
+                return false;
+            };
+            style.max_size.height = self.max_height.map_or(Dimension::auto(), Dimension::length);
+            style.size.height = match self.fixed_height {
+                Some(px) => Dimension::length(px),
+                None if self.fill_parent_height => Dimension::length(0.0),
+                None => Dimension::auto(),
+            };
+            if taffy.set_style(node, style).is_err() {
+                return false;
+            }
+            self.height_limit_dirty = false;
+            changed = true;
+        }
         let Some(minimum) = &self.content_min_viewport_height else {
-            return false;
+            return changed;
         };
         let Ok(layout) = taffy.layout(node) else {
-            return false;
+            return changed;
         };
         let height = layout.size.height.max(0.0);
         if (minimum.get() - height).abs() < f32::EPSILON {
-            return false;
+            return changed;
         }
         // Inherited decision only. The wrapper's hook changes its OWN style,
         // regardless of the host's node visitation order.
@@ -1520,15 +1564,13 @@ impl Widget for Scrollable {
             }
             _ => true,
         };
+        // A capturing child also gets presses outside: what it shows past
+        // the clip (an open menu) is chosen or dismissed by them.
         let child_pointer_allowed = pointer_in_content
             || (child_has_capture
                 && matches!(
                     event,
-                    WindowEvent::CursorMoved { .. }
-                        | WindowEvent::MouseInput {
-                            state: ElementState::Released,
-                            ..
-                        }
+                    WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
                 ));
         if !child_pointer_allowed {
             return;
@@ -1725,7 +1767,11 @@ impl Widget for Scrollable {
     /// The meaningful label belongs to whatever it wraps.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
-        Some(AccessNode::new(Role::Group))
+        let node = AccessNode::new(Role::Group);
+        Some(match &self.semantic_key {
+            Some(key) => node.with_semantic_key(key.clone()),
+            None => node,
+        })
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -1786,7 +1832,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -2085,7 +2131,7 @@ mod tests {
                     &mut crate::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &winit::event::Modifiers::default(),
-                        state: &mut doc,
+                        state: crate::widget::Edits::lend(&mut doc),
                         path: &root,
                         handled: &mut handled,
                         focus_target: &mut focus_target,
@@ -2116,7 +2162,7 @@ mod tests {
                     &mut crate::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &winit::event::Modifiers::default(),
-                        state: &mut doc,
+                        state: crate::widget::Edits::lend(&mut doc),
                         path: &root,
                         handled: &mut handled,
                         focus_target: &mut focus_target,
@@ -2574,6 +2620,57 @@ mod tests {
     use crate::widget::{Column, Text};
     use std::collections::HashMap;
 
+    #[test]
+    fn changing_max_height_relayouts_the_retained_scroll_tree() {
+        let mut scroll = Box::new(
+            Scrollable::new_vertical()
+                .with_child(tall_child())
+                .with_max_height(300.0),
+        );
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let mut text = TextRenderer::new();
+        let node = scroll.build_layout(&mut taffy, &theme, &mut nodes);
+        let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+        // SAFETY: the boxed tree owns this exact stable node map.
+        unsafe { bindings.rebuild(scroll.as_ref(), &taffy, node, &nodes) };
+        let child_node = scroll.child_node;
+        let child = scroll.child.as_deref().unwrap() as *const dyn Widget;
+        for height in [300.0, 120.0, 240.0] {
+            scroll.set_max_height(height);
+            // SAFETY: boxed retained widgets remain alive and uniquely owned
+            // for both the measurement and style-settling passes.
+            unsafe {
+                crate::widget::layout::compute_widget_layout(
+                    &mut taffy,
+                    node,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(400.0),
+                        height: taffy::AvailableSpace::MaxContent,
+                    },
+                    &nodes,
+                    &bindings,
+                    &mut text,
+                )
+            }
+            .unwrap();
+            scroll.apply_layout(&taffy, node, Point::ZERO);
+            assert!(
+                (scroll.get_rect().height() - f64::from(height)).abs() < 0.5,
+                "retained maximum {height} produced viewport {}, style {:?}",
+                scroll.get_rect().height(),
+                taffy.style(node).unwrap(),
+            );
+            assert_eq!(scroll.child_node, child_node);
+            assert!(std::ptr::addr_eq(
+                child,
+                scroll.child.as_deref().unwrap() as *const dyn Widget
+            ));
+            assert!(scroll.content_h > scroll.viewport_h);
+        }
+    }
+
     fn viewport_height_under_indefinite_parent(mut scroll: Scrollable) -> f64 {
         let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();
@@ -2856,7 +2953,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -3066,15 +3163,15 @@ mod tests {
                 s.needs_animation_frame(),
                 "momentum must not depend on scrollbar opacity"
             );
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             // Match the admitted primary-frame lifecycle: update runs even when
             // the prior frame consumed all ordinary dirty flags.
             for _ in 0..240 {
                 if !s.needs_animation_frame() {
                     break;
                 }
-                s.update(&mut doc, &automerge::ROOT);
-                s.sync(&mut doc, &automerge::ROOT);
+                s.update(&doc, &automerge::ROOT);
+                s.sync(&doc, &automerge::ROOT);
                 s.mark_drawn();
             }
             assert!(s.offset_y() > 0.0, "the demanded frames advance content");

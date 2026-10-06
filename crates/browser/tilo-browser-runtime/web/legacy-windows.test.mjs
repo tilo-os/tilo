@@ -2,13 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CHUNK_FIRST, CHUNK_KEY, CHUNK_LAST, INDEX_RECORD, LEGACY_APP,
-  createLegacyWindows, createReassembler, createStreamDecoder, decodeFrame, evdevKey, h264CodecString, matchStreams,
-  windowPoint,
+  createLegacyWindows, createReassembler, createStreamDecoder, decodeFrame, evdevKey, h264CodecString,
+  wheelPixels, windowPoint, windowTitle,
 } from './legacy-windows.mjs';
 
 const unhex = value => Uint8Array.from(value.match(/../g), byte => parseInt(byte, 16));
 const utf8 = new TextEncoder();
-const STREAM = {source: '000000000000abcd', surface: '0000000000000007', app: 'org.chromium.Chromium', codec: 'h264', width: 1280, height: 720, record: '@tilo:legacy-window:000000000000abcd:0000000000000007'};
+const STREAM = {surface: '0000000000000007', app: 'org.chromium.Chromium', codec: 'h264', width: 1280, height: 720, record: '@tilo:legacy-window:0000000000000007'};
+const SHELL = 'ab'.repeat(32);
+const KEY = `${SHELL}:${STREAM.surface}`;
 const json = (kind, value) => Uint8Array.from([0xf1, kind, ...utf8.encode(JSON.stringify(value))]);
 function chunk(flags, seq, data, total = data.length) {
   const out = new Uint8Array(19 + data.length);
@@ -21,9 +23,10 @@ function chunk(flags, seq, data, total = data.length) {
   return out;
 }
 const SPS_IDR = [0, 0, 0, 1, 0x67, 0x64, 0x00, 0x28, 0xac, 0, 0, 1, 0x65, 0x88];
+const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
 test('frames decode exactly as the host encodes them', () => {
-  // `live_wire::legacy_window::Frame::Chunk` for these fields, byte for byte.
+  // `legacy_window::Frame::Chunk` for these fields, byte for byte.
   assert.deepEqual(decodeFrame(unhex('f10307000000090000000000000063' + '00000003000001')), {
     kind: 'chunk', flags: 7, seq: 9, tsUs: 99, total: 3, data: Uint8Array.from([0, 0, 1]),
   });
@@ -32,7 +35,7 @@ test('frames decode exactly as the host encodes them', () => {
   assert.deepEqual(decodeFrame(Uint8Array.from([0xf1, 4])), {kind: 'end'});
   for (const bad of [[], [0xf1], [0x01, 1], [0xf1, 9], [0xf1, 4, 0], [0xf1, 3, 7, 0, 0]]) assert.equal(decodeFrame(Uint8Array.from(bad)), null);
   assert.equal(decodeFrame(json(1, [{...STREAM, width: -1}])), null, 'a malformed stream spoils the index');
-  assert.equal(decodeFrame(json(2, {...STREAM, extra: 1}).subarray(0, 5)), null);
+  assert.equal(decodeFrame(json(2, {...STREAM, surface: '7'})), null);
 });
 
 test('chunks reassemble in order and a gap drops the frame', () => {
@@ -40,7 +43,6 @@ test('chunks reassemble in order and a gap drops the frame', () => {
   assert.equal(r.push(decodeFrame(chunk(CHUNK_KEY | CHUNK_FIRST, 1, [1, 2], 5))), null);
   assert.equal(r.push(decodeFrame(chunk(CHUNK_KEY, 1, [3, 4], 5))), null);
   assert.deepEqual(r.push(decodeFrame(chunk(CHUNK_KEY | CHUNK_LAST, 1, [5], 5))), {key: true, seq: 1, tsUs: 99, data: Uint8Array.from([1, 2, 3, 4, 5])});
-  // A missing middle chunk: the frame never completes.
   assert.equal(r.push(decodeFrame(chunk(CHUNK_FIRST, 2, [1], 3))), null);
   assert.equal(r.push(decodeFrame(chunk(CHUNK_LAST, 3, [3], 3))), null, 'a chunk of another frame');
   assert.equal(r.push(decodeFrame(chunk(CHUNK_LAST, 2, [3], 3))), null, 'nothing pending any more');
@@ -51,18 +53,6 @@ test('chunks reassemble in order and a gap drops the frame', () => {
 test('the H.264 codec string comes from the sequence parameter set', () => {
   assert.equal(h264CodecString(Uint8Array.from(SPS_IDR)), 'avc1.640028');
   assert.equal(h264CodecString(Uint8Array.from([0, 0, 1, 0x65, 0x88])), 'avc1.42E01F');
-});
-
-test('streams are drawn over tabs of their app, in desktop order, and keep their tab', () => {
-  const tile = (tab, app, x) => ({id: tab, rect: [x, 0, 100, 100], legacy: {app, tab, content: [x, 30, 100, 70]}});
-  const snapshot = {covered: false, groups: [tile('t1', 'org.chromium.Chromium', 0), {id: 'w', rect: [100, 0, 50, 50], legacy: null}, tile('t2', 'ORG.chromium.chromium', 200), tile('t3', 'org.gimp.GIMP', 400)]};
-  const streams = new Map([['a', {app: 'org.chromium.Chromium'}], ['b', {app: 'org.chromium.Chromium'}], ['c', {app: 'org.libreoffice.LibreOffice'}]]);
-  const first = matchStreams(snapshot, streams);
-  assert.deepEqual([...first], [['a', {tab: 't1', content: [0, 30, 100, 70]}], ['b', {tab: 't2', content: [200, 30, 100, 70]}]]);
-  const swapped = matchStreams(snapshot, new Map([['b', streams.get('b')], ['a', streams.get('a')]]), first);
-  assert.equal(swapped.get('a').tab, 't1', 'an assignment survives a reordered index');
-  assert.equal(matchStreams({...snapshot, covered: true}, streams).size, 0, 'hidden under a desktop activity');
-  assert.equal(matchStreams(null, streams).size, 0);
 });
 
 function fakeCodecs() {
@@ -97,8 +87,9 @@ test('decoding starts at a keyframe and skips a backlog until the next one', () 
   assert.deepEqual(decoder.stats, {decoded: 0, skipped: 3, errors: 0});
 });
 
-// --- minimal DOM and live client --------------------------------------------------
+// --- minimal DOM and live layer --------------------------------------------------
 function fakeDocument() {
+  const doc = {createElement: element, activeElement: null};
   function element(tag) {
     return {
       tag, children: [], parent: null, dataset: {}, style: {}, width: 0, height: 0, drawn: 0,
@@ -106,143 +97,534 @@ function fakeDocument() {
       append(...nodes) { for (const child of nodes) { child.parent = this; this.children.push(child); } },
       addEventListener(type, handler) { (this.listeners[type] ??= []).push(handler); },
       dispatch(type, event = {}) { for (const handler of this.listeners[type] ?? []) handler({preventDefault() {}, ...event}); },
-      focus() {},
+      focus() { doc.activeElement = this; },
       getBoundingClientRect() { return {left: 10, top: 36, width: 400, height: 264}; },
       remove() { if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); this.parent = null; },
       getContext() { const node = this; return {drawImage() { node.drawn++; }}; },
     };
   }
-  return {createElement: element};
+  return doc;
 }
-function fakeLive({control = false, status = 200} = {}) {
+function fakeLive() {
   const watches = [];
-  const sent = [];
+  const members = new Set();
   return {
     watches,
-    sent,
-    get canControl() { return control; },
-    async sendLegacyInput(request) { sent.push(request); return {ok: status === 200, status}; },
-    watchRecord(record, onFrame) { const entry = {record, onFrame, active: true}; watches.push(entry); return () => { entry.active = false; }; },
-    deliver(record, publisher, bytes) { for (const entry of watches) if (entry.active && entry.record.record === record) entry.onFrame(publisher, bytes); },
+    members,
+    watchRecordFrames(record, onFrame) { const entry = {record, onFrame, active: true}; watches.push(entry); return () => { entry.active = false; }; },
+    subscribeMemberRecord(publisher, record, onFrame) { const entry = {publisher, record, onFrame: (_, bytes) => onFrame(bytes), active: true}; watches.push(entry); return () => { entry.active = false; }; },
+    onMember(listener) { members.add(listener); return () => members.delete(listener); },
+    leave(publisher) { for (const listener of members) listener({publisher, active: false}); },
+    deliver(record, publisher, bytes) {
+      for (const entry of watches) if (entry.active && entry.record.record === record && (!entry.publisher || entry.publisher === publisher)) entry.onFrame(publisher, bytes);
+    },
   };
 }
-
-test('a listed stream is subscribed, decoded and drawn over its tab until the index drops it', () => {
+function mount({control = false, refuse = false, dismissed = () => [], paintFrame = () => false, takePaintInput = () => [], focusWindow, focusDesktop, sendInput, onError} = {}) {
   const doc = fakeDocument();
   const surface = doc.createElement('div');
   const live = fakeLive();
   const codecs = fakeCodecs();
-  let clock = 0;
   const frames = [];
-  let snapshot = {covered: false, groups: [{id: 'g', rect: [10, 0, 400, 300], legacy: {app: 'org.chromium.Chromium', tab: 't', content: [10, 36, 400, 264]}}]};
-  let presented = 1;
+  const shown = [];
+  const sent = [];
+  const clock = {t: 0};
+  let rects = [];
   let poll;
   const layer = createLegacyWindows({
-    surface, document: doc, live: () => live, snapshot: () => JSON.stringify(snapshot), presented: () => presented,
-    ...codecs, now: () => clock,
+    surface, document: doc, live: () => live, ...codecs, now: () => clock.t, mac: false,
+    windows: () => rects,
+    setWindows: list => shown.push(list),
+    dismissed, focusWindow, focusDesktop, onError,
+    inputPause: async ms => { clock.t += ms; },
+    paintFrame,
+    takePaintInput,
+    sendInput: sendInput ?? (async (publisher, stream, events) => {
+      if (events.length) sent.push({publisher, stream, events});
+      return events.length ? control && !refuse : control;
+    }),
     requestFrame: callback => { frames.push(callback); return frames.length; }, cancelFrame: () => {},
     setInterval: callback => { poll = callback; return 1; }, clearInterval: () => {},
   });
-  const run = () => { for (const callback of frames.splice(0)) callback(); };
-  assert.deepEqual(live.watches.map(w => w.record), [INDEX_RECORD]);
-  const shell = 'ab'.repeat(32);
-  live.deliver(INDEX_RECORD.record, shell, json(1, [STREAM]));
-  assert.deepEqual(live.watches[1].record, {app: LEGACY_APP, record: STREAM.record});
-  live.deliver(STREAM.record, 'cd'.repeat(32), chunk(CHUNK_KEY | CHUNK_FIRST | CHUNK_LAST, 0, SPS_IDR));
-  assert.equal(codecs.decoders.length, 0, 'another namespace cannot feed the stream');
-  live.deliver(STREAM.record, shell, json(2, STREAM));
-  live.deliver(STREAM.record, shell, chunk(CHUNK_KEY | CHUNK_FIRST, 0, SPS_IDR.slice(0, 6), SPS_IDR.length));
-  live.deliver(STREAM.record, shell, chunk(CHUNK_KEY | CHUNK_LAST, 0, SPS_IDR.slice(6), SPS_IDR.length));
-  assert.equal(codecs.decoders[0].chunks.length, 1);
-  codecs.decoders[0].output({displayWidth: 1280, displayHeight: 720, close() { this.closed = true; }});
-  run();
-  const canvas = layer.layer.children[0];
+  return {
+    layer, live, codecs, shown, sent, clock, surface, doc,
+    run: () => { for (const callback of frames.splice(0)) callback(); },
+    place: next => { rects = next; },
+    poll: () => poll(),
+  };
+}
+
+test('a listed stream opens a desktop window, is decoded and drawn over it until the index drops it', async () => {
+  const m = mount();
+  assert.deepEqual(m.live.watches.map(w => w.record), [INDEX_RECORD]);
+  m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [STREAM]));
+  assert.deepEqual(m.shown.at(-1), [{key: KEY, app: STREAM.app, title: 'Chromium', codec: 'h264'}], 'the desktop opens a window for it');
+  assert.deepEqual(m.live.watches[1], {...m.live.watches[1], publisher: SHELL, record: {app: LEGACY_APP, record: STREAM.record}});
+  m.live.deliver(STREAM.record, 'cd'.repeat(32), chunk(CHUNK_KEY | CHUNK_FIRST | CHUNK_LAST, 0, SPS_IDR));
+  assert.equal(m.codecs.decoders.length, 0, 'another namespace cannot feed the stream');
+  m.live.deliver(STREAM.record, SHELL, json(2, STREAM));
+  m.live.deliver(STREAM.record, SHELL, chunk(CHUNK_KEY | CHUNK_FIRST, 0, SPS_IDR.slice(0, 6), SPS_IDR.length));
+  m.live.deliver(STREAM.record, SHELL, chunk(CHUNK_KEY | CHUNK_LAST, 0, SPS_IDR.slice(6), SPS_IDR.length));
+  assert.equal(m.codecs.decoders[0].chunks.length, 1);
+  m.codecs.decoders[0].output({displayWidth: 1280, displayHeight: 720, close() { this.closed = true; }});
+  const canvas = m.layer.layer.children[0];
   assert.equal(canvas.drawn, 1);
+  m.run();
+  assert.notEqual(canvas.style.display, 'block', 'no window laid out yet');
+  m.place([{key: KEY, rect: [10, 36, 410, 300]}]);
+  m.run();
   assert.equal(canvas.style.display, 'block');
   assert.equal(canvas.style.transform, 'translate3d(10.0px,36.0px,0)');
   assert.equal(canvas.style.width, '400.0px');
-  assert.equal(canvas.dataset.tab, 't');
-  assert.deepEqual(layer.stats().visible, 1);
-  // The tab goes away: the stream stays subscribed but is not drawn.
-  snapshot = {covered: false, groups: []};
-  presented++;
-  run();
+  assert.equal(canvas.style.height, '264.0px');
+  assert.equal(m.layer.stats().visible, 1);
+  // Search covers the desktop (or the window scrolled away).
+  m.place([]);
+  m.run();
   assert.equal(canvas.style.display, 'none');
-  assert.deepEqual(layer.streams().map(stream => stream.tab), [null]);
-  live.deliver(INDEX_RECORD.record, shell, json(1, []));
-  assert.equal(layer.stats().streams, 0);
-  assert.equal(live.watches[1].active, false, 'an unlisted stream is unsubscribed');
-  assert.equal(codecs.decoders[0].state, 'closed');
-  assert.equal(layer.layer.children.length, 0);
-  // An index that stops arriving expires its streams.
-  live.deliver(INDEX_RECORD.record, shell, json(1, [STREAM]));
-  assert.equal(layer.stats().streams, 1);
-  clock += 4000;
-  poll();
-  assert.equal(layer.stats().streams, 1, 'still within the index lifetime');
-  clock += 1001;
-  poll();
-  assert.equal(layer.stats().streams, 0);
-  layer.close();
-  assert.equal(surface.children.length, 0);
+  m.live.deliver(INDEX_RECORD.record, SHELL, json(1, []));
+  assert.equal(m.layer.stats().streams, 0);
+  assert.deepEqual(m.shown.at(-1), [], 'its window closes');
+  assert.equal(m.live.watches[1].active, false, 'an unlisted stream is unsubscribed');
+  assert.equal(m.codecs.decoders[0].state, 'closed');
+  assert.equal(m.layer.layer.children.length, 0);
+  // An index that stops arriving expires its streams; a member that leaves takes them along.
+  m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [STREAM]));
+  m.clock.t += 4000;
+  m.poll();
+  assert.equal(m.layer.stats().streams, 1, 'still within the index lifetime');
+  m.clock.t += 1001;
+  m.poll();
+  assert.equal(m.layer.stats().streams, 0);
+  m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [STREAM]));
+  m.live.leave(SHELL);
+  assert.equal(m.layer.stats().streams, 0);
+  m.layer.close();
+  assert.equal(m.surface.children.length, 0);
+  await tick();
 });
 
-test('keys map to evdev codes and points to window pixels through the letterbox', () => {
-  assert.deepEqual(['KeyA', 'KeyQ', 'Digit1', 'Digit0', 'Enter', 'F5', 'ArrowLeft', 'Numpad7'].map(evdevKey), [30, 16, 2, 11, 28, 63, 105, null]);
-  // 1280x720 into 400x300: scale 0.3125, 37.5px bars above and below.
+test('keys map to evdev codes, points to window pixels through the letterbox, wheels to pixels', () => {
+  assert.deepEqual(['KeyA', 'KeyQ', 'Digit1', 'Digit0', 'Enter', 'F5', 'ArrowLeft', 'Numpad7'].map(code => evdevKey(code)), [30, 16, 2, 11, 28, 63, 105, null]);
+  assert.equal(evdevKey('MetaLeft'), 125);
+  assert.equal(evdevKey('MetaLeft', {mac: true}), 29, 'Command is Control for the window');
   const box = {left: 10, top: 20, width: 400, height: 300};
   assert.deepEqual(windowPoint(box, 1280, 720, 10, 57.5), [0, 0]);
   assert.deepEqual(windowPoint(box, 1280, 720, 210, 170), [640, 360]);
   assert.equal(windowPoint(box, 1280, 720, 210, 30), null, 'on the bar');
+  assert.deepEqual(wheelPixels({deltaMode: 1, deltaX: 0, deltaY: 3}, 600), [0, 120]);
+  assert.deepEqual(wheelPixels({deltaMode: 0, deltaX: 5, deltaY: -2}, 600), [5, -2]);
+  assert.equal(windowTitle('org.libreoffice.writer'), 'Writer');
 });
 
-async function inputLayer(live) {
-  const doc = fakeDocument();
-  const frames = [];
-  const layer = createLegacyWindows({
-    surface: doc.createElement('div'), document: doc, live: () => live, presented: () => 1,
-    snapshot: () => ({covered: false, groups: [{id: 'g', legacy: {app: STREAM.app, tab: 't', content: [10, 36, 400, 264]}}]}),
-    ...fakeCodecs(), requestFrame: callback => { frames.push(callback); return 1; }, cancelFrame: () => {},
-    setInterval: () => 1, clearInterval: () => {},
-  });
-  live.deliver(INDEX_RECORD.record, 'ab'.repeat(32), json(1, [STREAM]));
-  for (const callback of frames.splice(0)) callback();
-  return {layer, canvas: layer.layer.children[0]};
+async function controlled(options) {
+  const m = mount(options);
+  m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [STREAM]));
+  await tick();
+  m.place([{key: KEY, rect: [10, 36, 410, 300]}]);
+  m.run();
+  return {...m, canvas: m.layer.layer.children[0]};
 }
 
-test('a controlling member clicks and types into the window it sees', async () => {
-  const live = fakeLive({control: true});
-  const {layer, canvas} = await inputLayer(live);
-  assert.equal(canvas.style.pointerEvents, 'auto');
-  canvas.dispatch('pointerdown', {button: 0, clientX: 210, clientY: 168});
-  canvas.dispatch('pointerup', {button: 0});
-  canvas.dispatch('keydown', {code: 'KeyA'});
-  await new Promise(resolve => setTimeout(resolve, 0));
-  assert.equal(live.sent[0].record, STREAM.record);
-  const events = live.sent.flatMap(request => request.events);
+test('a member the host lets drive the window clicks, scrolls, types and pastes into it', async () => {
+  const m = await controlled({control: true});
+  assert.equal(m.canvas.style.pointerEvents, 'auto');
+  assert.equal(m.layer.streams()[0].control, true);
+  m.canvas.dispatch('pointerdown', {button: 0, clientX: 210, clientY: 168});
+  m.canvas.dispatch('pointerup', {button: 0});
+  m.canvas.dispatch('wheel', {deltaMode: 1, deltaX: 0, deltaY: 1});
+  m.canvas.dispatch('wheel', {deltaMode: 1, deltaX: 0, deltaY: 1});
+  m.canvas.dispatch('keydown', {code: 'KeyA'});
+  m.canvas.dispatch('keydown', {code: 'ControlLeft', ctrlKey: true});
+  m.canvas.dispatch('keydown', {code: 'KeyV', ctrlKey: true});
+  m.canvas.dispatch('paste', {clipboardData: {getData: type => (type === 'text/plain' ? 'hello' : '')}});
+  m.canvas.dispatch('keyup', {code: 'KeyV', ctrlKey: true});
+  await tick();
+  await tick();
+  assert.deepEqual(new Set(m.sent.map(request => `${request.publisher}:${request.stream}`)), new Set([KEY]));
+  const events = m.sent.flatMap(request => request.events);
   assert.deepEqual(events[0], {KeyboardFocus: {surface: 0, focused: true}});
   assert.ok('PointerMotion' in events[1]);
   assert.deepEqual(events.slice(2), [
     {PointerButton: {button: 272, pressed: true}},
     {PointerButton: {button: 272, pressed: false}},
+    {PointerAxis: {dx: 0, dy: 80}},
     {Key: {keysym: 30, pressed: true, modifiers: 0}},
-  ]);
-  assert.equal(layer.stats().inputSent, 5);
-  layer.close();
+    {Key: {keysym: 29, pressed: true, modifiers: 0}},
+    {ClipboardText: {text: 'hello'}},
+    {Key: {keysym: 47, pressed: true, modifiers: 0}},
+    {Key: {keysym: 47, pressed: false, modifiers: 0}},
+  ], 'the pasted text reaches the window before its paste key');
+  assert.equal(m.layer.stats().inputSent, events.length);
+  m.layer.close();
 });
 
-test('a watching member sends nothing, and a refusal is counted', async () => {
-  const watcher = fakeLive({control: false});
-  const watched = await inputLayer(watcher);
-  assert.equal(watched.canvas.style.pointerEvents, 'none');
-  watched.canvas.dispatch('pointerdown', {button: 0, clientX: 210, clientY: 168});
-  await new Promise(resolve => setTimeout(resolve, 0));
+test('typing reaches the window as every stroke in order, and a held key repeats as the browser repeats it', async () => {
+  const m = await controlled({control: true});
+  m.canvas.dispatch('pointerdown', {button: 0, clientX: 210, clientY: 168});
+  m.canvas.dispatch('pointerup', {button: 0});
+  const SHIFTED = {'!': 'Digit1', ':': 'Semicolon', '?': 'Slash'};
+  const code = c => SHIFTED[c] ?? ({' ': 'Space', '.': 'Period', ',': 'Comma', '/': 'Slash', ';': 'Semicolon'}[c]
+    ?? (/[0-9]/.test(c) ? `Digit${c}` : `Key${c.toUpperCase()}`));
+  const text = 'Hello, World! example.com';
+  for (const c of text) {
+    const shift = c in SHIFTED || /[A-Z]/.test(c);
+    if (shift) m.canvas.dispatch('keydown', {code: 'ShiftLeft', shiftKey: true});
+    m.canvas.dispatch('keydown', {code: code(c), shiftKey: shift});
+    m.canvas.dispatch('keyup', {code: code(c), shiftKey: shift});
+    if (shift) m.canvas.dispatch('keyup', {code: 'ShiftLeft'});
+  }
+  m.canvas.dispatch('keydown', {code: 'ShiftLeft', shiftKey: true});
+  m.canvas.dispatch('keydown', {code: 'ShiftLeft', shiftKey: true, repeat: true});
+  m.canvas.dispatch('keyup', {code: 'ShiftLeft'});
+  m.canvas.dispatch('keydown', {code: 'KeyO'});
+  m.canvas.dispatch('keydown', {code: 'KeyO', repeat: true});
+  m.canvas.dispatch('keydown', {code: 'KeyO', repeat: true});
+  m.canvas.dispatch('keyup', {code: 'KeyO'});
+  m.canvas.dispatch('keydown', {code: 'KeyP', repeat: true});
+  for (let i = 0; i < 8; i++) await tick();
+  const keys = m.sent.flatMap(request => request.events).filter(event => 'Key' in event).map(({Key}) => [Key.keysym, Key.pressed]);
+  const strokes = [];
+  for (const c of text) {
+    const shift = c in SHIFTED || /[A-Z]/.test(c);
+    const keysym = evdevKey(code(c));
+    if (shift) strokes.push([42, true]);
+    strokes.push([keysym, true], [keysym, false]);
+    if (shift) strokes.push([42, false]);
+  }
+  assert.deepEqual(keys, [...strokes, [42, true], [42, false], [24, true], [24, true], [24, true], [24, false]],
+    'every press and release in order; a held letter repeats, a held modifier and a key not held do not');
+  m.layer.close();
+});
+
+test('character modifier snapshots reach the window as shift edges even without a shift key event', async () => {
+  const m = await controlled({control: true});
+  m.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
+  m.run();
+  for (const [code, shiftKey] of [['KeyM', true], ['KeyI', false], ['Slash', true], ['Digit7', true], ['KeyA', false]]) {
+    m.canvas.dispatch('keydown', {code, shiftKey, ctrlKey: false, altKey: false, metaKey: false});
+    m.canvas.dispatch('keyup', {code, shiftKey, ctrlKey: false, altKey: false, metaKey: false});
+  }
+  for (let i = 0; i < 8; i++) await tick();
+  const keys = m.sent.flatMap(request => request.events).filter(event => 'Key' in event).map(({Key}) => [Key.keysym, Key.pressed]);
+  assert.deepEqual(keys, [
+    [42, true], [50, true], [50, false], [42, false], [23, true], [23, false],
+    [42, true], [53, true], [53, false], [8, true], [8, false],
+    [42, false], [30, true], [30, false],
+  ], 'Mi?&a retains capitals and shifted punctuation without duplicate modifier presses');
+  m.layer.close();
+});
+
+test('a shortcut held before focus is restored and its modifier is released on blur', async () => {
+  const m = await controlled({control: true});
+  m.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
+  m.run();
+  m.canvas.dispatch('keydown', {code: 'KeyL', ctrlKey: true, shiftKey: false, altKey: false, metaKey: false});
+  m.canvas.dispatch('keyup', {code: 'KeyL', ctrlKey: true, shiftKey: false, altKey: false, metaKey: false});
+  m.canvas.dispatch('blur');
+  for (let i = 0; i < 8; i++) await tick();
+  const keys = m.sent.flatMap(request => request.events).filter(event => 'Key' in event).map(({Key}) => [Key.keysym, Key.pressed]);
+  assert.deepEqual(keys, [[29, true], [38, true], [38, false], [29, false]]);
+  m.layer.close();
+});
+
+test('the window the desktop focuses takes the keyboard, and a click focuses its desktop window', async () => {
+  const focused = [];
+  let desktop = 0;
+  const m = await controlled({control: true, focusWindow: key => focused.push(key), focusDesktop: () => { desktop++; m.doc.activeElement = m.surface; }});
+  assert.notEqual(m.doc.activeElement, m.canvas, 'an unfocused window leaves the keyboard alone');
+  m.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
+  m.run();
+  assert.equal(m.doc.activeElement, m.canvas, 'opening it, or choosing its tab, focuses it');
+  await tick();
+  assert.deepEqual(m.sent.flatMap(request => request.events)[0], {KeyboardFocus: {surface: 0, focused: true}});
+  m.place([{key: KEY, rect: [10, 36, 410, 300], focused: false}]);
+  m.run();
+  assert.equal(desktop, 1, 'the desktop focusing another window takes the keyboard back');
+  m.canvas.dispatch('pointerdown', {button: 0, clientX: 210, clientY: 168});
+  assert.equal(m.doc.activeElement, m.canvas);
+  assert.deepEqual(focused, [KEY], 'a click into the window focuses its desktop window');
+  m.layer.close();
+  const watcher = await controlled({control: false});
+  watcher.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
+  watcher.run();
+  assert.notEqual(watcher.doc.activeElement, watcher.canvas, 'a watcher keeps typing on the desktop');
+  watcher.layer.close();
+});
+
+test('closing a window a member drives closes it at its source', async () => {
+  let closedKeys = [];
+  const options = {dismissed: () => { const keys = closedKeys; closedKeys = []; return keys; }};
+  const driver = await controlled({control: true, ...options});
+  closedKeys = [KEY, 'cd'.repeat(32) + ':0000000000000001'];
+  driver.run();
+  await tick();
+  assert.deepEqual(driver.sent.map(request => request.events), [['Close']]);
+  driver.layer.close();
+  const watcher = await controlled({control: false, ...options});
+  closedKeys = [KEY];
+  watcher.poll();
+  await tick();
+  assert.deepEqual(watcher.sent, [], 'a watcher only closes its own view');
+  watcher.layer.close();
+});
+
+test('a watching member sends nothing, and a refusal stops input', async () => {
+  const watcher = await controlled({control: false});
+  assert.equal(watcher.canvas.style.pointerEvents, 'none');
+  watcher.canvas.dispatch('pointerdown', {button: 0, clientX: 210, clientY: 168});
+  await tick();
   assert.equal(watcher.sent.length, 0);
-  watched.layer.close();
-  const refused = fakeLive({control: true, status: 403});
-  const {layer, canvas} = await inputLayer(refused);
-  canvas.dispatch('pointerdown', {button: 0, clientX: 210, clientY: 168});
-  await new Promise(resolve => setTimeout(resolve, 0));
-  assert.equal(layer.stats().inputRefused, 3);
+  watcher.layer.close();
+  const refused = await controlled({control: true, refuse: true});
+  refused.canvas.dispatch('pointerdown', {button: 0, clientX: 210, clientY: 168});
+  await tick();
+  assert.equal(refused.layer.stats().inputRefused, 1, 'the first refused request ends input; the rest is dropped');
+  assert.equal(refused.sent.length, 1);
+  refused.run();
+  assert.equal(refused.canvas.style.pointerEvents, 'none', 'the window no longer takes input');
+  refused.layer.close();
+});
+
+
+test('keyframes cannot grow a decoder backlog without bound', () => {
+  const codecs = fakeCodecs();
+  const decoder = createStreamDecoder({...codecs, onFrame: () => {}});
+  const frame = {key: true, seq: 2, tsUs: 2, data: Uint8Array.from(SPS_IDR)};
+  assert.equal(decoder.decode(frame), true);
+  codecs.decoders[0].decodeQueueSize = 100;
+  assert.equal(decoder.decode(frame), false);
+  assert.equal(codecs.decoders[0].chunks.length, 1);
+  decoder.close();
+});
+
+test('chunks with inconsistent timestamps, sizes or key flags drop the access unit', () => {
+  for (const changed of [{tsUs: 100}, {total: 3}, {flags: CHUNK_LAST | CHUNK_KEY}]) {
+    const r = createReassembler();
+    r.push(decodeFrame(chunk(CHUNK_FIRST, 1, [1], 2)));
+    assert.equal(r.push({...decodeFrame(chunk(CHUNK_LAST, 1, [2], 2)), ...changed}), null);
+  }
+});
+
+test('an index cannot redirect a surface to an arbitrary record or codec', () => {
+  assert.equal(decodeFrame(json(1, [{...STREAM, record: '@tilo:private-document'}])), null);
+  assert.equal(decodeFrame(json(1, [{...STREAM, codec: 'vp9'}])), null);
+});
+
+test('closing while input is in flight drops unsent events', async () => {
+  const m = await controlled({control: true});
+  let complete;
+  // Use an actual pending send rather than delaying the whole test environment.
+  const doc = fakeDocument();
+  const live = fakeLive();
+  const sent = [];
+  const layer = createLegacyWindows({surface: doc.createElement('div'), document: doc, live: () => live,
+    ...fakeCodecs(), windows: () => [], setWindows() {},
+    sendInput: async (_, __, events) => {
+      if (!events.length) return true;
+      sent.push(events);
+      return await new Promise(resolve => { complete = resolve; });
+    }, requestFrame: () => 1, cancelFrame() {}, setInterval: () => 1, clearInterval() {}});
+  live.deliver(INDEX_RECORD.record, SHELL, json(1, [STREAM]));
+  await tick();
+  const canvas = layer.layer.children[0];
+  canvas.dispatch('keydown', {code: 'KeyA'});
+  await tick();
+  assert.equal(sent.length, 1, 'the first key is in flight before closing');
+  canvas.dispatch('keydown', {code: 'KeyB'});
   layer.close();
+  complete(true);
+  await tick();
+  assert.equal(sent.length, 1, 'no queued key is sent after close');
+  m.layer.close();
+});
+
+
+test('blur releases held buttons and keys before relinquishing keyboard focus', async () => {
+  const m = await controlled({control: true});
+  m.canvas.dispatch('pointerdown', {button: 0, pointerId: 5, clientX: 210, clientY: 168});
+  m.canvas.dispatch('keydown', {code: 'ShiftLeft'});
+  await tick();
+  await tick();
+  m.canvas.dispatch('blur');
+  await tick();
+  await tick();
+  const events = m.sent.flatMap(request => request.events);
+  assert.ok(events.some(event => event.Key?.keysym === 42 && event.Key.pressed === false));
+  assert.ok(events.some(event => event.PointerButton?.button === 272 && event.PointerButton.pressed === false));
+  assert.deepEqual(events.at(-1), {KeyboardFocus: {surface: 0, focused: false}});
+  m.layer.close();
+});
+
+const PAINT = {...STREAM, app: 'so.tilo.browser', codec: 'tilo-paint'};
+const PAINT_KEY = `${SHELL}:${PAINT.surface}`;
+
+test('a painted page is handed to the runtime to draw, not decoded as video', async () => {
+  const painted = [];
+  const m = mount({paintFrame: (key, bytes) => { painted.push({key, bytes: [...bytes]}); return true; }});
+  m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [PAINT]));
+  assert.deepEqual(m.shown.at(-1), [{key: PAINT_KEY, app: PAINT.app, title: 'Browser', codec: 'tilo-paint'}],
+    'the desktop opens a window it draws itself');
+  assert.equal(m.layer.layer.children.length, 0, 'no canvas over the desktop');
+  m.live.deliver(PAINT.record, SHELL, json(2, PAINT));
+  // A whole frame (first byte 0) split across two chunks, then a patch.
+  m.live.deliver(PAINT.record, SHELL, chunk(CHUNK_KEY | CHUNK_FIRST, 0, [0, 1, 2], 5));
+  m.live.deliver(PAINT.record, SHELL, chunk(CHUNK_KEY | CHUNK_LAST, 0, [3, 4], 5));
+  m.live.deliver(PAINT.record, SHELL, chunk(CHUNK_FIRST | CHUNK_LAST, 1, [1, 9]));
+  assert.deepEqual(painted, [{key: PAINT_KEY, bytes: [0, 1, 2, 3, 4]}, {key: PAINT_KEY, bytes: [1, 9]}]);
+  assert.equal(m.codecs.decoders.length, 0, 'no video decoder');
+  assert.equal(m.layer.stats().drawn, 2);
+  // A start that changes the codec cannot turn the page into video.
+  m.live.deliver(PAINT.record, SHELL, json(2, {...PAINT, codec: 'h264'}));
+  assert.equal(m.layer.streams()[0].codec, 'tilo-paint');
+  m.place([{key: PAINT_KEY, rect: [0, 0, 100, 100]}]);
+  m.run();
+  m.live.deliver(INDEX_RECORD.record, SHELL, json(1, []));
+  assert.equal(m.layer.stats().streams, 0);
+  m.layer.close();
+  await tick();
+});
+
+test('input on a painted page goes to its host only when this member drives it', async () => {
+  const events = [{PointerMotion: {x: 20, y: 30}}, {PointerButton: {button: 272, pressed: true}}];
+  let pending = [{key: PAINT_KEY, events}];
+  const take = () => { const out = pending; pending = []; return out; };
+  const watcher = mount({takePaintInput: take});
+  watcher.live.deliver(INDEX_RECORD.record, SHELL, json(1, [PAINT]));
+  await tick();
+  watcher.run();
+  await tick();
+  assert.deepEqual(watcher.sent, [], 'a watching member sends nothing');
+  watcher.layer.close();
+
+  pending = [{key: PAINT_KEY, events}, {key: 'unknown:0000000000000001', events}];
+  const driver = mount({control: true, takePaintInput: take});
+  driver.live.deliver(INDEX_RECORD.record, SHELL, json(1, [PAINT]));
+  await tick();
+  driver.run();
+  await tick();
+  assert.ok(driver.sent.every(({publisher, stream}) => publisher === SHELL && stream === PAINT.surface),
+    'only to the painted stream\'s host; an unknown window\'s input is dropped');
+  assert.deepEqual(driver.sent.flatMap(request => request.events), events, 'in order');
+  driver.layer.close();
+  await tick();
+});
+
+
+test('a delayed HTTPS send preserves a mixed-case typing burst in wire order', async () => {
+  let release;
+  const sent = [], errors = [], delivered = [];
+  let clock;
+  const m = await controlled({control: true, onError: error => errors.push(String(error)),
+    sendInput: async (_, __, events) => {
+      if (!events.length) return true;
+      sent.push(events);
+      if (sent.length === 1) await new Promise(resolve => { release = resolve; });
+      delivered.push({at: clock.t, count: events.length});
+      return true;
+    }});
+  clock = m.clock;
+  const physical = [
+    ['ShiftLeft', 42, true, true], ['KeyA', 30, true, true], ['KeyA', 30, false, true],
+    ['ShiftLeft', 42, false, false], ['KeyB', 48, true, false], ['KeyB', 48, false, false],
+    ['Digit1', 2, true, false], ['Digit1', 2, false, false],
+    ['ShiftLeft', 42, true, true], ['Slash', 53, true, true], ['Slash', 53, false, true],
+    ['ShiftLeft', 42, false, false],
+  ];
+  const expected = [];
+  for (let repeat = 0; repeat < 20; repeat++) {
+    for (const [code, keysym, pressed, shiftKey] of physical) {
+      m.canvas.dispatch(pressed ? 'keydown' : 'keyup', {code, shiftKey});
+      expected.push({Key: {keysym, pressed, modifiers: 0}});
+    }
+  }
+  await tick();
+  assert.equal(sent.length, 1, 'one send in flight while the remaining physical keys queue');
+  assert.equal(m.layer.streams()[0].control, true, 'typing retains the granted control');
+  assert.deepEqual(errors, []);
+  clock.t = 4000;
+  release();
+  for (let batch = 0; batch < 10; batch++) await tick();
+  assert.deepEqual(sent.flat(), expected, 'every physical key reaches the host exactly once in order');
+  assert.ok(sent.every(batch => batch.length <= 64), 'each request respects the host wire bound');
+  for (const sample of delivered) {
+    const count = delivered.filter(row => row.at >= sample.at && row.at < sample.at + 1000).reduce((sum, row) => sum + row.count, 0);
+    assert.ok(count <= 120, `catch-up offered ${count} events inside the native rate window`);
+  }
+  m.layer.close();
+});
+
+test('an unresponsive host still bounds the input queue and revokes control', async () => {
+  let release;
+  const errors = [], sent = [];
+  const m = await controlled({control: true, onError: error => errors.push(String(error)),
+    sendInput: async (_, __, events) => {
+      if (!events.length) return true;
+      sent.push(events);
+      await new Promise(resolve => { release = resolve; });
+      return true;
+    }});
+  for (let i = 0; i < 600; i++) m.canvas.dispatch(i % 2 ? 'keyup' : 'keydown', {code: 'KeyA'});
+  assert.equal(m.layer.streams()[0].control, false);
+  assert.deepEqual(errors, ['Error: legacy window input backlog exceeded']);
+  await tick();
+  release();
+  await tick();
+  assert.equal(sent.length, 1, 'revocation drops the unsent queue');
+  m.layer.close();
+});
+
+
+test('two windows share the native input rate budget while draining queued keys', async () => {
+  const sent = [], errors = [];
+  let m;
+  m = mount({control: true, onError: error => errors.push(String(error)),
+    sendInput: async (_, surface, events) => {
+      if (events.length) sent.push({surface, events, at: m.clock.t});
+      return true;
+    }});
+  const second = {...STREAM, surface: '0000000000000008', record: '@tilo:legacy-window:0000000000000008'};
+  m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [STREAM, second]));
+  await tick();
+  const [first, other] = m.layer.layer.children;
+  for (let i = 0; i < 60; i++) {
+    for (const [canvas, code] of [[first, 'KeyA'], [other, 'KeyB']]) {
+      canvas.dispatch('keydown', {code});
+      canvas.dispatch('keyup', {code});
+    }
+  }
+  for (let batch = 0; batch < 10; batch++) await tick();
+  for (const [surface, keysym] of [[STREAM.surface, 30], [second.surface, 48]]) {
+    const expected = Array.from({length: 120}, (_, i) => ({Key: {keysym, pressed: i % 2 === 0, modifiers: 0}}));
+    assert.deepEqual(sent.filter(row => row.surface === surface).flatMap(row => row.events), expected);
+  }
+  for (const sample of sent) {
+    const count = sent.filter(row => row.at >= sample.at && row.at < sample.at + 1000).reduce((sum, row) => sum + row.events.length, 0);
+    assert.ok(count <= 120, `both windows offered ${count} events inside one native rate window`);
+  }
+  assert.deepEqual(errors, []);
+  assert.ok(m.layer.streams().every(stream => stream.control));
+  m.layer.close();
+});
+
+
+test('a dismissed window queues one close while its host acknowledges it', async () => {
+  let release;
+  const sent = [];
+  const m = await controlled({control: true, dismissed: () => [KEY],
+    sendInput: async (_, __, events) => {
+      if (!events.length) return true;
+      sent.push(events);
+      await new Promise(resolve => { release = resolve; });
+      return true;
+    }});
+  await tick();
+  for (let frame = 0; frame < 100; frame++) m.run();
+  assert.deepEqual(sent, [['Close']], 'painting must not flood the shared sender with repeated closes');
+  release();
+  await tick();
+  m.run();
+  await tick();
+  assert.deepEqual(sent, [['Close']], 'the same dismissal is still one action after acknowledgement');
+  m.layer.close();
 });

@@ -81,6 +81,11 @@ pub struct InstalledPackage {
     /// trust input.
     #[serde(default)]
     pub source: String,
+    /// The user went back to this version on purpose (a rollback): it keeps
+    /// running even when the system image ships a newer one, until the next
+    /// update. Without it the newer of the user's and the image's copy runs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub held: bool,
     /// True for a package of the read-only system store. Not persisted:
     /// it describes which store a row was read from.
     #[serde(skip)]
@@ -184,7 +189,8 @@ impl Registry {
             entry: self.entries.clone(),
         };
         let text = toml::to_string(&file).map_err(|error| write_error(error.to_string()))?;
-        atomic_file::write(path, text.as_bytes()).map_err(|error| write_error(error.to_string()))
+        tilo_files::native::atomic::write(path, text.as_bytes())
+            .map_err(|error| write_error(error.to_string()))
     }
 
     pub fn entries(&self) -> &[InstalledPackage] {
@@ -287,6 +293,7 @@ mod tests {
                 cli_commands: Vec::new(),
                 runtime: String::new(),
                 source: String::new(),
+                held: false,
                 system: false,
             };
             let mut registry = Registry::default();

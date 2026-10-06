@@ -1,0 +1,26 @@
+diff --git a/crates/lib/src/cli.rs b/crates/lib/src/cli.rs
+--- a/crates/lib/src/cli.rs
++++ b/crates/lib/src/cli.rs
+@@ -2078,11 +2078,20 @@
+                     iid
+                 };
+ 
+-                let imgref = format!("containers-storage:{image}");
++                // A transport-qualified reference (docker://, oci:, ...) is
++                // read as given, without the host container store.
+                 let host_store = std::path::Path::new("/run/host-container-storage");
++                let qualified = ["docker://", "oci:", "oci-archive:", "dir:"]
++                    .iter()
++                    .any(|t| image.starts_with(t));
++                let (imgref, stores): (String, &[&std::path::Path]) = if qualified {
++                    (image.clone(), &[])
++                } else {
++                    (format!("containers-storage:{image}"), &[host_store])
++                };
+                 let opts = composefs_oci::PullOptions {
+                     img_proxy_config: Some(proxycfg),
+-                    additional_image_stores: &[host_store],
++                    additional_image_stores: stores,
+                     ..Default::default()
+                 };
+                 let pull_result = composefs_oci::pull(&repo, &imgref, None, opts)

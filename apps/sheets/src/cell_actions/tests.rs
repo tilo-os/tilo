@@ -5,8 +5,6 @@ use serde_json::json;
 use tilo_actions::{ActionRegistry, Resource};
 
 use super::*;
-use crate::actions::{SearchableSheet, SheetsResourceCtx, provide_resources};
-use crate::model::format_value;
 
 fn workbook(rows: &[&[&str]]) -> AutoCommit {
     let mut doc = AutoCommit::new();
@@ -20,37 +18,13 @@ fn workbook(rows: &[&[&str]]) -> AutoCommit {
     doc
 }
 
-/// The resource tree as the app publishes it, with the searchable cells the
-/// live app keeps (sort reads them).
+/// The first sheet as the workbook publishes it.
 fn sheet_resource(doc: &AutoCommit) -> Resource {
-    let mut scratch = doc.clone();
-    let snap = SheetsDoc::snapshot_sheet(&mut scratch, 0, Currency::USD);
-    let values = crate::formula::recalculate(&snap.raw);
-    let cells = snap
-        .raw
-        .iter()
-        .map(|(&(col, row), raw)| SearchableCell {
-            col,
-            row,
-            raw: raw.clone(),
-            display: values.get(&(col, row)).map_or_else(String::new, |value| {
-                format_value(value, CellFormat::General)
-            }),
-        })
-        .collect();
-    let ctx = SheetsResourceCtx {
-        sheet_names: SheetsDoc::sheet_names(&mut scratch),
-        searchable_sheets: vec![SearchableSheet {
-            id: SheetsDoc::sheet_resource_id(doc, 0).unwrap(),
-            name: snap.name,
-            cells,
-        }],
-        palette_actions: Vec::new(),
-        selection: None,
-    };
-    provide_resources(&ctx, doc)
+    use ui::tilo_resource::Resource as _;
+    let state = crate::resource::SheetsWorkbook::read(doc).unwrap();
+    crate::actions::published(&state)
+        .children
         .into_iter()
-        .flat_map(|workbook| workbook.children)
         .find(|child| child.kind == "sheets.sheet")
         .unwrap()
 }
@@ -94,8 +68,7 @@ fn read(doc: &AutoCommit, range: Option<&str>) -> serde_json::Value {
 }
 
 fn raws(doc: &AutoCommit) -> Vec<Vec<String>> {
-    let mut scratch = doc.clone();
-    let snap = SheetsDoc::snapshot_sheet(&mut scratch, 0, Currency::USD);
+    let snap = SheetsDoc::snapshot_sheet(doc, 0, Currency::USD);
     let rows = snap.raw.keys().map(|addr| addr.1).max().unwrap_or(0);
     let cols = snap.raw.keys().map(|addr| addr.0).max().unwrap_or(0);
     (0..=rows)
@@ -165,8 +138,7 @@ fn bold_is_stored_read_back_and_exported_to_xlsx() {
     );
     assert_eq!(read(&doc, None)["bold"], json!(["A1", "B1"]));
 
-    let mut scratch = doc.clone();
-    let snap = SheetsDoc::snapshot_sheet(&mut scratch, 0, Currency::USD);
+    let snap = SheetsDoc::snapshot_sheet(&doc, 0, Currency::USD);
     let values = crate::formula::recalculate(&snap.raw);
     let table =
         crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &snap.fmt, &values, &snap.bold);
@@ -330,32 +302,16 @@ fn a_large_edit_answers_its_first_rows_and_names_the_whole_range() {
 
 #[test]
 fn the_app_answers_a_cell_edit_through_its_action_door() {
-    use ui::Widget as _;
-    let mut app = crate::app::SheetsApp::new();
-    app.shots_mode();
-    let mut state = ui::State::new();
-    app.sync(&mut state.doc, &state.root);
-    state.commit_action(None, None);
-    let mut harness = ui::headless::FrameHarness::new(state, Box::new(app), (1200, 800));
-    crate::actions::register(harness.action_registry_mut());
-    let sheet = harness
-        .resources()
-        .into_iter()
-        .flat_map(|workbook| workbook.children)
-        .find(|child| child.kind == "sheets.sheet")
-        .unwrap();
-    let address = tilo_actions::ActionAddress::new(sheet.id.as_str(), "set-cells");
-    let started = harness
-        .invoke_action(
-            &address,
-            json!({"start": "Z90", "rows": [["=1+2"]]})
-                .as_object()
-                .unwrap(),
-            false,
-            None,
+    use ui::framework::testing::TestApp;
+    let mut app = TestApp::<crate::SheetsShell>::new().unwrap();
+    let sheet = app.state().sheets[0].id.clone();
+    let value = app
+        .call_on(
+            &crate::actions::sheet_resource_id(&sheet),
+            "set-cells",
+            json!({"start": "Z90", "rows": [["=1+2"]]}),
         )
         .unwrap();
-    let value = started.completed().and_then(|output| output.value);
     assert_eq!(
         value
             .as_ref()
@@ -459,9 +415,9 @@ fn an_import_into_a_blank_workbook_replaces_its_empty_sheet() {
     let mut blank = AutoCommit::new();
     SheetsDoc::add_sheet(&mut blank, "Sheet1");
     import(&mut blank);
-    assert_eq!(SheetsDoc::sheet_names(&mut blank), ["sales"]);
+    assert_eq!(SheetsDoc::sheet_names(&blank), ["sales"]);
 
     let mut used = workbook(&[&["kept"]]);
     import(&mut used);
-    assert_eq!(SheetsDoc::sheet_names(&mut used), ["Data", "sales"]);
+    assert_eq!(SheetsDoc::sheet_names(&used), ["Data", "sales"]);
 }

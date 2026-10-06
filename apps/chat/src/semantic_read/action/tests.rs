@@ -31,7 +31,7 @@ fn semantic_read_action_continuation_stays_with_its_real_channel() {
         &doc.base_heads(),
         "one",
         None,
-        qdoc::semantic_read::Limits {
+        tilo_doc::semantic_read::Limits {
             items: 1,
             ..Default::default()
         },

@@ -6,8 +6,8 @@
 //! offers contextual actions (open URL, copy, connect Wi-Fi, add contact).
 //! Settings and capture metadata live in the Automerge CRDT.
 //!
-//! `app_root()` is the single integration point used by both the live event
-//! loop and the `--shots` offscreen renderer.
+//! [`CameraShell`] is the app: the live window, `--shots` and every host
+//! that mounts the camera ([`definition`]) run it through the framework.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -43,8 +43,8 @@ pub mod library;
 pub mod media;
 pub mod model;
 pub mod paint;
+pub mod resource;
 pub mod scan;
-pub mod search;
 pub mod video;
 pub mod worker;
 
@@ -52,24 +52,9 @@ pub mod worker;
 pub mod capture;
 
 pub use app::CameraApp;
+pub use resource::{Camera, CameraShell, CameraState};
 
-use ui::widget::Widget;
-
-/// Build the live app: captures may be projected to disk and the viewfinder
-/// needs a real camera.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(CameraApp::disk())
-}
-
-/// The app as every host mounts it: the live camera and its actions.
+/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::launch::LaunchSpec::new("so.tilo.camera", app_root)
-        .component_actions(actions::register)
-        .as_definition("Camera")
-}
-
-/// Build the hermetic app used by `--shots` and integration harnesses:
-/// self-contained sample content, no disk or device access.
-pub fn shots_root() -> Box<dyn Widget> {
-    Box::new(CameraApp::sample())
+    ui::framework::definition::<CameraShell>()
 }

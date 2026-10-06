@@ -20,8 +20,12 @@
 //! periodic work is the 50 ms live permission observation and the session
 //! janitor, both on tokio intervals.
 
+pub mod install;
+mod legacy;
 mod live;
 mod sessions;
+#[cfg(test)]
+mod tests;
 mod tls;
 
 pub use tls::TlsSource;
@@ -42,11 +46,12 @@ use tilo_moq::live::fallback::{
     FallbackError, FallbackStream, MAX_SEND_BYTES, session_id,
 };
 use tilo_relay_protocol::certify::CertifyReply;
-use tilo_relay_protocol::live::LiveFrame;
+use tilo_relay_protocol::legacy_window::InputRequest;
+use tilo_relay_protocol::live::{LiveKind, SealedLiveFrame};
 pub(crate) use tilo_relay_protocol::web as protocol;
 use tilo_relay_protocol::web::{
     API_PREFIX, AgentLiveGrantRequest, EventsRequest, HostInfo, MAX_AGENT_ID_BYTES, MAX_POLL_MS,
-    MAX_REQUEST_BYTES, SESSION_HEADER, SessionFinish, live_room,
+    MAX_REQUEST_BYTES, NodeInfo, SESSION_HEADER, SessionFinish, live_room,
 };
 use tilo_user_identity::CertificationRequest;
 
@@ -82,10 +87,12 @@ pub struct WebHandle {
     /// `http://localhost:port` of the plain loopback listener, if any.
     pub plain_origin: Option<String>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
+    legacy: Arc<legacy::LegacyWindows>,
 }
 
 impl Drop for WebHandle {
     fn drop(&mut self) {
+        self.legacy.close();
         for task in &self.tasks {
             task.abort();
         }
@@ -95,11 +102,14 @@ impl Drop for WebHandle {
 struct Web {
     sessions: Arc<Sessions>,
     grants: Arc<live::LiveGrants>,
+    legacy: Arc<legacy::LegacyWindows>,
     live: LiveRelay,
     host_info: HostInfo,
     allowed_origins: Vec<String>,
     /// What `/session/finish` advertises.
     features: u64,
+    /// The rooms this relay governs, for `/rooms` and `/join`.
+    rooms: Option<crate::rooms::Rooms>,
 }
 
 impl Relay {
@@ -124,14 +134,13 @@ impl Relay {
             ));
         }
         let identity = tls::Identity::load(&config.tls).map_err(failed)?;
-        let tcp = tokio::net::TcpListener::bind(config.listen)
-            .await
-            .map_err(|error| failed(error.to_string()))?;
+        let (tcp, udp) =
+            bind_port_pair(config.listen).map_err(|error| failed(error.to_string()))?;
         let addr = tcp
             .local_addr()
             .map_err(|error| failed(error.to_string()))?;
         let endpoint =
-            tilo_moq::carrier::listener(addr, identity.chain.clone(), identity.key.clone_key())
+            tilo_moq::carrier::listener_on(udp, identity.chain.clone(), identity.key.clone_key())
                 .map_err(failed)?;
         let acceptor =
             tokio_rustls::TlsAcceptor::from(Arc::new(identity.https_config().map_err(failed)?));
@@ -139,28 +148,18 @@ impl Relay {
         let sessions = Sessions::new(context.clone());
         let grants = live::LiveGrants::new();
         let live = LiveRelay::new(Arc::new(live::Authority(grants.clone())));
-        let bridge_relay = live.clone();
-        let _ = context
-            .relay
-            .live_bridge
-            .set(Arc::new(move |workspace, from, frame| {
-                let room = live_room(workspace);
-                let publisher = hex::encode(from);
-                match LiveFrame::decode(frame) {
-                    Ok(LiveFrame::Presence(_)) => {
-                        bridge_relay.inject_presence(&room, &publisher, frame);
-                    }
-                    Ok(LiveFrame::Ops(ops)) => {
-                        let record = hex::encode(ops.record().digest());
-                        bridge_relay.inject_ops(&room, &publisher, &record, frame);
-                    }
-                    Err(_) => {}
-                }
-            }));
+        let legacy =
+            legacy::LegacyWindows::new(live.clone(), context.relay.own_cert.device_public_key);
+        let _ = context.relay.live_bridge.set(Arc::new(Bridge {
+            live: live.clone(),
+            legacy: legacy.clone(),
+        }));
         let tasks_bridge = bridge_browser_presence(&live, &grants, &context);
+        let tasks_legacy = tokio::spawn(maintain_legacy(legacy.clone(), context.clone()));
         let web = Arc::new(Web {
             sessions: sessions.clone(),
             grants: grants.clone(),
+            legacy: legacy.clone(),
             live,
             host_info: HostInfo {
                 host_cert: context.relay.own_cert,
@@ -169,8 +168,9 @@ impl Relay {
             },
             allowed_origins: config.allowed_origins,
             features: self.web_features(),
+            rooms: self.rooms().cloned(),
         });
-        let mut tasks = vec![tasks_bridge];
+        let mut tasks = vec![tasks_bridge, tasks_legacy];
         let live = web.live.clone();
         tasks.push(
             match self.voice_carrier(&config.tls, addr, identity.pinned_sha256.clone()) {
@@ -210,19 +210,21 @@ impl Relay {
             certificate_sha256: identity.pinned_sha256,
             plain_origin,
             tasks,
+            legacy,
         })
     }
 }
 
 impl Relay {
-    /// What `/session/finish` advertises: calls only where rooms are governed.
+    /// What `/session/finish` advertises: calls and room administration
+    /// only where rooms are governed.
     fn web_features(&self) -> u64 {
-        let voice = if self.rooms().is_some() {
-            protocol::FEATURE_VOICE
+        let rooms = if self.rooms().is_some() {
+            protocol::FEATURE_VOICE | protocol::FEATURE_ROOMS
         } else {
             0
         };
-        protocol::FEATURE_RESUME | protocol::FEATURE_COMPACTION | voice
+        protocol::FEATURE_RESUME | protocol::FEATURE_COMPACTION | rooms
     }
 
     /// The voice carrier of the calls in this relay's rooms, served beside
@@ -240,7 +242,7 @@ impl Relay {
         let host = match tls {
             TlsSource::Development { hosts, .. } => hosts.first().cloned(),
             TlsSource::Managed { domain } => Some(domain.clone()),
-            TlsSource::Files { .. } => None,
+            TlsSource::Files { host, .. } => host.clone(),
         }
         .filter(|_| addr.ip().is_unspecified())
         .unwrap_or_else(|| addr.ip().to_string());
@@ -257,6 +259,200 @@ impl Relay {
             ),
             pinned_sha256.into_iter().collect(),
         ))
+    }
+}
+
+/// What the relay's sessions hand the browser plane: native members' live
+/// frames, and the legacy windows sessions share with this host.
+struct Bridge {
+    live: LiveRelay,
+    legacy: Arc<legacy::LegacyWindows>,
+}
+
+impl crate::peer::BrowserBridge for Bridge {
+    fn live(&self, workspace_id: u64, from: [u8; 32], frame: &[u8]) {
+        let room = live_room(workspace_id);
+        let publisher = hex::encode(from);
+        // Only a sealed frame crosses, by its clear kind and record.
+        match SealedLiveFrame::decode(frame) {
+            Ok(sealed) if sealed.kind == LiveKind::Presence => {
+                self.live.inject_presence(&room, &publisher, frame);
+            }
+            Ok(sealed) => {
+                let record = hex::encode(sealed.record);
+                self.live.inject_ops(&room, &publisher, &record, frame);
+            }
+            Err(_) => {}
+        }
+    }
+
+    fn presence(&self, workspace_id: u64, from: [u8; 32], user: [u8; 32], payload: &[u8]) {
+        self.legacy
+            .observe_presence(workspace_id, from, user, payload);
+    }
+}
+
+/// Look after the legacy windows on the live relay for as long as the
+/// listener runs: replays, indexes, and the departure of their sessions.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the guard only lives for the lookup; the value kept is a clone"
+)]
+async fn maintain_legacy(legacy: Arc<legacy::LegacyWindows>, context: crate::daemon::WebContext) {
+    let mut tick = tokio::time::interval(legacy::MAINTAIN_EVERY);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tick.tick().await;
+        for (workspace_id, device) in legacy.publishers() {
+            let workspace = context
+                .relay
+                .workspaces
+                .lock()
+                .await
+                .get(&workspace_id)
+                .cloned();
+            let (here, authority) = match workspace {
+                Some(workspace) => {
+                    let runtime = workspace.lock().await;
+                    (
+                        runtime.has_subscriber(&device),
+                        runtime.room_authority.clone(),
+                    )
+                }
+                None => (false, None),
+            };
+            let revoked = context
+                .relay
+                .revocations
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_revoked(&device);
+            let writable = match authority {
+                Some(authority) => match authority.rooms() {
+                    Some(rooms) => matches!(
+                        rooms.legacy_writer_role(authority.room(), device).await,
+                        Some(collab_types::Role::Owner | collab_types::Role::Editor)
+                    ),
+                    None => false,
+                },
+                None => true,
+            };
+            if revoked || !writable {
+                legacy.revoke(workspace_id, device, std::time::Instant::now());
+                continue;
+            }
+            legacy.present(workspace_id, device, here, std::time::Instant::now());
+        }
+        legacy.maintain(std::time::Instant::now());
+    }
+}
+
+/// How long one input request waits for room in the session's queue.
+const LEGACY_INPUT_DELIVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Forward a member's input to the session streaming the window, if the
+/// member may drive it: admitted to the room now and, in a room this relay
+/// governs, its owner or an editor (a viewer only watches); in a room it
+/// does not govern, a device of the publishing session's own user.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the guard only lives for the lookup; the value kept is a clone"
+)]
+async fn legacy_input(
+    web: &Web,
+    member: &crate::auth::AuthenticatedPeer,
+    request: InputRequest,
+) -> Result<Response<Body>, Response<Body>> {
+    let refused = || status(StatusCode::FORBIDDEN, "you may not drive this window");
+    let relay = &web.sessions.context().relay;
+    let InputRequest {
+        workspace_id,
+        publisher,
+        surface,
+        events,
+    } = request;
+    if !live::admitted(
+        &web.sessions,
+        member.device_public_key,
+        member.user_public_key,
+        workspace_id,
+    )
+    .await
+    {
+        return Err(refused());
+    }
+    let publisher_user = web
+        .legacy
+        .publisher_user(workspace_id, publisher, surface)
+        .ok_or_else(|| status(StatusCode::NOT_FOUND, "no such window"))?;
+    let workspace = relay
+        .workspaces
+        .lock()
+        .await
+        .get(&workspace_id)
+        .cloned()
+        .ok_or_else(refused)?;
+    let authority = workspace.lock().await.room_authority.clone();
+    let governed = match authority {
+        Some(authority) => Some((
+            authority.rooms().ok_or_else(refused)?,
+            authority.room().to_owned(),
+        )),
+        None => None,
+    };
+    let may = match governed {
+        Some((rooms, room)) => matches!(
+            rooms
+                .legacy_writer_role(&room, member.device_public_key)
+                .await,
+            Some(collab_types::role::Role::Owner | collab_types::role::Role::Editor)
+        ),
+        None => member.user_public_key == publisher_user,
+    };
+    if !may {
+        return Err(refused());
+    }
+    if events.is_empty() {
+        return Ok(reply(StatusCode::NO_CONTENT, Vec::new()));
+    }
+    let payloads = web
+        .legacy
+        .input(
+            workspace_id,
+            publisher,
+            surface,
+            events,
+            &relay.own_cert,
+            std::time::Instant::now(),
+        )
+        .map_err(|_| status(StatusCode::NOT_FOUND, "no such window"))?;
+    let unreachable = || {
+        status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the window's session is not reachable",
+        )
+    };
+    let queue = workspace
+        .lock()
+        .await
+        .subscriber_queue(&publisher)
+        .ok_or_else(unreachable)?;
+    // Every event, in order: a key-up lost or a batch cut short leaves keys
+    // held or typed text missing letters. A busy session is waited for.
+    let delivered = tokio::time::timeout(LEGACY_INPUT_DELIVERY, async {
+        for payload in payloads {
+            let envelope = crate::Envelope::Presence {
+                workspace_id,
+                payload,
+            };
+            queue.send(envelope).await.ok()?;
+        }
+        Some(())
+    })
+    .await;
+    match delivered {
+        Ok(Some(())) => Ok(reply(StatusCode::NO_CONTENT, Vec::new())),
+        Ok(None) | Err(_) => Err(unreachable()),
     }
 }
 
@@ -324,6 +520,41 @@ fn bridge_browser_presence(
             );
         }
     })
+}
+
+/// Ephemeral ports tried for a TCP and UDP pair before giving up.
+const PORT_PAIR_ATTEMPTS: usize = 64;
+
+/// HTTPS (TCP) and WebTransport (UDP) sockets on one port of `listen`. For
+/// port 0 the kernel picks the TCP port, which another socket may hold for
+/// UDP; the next pick is tried then.
+fn bind_port_pair(
+    listen: SocketAddr,
+) -> std::io::Result<(tokio::net::TcpListener, std::net::UdpSocket)> {
+    let mut attempts = 0;
+    loop {
+        let socket = if listen.is_ipv4() {
+            tokio::net::TcpSocket::new_v4()?
+        } else {
+            tokio::net::TcpSocket::new_v6()?
+        };
+        // As `TcpListener::bind`: a restarted host takes its port back while
+        // its old connections linger in TIME_WAIT.
+        socket.set_reuseaddr(true)?;
+        socket.bind(listen)?;
+        let tcp = socket.listen(1024)?;
+        match std::net::UdpSocket::bind(tcp.local_addr()?) {
+            Ok(udp) => return Ok((tcp, udp)),
+            Err(error)
+                if listen.port() == 0
+                    && error.kind() == std::io::ErrorKind::AddrInUse
+                    && attempts < PORT_PAIR_ATTEMPTS =>
+            {
+                attempts = attempts.saturating_add(1);
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 /// Accepted connections belong to their listener's loop: aborting the loop
@@ -454,12 +685,19 @@ fn token(request: &Request<hyper::body::Incoming>) -> Option<[u8; 32]> {
     hex::decode(value).ok()?.try_into().ok()
 }
 
-fn cors(web: &Web, origin: Option<&header::HeaderValue>, response: &mut Response<Body>) {
+/// Headers a page may send to the browser routes.
+const ALLOWED_HEADERS: &str = "content-type, x-tilo-session, x-tilo-live-session";
+
+fn cors(
+    allowed_origins: &[String],
+    allowed_headers: &str,
+    origin: Option<&header::HeaderValue>,
+    response: &mut Response<Body>,
+) {
     let Some(origin) = origin.and_then(|value| value.to_str().ok()) else {
         return;
     };
-    if !web
-        .allowed_origins
+    if !allowed_origins
         .iter()
         .any(|allowed| allowed == origin || allowed == "*")
     {
@@ -474,10 +712,9 @@ fn cors(web: &Web, origin: Option<&header::HeaderValue>, response: &mut Response
         header::ACCESS_CONTROL_ALLOW_METHODS,
         header::HeaderValue::from_static("POST, OPTIONS"),
     );
-    headers.insert(
-        header::ACCESS_CONTROL_ALLOW_HEADERS,
-        header::HeaderValue::from_static("content-type, x-tilo-session, x-tilo-live-session"),
-    );
+    if let Ok(allowed) = header::HeaderValue::from_str(allowed_headers) {
+        headers.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, allowed);
+    }
     headers.insert(
         header::ACCESS_CONTROL_EXPOSE_HEADERS,
         header::HeaderValue::from_static("x-tilo-live-session"),
@@ -495,7 +732,12 @@ async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<
             .await
             .unwrap_or_else(|response| response)
     };
-    cors(web, origin.as_ref(), &mut response);
+    cors(
+        &web.allowed_origins,
+        ALLOWED_HEADERS,
+        origin.as_ref(),
+        &mut response,
+    );
     response
 }
 
@@ -559,6 +801,12 @@ async fn route(
     };
     match route {
         "/host" => Ok(encoded(&web.host_info)),
+        "/node" => {
+            authed()?;
+            Ok(encoded(&NodeInfo {
+                session: sessions.context().node_session.get().copied(),
+            }))
+        }
         "/certify" => {
             let request: CertificationRequest = decode(&bytes)?;
             Ok(encoded(
@@ -645,6 +893,33 @@ async fn route(
                 .await
                 .map(|grant| encoded(&grant))
                 .ok_or_else(|| status(StatusCode::FORBIDDEN, "not admitted to this workspace"))
+        }
+        "/live/legacy-input" => {
+            let session = authed()?;
+            let request: InputRequest = decode(&bytes)?;
+            if !request.valid() {
+                return Err(status(StatusCode::BAD_REQUEST, "input out of bounds"));
+            }
+            legacy_input(web, &session.peer, request).await
+        }
+        "/rooms" => {
+            let session = authed()?;
+            let rooms = web
+                .rooms
+                .as_ref()
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
+            let request = decode(&bytes)?;
+            Ok(encoded(
+                &rooms.page_rooms(&session.peer.cert, request).await,
+            ))
+        }
+        "/join" => {
+            let rooms = web
+                .rooms
+                .as_ref()
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
+            let step = decode(&bytes)?;
+            Ok(encoded(&rooms.page_join(step).await))
         }
         _ if path == FALLBACK_OPEN_PATH => {
             let id: [u8; 16] = rand::random();

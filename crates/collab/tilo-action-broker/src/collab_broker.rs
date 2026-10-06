@@ -226,6 +226,13 @@ impl FanoutState {
             .filter(|state| state.is_accepting())
     }
 
+    /// Ask the local apps holding records in `cluster_id` to publish their
+    /// snapshots; see [`CapnpBrokerState::request_room_snapshots`].
+    pub fn request_room_snapshots(&self, cluster_id: &str) -> usize {
+        self.capnp_state()
+            .map_or(0, |state| state.request_room_snapshots(cluster_id))
+    }
+
     /// Deliver `event` to every typed or in-process subscriber addressed by
     /// `route`, skipping the originating typed peer id.
     pub fn fanout_to_route(&self, event: &CollabEvent, except: u64, route: &CrdtRoute) {
@@ -344,6 +351,21 @@ impl AppActionBroker {
             .unwrap_or_else(|_| {
                 crate::collab_broker_capnp::ActionDirectoryRequestQueue::unavailable()
             })
+    }
+
+    /// A local action door bound to an already-issued signed room admission and
+    /// one host-issued execution. No device is enrolled and no grant is minted.
+    ///
+    /// # Errors
+    ///
+    /// Refuses unavailable/currently invalid admission, a missing registered
+    /// policy clock, or any mismatch with the transport-owned caller.
+    pub fn certified_local_action_host(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        presentation: &[u8],
+    ) -> Result<Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>, String> {
+        self.state.certified_local_action_host(caller, presentation)
     }
 
     /// Reusable native broker attachment for an ordinary standalone peer.
@@ -841,8 +863,9 @@ impl BrokerHandle {
 }
 impl Drop for BrokerHandle {
     fn drop(&mut self) {
-        self.fanout.request_shutdown();
+        // Quit first so a wake from request_stop sees the flag and exits.
         self.capnp_quit.store(true, Ordering::Relaxed);
+        self.fanout.request_shutdown();
         if let Some(thread) = self.capnp_thread.take() {
             join_owned_thread(thread, self.capnp_identity);
         }
