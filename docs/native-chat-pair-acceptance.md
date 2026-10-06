@@ -105,7 +105,12 @@ one-shot microphone prompt and chooses Allow once. The prompt clears, but her
 native session ends with `permission_denied` before active capture is observed.
 The bounded capture observation and failure still are retained separately from
 private profile material. Opposite-frequency audio, Leave, fresh rejoin consent
-and removal have not executed in that run.
+and removal have not executed in that run. Subsequent diagnostic runs
+present both apps but can terminate before capture with an ended, empty call
+report and no issue. `call-status` explicitly returns its preceding snapshot
+while requesting an asynchronous refresh; the reproducer waits for the first
+service reply but refuses a later terminal state. No capture fence diagnosis
+has been established by those later runs.
 
 `journey.json` remains `qualified: false` until every step completes: presented
 native Chat on both peers; opt-in context navigation; Stop and explicit follow
