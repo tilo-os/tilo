@@ -2,21 +2,20 @@
  * stdin is ephemeral fixture material, never a live identity or account. */
 import assert from 'node:assert/strict';
 import {createServer} from 'node:https';
-import {readFileSync, mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync} from 'node:fs';
-import {execFileSync} from 'node:child_process';
+import {readFileSync, existsSync, mkdirSync, writeFileSync} from 'node:fs';
 import {resolve, join, extname} from 'node:path';
-import {tmpdir} from 'node:os';
 import {createInterface} from 'node:readline';
 import {launch} from '../../../../../tools/web/chrome.mjs';
 
 const bundle = resolve(process.argv[2]);
 assert.ok(existsSync(join(bundle, 'resource.html')), 'built resource entry is required');
-const temporary = mkdtempSync(join(tmpdir(), 'tilo-resource-https-'));
-execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
-  '-subj', '/CN=localhost', '-keyout', join(temporary, 'key.pem'), '-out', join(temporary, 'cert.pem')], {stdio: 'ignore'});
+// Ephemeral TLS material arrives only over the native fixture's stdin pipe.
+const input = createInterface({input: process.stdin});
+const lines = input[Symbol.asyncIterator]();
+const credentials = JSON.parse((await lines.next()).value);
 const types = {'.html': 'text/html', '.mjs': 'text/javascript', '.js': 'text/javascript',
   '.css': 'text/css', '.wasm': 'application/wasm', '.json': 'application/json'};
-const server = createServer({key: readFileSync(join(temporary, 'key.pem')), cert: readFileSync(join(temporary, 'cert.pem'))}, (request, response) => {
+const server = createServer(credentials, (request, response) => {
   const path = new URL(request.url, 'https://localhost').pathname;
   if (path === '/fixture.html') {
     response.writeHead(200, {'content-type': 'text/html'}).end('<!doctype html><link rel="stylesheet" href="/resource.css"><div id="surface"></div>');
@@ -29,8 +28,6 @@ const server = createServer({key: readFileSync(join(temporary, 'key.pem')), cert
 await new Promise(done => server.listen(0, '127.0.0.1', done));
 const origin = `https://127.0.0.1:${server.address().port}`;
 process.stdout.write(JSON.stringify({origin}) + '\n');
-const input = createInterface({input: process.stdin});
-const lines = input[Symbol.asyncIterator]();
 const fixture = JSON.parse((await lines.next()).value);
 process.env.CHROME ??= '/usr/bin/chromium-browser';
 let browser;
@@ -42,7 +39,6 @@ const deadline = setTimeout(async () => {
   console.error('Mounted resource journey exceeded its 130-second bound');
   await browser?.close();
   server.close();
-  rmSync(temporary, {recursive:true, force:true});
   process.exit(1);
 }, 130_000);
 try {
@@ -200,5 +196,4 @@ try {
   process.stdin.pause();
   await browser?.close();
   await new Promise(done => server.close(done));
-  rmSync(temporary, {recursive:true, force:true});
 }
