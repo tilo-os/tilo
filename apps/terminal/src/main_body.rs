@@ -6786,8 +6786,8 @@ impl TerminalWidget {
         let mut widget = Self::without_process(ContentStore::memory());
         widget.sessions =
             crate::sessions::Sessions::hosted(crate::HostedProcessServices::unavailable());
-        widget.sessions.state = crate::sessions::OpenState::NoRuntime(reason.clone());
         widget.show_status(&reason);
+        widget.sessions.state = crate::sessions::OpenState::NoRuntime(reason);
         widget
     }
 
