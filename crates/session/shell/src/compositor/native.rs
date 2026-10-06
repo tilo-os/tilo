@@ -5027,7 +5027,8 @@ fn pump_test_control_conn(
             }
             Ok(Some(())) => {
                 let mut scope: Option<AgentScope> = None;
-                let (resp, actions) = match parse_request(&line) {
+                let mut diagnostic_query = None;
+                let (mut resp, actions) = match parse_request(&line) {
                     Ok(request)
                         if conn.admin
                             && (request.agent.is_some()
@@ -5087,6 +5088,26 @@ fn pump_test_control_conn(
                             }
                             continue;
                         }
+                        if conn.admin && agent.is_none() && !session.is_locked() {
+                            if let test_control::Command::ActionsEnumerate { query, .. } =
+                                &request.command
+                            {
+                                diagnostic_query = Some(query.clone());
+                            }
+                            if let Some(response) =
+                                super::diagnostic_actions::dispatch(&request.command)
+                            {
+                                let progress = queue_test_control_response(conn, &response);
+                                if matches!(
+                                    progress,
+                                    PendingConnectionProgress::Closed
+                                        | PendingConnectionProgress::OutputPending
+                                ) {
+                                    return injected_input;
+                                }
+                                continue;
+                            }
+                        }
                         match agent {
                             Some(_)
                                 if session.is_locked()
@@ -5140,6 +5161,9 @@ fn pump_test_control_conn(
                     }
                     Err(err_resp) => (err_resp, Vec::new()),
                 };
+                if let Some(query) = diagnostic_query.as_deref() {
+                    super::diagnostic_actions::append_catalogue(&mut resp, query);
+                }
                 if let Some(scope) = &scope {
                     state.client_input.set_participant(Some(scope.peer));
                     ctx.snapshot_crop = Some(scope.viewport);
@@ -14763,6 +14787,74 @@ mod tests {
             matches!(socket_response(&mut reader),test_control::Response::Err{code,..} if code=="not_permitted")
         );
         assert!(session.is_locked());
+    }
+
+    #[test]
+    fn session_diagnostics_require_the_unlocked_authenticated_owner_connection() {
+        use std::io::Write as _;
+        let mut fb = FrameBuilder::with_handle(directory_test_tree(), false, (800, 600));
+        let mut ctx = TestControlCtx::new();
+        let mut session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+        let mut lock =
+            LockController::new(std::sync::Arc::new(lock_auth::UnavailableVerifier), "owner");
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().unwrap();
+        let display: Display<State> = Display::new().unwrap();
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let (server, client) = UnixStream::pair().unwrap();
+        let mut writer = client.try_clone().unwrap();
+        let mut reader = BufReader::new(client);
+        let mut conn = TestControlConn::new(server, false).unwrap();
+        let request = serde_json::json!({"op":"actions_invoke", "provider":"session-diagnostics", "id":"configure@session-diagnostics", "args":{"presentation":true,"gpu_stages":false,"gpu_timestamps":false,"gpu_dispatch_timestamps":false}});
+        writer.write_all(format!("{request}\n").as_bytes()).unwrap();
+        pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+        );
+        assert!(matches!(
+            socket_response(&mut reader),
+            test_control::Response::Err { .. }
+        ));
+        assert!(
+            crate::shell::launcher::LaunchSession::current()
+                .diagnostics
+                .lock()
+                .unwrap()
+                .is_none()
+        );
+        conn.admin = true; // Set by authenticated production accept, tested in admin_control.
+        writer.write_all(format!("{request}\n").as_bytes()).unwrap();
+        pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+        );
+        assert!(
+            matches!(socket_response(&mut reader), test_control::Response::Answer(value) if value["diagnostics"]["presentation"] == true)
+        );
+        writer
+            .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"session-diagnostics\"}\n")
+            .unwrap();
+        pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+        );
+        assert!(
+            matches!(socket_response(&mut reader), test_control::Response::Answer(value) if value["actions"].as_array().unwrap().iter().any(|row| row["id"] == "configure@session-diagnostics"))
+        );
+        let mut agent = request.clone();
+        agent["agent"] = serde_json::json!("peer");
+        writer.write_all(format!("{agent}\n").as_bytes()).unwrap();
+        pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+        );
+        assert!(
+            matches!(socket_response(&mut reader), test_control::Response::Err { code, .. } if code == "not_permitted")
+        );
+        let _ = session.request_lock(Instant::now());
+        writer.write_all(format!("{request}\n").as_bytes()).unwrap();
+        pump_test_control_conn(
+            &mut conn, &mut fb, &mut ctx, &session, &mut lock, &mut state,
+        );
+        assert!(matches!(
+            socket_response(&mut reader),
+            test_control::Response::Err { .. }
+        ));
     }
 
     /// A driver's request often lands after its connection was accepted and
