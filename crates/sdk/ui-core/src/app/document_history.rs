@@ -1256,7 +1256,7 @@ mod tests {
             app.state.commit_action(None, None);
             app.state.doc.put(ROOT, "title", "pending").unwrap();
             let pending = app.state.doc.pending_ops();
-            app.enable_document_history_chrome();
+            app.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
             app.init_layout();
             layout(&mut app, 1200);
             let original = std::ptr::from_ref(app.root_widget.as_ref());
