@@ -313,35 +313,17 @@ impl Contact {
         } else if !self.org.trim().is_empty() {
             self.org.trim().to_string()
         } else {
-            "No Name".to_string()
+            "Unnamed contact".to_string()
         }
     }
 
-    /// One- or two-letter initials for the avatar chip.
-    pub fn initials(&self) -> String {
-        let f = self.first.trim().chars().next();
-        let l = self.last.trim().chars().next();
-        match (f, l) {
-            (Some(a), Some(b)) => format!("{a}{b}"),
-            (Some(a), None) => a.to_string(),
-            (None, Some(b)) => b.to_string(),
-            (None, None) => self
-                .org
-                .trim()
-                .chars()
-                .next()
-                .map_or_else(|| "?".to_string(), |c| c.to_string()),
-        }
-        .to_uppercase()
-    }
-
-    /// Secondary line shown under the name in the list: org + title.
+    /// The one secondary fact a list row shows under the name: the
+    /// organization, or the job title when there is none.
     pub fn subtitle(&self) -> String {
-        match (self.org.trim().is_empty(), self.title.trim().is_empty()) {
-            (false, false) => format!("{} · {}", self.title.trim(), self.org.trim()),
-            (false, true) => self.org.trim().to_string(),
-            (true, false) => self.title.trim().to_string(),
-            (true, true) => String::new(),
+        if self.org.trim().is_empty() {
+            self.title.trim().to_string()
+        } else {
+            self.org.trim().to_string()
         }
     }
 
@@ -419,7 +401,7 @@ impl SortKey {
     pub fn label(self) -> &'static str {
         match self {
             SortKey::Name => "Name",
-            SortKey::Org => "Org",
+            SortKey::Org => "Organization",
         }
     }
 }
@@ -632,7 +614,7 @@ fn sample_contacts_part1() -> Vec<Contact> {
             birthday: "1815-12-10",
             website: "https://analyticalengines.co.uk",
             notes: "First programmer. Prefers correspondence by letter. Working on Note G.",
-            groups: &["Work", "Favorites"],
+            groups: &["Work", "Mathematics"],
             favorite: true,
         }),
         make_sample(SampleSpec {
@@ -690,7 +672,7 @@ fn sample_contacts_part1() -> Vec<Contact> {
             birthday: "1918-08-26",
             website: "",
             notes: "Orbital mechanics. Double-checks every trajectory by hand.",
-            groups: &["Work", "Favorites"],
+            groups: &["Work", "Mathematics"],
             favorite: true,
         }),
     ]
@@ -754,9 +736,14 @@ fn sample_contacts_part2() -> Vec<Contact> {
 
 /// Seed an empty store with a varied sample address book so a fresh
 /// launch shows a populated list and a fully-filled detail pane.
+/// Each sample person keeps one identity across runs, so their avatar
+/// colour and every capture of the book are the same each time.
 pub fn sample_contacts() -> Vec<Contact> {
     let mut out = sample_contacts_part1();
     out.extend(sample_contacts_part2());
+    for (index, contact) in (1_u128..).zip(out.iter_mut()) {
+        contact.id = Uuid::from_u128(0x5a3e_c0de_0000_4000_8000_0000_0000_0000 | index);
+    }
     out
 }
 
@@ -902,26 +889,18 @@ mod tests {
         }
     }
 
-    /// Display names fall back to org then placeholder, initials uppercase first and last, and matching searches across fields.
+    /// Display names fall back to org then placeholder, and matching searches across fields.
     #[test]
-    fn display_names_initials_and_field_matching() {
+    fn display_names_and_field_matching() {
         // --- phase: display_name_falls_back_to_org_then_placeholder ---
         {
             let mut c = Contact::new();
-            assert_eq!(c.display_name(), "No Name");
+            assert_eq!(c.display_name(), "Unnamed contact");
             c.org = "ACME".into();
             assert_eq!(c.display_name(), "ACME");
             c.first = "Jane".into();
             c.last = "Doe".into();
             assert_eq!(c.display_name(), "Jane Doe");
-        }
-
-        // --- phase: initials_uppercase_first_and_last ---
-        {
-            let mut c = Contact::new();
-            c.first = "ada".into();
-            c.last = "lovelace".into();
-            assert_eq!(c.initials(), "AL");
         }
 
         // --- phase: matches_searches_across_fields ---

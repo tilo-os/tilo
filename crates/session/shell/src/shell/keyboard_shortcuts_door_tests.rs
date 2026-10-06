@@ -275,7 +275,7 @@ fn rebinding_through_the_door_moves_what_the_chord_triggers() {
         &door.owner,
         "keyboard-shortcut:quick-settings",
         "rebind",
-        &json!({"chord": "Super+K"}),
+        &json!({"chord": "Super+Space"}),
     ) {
         Ok(ReceiptStatus::Failed { error }) => {
             assert_eq!(error.code, "shortcut_conflict");

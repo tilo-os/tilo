@@ -410,7 +410,7 @@ fn edit_program(
     Ok(())
 }
 
-#[resource(kind = "shortcuts.workbench", label = "Shortcut drafts")]
+#[resource(kind = "shortcuts.workbench", label = "Shortcuts")]
 impl Workbench {
     /// Start a new shortcut.
     #[action]

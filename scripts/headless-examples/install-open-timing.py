@@ -375,12 +375,12 @@ def measure_run(s: Session, timeout: float, shot: pathlib.Path | None) -> dict:
     # Open the palette in global scope — the only scope that offers an
     # app the machine does not have.
     s.modifiers(logo=True)
-    s.key("k")
+    s.key("Space")
     s.modifiers()
     time.sleep(0.5)
     pal = s.palette()
     if pal.get("visible") is not True:
-        raise Failure(f"Super+K did not open the palette: {pal}")
+        raise Failure(f"Super+Space did not open the palette: {pal}")
     # Let the cold catalogue cache fill before the name is finished.
     time.sleep(1.5)
     s.type_text(QUERY)

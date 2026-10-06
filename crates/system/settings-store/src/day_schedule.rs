@@ -21,8 +21,10 @@ pub const SCHEDULE_KEY: &str = "schedule";
 pub const SUNRISE_KEY: &str = "sunrise";
 /// Custom sunset, `HH:MM`.
 pub const SUNSET_KEY: &str = "sunset";
-/// The theme value meaning "light by day, dark by night".
-pub const AUTOMATIC_THEME: &str = "Automatic";
+/// The appearance mode: `"dark"`, `"light"` or [`AUTOMATIC_MODE`].
+pub const MODE_KEY: &str = "mode";
+/// The mode meaning "light by day, dark by night".
+pub const AUTOMATIC_MODE: &str = "automatic";
 
 const MINUTES_PER_DAY: i32 = 24 * 60;
 
@@ -152,9 +154,10 @@ impl Scheduled {
     }
 }
 
-/// Whether `theme` (the `appearance.theme` value) asks for light by day and dark by night.
-pub fn is_automatic(theme: &str) -> bool {
-    theme == AUTOMATIC_THEME
+/// Whether `mode` (the `appearance.mode` value) asks for light by day and
+/// dark by night.
+pub fn is_automatic(mode: &str) -> bool {
+    mode == AUTOMATIC_MODE
 }
 
 /// Parse `HH:MM` (24-hour) to minutes after midnight.
@@ -433,7 +436,7 @@ mod tests {
             scheduled.is_night(at(355, "17:00", 60)),
             "dark before five in winter"
         );
-        assert!(is_automatic("Automatic"));
-        assert!(!is_automatic("Dark"));
+        assert!(is_automatic("automatic"));
+        assert!(!is_automatic("dark"));
     }
 }
