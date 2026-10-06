@@ -12,7 +12,10 @@ impl SpotifyBackend {
         use SpotifyOperation as Op;
         let state = match operation {
             Op::Queue => self.read_remote_queue()?,
-            Op::LibraryPage { offset } => self.library_page(*offset)?,
+            Op::LibraryPage {
+                offset,
+                artists_after,
+            } => self.library_page(*offset, artists_after.as_deref())?,
             Op::CreatePlaylist { name } => self.create_private_playlist(name)?,
             Op::Devices => {
                 return Ok(SpotifyReply {
@@ -118,16 +121,25 @@ impl SpotifyBackend {
         Ok(json!({"remote_queue":queue,"truncated":truncated}))
     }
 
-    fn library_page(&self, offset: u32) -> Result<Value, BackendError> {
+    fn library_page(&self, offset: u32, after: Option<&str>) -> Result<Value, BackendError> {
         if offset > 1950 || !offset.is_multiple_of(50) {
             return Err(BackendError(
                 "Spotify library page is outside the 2,000-item bound".into(),
             ));
         }
         let offset_arg = offset.to_string();
+        let mut artist_params = vec![("type", "artist"), ("limit", "50")];
+        if let Some(after) = after {
+            raw_id(&format!("spotify:artist:{after}"), "artist")?;
+            artist_params.push(("after", after));
+        }
         let albums = self.get("me/albums", &[("limit", "50"), ("offset", &offset_arg)])?;
         let playlists = self.get("me/playlists", &[("limit", "50"), ("offset", &offset_arg)])?;
-        for page in [&albums, &playlists] {
+        let followed = self.get("me/following", &artist_params)?;
+        let artists = followed
+            .get("artists")
+            .ok_or_else(|| BackendError("Spotify did not provide followed artists".into()))?;
+        for page in [&albums, &playlists, artists] {
             if page
                 .get("items")
                 .and_then(Value::as_array)
@@ -138,9 +150,34 @@ impl SpotifyBackend {
                 ));
             }
         }
+        let has_more = [&albums, &playlists, artists]
+            .iter()
+            .any(|page| !page.get("next").unwrap_or(&Value::Null).is_null());
+        if super::items(artists)
+            .iter()
+            .any(|item| super::artist(item).is_none())
+        {
+            return Err(BackendError(
+                "Spotify returned an invalid followed artist".into(),
+            ));
+        }
+        if !artists.get("next").unwrap_or(&Value::Null).is_null() {
+            let last = super::items(artists)
+                .last()
+                .and_then(|item| item.get("id"))
+                .and_then(Value::as_str);
+            if last.is_none()
+                || last == after
+                || artists.pointer("/cursors/after").and_then(Value::as_str) != last
+            {
+                return Err(BackendError(
+                    "Spotify did not provide an advancing artist cursor".into(),
+                ));
+            }
+        }
         Ok(
-            json!({"library_page":offset,"home_page":super::library_home(&albums, &playlists),
-                    "has_more":!albums.get("next").unwrap_or(&Value::Null).is_null() || !playlists.get("next").unwrap_or(&Value::Null).is_null()}),
+            json!({"library_page":offset,"home_page":super::library_home(&albums, &playlists, artists),
+                    "has_more":has_more}),
         )
     }
 
@@ -328,7 +365,7 @@ fn valid_playlist_name(name: &str) -> Result<(), BackendError> {
 }
 
 fn valid_library_uri(uri: &str) -> Result<(), BackendError> {
-    for kind in ["track", "album", "playlist"] {
+    for kind in ["track", "album", "playlist", "artist"] {
         if raw_id(uri, kind).is_ok() {
             return Ok(());
         }

@@ -1196,7 +1196,7 @@ impl MusicApp {
                 .map(|artist| crate::actions::CatalogArtistResource {
                     id: artist.id.clone(),
                     label: artist.name.clone(),
-                    followed: self.lib.is_artist_followed(&artist.id),
+                    followed: self.artist_followed(&artist.id),
                 })
                 .collect(),
             membership: None,
@@ -1390,6 +1390,9 @@ impl MusicApp {
         let mut ctx = crate::actions::MusicResourceCtx::for_document_id(&self.lib, id)?;
         for track in &mut ctx.tracks {
             track.offline = matches!(self.cache_state(&track.id), CacheState::Cached);
+        }
+        for artist in &mut ctx.artists {
+            artist.followed = self.artist_followed(&artist.id);
         }
         Some(ctx)
     }
@@ -2576,6 +2579,16 @@ impl MusicApp {
     }
 
     fn on_toggle_follow(&mut self, id: &str, state: &mut ui::widget::Edits<'_>) {
+        if id.starts_with("spotify:artist:") {
+            let effect = if self.artist_followed(id) {
+                crate::actions::MusicEffect::SpotifyUnsave { uri: id.into() }
+            } else {
+                crate::actions::MusicEffect::SpotifySave { uri: id.into() }
+            };
+            self.queue_spotify_effect_control(&effect);
+            self.dirty = true;
+            return;
+        }
         let followed = !self.lib.is_artist_followed(id);
         self.perform_action(
             state,
@@ -4396,6 +4409,7 @@ impl MusicApp {
             tracks: Self::snap_artist_page_tracks(),
             albums: Self::snap_artist_page_albums(),
             similar: Self::snap_artist_page_similar(),
+            provider_followed: None,
         };
         self.absorb_artist(&page);
         self.artist_pages.insert(page.id.clone(), page);

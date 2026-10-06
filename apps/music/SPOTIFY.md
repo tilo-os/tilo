@@ -67,8 +67,10 @@ backend and does not enable native Spotify dependencies.
 
 ## Catalogue, library and devices
 
-Home starts with Liked Songs and up to 50 saved albums and 50 playlists.
+Home starts with Liked Songs and up to 50 saved albums, playlists and followed artists.
 Load more Spotify collections advances by 50, up to 2,000 collections per type.
+Artist continuation uses the last retrieved artist ID, as specified by Spotify,
+and rejects missing/non-advancing provider cursors. It never follows a provider URL.
 Only a successfully decoded page advances the cursor; overlapping IDs merge
 once, failed/stale pages preserve the current library, and only one page request
 can be active. Device/remote-queue refreshes preserve loaded library pages.
@@ -78,6 +80,11 @@ Mixed and per-type search return up to ten results per requested type. Albums,
 playlists and Liked Songs use bounded paging, with an explicit 2,000-track
 limit; an incomplete or oversized collection is refused rather than presented
 as complete. Artist pages currently show releases rather than invent top tracks.
+Artist pages read back follow status. Follow/unfollow uses the generic library
+endpoint and confirms membership; failed writes leave the observed state intact.
+These are host-admitted device-local effects. The shared document action refuses
+Spotify artist IDs. Existing catalogue grants need `user-follow-read` and
+`user-follow-modify`; reconnect with specific approval if those scopes are absent.
 
 Track menus offer explicit Spotify save/remove, separate from Tilo's shared
 likes. Save/remove actions read back library membership. Playlist rename reads
@@ -136,10 +143,25 @@ registration and an eligible, consenting Premium test account. Spotify account
 allowlists, quota mode and streaming eligibility apply independently of this UI.
 No credentials or grants were created during implementation.
 
-The competitive UX goal is not yet certified: further acceptance covers
-paging beyond the current bounds, followed artists,
-all search/queue/playback states at large text,
-keyboard/screen-reader journeys and responsiveness on older hardware.
+The implementation covers the competitive baseline below. Provider behavior is
+not certified by local fixtures; the live checks listed here remain blocked by
+registration/account/device access. The documented paging limits are supported
+bounds, not promises of unbounded collections.
+
+## Feature and verification checklist
+
+| Capability | Implemented code | Independent verification | Live acceptance |
+| --- | --- | --- | --- |
+| Local files and YouTube Music alongside Spotify | Preserved source routing and existing library/queue | Existing production Music tests | Existing source behavior retained |
+| Spotify search, filters, artwork and album/artist/playlist navigation | Catalogue API, ten search hits per type; bounded detail paging | HTTP fixtures, canonical resource lookup, offscreen rendering | Owned registration and provider catalogue access |
+| Library and followed artists | Fifty-item pages, ID deduplication and 2,000-item bounds; confirmed follow/unfollow | Cursor validation, provider read-back, failure preservation; no CRDT follow edits | Follow scopes and consenting account |
+| Playlist creation, save, rename and song edits | Shared dialogs and menus; owner/collaborator preflight; provider confirmations | Typed host controls, HTTP fixtures, cancellation and uncertain-write tests | Consenting owner/collaborator/non-owner fixtures on the service |
+| Native playback and local queue | PCM/GStreamer; pause/seek/volume; preload/repeat/EOS/cancel/error states | Real clocked synthetic PCM, sink refusal, teardown and eligibility tests | Premium stream, device output and live gapless timing |
+| Connect devices and remote queue | Read-back of transfer/play/pause; separate bounded remote snapshot | Fake provider confirmations and independent local-queue preservation | Real active Spotify device |
+| Authorization and eligibility | Owned public PKCE registration; sealed separate grants; identity matching; native Premium confirmation before a sink | Fake OAuth, expiry/revocation/error cases, unknown metadata producing no audio | Explicitly approved browser sign-in and system secret-store checks |
+| Responsive UI and accessibility | Shared controls, wrapping/scrolling, visible-row culling, canonical actions; provider status and page names | Normal/200% text and 360px high-contrast fixtures; actual managed-host Enter/Escape journey; assistive metadata | No Spotify account needed for these checks |
+
+No Spotify offline/lossless DRM or native Connect receiver is claimed.
 
 ## Reference sources
 
@@ -152,6 +174,8 @@ artwork, icon, assets, client identity or authentication workaround was copied.
 - [Spotifast connection architecture](https://spotifast.rocks/how-it-connects/)
 - [Spotify PKCE](https://developer.spotify.com/documentation/web-api/tutorials/code-pkce-flow)
 - [Spotify quota modes](https://developer.spotify.com/documentation/web-api/concepts/quota-modes)
+- [Spotify followed artists](https://developer.spotify.com/documentation/web-api/reference/get-followed)
+- [Spotify 2026 library API migration](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide)
 - [Spotify playlist items](https://developer.spotify.com/documentation/web-api/reference/get-playlists-items)
 - [librespot](https://github.com/librespot-org/librespot)
 

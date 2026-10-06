@@ -282,13 +282,13 @@ pub enum MusicEffect {
     /// Save to Spotify library
     #[effect(job, device_only)]
     SpotifySave {
-        #[param("Spotify track, album or playlist URI")]
+        #[param("Spotify track, album, artist or playlist URI")]
         uri: String,
     },
     /// Remove from Spotify library
     #[effect(job, device_only)]
     SpotifyUnsave {
-        #[param("Spotify track, album or playlist URI")]
+        #[param("Spotify track, album, artist or playlist URI")]
         uri: String,
     },
     /// Rename Spotify playlist
@@ -427,7 +427,7 @@ pub(crate) fn effect_payload(effect: &MusicEffect) -> Vec<u8> {
 }
 
 /// `effect` bound to the row it acts on, under the row's own `label`.
-fn bound(effect: &MusicEffect, label: &str) -> ActionSpec {
+pub(crate) fn bound(effect: &MusicEffect, label: &str) -> ActionSpec {
     let mut spec = effect.bound();
     label.clone_into(&mut spec.label);
     spec
@@ -645,6 +645,10 @@ impl Action for MusicAction {
                 mdoc::set_saved_album(doc, album, *saved);
             }
             MusicAction::SetFollowedArtist { artist, followed } => {
+                require(
+                    !artist.starts_with("spotify:artist:"),
+                    "Spotify following requires a provider-authorized effect",
+                )?;
                 require(
                     mdoc::has_artist(doc, artist),
                     "artist is no longer in the library",
@@ -1756,7 +1760,7 @@ fn catalog_album_resource(album: &CatalogAlbumResource) -> Resource {
 }
 
 fn catalog_artist_resource(artist: &CatalogArtistResource) -> Resource {
-    Resource::new(
+    let resource = Resource::new(
         artist_resource_id(&artist.id),
         "music.artist",
         artist.label.clone(),
@@ -1766,8 +1770,26 @@ fn catalog_artist_resource(artist: &CatalogArtistResource) -> Resource {
             place: Place::Artist(artist.id.clone()),
         },
         "Open artist",
-    ))
-    .with_action(immediate_spec(
+    ));
+    if artist.id.starts_with("spotify:artist:") {
+        return resource.with_action(bound(
+            &if artist.followed {
+                MusicEffect::SpotifyUnsave {
+                    uri: artist.id.clone(),
+                }
+            } else {
+                MusicEffect::SpotifySave {
+                    uri: artist.id.clone(),
+                }
+            },
+            if artist.followed {
+                "Unfollow artist"
+            } else {
+                "Follow artist"
+            },
+        ));
+    }
+    resource.with_action(immediate_spec(
         "toggle-follow",
         if artist.followed {
             "Unfollow artist"

@@ -1317,6 +1317,19 @@ impl Widget for MusicApp {
             .with_action_target("music.search");
 
         let mut page_content = Vec::new();
+        if self.source_widget_mode() > 0 {
+            page_content.push(
+                AccessNode::new(Role::Group)
+                    .with_hashed_key("music-source-status")
+                    .with_name(self.source_status())
+                    .with_description(self.source_error.clone().unwrap_or_default())
+                    .with_state(
+                        AccessState::new().busy(
+                            self.source_invocation.is_some() || !self.spotify_jobs.is_empty(),
+                        ),
+                    ),
+            );
+        }
         // The custom-painted empty-state button is page content, not a
         // transport control. Give it a separate semantic group and route it to
         // the same reducer as the visible button.
@@ -1325,6 +1338,10 @@ impl Widget for MusicApp {
             && self.lib.playlists.is_empty()
             && self.lib.albums.is_empty()
             && self.lib.tracks.is_empty()
+            && self
+                .home
+                .as_ref()
+                .is_none_or(crate::backend::HomeContent::is_empty)
         {
             page_content.push(
                 AccessNode::new(Role::Group)
@@ -1362,14 +1379,26 @@ impl Widget for MusicApp {
             View::Search => "Search results".to_string(),
             View::Queue => "Queue".to_string(),
             View::Lyrics => "Lyrics".to_string(),
-            View::Album(id) => self.lib.album_title(id).to_string(),
-            View::Artist(id) => self.lib.artist_name(id).to_string(),
+            View::Album(id) => self.album_pages.get(id).map_or_else(
+                || self.lib.album_title(id).to_string(),
+                |page| page.title.clone(),
+            ),
+            View::Artist(id) => self.artist_pages.get(id).map_or_else(
+                || self.lib.artist_name(id).to_string(),
+                |page| page.name.clone(),
+            ),
             View::Playlist(id) => self
-                .lib
-                .playlists
-                .iter()
-                .find(|playlist| playlist.id == *id)
-                .map_or_else(|| "Playlist".to_string(), |playlist| playlist.name.clone()),
+                .playlist_pages
+                .get(id)
+                .map(|page| page.title.clone())
+                .or_else(|| {
+                    self.lib
+                        .playlists
+                        .iter()
+                        .find(|playlist| playlist.id == *id)
+                        .map(|playlist| playlist.name.clone())
+                })
+                .unwrap_or_else(|| "Playlist".to_string()),
         };
 
         let mut list_items = Vec::new();
@@ -6006,7 +6035,9 @@ impl MusicApp {
             .iter()
             .map(|h| live_track_id(&h.video_id))
             .collect();
-        let followed = self.lib.is_artist_followed(&page.id);
+        let followed = page
+            .provider_followed
+            .unwrap_or_else(|| self.lib.is_artist_followed(&page.id));
         let mut y = self.draw_detail_header(
             ctx,
             c,

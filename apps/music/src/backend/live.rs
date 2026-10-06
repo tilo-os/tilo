@@ -665,6 +665,7 @@ impl MusicBackend for RustyPipeBackend {
             tracks,
             albums,
             similar,
+            provider_followed: None,
         })
     }
 
