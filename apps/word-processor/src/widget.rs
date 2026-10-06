@@ -12756,10 +12756,13 @@ impl WordProcessorWidget {
             return false;
         }
         match event {
-            // Explicit application shortcuts retain their existing action
-            // routes; only unclaimed text belongs to the foreground page.
-            WindowEvent::KeyboardInput { .. }
-                if ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key() =>
+            // Only application file commands may leave the foreground page.
+            // Formatting, clipboard and deletion shortcuts belong to its
+            // hosted fields (which have already received the event).
+            WindowEvent::KeyboardInput { event: key, .. }
+                if (ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key())
+                    && matches!(&key.logical_key, Key::Character(key)
+                        if key.eq_ignore_ascii_case("s") || key.eq_ignore_ascii_case("o")) =>
             {
                 false
             }
@@ -12772,7 +12775,14 @@ impl WordProcessorWidget {
                 *ctx.handled = true;
                 true
             }
-            WindowEvent::Ime(_) | WindowEvent::DroppedFile(_) => {
+            WindowEvent::Ime(_)
+            | WindowEvent::DroppedFile(_)
+            | WindowEvent::HoveredFile(_)
+            | WindowEvent::HoveredFileCancelled
+            | WindowEvent::MouseInput {
+                state: ElementState::Released,
+                ..
+            } => {
                 *ctx.handled = true;
                 true
             }
@@ -12953,6 +12963,13 @@ impl WordProcessorWidget {
         reason = "the widget's single event entry point routes each window event to overlays, panels and the editor in priority order"
     )]
     fn route_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if self.styles_panel_full_window() {
+            // Displaced document overlays cannot act above the Styles page.
+            self.context_menu.close();
+            if self.thread_comment.is_some() {
+                self.close_comment_thread();
+            }
+        }
         let shift = ctx.modifiers.state().shift_key();
         let ctrl = ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
         // An open menu owns input until selection or dismissal. Forward
