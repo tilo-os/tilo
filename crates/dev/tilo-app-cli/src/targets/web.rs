@@ -128,7 +128,7 @@ const WASM_OPT_FLAGS: [&str; 4] = [
     "--enable-bulk-memory",
     "--enable-nontrapping-float-to-int",
     // Sound for rustc's stack-first wasm32 layout: the first KiB is the
-    // bottom of the 1 MiB stack, reached only by a stack about to overflow.
+    // bottom of the stack, reached only by a stack about to overflow.
     "--low-memory-unused",
 ];
 
