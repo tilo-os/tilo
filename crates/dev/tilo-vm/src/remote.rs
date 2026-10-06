@@ -9,6 +9,8 @@ use tilo_vm_protocol::{Call, Client, ClientError, HelloResult};
 use crate::error::CliError;
 use crate::hypervisor::{CommandLine, SshEndpoint};
 
+mod keepawake;
+
 pub const DEFAULT_DAEMON: &str = "tilo-vmd rpc";
 
 /// The VM's own `known_hosts`, beside its key. Local VMs all answer on
@@ -135,6 +137,48 @@ pub struct Remote {
 }
 
 impl Remote {
+    /// Renew the existing automatic sleep lease while a builder is running.
+    /// Explicit longer holds are preserved by the normal hello handshake.
+    ///
+    /// # Errors
+    /// Worker startup, handshake, lease and transport failures. The inner
+    /// result reports a renewal failure after the owned build has finished.
+    pub(crate) fn keep_awake_while<T>(
+        &mut self,
+        build: impl FnOnce() -> T,
+    ) -> Result<(T, Result<(), CliError>), CliError> {
+        keepawake::during(
+            std::time::Duration::from_secs(60),
+            || self.renew_sleep_lease(std::time::Duration::from_secs(10)),
+            build,
+        )
+    }
+
+    fn renew_sleep_lease(&mut self, timeout: std::time::Duration) -> Result<(), CliError> {
+        let client = self
+            .client
+            .as_mut()
+            .ok_or_else(|| CliError::from(ClientError::Closed))?;
+        let hello = keepawake::hello(client, &mut self.child, timeout)?;
+        let lease = hello.awake.as_ref().ok_or_else(|| {
+            CliError::io("renew the device sleep lease")(std::io::Error::other(
+                "the daemon did not report its sleep lease",
+            ))
+        })?;
+        if !lease.held {
+            return Err(CliError::io("renew the device sleep lease")(
+                std::io::Error::other(
+                    lease
+                        .problem
+                        .as_deref()
+                        .unwrap_or("the sleep lock is not held"),
+                ),
+            ));
+        }
+        self.hello = hello;
+        Ok(())
+    }
+
     /// Open `ssh <vm> tilo-vmd rpc` and complete the handshake.
     ///
     /// # Errors
