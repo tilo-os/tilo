@@ -173,7 +173,10 @@ python3 apps/browser/chromium/tests/page_actions.py target/chromium/tilo-chromiu
 
 `text_input` is a separate backend protocol; it does not activate page-agent
 logging. `prepare_text_input` leases the currently focused editable element and
-selection, returning only a random opaque `data.lease`. `check_text_input`
+selection, returning only a random opaque `data.lease`. After explicit desktop
+consent, `start_text_input` validates that same original snapshot and starts one
+bounded recording session without changing its lease or edit stamp. The host
+waits for that acknowledgement before launching recognition. `check_text_input`
 validates that same lease without acquiring a replacement. `commit_text_input`
 requires that lease and at most 4096 UTF-8 bytes of `text`;
 `cancel_text_input` retires it. Each request has a positive `request_id` and
@@ -181,9 +184,13 @@ answers with a private `text_input_result`, rather than `page_result`. The SDK
 adds a five-second admission expiry; late requests fail before editing. Private
 commands are never retried after an ambiguous renderer response.
 
-The isolated world retains the original contents locally for at most three
-minutes. Focus loss, navigation, input, composition and observed eligibility
-changes retire the lease; composed shadow ancestors participate in eligibility,
+Warm preparation expires after three minutes. Explicit consent can activate the
+unchanged original lease once, with a fixed three-minute active-session bound;
+checks and repeated starts cannot extend it. The combined warm/active lifetime
+is bounded by six minutes, matching the native preparation/consented session
+phases. Cancellation after start acknowledgement revokes only that original
+receipt scope. Focus loss, navigation, input, composition and observed eligibility
+changes retire the lease; composed shadow and same-origin frame ancestors participate in eligibility,
 and transient style/class masking or read-only changes also retire it. A stale
 cancel cannot retire a successor. Final
 validation includes the current value and selection. Page `beforeinput` handlers
@@ -191,8 +198,19 @@ may cancel the edit; their changes are revalidated before Chromium's synchronous
 `insertText` command. That path preserves native undo/redo. There is no fallback
 to setting a value, focusing another field, clipboard or synthetic keys.
 
-Real-host regressions cover text inputs, textareas, open-shadow inputs and rich
-contenteditable selections, including Unicode replacement, undo/redo, changed
+Private preparation probes focus in bounded isolated frame contexts without
+extracting field content. Subsequent checks, start and final stay pinned to the
+original frame ID, loader and context; replacement refuses the old lease. A
+failed non-editing check can observe frame retirement with a read-only frame-tree
+query, without retrying an evaluation. Ambiguous commits remain unknown.
+Cross-origin/opaque ancestors and unobservable contexts remain closed; no
+universal-access world, origin bypass or debugger pause is requested. Private
+text operations also grant no site transient user activation. Public
+page-agent actions retain their existing main-frame contract. See the
+[upstream frame-context protocol](https://github.com/ChromeDevTools/devtools-protocol/blob/master/pdl/domains/Page.pdl).
+
+Real-host regressions cover text inputs, textareas, open-shadow inputs, same-origin
+iframe fields and rich contenteditable selections, including Unicode replacement, undo/redo, changed
 focus/content/selection, cancellation, navigation and protected-field rejection:
 
 ```sh
@@ -233,8 +251,8 @@ fixtures and mounted SDK fixtures prove distinct boundaries; they do not prove a
 microphone journey. Chromium's one-batch rich-text insertion preserves inline
 bold markup and native undo but can convert an adjacent space to `&nbsp;`; the
 fixture asserts its exact HTML and exact undo/redo, alongside native typing.
-Frame selection, fields without a DOM selection API (including email/number
-inputs), closed shadow roots and an already-active composition at isolated-world
+Cross-origin frame ancestry, fields without a DOM selection API (including
+email/number inputs), closed shadow roots and an already-active composition at isolated-world
 startup need additional renderer lifecycle support before admission.
 
 What an agent host relies on — the process budget (the browser, its storage

@@ -339,8 +339,179 @@ fn qualify_queued_finals<W: Widget + 'static>(
     println!("PASS mounted canceled queued final and repeated fresh session without retargeting");
 }
 
+fn qualify_activation<W: Widget + 'static>(view: &mut Framed<W>, engine: &SharedEngine, url: &str) {
+    load(engine, url);
+    selected(view, engine, "first");
+    let stamp = view.ime_edit_fingerprint(&[7; 32]);
+    let receipt = view
+        .start_deferred_text()
+        .expect("original deferred session start");
+    assert_eq!(view.ime_edit_fingerprint(&[7; 32]), stamp);
+    assert_eq!(finish(view, &receipt), Ok(()));
+    assert_eq!(view.ime_edit_fingerprint(&[7; 32]), stamp);
+    let repeated = view
+        .start_deferred_text()
+        .expect("typed repeated-start refusal");
+    assert_eq!(finish(view, &repeated), Err(Failure::Rejected));
+    let final_text = view.commit_deferred_text("consented original").unwrap();
+    assert_eq!(finish(view, &final_text), Ok(()));
+    assert_eq!(
+        evaluate(engine, "first.value"),
+        "alpha consented original gamma"
+    );
+    println!("PASS mounted one-shot session start: stable original stamp, private ACK and final");
+
+    load(engine, url);
+    selected(view, engine, "first");
+    let receipt = view.start_deferred_text().unwrap();
+    receipt.cancel();
+    assert_eq!(finish(view, &receipt), Err(Failure::Unknown));
+    assert_eq!(evaluate(engine, "first.value"), "alpha beta gamma");
+    selected(view, engine, "notes");
+    let receipt = view.start_deferred_text().unwrap();
+    assert_eq!(finish(view, &receipt), Ok(()));
+    let receipt = view.commit_deferred_text("fresh consent").unwrap();
+    assert_eq!(finish(view, &receipt), Ok(()));
+    assert_eq!(evaluate(engine, "notes.value"), "alpha fresh consent gamma");
+    println!("PASS mounted canceled session start and independently consented repeated session");
+
+    view.set_focus(false);
+    load(engine, url);
+    view.set_focus(true);
+    selected(view, engine, "first");
+    let old = view.start_deferred_text().unwrap();
+    assert_eq!(finish(view, &old), Ok(()));
+    old.cancel();
+    assert!(view.ime_purpose().is_none());
+    wait_ready(view);
+    let fresh = view.start_deferred_text().unwrap();
+    assert_eq!(finish(view, &fresh), Ok(()));
+    let stamp = view.ime_edit_fingerprint(&[7; 32]);
+    old.cancel();
+    Framed::harness_mut(view).relayout();
+    assert_eq!(view.ime_edit_fingerprint(&[7; 32]), stamp);
+    let receipt = view
+        .commit_deferred_text("after acknowledged cancel")
+        .unwrap();
+    assert_eq!(finish(view, &receipt), Ok(()));
+    assert_eq!(
+        evaluate(engine, "first.value"),
+        "alpha after acknowledged cancel gamma"
+    );
+    println!("PASS mounted cancel after start ACK: fresh session survives retired cancellation");
+}
+
+fn frame_selected<W: Widget + 'static>(
+    view: &mut Framed<W>,
+    engine: &SharedEngine,
+    url: &str,
+    target: &str,
+) {
+    view.set_focus(false);
+    load(engine, url);
+    view.set_focus(true);
+    assert_eq!(
+        evaluate(
+            engine,
+            "(()=>{let f=document.createElement('iframe');f.id='editorFrame';f.src='/frame';document.body.append(f);return true})()"
+        ),
+        true
+    );
+    let deadline = tilo_ui::time::now()
+        .checked_add(Duration::from_secs(10))
+        .unwrap();
+    while evaluate(
+        engine,
+        "!!editorFrame.contentDocument?.getElementById('first')",
+    ) != true
+    {
+        assert!(tilo_ui::time::now() < deadline, "owned frame must load");
+        pause();
+    }
+    let selection = if target == "rich" {
+        "let r=d.createRange();r.selectNodeContents(e.querySelector('b'));let s=d.getSelection();s.removeAllRanges();s.addRange(r);".to_string()
+    } else {
+        "e.setSelectionRange(6,10);".to_string()
+    };
+    assert_eq!(
+        evaluate(
+            engine,
+            &format!(
+                "(()=>{{let d=editorFrame.contentDocument,e=d.getElementById({target:?});e.focus();{selection}return d.hasFocus()}})()"
+            )
+        ),
+        true
+    );
+    view.set_focus(true);
+    wait_ready(view);
+}
+
+fn qualify_iframes<W: Widget + 'static>(view: &mut Framed<W>, engine: &SharedEngine, url: &str) {
+    for target in ["first", "notes", "rich"] {
+        frame_selected(view, engine, url, target);
+        let stamp = view.ime_edit_fingerprint(&[7; 32]);
+        let start = view.start_deferred_text().unwrap();
+        assert_eq!(finish(view, &start), Ok(()));
+        assert_eq!(view.ime_edit_fingerprint(&[7; 32]), stamp);
+        let receipt = view.commit_deferred_text("日本語 café العربية").unwrap();
+        assert_eq!(finish(view, &receipt), Ok(()));
+        let value = if target == "rich" {
+            "textContent"
+        } else {
+            "value"
+        };
+        let actual = evaluate(
+            engine,
+            &format!("editorFrame.contentDocument.getElementById({target:?}).{value}"),
+        );
+        let expected = if target == "rich" {
+            "alpha 日本語 café العربية\u{a0}gamma"
+        } else {
+            "alpha 日本語 café العربية gamma"
+        };
+        assert_eq!(actual, expected);
+        assert_eq!(evaluate(engine, "first.value"), "alpha beta gamma");
+        assert_eq!(
+            evaluate(engine, "editorFrame.contentDocument.execCommand('undo')"),
+            true
+        );
+        assert_eq!(
+            evaluate(
+                engine,
+                &format!("editorFrame.contentDocument.getElementById({target:?}).{value}")
+            ),
+            "alpha beta gamma"
+        );
+        println!("PASS mounted iframe {target}: original ACK, Unicode replacement and native undo");
+    }
+    frame_selected(view, engine, url, "first");
+    let start = view.start_deferred_text().unwrap();
+    assert_eq!(finish(view, &start), Ok(()));
+    assert_eq!(evaluate(engine, "(editorFrame.remove(),true)"), true);
+    let receipt = view.commit_deferred_text("retired frame final").unwrap();
+    assert_eq!(finish(view, &receipt), Err(Failure::Rejected));
+    assert_eq!(evaluate(engine, "first.value"), "alpha beta gamma");
+    frame_selected(view, engine, url, "notes");
+    let start = view.start_deferred_text().unwrap();
+    assert_eq!(finish(view, &start), Ok(()));
+    let receipt = view.commit_deferred_text("fresh frame session").unwrap();
+    assert_eq!(finish(view, &receipt), Ok(()));
+    assert_eq!(
+        evaluate(
+            engine,
+            "editorFrame.contentDocument.getElementById('notes').value"
+        ),
+        "alpha fresh frame session gamma"
+    );
+    println!(
+        "PASS mounted iframe removal: rejected original final and independently started recovery session"
+    );
+}
+
 fn qualify_view<W: Widget + 'static>(view: &mut Framed<W>, engine: &SharedEngine, url: &str) {
     load(engine, url);
+    qualify_activation(view, engine, url);
+    qualify_iframes(view, engine, url);
     qualify_replacements(view, engine, url);
     qualify_common_fields(view, engine, url);
     qualify_refusals(view, engine, url);

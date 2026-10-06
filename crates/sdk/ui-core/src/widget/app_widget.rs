@@ -1316,6 +1316,12 @@ mod component_adapter {
                 .is_none_or(|root| root.ime_requires_deferred_ack())
         }
 
+        fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
+            let binding = self.component.callback_binding();
+            let _entry = binding.enter().ok()?;
+            self.component.root.as_deref_mut()?.start_deferred_text()
+        }
+
         fn commit_deferred_text(
             &mut self,
             text: &str,

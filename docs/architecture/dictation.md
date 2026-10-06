@@ -600,7 +600,11 @@ Small's median cold load is 2.748 seconds. Short final medians are 4.37–4.79
 seconds, with automatic language approximately another four seconds; long
 English/French/Mandarin finals are 14.93/20.57/20.74 seconds, automatic finals
 18.94/24.60/24.75 seconds. These remote x86_64 timings exclude capture completion;
-older CPUs and ARM remain unqualified. An explicit language removes detection
+older CPUs and ARM remain unqualified. A subsequent observation of the same
+remote worktree/container reports AMD EPYC 9R45, 64 visible logical CPUs and
+no cgroup CPU quota; the decoder used two threads. Original timing receipts
+recorded only x86_64, so this is follow-up provenance rather than contemporaneous
+CPU telemetry or a dedicated-core claim. An explicit language removes detection
 work. The actor preserves bounded audio under decoder backpressure and allows
 60 seconds for a final, rather than discarding these valid long results after
 15 seconds. Cancellation remains responsive and retires the exact child.

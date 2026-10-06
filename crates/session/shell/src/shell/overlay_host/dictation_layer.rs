@@ -90,6 +90,10 @@ impl DictationSurface {
             )
     }
 
+    pub(crate) fn pending_consent(&self) -> bool {
+        matches!(self.pending, Some(Request::Consent(id)) if Some(id) == self.id && self.is_consent())
+    }
+
     pub(crate) fn take_request(&mut self) -> Option<Request> {
         self.pending.take()
     }

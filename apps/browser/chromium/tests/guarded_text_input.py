@@ -24,13 +24,26 @@ addEventListener('beforeinput', e=>{
 </script>'''
 
 
+FRAME = b'''<!doctype html><title>Frame field</title>
+<input id="first" autofocus value="alpha beta gamma"><input id="second" value="second">
+<textarea id="notes">alpha beta gamma</textarea>
+<div id="rich" contenteditable>alpha <b>beta</b> gamma</div>
+<script>
+addEventListener('message', e=>{
+ if(e.source!==parent || !e.data || !['inspect','focus'].includes(e.data.op)) return;
+ if(e.data.op==='focus'){first.focus();first.setSelectionRange(6,10);}
+ parent.postMessage({id:e.data.id,value:first.value,html:rich.innerHTML,focused:document.hasFocus(),active:document.activeElement?.id},e.origin);
+});
+</script>'''
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        body = FRAME if self.path.split('?')[0] == '/frame' else PAGE
         self.send_response(200)
         self.send_header('Content-Type', 'text/html')
-        self.send_header('Content-Length', str(len(PAGE)))
+        self.send_header('Content-Length', str(len(body)))
         self.end_headers()
-        self.wfile.write(PAGE)
+        self.wfile.write(body)
 
     def log_message(self, *_):
         pass
@@ -63,9 +76,13 @@ class GuardedTextInput(unittest.TestCase):
         self.assertTrue(self.main_world("(first.focus(),first.setSelectionRange(6,10),document.hasFocus())"))
 
     def main_world(self, expression):
-        self.h.send(op='scripts', scripts=['document.title=JSON.stringify({value:(' + expression +
-            '),nonce:' + str(time.monotonic_ns()) + '})'])
-        value = json.loads(self.h.until(lambda e: e['event'] == 'title' and e['title'].startswith('{'))['title'])['value']
+        nonce = time.monotonic_ns()
+        # Document-start scripts apply to every frame; fixture control belongs
+        # only to the top document, never to the field's descendant context.
+        self.h.send(op='scripts', scripts=['if(window===window.top){document.title=JSON.stringify({value:(' + expression +
+            '),nonce:' + str(nonce) + '})}'])
+        value = json.loads(self.h.until(lambda e: e['event'] == 'title' and e['title'].startswith('{') and
+            json.loads(e['title']).get('nonce') == nonce)['title'])['value']
         self.h.send(op='scripts', scripts=[])
         return value
 
@@ -84,6 +101,151 @@ class GuardedTextInput(unittest.TestCase):
     def unchanged(self, target='first'):
         self.assertEqual(self.main_world(f'{target}.value'), 'alpha beta gamma')
         self.assertEqual(self.main_world('second.value'), 'second')
+
+    def frame_field(self):
+        self.main_world("(()=>{const f=document.createElement('iframe');f.id='editorFrame';f.src='/frame';document.body.append(f);return true})()")
+        deadline = time.monotonic() + 10
+        while not self.main_world("!!editorFrame.contentDocument?.getElementById('first')"):
+            self.assertLess(time.monotonic(), deadline, 'owned frame must load')
+        self.assertTrue(self.main_world("(()=>{const f=editorFrame.contentDocument.getElementById('first');f.focus();f.setSelectionRange(6,10);return editorFrame.contentDocument.hasFocus()})()"))
+
+    def test_focused_iframe_original_ack_unicode_and_native_undo(self):
+        self.frame_field()
+        lease = self.prepare()
+        self.assertEqual(self.request_input('start', lease=lease)['data'], {'lease': lease})
+        self.assertTrue(self.request_input('commit', lease=lease, text='日本語 café العربية')['ok'])
+        self.assertEqual(self.main_world("editorFrame.contentDocument.getElementById('first').value"), 'alpha 日本語 café العربية gamma')
+        self.assertEqual(self.main_world('first.value'), 'alpha beta gamma')
+        self.assertTrue(self.main_world("editorFrame.contentDocument.execCommand('undo')"))
+        self.assertEqual(self.main_world("editorFrame.contentDocument.getElementById('first').value"), 'alpha beta gamma')
+
+    def test_unrelated_sibling_updates_preserve_original_iframe_and_main_field(self):
+        for frame in [False, True]:
+            if frame:
+                self.frame_field()
+            lease = self.prepare()
+            self.assertTrue(self.request_input('start', lease=lease)['ok'])
+            self.main_world("(()=>{let n=document.createElement('aside');n.textContent='notification';document.body.append(n);n.remove();return true})()")
+            self.assertEqual(self.request_input('check', lease=lease)['data'], {'lease': lease})
+            self.assertTrue(self.request_input('commit', lease=lease, text='original field')['ok'])
+            if frame:
+                self.assertEqual(self.main_world("editorFrame.contentDocument.getElementById('first').value"), 'alpha original field gamma')
+                self.assertEqual(self.main_world('first.value'), 'alpha beta gamma')
+            else:
+                self.assertEqual(self.main_world('first.value'), 'alpha original field gamma')
+                self.assertTrue(self.main_world("document.execCommand('undo')"))
+
+    def test_cross_origin_frame_remains_closed_without_observable_ancestors(self):
+        # A distinct port is cross-origin while keeping both fixture documents
+        # on one site; no site-isolation or Chromium sandbox flag is relaxed.
+        other = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        threading.Thread(target=other.serve_forever, daemon=True).start()
+        self.addCleanup(other.server_close)
+        self.addCleanup(other.shutdown)
+        origin = f'http://127.0.0.1:{other.server_port}'
+        self.main_world("(()=>{window.frameReply=null;addEventListener('message',e=>{if(e.origin===" + json.dumps(origin) + " && e.data.id==='owned-frame')window.frameReply=e.data;});const f=document.createElement('iframe');f.id='editorFrame';f.src=" + json.dumps(origin + '/frame') + ";f.onload=()=>{f.contentWindow.focus();f.contentWindow.postMessage({op:'focus',id:'owned-frame'}," + json.dumps(origin) + ");};document.body.append(f);return true})()")
+        deadline = time.monotonic() + 10
+        while self.main_world('frameReply') is None:
+            self.assertLess(time.monotonic(), deadline, 'owned cross-origin field must be observed')
+        # Cross-origin programmatic focus can be refused without activation.
+        # Deliver real host pointer input into this owned fixture, then inspect
+        # the child through its origin-checked message handshake.
+        point = self.main_world("(()=>{const r=editorFrame.getBoundingClientRect();return {x:r.left+20,y:r.top+20}})()")
+        self.h.send(op='mouse_button', button='left', down=True, **point)
+        self.h.send(op='mouse_button', button='left', down=False, **point)
+        self.main_world("(window.frameReply=null,editorFrame.contentWindow.postMessage({op:'focus',id:'owned-frame'}," + json.dumps(origin) + "),true)")
+        while not self.main_world('frameReply?.focused===true'):
+            self.assertLess(time.monotonic(), deadline, 'real pointer input must focus the owned cross-origin field: '+repr({'point':point,'reply':self.main_world('frameReply'),'active':self.main_world('document.activeElement?.id')}))
+            self.main_world("(editorFrame.contentWindow.postMessage({op:'inspect',id:'owned-frame'}," + json.dumps(origin) + "),true)")
+            time.sleep(0.01)
+        self.assertTrue(self.main_world('frameReply.focused'))
+        self.assertTrue(self.main_world('editorFrame.contentDocument===null'))
+        result = self.request_input('prepare')
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['code'], 'unavailable')
+        self.assertEqual(self.main_world('frameReply.value'), 'alpha beta gamma')
+        self.unchanged()
+
+    def test_iframe_replacement_refuses_old_final_and_allows_new_original_session(self):
+        self.frame_field()
+        lease = self.prepare()
+        self.assertTrue(self.request_input('start', lease=lease)['ok'])
+        self.main_world("(editorFrame.remove(),true)")
+        result = self.request_input('commit', lease=lease, text='must not retarget')
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['code'], 'text_input_retired')
+        self.assertEqual(self.main_world('first.value'), 'alpha beta gamma')
+        self.frame_field()
+        fresh = self.prepare()
+        self.assertNotEqual(fresh, lease)
+        self.assertFalse(self.request_input('cancel', lease=lease)['ok'])
+        self.assertTrue(self.request_input('start', lease=fresh)['ok'])
+        self.assertTrue(self.request_input('commit', lease=fresh, text='new frame')['ok'])
+        self.assertEqual(self.main_world("editorFrame.contentDocument.getElementById('first').value"), 'alpha new frame gamma')
+
+    def test_iframe_readonly_ancestor_revocation_is_not_cleared_by_restore(self):
+        self.frame_field()
+        self.main_world("(editorFrame.setAttribute('aria-readonly','true'),true)")
+        self.assertFalse(self.request_input('prepare')['ok'])
+        self.main_world("(editorFrame.removeAttribute('aria-readonly'),true)")
+        lease = self.prepare()
+        self.main_world("(editorFrame.setAttribute('aria-readonly','true'),editorFrame.removeAttribute('aria-readonly'),true)")
+        self.assertFalse(self.request_input('commit', lease=lease, text='must refuse')['ok'])
+        self.assertEqual(self.main_world("editorFrame.contentDocument.getElementById('first').value"), 'alpha beta gamma')
+
+    def test_bounded_session_start_outlives_warm_expiry_without_sliding(self):
+        # Real monotonic time against the production timer, without clock hooks.
+        def wait_until(deadline):
+            while time.monotonic() < deadline:
+                time.sleep(min(1, deadline - time.monotonic()))
+
+        lease = self.prepare()
+        prepared = time.monotonic()
+        print('LEASE lifetime: original warm lease prepared', flush=True)
+        wait_until(prepared + 20)
+        self.assertTrue(self.request_input('start', lease=lease)['ok'])
+        started = time.monotonic()
+        print('LEASE lifetime: explicit original session acknowledged', flush=True)
+        wait_until(prepared + 181)
+        self.assertEqual(self.request_input('check', lease=lease)['data'], {'lease': lease})
+        self.assertFalse(self.request_input('start', lease=lease)['ok'])
+        print('LEASE lifetime: original survives warm expiry; replay cannot extend it', flush=True)
+        wait_until(started + 181)
+        result = self.request_input('check', lease=lease)
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['code'], 'text_input_retired')
+        self.unchanged()
+        print('LEASE lifetime: fixed active-session bound expired without editing', flush=True)
+
+    def test_private_text_operations_never_create_site_user_activation(self):
+        self.assertFalse(self.main_world('navigator.userActivation.isActive'))
+        lease = self.prepare()
+        self.assertFalse(self.main_world('navigator.userActivation.isActive'))
+        self.assertTrue(self.request_input('start', lease=lease)['ok'])
+        self.assertFalse(self.main_world('navigator.userActivation.isActive'))
+        self.assertTrue(self.request_input('check', lease=lease)['ok'])
+        self.assertFalse(self.main_world('navigator.userActivation.isActive'))
+        self.assertTrue(self.request_input('commit', lease=lease, text='private input')['ok'])
+        self.assertEqual(self.main_world('first.value'), 'alpha private input gamma')
+        self.assertFalse(self.main_world('navigator.userActivation.isActive'))
+
+    def test_explicit_start_is_one_shot_and_preserves_the_original_selection(self):
+        lease = self.prepare()
+        self.assertEqual(self.request_input('start', lease=lease)['data'], {'lease': lease})
+        self.assertFalse(self.request_input('start', lease=lease)['ok'])
+        self.assertTrue(self.request_input('check', lease=lease)['ok'])
+        self.assertTrue(self.request_input('commit', lease=lease, text='consented')['ok'])
+        self.assertEqual(self.main_world('first.value'), 'alpha consented gamma')
+        self.assertTrue(self.main_world("document.execCommand('undo')"))
+        self.unchanged()
+
+    def test_start_cannot_acquire_a_changed_or_expired_original_target(self):
+        lease = self.prepare()
+        self.assertFalse(self.request_input('start', lease=lease, expires_ms=1)['ok'])
+        self.assertTrue(self.request_input('check', lease=lease)['ok'])
+        self.main_world('(second.focus(),first.focus(),first.setSelectionRange(6,10),true)')
+        self.assertFalse(self.request_input('start', lease=lease)['ok'])
+        self.unchanged()
 
     def test_private_lease_check_observes_the_original_edit_stamp(self):
         lease = self.prepare()

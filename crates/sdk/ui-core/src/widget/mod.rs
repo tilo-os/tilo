@@ -1514,6 +1514,18 @@ pub trait Widget {
         required
     }
 
+    /// Begin one bounded deferred session after explicit host consent, preserving
+    /// the existing original-field fingerprint. This grants no microphone access.
+    fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
+        let caret = self.ime_cursor_rect()?;
+        for child in self.children_mut() {
+            if child.ime_cursor_rect() == Some(caret) && child.ime_purpose().is_some() {
+                return child.start_deferred_text();
+            }
+        }
+        None
+    }
+
     /// A private asynchronous final. None leaves ordinary synchronous IME dispatch
     /// to the host. A receipt binds this original field and must be acknowledged
     /// before the host releases its private recovery transcript.
