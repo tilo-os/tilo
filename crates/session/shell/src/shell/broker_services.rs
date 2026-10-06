@@ -621,6 +621,63 @@ impl LauncherServices for NativeLauncher {
                 .map_err(|error| error.to_string())
         })
     }
+    fn begin_launch_from_original(
+        &self,
+        app: &str,
+        package_root: Option<&str>,
+        workspace: &tilo_desktop_model::Workspace,
+        author: Option<&str>,
+        original: Option<tilo_action_broker::services::ObservedApplicationLaunch>,
+    ) -> Result<tilo_action_broker::services::LaunchReadiness, String> {
+        let native_tree = self
+            .0
+            .as_ref()
+            .filter(|tree| tree.read().installed_native_owner().is_some());
+        let Some(tree) = native_tree else {
+            return self.begin_launch(app, package_root, workspace, author);
+        };
+        if app.starts_with(HOST_APPLICATION_PREFIX) {
+            return self.begin_launch(app, package_root, workspace, author);
+        }
+        if self
+            .1
+            .as_ref()
+            .is_some_and(|network| network.governor_opens_apps(workspace.room))
+        {
+            return Err(
+                "observed package startup must be requested from the workspace host".into(),
+            );
+        }
+        let original =
+            original.ok_or("native observed launch requires its original certified caller")?;
+        if !original.matches(app, package_root, workspace) {
+            return Err("original application launch scope mismatch".into());
+        }
+        original.certificate()?;
+        let catalog = package_store::Catalog::from_env().map_err(|error| error.to_string())?;
+        let selected = match package_root {
+            Some(root) => tilo_installed_apps::read_exact(
+                &catalog,
+                app,
+                root.parse().map_err(|_| "invalid installed package root")?,
+            )
+            .map_err(|error| error.to_string())?,
+            None => tilo_installed_apps::read(&catalog)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .find(|installed| installed.package_id == app),
+        }
+        .ok_or("the exact selected application package is no longer installed")?;
+        super::launch_readiness::observe(|| {
+            super::launcher::queue_observed_native_launch(
+                selected,
+                tree.clone(),
+                workspace.room,
+                original,
+            )
+            .map_err(|error| error.to_string())
+        })
+    }
     fn launch_content(
         &self,
         app: &str,

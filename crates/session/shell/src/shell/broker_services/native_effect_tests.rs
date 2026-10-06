@@ -17,6 +17,113 @@ struct NativeFixture {
     path: std::path::PathBuf,
 }
 
+#[test]
+fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app() {
+    use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capability};
+    let fixture = fixture();
+    let actions = fixture.broker.app_action_broker().unwrap();
+    wait_for_membership_surface(&actions, fixture.room);
+    let check = |expected| {
+        fixture
+            .owner
+            .with_current(fixture.room, |view| {
+                let now = std::time::SystemTime::now();
+                view.peer()
+                    .check_workspace_administration(fixture.certificate.device_public_key, now)?;
+                let (_, caps, _) = view
+                    .peer()
+                    .permissions(fixture.certificate.device_public_key, now)?;
+                let seconds = now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+                assert_eq!(
+                    decide_capability(
+                        &Actor::app("so.tilo.chat").in_room(fixture.room.to_string()),
+                        &ResourceRef::Workspace,
+                        Verb::Write,
+                        &caps,
+                        Some(seconds)
+                    ),
+                    expected
+                );
+                assert!(
+                    view.peer().document("so.tilo.chat", "").is_none(),
+                    "authorship must not create sample or synthetic app data"
+                );
+                Ok(())
+            })
+            .unwrap();
+    };
+    check(CapDecision::DeniedByRole);
+    let job = actions
+        .change_workspace_membership(
+            &fixture.room.to_string(),
+            &WorkspaceMembershipCommand::GrantAppAuthorship {
+                app: "so.tilo.chat".into(),
+            },
+            &fixture.certificate,
+        )
+        .unwrap();
+    let completed = job.completion.recv_timeout(Duration::from_secs(3)).unwrap();
+    assert!(completed.code.is_empty(), "{}", completed.message);
+    assert!(matches!(
+        actions.status(job.id),
+        Some(InvocationUpdate::Succeeded { .. })
+    ));
+    check(CapDecision::Allow);
+    drop(actions);
+    drop(fixture.broker);
+    crate::shell::persist::wait_for_saves();
+    drop(fixture.owner);
+    let mut stored = crate::shell::persist::load_tree_from(&fixture.path).unwrap();
+    stored.persist_path = Some(fixture.path);
+    let reopened = native_workspace_owner::open(stored.shared()).unwrap();
+    reopened
+        .with_current(fixture.room, |view| {
+            let now = std::time::SystemTime::now();
+            let (_, caps, _) = view
+                .peer()
+                .permissions(fixture.certificate.device_public_key, now)?;
+            assert_eq!(
+                decide_capability(
+                    &Actor::app("so.tilo.chat").in_room(fixture.room.to_string()),
+                    &ResourceRef::Workspace,
+                    Verb::Write,
+                    &caps,
+                    Some(now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs())
+                ),
+                CapDecision::Allow
+            );
+            assert!(view.peer().document("so.tilo.chat", "").is_none());
+            Ok(())
+        })
+        .unwrap();
+}
+
+fn wait_for_membership_surface(
+    actions: &tilo_action_broker::collab_broker::AppActionBroker,
+    room: crate::shell::state::RoomId,
+) -> tilo_action_broker::collab_broker_capnp::PublishedSurface {
+    let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();
+    loop {
+        if let Some(surface) = actions
+            .state()
+            .published_surfaces()
+            .into_iter()
+            .find(|surface| {
+                surface.route.cluster_id == room.to_string()
+                    && surface.app_id == "so.tilo.desktop"
+                    && surface.route.record_id == "membership"
+            })
+        {
+            return surface;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "normal native membership source was not published"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn fixture() -> NativeFixture {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let system = home.config().join("test-system");

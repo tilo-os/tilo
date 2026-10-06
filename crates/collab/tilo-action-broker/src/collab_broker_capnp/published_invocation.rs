@@ -148,6 +148,61 @@ impl OriginalInvocationData {
                 .is_none_or(tilo_actions::remote::ExecutionLease::is_live)
     }
 
+    pub(super) fn launch_person_certificate(
+        &self,
+        state: &CapnpBrokerState,
+        room: &str,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        if !self.permits_launch_in(room) {
+            return Err("original invocation cannot authorize this launch".into());
+        }
+        self.current_person_certificate(state)
+    }
+
+    pub(super) fn launch_administrator_certificate(
+        &self,
+        state: &CapnpBrokerState,
+        room: &str,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        let certificate = self.launch_person_certificate(state, room)?;
+        let (_, now) = state.checked_policy_time(Some(&self.time))?;
+        let tree = state
+            .membership
+            .as_ref()
+            .ok_or("workspace authority unavailable")?
+            .snapshot()?;
+        let workspace = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == room)
+            .ok_or("original launch workspace unavailable")?;
+        let mut actor = state.certified_person(room, &certificate);
+        if let InvocationCaller::Certified {
+            foreign_restriction,
+            ..
+        } = &self.caller
+        {
+            actor.capped |= super::cap_applies_in(
+                state.certificate_authority.get().map(AsRef::as_ref),
+                room,
+                *foreign_restriction,
+                Some(&certificate.device_public_key),
+            );
+        }
+        let seconds = now / 1_000_000_000;
+        if workspace.decide_at(
+            &actor.policy_in(workspace, seconds),
+            &ResourceRef::Workspace,
+            Verb::Admin,
+            seconds,
+        ) != CapDecision::Allow
+        {
+            return Err("original launch caller cannot delegate application authorship".into());
+        }
+        drop(tree);
+        Ok(certificate)
+    }
+
     pub(super) fn capture(
         request: PublishedInvocationRequest,
         route: CrdtRoute,

@@ -8835,20 +8835,13 @@ impl channel_handle::Server for CapnpChannelHandle {
             Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
         let author = observed_launch::launch_author(&actor, &workspace, now);
-        let started = self
-            .state
-            .services
-            .launcher
-            .as_ref()
-            .ok_or_else(|| "application launch unsupported".to_string())
-            .and_then(|service| {
-                service.begin_launch(
-                    &app_id,
-                    package_root.as_deref(),
-                    &workspace,
-                    author.as_deref(),
-                )
-            });
+        let started = self.begin_original_launch(
+            &app_id,
+            package_root.as_deref(),
+            &workspace,
+            author.as_deref(),
+            parent,
+        );
         let actor = actor.id().to_owned();
         Promise::from_future(async move {
             let outcome = observed_launch::wait_for_startup(started).await;

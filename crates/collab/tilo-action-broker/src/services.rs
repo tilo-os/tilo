@@ -215,6 +215,60 @@ impl Drop for LaunchReadiness {
     }
 }
 
+/// Host-retained original custody for one exact observed application launch.
+/// No public constructor or wire representation exists. It never grants rights:
+/// the canonical membership action independently checks current administration.
+#[derive(Clone)]
+pub struct ObservedApplicationLaunch {
+    room: String,
+    app: String,
+    package_root: Option<String>,
+    check: Arc<dyn Fn() -> Result<tilo_user_identity::DeviceCert, String> + Send + Sync>,
+    grant: Arc<ObservedAuthorshipGrant>,
+}
+
+type ObservedAuthorshipGrant = dyn Fn(&tilo_user_identity::DeviceCert) -> Result<crate::collab_broker_capnp::InvocationJob, String>
+    + Send
+    + Sync;
+
+impl ObservedApplicationLaunch {
+    pub(crate) fn new(
+        room: String,
+        app: String,
+        package_root: Option<String>,
+        check: Arc<dyn Fn() -> Result<tilo_user_identity::DeviceCert, String> + Send + Sync>,
+        grant: Arc<ObservedAuthorshipGrant>,
+    ) -> Self {
+        Self {
+            room,
+            app,
+            package_root,
+            check,
+            grant,
+        }
+    }
+
+    pub fn matches(&self, app: &str, root: Option<&str>, workspace: &Workspace) -> bool {
+        self.app == app
+            && self.package_root.as_deref() == root
+            && self.room == workspace.room.to_string()
+    }
+
+    /// Recheck the actual original caller, pending invocation and policy clock.
+    /// # Errors
+    /// Refuses retired, cancelled, replaced or no-longer-authorized custody.
+    pub fn certificate(&self) -> Result<tilo_user_identity::DeviceCert, String> {
+        (self.check)()
+    }
+
+    /// Submit this bound app's authorship through the normal published door.
+    /// # Errors
+    /// Refuses missing custody or unavailable/ambiguous membership publication.
+    pub fn delegate_authorship(&self) -> Result<crate::collab_broker_capnp::InvocationJob, String> {
+        (self.grant)(&self.certificate()?)
+    }
+}
+
 pub trait LauncherServices: Send + Sync {
     fn applications(&self) -> Vec<LaunchableApplication>;
     /// Launches `app` into `workspace`.
@@ -238,6 +292,25 @@ pub trait LauncherServices: Send + Sync {
     ) -> Result<LaunchReadiness, String> {
         let _ = (app, package_root, workspace, author);
         Err("observed application startup is unavailable on this host".into())
+    }
+    /// Observe startup with host-retained original custody, when available.
+    /// # Errors
+    /// Refuses stale original custody or startup failures.
+    fn begin_launch_from_original(
+        &self,
+        app: &str,
+        package_root: Option<&str>,
+        workspace: &Workspace,
+        author: Option<&str>,
+        original: Option<ObservedApplicationLaunch>,
+    ) -> Result<LaunchReadiness, String> {
+        if let Some(original) = original {
+            if !original.matches(app, package_root, workspace) {
+                return Err("original launch target changed".into());
+            }
+            original.certificate()?;
+        }
+        self.begin_launch(app, package_root, workspace, author)
     }
     /// Launch `app` into `workspace`, opening the content-addressed bytes
     /// `content` names read-only, read through the calling application's own

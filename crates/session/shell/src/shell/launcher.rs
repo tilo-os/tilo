@@ -2814,18 +2814,11 @@ pub(crate) fn queue_native_authoring_launch(
                     .ok_or("native app owner disappeared")?;
                 let access = native_app_open_access(&owner, room, &certificate, &package)?;
                 if access != NativeAppOpenAccess::Delegate {
-                    let mut workspace = native_launch_workspace(&tree, room)?;
-                    if access == NativeAppOpenAccess::Viewer {
-                        workspace
-                            .capabilities
-                            .push(collab_types::caps::CapOverride::new(
-                                Subject::app(&package),
-                                collab_types::caps::Scope::Workspace,
-                                collab_types::caps::Effect::Restrict,
-                                collab_types::caps::Verb::Read,
-                            ));
-                    }
-                    return Ok(workspace);
+                    return Ok(native_launch_capabilities(
+                        native_launch_workspace(&tree, room)?,
+                        &package,
+                        access,
+                    ));
                 }
                 let broker = opening.ok_or("native app authorship broker unavailable")?;
                 let broker = broker.0.upgrade()?;
@@ -2864,6 +2857,84 @@ enum NativeAppOpenAccess {
     Viewer,
 }
 
+pub(crate) fn queue_observed_native_launch(
+    app: InstalledApp,
+    tree: super::state::WorkspaceTreeHandle,
+    room: RoomId,
+    original: tilo_action_broker::services::ObservedApplicationLaunch,
+) -> Result<(), LaunchError> {
+    let package = app.package_id.clone();
+    queue_prepared_launch(
+        app,
+        room,
+        move || {
+            prepare_observed_native_launch(&tree, room, &package, &original)
+                .map_err(|detail| LaunchError::IdentityUnavailable { detail })
+        },
+        None,
+    )
+}
+
+fn prepare_observed_native_launch(
+    tree: &super::state::WorkspaceTreeHandle,
+    room: RoomId,
+    package: &str,
+    original: &tilo_action_broker::services::ObservedApplicationLaunch,
+) -> Result<Workspace, String> {
+    let certificate = original.certificate()?;
+    let owner = tree
+        .read()
+        .installed_native_owner()
+        .ok_or("native app owner disappeared")?;
+    let access = native_app_open_access(&owner, room, &certificate, package)?;
+    if access == NativeAppOpenAccess::Delegate {
+        let job = original.delegate_authorship()?;
+        let completed = job
+            .completion
+            .recv_timeout(Duration::from_secs(30))
+            .map_err(|error| format!("native app authorship did not durably complete: {error}"))?;
+        if !completed.code.is_empty() {
+            return Err(format!(
+                "native app authorship refused: {}",
+                completed.message
+            ));
+        }
+        if original.certificate()? != certificate {
+            return Err("original launch certificate changed during admission".into());
+        }
+        if native_app_open_access(&owner, room, &certificate, package)?
+            != NativeAppOpenAccess::Author
+        {
+            return Err("native app authorship was not admitted by the canonical owner".into());
+        }
+    }
+    // Recheck even viewer/author opens; the earlier result was not authority.
+    original.certificate()?;
+    Ok(native_launch_capabilities(
+        native_launch_workspace(tree, room)?,
+        package,
+        access,
+    ))
+}
+
+fn native_launch_capabilities(
+    mut workspace: Workspace,
+    package: &str,
+    access: NativeAppOpenAccess,
+) -> Workspace {
+    if access == NativeAppOpenAccess::Viewer {
+        workspace
+            .capabilities
+            .push(collab_types::caps::CapOverride::new(
+                Subject::app(package),
+                collab_types::caps::Scope::Workspace,
+                collab_types::caps::Effect::Restrict,
+                collab_types::caps::Verb::Read,
+            ));
+    }
+    workspace
+}
+
 #[cfg(test)]
 #[path = "launcher_native_open_tests.rs"]
 mod native_open_tests;
@@ -2875,7 +2946,7 @@ fn native_app_open_access(
     package: &str,
 ) -> Result<NativeAppOpenAccess, String> {
     owner.with_current(room, |view| {
-        if view.device() != certificate || !view.peer().certificates().contains(certificate) {
+        if !view.peer().certificates().contains(certificate) {
             return Err("native app opening certificate is no longer admitted".into());
         }
         let now = std::time::SystemTime::now();
@@ -2886,14 +2957,13 @@ fn native_app_open_access(
             .peer()
             .check_workspace_administration(certificate.device_public_key, now)
             .is_ok();
-        if view.peer().document(package, "").is_none() {
-            if administrator {
-                return Ok(NativeAppOpenAccess::Delegate);
-            }
+        let exists = view.peer().document(package, "").is_some();
+        if exists {
+            view.peer()
+                .check_document_read(certificate.device_public_key, package, "", now)?;
+        } else if !administrator {
             return Err("creating an application requires governor-authorized authorship".into());
         }
-        view.peer()
-            .check_document_read(certificate.device_public_key, package, "", now)?;
         let seconds = now
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
             .map_err(|_| "native app opening clock is before the Unix epoch")?
@@ -2944,7 +3014,7 @@ fn queue_prepared_launch(
     let display_name = app.display_name.clone();
     spawn_reporting(
         std::thread::Builder::new().name("tilo-launch-preflight".to_string()),
-        move || {
+        super::launch_readiness::inherit(move || {
             let outcome = prepare().and_then(|workspace| {
                 let app_capabilities = workspace
                     .capabilities
@@ -2962,6 +3032,7 @@ fn queue_prepared_launch(
                 )
             });
             if let Err(error) = outcome {
+                super::launch_readiness::fail_current(error.user_message());
                 push_event(LaunchEvent {
                     package_id,
                     display_name,
@@ -2972,7 +3043,7 @@ fn queue_prepared_launch(
                     },
                 });
             }
-        },
+        }),
     )
     .map_err(|error| LaunchError::AgentLaunchWorkerUnavailable {
         detail: error.to_string(),
