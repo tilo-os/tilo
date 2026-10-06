@@ -2622,7 +2622,7 @@ fn attach_sandbox_authority(
     match action_authority::attach_optional(app, room, command) {
         Some(lease) => Ok(Some(lease.with_sandbox_capabilities(applied, file))),
         None if requires_supervision => Err(LaunchError::RegistryUnreadable {
-            detail: "could not supervise revocable sandbox capabilities".into(),
+            detail: crate::shell::i18n::t("launch-error-sandbox-supervision"),
         }),
         None => Ok(None),
     }

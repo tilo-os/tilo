@@ -1,4 +1,5 @@
-//! Read-only action admission projection; never sandbox or record grants.
+//! Project accepted action policy and interrupt withdrawn sandbox authority.
+//! This observer never creates or expands grants.
 use super::{InstalledApp, LaunchCommand, lock, runtime_dir};
 use crate::shell::state::RoomId;
 use collab_types::caps::action_authority::{AppActionAuthorityProjection, MAX_PROJECTION_BYTES};
@@ -251,6 +252,17 @@ impl Lease {
 
     #[cfg(target_os = "linux")]
     pub(super) fn register_sandbox(&mut self, pid: u32) -> std::io::Result<()> {
+        // Opening a document queues its grant on the existing state writer.
+        // Wait on this launch worker, before taking PUBLISHED or opening the
+        // child gate. A refused/superseded write still cannot authorize it.
+        if !self.capabilities.is_empty()
+            && !crate::shell::durable_writer::global().flush_timeout(Duration::from_secs(10))
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "filesystem authority publication did not complete",
+            ));
+        }
         let mut published = lock(&PUBLISHED);
         let sandbox =
             sandbox_revocation::Sandbox::capture(pid, self.binding.clone(), &self.capabilities)?;
