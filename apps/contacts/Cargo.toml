@@ -19,6 +19,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+tilo-contact-directory = { path = "../../crates/platform/tilo-contact-directory" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).

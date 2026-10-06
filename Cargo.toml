@@ -231,6 +231,7 @@ members = [
     "crates/platform/tilo-capture",
     "crates/platform/tilo-clipboard",
     "crates/platform/tilo-clock",
+    "crates/platform/tilo-contact-directory",
     "crates/platform/tilo-dialogs",
     "crates/platform/tilo-files",
     "crates/platform/tilo-location",
