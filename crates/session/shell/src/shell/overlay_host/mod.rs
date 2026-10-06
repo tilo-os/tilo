@@ -7576,41 +7576,38 @@ impl ShellOverlayHost {
         let Some(broker) = self.shortcut_triggers.broker() else {
             return false;
         };
-        let caller = {
+        let expected_person = {
             let state = chrome.borrow();
             let tree = state.tree();
             tree.desktop
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.room.to_string() == room)
-                .map(|workspace| {
-                    tilo_actions::remote::Caller::local_person(
-                        state.local_user_for_room(&workspace.room),
-                    )
-                    .in_room(room)
-                })
+                .map(|workspace| state.local_user_for_room(&workspace.room))
         };
-        let Some(caller) = caller else {
+        let Some(expected_person) = expected_person else {
+            return false;
+        };
+        let Ok(session) = crate::shell::certified_action_session::ActionSessionSource::new(broker)
+            .open(room, Some(&expected_person))
+        else {
             return false;
         };
         chrome.borrow_mut().open_target = crate::shell::chrome_state::OpenTarget::Beside;
-        let admission = crate::shell::remote_actions::BrokerActionHost::new(broker).invoke_job(
-            &caller,
-            InvokeRequest {
-                on_behalf_of: None,
-                invocation: tilo_actions::InvocationId::new(),
-                target: application_action_target(
-                    room,
-                    "so.tilo.chat",
-                    format!("chat.person:{agent}"),
-                    "open-agent-conversation",
-                ),
-                argument: InvokeArgument::None,
-                context: None,
-                confirmation: None,
-                revision: None,
-            },
-        );
+        let admission = session.invoke_job(InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: application_action_target(
+                room,
+                "so.tilo.chat",
+                format!("chat.person:{agent}"),
+                "open-agent-conversation",
+            ),
+            argument: InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+        });
         self.pending_launchpad_actions.push(PendingLaunchpadAction {
             title: crate::shell::i18n::t_args(
                 "agent-conversation-opening",
