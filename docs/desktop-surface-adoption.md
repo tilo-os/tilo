@@ -31,10 +31,14 @@ solid surfaces and reduced-motion behavior; no new desktop visual language.
 
 ## Concurrency boundaries
 
-Inspected Forgejo changed-file lists for Messages #2881, Dictation #2974 and
-Files #3009. #2881 and #2974 both modify overlay_host/mod.rs: Messages adds its update pump; Dictation adds layer geometry, pointer routing, fixture setup and DictationSetup intent. These inspected UI hunks do not overlap reader, overview selection or the power-menu Session intent closing change. #3009 modifies shell broker_services/file_clipboard,
-nearby_transfer and shared clipboard/broker/undo-adjacent paths. This increment
-touches none of those paths.
+Complete paginated changed-file lists for Messages #2881 and Dictation #2974
+both include shell/overlay_host/mod.rs. Messages adds its update pump; Dictation
+changes layer geometry, fixtures and setup routing. Those hunks do not overlap
+overview selection, notification-reader routes or power Session-intent handling.
+Neither PR changes the desktop switcher file or its native integration module.
+Displays #3095 has no file overlap with these increments. Files #3009 owns
+broker_services/file_clipboard, nearby_transfer, clipboard/broker and undo-adjacent
+paths; none are edited here. No account sends or microphone/device effects.
 
 ## Evidence and completion gates
 
@@ -86,8 +90,12 @@ source revisions and checksums; the current source tree contains no capture PNGs
 ## Current verification (2026-10-07)
 
 - #3067 merged normally at ae67fc35d70b479b9a24a8c3a1426e289cbc6a12. Exact merged-main checks passed: 12 center cases, one portable reader case, two native reader cases, four notification integration cases and shell tests compile.
-- #3076 head 38942a3da31cf468616e07364bb66b505559e0a2 remains ready. Its only failing shell CI case is the separately owned session_lock_recovery fixture; no authentication/policy code is part of this UI increment.
-- Power-menu details: baseline captures confirm ellipsized recovery copy at 200% text. The shared tooltip regression fails on ae67: single-line sizing clips the complete description. Current work wraps measurement/paint at the available width and adopts TooltipHost for keyboard/pointer reading; cancellation, inert hint clicks, semantic actions and scaled resize are verification gates.
+- #3076 rebased onto integrated control framing repair #3100. Fresh focused validation and exact-head CI are required; no authentication/policy code is part of this UI increment.
+- #3110 merged normally at 1161ca6aed22a58cb2904d8aa8ce784fabd3ee33. Shared TooltipHost reveals full power descriptions; wrapped measurement/paint, cancellation, inert presses, semantic actions and scaled resize passed branch validation. Exact merged-main postchecks remain required.
 - All new screenshot evidence stays outside Git, in Library and PR attachments, with text manifests only. Full desktop/VM journeys and the remaining rows above remain open.
 
 Power-description increment: verified source 2e9349c8d64f0252bf4ad6cdc43cd449c52c3dc9 uses shared TooltipHost and wrapped Caption painting. Nine power-menu cases, six tooltip cases, shell test compilation and all-target UI/shell Clippy passed. [Inspected before/after evidence](evidence/power-menu-details/README.md) covers six theme/scale/viewport variants. New capture PNGs remain outside Git. Displays #3095 changed-file inspection found no overlap with power or overview paths.
+
+## Overview stable selection follow-up
+
+Overview binds the shared focus ring and accessibility key to stable tab IDs. A surviving preview keeps focus when another closes; a vanished selection restores the current workspace and consumes one interrupted activation. [Original inspected evidence](evidence/overview-window-identity/README.md) is preserved with its original source revision and Library identities. Fresh validation of the rebased head is in progress; exact-head CI and normal landing/main postchecks remain required.
