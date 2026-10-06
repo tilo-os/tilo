@@ -178,6 +178,14 @@ impl CameraApp {
         panel
     }
 
+    pub(super) fn selected_capture_mode(&self) -> usize {
+        match self.base_screen() {
+            Screen::Camera | Screen::Settings => usize::from(self.mode == CaptureMode::Video),
+            Screen::Scanner => 2,
+            Screen::Document => 3,
+        }
+    }
+
     /// Photo, Video, Codes and Documents: the switcher docked at the bottom
     /// centre of every screen. Returns its panel.
     pub(super) fn draw_mode_switcher(
@@ -196,11 +204,7 @@ impl CameraApp {
             ("Codes", Action::Nav(Screen::Scanner)),
             ("Documents", Action::Nav(Screen::Document)),
         ];
-        let selected = match self.base_screen() {
-            Screen::Camera | Screen::Settings => usize::from(self.mode == CaptureMode::Video),
-            Screen::Scanner => 2,
-            Screen::Document => 3,
-        };
+        let selected = self.selected_capture_mode();
         let room = (full.width() - 2.0 * (m.edge + m.pad)).max(1.0);
         let mut labels: Vec<&str> = entries.iter().map(|(label, _)| *label).collect();
         let mut natural = SegmentedFace::intrinsic_width(&labels, ControlSize::Regular, tr, &local);
@@ -559,7 +563,7 @@ impl CameraApp {
         self.push_region(panel, Action::OpenRecentCapture);
     }
 
-    /// Switch camera, bottom-trailing: names the camera in use.
+    /// Switch camera beside the shutter, with an accessible name and tooltip.
     fn draw_lens_switch(
         &mut self,
         scene: &mut Scene,
@@ -570,27 +574,18 @@ impl CameraApp {
         shutter: Rect,
     ) {
         let m = HudMetrics::of(theme);
-        let labelled = [HudItem {
-            label: self.facing.label(),
+        let items = [HudItem {
+            label: "",
             icon: Some(Icon::SwitchCamera),
             name: "Switch camera",
             on: None,
             action: Action::CycleFacing,
         }];
-        let icon_only = [HudItem {
-            label: "",
-            ..labelled[0].clone()
-        }];
-        let limit = shutter.x1 + f64::from(theme.tokens.spacing.s4);
-        let width = cluster_width(&labelled, tr, theme);
-        let items: &[HudItem<'_>] = if full.x1 - m.edge - width >= limit {
-            &labelled
-        } else {
-            &icon_only
-        };
-        let width = cluster_width(items, tr, theme);
-        let origin = Point::new(full.x1 - m.edge - width, shutter.center().y - m.bar() / 2.0);
-        self.draw_cluster(scene, t, tr, theme, origin, items);
+        let width = cluster_width(&items, tr, theme);
+        let x =
+            (shutter.x1 + f64::from(theme.tokens.spacing.s4) - m.pad).min(full.x1 - m.edge - width);
+        let origin = Point::new(x, shutter.center().y - m.bar() / 2.0);
+        self.draw_cluster(scene, t, tr, theme, origin, &items);
     }
 
     /// "Recording" and the elapsed time, top centre, while a clip records.

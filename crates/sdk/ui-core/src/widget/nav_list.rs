@@ -585,7 +585,16 @@ impl NavModel {
         openings: &mut Openings,
     ) {
         let id = keys.id(&format!("item:{}", item.id));
+        let under_section = self
+            .nodes
+            .get(&parent)
+            .is_some_and(|node| match &node.kind {
+                NavNodeKind::Section { .. } => true,
+                NavNodeKind::Item { spec, .. } => spec.under_section,
+                _ => false,
+            });
         let spec = NavItemSpec {
+            under_section,
             icon: item.icon,
             count: item.count,
             depth,
