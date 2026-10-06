@@ -25,3 +25,4 @@ store-flatpak-checking = Checking Flatpak availability on this device…
 store-flathub-account-missing = This repository is no longer configured.
 store-flathub-account-source = Only the enabled device Flathub repository can be used for this account.
 store-flathub-account-existing = Flathub is already configured for this account. Its configuration will not be replaced.
+store-launch-opened = App opened.

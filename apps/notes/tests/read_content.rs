@@ -1,6 +1,7 @@
 //! A notebook is read through its published `read` action, as a script or an
 //! agent reads it: the pages it holds, then one page's title and blocks.
 
+use automerge::transaction::Transactable;
 use notes::NotesShell;
 use notes::actions::page_body_id;
 use notes::doc::NotesDoc;
@@ -96,4 +97,139 @@ fn read_is_published_as_the_notebooks_document_read() {
         .expect("the notebook publishes read");
     assert_eq!(read.kind, tilo_actions::OperationKind::View);
     assert!(read.contract.reads_document());
+}
+
+fn inspect_editor(app: &mut TestApp<NotesShell>) -> serde_json::Value {
+    app.call("inspect-editor", json!({}))
+        .expect("the read-only editor action is published")
+        .expect("the action returns its observation")
+}
+
+#[test]
+fn editor_inspection_reuses_the_native_observer_and_writes_nothing() {
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<NotesShell>::new().unwrap();
+    app.call("new-page", json!({"value":"Private fixture title"}))
+        .unwrap();
+    let page = app.state().pages()[0].id;
+    app.invoke_child::<RichText>(
+        &page_body_id(page),
+        Invoke::apply(&RichTextAction::AppendParagraph {
+            text: "Private body fixture".into(),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    app.settle();
+    let canonical_body = app.read_document(|doc| {
+        NotesDoc::page_block_snapshots(doc, page)
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+    let before = app.read_document(|doc| (doc.base_heads(), doc.pending_ops()));
+    let native = app
+        .harness()
+        .native_input_snapshot()
+        .expect("native Notes observation");
+    let observed = inspect_editor(&mut app);
+    assert_eq!(observed, native, "one observer serves both existing doors");
+    assert_eq!(observed["selected_page"], observed["main_page"]);
+    assert_eq!(observed["main_page"], observed["editor_binding_page"]);
+    assert_eq!(observed["body_hash"], observed["rendered_body_hash"]);
+    assert_eq!(
+        observed["body_hash"],
+        blake3::hash(canonical_body.as_bytes()).to_hex().to_string()
+    );
+    assert_eq!(observed["body_chars"], canonical_body.chars().count());
+    assert!(observed["body_chars"].as_u64().unwrap() > 0);
+    assert!(!observed.to_string().contains("Private body fixture"));
+    assert!(observed.get("caret").is_some());
+    assert!(observed.get("editor_focused").is_some());
+    assert!(observed.get("text").is_none());
+    assert!(observed.get("body").is_none());
+    assert!(!observed.to_string().contains("Private fixture title"));
+    assert_eq!(
+        app.read_document(|doc| (doc.base_heads(), doc.pending_ops())),
+        before
+    );
+    assert_eq!(inspect_editor(&mut app), observed);
+}
+
+#[test]
+fn editor_inspection_preserves_actual_wrong_page_and_stale_cache_evidence() {
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<NotesShell>::new().unwrap();
+    app.call("new-page", json!({"value":"First private fixture"}))
+        .unwrap();
+    let first = app.state().pages()[0].id;
+    app.call("new-page", json!({"value":"Second private fixture"}))
+        .unwrap();
+    let second = app
+        .state()
+        .pages()
+        .iter()
+        .find(|page| page.id != first)
+        .unwrap()
+        .id;
+    app.call_on(&notes::actions::page_resource_id(second), "open", json!({}))
+        .expect("the second page opens through its actual published row");
+    app.settle();
+    let before = app.read_document(|doc| (doc.base_heads(), doc.pending_ops()));
+    let canonical = app.read_document(Clone::clone);
+    // A real panel binding can lag or disagree with the local selected route.
+    // Inspection must report that state rather than rebinding it to a target.
+    app.surface_mut::<notes::NotesApp>()
+        .main_panel_mut()
+        .bind_canonical_page(&canonical, first, "First private fixture")
+        .unwrap();
+    let observed = inspect_editor(&mut app);
+    assert_eq!(observed["selected_page"], second.to_string());
+    assert_eq!(observed["editor_binding_page"], second.to_string());
+    assert_eq!(observed["main_page"], first.to_string());
+    assert_ne!(observed["main_page"], observed["selected_page"]);
+    // The production panel loader establishes a rendered cache independently
+    // of the canonical body. Do not substitute this cache for the document.
+    app.surface_mut::<notes::NotesApp>()
+        .main_panel_mut()
+        .load_page(second, "Second private fixture", "Stale private cache");
+    let cached = inspect_editor(&mut app);
+    assert_eq!(cached["selected_page"], second.to_string());
+    assert_eq!(cached["main_page"], second.to_string());
+    assert_ne!(cached["body_hash"], cached["rendered_body_hash"]);
+    assert_eq!(cached["body_chars"], 0);
+    assert_eq!(
+        cached["rendered_body_hash"],
+        blake3::hash(b"Stale private cache").to_hex().to_string()
+    );
+    assert!(!cached.to_string().contains("Stale private cache"));
+    assert_eq!(
+        app.read_document(|doc| (doc.base_heads(), doc.pending_ops())),
+        before
+    );
+    assert!(
+        app.call("inspect-editor", json!({"page":first})).is_err(),
+        "a caller cannot inject the page identity to be reported"
+    );
+}
+
+#[test]
+fn a_viewer_inspects_editor_without_gaining_note_mutation_rights() {
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<NotesShell>::with_role(Role::Viewer).unwrap();
+    let before = app.read_document(|doc| (doc.base_heads(), doc.pending_ops()));
+    let observed = inspect_editor(&mut app);
+    assert!(observed["selected_page"].is_null());
+    assert!(observed["main_page"].is_null());
+    assert!(observed["body_hash"].is_null());
+    assert!(
+        app.call("new-page", json!({"value":"Not permitted"}))
+            .is_err()
+    );
+    assert_eq!(inspect_editor(&mut app), observed);
+    assert_eq!(
+        app.read_document(|doc| (doc.base_heads(), doc.pending_ops())),
+        before
+    );
 }
