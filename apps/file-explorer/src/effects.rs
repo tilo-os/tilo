@@ -274,6 +274,12 @@ pub enum FilesEffect {
         #[param("The incoming transfer")]
         transfer: NearbyTransferHandle,
     },
+    /// Inspect a transfer's current phase and confirmed byte progress.
+    #[effect(row, permission = "read", returns, idempotent)]
+    InspectNearby {
+        #[param("The visible transfer")]
+        transfer: NearbyTransferHandle,
+    },
     /// Retry a transfer.
     #[effect(row, permission = "read")]
     RetryNearby {

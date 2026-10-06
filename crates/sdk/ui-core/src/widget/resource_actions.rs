@@ -445,6 +445,11 @@ impl Widget for ResourceActionHost {
         self.root.ime_cursor_rect()
     }
 
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.ime_cursor_rect()?;
+        self.root.ime_edit_fingerprint(key)
+    }
+
     fn ime_purpose(&self) -> Option<crate::winit::window::ImePurpose> {
         self.root.ime_purpose()
     }

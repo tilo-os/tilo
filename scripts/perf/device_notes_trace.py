@@ -8,7 +8,10 @@ import json
 import sys
 from pathlib import Path
 markers = ("tilo-physical-input ", "tilo-physical-frame ",
-           "tilo-physical-delivery ", "tilo-display-frame ")
+           "tilo-physical-delivery ", "tilo-display-frame ",
+           "tilo-native-send ", "tilo-native-main-stages ",
+           "tilo-native-worker ", "tilo-native-worker-handoff ",
+           "tilo-native-present-call ")
 records = []
 for line in Path(sys.argv[1]).read_text().splitlines():
     for marker in markers:
@@ -38,6 +41,8 @@ for tag, row, original in records:
             or (tag == markers[1] and worker + (row.get("cpu_frame_id"),) in frame_ids)
             or (tag == markers[2] and row.get("wayland_serial") in serials)
             or (tag == markers[3] and row.get("backend") == "wayland"
+                and worker + (row.get("cpu_frame_id"),) in frame_ids)
+            or (tag in markers[4:]
                 and worker + (row.get("cpu_frame_id"),) in frame_ids)):
         selected.append(original)
 result = "\n".join(selected)

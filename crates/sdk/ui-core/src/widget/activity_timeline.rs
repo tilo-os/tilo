@@ -3249,6 +3249,16 @@ impl Widget for ActivityTimeline {
             .and_then(|naming| naming.field.ime_cursor_rect())
     }
 
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        let naming = self.naming.as_ref()?;
+        let scope = format!("{:?}:{:?}", naming.target, self.selection);
+        Some(crate::ime::scoped_fingerprint(
+            scope.as_bytes(),
+            naming.field.ime_edit_fingerprint(key)?,
+            key,
+        ))
+    }
+
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         Some(winit::window::ImePurpose::Normal)
     }

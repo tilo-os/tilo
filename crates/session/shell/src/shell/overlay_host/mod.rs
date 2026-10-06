@@ -36,6 +36,7 @@ use ui::TextRole;
 
 mod controller;
 mod device_fabric;
+pub(crate) mod dictation_layer;
 mod displays;
 mod emoji_layer;
 mod history;
@@ -1789,7 +1790,8 @@ impl ShellOverlayHost {
             | LayerId::WindowSwitcher
             | LayerId::EmojiPicker
             | LayerId::TabContextMenu
-            | LayerId::PowerMenu => false,
+            | LayerId::PowerMenu
+            | LayerId::Dictation => false,
         }
     }
 
@@ -2422,6 +2424,13 @@ impl ShellOverlayHost {
     /// hit-testing would otherwise consume Restore/Close presses before the
     /// `WindowGroup` which draws those controls can see them.
     pub(crate) fn maximized_chrome_captures_pointer(&self) -> bool {
+        // Local input controls are above window chrome and preserve its seat.
+        if self
+            .last_cursor
+            .is_some_and(|point| self.dictation_pointer_at((point.x, point.y)))
+        {
+            return false;
+        }
         let Some(chrome) = self.chrome.as_ref() else {
             return false;
         };
@@ -5914,6 +5923,19 @@ impl ShellOverlayHost {
                 ),
             ));
         }
+        if self.layers.dictation.is_consent() {
+            let outputs = self.layer_outputs();
+            let surface =
+                dictation_layer::DictationSurface::surface_rect(self.layer_geometry(&outputs));
+            targets.push((
+                crate::shell::trusted_ui::DICTATION_PROMPT_TARGET,
+                crate::shell::trusted_ui::seal_band(
+                    surface,
+                    thickness,
+                    f64::from(theme.tokens.radii.control),
+                ),
+            ));
+        }
         if let Some(layout) = self.portal_dialogs.layout(self.rect) {
             let radius = ui::chrome::ChromeRole::Panel.radius(theme, layout.sheet.height());
             targets.push((
@@ -8547,6 +8569,10 @@ impl ShellOverlayHost {
             .flatten()
     }
 
+    pub(crate) fn palette_ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.palette.ime_edit_fingerprint(key)
+    }
+
     /// Force-set the palette visibility, so headless harnesses can drive
     /// the palette scene without a synthetic Ctrl+K.
     pub fn set_palette_visible(&mut self, v: bool) {
@@ -10669,7 +10695,8 @@ impl ShellOverlayHost {
     /// light up affordances underneath.
     pub(crate) fn cursor_over_open_overlay(&self, p: Point) -> bool {
         let f = self.overlay_flags();
-        (self.palette_visible && self.palette.get_rect().contains(p))
+        self.dictation_pointer_at((p.x, p.y))
+            || (self.palette_visible && self.palette.get_rect().contains(p))
             || (f.collaborators && self.collaborators_overlay.contains(p))
             || (f.quick_settings && self.quick_settings_rect().contains(p))
             || (f.ws_settings && self.ws_settings_rect().contains(p))
@@ -12115,6 +12142,36 @@ impl ShellOverlayHost {
         true
     }
 
+    /// Intercept only local input controls without withdrawing text-input focus.
+    pub(crate) fn dictation_owns_key(&self, key: &winit::keyboard::Key) -> bool {
+        self.layers.dictation.owns_key(key)
+    }
+
+    /// Local microphone controls cannot be operated through a shared seat.
+    /// This does not withdraw the original editable field's local IME focus.
+    pub(crate) fn dictation_mutes_remote_input(&self) -> bool {
+        self.layers.dictation.is_open()
+    }
+
+    pub(crate) fn dictation_pointer_at(&self, point: (f64, f64)) -> bool {
+        let outputs = self.layer_outputs();
+        self.layers.dictation.is_open()
+            && dictation_layer::DictationSurface::surface_rect(self.layer_geometry(&outputs))
+                .contains(Point::new(point.0, point.1))
+    }
+
+    pub(crate) fn dictation_input_available(&self) -> bool {
+        self.onboarding.is_none()
+            && self.permission_prompt.is_none()
+            && self.portal_dialogs.layout(self.rect).is_none()
+            && !self.display_confirmation_visible()
+            && !self.window_switcher_active()
+    }
+
+    pub(crate) fn dictation_surface_mut(&mut self) -> &mut dictation_layer::DictationSurface {
+        &mut self.layers.dictation
+    }
+
     /// Run every window operation the action door queued on the chrome
     /// ([`ChromeState::request_shortcut_action`]), in order. The shell
     /// runs this each update, before splicing tree changes into the rows.
@@ -12179,6 +12236,23 @@ impl ShellOverlayHost {
             // Zooming is a step, so a held zoom key keeps zooming; the toggle is an edge.
             if !(repeat && step == MagnifierStep::Toggle) {
                 self.step_magnifier(step);
+            }
+            return true;
+        }
+        if matches!(
+            action,
+            A::DictationToggle | A::DictationFinish | A::DictationCancel
+        ) {
+            if !repeat {
+                match action {
+                    A::DictationToggle => self.layers.dictation.request_toggle(),
+                    A::DictationFinish => self.layers.dictation.request_finish(),
+                    A::DictationCancel => self.layers.dictation.request_cancel(),
+                    _ => {}
+                }
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
             }
             return true;
         }
@@ -16128,6 +16202,13 @@ impl ShellOverlayHost {
                 true
             }
             LayerIntent::FocusWindow(address) => self.focus_switcher_window(address),
+            LayerIntent::Dictation(request) => {
+                self.layers.dictation.enqueue(request);
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
+                true
+            }
             LayerIntent::Repaint => {
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().bump();
@@ -17718,7 +17799,8 @@ impl Widget for ShellOverlayHost {
                 | LayerId::WindowSwitcher
                 | LayerId::EmojiPicker
                 | LayerId::TabContextMenu
-                | LayerId::PowerMenu => {}
+                | LayerId::PowerMenu
+                | LayerId::Dictation => {}
                 LayerId::CommandPalette => {
                     if let Some(mut palette) = self.palette.accessibility() {
                         // The filter band is the host's, painted over the
@@ -18736,7 +18818,7 @@ impl Widget for ShellOverlayHost {
             | LayerId::WindowSwitcher
             | LayerId::EmojiPicker
             | LayerId::TabContextMenu
-            | LayerId::PowerMenu => None,
+            | LayerId::PowerMenu | LayerId::Dictation => None,
         }
     }
 
@@ -18783,7 +18865,7 @@ impl Widget for ShellOverlayHost {
             | LayerId::WindowSwitcher
             | LayerId::EmojiPicker
             | LayerId::TabContextMenu
-            | LayerId::PowerMenu => false,
+            | LayerId::PowerMenu | LayerId::Dictation => false,
         }
     }
 
@@ -21285,6 +21367,18 @@ impl ShellOverlayHost {
     ) {
         self.draw_top_overlays_below_switcher(scene, transform, text_renderer, theme, presence);
         let outputs = self.layer_outputs();
+        self.layers.draw(
+            LayerId::Dictation,
+            &mut LayerPaint {
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                geometry: self.layer_geometry(&outputs),
+                thumbnails: &mut self.window_previews,
+            },
+        );
         self.layers.draw(
             LayerId::WindowSwitcher,
             &mut LayerPaint {
