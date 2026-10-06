@@ -12236,10 +12236,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ed25519-dalek 3.0.0",
+ "hex",
  "registry-server",
  "registry-types",
  "tempfile",
  "tilo-app",
+ "tilo-app-package",
  "tilo-clock",
  "workspace-hack",
 ]
