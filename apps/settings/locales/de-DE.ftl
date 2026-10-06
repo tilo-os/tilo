@@ -1764,3 +1764,4 @@ agent-key-read-error = Ob ein Schlüssel gespeichert ist, kann nicht festgestell
 shortcut-name-dictation-toggle = Diktat starten oder beenden
 shortcut-name-dictation-finish = Diktat beenden
 shortcut-name-dictation-cancel = Diktat abbrechen
+shortcut-name-tab-menu = Tab-Menü öffnen

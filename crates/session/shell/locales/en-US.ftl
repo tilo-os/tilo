@@ -2419,3 +2419,8 @@ terminal-device-shell-session-param = Exact local session UUID from Inspect
 terminal-device-shell-command-param = One reviewed command in this device shell
 
 terminal-device-shell-confirm-param = Confirm this reviewed device-shell operation
+
+shortcut-name-tab-menu = Show tab menu
+search-action-tab-menu = Show tab menu
+search-action-tab-menu-subtitle = Actions for the focused tab
+search-action-tab-menu-unavailable = No focused tab is available

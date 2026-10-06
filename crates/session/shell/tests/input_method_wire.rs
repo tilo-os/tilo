@@ -863,7 +863,9 @@ fn assert_native_field_selection_and_undo(transcript: &str) {
         "dictation must enter owned persistent history"
     );
     fixture.driver.close_components();
-    for report in fixture.driver.take_component_close_reports() {
+    let reports = fixture.driver.take_component_close_reports();
+    assert!(!reports.is_empty(), "the real Notes component must close");
+    for report in reports {
         assert!(report.record_error.is_none());
         assert!(report.view_error.is_none());
         assert!(report.teardown_error.is_none());
