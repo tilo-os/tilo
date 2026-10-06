@@ -354,6 +354,8 @@ impl<R: Resource> ResourceRoot<R> {
     /// Apply a permission change made while the app runs: dispatchers stop
     /// (or resume) submitting, bound state and surfaces see the new value.
     fn refresh_access(&self) {
+        #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+        let _profile = super::testing::phases::Scope::start("framework.access_refresh");
         if let (Some(permissions), Some(write)) = (&self.permissions, &self.write) {
             self.dispatch.set_read_only(!permissions.check(write));
         }
@@ -416,8 +418,13 @@ impl<R: Resource> ResourceRoot<R> {
     }
 
     fn publication_of(&self, state: &R::State) -> tilo_actions::Resource {
-        let mut resource =
-            tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, state);
+        #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+        let _profile = super::testing::phases::Scope::start("framework.publication");
+        let mut resource = {
+            #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+            let _profile = super::testing::phases::Scope::start("framework.resource_tree");
+            tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, state)
+        };
         let mut bound = self.bindings.declarations(state);
         let mut rows = Vec::new();
         let mut availability = Vec::new();
@@ -444,8 +451,12 @@ impl<R: Resource> ResourceRoot<R> {
             }
         }
         merge(&mut resource.children, rows);
-        for child in &mut resource.children {
-            self.bind_row_declarations(child);
+        {
+            #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+            let _profile = super::testing::phases::Scope::start("framework.row_declarations");
+            for child in &mut resource.children {
+                self.bind_row_declarations(child);
+            }
         }
         for spec in &self.presentation {
             if spec.kind == tilo_actions::OperationKind::Document {
