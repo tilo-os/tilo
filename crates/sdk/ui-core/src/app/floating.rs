@@ -520,6 +520,16 @@ impl App {
         let changed = !messages.is_empty();
         for message in messages {
             match &message {
+                FloatingSurfaceHostMessage::DeviceShellOperation { request, operation } => {
+                    let result = crate::widget::capability::capability_mut::<dyn crate::AppWidget>(
+                        &mut *self.root_widget,
+                    )
+                    .ok_or_else(|| "Terminal is not available".to_string())
+                    .and_then(|widget| widget.device_shell_operation(operation));
+                    if let Some(client) = &mut self.floating.client {
+                        let _ = client.send(&crate::floating_surface::FloatingSurfaceClientMessage::DeviceShellOutcome { request: *request, result });
+                    }
+                }
                 FloatingSurfaceHostMessage::CaptureProtectionApplied {
                     generation,
                     protected,

@@ -88,7 +88,7 @@ fn tokens_of(document: &ThemeDocument, you: PresenceHue) -> Tokens {
     tokens
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Theme {
     pub name: String,
     /// The document this theme was built from, as applied: after the

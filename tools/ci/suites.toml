@@ -38,6 +38,11 @@
 # whose read CI never runs, with the reason.
 
 [[group]]
+name = "session-diagnostics"
+inputs = ["dist/session/tilo-flight-recorder.py"]
+suites = ["os/tests/flight_recorder_test.py"]
+
+[[group]]
 name = "os"
 inputs = ["os/"]
 suites = [
@@ -363,6 +368,7 @@ inputs = ["scripts/perf/", "apps/settings/src/categories.rs"]
 suites = [
   "scripts/perf/check_app_coverage_test.py",
   "scripts/perf/code_editor_effects_test.py",
+  "scripts/perf/device_notes_latency_test.py",
   "scripts/perf/collect_code_editor_native_test.py",
   "scripts/perf/collect_file_explorer_native_test.py",
   "scripts/perf/collect_scratchpad_native_test.py",

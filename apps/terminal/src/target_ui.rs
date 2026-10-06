@@ -371,6 +371,13 @@ impl TerminalWidget {
         }
     }
 
+    /// The authenticated owner selected Host through the trusted shell lifecycle channel.
+    /// This follows the ordinary picker path and still waits for supervisor permission.
+    pub(crate) fn request_device_shell(&mut self) -> bool {
+        self.switch_target(&SessionTarget::Host, Requester::Person)
+            .is_ok()
+    }
+
     /// Move this tab to `target`: record it, end the current session, and
     /// open one there.
     ///
