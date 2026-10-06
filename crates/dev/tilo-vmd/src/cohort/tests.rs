@@ -96,24 +96,38 @@ fn pin(layer: &Path, name: &str, key: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o644)).unwrap();
 }
 
-fn package(layer: &Path, work: &Path, version: &str, foreign: bool) -> InstalledPackage {
+fn package(layer: &Path, work: &Path, version: &str, case: &str) -> InstalledPackage {
     let payload = work.join("payload");
     fs::create_dir_all(payload.join("bin")).unwrap();
     let binary = payload.join("bin/fixture");
-    fs::write(&binary, app_elf(foreign)).unwrap();
+    fs::write(&binary, app_elf(case == "arch")).unwrap();
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
-    let isa = if std::env::consts::ARCH == "aarch64" {
+    let dual = matches!(case, "dual_isa" | "service");
+    let isa = if dual {
+        "x86_64 = \"baseline\"\naarch64 = \"armv8-a\""
+    } else if (std::env::consts::ARCH == "aarch64") != (case == "missing_isa") {
         "aarch64 = \"aarch64\""
     } else {
         "x86_64 = \"baseline\""
+    };
+    let (kind, entry_type) = if case == "service" {
+        ("service", "cli")
+    } else {
+        ("app", "gui")
+    };
+    let platform = if case == "platform" {
+        "platforms = [\"macos\"]\nplatform-reason = \"An explicit non-Linux fixture.\""
+    } else {
+        ""
     };
     let source = format!(
         r#"
 [package]
 id = "so.tilo.fixture"
-kind = "app"
+kind = "{kind}"
 version = "0.1.0"
 runtime = "tilo-runtime/{version}"
+{platform}
 [package.isa]
 {isa}
 [publisher]
@@ -128,7 +142,7 @@ mode = "off"
 [sandbox.portals]
 [entrypoint]
 bin = "bin/fixture"
-type = "gui"
+type = "{entry_type}"
 "#,
         "00".repeat(32)
     );
@@ -178,7 +192,7 @@ fn fixture(root: &Path, case: &str) {
     } else {
         &version
     };
-    let row = package(&layer, &work, claimed, case == "arch");
+    let row = package(&layer, &work, claimed, case);
     let mut registry = Registry::default();
     registry.upsert(row.clone());
     save(&registry, &layer.join("usr/share/tilo-apps/registry.toml"));
@@ -240,55 +254,65 @@ fn save(registry: &Registry, path: &Path) {
     .unwrap();
 }
 
+fn verify_subject(root: &Path, case: &str) {
+    let result = verify(
+        &root.join("layer"),
+        &root.join("base"),
+        std::env::consts::ARCH,
+    );
+    if matches!(case, "valid" | "dual_isa" | "service") {
+        assert!(result.is_ok(), "{}", result.err().unwrap());
+        let cohort = result.unwrap();
+        let mut provenance = tilo_vm_protocol::Provenance::local("apps+runtime");
+        provenance.cargo_profile = Some("thin-app".into());
+        provenance.cargo_lock_hash = Some("new graph".into());
+        provenance.target = Some(format!("{}-unknown-linux-gnu", std::env::consts::ARCH));
+        let base = tilo_vm_protocol::BaseInfo {
+            cargo_lock_hash: Some("old graph".into()),
+            target: provenance.target.clone(),
+            ..Default::default()
+        };
+        assert!(crate::daemon::abi_check(&provenance, &base, std::env::consts::ARCH).is_err());
+        assert!(
+            crate::daemon::abi_check_verified(
+                &provenance,
+                &base,
+                std::env::consts::ARCH,
+                Some(&cohort)
+            )
+            .is_ok()
+        );
+        provenance.target = Some("wrong-architecture".into());
+        assert!(
+            crate::daemon::abi_check_verified(
+                &provenance,
+                &base,
+                std::env::consts::ARCH,
+                Some(&cohort)
+            )
+            .is_err()
+        );
+    } else {
+        assert!(result.is_err(), "an invalid cohort was admitted");
+    }
+}
+
 #[test]
 fn complete_cohort_replays_real_signatures_payload_and_native_closure() {
     const SUBJECT: &str = "TILO_VMD_COHORT_SUBJECT";
     if let Ok(subject) = std::env::var(SUBJECT) {
-        let root = Path::new(&subject);
-        let result = verify(
-            &root.join("layer"),
-            &root.join("base"),
-            std::env::consts::ARCH,
+        verify_subject(
+            Path::new(&subject),
+            &std::env::var("TILO_VMD_COHORT_CASE").unwrap(),
         );
-        if std::env::var("TILO_VMD_COHORT_CASE").unwrap() == "valid" {
-            assert!(result.is_ok(), "{}", result.err().unwrap());
-            let cohort = result.unwrap();
-            let mut provenance = tilo_vm_protocol::Provenance::local("apps+runtime");
-            provenance.cargo_profile = Some("thin-app".into());
-            provenance.cargo_lock_hash = Some("new graph".into());
-            provenance.target = Some(format!("{}-unknown-linux-gnu", std::env::consts::ARCH));
-            let base = tilo_vm_protocol::BaseInfo {
-                cargo_lock_hash: Some("old graph".into()),
-                target: provenance.target.clone(),
-                ..Default::default()
-            };
-            assert!(crate::daemon::abi_check(&provenance, &base, std::env::consts::ARCH).is_err());
-            assert!(
-                crate::daemon::abi_check_verified(
-                    &provenance,
-                    &base,
-                    std::env::consts::ARCH,
-                    Some(&cohort)
-                )
-                .is_ok()
-            );
-            provenance.target = Some("wrong-architecture".into());
-            assert!(
-                crate::daemon::abi_check_verified(
-                    &provenance,
-                    &base,
-                    std::env::consts::ARCH,
-                    Some(&cohort)
-                )
-                .is_err()
-            );
-        } else {
-            assert!(result.is_err(), "an invalid cohort was admitted");
-        }
         return;
     }
     for case in [
         "valid",
+        "dual_isa",
+        "service",
+        "missing_isa",
+        "platform",
         "publisher",
         "runtime",
         "payload",
