@@ -14753,6 +14753,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-files",
  "tilo-identity-host",
+ "tilo-joined-room",
  "tilo-peer-state",
  "tilo-relay",
  "tilo-rt",

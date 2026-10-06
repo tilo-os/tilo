@@ -8,8 +8,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+#[path = "invocation_journal/effect.rs"]
+mod effect;
 #[path = "invocation_journal/guarded.rs"]
 mod guarded;
+pub(crate) use effect::PreparedEffect;
+#[cfg(test)]
+#[path = "invocation_journal/effect_tests.rs"]
+mod effect_tests;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use tilo_actions::{InvocationId, InvocationUpdate};
@@ -95,6 +101,7 @@ pub(crate) struct DurableInvocation {
     pub uncertain: bool,
     pub cancellation_requested: bool,
     guarded: Option<guarded::State>,
+    pub(crate) prepared_effect: Option<PreparedEffect>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -217,7 +224,7 @@ impl InvocationJournal {
             observed_snapshot = Some(file);
             snapshot
         };
-        if !matches!(snapshot.version, 1..=4) || snapshot.host.is_nil() {
+        if !matches!(snapshot.version, 1..=5) || snapshot.host.is_nil() {
             return Err("invocation journal version or host unsupported".into());
         }
         let mut keys = HashSet::new();
@@ -225,6 +232,12 @@ impl InvocationJournal {
         let mut invocations = HashSet::new();
         for record in &snapshot.records {
             record.key.owner.validate()?;
+            if let Some(prepared) = &record.prepared_effect {
+                if snapshot.version < 5 {
+                    return Err("prepared effect requires journal version 5".into());
+                }
+                prepared.validate(record)?;
+            }
             if record.guarded.is_some() && snapshot.version < 3 {
                 return Err("guarded read requires journal version 3".into());
             }
@@ -258,7 +271,13 @@ impl InvocationJournal {
         let mut recovered = false;
         for record in &mut journal.snapshot.records {
             if !record.update.is_terminal() {
-                record.update = unknown(record.key.invocation);
+                record.update = if record.prepared_effect.is_some() {
+                    InvocationUpdate::Accepted {
+                        invocation: record.key.invocation,
+                    }
+                } else {
+                    unknown(record.key.invocation)
+                };
                 record.uncertain = true;
                 recovered = true;
             }
@@ -269,7 +288,7 @@ impl InvocationJournal {
             .snapshot
             .records
             .iter()
-            .any(|record| record.guarded.is_some())
+            .any(|record| record.guarded.is_some() || record.prepared_effect.is_some())
         {
             // A visible terminal marker may be the result of a failed rename
             // directory barrier. Reconcile the exact decoded file, not a
@@ -362,6 +381,7 @@ impl InvocationJournal {
             uncertain: false,
             cancellation_requested: false,
             guarded: None,
+            prepared_effect: None,
         });
         self.persist()?;
         #[cfg(test)]
@@ -392,6 +412,11 @@ impl InvocationJournal {
             return Err(
                 "guarded invocation requires a sanitized failure or private terminal".into(),
             );
+        }
+        if let Some(prepared) = &record.prepared_effect
+            && (update != prepared.update || uncertain)
+        {
+            return Err("prepared effect requires its exact owner-accepted terminal".into());
         }
         record.update = update;
         record.uncertain = uncertain;

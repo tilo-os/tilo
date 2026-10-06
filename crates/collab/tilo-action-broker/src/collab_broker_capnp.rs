@@ -25,6 +25,9 @@ mod durable_local_invocation;
 #[path = "invocation_journal.rs"]
 mod invocation_journal;
 mod invoker;
+#[cfg(test)]
+#[path = "collab_broker_capnp/native_effect_recovery_tests.rs"]
+mod native_effect_recovery_tests;
 mod native_media;
 mod published_invocation;
 mod resolved_invocation;
@@ -1560,6 +1563,15 @@ impl CapnpBrokerState {
         record: &DurableInvocation,
     ) -> Result<(), String> {
         let current = self.current_action_caller(caller)?;
+        if record.prepared_effect.is_some()
+            && record
+                .intent
+                .get("actor")
+                .and_then(serde_json::Value::as_str)
+                != Some(current.broker_actor().id.as_str())
+        {
+            return Err("prepared invocation actor differs from current caller".into());
+        }
         let now = self.checked_policy_time(caller.policy_time.as_ref())?.1 / 1_000_000_000;
         let contract: tilo_actions::ActionContract =
             serde_json::from_value(record.intent.get("contract").cloned().unwrap_or_default())
@@ -3228,7 +3240,50 @@ impl CapnpBrokerState {
                 request
             }
         };
+        if let Some(key) = &pending.journal_key {
+            self.journal
+                .lock()
+                .map_err(|_| capnp::Error::failed("invocation journal unavailable".into()))?
+                .as_mut()
+                .map_err(|error| capnp::Error::failed(error.clone()))?
+                .as_mut()
+                .ok_or_else(|| capnp::Error::failed("durable admission unavailable".into()))?
+                .prepare_effect(key, update.clone(), &request)
+                .map_err(capnp::Error::failed)?;
+        }
         self.commit_owner_request(request, None).await
+    }
+
+    /// Reconcile an inert saved receipt, never dispatch or reconstruct action authority.
+    async fn reconcile_prepared_effect(
+        &self,
+        record: DurableInvocation,
+        authorize: impl Fn() -> Result<(), String>,
+    ) -> Result<DurableInvocation, String> {
+        authorize()?;
+        let Some(prepared) = record.prepared_effect.as_ref() else {
+            return Ok(record);
+        };
+        if !record.uncertain || record.update.is_terminal() {
+            return Ok(record);
+        }
+        self.owner_health()?;
+        // The normal service supplies actual current governor custody and exact owner retry.
+        // A saved request grants no authority, and no unavailable service fallback is allowed.
+        if let Err(error) = self.publisher.commit_owner(prepared.request(), None).await {
+            tracing::warn!(%error, "prepared effect remains uncertain");
+            authorize()?;
+            return Ok(record);
+        }
+        authorize()?;
+        self.journal
+            .lock()
+            .map_err(|_| "invocation journal unavailable")?
+            .as_mut()
+            .map_err(|error| error.clone())?
+            .as_mut()
+            .ok_or("durable admission unavailable")?
+            .finish_effect(&record.key, prepared)
     }
 
     fn record_effect_receipt(
@@ -4756,7 +4811,7 @@ impl CapnpBrokerState {
             };
             let intent = serde_json::json!({ "request": request,
                 "contract": offered.1.contract, "operation_kind": offered.1.operation_kind,
-                "context": receipt_context, "app_id": offered.0.app_id,
+                "context": receipt_context, "actor": actor.id, "app_id": offered.0.app_id,
                 "action": offered.1.action, "revision": revision });
             if let Some(context) = durable {
                 context.before_admission(self, journal.host(), peer_id, &offered, &sender)?;
