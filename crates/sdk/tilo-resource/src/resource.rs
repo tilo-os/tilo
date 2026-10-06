@@ -939,31 +939,47 @@ enum TypeSchema {
     Group,
 }
 
-/// `build`'s schema for `R`, retained per resource type. The [`APPLY`] and
-/// [`GROUP`](crate::GROUP) schemas read the action's whole serde form and
-/// every declaration, none of which change while the program runs, and a
-/// surface publishes its resource again whenever what it shows changes.
+#[derive(Default)]
+struct CompiledSchemas {
+    epoch: u64,
+    entries: HashMap<(TypeId, TypeSchema), Option<serde_json::Value>>,
+}
+
+static SCHEMAS: OnceLock<Mutex<CompiledSchemas>> = OnceLock::new();
+
+/// Forget schemas derived by the previous app code before an in-place reload.
+/// Hosts also call this when a reload is rejected, so the retained app rebuilds
+/// its own definitions. Document and view changes do not invalidate type schemas.
+#[doc(hidden)]
+pub fn reset_type_schemas() {
+    if let Some(cache) = SCHEMAS.get() {
+        let mut store = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        store.epoch = store.epoch.wrapping_add(1);
+        store.entries.clear();
+    }
+}
+
+/// `build`'s schema for `R`, retained for this generation of app code.
 fn per_type<R: Resource>(
     schema: TypeSchema,
     build: impl FnOnce() -> Option<serde_json::Value>,
 ) -> Option<serde_json::Value> {
-    type Built = HashMap<(TypeId, TypeSchema), Option<serde_json::Value>>;
-    static BUILT: OnceLock<Mutex<Built>> = OnceLock::new();
-    let cache = BUILT.get_or_init(Mutex::default);
+    let cache = SCHEMAS.get_or_init(Mutex::default);
     let key = (TypeId::of::<R>(), schema);
-    if let Some(found) = cache
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(&key)
-    {
-        return found.clone();
-    }
-    // Built outside the lock: a schema may publish another resource's.
+    let epoch = {
+        let store = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(found) = store.entries.get(&key) {
+            return found.clone();
+        }
+        store.epoch
+    };
+    // Build outside the lock: a schema may publish another resource's.
     let value = build();
-    cache
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(key, value.clone());
+    let mut store = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    // A build started before a code reload cannot repopulate the new cache.
+    if store.epoch == epoch {
+        store.entries.insert(key, value.clone());
+    }
     value
 }
 
