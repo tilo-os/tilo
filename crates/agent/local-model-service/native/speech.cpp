@@ -96,7 +96,13 @@ extern "C" int tilo_speech_transcribe(void * context, const float * samples,
     params.suppress_blank = true;
     params.suppress_nst = true;
     params.language = language;
-    const int result = whisper_full_with_state(ctx, handle->state, params, samples, count);
+    // FFT preprocessing allocates per thread. An allocation exception while a
+    // worker is joinable terminates before this ABI catch can run. Compute mel
+    // serially inside the catch, then retain two threads for recognition. The
+    // pinned API consumes precomputed mel when no new samples are supplied.
+    if (count > 0 && whisper_pcm_to_mel_with_state(ctx, handle->state, samples, count, 1) != 0)
+        return -3;
+    const int result = whisper_full_with_state(ctx, handle->state, params, nullptr, 0);
     // Pinned 1.8.3 frees the state when KV allocation fails (-7). Never leave
     // an owning handle pointing at it for destruction or a later call.
     if (result == -7) handle->state = nullptr;
