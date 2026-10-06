@@ -140,12 +140,17 @@ def command(args) -> list[str]:
     argv.extend([args.operation, "--locked", "--color=never"])
     for package in args.package:
         argv.extend(["-p", package])
+    named_tests = [args.test] if isinstance(args.test, str) else (args.test or [])
+    if not (args.lib or args.tests or named_tests):
+        raise ValueError("select --lib, --tests, or at least one --test target")
+    if args.tests and (args.lib or named_tests):
+        raise ValueError("--tests already includes library and integration targets; choose all or explicit targets")
     if args.lib:
         argv.append("--lib")
-    elif args.tests:
+    if args.tests:
         argv.append("--tests")
-    elif args.test:
-        argv.extend(["--test", args.test])
+    for name in named_tests:
+        argv.extend(["--test", name])
     # A Cargo drop-in may use the project's nextest command, whose message formats
     # differ from Cargo. Preserve its normal test runner and human summary.
     if args.operation == "check":
@@ -240,10 +245,10 @@ def main() -> int:
     parser.add_argument("operation", choices=("check", "test"))
     parser.add_argument("--cargo-command", help="Cargo/drop-in command with arguments (default: $CARGO or cargo)")
     parser.add_argument("-p", "--package", action="append", required=True)
-    targets = parser.add_mutually_exclusive_group(required=True)
+    targets = parser.add_argument_group("targets (select all tests or combine explicit targets)")
     targets.add_argument("--lib", action="store_true")
     targets.add_argument("--tests", action="store_true")
-    targets.add_argument("--test")
+    targets.add_argument("--test", action="append", help="named integration target (repeatable; may be combined with --lib)")
     parser.add_argument("--filter")
     parser.add_argument("--exact", action="store_true")
     parser.add_argument("--out", type=Path)
