@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
-// No filesystem or D-Bus fallback. Only an inherited authenticated connection.
+// Document selection uses only the inherited authenticated chooser connection.
+// Metadata opens existing files inside the unchanged launcher sandbox.
 #define _GNU_SOURCE
 #include <jni.h>
 #include <gio/gio.h>
@@ -10,11 +11,87 @@
 #include <poll.h>
 #include <stdlib.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
 #define FRAME_LIMIT 65536
 static int connection = -2;
+
+static gchar *java_utf8(JNIEnv *env, jstring value, jsize limit) {
+    if (!value) return NULL;
+    jsize length = (*env)->GetStringLength(env, value);
+    if (length > limit) return NULL;
+    const jchar *characters = (*env)->GetStringChars(env, value, NULL);
+    if (!characters) return NULL;
+    gchar *text = NULL;
+    // Embedded NUL cannot name a file or metadata column faithfully.
+    gboolean valid = TRUE;
+    for (jsize i = 0; i < length; i++) if (!characters[i]) valid = FALSE;
+    if (valid) text = g_utf16_to_utf8((const gunichar2 *)characters, length, NULL, NULL, NULL);
+    (*env)->ReleaseStringChars(env, value, characters);
+    return text;
+}
+
+static jstring utf8_java(JNIEnv *env, const char *value) {
+    if (!value) return NULL;
+    glong length;
+    gunichar2 *characters = g_utf8_to_utf16(value, -1, NULL, &length, NULL);
+    if (!characters) return NULL;
+    jstring result = (*env)->NewString(env, (const jchar *)characters, (jsize)length);
+    g_free(characters);
+    return result;
+}
+
+// Metadata requires a successful read-authorized open in the existing sandbox.
+// fstat does not read content. Never reopen a path after this authority
+// check: a swapped symlink must not disclose another file's metadata.
+JNIEXPORT jobjectArray JNICALL Java_android_app_TiloDocuments_queryFileNative(
+        JNIEnv *env, jclass klass, jstring path, jobjectArray columns) {
+    (void)klass;
+    if (!columns || (*env)->GetArrayLength(env, columns) > 32) return NULL;
+    gchar *filename = java_utf8(env, path, 4096);
+    if (!filename || filename[0] != '/') { g_free(filename); return NULL; }
+    int fd = open(filename, O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOCTTY);
+    if (fd < 0) { g_free(filename); return NULL; }
+    struct stat metadata;
+    int observed = fstat(fd, &metadata);
+    close(fd);
+    if (observed || !S_ISREG(metadata.st_mode)) { g_free(filename); return NULL; }
+    jclass object_class = (*env)->FindClass(env, "java/lang/Object");
+    jclass long_class = (*env)->FindClass(env, "java/lang/Long");
+    if (!object_class || !long_class) { g_free(filename); return NULL; }
+    jmethodID value_of = (*env)->GetStaticMethodID(env, long_class, "valueOf", "(J)Ljava/lang/Long;");
+    if (!value_of) { g_free(filename); return NULL; }
+    jsize count = (*env)->GetArrayLength(env, columns);
+    jobjectArray row = (*env)->NewObjectArray(env, count, object_class, NULL);
+    if (!row) { g_free(filename); return NULL; }
+    for (jsize i = 0; i < count && !(*env)->ExceptionCheck(env); i++) {
+        jstring column = (*env)->GetObjectArrayElement(env, columns, i);
+        gchar *name = java_utf8(env, column, 128);
+        (*env)->DeleteLocalRef(env, column);
+        if (!name) { g_free(filename); return NULL; }
+        jobject value = NULL;
+        if (g_str_equal(name, "_display_name")) {
+            gchar *basename = g_path_get_basename(filename);
+            value = utf8_java(env, basename);
+            g_free(basename);
+        } else if (g_str_equal(name, "_size")) {
+            value = (*env)->CallStaticObjectMethod(env, long_class, value_of, (jlong)metadata.st_size);
+        } else if (g_str_equal(name, "mime_type")) {
+            gchar *type = g_content_type_guess(filename, NULL, 0, NULL);
+            gchar *mime = type ? g_content_type_get_mime_type(type) : NULL;
+            value = utf8_java(env, mime);
+            g_free(mime);
+            g_free(type);
+        }
+        g_free(name);
+        if (value && !(*env)->ExceptionCheck(env)) (*env)->SetObjectArrayElement(env, row, i, value);
+        if (value) (*env)->DeleteLocalRef(env, value);
+    }
+    g_free(filename);
+    return (*env)->ExceptionCheck(env) ? NULL : row;
+}
 
 // ATL wraps its GtkLabel inside a generic WrapperWidget and GtkBox. Generic
 // roles do not expose an accessible name. Label the TextView's real semantic

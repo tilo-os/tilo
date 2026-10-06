@@ -573,6 +573,7 @@ files-place-recent = Recent
 files-empty-recent = Files you open or create appear here
 files-recent-reveal = Open containing folder
 files-recent-forget = Remove from Recent
+files-recent-action-unavailable = This recent item is no longer available. Open Recent and choose a current item.
 files-recent-not-a-folder = Recent is not a folder; open one to add files
 
 ## Cloud accounts

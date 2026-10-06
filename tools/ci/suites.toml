@@ -369,6 +369,7 @@ suites = [
   "scripts/perf/check_app_coverage_test.py",
   "scripts/perf/code_editor_effects_test.py",
   "scripts/perf/device_notes_latency_test.py",
+  "scripts/perf/device_notes_trace_test.py",
   "scripts/perf/collect_code_editor_native_test.py",
   "scripts/perf/collect_file_explorer_native_test.py",
   "scripts/perf/collect_scratchpad_native_test.py",
@@ -603,6 +604,8 @@ inputs = [
   "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/Cargo.toml", "crates/dev/ui-builder/Cargo.toml",
   ".cargo/config.toml",
   "examples/apps/", "examples/README.md", "docs/examples.md",
+  # Task guides are embedded by the CLI from the published documentation.
+  "docs/developers/tasks/",
   # The portability lint compiles in the policy gate's rules table, and the
   # capability check the table of what each capability's code uses.
   "tools/policy/app_portability_rules.toml", "tools/policy/app_capability_usage.toml",
@@ -674,6 +677,7 @@ inputs = [
 ]
 readers = [
   "crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/portability.rs",
+  "crates/dev/tilo-app-cli/src/guide.rs",
   "crates/dev/tilo-app-cli/src/standalone.rs", "crates/dev/tilo-app-cli/tests/outside_repo.rs",
   "crates/dev/tilo-app-cli/src/capability_usage.rs",
   # Android packaging copies the standalone font catalog out of the SDK.
