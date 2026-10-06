@@ -2409,12 +2409,13 @@ impl VelloDrmBridge {
                 .renderer
                 .gpu_dispatch_timestamp_latest_submission_id()
         });
+        let mut timing = self.phase_timing_enabled.then(BridgePhaseTiming::default);
         let rendered = self.target.render(
             scene,
             Some(damage),
             FrameOutput::GpuOnly,
             CompletionPolicy::Absolute(deadline),
-            None,
+            timing.as_mut(),
             |device, encoder, source| match (compositor, encode) {
                 (Some(compositor), _) => compositor.encode(encoder, source, view, format),
                 (None, Some(pipeline)) => pipeline.encode(device, encoder, source, view),
@@ -2437,6 +2438,7 @@ impl VelloDrmBridge {
                 self.xrgb_history_generation,
             );
         }
+        self.last_phase_timing = rendered.as_ref().ok().and(timing);
         let (_, admitted) = rendered?;
         Ok(GpuFrameStats {
             revision: damage.revision,
@@ -2647,6 +2649,11 @@ impl VelloDrmBridge {
     /// Latest diagnostic timing. `None` means profiling was not enabled for that paint.
     pub fn last_phase_timing(&self) -> Option<BridgePhaseTiming> {
         self.last_phase_timing
+    }
+
+    /// Consume the completed paint phases so a skipped subsequent frame cannot reuse them.
+    pub fn take_phase_timing(&mut self) -> Option<BridgePhaseTiming> {
+        self.last_phase_timing.take()
     }
 
     /// Current opt-in Vello per-dispatch timestamp diagnostic state.
@@ -8392,6 +8399,91 @@ mod tests {
             height,
             stride: width.saturating_mul(4),
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn direct_paint_phase_timing_observes_real_gpu_wait_without_pixel_readback() {
+        let mut bridge = required_bridge(128, 96);
+        let target = direct_target(&bridge, 128, 96);
+        let scene = rect_scene(128, 96, Color::WHITE);
+        let white = crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS;
+        bridge
+            .paint_imported_until(
+                &scene,
+                version(1, None, None),
+                &target,
+                tilo_test_env::hang_deadline(),
+                white,
+                &[],
+            )
+            .unwrap();
+        assert!(
+            bridge.last_phase_timing().is_none(),
+            "ordinary bridge profiling stays off"
+        );
+        bridge.set_phase_timing_enabled(true);
+        let stats = bridge
+            .paint_imported_until(
+                &scene,
+                version(2, None, None),
+                &target,
+                tilo_test_env::hang_deadline(),
+                white,
+                &[],
+            )
+            .unwrap();
+        let timing = bridge
+            .last_phase_timing()
+            .expect("actual direct GPU paint must expose its phases");
+        assert!(
+            timing.submit_us > 0,
+            "actual CPU encoding and queue submission"
+        );
+        assert!(
+            timing.completed_readback_map_us > 0,
+            "actual GPU completion poll"
+        );
+        assert_eq!(timing.readback_bytes, 0);
+        assert_eq!(timing.cpu_output_bytes, 0);
+        assert_eq!(timing.cpu_copy_swizzle_us, 0);
+        assert_eq!(stats.framebuffer_copy_bytes, 0);
+        assert_eq!(stats.completion_markers, 1);
+        assert_eq!(bridge.take_phase_timing(), Some(timing));
+        assert!(
+            bridge.take_phase_timing().is_none(),
+            "timing is consumed exactly once"
+        );
+        assert!(
+            bridge
+                .paint_imported_until(
+                    &scene,
+                    version(3, None, None),
+                    &target,
+                    Instant::now()
+                        .checked_sub(Duration::from_millis(1))
+                        .expect("monotonic clock permits an expired deadline"),
+                    white,
+                    &[]
+                )
+                .is_err()
+        );
+        assert!(
+            bridge.last_phase_timing().is_none(),
+            "early refusal never reuses preceding frame timing"
+        );
+        bridge.set_phase_timing_enabled(false);
+        bridge
+            .paint_imported_until(
+                &scene,
+                version(4, None, None),
+                &target,
+                tilo_test_env::hang_deadline(),
+                white,
+                &[],
+            )
+            .unwrap();
+        assert!(bridge.last_phase_timing().is_none());
     }
 
     /// Runs the ordinary direct paint, not a diagnostic helper or a fake GPU sample.
