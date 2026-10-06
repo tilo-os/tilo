@@ -5067,6 +5067,8 @@ mod architecture_tests {
 
     #[test]
     fn owned_navigation_rejects_unrelated_completion_and_preserves_redirect_output() {
+        use ui::tilo_resource::Effect as _;
+
         struct Events(
             std::sync::Mutex<Vec<WebViewEvent>>,
             std::sync::Arc<TestEngine>,
@@ -5149,6 +5151,17 @@ mod architecture_tests {
             output.value,
             Some(serde_json::json!("https://redirect.test/"))
         );
+        let contract = crate::effects::BrowserEffect::Navigate {
+            url: "https://request.test/".into(),
+        }
+        .bound()
+        .contract;
+        assert!(matches!(
+            contract.execution,
+            ui::tilo_actions::ExecutionMode::Background { cancellable: false }
+        ));
+        assert!(contract.validate_declaration().is_empty());
+        contract.result.validate(&output).unwrap();
         let failed = ui::tilo_actions::InvocationId::new();
         widget.admit(failed, BrowserOperation::Reload).unwrap();
         let request_id = widget.resource_navigation_request.unwrap();
