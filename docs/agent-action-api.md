@@ -271,6 +271,19 @@ a private JSON object on standard input, rather than placing a credential
 in the command line. An accepted invocation means the attempt started;
 `state-dump` reports authentication progress and the mapped result.
 
+For a bounded timing measurement, `configure-session-diagnostics@greeter`
+configures this greeter's next ordinary sign-in with four required booleans:
+`presentation`, `gpu_stages`, `gpu_timestamps`, `gpu_dispatch_timestamps`.
+Dispatch timestamps require GPU timestamps. The selection is transient and
+inspectable as `session_diagnostics`; a fresh greeter starts without a selection,
+and normal diagnostic flags are off unless explicitly configured by the host.
+Set all four false to disable them for this sign-in. Authentication in progress
+refuses changes. These are fixed content-free timing switches, never arbitrary
+environment, session argv, output paths or input gates. Invoke normal `sign-in`
+through private stdin afterward; PAM and the installed session remain authoritative.
+No measurement qualifies without the matching actual input, body revision and
+hardware presentation proof; GPU-feature support must be observed separately.
+
 If PAM requires another answer, the current challenge has a unique ID and
 a `secret` or `visible` response kind, and its bounded normal PAM question
 with literal echoes of private answers removed. `respond-challenge@greeter` takes that

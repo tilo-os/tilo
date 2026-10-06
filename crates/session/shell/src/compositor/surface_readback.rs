@@ -101,32 +101,33 @@ pub fn swizzle_row_to_rgba(
     debug_assert_eq!(src.len(), expected);
     match format {
         wl_shm::Format::Argb8888 => {
-            // [B, G, R, A] -> [R, G, B, A]
-            for px in src.chunks_exact(4) {
-                let &[b, g, r, a] = px else {
-                    continue; // chunks_exact(4) guarantees len == 4
-                };
-                out.push(r);
-                out.push(g);
-                out.push(b);
-                out.push(a);
-            }
+            append_bgra_row::<false>(src, out);
             Ok(())
         }
         wl_shm::Format::Xrgb8888 => {
-            // [B, G, R, X] -> [R, G, B, 0xFF]
-            for px in src.chunks_exact(4) {
-                let &[b, g, r, _x] = px else {
-                    continue; // chunks_exact(4) guarantees len == 4
-                };
-                out.push(r);
-                out.push(g);
-                out.push(b);
-                out.push(0xFF);
-            }
+            append_bgra_row::<true>(src, out);
             Ok(())
         }
         other => Err(ReadbackError::UnsupportedFormat(other)),
+    }
+}
+
+fn append_bgra_row<const OPAQUE: bool>(src: &[u8], out: &mut Vec<u8>) {
+    // One bulk append checks capacity once per row. Converting the initialized
+    // tail lets LLVM vectorize without a Vec capacity check for each channel.
+    // The source and existing prefix remain untouched; no CPU-specific ISA or
+    // uninitialized-memory access is required.
+    let start = out.len();
+    out.extend_from_slice(src);
+    let (_, tail) = out.split_at_mut(start);
+    for pixel in tail.chunks_exact_mut(4) {
+        let [blue, _, red, alpha] = pixel else {
+            continue;
+        };
+        std::mem::swap(blue, red);
+        if OPAQUE {
+            *alpha = 255;
+        }
     }
 }
 
@@ -333,6 +334,74 @@ pub use crate::network::surface_tracker::{CapturePath, SurfaceTracker, TakenFram
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn swizzle_matches_every_pixel_and_preserves_the_existing_tail() {
+        for width in [
+            0_usize, 1, 3, 7, 15, 16, 17, 31, 32, 33, 129, 801, 1920, 3840,
+        ] {
+            let source: Vec<u8> = (0..width.saturating_mul(4))
+                .map(|index: usize| index.wrapping_mul(131).wrapping_add(17).to_le_bytes()[0])
+                .collect();
+            for format in [wl_shm::Format::Argb8888, wl_shm::Format::Xrgb8888] {
+                let mut expected = vec![91, 92, 93];
+                for pixel in source.chunks_exact(4) {
+                    let [blue, green, red, alpha] = pixel else {
+                        unreachable!("whole pixels in the fixture");
+                    };
+                    expected.extend_from_slice(&[
+                        *red,
+                        *green,
+                        *blue,
+                        if format == wl_shm::Format::Xrgb8888 {
+                            255
+                        } else {
+                            *alpha
+                        },
+                    ]);
+                }
+                let mut output = vec![91, 92, 93];
+                swizzle_row_to_rgba(format, &source, width, &mut output).unwrap();
+                assert_eq!(output, expected, "format={format:?}, width={width}");
+            }
+        }
+    }
+
+    #[test]
+    fn rejected_swizzle_rows_preserve_the_destination() {
+        for (format, source, width) in [
+            (wl_shm::Format::Argb8888, vec![0; 7], 2),
+            (wl_shm::Format::Xrgb8888, vec![0; 9], 2),
+            (wl_shm::Format::Argb8888, vec![0; 4], usize::MAX),
+            (wl_shm::Format::Rgb565, vec![0; 8], 2),
+            (wl_shm::Format::Rgb565, vec![], 0),
+        ] {
+            let mut output = vec![91, 92, 93];
+            assert!(swizzle_row_to_rgba(format, &source, width, &mut output).is_err());
+            assert_eq!(output, [91, 92, 93]);
+        }
+    }
+
+    #[test]
+    fn owned_shm_conversion_excludes_stride_padding() {
+        for format in [wl_shm::Format::Argb8888, wl_shm::Format::Xrgb8888] {
+            let frame = OwnedShmFrame {
+                bytes: vec![10, 20, 30, 40, 99, 99, 50, 60, 70, 80, 99, 99],
+                width: 1,
+                height: 2,
+                stride: 6,
+                format,
+            };
+            let mut output = vec![91, 92, 93];
+            assert_eq!(owned_shm_to_rgba(&frame, &mut output).unwrap(), (1, 2));
+            let expected = if format == wl_shm::Format::Argb8888 {
+                vec![30, 20, 10, 40, 70, 60, 50, 80]
+            } else {
+                vec![30, 20, 10, 255, 70, 60, 50, 255]
+            };
+            assert_eq!(output, expected);
+        }
+    }
 
     /// Test fixture: deterministic single-row Argb8888 buffer exercising the byte swizzle without client-server plumbing.
     fn argb_row(width: usize) -> Vec<u8> {
