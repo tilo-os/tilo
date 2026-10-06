@@ -142,7 +142,45 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
     }
 }
 
+impl NativeOwnerCommitService {
+    fn request_agent_start(
+        &self,
+        room: &str,
+        agent: &str,
+        caller: &tilo_user_identity::DeviceCert,
+    ) -> Result<(), String> {
+        let owner = self.owner.as_ref().ok_or("native task owner unavailable")?;
+        let room_id = super::state::RoomId::parse(room).ok_or("invalid native Agent room")?;
+        if let Some(network) = self.network.as_ref() {
+            network.check_native_custody(owner, room_id)?;
+            if network.governed_elsewhere(room_id) {
+                return Err("Agent startup requires the governing owner".into());
+            }
+        }
+        let workspace = self
+            .tree
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room_id)
+            .cloned()
+            .ok_or("native Agent workspace disappeared")?;
+        super::launcher::launch_certified_workspace_agent(agent, &workspace, owner, caller)
+            .map(|_| ())
+    }
+}
+
 impl WorkspaceTasks for NativeOwnerCommitService {
+    fn start_agent(
+        &self,
+        room: &str,
+        agent: &str,
+        caller: &tilo_user_identity::DeviceCert,
+    ) -> Result<(), String> {
+        self.request_agent_start(room, agent, caller)
+    }
+
     fn requires_room(&self, room: &str) -> bool {
         tilo_peer_state::owner_commit::OwnerCommitService::requires_room(self, room)
     }

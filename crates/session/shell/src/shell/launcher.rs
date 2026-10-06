@@ -1021,6 +1021,9 @@ pub(crate) struct LaunchSession(std::sync::Arc<SessionLaunches>);
 
 pub(crate) struct SessionLaunches {
     events: Mutex<Vec<LaunchEvent>>,
+    /// One supervised managed service per room and Agent. Reservations live
+    /// until the actual worker terminates, not a connection timeout.
+    managed_agents: Mutex<HashSet<(String, String)>>,
     pub(super) startup: super::launch_readiness::StartupObservations,
     /// `package_id` -> where its next window should land; claimed (not
     /// consumed) by [`placement_for_toplevel`] since the compositor tracks
@@ -1069,6 +1072,7 @@ impl Default for SessionLaunches {
     fn default() -> Self {
         Self {
             events: Mutex::default(),
+            managed_agents: Mutex::default(),
             startup: super::launch_readiness::StartupObservations::default(),
             pending: Mutex::default(),
             launched: Mutex::default(),
@@ -1087,6 +1091,30 @@ impl Default for SessionLaunches {
                 crate::shell::launch_gate::MAX_HELD_LAUNCHES,
             )),
         }
+    }
+}
+
+struct ManagedAgentReservation {
+    session: LaunchSession,
+    key: (String, String),
+}
+
+impl Drop for ManagedAgentReservation {
+    fn drop(&mut self) {
+        lock(&self.session.managed_agents).remove(&self.key);
+    }
+}
+
+impl LaunchSession {
+    fn reserve_managed_agent(&self, room: &str, agent: &str) -> Option<ManagedAgentReservation> {
+        let key = (room.to_owned(), agent.to_owned());
+        if !lock(&self.managed_agents).insert(key.clone()) {
+            return None;
+        }
+        Some(ManagedAgentReservation {
+            session: self.clone(),
+            key,
+        })
     }
 }
 
@@ -2263,6 +2291,29 @@ pub fn launch_workspace_agent(
     if !workspace.may_administer(&crate::shell::state::local_user_id()) {
         return Err(LaunchError::AgentLaunchNotAuthorized);
     }
+    launch_admitted_workspace_agent(agent_id, workspace)
+}
+
+/// Launch using the genuine original caller rather than the local UI identity.
+/// The canonical owner read remains held through the normal startup request,
+/// so a concurrent policy change cannot precede admission of that request.
+pub(super) fn launch_certified_workspace_agent(
+    agent_id: &str,
+    workspace: &Workspace,
+    owner: &super::native_workspace_owner::NativeWorkspaceOwner,
+    caller: &tilo_user_identity::DeviceCert,
+) -> Result<InstalledApp, String> {
+    owner.with_current(workspace.room, |view| {
+        view.peer()
+            .check_workspace_agent_start(caller, agent_id, std::time::SystemTime::now())?;
+        launch_admitted_workspace_agent(agent_id, workspace).map_err(|error| error.user_message())
+    })
+}
+
+fn launch_admitted_workspace_agent(
+    agent_id: &str,
+    workspace: &Workspace,
+) -> Result<InstalledApp, LaunchError> {
     let app = installed_apps()?
         .into_iter()
         .find(|app| app.package_id == WORKSPACE_AGENT_PACKAGE_ID)
@@ -3382,6 +3433,19 @@ fn start_launch(
     if !TEST_EXECUTION_PROGRAM.with(|slot| slot.borrow().as_ref() == Some(&command.program)) {
         return Err("Linux package execution provider is unavailable".into());
     }
+    let managed_reservation = match (
+        command.managed_agent_id.as_deref(),
+        command.service_identity.as_ref(),
+    ) {
+        (Some(agent), Some(identity)) => {
+            let Some(reservation) = events.reserve_managed_agent(&identity.workspace_id, agent)
+            else {
+                return Ok(());
+            };
+            Some(reservation)
+        }
+        _ => None,
+    };
     let app = LaunchIdentity {
         package_id,
         display_name,
@@ -3403,6 +3467,7 @@ fn start_launch(
     let startup_token = super::launch_readiness::command_token(&command);
     let spawn_result = builder.spawn(move || {
         let _authority_lease = authority;
+        let _managed_reservation = managed_reservation;
         let events = worker_events;
         events.clone().adopt();
         let mut cmd = Command::new(&command.program);
@@ -4320,6 +4385,72 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_agent_launch_deduplicates_until_actual_worker_exit() {
+        let session = LaunchSession::current();
+        let command = LaunchCommand {
+            program: PathBuf::from("/bin/sh"),
+            args: vec!["-c".into(), "sleep 0.05".into()],
+            env: Vec::new(),
+            service_identity: Some(ServiceLaunchIdentity {
+                app_id: "so.tilo.agent".into(),
+                workspace_id: "managed-start-test".into(),
+                allowed_compat_entry_ids: Vec::new(),
+                compat_entry_generation: 0,
+                application_creation: None,
+            }),
+            portal_workspace_id: None,
+            managed_agent_id: Some("scribe".into()),
+        };
+        for attempt in 0..2 {
+            spawn_launch("so.tilo.agent".into(), "Agent".into(), command.clone()).unwrap();
+            // Duplicate user/action requests do not create another supervisor.
+            spawn_launch("so.tilo.agent".into(), "Agent".into(), command.clone()).unwrap();
+            let deadline = tilo_test_env::hang_deadline();
+            let mut started = 0;
+            let mut exited = 0;
+            loop {
+                for event in drain_events() {
+                    assert_eq!(event.managed_agent_id.as_deref(), Some("scribe"));
+                    match event.kind {
+                        LaunchEventKind::Started { .. } => started += 1,
+                        LaunchEventKind::Exited => exited += 1,
+                        other => panic!("unexpected managed launch event: {other:?}"),
+                    }
+                }
+                if exited == 1 && lock(&session.managed_agents).is_empty() {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "managed worker did not terminate: attempt {attempt}"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(started, 1);
+            assert_eq!(exited, 1);
+        }
+    }
+
+    #[test]
+    fn managed_agent_reservations_are_room_and_session_specific() {
+        let session = LaunchSession::default();
+        let first = session.reserve_managed_agent("room-a", "scribe").unwrap();
+        assert!(session.reserve_managed_agent("room-a", "scribe").is_none());
+        let other_room = session.reserve_managed_agent("room-b", "scribe").unwrap();
+        let other_agent = session.reserve_managed_agent("room-a", "reed").unwrap();
+        let other_session = LaunchSession::default();
+        let independent = other_session
+            .reserve_managed_agent("room-a", "scribe")
+            .unwrap();
+        drop(first);
+        let retry = session.reserve_managed_agent("room-a", "scribe").unwrap();
+        drop((other_room, other_agent, independent, retry));
+        assert!(lock(&session.managed_agents).is_empty());
+        assert!(lock(&other_session.managed_agents).is_empty());
+    }
 
     fn launch_event(kind: LaunchEventKind) -> LaunchEvent {
         LaunchEvent {

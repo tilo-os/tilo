@@ -8,6 +8,55 @@ use ed25519_dalek::SigningKey;
 use tilo_user_identity::DeviceCert;
 
 impl StatePeer {
+    /// Authorize managed startup without creating membership or task authority.
+    /// The retained original person's exact certificate must still be admitted,
+    /// and the target must already be a current workspace Agent.
+    ///
+    /// # Errors
+    /// Refuses invalid identifiers, replaced certificates, restricted callers,
+    /// missing Agent membership and invalid policy time.
+    pub fn check_workspace_agent_start(
+        &self,
+        caller: &DeviceCert,
+        agent: &str,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        WorkspaceMembershipCommand::RemoveAgent {
+            agent: agent.into(),
+        }
+        .validate()?;
+        if self
+            .core
+            .certificates
+            .get(&caller.device_public_key)
+            .map(AsRef::as_ref)
+            != Some(caller)
+        {
+            return Err("agent startup caller is not current admitted evidence".into());
+        }
+        self.certificate(&caller.device_public_key, now)?;
+        self.check_workspace_administration(caller.device_public_key, now)?;
+        let seconds = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|_| "agent startup clock is before the Unix epoch")?
+            .as_secs();
+        let document = self.admitted_room().ok_or("agent startup room is absent")?;
+        let (_, owner, caps) = crate::room::extract_governed_fields(document);
+        let mut workspace = tilo_desktop_model::Workspace::new(
+            tilo_desktop_model::WorkspaceId(1),
+            "agent startup authority",
+        );
+        workspace.owner = owner;
+        workspace.capabilities = caps;
+        if workspace
+            .role_of_agent_at(agent, seconds)
+            .is_none_or(|role| role == Role::Denied)
+        {
+            return Err("agent startup target is not a current room member".into());
+        }
+        Ok(())
+    }
+
     /// Check current deny-biased workspace administration for this admitted device.
     ///
     /// # Errors

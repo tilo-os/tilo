@@ -340,6 +340,72 @@ mod tests {
     }
 
     #[test]
+    fn managed_agent_start_requires_exact_current_person_and_admitted_target() {
+        let (peer, governor, other, now) = peer();
+        let before = peer.durable().unwrap();
+        peer.check_workspace_agent_start(&governor, "scribe", now)
+            .unwrap();
+        assert!(
+            peer.check_workspace_agent_start(&other, "scribe", now)
+                .is_err()
+        );
+        let mut changed = governor.clone();
+        changed.device_label = "not the admitted certificate".into();
+        assert!(
+            peer.check_workspace_agent_start(&changed, "scribe", now)
+                .is_err()
+        );
+        for invalid in ["missing", " Scribe", "scribe\n", ""] {
+            assert!(
+                peer.check_workspace_agent_start(&governor, invalid, now)
+                    .is_err()
+            );
+        }
+        assert_eq!(peer.durable().unwrap(), before);
+    }
+
+    #[test]
+    fn managed_agent_start_rechecks_removed_agent_membership_without_granting_it() {
+        let (mut peer, governor, _, now) = peer();
+        peer.check_workspace_agent_start(&governor, "scribe", now)
+            .unwrap();
+        peer.remove_governed_capabilities(
+            &["agent-scribe".into()],
+            &SigningKey::from_bytes(&[2; 32]),
+            now,
+        )
+        .unwrap();
+        let before = peer.durable().unwrap();
+        assert!(
+            peer.check_workspace_agent_start(&governor, "scribe", now)
+                .is_err()
+        );
+        assert_eq!(peer.durable().unwrap(), before);
+    }
+
+    #[test]
+    fn managed_agent_start_rechecks_current_deny_biased_administration() {
+        let (mut peer, governor, _, now) = peer();
+        peer.check_workspace_agent_start(&governor, "scribe", now)
+            .unwrap();
+        let restriction = CapOverride::new(
+            Subject::Role(Role::Owner),
+            Scope::Workspace,
+            collab_types::caps::Effect::Restrict,
+            Verb::Read,
+        )
+        .with_id("read-only-startup-owner");
+        peer.put_governed_capabilities(&[restriction], &SigningKey::from_bytes(&[2; 32]), now)
+            .unwrap();
+        let before = peer.durable().unwrap();
+        assert!(
+            peer.check_workspace_agent_start(&governor, "scribe", now)
+                .is_err()
+        );
+        assert_eq!(peer.durable().unwrap(), before);
+    }
+
+    #[test]
     fn current_owner_with_read_restriction_cannot_queue_a_task() {
         let (mut peer, governor, _, now) = peer();
         let restriction = CapOverride::new(

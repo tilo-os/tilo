@@ -146,6 +146,32 @@ are deliberately indistinguishable, so probing cannot map what you may not see:
         "message":"no visible action addressed by (actions, nope) in the current catalogue"}}
 ```
 
+## Starting an admitted Agent
+
+The desktop Task Center publishes `desktop:tasks#start-agent` under
+`so.tilo.desktop`, on the room's `tasks` record. Its only argument is `agent`,
+the canonical identifier of an Agent already admitted to that workspace.
+Discover the published provider in the current catalogue rather than retaining
+its connection-local provider ID across sessions.
+
+Startup requires the original authenticated Person's current workspace Admin
+permission and the target's current Agent membership. Caller certificates,
+room bindings and invocation identity stay out of band; public arguments cannot
+grant membership or delegate authority. Startup uses the ordinary signed managed
+service launcher, not pointer input or a second automation process.
+
+A successful result contains `startup_requested: true`. It does **not** mean the
+Agent is connected, has accepted a task, or is working. Repeated startup requests
+share a supervised managed service for the same room and Agent until its actual
+worker exits; a connection timeout does not release that reservation.
+
+Use `desktop:tasks#queue` to submit work separately and
+`desktop:tasks#read-current-tasks` to observe the owner-confirmed task frontier.
+Per-task `direct` and `stop` actions carry the exact run epoch and direction
+revision returned by the owner. A saved direction is not yet applied, and a
+durable cancellation request is not a stopped Agent. Ordinary messages belong
+in the Agent's Chat conversation and do not create tasks.
+
 ## Reading a terminal session
 
 For Terminal, `tilo-control read so.tilo.terminal --json` returns the shared

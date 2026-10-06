@@ -113,6 +113,22 @@ pub trait WorkspaceTasks: Send + Sync {
     /// The room's current host authority is unavailable.
     fn host_certificate(&self, room: &str) -> Result<tilo_user_identity::DeviceCert, String>;
 
+    /// Request the normal managed service for an already admitted Agent.
+    /// Caller custody comes from the retained original invocation, never args.
+    /// A successful request does not establish that the Agent is connected.
+    ///
+    /// # Errors
+    /// Startup is unsupported, custody changed, or current administration or
+    /// Agent membership cannot be established.
+    fn start_agent(
+        &self,
+        _room: &str,
+        _agent: &str,
+        _caller: &tilo_user_identity::DeviceCert,
+    ) -> Result<(), String> {
+        Err("managed Agent startup is unavailable".into())
+    }
+
     fn execute(
         &self,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,

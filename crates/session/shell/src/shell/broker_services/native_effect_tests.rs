@@ -265,6 +265,65 @@ fn fixture() -> NativeFixture {
 }
 
 #[test]
+fn native_certified_agent_start_refuses_unadmitted_target_with_original_receipt() {
+    let NativeFixture {
+        home,
+        owner,
+        broker,
+        certificate,
+        room,
+        path: _path,
+    } = fixture();
+    let actions = broker.app_action_broker().unwrap();
+    let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();
+    while !actions.state().published_surfaces().iter().any(|surface| {
+        surface.live
+            && surface.app_id == "so.tilo.desktop"
+            && surface.route.cluster_id == room.to_string()
+            && surface.route.record_id == "tasks"
+            && surface
+                .actions
+                .iter()
+                .any(|action| action.action == "start-agent")
+    }) {
+        assert!(
+            Instant::now() < deadline,
+            "native Agent startup door was not published"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let public = failed_certified_effect(
+        &actions,
+        room,
+        &certificate,
+        ("tasks", "desktop:tasks", "start-agent"),
+        serde_json::json!({"agent":"not-admitted"}),
+    );
+    let InvocationUpdate::Failed { invocation, error } = public else {
+        panic!("unadmitted Agent startup must fail")
+    };
+    assert_eq!(error.code, "workspace_task_refused");
+    assert_eq!(
+        error.message,
+        "agent startup target is not a current room member"
+    );
+    owner
+        .with_current(room, |view| {
+            let receipts = tilo_desktop_model::projection::workspace_effect_receipts_of(
+                view.peer().admitted_room().unwrap(),
+            );
+            assert_eq!(receipts.len(), 1);
+            assert_eq!(receipts[0].invocation, invocation);
+            Ok(())
+        })
+        .unwrap();
+    drop(actions);
+    drop(broker);
+    drop(owner);
+    drop(home);
+}
+
+#[test]
 fn native_certified_local_membership_retains_original_and_settles_failed_and_successful_effects() {
     let NativeFixture {
         home,
@@ -471,6 +530,22 @@ fn failed_effect(
     room: crate::shell::state::RoomId,
     certificate: &tilo_user_identity::DeviceCert,
 ) -> InvocationUpdate {
+    failed_certified_effect(
+        actions,
+        room,
+        certificate,
+        ("membership", "desktop:workspace", "add-agent"),
+        serde_json::json!({"agent":"scribe", "preset":"not-a-preset"}),
+    )
+}
+
+fn failed_certified_effect(
+    actions: &tilo_action_broker::collab_broker::AppActionBroker,
+    room: crate::shell::state::RoomId,
+    certificate: &tilo_user_identity::DeviceCert,
+    target: (&str, &str, &str),
+    arguments: serde_json::Value,
+) -> InvocationUpdate {
     use ed25519_dalek::Signer as _;
     use tilo_actions::remote::{
         Caller, InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
@@ -500,21 +575,19 @@ fn failed_effect(
         .find(|surface| {
             surface.route.cluster_id == room
                 && surface.app_id == "so.tilo.desktop"
-                && surface.route.record_id == "membership"
+                && surface.route.record_id == target.0
         })
         .unwrap();
     let request = InvokeRequest {
         invocation,
         target: RemoteActionTarget {
             provider: surface.peer_id.to_string(),
-            address: tilo_actions::ActionAddress::new("desktop:workspace", "add-agent"),
+            address: tilo_actions::ActionAddress::new(target.1, target.2),
         },
-        argument: InvokeArgument::Json(
-            serde_json::json!({"agent":"scribe", "preset":"not-a-preset"})
-                .as_object()
-                .unwrap()
-                .clone(),
-        ),
+        argument: InvokeArgument::Json(match arguments {
+            serde_json::Value::Object(arguments) => arguments,
+            _ => panic!("certified effect arguments must be an object"),
+        }),
         context: None,
         confirmation: None,
         revision: None,

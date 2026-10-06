@@ -193,6 +193,11 @@ impl CapnpBrokerState {
             .as_ref()
             .ok_or("task original custody unavailable")?;
         let caller = original.owner_person_certificate(self, room, envelope)?;
+        if envelope.resource == COLLECTION && envelope.action == "start-agent" {
+            let agent = startup_agent(envelope)?;
+            service.start_agent(room, &agent, &caller)?;
+            return Ok(serde_json::json!({"agent": agent, "startup_requested": true}));
+        }
         let device = caller.device_public_key;
         let command = person_command(envelope)?;
         let request = OwnerCommitRequest {
@@ -992,7 +997,7 @@ fn task_actions(
     tasks: &[tilo_desktop_model::WorkspaceTask],
     controls: &std::collections::BTreeMap<String, tilo_desktop_model::WorkspaceTaskControl>,
 ) -> Vec<PublishedAction> {
-    let mut actions = vec![current_tasks_action(), queue_action()];
+    let mut actions = vec![current_tasks_action(), queue_action(), start_agent_action()];
     for task in tasks {
         actions.push(task_read_action(task));
         let active = controls
@@ -1045,6 +1050,37 @@ fn task_actions(
         }
     }
     actions
+}
+
+fn startup_agent(envelope: &InvocationEnvelope) -> Result<String, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Arguments {
+        agent: String,
+    }
+    let arguments: Arguments = serde_json::from_str(bounded_argument(envelope)?)
+        .map_err(|_| "invalid Agent startup arguments")?;
+    tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::RemoveAgent {
+        agent: arguments.agent.clone(),
+    }
+    .validate()?;
+    Ok(arguments.agent)
+}
+
+fn start_agent_action() -> PublishedAction {
+    let mut action = effect_action(
+        COLLECTION,
+        "start-agent",
+        "Tasks",
+        "Start agent",
+        vec![tilo_actions::ActionParam::required(
+            "agent",
+            tilo_actions::ParamType::Text,
+            "Already admitted workspace Agent",
+        )],
+    );
+    action.contract.permission = tilo_actions::PermissionRequirement::Admin;
+    action
 }
 
 fn current_tasks_action() -> PublishedAction {
@@ -1353,6 +1389,51 @@ mod tests {
             actor: "not-authority".into(),
             context: None,
         }
+    }
+
+    #[test]
+    fn public_start_agent_accepts_only_target_and_declares_administration() {
+        let action = start_agent_action();
+        assert_eq!(action.resource, COLLECTION);
+        assert_eq!(action.action, "start-agent");
+        assert_eq!(
+            action.contract.permission,
+            tilo_actions::PermissionRequirement::Admin
+        );
+        assert_eq!(action.params.len(), 1);
+        assert_eq!(action.params[0].name, "agent");
+        assert_eq!(
+            startup_agent(&envelope(
+                COLLECTION,
+                "start-agent",
+                Some(serde_json::json!({"agent": "scribe"}))
+            ))
+            .unwrap(),
+            "scribe"
+        );
+        for extra in [
+            "caller",
+            "certificate",
+            "room",
+            "invocation",
+            "authority",
+            "role",
+        ] {
+            let mut arguments = serde_json::json!({"agent": "scribe"});
+            arguments[extra] = serde_json::json!("must not confer authority");
+            assert!(startup_agent(&envelope(COLLECTION, "start-agent", Some(arguments))).is_err());
+        }
+        for agent in ["", "Scribe", " scribe", "scribe\n"] {
+            assert!(
+                startup_agent(&envelope(
+                    COLLECTION,
+                    "start-agent",
+                    Some(serde_json::json!({"agent": agent}))
+                ))
+                .is_err()
+            );
+        }
+        assert!(startup_agent(&envelope(COLLECTION, "start-agent", None)).is_err());
     }
 
     #[test]
