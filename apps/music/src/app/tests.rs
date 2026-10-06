@@ -782,17 +782,41 @@ fn hit_center(app: &MusicApp, action: &Action) -> Option<Point> {
 }
 
 #[test]
+fn home_source_picker_keyboard_activation_opens_choices_without_sign_in() {
+    use ui::framework::testing::TestApp;
+    let mut app = TestApp::<crate::resource::MusicShell>::new().unwrap();
+    app.harness()
+        .relayout_themed((360, 900), ui::Theme::high_contrast().with_text_scale(2.0))
+        .unwrap();
+    let before = app.read_document(|doc| doc.clone().get_heads());
+    app.harness()
+        .perform_semantic_named("music-sources", None, &ui::a11y::Action::Focus)
+        .unwrap();
+    app.harness().key("Enter");
+    assert_eq!(app.surface_mut::<MusicApp>().menu_actions.len(), 2);
+    assert!(
+        app.surface_mut::<MusicApp>().source_invocation.is_none(),
+        "opening the source menu never starts OAuth"
+    );
+    assert!(app.surface_mut::<MusicApp>().spotify_jobs.is_empty());
+    app.harness().key("Escape");
+    assert_eq!(app.read_document(|doc| doc.clone().get_heads()), before);
+}
+
+#[test]
 fn spotify_keyboard_creation_and_escape_use_accessible_shared_controls() {
     use ui::framework::testing::TestApp;
     for scale in [1.0, 2.0] {
         let mut app = TestApp::<crate::resource::MusicShell>::new().unwrap();
         app.surface_mut::<MusicApp>().snap_spotify("spotify-home");
+        app.surface_mut::<MusicApp>().on_nav(View::Playlists);
         app.harness()
             .relayout_themed(
                 (360, 900),
                 ui::Theme::high_contrast().with_text_scale(scale),
             )
             .unwrap();
+        assert_eq!(app.surface_mut::<MusicApp>().source_widget_mode(), 3);
         let accessible = app.harness().focus_access_nodes();
         let label = ui::i18n!("music-spotify-create-playlist");
         assert!(
@@ -800,7 +824,8 @@ fn spotify_keyboard_creation_and_escape_use_accessible_shared_controls() {
                 .iter()
                 .any(|node| node.name.as_deref() == Some(label.as_str())
                     && node.state.focusable
-                    && !node.state.disabled)
+                    && !node.state.disabled),
+            "creation remains keyboard accessible in Playlists: {accessible:?}"
         );
         let before = app.read_document(|doc| doc.clone().get_heads());
         app.harness()

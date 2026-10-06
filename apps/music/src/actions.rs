@@ -227,6 +227,11 @@ pub enum Place {
 #[derive(Debug, Clone, PartialEq, Effect)]
 #[effect(operation = "music.effects")]
 pub enum MusicEffect {
+    /// Choose music source
+    ///
+    /// Opens the source picker without starting sign-in or changing a grant.
+    #[effect(device_only)]
+    Sources,
     /// Connect Spotify
     ///
     /// Opens Spotify's PKCE sign-in in the system browser; grants stay in system custody.

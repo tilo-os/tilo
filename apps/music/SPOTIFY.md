@@ -106,8 +106,8 @@ denials and failures are surfaced without retrying the command. A 204 response i
 state and confirms the device, track and playing state before reporting success.
 Confirmed remote play pauses Music's local transport. Spotify owns the remote
 queue; Music does not claim local reorder/remove controls edit that queue.
-Device resources expose the complete discovered list; the Home control group
-shows up to twelve devices. Refresh Spotify queue opens a separate, read-only
+Device resources expose the complete discovered list; the player’s More menu
+shows up to twelve unrestricted output choices after discovery. Refresh Spotify queue opens a separate, read-only
 provider snapshot (up to 50 upcoming items, with truncation explicitly labelled).
 Tracks and episodes show their metadata; snapshot age and errors remain visible.
 The shared refresh button is in Queue’s host focus/accessibility tree, and
@@ -116,11 +116,13 @@ this device’s local queue.
 
 ## UI and resource surface
 
-Shared buttons provide source, authorization and device controls; source and
-error text wraps, controls wrap to the viewport, and their geometry scales with
-system text size. Home playlist tiles now paint artwork and open their actual
-provider collection. The large-text Home renderer includes remote collections,
-wraps empty-state headings, and scrolls the source controls with the content.
+Home has one compact shared source picker above the library. Its menu offers
+Spotify sign-in and YouTube Music; once Spotify is selected, playback authorization
+and disconnect are available there. Opening the picker never starts OAuth.
+Playlist creation belongs in Playlists, device discovery/output selection in the
+player’s More menu, and remote queue refresh in Queue. Controls remain typed
+host-admitted effects with keyboard and accessibility support. Source errors wrap,
+and Home playlist cards display artwork and open the provider collection.
 Search hints describe the selected catalogue instead of assuming YouTube.
 
 Search/library entities, provider save/remove, playlist edits, Connect and

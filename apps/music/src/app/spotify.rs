@@ -16,6 +16,58 @@ pub(super) struct PendingJob {
 use ui::widget::Widget as _;
 
 impl MusicApp {
+    pub(super) fn open_sources_menu(&mut self) {
+        self.context = ui::widget::context_menu::ContextMenu::new();
+        self.menu_actions.clear();
+        self.ctx_track = None;
+        self.ctx_in_playlist = None;
+        self.ctx_queue_index = None;
+        self.menu_anchor_row = None;
+        let choices = if self.spotify_catalogue {
+            vec![
+                ("music-browse-spotify", MusicEffect::BrowseSpotify),
+                ("music-browse-youtube", MusicEffect::BrowseYouTube),
+                (
+                    "music-spotify-playback",
+                    MusicEffect::ConnectSpotifyPlayback,
+                ),
+                ("music-disconnect-spotify", MusicEffect::DisconnectSpotify),
+            ]
+        } else {
+            vec![
+                ("music-connect-spotify", MusicEffect::ConnectSpotify),
+                ("music-browse-youtube", MusicEffect::BrowseYouTube),
+            ]
+        };
+        for (key, effect) in choices {
+            self.push_menu(
+                ui::i18n::I18nManager::format(key, &[]),
+                super::Action::SpotifyEffect(effect),
+            );
+        }
+        if self.spotify_catalogue
+            && self.home.is_some()
+            && self.spotify_library_more
+            && self.spotify_library_offset <= 1950
+        {
+            self.push_menu(
+                ui::i18n!("music-spotify-library-more"),
+                super::Action::SpotifyEffect(MusicEffect::SpotifyLibraryMore),
+            );
+        }
+        let anchor = self
+            .source_buttons
+            .iter()
+            .find(|button| button.test_id() == Some("music-sources"))
+            .map_or_else(
+                || vello::kurbo::Rect::from_origin_size(self.mouse, (0.0, 0.0)),
+                ui::widget::Widget::get_rect,
+            );
+        self.context.set_text_scale(self.context_text_scale);
+        self.context.open_anchored(anchor, self.rect);
+        self.dirty = true;
+    }
+
     pub(super) fn artist_followed(&self, id: &str) -> bool {
         if !id.starts_with("spotify:artist:") {
             return self.lib.is_artist_followed(id);
@@ -53,6 +105,7 @@ impl MusicApp {
     pub(super) fn source_widget_mode(&self) -> u8 {
         match self.view {
             super::View::Home => 2,
+            super::View::Playlists if self.spotify_catalogue => 3,
             super::View::Queue if self.spotify_catalogue || self.spotify_remote_queue.is_some() => {
                 1
             }
@@ -795,6 +848,12 @@ impl ui::widget::controls::ActionControls for MusicApp {
         attachment: ui::control_custody::CustodyAttachment,
     ) {
         self.control_domain = Some(domain.clone());
+        // These retained controls appear on different destinations. Install the
+        // same owner custody before a hidden control joins the physical tree.
+        for button in &mut self.source_buttons {
+            ui::widget::controls::install_control_custody(button, domain, attachment);
+        }
+
         for emitter in &mut self.spotify_menu_controls {
             let _ = emitter.install_custody(domain, attachment);
         }
@@ -1109,6 +1168,40 @@ mod tests {
     }
 
     #[test]
+    fn source_picker_only_emits_sign_in_when_a_choice_is_activated() {
+        use ui::tilo_resource::Effect as _;
+        let mut app = MusicApp::without_profile();
+        let effect = MusicEffect::Sources;
+        app.begin_effect(tilo_actions::InvocationId::new(), effect)
+            .unwrap();
+        assert!(
+            app.take_control_invocation().is_none(),
+            "opening the picker never initiates consent"
+        );
+        assert!(app.source_invocation.is_none());
+        assert_eq!(app.menu_actions.len(), 2);
+        assert!(matches!(
+            app.menu_actions[0],
+            super::super::Action::SpotifyEffect(MusicEffect::ConnectSpotify)
+        ));
+        assert!(
+            app.menu_actions.iter().all(|action| !matches!(
+                action,
+                super::super::Action::SpotifyEffect(
+                    MusicEffect::ConnectSpotifyPlayback | MusicEffect::DisconnectSpotify
+                )
+            )),
+            "an unconnected source offers no playback grant or disconnect operation"
+        );
+        app.queue_spotify_effect_control(&MusicEffect::ConnectSpotify);
+        let intent = app
+            .take_control_invocation()
+            .expect("choice uses the host action door");
+        assert_eq!(intent.address.action, MusicEffect::ConnectSpotify.id());
+        assert!(app.take_control_invocation().is_none());
+    }
+
+    #[test]
     fn spotify_creation_prompt_cancel_and_reopen_emit_one_host_intent() {
         use ui::tilo_resource::Effect as _;
         let mut app = MusicApp::without_profile();
@@ -1160,15 +1253,13 @@ mod tests {
         let state = serde_json::json!({"library_page":50,"has_more":false,"home_page":page});
         app.merge_spotify_library_page(50, &state).unwrap();
         app.refresh_spotify_control_flags();
+        app.open_sources_menu();
         assert!(
-            app.source_buttons
-                .iter()
-                .find(|button| button.test_id() == Some("music-spotify-library-more"))
-                .unwrap()
-                .accessibility()
-                .expect("shared control accessibility")
-                .state
-                .disabled
+            app.menu_actions.iter().all(|action| !matches!(
+                action,
+                super::super::Action::SpotifyEffect(MusicEffect::SpotifyLibraryMore)
+            )),
+            "an exhausted provider page is absent from the source menu"
         );
         assert_eq!(
             app.home.as_ref().unwrap().sections[0].items.len(),

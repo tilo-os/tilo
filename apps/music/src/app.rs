@@ -1417,6 +1417,7 @@ impl MusicApp {
             "music.source",
             self.source_status(),
         )
+        .effect(&MusicEffect::Sources)
         .effect(&MusicEffect::ConnectSpotify)
         .effect(&MusicEffect::ConnectSpotifyPlayback)
         .effect(&MusicEffect::SpotifyDevices)
@@ -4757,6 +4758,26 @@ impl MusicApp {
             Action::Nav(View::Lyrics),
         );
         self.push_checked_menu("Queue", self.view == View::Queue, Action::ToggleQueue);
+        if self.spotify_catalogue {
+            self.push_menu(
+                ui::i18n!("music-spotify-devices"),
+                Action::SpotifyEffect(crate::actions::MusicEffect::SpotifyDevices),
+            );
+            let devices = self.spotify_devices.clone();
+            for device in devices.iter().filter(|device| !device.restricted).take(12) {
+                let label = ui::i18n::I18nManager::format(
+                    "music-spotify-select-device",
+                    &[("device", (&device.name).into())],
+                );
+                self.push_menu(
+                    label,
+                    Action::SpotifyEffect(crate::actions::MusicEffect::SpotifyTransfer {
+                        device: device.id.clone(),
+                    }),
+                );
+            }
+        }
+
         self.context.set_text_scale(self.context_text_scale);
         self.context.open_anchored(anchor, self.rect);
         self.dirty = true;

@@ -772,11 +772,19 @@ impl Widget for MusicApp {
                 .iter()
                 .filter_map(|slot| slot.table.visible_widget()),
         );
-        match self.source_widget_mode() {
-            2 => children.extend(
+        let mode = self.source_widget_mode();
+        match mode {
+            2 | 3 => children.extend(
                 self.source_buttons
                     .iter()
-                    .chain(self.spotify_device_buttons.iter())
+                    .filter(|button| {
+                        button.test_id()
+                            == Some(if mode == 3 {
+                                "music-spotify-create-playlist"
+                            } else {
+                                "music-sources"
+                            })
+                    })
                     .map(|button| button as &dyn Widget),
             ),
             1 => children.extend(
@@ -810,10 +818,17 @@ impl Widget for MusicApp {
                 .filter_map(|slot| slot.table.visible_widget_mut()),
         );
         match mode {
-            2 => children.extend(
+            2 | 3 => children.extend(
                 self.source_buttons
                     .iter_mut()
-                    .chain(self.spotify_device_buttons.iter_mut())
+                    .filter(|button| {
+                        button.test_id()
+                            == Some(if mode == 3 {
+                                "music-spotify-create-playlist"
+                            } else {
+                                "music-sources"
+                            })
+                    })
                     .map(|button| button as &mut (dyn Widget + '_)),
             ),
             1 => children.extend(
@@ -902,6 +917,7 @@ impl Widget for MusicApp {
         // `new_leaf` failure (which a freshly-created tree with one valid
         // leaf style cannot produce) has no propagation path here.
         self.drawer.scale_for(theme);
+        self.refresh_spotify_control_flags();
         let mut children = vec![self.search_button.build_layout(taffy, theme, node_map)];
         if self.view == View::Home {
             children.push(self.open_file_button.build_layout(taffy, theme, node_map));
@@ -909,11 +925,19 @@ impl Widget for MusicApp {
         if !self.nav_back.is_empty() {
             children.push(self.back_button.build_layout(taffy, theme, node_map));
         }
-        match self.source_widget_mode() {
-            2 => children.extend(
+        let mode = self.source_widget_mode();
+        match mode {
+            2 | 3 => children.extend(
                 self.source_buttons
                     .iter_mut()
-                    .chain(self.spotify_device_buttons.iter_mut())
+                    .filter(|button| {
+                        button.test_id()
+                            == Some(if mode == 3 {
+                                "music-spotify-create-playlist"
+                            } else {
+                                "music-sources"
+                            })
+                    })
                     .map(|button| button.build_layout(taffy, theme, node_map)),
             ),
             1 => children.extend(
@@ -1776,17 +1800,24 @@ impl MusicApp {
         let Ok(nodes) = ctx.taffy.children(ctx.node_id) else {
             return;
         };
-        let count = match self.source_widget_mode() {
-            2 => self.source_buttons.len() + self.spotify_device_buttons.len(),
-            1 => 1,
+        let mode = self.source_widget_mode();
+        let count = match mode {
+            1..=3 => 1,
             _ => return,
         };
         let nodes = nodes.iter().skip(nodes.len().saturating_sub(count));
-        if self.source_widget_mode() == 2 {
+        if matches!(mode, 2 | 3) {
             for (button, node) in self
                 .source_buttons
                 .iter_mut()
-                .chain(self.spotify_device_buttons.iter_mut())
+                .filter(|button| {
+                    button.test_id()
+                        == Some(if mode == 3 {
+                            "music-spotify-create-playlist"
+                        } else {
+                            "music-sources"
+                        })
+                })
                 .zip(nodes)
             {
                 if !*ctx.handled {
@@ -1854,6 +1885,10 @@ impl MusicApp {
     ) -> Result<ui::framework::Effected, String> {
         use crate::actions::MusicEffect;
         match effect {
+            MusicEffect::Sources => {
+                self.open_sources_menu();
+                Ok(ui::framework::Effected::done())
+            }
             MusicEffect::ConnectSpotify
             | MusicEffect::ConnectSpotifyPlayback
             | MusicEffect::DisconnectSpotify
@@ -3071,36 +3106,15 @@ impl MusicApp {
         y + f64::from(height)
     }
 
-    /// Use the same retained layout solver as the host, including theme metrics,
-    /// intrinsic label widths and the control owner's admission checks.
-    fn source_button_size(
-        button: &mut Button,
-        ctx: &mut PaintCtx<'_>,
-        width: f32,
-    ) -> Option<Size<f32>> {
-        let mut tree = TaffyTree::new();
-        let mut nodes = HashMap::new();
-        let root = button.build_layout(&mut tree, ctx.theme, &mut nodes);
-        let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
-        // SAFETY: this freshly built tree contains only the exclusively borrowed
-        // button. Neither it nor its nodes move until both layout calls return;
-        // maps and raw pointers are dropped before the borrow is released.
-        unsafe {
-            bindings.rebuild(button, &tree, root, &nodes);
-            ui::widget::compute_widget_layout(
-                &mut tree,
-                root,
-                Size {
-                    width: taffy::AvailableSpace::Definite(width),
-                    height: taffy::AvailableSpace::MaxContent,
-                },
-                &nodes,
-                &bindings,
-                ctx.text,
-            )
-            .ok()?;
+    /// This page positions retained controls manually. Use the toolkit's
+    /// shared button face metrics; geometry does not acquire widget authority.
+    fn source_control_size(button: &Button, ctx: &mut PaintCtx<'_>) -> Size<f32> {
+        let label = button.test_id().unwrap_or_default();
+        let face = ButtonFace::new(Rect::ZERO, label);
+        Size {
+            width: face.intrinsic_width(ctx.text, ctx.theme) as f32,
+            height: ButtonFace::height(ControlSize::Regular, ctx.theme) as f32,
         }
-        tree.layout(root).ok().map(|layout| layout.size)
     }
 
     fn position_source_buttons(
@@ -3110,23 +3124,21 @@ impl MusicApp {
         body: Rect,
         mut y: f64,
     ) -> f64 {
-        y = Self::section_heading(ctx, look, body, y, &ui::i18n!("music-sources-heading"));
-        y = Self::provider_note(ctx, look, body, y, &ui::i18n!("music-sources-guide"))
-            + look.sibling;
         let left = body.x0 + look.gutter;
         let right = body.x1 - look.gutter;
         let width = (right - left).max(1.0) as f32;
         let mut x = left;
         let mut row_height: f64 = 0.0;
-        for button in self
-            .source_buttons
-            .iter_mut()
-            .chain(self.spotify_device_buttons.iter_mut())
-        {
-            let Some(size) = Self::source_button_size(button, ctx, width) else {
-                button.apply_layout_external(Rect::ZERO);
-                continue;
-            };
+        let mode = self.source_widget_mode();
+        for button in self.source_buttons.iter_mut().filter(|button| {
+            button.test_id()
+                == Some(if mode == 3 {
+                    "music-spotify-create-playlist"
+                } else {
+                    "music-sources"
+                })
+        }) {
+            let size = Self::source_control_size(button, ctx);
             if x > left && x + f64::from(size.width) > right {
                 y += row_height + look.sibling;
                 x = left;
@@ -3157,7 +3169,10 @@ impl MusicApp {
             row_height = row_height.max(f64::from(size.height));
         }
         y += row_height + look.sibling;
-        Self::provider_note(ctx, look, body, y, &self.source_status()) + look.gutter
+        if self.source_invocation.is_some() || self.source_error.is_some() {
+            y = Self::provider_note(ctx, look, body, y, &self.source_status()) + look.sibling;
+        }
+        y + look.sibling
     }
 
     fn draw_spotify_remote_queue(
@@ -3176,10 +3191,7 @@ impl MusicApp {
             .find(|button| button.test_id() == Some("music-spotify-queue-refresh"))
         {
             let width = (body.width() - 2.0 * look.gutter).max(1.0) as f32;
-            let Some(size) = Self::source_button_size(button, ctx, width) else {
-                button.apply_layout_external(Rect::ZERO);
-                return y;
-            };
+            let size = Self::source_control_size(button, ctx);
             button.apply_layout_external(Rect::from_origin_size(
                 (body.x0 + look.gutter, y),
                 (
@@ -3554,6 +3566,14 @@ impl MusicApp {
         pls: &[PlaylistDisp],
     ) -> f64 {
         let span = (body.x0 + look.gutter, body.x1 - look.gutter);
+        if self.spotify_catalogue {
+            let y = self.position_source_buttons(ctx, look, body, y);
+            return if pls.is_empty() {
+                Self::note(ctx, look, body, y, "Playlists you make appear here.")
+            } else {
+                self.draw_playlist_cards(ctx, look, body, y, pls)
+            };
+        }
         let y = self.page_part(ctx, span, y, "new-playlist".into(), |asked| {
             Box::new(
                 ui::widget::Row::new().no_wrap().push(Box::new(

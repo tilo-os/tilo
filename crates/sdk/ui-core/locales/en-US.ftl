@@ -482,6 +482,7 @@ music-spotify-device-help = Move Spotify playback to this device. Spotify manage
 music-spotify-library = Your Spotify library
 music-spotify-liked = Spotify Liked Songs
 music-spotify-liked-description = Songs saved to your Spotify account
+music-sources = Music sources
 music-sources-heading = Music sources
 music-sources-guide = Choose a catalogue alongside your local files. Authorize Spotify Premium playback separately.
 music-spotify-active = active
