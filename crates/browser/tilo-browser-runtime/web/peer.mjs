@@ -20,6 +20,7 @@
  * `getSnapshot()` returns `PeerSnapshot` with `SessionHealth` v1.
  */
 import {createActions} from './actions.mjs';
+import {resolveResourceReference} from './resource-reference.mjs';
 import {createAgents} from './agents.mjs';
 import {openChannelVault} from './channel-vault.mjs';
 import {createMembership, createWorkspaces} from './membership.mjs';
@@ -913,6 +914,14 @@ async function connect({
     },
     /** The room's app actions (`actions.mjs`), or `undefined` without a room. */
     get actions() { return actions; },
+    /** Fresh permission-filtered metadata for a record-local shared resource.
+     * The host-issued source provider is required; this never joins a room,
+     * grants access, follows a peer or navigates as a side effect. */
+    resolveResource(reference, provider) {
+      const connection = actions;
+      return resolveResourceReference({reference, provider, actions: connection,
+        current: () => !disposed && snapshot.phase === 'ready' && actions === connection});
+    },
     /** The room's calls (`voice-peer.mjs`), or `undefined` without a room. */
     get voice() { return voice; },
     /** `actions` in the frozen `actionsV1` contract. */
