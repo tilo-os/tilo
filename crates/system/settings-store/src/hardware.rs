@@ -2296,9 +2296,9 @@ impl Default for ShortcutConfig {
             ),
             (ShortcutAction::ResizeNarrower, super_chord("-")),
             (ShortcutAction::ResizeWider, super_chord("=")),
-            // Browsers' reopen-closed-tab chord, on the desktop's own
-            // modifier; plain Super+T keeps adding a tab.
-            (ShortcutAction::ReopenClosedTab, super_shift_chord("t")),
+            // Restore the most recently closed frame in this workspace.
+            // Plain Super+T keeps adding a tab.
+            (ShortcutAction::ReopenClosedTab, ctrl_shift_chord("t")),
             (ShortcutAction::FocusGroup1, super_chord("1")),
             (ShortcutAction::FocusGroup2, super_chord("2")),
             (ShortcutAction::FocusGroup3, super_chord("3")),
@@ -2347,6 +2347,7 @@ const RETIRED_DEFAULTS: &[(ShortcutAction, &[&str], &str)] = &[
     (ShortcutAction::NextStrip, &["Shift", "Super"], "down"),
     (ShortcutAction::ToggleMaximize, &["Super"], "up"),
     (ShortcutAction::Search, &["Super"], "k"),
+    (ShortcutAction::ReopenClosedTab, &["Shift", "Super"], "t"),
 ];
 
 impl ShortcutConfig {
@@ -2817,13 +2818,34 @@ mod tests {
     }
 
     #[test]
-    fn reopen_closed_tab_defaults_to_super_shift_t_without_colliding() {
+    fn reopen_closed_tab_defaults_to_ctrl_shift_t_without_colliding() {
         let cfg = ShortcutConfig::default();
         assert_eq!(
             cfg.bindings[&ShortcutAction::ReopenClosedTab],
-            KeyChord::parse("Super+Shift+T").unwrap()
+            KeyChord::parse("Ctrl+Shift+T").unwrap()
         );
         assert!(cfg.validate().is_ok(), "no other default claims the chord");
+    }
+
+    #[test]
+    fn saved_reopen_default_migrates_without_overwriting_a_custom_chord() {
+        let mut loaded = ShortcutConfig::default();
+        loaded.bindings.insert(
+            ShortcutAction::ReopenClosedTab,
+            KeyChord::parse("Super+Shift+T").unwrap(),
+        );
+        assert_eq!(
+            ShortcutConfig::normalise(loaded.clone()).bindings[&ShortcutAction::ReopenClosedTab],
+            KeyChord::parse("Ctrl+Shift+T").unwrap()
+        );
+        loaded.bindings.insert(
+            ShortcutAction::ReopenClosedTab,
+            KeyChord::parse("Alt+Shift+T").unwrap(),
+        );
+        assert_eq!(
+            ShortcutConfig::normalise(loaded).bindings[&ShortcutAction::ReopenClosedTab],
+            KeyChord::parse("Alt+Shift+T").unwrap()
+        );
     }
 
     #[test]
