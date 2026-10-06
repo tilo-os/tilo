@@ -8,7 +8,7 @@
 # device that asked for it.
 #
 # An environment variable overrides each value at runtime, then at build
-# time (TILO_OAUTH_{GOOGLE,MICROSOFT,DROPBOX}_CLIENT_ID and
+# time (TILO_OAUTH_{GOOGLE,MICROSOFT,DROPBOX,SPOTIFY}_CLIENT_ID and
 # TILO_OAUTH_GOOGLE_CLIENT_SECRET), so private deployments can bring their
 # own registration. An empty `client_id` with no override is the "not
 # configured" state Settings and Mail show for that provider.
@@ -72,7 +72,7 @@ files = [
 [spotify]
 # Public PKCE registration supplied by the distributor; never borrow another
 # application's identity. Register http://127.0.0.1:47654/oauth exactly.
-client_id = ""
+client_id = "fc7bc68792734157a2c9857cba652df7"
 redirect_ports = [47654]
 
 [spotify.scopes]

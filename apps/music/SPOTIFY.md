@@ -9,8 +9,9 @@ identity when the catalogue changes. The live app starts empty. The
 
 ## Authorization
 
-Register a public Spotify client owned by Tilo or its distributor. Supply its
-public ID through `TILO_OAUTH_SPOTIFY_CLIENT_ID` or the system account-custody
+The task registration supplies public client ID
+`fc7bc68792734157a2c9857cba652df7` in the system client table. A distributor can
+override the public ID through `TILO_OAUTH_SPOTIFY_CLIENT_ID` or the system account-custody
 client table, and register `http://127.0.0.1:47654/oauth` exactly. Browser sign-in
 uses the existing PKCE S256 implementation and state-validated loopback callback.
 There is no client secret, password prompt, pasted bearer token or borrowed

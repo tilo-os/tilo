@@ -195,6 +195,10 @@ mod tests {
         assert!(table.microsoft.redirect_ports.is_empty());
         assert!(!table.dropbox.redirect_ports.is_empty());
         assert!(table.dropbox.paste_code_fallback);
+        assert_eq!(table.spotify.client_id, "fc7bc68792734157a2c9857cba652df7");
+        assert!(table.spotify.client_secret.is_empty());
+        assert_eq!(table.spotify.redirect_ports, [47654]);
+        assert!(!table.spotify.paste_code_fallback);
     }
 
     #[test]
