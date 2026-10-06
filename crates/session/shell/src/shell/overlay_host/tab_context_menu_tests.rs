@@ -184,13 +184,17 @@ fn harness_built_with(
 
 impl Harness {
     fn send(&mut self, event: &WindowEvent) -> bool {
+        self.send_with_modifiers(event, Modifiers::default())
+    }
+
+    fn send_with_modifiers(&mut self, event: &WindowEvent, modifiers: Modifiers) -> bool {
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
         self.host.handle_event(
             event,
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
+                modifiers: &modifiers,
                 state: ui::widget::Edits::lend(&mut self.doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
@@ -224,19 +228,31 @@ impl Harness {
     }
 
     fn key(&mut self, key: Key) -> bool {
+        self.key_with_modifiers(key, winit::keyboard::ModifiersState::empty(), false)
+    }
+
+    fn key_with_modifiers(
+        &mut self,
+        key: Key,
+        modifiers: winit::keyboard::ModifiersState,
+        repeat: bool,
+    ) -> bool {
         let mut event: KeyEvent = unsafe { std::mem::zeroed() };
         event.logical_key = key;
         event.physical_key =
             PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
         event.location = KeyLocation::Standard;
         event.state = ElementState::Pressed;
-        event.repeat = false;
+        event.repeat = repeat;
         event.text = None;
-        self.send(&WindowEvent::KeyboardInput {
-            device_id: DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        })
+        self.send_with_modifiers(
+            &WindowEvent::KeyboardInput {
+                device_id: DeviceId::dummy(),
+                event,
+                is_synthetic: false,
+            },
+            modifiers.into(),
+        )
     }
 
     /// Centre of tab pill `index` in the fixture's only group, as the
@@ -920,5 +936,193 @@ fn an_apps_search_request_opens_the_palette_scoped_to_its_tab() {
         h.host.palette_query(),
         "",
         "the stale request changed nothing"
+    );
+}
+
+/// The tab menu is reachable without positioning a pointer or cycling through
+/// destructive actions in the palette. It uses durable focus and the same
+/// bounded menu, target and split dispatcher as a right-click.
+#[test]
+fn tab_menu_keyboard_journey_opens_at_focus_cancels_and_splits() {
+    use winit::keyboard::ModifiersState;
+    let mut h = harness(2);
+    let workspace = h.chrome.borrow().tree().desktop.active;
+    h.chrome
+        .borrow_mut()
+        .focus_tab(workspace, h.strip, h.group, h.tabs[1]);
+    // Put the pointer somewhere unrelated; keyboard anchoring must not use it.
+    h.move_to(Point::new(VW - 30.0, VH - 30.0));
+    assert!(h.key_with_modifiers(Key::Named(NamedKey::F10), ModifiersState::SUPER, false));
+    let menu = h.menu_node().expect("the opening press publishes the menu");
+    assert!(menu.name.as_deref().unwrap().contains(&h.titles[1]));
+    assert!(
+        menu.children[0].state.focused,
+        "the first action is armed immediately"
+    );
+    let rect = h.host.tab_context_menu_rect().unwrap();
+    assert!(rect.x1 <= VW && rect.y1 <= VH && rect.x0 >= 0.0 && rect.y0 >= 0.0);
+    assert!(
+        rect.y0 < VH / 2.0,
+        "anchor follows the tab, not the pointer"
+    );
+    assert!(h.key(Key::Named(NamedKey::ArrowDown)));
+    let armed = h
+        .menu_node()
+        .unwrap()
+        .children
+        .iter()
+        .position(|node| node.state.focused);
+    assert_eq!(armed, Some(1));
+    assert!(h.key_with_modifiers(Key::Named(NamedKey::F10), ModifiersState::SUPER, true));
+    assert_eq!(
+        h.menu_node()
+            .unwrap()
+            .children
+            .iter()
+            .position(|node| node.state.focused),
+        armed,
+        "repeat leaves the current action armed"
+    );
+    assert!(h.key(Key::Named(NamedKey::Escape)));
+    assert!(h.menu_node().is_none());
+    assert_eq!(h.tab_ids(0), h.tabs, "cancel changes no tab or group");
+    assert!(h.key_with_modifiers(Key::Named(NamedKey::F10), ModifiersState::SUPER, false));
+    h.key(Key::Named(NamedKey::ArrowDown));
+    assert!(h.key(Key::Named(NamedKey::Enter)));
+    assert!(h.menu_node().is_none());
+    let remaining: Vec<_> = h
+        .tabs
+        .iter()
+        .copied()
+        .filter(|tab| *tab != h.tabs[1])
+        .collect();
+    assert_eq!(h.tab_ids(0), remaining);
+    assert_eq!(
+        h.tab_ids(1),
+        [h.tabs[1]],
+        "split applies to the keyboard-focused tab"
+    );
+}
+
+#[test]
+fn tab_menu_action_door_uses_the_same_menu_and_refuses_locked_or_stale_focus() {
+    use crate::shell::search::{SearchContext, SearchProvider as _};
+    let mut h = harness(2);
+    let provider = crate::shell::search::providers::actions::ActionsProvider::new();
+    let rows = provider.query(SearchContext {
+        needle: "tab.menu",
+        wanted: &[crate::shell::search::ResourceKind::Action],
+        chrome: &h.chrome.borrow(),
+        doc: &h.doc,
+        doc_root: &automerge::ROOT,
+    });
+    let action = rows
+        .iter()
+        .find(|row| row.id == "tab.menu")
+        .expect("published tab menu action");
+    (action.on_open)(
+        &mut ui::widget::Edits::lend(&mut h.doc),
+        &automerge::ROOT,
+        &h.chrome,
+        &crate::shell::search::action_api::ActionArgs::none(),
+    )
+    .expect("the action is admitted");
+    h.host.run_requested_shortcut_actions();
+    let menu = h.menu_node().expect("action request opens the menu");
+    assert_eq!(
+        menu.children.len(),
+        3,
+        "the focused multi-tab group offers its operations"
+    );
+    assert!(menu.children[0].state.focused);
+    assert!(h.host.perform_semantic_action(
+        "tabmenu:close",
+        &ui::a11y::Action::Activate,
+        &mut ui::widget::Edits::lend(&mut h.doc),
+        &automerge::ROOT,
+    ));
+    let closed = h.tabs[0];
+    assert!(!h.tab_ids(0).contains(&closed));
+    for tab in h.tabs.iter().copied().filter(|tab| *tab != closed) {
+        assert!(h.host.close_tab_in_group(h.group, Some(tab)));
+    }
+    assert!(h.group_ids().is_empty());
+    assert!(
+        !h.host.open_focused_tab_context_menu(),
+        "a closed tab cannot reopen a stale menu"
+    );
+
+    let mut h = harness(1);
+    assert!(h.host.open_focused_tab_context_menu());
+    assert_eq!(
+        h.menu_node().unwrap().children.len(),
+        1,
+        "a single tab has no split"
+    );
+    assert!(h.key(Key::Named(NamedKey::Escape)));
+    h.chrome.borrow_mut().set_session_locked(true);
+    assert!(!h.host.open_focused_tab_context_menu());
+    assert!(
+        h.menu_node().is_none(),
+        "locked presentation exposes no tab menu"
+    );
+}
+
+#[test]
+fn tab_menu_keyboard_anchor_stays_on_the_focused_display() {
+    use crate::shell::output_scene::OutputGeometry;
+    use winit::keyboard::ModifiersState;
+    let mut h = harness(2);
+    h.host.set_output_geometry(&[
+        OutputGeometry::unscaled(0.0, 0.0, 360.0, VH),
+        OutputGeometry::unscaled(360.0, 0.0, VW - 360.0, VH).with_id(1),
+    ]);
+    (h.taffy, h.root) = lay_out_host_with_theme(&mut h.host, VW, VH, &h.theme);
+    // Pointer entry focuses the empty second display. Keyboard navigation
+    // then returns to the first display while the pointer stays on the second.
+    h.move_to(Point::new(VW - 30.0, VH / 2.0));
+    assert!(h.key_with_modifiers(
+        Key::Named(NamedKey::ArrowLeft),
+        ModifiersState::SUPER,
+        false
+    ));
+    assert!(h.key_with_modifiers(
+        Key::Named(NamedKey::Tab),
+        ModifiersState::CONTROL | ModifiersState::SHIFT,
+        false,
+    ));
+    assert!(
+        h.host
+            .group_at_for_tests(h.strip, 0)
+            .unwrap()
+            .bar_rect()
+            .area()
+            > 0.0,
+        "the focused display must actually lay out the tab bar under test"
+    );
+    assert_eq!(
+        h.host
+            .group_at_for_tests(h.strip, 0)
+            .unwrap()
+            .tab_rects()
+            .last()
+            .unwrap()
+            .area(),
+        0.0,
+        "this journey opens before the newly-focused compact pill is expanded by layout"
+    );
+    assert!(h.key_with_modifiers(Key::Named(NamedKey::F10), ModifiersState::SUPER, false));
+    let menu = h.host.tab_context_menu_rect().unwrap();
+    assert!(
+        menu.x0 >= 0.0 && menu.x1 <= 360.0,
+        "the keyboard menu stays on the focused display: {menu:?}"
+    );
+    assert!(
+        h.menu_node()
+            .unwrap()
+            .name
+            .as_deref()
+            .unwrap()
+            .contains(h.titles.last().unwrap())
     );
 }

@@ -150,6 +150,49 @@ libraries and CPU floor as the OS it runs on, and the web job finds the web
 toolchain there. Each job installs `tilo-app` from the Tilo revision your
 `Cargo.lock` pins and caches it.
 
+### Reuse a GitHub build workflow
+
+On GitHub, `add ci` writes two files: `.github/workflows/tilo.yml` handles
+pushes, pull requests and tags; `.github/workflows/tilo-build.yml` is a
+[reusable workflow](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows).
+The caller passes the app directory and lockfile, explicitly names the three
+signing secrets, and requests publication only for `v*` tags. `--dry-run`
+lists both files without writing them; `--force` replaces both. Existing
+files are preserved unless you request replacement.
+
+To use the build from another GitHub repository, commit the generated
+`tilo-build.yml` to a shared repository and call its exact commit:
+
+```yaml
+name: Tilo app
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  app:
+    uses: your-org/app-builds/.github/workflows/tilo-build.yml@<full-commit-sha>
+    with:
+      working-directory: .
+      lockfile: Cargo.lock
+```
+
+Replace the repository and commit with your actual shared workflow. GitHub
+must allow the caller to access that repository. This is a callable workflow
+you own; it does not require an assumed Tilo repository on GitHub.
+The workflow checks out **the caller's app**, builds the existing ten
+platform/architecture targets, and installs the CLI from **the caller's SDK
+pin**, rather than the shared workflow repository's SDK.
+
+Publication defaults to false. For a release caller, set `publish: true`
+and explicitly pass `TILO_PUBLISHER_KEY` under the job's `secrets`; Android
+release signing also uses `TILO_ANDROID_KEYSTORE` and
+`TILO_ANDROID_KEYSTORE_PASS`. `registry` optionally selects another registry;
+`linux-runner` overrides the default Linux x86 runner. Pull request events
+never run the publish job, even if the caller requests it. Publication still
+submits a request for owner review; it does not approve a release.
+
+Forgejo and Gitea keep their existing single-file workflow.
+
 ## Decisions
 
 These are the defaults this flow is built on. Each is a decision, not a

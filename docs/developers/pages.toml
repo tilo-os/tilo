@@ -55,6 +55,13 @@ nav = "Interface guidelines"
 description = "Layout, navigation, text, chrome, system integration and the shared controls every Tilo app builds on."
 
 [[page]]
+slug = "resource-journey"
+source = "docs/sdk-resource-journey.md"
+section = "Guides"
+nav = "A resource workflow"
+description = "One checklist workflow proving validation, host identity, permissions, confirmation, undo, persistence and four shared-control presentations."
+
+[[page]]
 slug = "agent-action-api"
 source = "docs/agent-action-api.md"
 section = "Guides"
