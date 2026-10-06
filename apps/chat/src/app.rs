@@ -3752,11 +3752,7 @@ impl Widget for ChatApp {
             .nth(offset)
             .and_then(|node| node.action_target);
             return target.is_some_and(|target| {
-                self.left_flap
-                    .perform_resize_action(&target, &ui::a11y::Action::Focus)
-                    || self
-                        .right_flap
-                        .perform_resize_action(&target, &ui::a11y::Action::Focus)
+                self.perform_drawer_resize(&target, &ui::a11y::Action::Focus)
             });
         }
         self.left_flap.set_resize_focused(false);
@@ -3979,6 +3975,7 @@ impl ChatApp {
         let handled = self.left_flap.perform_resize_action(target, action)
             || self.right_flap.perform_resize_action(target, action);
         if handled {
+            self.keyboard_target = None;
             self.reconcile_flaps();
             self.canonical_dirty = true;
         }
