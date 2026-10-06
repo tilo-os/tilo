@@ -1171,10 +1171,17 @@ impl CodeApp {
         let name = buffer.name.clone();
         match self.session.project.file_seed(node) {
             Ok((text, stamp)) => {
-                self.submit(&actions::CodeEditorAction::EnsureBuffer {
-                    key: self.buffer_key(node),
-                    seed: text.clone(),
-                });
+                let key = self.buffer_key(node);
+                let already_opened = self
+                    .live_state
+                    .as_ref()
+                    .is_some_and(|live| live.with(|state| state.opened_buffers.contains(&key)));
+                if !already_opened {
+                    self.submit(&actions::CodeEditorAction::EnsureBuffer {
+                        key,
+                        seed: text.clone(),
+                    });
+                }
                 let path = self.session.project.disk_path_of(node);
                 if let Some(buffer) = self.session.buffer_of_mut(node) {
                     buffer.path = path;
@@ -1285,6 +1292,10 @@ impl CodeApp {
         self.settings = Some(settings);
     }
 
+    pub(crate) fn set_highlight_waker(&mut self, wake: ui::WakeHandle) {
+        self.editor.set_highlight_waker(wake);
+    }
+
     fn project_files(&mut self, files: Vec<crate::doc::CollaborativeFile>) {
         let ordering: Vec<_> = files
             .iter()
@@ -1392,10 +1403,10 @@ impl CodeApp {
         use automerge::transaction::Transactable;
         // Heads identify committed CRDT content, including remote/history changes.
         // Even zero pending operations may hide an open empty transaction.
-        // Obtain the witness on a clone: get_heads must never close the caller's
-        // transaction or change its patch/history cursors. Pending edits bypass
+        // Read the committed witness without cloning or closing the caller's
+        // transaction or changing its patch/history cursors. Pending edits bypass
         // caching; an equal pending-operation count is not a content version.
-        let heads = (doc.pending_ops() == 0).then(|| doc.clone().get_heads());
+        let heads = (doc.pending_ops() == 0).then(|| doc.committed_heads());
         self.refresh_diagnostics_at(doc, heads);
     }
 
@@ -2700,6 +2711,8 @@ impl Widget for CodeApp {
         let editor_rect = self.editor.get_rect();
         let (offset_x, offset_y) = self.editor.native_scroll_offsets();
         let (caret_line, caret_column) = self.editor.primary_caret();
+        let (highlighted_rows, cached_buffers, inactive_source_bytes) =
+            self.editor.native_projection_stats();
         Some(serde_json::json!({
             "app": "so.tilo.code-editor",
             "editor_id": "editor_view",
@@ -2707,6 +2720,9 @@ impl Widget for CodeApp {
             "buffer_id": buffer_id,
             "body_hash": body.as_ref().map(|text| crate::native_fixture::hash(text.as_bytes())),
             "body_bytes": body.as_ref().map(String::len),
+            "highlighted_rows": highlighted_rows,
+            "cached_buffers": cached_buffers,
+            "inactive_source_bytes": inactive_source_bytes,
             "editor_focused": self.editor.is_focused(),
             "caret_line": caret_line,
             "caret_column": caret_column,
@@ -3292,6 +3308,7 @@ impl Widget for CodeApp {
     /// Advance the explorer and drain the retained terminal before settlement.
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let mut changed = self.sidebar.update(state, path);
+        changed |= self.editor.update(state, path);
         if let Some(terminal) = self.terminal.as_mut() {
             changed |= terminal.widget_mut().update(state, path);
         }

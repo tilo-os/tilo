@@ -47,7 +47,9 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::modal_dialog::ModalLayout;
-use ui::widget::{DatePicker, Popover, TextInput};
+use ui::widget::{
+    DatePicker, Popover, SegmentedTouch, SegmentedTouchGroup, SegmentedTouchResult, TextInput,
+};
 
 use tilo_rich_text::{RichTextField, RichTextSurface};
 
@@ -328,6 +330,7 @@ pub struct CalendarApp {
 
     hits: Vec<(Rect, Action)>,
     last_mouse: Point,
+    segmented_touch: SegmentedTouch,
     status: Option<String>,
     /// The status toast's close button as last painted.
     status_close: Rect,
@@ -492,6 +495,7 @@ impl CalendarApp {
             built_notes_w: -1.0,
             hits: Vec::new(),
             last_mouse: Point::ZERO,
+            segmented_touch: SegmentedTouch::default(),
             status: None,
             status_close: Rect::ZERO,
             fresh_draft: None,
@@ -2515,6 +2519,49 @@ impl CalendarApp {
         })
     }
 
+    fn segmented_rects(&self) -> (Vec<Rect>, Vec<Rect>) {
+        if self.detail_open || self.sidebar_menu.is_open() {
+            return (Vec::new(), Vec::new());
+        }
+        let sidebar = self.sidebar.rect();
+        self.hits
+            .iter()
+            .filter_map(|(rect, action)| matches!(action, Action::View(_)).then_some(*rect))
+            .partition(|rect| !sidebar.contains(rect.center()))
+    }
+
+    fn handle_segmented_touch(
+        &mut self,
+        touch: &winit::event::Touch,
+        scale: f64,
+        edits: &mut ui::widget::Edits<'_>,
+    ) -> bool {
+        let (header, sidebar) = self.segmented_rects();
+        let selected = View::ALL
+            .iter()
+            .position(|view| *view == self.view)
+            .unwrap_or(0);
+        let groups = [
+            SegmentedTouchGroup::new(0, &header, selected),
+            SegmentedTouchGroup::new(1, &sidebar, selected),
+        ];
+        let result = self.segmented_touch.handle(touch, scale, &groups);
+        if let SegmentedTouchResult::Selected { index, .. } = result {
+            let Some(&view) = View::ALL.get(index) else {
+                return true;
+            };
+            if self.dispatcher.is_some() {
+                self.invoke_effect(&crate::resource::CalendarEffect::ShowView {
+                    view: view.label().to_lowercase(),
+                });
+            } else {
+                self.apply_action(Action::View(view), edits);
+            }
+            self.dirty = true;
+        }
+        result.handled()
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "the complete local action routing table remains intentionally centralized so every hit and semantic action shares one persistence boundary"
@@ -3901,6 +3948,13 @@ impl Widget for CalendarApp {
             self.dirty = true;
         }
 
+        if let WindowEvent::Touch(touch) = event
+            && self.handle_segmented_touch(touch, ctx.scale_factor, &mut ctx.state)
+        {
+            *ctx.handled = true;
+            return;
+        }
+
         // The sidebar's overflow menu owns input while it is open.
         if self.sidebar_menu.is_open() {
             Widget::handle_event(&mut self.sidebar_menu, event, ctx);
@@ -4015,6 +4069,18 @@ impl Widget for CalendarApp {
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
+    }
+
+    fn claims_raw_touch(&self, point: Point) -> bool {
+        let (header, sidebar) = self.segmented_rects();
+        header
+            .iter()
+            .chain(&sidebar)
+            .any(|rect| rect.contains(point))
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.segmented_touch.is_active() || self.agenda.wants_pointer_capture()
     }
 
     fn name(&self) -> &'static str {
