@@ -1,4 +1,4 @@
-//! One person-owned directory shared by Contacts and messaging applications.
+//! One person-owned directory shared by Contacts and its application consumers.
 //! Names are labels. Only explicit, confirmed endpoint associations resolve
 //! identity; concurrent conflicting confirmations remain ambiguous and refuse
 //! routing rather than choosing a winner. No credentials or histories live here.
@@ -22,6 +22,8 @@ pub struct Person {
     pub removed: bool,
     /// International phone hints: candidate discovery only, never proof.
     pub phones: Json<Vec<String>>,
+    /// Address-book mailboxes, never identity evidence or a sending grant.
+    pub emails: Json<Vec<String>>,
     pub endpoints: Collection<Endpoint>,
 }
 
@@ -178,6 +180,21 @@ impl ContactDirectory {
         Ok(())
     }
 
+    /// Project mailbox hints without creating any service association.
+    #[action(external)]
+    pub fn project_emails(&mut self, person: Id, emails: Vec<String>) -> Result<(), Refusal> {
+        if emails.len() > 128 || emails.iter().any(|email| email.len() > 512) {
+            return Err(refused());
+        }
+        let selected = self
+            .people
+            .get_mut(&person)
+            .filter(|person| !person.removed)
+            .ok_or_else(refused)?;
+        selected.emails = Json(emails);
+        Ok(())
+    }
+
     /// Remove a reviewed association. No implicit transfer to another person.
     #[action(destructive)]
     pub fn forget_endpoint(&mut self, person: Id, endpoint: Id) -> Result<(), Refusal> {
@@ -196,6 +213,28 @@ impl ContactDirectory {
 }
 
 impl ContactDirectory {
+    /// Every matching person remains a candidate, including a unique match.
+    /// Local-part case and provider-specific aliases are never guessed.
+    pub fn email_candidates(&self, email: &str) -> Vec<Id> {
+        let Some(email) = canonical_email_hint(email) else {
+            return Vec::new();
+        };
+        let mut candidates = self
+            .people
+            .iter()
+            .filter(|(_, person)| {
+                !person.removed
+                    && person
+                        .emails
+                        .0
+                        .iter()
+                        .any(|value| canonical_email_hint(value).as_ref() == Some(&email))
+            })
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        candidates.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        candidates
+    }
     fn associate(
         &mut self,
         person: &Id,
@@ -381,6 +420,44 @@ fn validate_person(person: &Id) -> Result<(), Refusal> {
         return Err(refused());
     }
     Ok(())
+}
+
+/// Conservative ASCII dot-atom mailbox key for address-book suggestions.
+/// This is not deliverability validation. Quoted/EAI mailboxes stay available
+/// through consumers' manual entry; their equivalence is not guessed here.
+/// RFC 5321 §2.4 preserves local-part case and folds only the DNS domain.
+pub fn canonical_email_hint(value: &str) -> Option<String> {
+    if value.bytes().any(|byte| byte.is_ascii_control()) {
+        return None;
+    }
+    let value = value.trim();
+    if value.len() > 254 || !value.is_ascii() {
+        return None;
+    }
+    let (local, domain) = value.split_once('@')?;
+    if local.is_empty()
+        || local.len() > 64
+        || domain.is_empty()
+        || domain.len() > 253
+        || local.starts_with('.')
+        || local.ends_with('.')
+        || local.contains("..")
+        || !local
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b".!#$%&'*+-/=?^_`{|}~".contains(&c))
+        || !domain.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+        })
+    {
+        return None;
+    }
+    Some(format!("{local}@{}", domain.to_ascii_lowercase()))
 }
 
 fn refused() -> Refusal {

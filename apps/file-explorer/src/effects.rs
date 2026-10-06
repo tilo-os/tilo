@@ -117,6 +117,20 @@ pub enum FilesEffect {
         #[param("The collaborative record's id")]
         record: String,
     },
+    /// Open containing folder.
+    #[effect(view, row)]
+    RevealRecent {
+        #[param("The Recent entry's published row id")]
+        entry: String,
+    },
+    /// Remove from Recent.
+    ///
+    /// Forgets this device's recent-use entry. The file remains untouched.
+    #[effect(view, row)]
+    ForgetRecent {
+        #[param("The Recent entry's published row id")]
+        entry: String,
+    },
     /// New file from template.
     ///
     /// Creates a file from a template in the folder shown.
