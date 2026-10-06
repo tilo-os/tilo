@@ -279,6 +279,27 @@ impl BlockingClient {
         )
     }
 
+    /// Read verified metadata from an enabled repository configured by this person.
+    /// The host retains the durable antirollback checkpoint outside the app sandbox.
+    ///
+    /// # Errors
+    /// Returns why the configured repository cannot be verified or read.
+    pub fn registry_catalogue(&self, registry: &str) -> Result<String, String> {
+        let mut request = self.client.registry_catalogue_request();
+        request.get().set_registry(registry);
+        let response = self.wait(request.send().promise)?;
+        let entries = text_result(
+            response
+                .get()
+                .map_err(|error| error.to_string())?
+                .get_entries(),
+        )?;
+        if entries.len() > 4 * 1024 * 1024 {
+            return Err("verified repository catalogue exceeds the response limit".into());
+        }
+        Ok(entries)
+    }
+
     /// Read cached app metadata from one configured Flatpak repository.
     ///
     /// # Errors
@@ -333,6 +354,27 @@ impl BlockingClient {
             installed: text_result(result.get_installed())?,
             remotes: text_result(result.get_remotes())?,
         })
+    }
+
+    /// Enable or disable an existing repository in this account's scope.
+    ///
+    /// # Errors
+    /// Returns why the repository change was refused or failed.
+    pub fn set_remote_enabled(&self, name: &str, enabled: bool) -> Result<String, String> {
+        let mut request = self.client.remote_request();
+        request.get().set_action(if enabled {
+            WireRemoteAction::Enable
+        } else {
+            WireRemoteAction::Disable
+        });
+        request.get().set_name(name);
+        request.get().set_url("");
+        text_result(
+            self.wait(request.send().promise)?
+                .get()
+                .map_err(|error| error.to_string())?
+                .get_status(),
+        )
     }
 
     /// Add or remove a user Flatpak remote through the host service.

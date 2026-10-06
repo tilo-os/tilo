@@ -117,6 +117,18 @@ are deliberately indistinguishable, so probing cannot map what you may not see:
         "message":"no visible action addressed by (actions, nope) in the current catalogue"}}
 ```
 
+## Reading a terminal session
+
+For Terminal, `tilo-control read so.tilo.terminal --json` returns the shared
+session target, screen and cursor, with an explicit truncation flag when output
+exceeds 64 KiB. That record can outlive the process or describe a collaborator's
+screen. Discover and invoke the read-only **Inspect session** action for this
+participant's actual lifecycle, attached process identity, input availability
+and startup cause. Neither getter opens, restarts or grants a session. A command
+is unavailable until the local process has opened; sending to a placeholder
+writer cannot report success. The device's own shell continues to require the
+person, device ownership and an explicit grant; agents use managed environments.
+
 ## Why enumeration and invocation are separate steps
 
 They answer different questions and carry different risk. "What can I do here"
@@ -250,6 +262,24 @@ destructive one — deleting a clip — is refused with
 Input injection is not served; the surface is semantic only.
 `tilo-vm scenario install` drives the installer this way end to end
 (`tilo-vm guide scenarios`).
+
+The greeter publishes `sign-in@greeter`, account and session selection, and
+the available fingerprint action. Sign-in uses the existing greetd/PAM
+conversation and the selected installed session; its `password` parameter
+is `Secret`. Use `actions invoke greeter sign-in@greeter --args-stdin` with
+a private JSON object on standard input, rather than placing a credential
+in the command line. An accepted invocation means the attempt started;
+`state-dump` reports authentication progress and the mapped result.
+
+If PAM requires another answer, the current challenge has a unique ID and
+a `secret` or `visible` response kind, and its bounded normal PAM question
+with literal echoes of private answers removed. `respond-challenge@greeter` takes that
+ID as `challenge` and a private `Secret` argument named `response`. Stale
+IDs cannot answer a later prompt. `cancel-authentication@greeter` sends the
+ordinary greetd cancellation request and keeps the attempt busy until its
+worker finishes; no cancelled response can start a session. Credentials
+and raw PAM diagnostics never enter resource values, encoded operations,
+state dumps, action replies or logs.
 
 ## Carrying one action result into the next
 

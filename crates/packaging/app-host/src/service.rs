@@ -303,6 +303,23 @@ fn flatpak_catalogue_from(
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+fn flatpak_remote_enabled_from(
+    binary: &std::path::Path,
+    name: &str,
+    enabled: bool,
+) -> Result<String, Error> {
+    require_flatpak_selector(name)?;
+    let mut command = std::process::Command::new(binary);
+    command.args([
+        "remote-modify",
+        "--user",
+        if enabled { "--enable" } else { "--disable" },
+        "--",
+        name,
+    ]);
+    run_host_command(command)
+}
+
 fn flatpak_install_remote_from(
     binary: &std::path::Path,
     remote: &str,
@@ -350,6 +367,39 @@ fn repositories_json_from(app: &std::path::Path) -> Result<String, Error> {
     }
     String::from_utf8(output.stdout)
         .map_err(|_| Error::failed("app repo list printed invalid UTF-8".to_owned()))
+}
+
+const MAX_REGISTRY_CATALOGUE_BYTES: usize = 4 * 1024 * 1024;
+
+fn registry_catalogue(registry: &str) -> Result<String, Error> {
+    let configured = app_cli::config::load_registries();
+    registry_catalogue_from(&configured, registry, app_cli::client::fetch_entries)
+}
+
+fn registry_catalogue_from(
+    configured: &app_cli::config::RegistriesFile,
+    name: &str,
+    fetch: impl FnOnce(
+        &app_cli::config::RegistryConfig,
+    )
+        -> Result<Vec<app_cli::client::VerifiedEntry>, app_cli::client::RegistryError>,
+) -> Result<String, Error> {
+    if name.is_empty() || name.len() > 256 || name.chars().any(char::is_control) {
+        return Err(Error::failed("invalid repository name".into()));
+    }
+    let registry = configured
+        .registries
+        .iter()
+        .find(|registry| registry.name == name && registry.enabled)
+        .ok_or_else(|| Error::failed("repository is not configured and enabled".into()))?;
+    let entries = fetch(registry).map_err(failed)?;
+    let json = serde_json::to_string(&entries).map_err(failed)?;
+    if json.len() > MAX_REGISTRY_CATALOGUE_BYTES {
+        return Err(Error::failed(
+            "verified repository catalogue exceeds the response limit".into(),
+        ));
+    }
+    Ok(json)
 }
 
 fn wayland_socket() -> Option<std::path::PathBuf> {
@@ -769,6 +819,13 @@ impl app_host::Server for AppHostServer {
                     WireRemoteAction::Remove => {
                         command.args(["remote-delete", "--user", "--force", &name]);
                     }
+                    WireRemoteAction::Enable | WireRemoteAction::Disable => {
+                        return flatpak_remote_enabled_from(
+                            std::path::Path::new("/usr/bin/flatpak"),
+                            &name,
+                            action == WireRemoteAction::Enable,
+                        );
+                    }
                 }
                 run_host_command(command)
             })
@@ -862,6 +919,30 @@ impl app_host::Server for AppHostServer {
         clippy::manual_async_fn,
         reason = "the generated Cap'n Proto Server trait requires an opaque Future return type"
     )]
+    fn registry_catalogue(
+        self: capnp::capability::Rc<Self>,
+        params: app_host::RegistryCatalogueParams,
+        mut results: app_host::RegistryCatalogueResults,
+    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
+        async move {
+            let registry = params
+                .get()
+                .map_err(failed)?
+                .get_registry()
+                .map_err(failed)?
+                .to_string()
+                .map_err(failed)?;
+            let json = tokio::task::spawn_blocking(move || registry_catalogue(&registry))
+                .await
+                .map_err(failed)??;
+            results.get().set_entries(&json);
+            Ok(())
+        }
+    }
+    #[allow(
+        clippy::manual_async_fn,
+        reason = "the generated Cap'n Proto Server trait requires an opaque Future return type"
+    )]
     fn flatpak_catalogue(
         self: capnp::capability::Rc<Self>,
         params: app_host::FlatpakCatalogueParams,
@@ -937,6 +1018,105 @@ impl app_host::Server for AppHostServer {
 #[cfg(test)]
 mod command_tests {
     use super::{repositories_json_from, safe_host_diagnostic};
+
+    fn catalogue_configuration() -> app_cli::config::RegistriesFile {
+        app_cli::config::RegistriesFile {
+            registries: vec![app_cli::config::RegistryConfig {
+                name: "Configured source".into(),
+                base_url: "https://registry.example.test/".into(),
+                owner_pubkey_hex: "17".repeat(32),
+                enabled: true,
+                channel: tilo_app_package::version::ReleaseChannel::Stable,
+            }],
+        }
+    }
+
+    #[test]
+    fn registry_catalogue_restricts_fetch_to_enabled_host_configuration() {
+        let mut configured = catalogue_configuration();
+        let json = super::registry_catalogue_from(&configured, "Configured source", |registry| {
+            assert_eq!(registry.base_url, "https://registry.example.test/");
+            assert_eq!(registry.owner_pubkey_hex, "17".repeat(32));
+            Ok(Vec::new())
+        })
+        .unwrap();
+        assert_eq!(json, "[]");
+        for name in ["", "https://attacker.example.test/", "Configured source\n"] {
+            assert!(
+                super::registry_catalogue_from(&configured, name, |_| panic!("unconfigured fetch"))
+                    .is_err()
+            );
+        }
+        configured.registries[0].enabled = false;
+        assert!(
+            super::registry_catalogue_from(&configured, "Configured source", |_| panic!(
+                "disabled fetch"
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn registry_catalogue_preserves_checkpoint_failure_and_refuses_oversized_metadata() {
+        let configured = catalogue_configuration();
+        let error = super::registry_catalogue_from(&configured, "Configured source", |_| {
+            Err(app_cli::client::RegistryError::Rollback)
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("rolled back or replayed"));
+        let entry: app_cli::client::VerifiedEntry = serde_json::from_value(serde_json::json!({
+            "entry": {
+                "package_id": "so.tilo.catalogue-test", "name": {"en": "Catalogue test"}, "description": {"en": "x".repeat(super::MAX_REGISTRY_CATALOGUE_BYTES)},
+                "tagline": {"en": ""}, "images": {}, "supported_languages": [], "categories": [],
+                "source_url": null, "homepage": null, "publisher_pubkey_hex": "17".repeat(32),
+                "versions": [], "updated_at_unix": 0, "signature_hex": ""
+            }, "trust": "PublisherSigned", "version_index": null
+        })).unwrap();
+        let error =
+            super::registry_catalogue_from(&configured, "Configured source", |_| Ok(vec![entry]))
+                .unwrap_err();
+        assert!(error.to_string().contains("exceeds the response limit"));
+    }
+
+    #[test]
+    fn remote_enabled_changes_use_only_account_scope_and_preserve_refusal() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("flatpak");
+        std::fs::write(
+            &binary,
+            r#"#!/bin/sh
+printf '%s\n' "$@"
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        for (enabled, flag) in [(true, "--enable"), (false, "--disable")] {
+            let result =
+                super::flatpak_remote_enabled_from(&binary, "custom-tools", enabled).unwrap();
+            assert_eq!(
+                result.trim(),
+                format!("remote-modify\n--user\n{flag}\n--\ncustom-tools")
+            );
+        }
+        for name in ["--system", "../other", ""] {
+            assert!(super::flatpak_remote_enabled_from(&binary, name, true).is_err());
+        }
+        std::fs::write(
+            &binary,
+            r"#!/bin/sh
+echo 'No account source with that name' >&2
+exit 1
+",
+        )
+        .unwrap();
+        assert!(
+            super::flatpak_remote_enabled_from(&binary, "custom-tools", false)
+                .unwrap_err()
+                .to_string()
+                .contains("No account source with that name")
+        );
+    }
 
     #[test]
     fn catalogue_install_requires_the_exact_selected_signed_identity() {

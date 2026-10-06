@@ -758,6 +758,16 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
                 meter.string_capacity(content_hash);
             }
         }
+        CollabRequest::LaunchInstalledApplication {
+            app_id,
+            package_root,
+            ..
+        } => {
+            meter.string_capacity(app_id);
+            if let Some(root) = package_root {
+                meter.string_capacity(root);
+            }
+        }
         CollabRequest::RemoteAction { message } => serialized_bytes(message, &mut meter),
         CollabRequest::OfferContent { hash, bytes } => {
             meter.string_capacity(hash);
@@ -1230,7 +1240,8 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
         },
         #[cfg(unix)]
         CollabEvent::ManagedInvocationObservation { result } => meter.add(result.meter_bytes()),
-        CollabEvent::PublishedInvocationResult { result, .. } => match result {
+        CollabEvent::PublishedInvocationResult { result, .. }
+        | CollabEvent::InstalledApplicationLaunchResult { result, .. } => match result {
             Ok((_, update)) => serialized_bytes(update, &mut meter),
             Err(error) => meter.string_capacity(error),
         },
@@ -1760,10 +1771,32 @@ impl InboundBridge {
         event: CollabEvent,
         turn: Option<tokio::sync::OwnedSemaphorePermit>,
     ) -> bool {
-        let Some(reservation) = self.state.event_bytes.reserve(
-            event_bytes(&event).unwrap_or(usize::MAX),
-            SDK_EVENT_QUEUE_BYTES,
-        ) else {
+        let required_bytes = event_bytes(&event).unwrap_or(usize::MAX);
+        let Some(reservation) = self
+            .state
+            .event_bytes
+            .reserve(required_bytes, SDK_EVENT_QUEUE_BYTES)
+        else {
+            let (event_kind, surface_count, action_count) = match &event {
+                CollabEvent::ActionCatalogue { surfaces } => (
+                    "action_catalogue",
+                    surfaces.len(),
+                    surfaces
+                        .iter()
+                        .map(|surface| surface.actions.len())
+                        .sum::<usize>(),
+                ),
+                _ => ("control", 0, 0),
+            };
+            tracing::error!(
+                event_kind,
+                required_bytes,
+                reserved_bytes = self.state.event_bytes.0.load(Ordering::Acquire),
+                limit_bytes = SDK_EVENT_QUEUE_BYTES,
+                surface_count,
+                action_count,
+                "collab: inbound control event exceeds its retained byte budget"
+            );
             self.state.fail_closed("inbound event byte budget");
             return false;
         };
@@ -2536,6 +2569,10 @@ impl CollaborationManager {
     fn from_connected(connected: ConnectedBroker) -> Self {
         let mut manager = Self::with_transport(Box::new(connected.transport));
         manager.primary_route = connected.primary_route;
+        // The bootstrap already acknowledged Ready, but the owner has not
+        // observed it. Its first pump must still announce the initial action
+        // surface and request the document snapshot on the admitted route.
+        manager.reported_state = None;
         manager
     }
 
@@ -2588,8 +2625,8 @@ impl CollaborationManager {
     }
 
     /// Wait until the shovel has processed the initial `Hello`, admitted its
-    /// primary route, and queued the route's initial action catalogue. Without
-    /// this barrier a caller can publish transient presence immediately after
+    /// primary route (including the initial decision catalogue for an agent).
+    /// Without this barrier a caller can publish transient presence immediately after
     /// construction, before the broker knows where to deliver it.
     fn await_primary_route(&mut self) -> Result<(), runtime_portal::NotAvailable> {
         self.primary_route.accepted = None;
@@ -3500,11 +3537,17 @@ async fn ensure_sdk_route(
         }
     };
 
-    // The catalogue is level-triggered and its first snapshot is the route's
-    // decision baseline. Enqueue it before subscribing to document traffic,
-    // so a backlogged snapshot cannot make an agent decide against stale
-    // local fallback data immediately after construction.
-    spawn_action_catalogue_stream(&channel, inbound_tx).await?;
+    // Only the explicit agent constructors consume the eager workspace
+    // decision catalogue. Ordinary App owners discard that event and expose
+    // their own actions through publication and the bounded pull directory;
+    // acquiring every other app's inventory can prevent an unrelated app from
+    // starting. This selects a consumer, not authority: broker admission and
+    // per-action permissions are unchanged.
+    if participant_kind == "agent" {
+        // Queue the first decision baseline before document traffic so an
+        // agent cannot start deciding against stale local fallback data.
+        spawn_action_catalogue_stream(&channel, inbound_tx).await?;
+    }
     let committed = committed_document::install(&channel, spec, inbound_tx).await?;
     // A committed route's owner admits and applies each edit itself, and a
     // committing host holds no channel keys: it could neither open a sealed
@@ -3689,7 +3732,7 @@ async fn spawn_context_stream(
                     .map(|collaborator| Collaborator {
                         id: collaborator.user_id,
                         name: collaborator.display_name,
-                        color: unpack_color(collaborator.color),
+                        colour: Collaborator::colour_from_packed(collaborator.color),
                         is_agent: collaborator.is_agent,
                         is_self: collaborator.is_self,
                     })
@@ -5632,6 +5675,30 @@ async fn dispatch_sdk_request(
             let _ = inbound_tx
                 .send_durable(CollabEvent::PublishedInvocationResult { request_id, result });
         }
+        CollabRequest::LaunchInstalledApplication {
+            request_id,
+            app_id,
+            package_root,
+            on_behalf_of,
+        } => {
+            let result = route
+                .channel
+                .launch_installed_application_for(
+                    &app_id,
+                    None,
+                    package_root.as_deref(),
+                    on_behalf_of.map(|id| *id.0.as_bytes()),
+                )
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|(id, update)| {
+                    serde_json::from_str(&update)
+                        .map(|update| (id, update))
+                        .map_err(|error| error.to_string())
+                });
+            let _ = inbound_tx
+                .send_durable(CollabEvent::InstalledApplicationLaunchResult { request_id, result });
+        }
         CollabRequest::SubscribeEnrolledTasks { request_id } => {
             let result = route
                 .channel
@@ -5875,20 +5942,6 @@ fn decrypt_document_payload(
             Err(refused(collab_types::DocumentMutationError::RouteMismatch))
         }
     }
-}
-
-/// Unpack the SDK's 0x00RRGGBB u32 into [R, G, B] floats in 0..1 — the
-/// shape the legacy dialect already used, so existing consumers render
-/// identically.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "each channel is masked to 0..=255 by `& 0xFF`, always exactly representable in f32"
-)]
-fn unpack_color(packed: u32) -> [f32; 3] {
-    let r = ((packed >> 16) & 0xFF) as f32 / 255.0;
-    let g = ((packed >> 8) & 0xFF) as f32 / 255.0;
-    let b = (packed & 0xFF) as f32 / 255.0;
-    [r, g, b]
 }
 
 /// Translate an SDK [`runtime_collab::PresenceEvent`] into a
@@ -7139,6 +7192,9 @@ mod tests {
             // Returning a manager must include the existing Hello/primary barrier.
             assert!(manager.is_connected());
             assert!(manager.primary_route.current(true).is_some());
+            assert_eq!(manager.state(), CollaborationState::Ready);
+            assert_eq!(manager.take_state_change(), Some(CollaborationState::Ready));
+            assert_eq!(manager.take_state_change(), None);
             let joined = captures.lock().unwrap().joined.clone();
             assert_eq!(joined.len(), 1);
             assert_eq!(
@@ -10260,7 +10316,7 @@ mod tests {
                 context_backlog: vec![SeedContext {
                     collaborators: vec![
                         ("alice".to_owned(), "Alice".to_owned(), 0x00FF_8000),
-                        ("bob".to_owned(), "Bob".to_owned(), 0x0000_80FF),
+                        ("bob".to_owned(), "Bob".to_owned(), 0),
                     ],
                     permissions: vec!["edit".to_owned(), "share".to_owned()],
                 }],
@@ -10288,10 +10344,9 @@ mod tests {
             assert_eq!(collabs.len(), 2);
             assert_eq!(collabs[0].id, "alice");
             assert_eq!(collabs[0].name, "Alice");
-            // 0x00FF8000 → R=255, G=128, B=0.
-            assert!((collabs[0].color[0] - 1.0).abs() < 1e-3);
-            assert!((collabs[0].color[1] - 128.0 / 255.0).abs() < 1e-3);
-            assert!(collabs[0].color[2].abs() < 1e-3);
+            // 0x00FF8000 is an orange; 0 says no colour.
+            assert_eq!(collabs[0].colour, Some(crate::tokens::PresenceHue::Orange));
+            assert_eq!(collabs[1].colour, None);
             assert_eq!(perms, vec!["edit".to_owned(), "share".to_owned()]);
         }
 
@@ -10684,7 +10739,7 @@ mod tests {
             SdkConnectSource::Fd(fd),
             Some(SdkJoinIdentity {
                 presentation: Vec::new(),
-                participant_kind: "person",
+                participant_kind: "agent",
                 signer: harness_document_signer(),
             }),
         )
@@ -10746,6 +10801,102 @@ mod tests {
             "the watch delivered its next snapshot"
         );
         assert!(state.is_healthy());
+    }
+
+    /// Ordinary application startup must not acquire an unrelated workspace's
+    /// eager discovery inventory. Discovery remains on the published directory;
+    /// this socket fixture certifies transport readiness, not broker authority.
+    #[test]
+    #[cfg(unix)]
+    fn ordinary_application_starts_with_an_oversized_workspace_catalogue() {
+        let cluster = Uuid::new_v4();
+        let snapshot = notebook_action_catalogue_fixture(cluster, 2049);
+        let decoded: BrokerActionCatalogueWire = serde_json::from_str(&snapshot).unwrap();
+        let retained = event_bytes(&CollabEvent::ActionCatalogue {
+            surfaces: decoded.surfaces,
+        })
+        .unwrap();
+        eprintln!(
+            "startup fixture serialized_bytes={} retained_bytes={retained}",
+            snapshot.len()
+        );
+        assert!(
+            retained > SDK_EVENT_QUEUE_BYTES,
+            "prove the existing bound matters"
+        );
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures {
+                action_catalogue_fixture: Some(vec![snapshot]),
+                ..Captures::default()
+            })),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, worker) = stand_up_fake_broker(broker);
+        let sdk = CollaborationManager::spawn_sdk(
+            SdkConnectSource::Fd(fd),
+            Some(SdkJoinIdentity {
+                presentation: Vec::new(),
+                participant_kind: "person",
+                signer: harness_document_signer(),
+            }),
+        )
+        .unwrap();
+        let mut manager = CollaborationManager::with_transport(Box::new(sdk));
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: "so.tilo.browser".into(),
+            cluster_id: cluster,
+            record: None,
+            record_kind: None,
+            handle: None,
+        }));
+        let admission = manager.await_primary_route();
+        let healthy = broker_state(&manager).is_healthy();
+        let subscriptions = captures.lock().unwrap().action_catalogue_subscriptions;
+        if admission.is_ok() && healthy {
+            // This unbound shared widget uses the normal local publication
+            // identity; the broker connection still belongs to the Browser route.
+            let publication_app_id = crate::collaboration::local_app_id();
+            let mut app = crate::App::with_collaboration_manager(
+                crate::State::new(),
+                Box::new(crate::widget::Button::new("complete", "Complete").on_view(|| {})),
+                manager,
+            );
+            crate::app::draw_prepared_component_test_frame(&mut app);
+            eventually(
+                "ordinary first frame publishes its actions and pull directory",
+                || {
+                    let seen = captures.lock().unwrap();
+                    seen.action_directories
+                        .iter()
+                        .any(|id| id == &publication_app_id)
+                        && seen.action_publications.iter().any(|(id, actions)| {
+                            id == &publication_app_id
+                                && actions.iter().any(|(label, action)| {
+                                    label == "Complete" && !action.is_empty()
+                                })
+                        })
+                },
+            );
+            drop(app);
+        } else {
+            drop(manager);
+        }
+        worker.join().unwrap();
+        assert!(
+            admission.is_ok(),
+            "ordinary route must become ready: {admission:?}"
+        );
+        assert!(
+            healthy,
+            "unconsumed metadata must not disconnect the application"
+        );
+        assert_eq!(
+            subscriptions, 0,
+            "ordinary startup does not subscribe to eager discovery"
+        );
     }
 
     /// SDK transport/owner ordering only. This uncertified test endpoint cannot

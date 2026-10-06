@@ -1,4 +1,4 @@
-//! `Flex` — the workhorse layout + surface + click primitive for Tube.
+//! `Flex` — retained layout for Tube content.
 //!
 //! The toolkit ships `Row`/`Column`/`Container`, but each bakes in a fixed
 //! padding/gap/background and none of them are clickable. Tube's grid,
@@ -8,13 +8,11 @@
 //!
 //! * direction (row / column), gap, padding, wrap
 //! * sizing per-axis (auto / fill / fixed px / percent) + flex grow
-//! * an optional rounded fill + border read from the [`Theme`]
 //! * an optional click [`Action`] pushed onto the shared [`ActionBus`],
-//!   with a hover/press surface treatment
 //! * optional clip (for scroll regions / rounded thumbnails)
 //!
-//! All colours come in as [`Color`] arguments resolved by the caller from
-//! the live `Theme`, so theming stays OS-controlled.
+//! Shared child controls own their semantic appearance; this container
+//! supplies layout and clipping only.
 
 use std::collections::HashMap;
 use ui::widget::ModelPath;
@@ -22,8 +20,8 @@ use ui::widget::ModelPath;
 use taffy::style_helpers::{fr, length, minmax, percent, repeat};
 use taffy::{Dimension, NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -89,14 +87,6 @@ pub enum Justify {
     Between,
 }
 
-/// Background fill + border treatment for a box.
-#[derive(Clone, Copy)]
-pub struct Surface {
-    pub fill: Option<Color>,
-    pub radius: f64,
-    pub border: Option<(f64, Color)>,
-}
-
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent layout toggle set by its own builder method \
@@ -130,9 +120,6 @@ pub struct Flex {
     /// box's interactive children fall through to the content beneath.
     /// Used for a small on-video affordance (the `SponsorBlock` "Skip" button).
     float: bool,
-
-    surface: Option<Surface>,
-    hover_surface: Option<Surface>,
 
     // Click support.
     bus: Option<ActionBus>,
@@ -179,8 +166,6 @@ impl Flex {
             block: false,
             clip: false,
             float: false,
-            surface: None,
-            hover_surface: None,
             bus: None,
             action: None,
             action_emitter: None,
@@ -337,18 +322,7 @@ impl Flex {
     }
 
     #[must_use]
-    pub fn surface(mut self, s: Surface) -> Self {
-        self.surface = Some(s);
-        self
-    }
-    #[must_use]
-    pub fn hover_surface(mut self, s: Surface) -> Self {
-        self.hover_surface = Some(s);
-        self
-    }
 
-    /// Make the whole box a button that pushes `action` on click.
-    #[must_use]
     pub fn on_click(mut self, bus: &ActionBus, action: Action) -> Self {
         let fallback = action.accessible_label();
         self.bus = Some(bus.clone());
@@ -412,24 +386,6 @@ impl Flex {
     pub fn id(mut self, id: &str) -> Self {
         self.test_id = Some(id.to_string());
         self
-    }
-
-    fn shape(&self, radius: f64) -> RoundedRect {
-        RoundedRect::from_rect(self.rect, radius)
-    }
-
-    fn paint_surface(&self, scene: &mut Scene, transform: Affine, s: &Surface) {
-        if let Some(fill) = s.fill {
-            scene.fill(Fill::NonZero, transform, fill, None, &self.shape(s.radius));
-        }
-        if let Some((w, c)) = s.border {
-            // A crisp inset stroke: half the width inside the rect, so the
-            // border covers the surface's outermost pixels instead of
-            // bleeding half a pixel onto the ground beside it.
-            let outline =
-                RoundedRect::from_rect(self.rect.inset(-w / 2.0), (s.radius - w / 2.0).max(0.0));
-            scene.stroke(&Stroke::new(w), transform, c, None, &outline);
-        }
     }
 
     fn dispatch_child_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
@@ -632,16 +588,6 @@ impl Widget for Flex {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Background / hover surface.
-        let surf = if self.hovered {
-            self.hover_surface.as_ref().or(self.surface.as_ref())
-        } else {
-            self.surface.as_ref()
-        };
-        if let Some(s) = surf {
-            self.paint_surface(scene, transform, s);
-        }
-
         if self.clip {
             scene.push_layer(
                 Fill::NonZero,
@@ -674,14 +620,6 @@ impl Widget for Flex {
     ) {
         if presence.should_cull(self.get_rect()) {
             return;
-        }
-        let surf = if self.hovered {
-            self.hover_surface.as_ref().or(self.surface.as_ref())
-        } else {
-            self.surface.as_ref()
-        };
-        if let Some(s) = surf {
-            self.paint_surface(scene, transform, s);
         }
         if self.clip {
             scene.push_layer(

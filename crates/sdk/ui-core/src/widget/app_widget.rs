@@ -107,6 +107,9 @@ pub enum AppHostIntent {
         /// an empty resource lens while the durable indexes converge.
         entry: Option<crate::widget::HistoryEntry>,
     },
+    /// Open the platform search scoped to this app (or one part of it), with
+    /// the query already typed. The shell focuses the source tab first.
+    OpenSearch(crate::search::SearchRequest),
     /// A Files-selected local document. The shell validates and admits it only
     /// after the originating tile has released its record loan.
     OpenDocument {
@@ -161,6 +164,7 @@ impl PartialEq for AppHostIntent {
                     && left_token == right_token
                     && Weak::ptr_eq(left_reply, right_reply)
             }
+            (Self::OpenSearch(left), Self::OpenSearch(right)) => left == right,
             (
                 Self::AllowHostShell { reply: left_reply },
                 Self::AllowHostShell { reply: right_reply },
@@ -257,6 +261,14 @@ pub trait AppWidget: Widget {
 
     /// Framework-owned durability, delivered only after the record loan ends.
     fn record_save_status(&mut self, _status: crate::record::RecordSaveStatus) {}
+
+    /// Whether the person asked to try a failed record save again
+    /// ([`crate::SaveAction::Retry`] on the [`crate::SaveStatusSurface`]),
+    /// once. The host that owns the record submits its changes again before
+    /// it next reports [`Self::record_save_status`].
+    fn take_save_retry(&mut self) -> bool {
+        false
+    }
 
     /// Drain a one-shot request for shell-owned chrome.
     fn take_host_intent(&mut self) -> Option<AppHostIntent> {
@@ -2082,6 +2094,9 @@ mod component_adapter {
         fn take_host_intent(&mut self) -> Option<AppHostIntent> {
             let binding = self.component.callback_binding();
             let _entry = binding.enter().ok()?;
+            if let Some(request) = binding.take_search_request() {
+                return Some(AppHostIntent::OpenSearch(request));
+            }
             self.component.root.as_deref_mut()?.take_host_intent()
         }
     }

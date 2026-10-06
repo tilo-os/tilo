@@ -90,6 +90,7 @@ const LAB_SOURCES: &[&str] = &[
 ];
 const SHOT_SOURCES: &[&str] = &[
     "chart_gallery_shots.rs",
+    "content_shots.rs",
     "ctrl_k_palette.rs",
     "data_table.rs",
     "denied_state_shots.rs",
@@ -109,6 +110,8 @@ const SHOT_SOURCES: &[&str] = &[
     "undo_controls_shots.rs",
     "widget_showcase_snapshot.rs",
     "widget_snapshot.rs",
+    "widget_states_shots.rs",
+    "window_chrome_shots.rs",
 ];
 const PERF_SOURCES: &[&str] = &[
     "dashboard_perf_bench.rs",
@@ -270,12 +273,16 @@ mod tests {
     const STANDALONE_ENTRYPOINTS: &[&str] = &[
         "block_editor_typing.rs",
         "card_composition_shots.rs",
+        "distinct_letters_shots.rs",
+        "distinct_letters_specimen.rs",
         "form_composition_shots.rs",
         "managed_history_probe.rs",
         "manual_composition_shots.rs",
         "native_file_picker.rs",
         "native_input_probe.rs",
+        "reading_face_shots.rs",
         "search_latency.rs",
+        "type_specimen_shots.rs",
         "windows_host.rs",
     ];
 

@@ -800,6 +800,131 @@ mod tests {
     }
 
     #[test]
+    fn spotify_connect_unknown_metadata_requires_confirmed_provider_capability() {
+        use crate::backend::SpotifyOperation;
+        use test_http::{Reply, Responder};
+        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+        let track = "spotify:track:1234567890123456789012";
+        for profile in [
+            serde_json::json!({"id":"account"}),
+            serde_json::json!({"id":"account","product":null}),
+        ] {
+            for operation in [
+                SpotifyOperation::Transfer {
+                    device: "bedroom".into(),
+                },
+                SpotifyOperation::RemotePlay {
+                    device: "bedroom".into(),
+                    track: track.into(),
+                },
+                SpotifyOperation::RemotePause {
+                    device: "bedroom".into(),
+                },
+            ] {
+                let playing = matches!(operation, SpotifyOperation::RemotePlay { .. });
+                let state = serde_json::json!({"device":{"id":"bedroom"},"is_playing":playing,"item":{"uri":track}});
+                let api = Responder::start(vec![
+                    Reply::status(200).body(serde_json::to_vec(&profile).unwrap()),
+                    Reply::status(200).body(
+                        br#"{"devices":[{"id":"bedroom","name":"Bedroom","is_restricted":false}]}"#
+                            .to_vec(),
+                    ),
+                    Reply::status(204),
+                    Reply::status(200).body(serde_json::to_vec(&state).unwrap()),
+                ]);
+                let (backend, _root) = fixture(&api.url(), &oauth);
+                let reply = backend.operation(&operation).unwrap();
+                assert_eq!(reply.state, state);
+                assert!(
+                    reply.state.get("product").is_none(),
+                    "no Premium tier is invented"
+                );
+                assert_eq!(api.next_request().target, "/me");
+                assert_eq!(api.next_request().target, "/me/player/devices");
+                let command = api.next_request();
+                assert_eq!(command.method, "PUT");
+                assert!(command.target.starts_with("/me/player"));
+                assert_eq!(api.next_request().target, "/me/player");
+                api.assert_untouched();
+            }
+        }
+    }
+
+    #[test]
+    fn spotify_connect_unknown_metadata_rejects_restricted_devices_before_a_command() {
+        use crate::backend::SpotifyOperation;
+        use test_http::{Reply, Responder};
+        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+        let api = Responder::start(vec![
+            Reply::status(200).body(br#"{"id":"account"}"#.to_vec()),
+            Reply::status(200).body(
+                br#"{"devices":[{"id":"restricted","name":"Unavailable","is_restricted":true}]}"#
+                    .to_vec(),
+            ),
+        ]);
+        let (backend, _root) = fixture(&api.url(), &oauth);
+        assert!(
+            backend
+                .operation(&SpotifyOperation::Transfer {
+                    device: "restricted".into()
+                })
+                .unwrap_err()
+                .to_string()
+                .contains("does not permit remote controls")
+        );
+        assert_eq!(api.next_request().target, "/me");
+        assert_eq!(api.next_request().target, "/me/player/devices");
+        api.assert_untouched();
+    }
+
+    #[test]
+    fn spotify_connect_unknown_metadata_does_not_turn_denial_or_acknowledgement_into_success() {
+        use crate::backend::SpotifyOperation;
+        use test_http::{Reply, Responder};
+        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+        for status in [403, 500, 204] {
+            let mut replies = vec![
+                Reply::status(200).body(br#"{"id":"account"}"#.to_vec()),
+                Reply::status(200).body(
+                    br#"{"devices":[{"id":"bedroom","name":"Bedroom","is_restricted":false}]}"#
+                        .to_vec(),
+                ),
+                Reply::status(status),
+            ];
+            if status == 204 {
+                replies.push(
+                    Reply::status(200)
+                        .body(br#"{"device":{"id":"other"},"is_playing":true}"#.to_vec()),
+                );
+            }
+            let api = Responder::start(replies);
+            let (backend, _root) = fixture(&api.url(), &oauth);
+            let error = backend
+                .operation(&SpotifyOperation::RemotePlay {
+                    device: "bedroom".into(),
+                    track: "spotify:track:1234567890123456789012".into(),
+                })
+                .unwrap_err()
+                .to_string();
+            assert!(
+                !error.contains("require Premium"),
+                "missing metadata is not a Free verdict"
+            );
+            assert!(if status == 403 {
+                error.contains("denied access")
+            } else if status == 204 {
+                error.contains("not confirmed")
+            } else {
+                error.contains("Spotify")
+            });
+            for _ in 0..if status == 204 { 4 } else { 3 } {
+                api.next_request();
+            }
+            api.assert_untouched();
+        }
+    }
+
+    #[test]
     fn spotify_free_accounts_cannot_start_streaming_or_connect_commands() {
         use crate::backend::SpotifyOperation;
         use test_http::{Reply, Responder};

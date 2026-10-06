@@ -140,22 +140,6 @@ fn read_anchors(anchor: &LiveAnchor, head: &LiveAnchor) -> Option<(Vec<u8>, u64,
     Some((key, start, end))
 }
 
-/// A stable cursor colour for a device.
-pub fn color_of(device: &[u8; 32]) -> [u8; 3] {
-    const PALETTE: [[u8; 3]; 8] = [
-        [0xe0, 0x4f, 0x5f],
-        [0x2f, 0x80, 0xed],
-        [0x27, 0xae, 0x60],
-        [0xf2, 0x99, 0x4a],
-        [0x9b, 0x51, 0xe0],
-        [0x00, 0xa3, 0xa3],
-        [0xd6, 0x33, 0x84],
-        [0x82, 0x82, 0x2d],
-    ];
-    let index = usize::from(device.iter().fold(0u8, |acc, byte| acc.wrapping_add(*byte))) % 8;
-    PALETTE.get(index).copied().unwrap_or([0x80, 0x80, 0x80])
-}
-
 struct Room {
     frame: PresenceFrame,
     sent: Instant,
@@ -247,6 +231,9 @@ pub struct Inbound {
     pub updates: Vec<PeerPresence>,
     /// The name the sender asks to be drawn with.
     pub label: Option<String>,
+    /// The colour the sender asks to be drawn in: the presence hue nearest
+    /// its participant colour.
+    pub colour: Option<ui::tokens::PresenceHue>,
 }
 
 /// Translate one live frame. Previews and malformed frames mean nothing
@@ -265,6 +252,10 @@ pub fn inbound(frame: &[u8]) -> Option<Inbound> {
             .participant
             .as_ref()
             .map(|participant| participant.label.clone()),
+        colour: presence.participant.as_ref().and_then(|participant| {
+            let [r, g, b] = participant.color;
+            ui::tokens::PresenceHue::nearest(vello::peniko::Color::from_rgb8(r, g, b))
+        }),
         ..Inbound::default()
     };
     if let Some([x, y]) = presence.pointer {
@@ -296,12 +287,15 @@ pub fn inbound(frame: &[u8]) -> Option<Inbound> {
     Some(inbound)
 }
 
-/// How this device asks to be drawn.
-pub fn participant(label: String, device: &[u8; 32]) -> LiveParticipant {
+/// How this device asks to be drawn: under the person's name, in the
+/// colour they wear everywhere (their choice, or the one their stable
+/// identity derives).
+pub fn participant(label: String, colour: ui::tokens::PresenceHue) -> LiveParticipant {
+    let (r, g, b) = ui::presence::identity_rgb(colour);
     LiveParticipant {
         kind: ParticipantKind::Person,
         label,
-        color: color_of(device),
+        color: [r, g, b],
         activity: None,
     }
 }
@@ -361,7 +355,7 @@ mod tests {
             .update(
                 1,
                 focus,
-                participant("Ada".into(), &[1; 32]),
+                participant("Ada".into(), ui::tokens::PresenceHue::Teal),
                 &PeerPresence {
                     key: caret_key(),
                     payload: PeerPresencePayload::Caret { pos: 3 },
@@ -407,7 +401,7 @@ mod tests {
             .update(
                 7,
                 focus.clone(),
-                participant("Ada".into(), &[3; 32]),
+                participant("Ada".into(), ui::tokens::PresenceHue::Teal),
                 &PeerPresence {
                     key: caret_key(),
                     payload: PeerPresencePayload::Caret { pos: 42 },
@@ -425,6 +419,11 @@ mod tests {
         assert_eq!(read.app_id, "so.tilo.notes");
         assert_eq!(read.label.as_deref(), Some("Ada"));
         assert_eq!(
+            read.colour,
+            Some(ui::tokens::PresenceHue::Teal),
+            "the person's colour crosses the live plane"
+        );
+        assert_eq!(
             read.updates,
             vec![PeerPresence {
                 key: caret_key(),
@@ -440,7 +439,7 @@ mod tests {
                     app: "so.tilo.notes".into(),
                     record: "r".into(),
                 },
-                participant("Ada".into(), &[3; 32]),
+                participant("Ada".into(), ui::tokens::PresenceHue::Teal),
                 &PeerPresence {
                     key: postcard::to_stdvec(&ui::presence::PresenceKey::pointer_default())
                         .unwrap(),

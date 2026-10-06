@@ -181,6 +181,57 @@ impl Resource for Terminal {
         };
         Ok(())
     }
+
+    const READABLE: bool = true;
+
+    /// Read the shared screen, not this participant's local process lifecycle.
+    fn read_content(
+        state: &SessionState,
+        _doc: &Doc,
+        item: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        if item.is_some() {
+            return Err("Terminal has no nested readable resource".into());
+        }
+        let (output, truncated) = readable_output(&state.screen);
+        Ok(serde_json::json!({
+            "kind": Self::KIND,
+            "title": state.title,
+            "target": state.target,
+            "session": state.local_session,
+            "relay_session": state.relay_session,
+            "pane": state.pane_id,
+            "alternate": state.screen.alternate,
+            "cursor": { "column": state.screen.cursor.0, "row": state.screen.cursor.1 },
+            "output": output,
+            "output_truncated": truncated,
+            "retained_lines": state.screen.active().len(),
+        }))
+    }
+}
+
+/// Keep explicit reads bounded even when retained output contains very long
+/// rows. The suffix ends at a Unicode scalar boundary; no terminal content is
+/// logged or copied until the caller requests the canonical Read action.
+fn readable_output(screen: &Screen) -> (String, bool) {
+    const LIMIT: usize = 64 * 1024;
+    let mut reversed = String::new();
+    let mut rows = screen.active().iter().rev().peekable();
+    while let Some(row) = rows.next() {
+        for character in row.text.trim_end().chars().rev() {
+            if reversed.len() + character.len_utf8() > LIMIT {
+                return (reversed.chars().rev().collect(), true);
+            }
+            reversed.push(character);
+        }
+        if rows.peek().is_some() {
+            if reversed.len() == LIMIT {
+                return (reversed.chars().rev().collect(), true);
+            }
+            reversed.push('\n');
+        }
+    }
+    (reversed.chars().rev().collect(), false)
 }
 
 /// What a terminal does that changes no document: drive its process, move
@@ -192,6 +243,12 @@ impl Resource for Terminal {
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "terminal.effects")]
 pub enum TerminalEffect {
+    /// Inspect session
+    ///
+    /// Read this participant's actual process lifecycle and startup cause.
+    /// The shared screen is read separately through the resource's Read action.
+    #[effect(returns, permission = "read")]
+    InspectSession,
     /// Send text
     ///
     /// Writes reviewed text without pressing Enter.
@@ -345,7 +402,7 @@ impl ResourceApp for TerminalShell {
             Some(content) => widget.with_content(content),
             None => widget,
         };
-        cx.surface(widget)
+        cx.surface(crate::TerminalView::new(widget))
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -422,6 +479,9 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
         effect: TerminalEffect,
         _cx: &mut EffectCx<Terminal, Self>,
     ) -> EffectAnswer {
+        if effect == TerminalEffect::InspectSession {
+            return Ok(Effected::value(self.inspect_session()));
+        }
         self.perform(effect).map(|()| Effected::done())
     }
 
@@ -438,9 +498,94 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
     }
 }
 
+impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
+    fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+        self.take_session_intent()
+    }
+    fn present(&mut self, state: &std::rc::Rc<SessionState>) {
+        self.present_session(state);
+    }
+    fn attach(&mut self, cx: SurfaceCx<Terminal>) {
+        self.wake_through(cx.waker());
+        self.bind(cx.dispatcher());
+    }
+    fn stage(&mut self, scenario: Option<&str>) {
+        if let Some(name) = scenario {
+            self.stage_scenario(name);
+        }
+        if scenario == Some("find") {
+            self.set_find_query("build step 042");
+        }
+    }
+    fn effect(
+        &mut self,
+        effect: TerminalEffect,
+        _cx: &mut EffectCx<Terminal, Self>,
+    ) -> EffectAnswer {
+        if effect == TerminalEffect::InspectSession {
+            return Ok(Effected::value(self.inspect_session()));
+        }
+        self.perform(effect).map(|()| Effected::done())
+    }
+    fn effects(&self) -> Vec<EffectStatus> {
+        self.effect_statuses()
+    }
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.link_rows()
+    }
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.link_row(id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_read_reports_recorded_screen_target_and_unicode_bound_without_local_claims() {
+        let mut app = ui::framework::testing::TestApp::<TerminalShell>::new().expect("terminal");
+        app.invoke(
+            ui::tilo_resource::Invoke::apply(&TerminalAction::SetTarget {
+                target: crate::target::SessionTarget::default_environment().encode(),
+            })
+            .expect("encode target action"),
+        )
+        .expect("recorded target");
+        app.with_surface(|terminal: &mut TerminalWidget| terminal.feed(b"recorded output\r\n"))
+            .expect("surface");
+        app.settle();
+        let state = app.state();
+        let read = app
+            .call("read", serde_json::json!({}))
+            .expect("published canonical read")
+            .expect("read answers with shared content");
+        assert!(read["output"].as_str().unwrap().contains("recorded output"));
+        assert_eq!(
+            read["target"],
+            serde_json::to_value(crate::target::SessionTarget::default_environment()).unwrap()
+        );
+        assert_eq!(read["cursor"]["row"], state.screen.cursor.1);
+        assert!(
+            read.get("lifecycle").is_none(),
+            "a shared screen cannot assert local process liveness"
+        );
+        assert!(
+            app.call("read", serde_json::json!({"item": "unknown"}))
+                .is_err()
+        );
+        let screen = Screen {
+            main: vec![std::rc::Rc::new(crate::screen::Line {
+                text: "é".repeat(40_000),
+                attrs: Vec::new(),
+            })],
+            ..Screen::default()
+        };
+        let (output, truncated) = readable_output(&screen);
+        assert!(truncated);
+        assert_eq!(output.len(), 64 * 1024);
+        assert!(output.chars().all(|character| character == 'é'));
+    }
 
     #[test]
     fn the_session_publishes_its_effects_and_the_links_on_screen() {
@@ -453,7 +598,7 @@ mod tests {
             b"see \x1b]8;;https://example.test/docs\x1b\\docs\x1b]8;;\x1b\\ \
               \x1b]8;;file:///home/me/.ssh/id_ed25519\x1b\\key\x1b]8;;\x1b\\\r\n",
         );
-        app.with_surface(|terminal: &mut TerminalWidget| terminal.feed(&output))
+        app.with_surface(|terminal: &mut crate::TerminalView| terminal.feed(&output))
             .expect("the terminal surface is hosted");
         app.settle();
 
@@ -477,7 +622,7 @@ mod tests {
         app.effect(&TerminalEffect::HistoryTop)
             .expect("history-top is offered while older output is retained");
         let scrolled = app
-            .with_surface(|terminal: &mut TerminalWidget| terminal.scroll_offset())
+            .with_surface(|terminal: &mut crate::TerminalView| terminal.scroll_offset())
             .expect("the terminal surface is hosted");
         assert!(scrolled > 0, "the view scrolled back");
 
@@ -504,7 +649,7 @@ mod tests {
 
     /// A scenario's output on screen through `--shots`' own path, with the
     /// view state staged over it.
-    fn captured<T>(scenario: &str, read: impl FnOnce(&mut TerminalWidget) -> T) -> T {
+    fn captured<T>(scenario: &str, read: impl FnOnce(&mut crate::TerminalView) -> T) -> T {
         let mut app = ui::framework::testing::TestApp::<TerminalShell>::capture(Some(scenario))
             .unwrap_or_else(|error| panic!("{scenario} stages: {error}"));
         app.with_surface(read)
@@ -513,9 +658,15 @@ mod tests {
 
     #[test]
     fn scenarios_stage_their_output_and_view_state() {
-        let (open, matches) = captured("find", |terminal| terminal.find_test_state());
+        let (open, counter) = captured("find", |terminal| {
+            (terminal.find_is_open(), terminal.find_counter())
+        });
         assert!(open, "the find scenario opens the find bar");
-        assert_eq!(matches.len(), 1, "one line matches `build step 042`");
+        assert_eq!(
+            counter,
+            Some(("build step 042".into(), Some((1, 1)))),
+            "one line matches `build step 042`"
+        );
 
         let selected = captured("shell-select", |terminal| terminal.test_selected_text());
         assert_eq!(
@@ -553,7 +704,7 @@ mod tests {
     #[test]
     fn output_reaches_the_session_record_but_is_nobodys_undo_step() {
         let mut app = ui::framework::testing::TestApp::<TerminalShell>::new().expect("terminal");
-        app.with_surface(|terminal: &mut TerminalWidget| {
+        app.with_surface(|terminal: &mut crate::TerminalView| {
             terminal.feed(b"\x1b]2;build\x07first line\r\nsecond \x1b[1;31mred\x1b[0m\r\n");
         })
         .expect("the terminal surface is hosted");
@@ -567,7 +718,7 @@ mod tests {
         assert!(texts(&app.state()).contains("first line"));
 
         // More output records only what changed.
-        app.with_surface(|terminal: &mut TerminalWidget| terminal.feed(b"third\r\n"))
+        app.with_surface(|terminal: &mut crate::TerminalView| terminal.feed(b"third\r\n"))
             .expect("the terminal surface is hosted");
         app.settle();
         let state = app.state();

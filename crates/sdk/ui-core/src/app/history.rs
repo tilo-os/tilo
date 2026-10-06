@@ -240,31 +240,29 @@ impl App {
             .as_ref()
             .and_then(|history| history.review_layout_node())
             .or(self.layout.root_node);
-        let mut nodes: Vec<_> = root.into_iter().collect();
-        while let Some(node) = nodes.pop() {
-            let allowed = crate::history_mode::embedded::allows_focus(
-                self.root_widget.as_ref(),
-                node,
-                &self.layout.taffy,
-            ) && self.history.as_ref().is_none_or(|history| {
-                !history.captures_input() || history.owns_node(node, &self.layout.taffy)
-            });
-            if allowed
-                && self
-                    .inspect_node(node, |widget| widget.is_focusable() && widget.is_enabled())
-                    .unwrap_or(false)
-            {
-                self.focusable_order.push(node);
-            }
-            nodes.extend(
-                self.layout
-                    .taffy
-                    .children(node)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .rev(),
-            );
-        }
+        let (order, app_trap) = root.map_or_else(
+            || (Vec::new(), false),
+            |root| {
+                crate::focus_navigation::mapped_order(root, &self.layout.taffy, |node| {
+                    let allowed = crate::history_mode::embedded::allows_focus(
+                        self.root_widget.as_ref(),
+                        node,
+                        &self.layout.taffy,
+                    ) && self.history.as_ref().is_none_or(|history| {
+                        !history.captures_input() || history.owns_node(node, &self.layout.taffy)
+                    });
+                    self.inspect_node(node, |widget| {
+                        (
+                            allowed && widget.is_focusable() && widget.is_enabled(),
+                            allowed && widget.traps_focus(),
+                            widget.accessibility().is_some_and(|node| node.state.hidden),
+                        )
+                    })
+                    .unwrap_or((false, false, false))
+                })
+            },
+        );
+        self.focusable_order = order;
         if self
             .history
             .as_ref()
@@ -276,11 +274,20 @@ impl App {
                     .is_some_and(|history| history.owns_node(*id, &self.layout.taffy))
             });
         }
-        self.accessibility.focus_trap_active = self
-            .history
-            .as_ref()
-            .is_some_and(|history| history.review_is_open());
-        self.accessibility.focus_before_trap = None;
+        let trap_active = app_trap
+            || self
+                .history
+                .as_ref()
+                .is_some_and(|history| history.review_is_open());
+        if let Some(next) = crate::focus_navigation::reconcile_trap(
+            &mut self.accessibility.focus_trap_active,
+            &mut self.accessibility.focus_before_trap,
+            self.focused_node,
+            &self.focusable_order,
+            trap_active,
+        ) {
+            self.set_focused_node(next);
+        }
     }
     pub(super) fn suspend_history_focus(&mut self, target: Option<NodeId>) {
         if unsafe {

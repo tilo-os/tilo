@@ -24,6 +24,7 @@ exclude = [
     "vendor/automerge",
     "vendor/librespot-core",
     "vendor/hyper-proxy2",
+    "vendor/cosmic-text",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
 # it requires unwind support, unlike the default release profile.
@@ -917,6 +918,10 @@ debug-assertions = true
 # See the two vendor PROVENANCE.md files.
 librespot-core = { path = "vendor/librespot-core" }
 hyper-proxy2 = { path = "vendor/hyper-proxy2" }
+# Shapes a variable font at its `wdth` as well as its `wght`, so condensed
+# text is measured and kerned at the width it is drawn. See
+# vendor/cosmic-text/TILO-PATCH.md.
+cosmic-text = { path = "vendor/cosmic-text" }
 # The Google Cast message types with their prost code pre-generated, so the
 # build no longer compiles a protobuf compiler for one message.
 # See vendor/google-cast-protocol/PROVENANCE.md.

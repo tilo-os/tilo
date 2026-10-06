@@ -62,7 +62,7 @@ impl Resource for Music {
                         .trim()
                         .to_owned();
                     let name = if name.is_empty() {
-                        "New Playlist".to_owned()
+                        "New playlist".to_owned()
                     } else {
                         name
                     };
@@ -209,11 +209,30 @@ impl ResourceSurface<Music, MusicEffect> for MusicApp {
     }
 
     /// The songs the live search found that the library does not hold.
+    fn search_query(&mut self, query: &ui::search::SearchQuery) {
+        self.queue_catalogue_query(query.text());
+    }
+
     fn search_entries(&self) -> Vec<SearchEntry> {
         self.live_search_entries()
     }
 
     fn effect(&mut self, effect: MusicEffect, cx: &mut EffectCx<Music, Self>) -> EffectAnswer {
+        if let MusicEffect::ToggleLike { track } = &effect {
+            if cx.dispatcher().read_only() {
+                return Err("Liking a song requires permission to edit the library".into());
+            }
+            let current = cx.live().get();
+            let _gesture = cx.dispatcher().begin_group();
+            if !current.tracks.contains_key(track) {
+                cx.apply(&self.catalogue_import_action(track)?);
+            }
+            cx.apply(&crate::actions::set_liked_action(
+                track,
+                !current.is_liked(track),
+            ));
+            return Ok(ui::framework::Effected::done());
+        }
         let invocation = cx.invocation().unwrap_or_default();
         let answer = self.begin_effect(invocation, effect)?;
         if matches!(answer, ui::framework::Effected::Pending) {

@@ -3,8 +3,12 @@ use ui::widget::{AppModel, ModelPath};
 use ui::{
     Theme,
     paint::PaintCtx,
-    text_render::{FontChoice, TextRenderer, TextStyle, TextWeight},
-    widget::{PressOutcome, ScrollMetrics, Scrollbar, TextInput, Widget},
+    text_render::{TextRenderer, TextStyle, TextWeight},
+    tokens::TextRole,
+    widget::{
+        Banner, BannerContent, BannerKind, EmptyState, EmptyStateContent, FindOptions, Findable,
+        PressOutcome, ScrollMetrics, Scrollbar, Widget, paint_find_match,
+    },
 };
 // Shared text-selection + clipboard primitives from the toolkit — the terminal
 // reuses these rather than re-implementing word/line boundary walking, multi-
@@ -19,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_content::ContentStore;
 use ui::collaboration::PresencePayload;
-use ui::icons::{Icon, draw_icon};
+use ui::icons::Icon;
 use ui::permissions::{AppKind as PermAppKind, PermissionContext};
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
@@ -30,7 +34,7 @@ use ui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Color, Fill};
 use vte::{Parser, Perform};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
@@ -99,6 +103,10 @@ pub(crate) fn lifetime_socket_open(socket: &std::os::unix::net::UnixStream) -> b
         Some(libc::EAGAIN | libc::EINTR)
     )
 }
+
+/// What the session banner says once the shell has exited.
+const SESSION_ENDED_MESSAGE: &str =
+    "Session ended. The shell has exited, so typing no longer reaches it.";
 
 /// One UI turn may parse at most this much queued PTY output. Anything beyond
 /// it stays in the bounded queue for the following frame, preserving ordering
@@ -530,12 +538,15 @@ pub struct TerminalWidget {
     char_w: f64,
     char_h: f64,
     forced_cell: bool,
-    theme_font_size: f32,
-    /// Cached font size, refreshed from `theme.tokens.font_size_base` on every
-    /// `draw`. `measure` runs before `draw` and does not receive a theme, so
-    /// it reads this cached value instead of hard-coding a size. Seeded with
-    /// 0.0 and updated before the first frame is drawn.
-    font_size: f32,
+    /// The grid's text style: the theme's `Code` role, cached on every
+    /// `build_layout` and `draw`. `measure` runs before `draw` and does not
+    /// receive a theme, so it reads this cached style. `None` until the first
+    /// layout, when the seeded cell size stands in.
+    cell_style: Option<TextStyle>,
+    /// The terminal's palette for the active theme: the theme's terminal
+    /// palette with the default background pinned to the window ground, so a
+    /// default-background cell is the surface the framework already painted.
+    palette: ui::tokens::TerminalPalette,
 
     /// What the terminal shows. A widget running a process keeps the
     /// emulator's screen here; one without (a past version, a collaborator's
@@ -557,6 +568,8 @@ pub struct TerminalWidget {
     pending_actions: Vec<crate::resource::TerminalAction>,
     /// Where the session record says this session runs.
     recorded_target: Option<crate::target::SessionTarget>,
+    /// Identity of the process attached here, distinct from a replica's record.
+    local_session: Option<String>,
     /// The relay session the record says this session re-attaches to.
     recorded_relay_session: Option<String>,
 
@@ -586,20 +599,29 @@ pub struct TerminalWidget {
     /// Shared toolkit interaction model for the terminal history bar.
     scrollbar: Scrollbar,
 
-    /// Local find-in-scrollback state. It is intentionally not recorded in
-    /// the session or published: a find term and its matching output can be
-    /// sensitive, while the shared terminal transcript already has its own
-    /// carefully bounded collaboration contract.
     conventions: ui::PlatformConventions,
-    find_open: bool,
-    find_input: TextInput,
+    /// Local find-in-scrollback state: the matches the find scope that hosts
+    /// this terminal asked for ([`Findable`]), painted over their cells. It
+    /// is intentionally not mirrored into the CRDT or resource tree: a find
+    /// term and its matching output can be sensitive, while the shared
+    /// terminal transcript already has its own carefully bounded
+    /// collaboration contract.
     find_matches: Vec<FindMatch>,
     find_current: usize,
-    find_query: String,
-    find_rect: Rect,
-    find_previous_rect: Rect,
-    find_next_rect: Rect,
-    find_close_rect: Rect,
+    /// The context menu's Find entry was chosen: the hosting find scope
+    /// opens its bar ([`Self::take_find_request`]).
+    find_request: bool,
+    /// Bumped whenever a sync brings fresh output, so an open find bar finds
+    /// again and its counter follows ([`Findable::content_revision`]).
+    content_revision: u64,
+    /// Height of the session banner, as laid out by the last `draw`. The
+    /// grid starts under it.
+    chrome_top_band: f64,
+    /// Where the session banner is painted by the last `draw`; empty while the
+    /// session is live.
+    banner_rect: Rect,
+    /// Whether this widget was made without any process behind it.
+    headless: bool,
 
     /// Last palette-derived cursor color, captured on every `draw`. Exposed
     /// for behavioural tests that want to verify palette swaps actually
@@ -636,6 +658,7 @@ pub struct TerminalWidget {
     /// the chosen row's label ourselves (mirrors `TextInput`).
     context_menu: ContextMenu,
     find_menu_index: Option<usize>,
+    copy_on_select_menu_index: Option<usize>,
     menu_paste_index: Option<usize>,
     /// What each effect row of the open menu asks for.
     menu_effects: HashMap<usize, crate::resource::TerminalEffect>,
@@ -649,12 +672,6 @@ pub struct TerminalWidget {
     /// viewport space). Defaults to 0 until the first frame paints.
     viewport_start_y: usize,
 
-    /// Horizontal glyph gutter used by the most recent `draw`, cached so
-    /// pointer hit-testing in `handle_event` (which has no `Theme`) lands on
-    /// the same column the glyphs were painted at even if the theme retunes
-    /// the spacing. Seeded to the default `spacing.s1` (4px).
-    last_padding_x: f64,
-
     /// The single source of truth for grid geometry: the widget
     /// [`rect`](Self::rect) inset by a uniform body padding on every side, with
     /// a scrollbar gutter reserved on the right. Every grid read — cell layout,
@@ -665,20 +682,12 @@ pub struct TerminalWidget {
     /// decoration (the tab/title chrome); the app draws only the grid.
     grid_rect: Rect,
     /// Cached body geometry (padding, scrollbar gutter), refreshed from the
-    /// theme on every `draw` (the same pattern as `last_padding_x`) so
-    /// `set_geometry` and pointer hit-testing — neither of which receives a
+    /// theme on every `draw` so `set_geometry` and pointer hit-testing — neither of which receives a
     /// `Theme` — inset the grid by the exact amounts `draw` painted with.
     /// Seeded to the default token values so the first (pre-draw) layout is
     /// already correct.
     chrome_body_pad: f64,
     chrome_scrollbar_w: f64,
-    /// Resolved monospace `FontChoice`, cached against the theme's mono family
-    /// name. Recomputed only when that name changes: the theme's named mono
-    /// face is used when installed, otherwise the generic monospace family —
-    /// never the proportional default cosmic-text would silently substitute,
-    /// which would give the cell grid a space advance narrower than its glyphs
-    /// and smear every run.
-    mono_choice: Option<(String, FontChoice)>,
     /// Latches true the first time the mirrored grid holds any non-blank
     /// content. Gates the honest empty-state watermark so it only shows before
     /// the session has ever produced output — never over a legitimately
@@ -766,9 +775,7 @@ impl TerminalWidget {
             session_disconnected: Arc::new(AtomicBool::new(false)),
             #[cfg(windows)]
             child_killer: None,
-            session_status_message: Arc::new(Mutex::new(
-                "Session ended — input unavailable".into(),
-            )),
+            session_status_message: Arc::new(Mutex::new(SESSION_ENDED_MESSAGE.to_owned())),
             parser: Parser::new(),
             grid,
             grid_attrs,
@@ -777,20 +784,21 @@ impl TerminalWidget {
             width,
             height,
             // Seed values only — `draw` overwrites char_w/char_h from the
-            // theme-derived `font_size` on the first frame, and `measure`
-            // uses the cached `font_size` (seeded to 0.0 so it falls back to
-            // these dimensions until the first draw completes).
+            // theme's `Code` role on the first frame, and `measure` uses the
+            // cached `cell_style` (unset until the first layout, so it falls
+            // back to these dimensions until then).
             char_w: 9.0,
             char_h: 18.0,
             forced_cell: false,
-            theme_font_size: 0.0,
-            font_size: 0.0,
+            cell_style: None,
+            palette: ui::tokens::TerminalPalette::dark(),
             screen: crate::screen::Screen::default(),
             mirrored: Vec::new(),
             emulating: false,
             synced: None,
             pending_actions: Vec::new(),
             recorded_target: None,
+            local_session: None,
             recorded_relay_session: None,
             current_attr: Attr::default(),
             pending_wrap: false,
@@ -803,18 +811,16 @@ impl TerminalWidget {
             wheel_remainder_px: 0.0,
             scrollbar: Scrollbar::vertical(),
             conventions: ui::PlatformConventions::default(),
-            find_open: false,
-            find_input: TextInput::local().with_id("terminal_find"),
             find_matches: Vec::new(),
             find_current: 0,
-            find_query: String::new(),
-            find_rect: Rect::ZERO,
-            find_previous_rect: Rect::ZERO,
-            find_next_rect: Rect::ZERO,
-            find_close_rect: Rect::ZERO,
-            last_cursor_color: Color::from_rgba8(0, 0, 0, 0),
-            last_fg_default: Color::from_rgba8(0, 0, 0, 0),
-            last_bg_default: Color::from_rgba8(0, 0, 0, 0),
+            find_request: false,
+            content_revision: 0,
+            chrome_top_band: 0.0,
+            banner_rect: Rect::ZERO,
+            headless: false,
+            last_cursor_color: Color::TRANSPARENT,
+            last_fg_default: Color::TRANSPARENT,
+            last_bg_default: Color::TRANSPARENT,
             selection: None,
             drag_select: DragSelect::default(),
             drag_granularity: Granularity::Char,
@@ -822,11 +828,11 @@ impl TerminalWidget {
             select_to_copy: false,
             context_menu: ContextMenu::new(),
             find_menu_index: None,
+            copy_on_select_menu_index: None,
             menu_paste_index: None,
             menu_effects: HashMap::new(),
             last_cursor_pos: Point::ZERO,
             viewport_start_y: 0,
-            last_padding_x: 4.0,
             grid_rect: Rect::ZERO,
             // Seeded to the default token metrics (body pad 12, scrollbar
             // gutter 8) so the first layout — which runs before the first
@@ -834,7 +840,6 @@ impl TerminalWidget {
             // grid correctly.
             chrome_body_pad: 12.0,
             chrome_scrollbar_w: 8.0,
-            mono_choice: None,
             ever_nonblank: false,
             title: "Terminal".to_string(),
             links: HashMap::new(),
@@ -864,6 +869,7 @@ impl TerminalWidget {
     /// the one before it.
     fn begin_local_session(&mut self) {
         let session_id = uuid::Uuid::new_v4().to_string();
+        self.local_session = Some(session_id.clone());
         self.pane_id = uuid::Uuid::new_v4().to_string();
         self.submit(crate::resource::TerminalAction::BindLocalSession { session_id });
         self.submit(crate::resource::TerminalAction::ClaimPane {
@@ -922,7 +928,7 @@ impl TerminalWidget {
 
     fn disconnected_message(&self) -> String {
         self.session_status_message.lock().map_or_else(
-            |_| "Session ended — input unavailable".to_owned(),
+            |_| SESSION_ENDED_MESSAGE.to_owned(),
             |message| message.clone(),
         )
     }
@@ -1020,15 +1026,14 @@ impl TerminalWidget {
         use crate::resource::TerminalEffect as E;
         use ui::framework::EffectStatus;
         let mut statuses = Vec::new();
-        if self.is_disconnected() {
-            let reason = "The terminal process has ended or its PTY failed; input cannot be sent.";
+        if let Some((code, reason)) = self.input_unavailable() {
             statuses.extend([
-                EffectStatus::unavailable(E::SEND, "session_disconnected", reason),
-                EffectStatus::unavailable(E::RUN, "session_disconnected", reason),
-                EffectStatus::unavailable(E::INTERRUPT, "session_disconnected", reason),
-                EffectStatus::unavailable(E::CLEAR, "session_disconnected", reason),
-                EffectStatus::unavailable(E::PASTE, "session_disconnected", reason),
-                EffectStatus::unavailable(E::PASTE_PRIMARY, "session_disconnected", reason),
+                EffectStatus::unavailable(E::SEND, code, reason),
+                EffectStatus::unavailable(E::RUN, code, reason),
+                EffectStatus::unavailable(E::INTERRUPT, code, reason),
+                EffectStatus::unavailable(E::CLEAR, code, reason),
+                EffectStatus::unavailable(E::PASTE, code, reason),
+                EffectStatus::unavailable(E::PASTE_PRIMARY, code, reason),
             ]);
         }
         if self.grid.len() <= self.current_visible_rows() {
@@ -1046,6 +1051,47 @@ impl TerminalWidget {
             ));
         }
         statuses
+    }
+
+    fn input_unavailable(&self) -> Option<(&'static str, &'static str)> {
+        if self.sessions.is_live()
+            && !matches!(self.sessions.state, crate::sessions::OpenState::Open)
+        {
+            return Some((
+                "session_not_open",
+                "The terminal process has not opened; input cannot be sent.",
+            ));
+        }
+        self.is_disconnected().then_some((
+            "session_disconnected",
+            "The terminal process has ended or its PTY failed; input cannot be sent.",
+        ))
+    }
+
+    pub(crate) fn inspect_session(&self) -> serde_json::Value {
+        use crate::sessions::OpenState;
+        let (lifecycle, startup_reason) = match &self.sessions.state {
+            OpenState::Fixed => ("fixed", None),
+            OpenState::Unopened => ("unopened", None),
+            OpenState::Open => ("open", None),
+            OpenState::AwaitingAllow => ("awaiting_allow", None),
+            OpenState::Failed(reason) => ("failed", Some(reason.as_str())),
+            OpenState::NoRuntime(reason) => ("no_runtime", Some(reason.as_str())),
+        };
+        serde_json::json!({
+            "lifecycle": lifecycle,
+            "target": self.sessions.target,
+            "input_available": self.input_unavailable().is_none(),
+            "transport_disconnected": self.is_disconnected(),
+            "transport_reason": self.is_disconnected().then(|| self.disconnected_message()),
+            "startup_reason": startup_reason,
+            "session": self.local_session,
+            "known_environments": self.sessions.environments.iter().map(|environment| {
+                serde_json::json!({ "record": environment.key, "name": environment.name,
+                    "tools": environment.tools, "grants": environment.grants })
+            }).collect::<Vec<_>>(),
+            "host_access_requirement": "requires_person_owner_grant",
+        })
     }
 
     fn visible_link_accessibility(&self) -> Vec<ui::a11y::AccessNode> {
@@ -1241,71 +1287,64 @@ impl TerminalWidget {
         self.grid.iter().rposition(|l| l.contains(needle))
     }
 
-    /// Open the local find surface. This does not publish the query, the
-    /// result positions, or a command to collaborators/agents: scrollback may
-    /// contain credentials and the feature is only a viewport aid.
-    pub fn open_find(&mut self) {
-        self.find_open = true;
-        self.find_input.set_focus(true);
-        self.refresh_find_matches();
+    /// Whether the context menu's Find entry was chosen since the last call.
+    /// The find scope that hosts this terminal opens its bar; the terminal
+    /// itself holds no bar. Nothing here publishes a query, a match or a
+    /// command to collaborators or agents: scrollback may contain
+    /// credentials, and find is only a viewport aid.
+    pub fn take_find_request(&mut self) -> bool {
+        std::mem::take(&mut self.find_request)
     }
 
-    /// Set the local find text for a host or screenshot. Production typing
-    /// routes through the same [`TextInput`] then calls
-    /// `refresh_find_matches`.
-    pub fn set_find_query(&mut self, query: &str) {
-        let bounded: String = query.chars().take(MAX_FIND_QUERY_CHARS).collect();
-        self.find_input.set_text(&bounded);
-        self.refresh_find_matches();
-    }
-
-    fn close_find(&mut self) {
-        self.find_open = false;
-        self.find_input.set_focus(false);
+    /// Match `query` against the retained scrollback. Matches are literal;
+    /// the bar's options choose whether case and whole words count.
+    fn scan_find_matches(&mut self, query: &str, options: FindOptions) {
         self.find_matches.clear();
-        self.find_current = 0;
-        self.find_query.clear();
-        self.find_rect = Rect::ZERO;
-        self.find_previous_rect = Rect::ZERO;
-        self.find_next_rect = Rect::ZERO;
-        self.find_close_rect = Rect::ZERO;
-    }
-
-    /// Re-scan the bounded local mirror only when the query changes or fresh
-    /// terminal output has reached a sync. Matches are literal and
-    /// case-sensitive: terminal identifiers, paths and hashes are commonly
-    /// case-significant, so silently folding case would be misleading.
-    fn refresh_find_matches(&mut self) {
-        let bounded: String = self
-            .find_input
-            .value()
-            .chars()
-            .take(MAX_FIND_QUERY_CHARS)
-            .collect();
-        if bounded != self.find_input.value() {
-            self.find_input.set_text(&bounded);
-        }
-        self.find_query = bounded;
-        self.find_matches.clear();
-        self.find_current = 0;
-        if self.find_query.is_empty() {
+        let query: Vec<char> = query.chars().take(MAX_FIND_QUERY_CHARS).collect();
+        if query.is_empty() {
             return;
         }
+        let same = |a: char, b: char| {
+            a == b || (!options.match_case && a.to_lowercase().eq(b.to_lowercase()))
+        };
+        let word = |c: char| c.is_alphanumeric() || c == '_';
+        let query_width: usize = query.iter().map(|c| c.width().unwrap_or(1)).sum();
         'rows: for (row, line) in self.grid.iter().enumerate() {
-            for (start_byte, _) in line.match_indices(&self.find_query) {
-                let start_col = line.get(..start_byte).map_or(0, UnicodeWidthStr::width);
-                let end_col = start_col + UnicodeWidthStr::width(self.find_query.as_str());
-                self.find_matches.push(FindMatch {
-                    row,
-                    start_col,
-                    end_col,
-                });
-                if self.find_matches.len() == MAX_FIND_MATCHES {
-                    break 'rows;
+            let chars: Vec<char> = line.chars().collect();
+            // Cell column of each character, so wide glyphs line up.
+            let mut columns = Vec::with_capacity(chars.len());
+            let mut column = 0usize;
+            for c in &chars {
+                columns.push(column);
+                column += c.width().unwrap_or(1);
+            }
+            let mut at = 0usize;
+            while at + query.len() <= chars.len() {
+                let hit = chars
+                    .get(at..at + query.len())
+                    .is_some_and(|window| window.iter().zip(&query).all(|(a, b)| same(*a, *b)));
+                let bounded = !options.whole_word
+                    || ((at == 0 || chars.get(at - 1).is_none_or(|c| !word(*c)))
+                        && chars.get(at + query.len()).is_none_or(|c| !word(*c)));
+                if hit && bounded {
+                    let start_col = columns.get(at).copied().unwrap_or(0);
+                    self.find_matches.push(FindMatch {
+                        row,
+                        start_col,
+                        end_col: start_col + query_width,
+                    });
+                    if self.find_matches.len() == MAX_FIND_MATCHES {
+                        break 'rows;
+                    }
+                    at += query.len();
+                } else {
+                    at += 1;
                 }
             }
         }
-        self.reveal_current_find_match();
+        self.find_current = self
+            .find_current
+            .min(self.find_matches.len().saturating_sub(1));
     }
 
     fn reveal_current_find_match(&mut self) {
@@ -1316,23 +1355,11 @@ impl TerminalWidget {
             return;
         }
         let visible = self.current_visible_rows().max(1);
-        let max_top = self.grid.len().saturating_sub(visible);
+        let max_top = self.view_rows().saturating_sub(visible);
         let top = found.row.saturating_sub(visible / 2).min(max_top);
         self.scroll_offset = max_top.saturating_sub(top);
     }
 
-    fn step_find_match(&mut self, backwards: bool) {
-        let len = self.find_matches.len();
-        if len == 0 {
-            return;
-        }
-        self.find_current = if backwards {
-            self.find_current.checked_sub(1).unwrap_or(len - 1)
-        } else {
-            (self.find_current + 1) % len
-        };
-        self.reveal_current_find_match();
-    }
     /// Resolve the OSC 8 hyperlink URL for the cell at absolute buffer
     /// `(row, col)`, if any. Host/test accessor: powers click-to-open and
     /// lets a test assert a parsed hyperlink landed on the right cells.
@@ -1453,7 +1480,7 @@ impl TerminalWidget {
     #[cfg(test)]
     pub fn visible_lines(&self) -> Vec<String> {
         let vis = self.current_visible_rows();
-        let max_top = self.grid.len().saturating_sub(vis);
+        let max_top = self.view_rows().saturating_sub(vis);
         let scroll = if self.alt_active {
             0
         } else {
@@ -1462,30 +1489,15 @@ impl TerminalWidget {
         let start = max_top.saturating_sub(scroll);
         self.grid.iter().skip(start).take(vis).cloned().collect()
     }
-    /// Find overlay state for geometry and privacy regressions. Kept
-    /// test-only: production hosts use the explicit open/set APIs and do not
-    /// inspect another person's local query/matches.
+    /// The rows of the painted find matches, for regressions.
     #[cfg(test)]
-    pub fn find_test_state(&self) -> (bool, Vec<usize>) {
-        (
-            self.find_open,
-            self.find_matches.iter().map(|found| found.row).collect(),
-        )
+    pub fn find_test_matches(&self) -> Vec<usize> {
+        self.find_matches.iter().map(|found| found.row).collect()
     }
-    /// The overlay and its three controls after the real draw pass.
+    /// The painted session banner after the real draw pass.
     #[cfg(test)]
-    pub fn find_test_geometry(&self) -> (Rect, Rect, Rect, Rect, Rect) {
-        (
-            self.find_rect,
-            self.find_input.get_rect(),
-            self.find_previous_rect,
-            self.find_next_rect,
-            self.find_close_rect,
-        )
-    }
-    #[cfg(test)]
-    pub fn find_test_target(&self, control: &str) -> String {
-        format!("terminal.find:{}:{control}", self.pane_id)
+    pub fn banner_test_rect(&self) -> Rect {
+        self.banner_rect
     }
 
     /// Tee subsequent PTY writes so a compositor-path test can see them.
@@ -1593,7 +1605,9 @@ impl TerminalWidget {
         let sp = &theme.tokens.spacing;
         self.chrome_body_pad = f64::from(sp.s3);
         self.chrome_scrollbar_w = f64::from(sp.s2);
-        self.chrome_header_h = f64::from(sp.s8);
+        self.chrome_header_h =
+            ui::widget::ButtonFace::height(ui::widget::ControlSize::Small, theme)
+                + f64::from(sp.s2);
     }
 
     /// Row pitch of the cell grid from the renderer's measured line box for
@@ -1608,13 +1622,14 @@ impl TerminalWidget {
     /// The inner grid content rect for a given widget rect: the widget rect
     /// inset by a uniform body padding on every side, with a scrollbar gutter
     /// reserved on the right. No header — the compositor owns window
-    /// decoration, so the grid starts at the top padding. Uses the cached body
+    /// decoration, so the grid starts under the find and session bands (when
+    /// they are showing) and the top padding. Uses the cached body
     /// metrics so it is available without a `Theme`. This is the *single*
     /// definition of the grid geometry, shared by `set_geometry` and `draw`.
     fn grid_content_rect(&self, rect: Rect) -> Rect {
         let pad = self.chrome_body_pad;
         let x0 = rect.x0 + pad;
-        let y0 = rect.y0 + self.header_h() + pad;
+        let y0 = rect.y0 + self.chrome_top_band + pad;
         let x1 = (rect.x1 - pad - self.chrome_scrollbar_w).max(x0);
         let y1 = (rect.y1 - pad).max(y0);
         Rect::new(x0, y0, x1, y1)
@@ -1629,7 +1644,7 @@ impl TerminalWidget {
     /// Furthest the viewport can scroll up: the number of rows above the
     /// live viewport.
     fn max_scroll(&self) -> usize {
-        self.grid.len().saturating_sub(self.current_visible_rows())
+        self.view_rows().saturating_sub(self.current_visible_rows())
     }
 
     fn scrollbar_track(&self) -> Rect {
@@ -1640,7 +1655,7 @@ impl TerminalWidget {
 
     fn scrollbar_metrics(&self) -> ScrollMetrics {
         let visible = self.current_visible_rows() as f64;
-        let total = self.grid.len() as f64;
+        let total = self.view_rows() as f64;
         // Scrollbar offsets are measured from the top; terminal history is
         // measured back from the live bottom.
         let from_top = self.max_scroll().saturating_sub(self.scroll_offset) as f64;
@@ -1849,11 +1864,16 @@ impl TerminalWidget {
     /// poisoned, or either write/flush operation fails. Every such error marks
     /// the session disconnected before returning.
     pub fn try_write_input(&self, bytes: &[u8]) -> Result<(), String> {
+        if let Some(("session_not_open", reason)) = self.input_unavailable() {
+            return Err(reason.to_owned());
+        }
         if self.is_disconnected() {
             return Err("terminal session is disconnected; input was not sent".to_string());
         }
         let Ok(mut writer) = self.pty_write.lock() else {
-            self.mark_disconnected("Terminal input unavailable — PTY writer stopped");
+            self.mark_disconnected(
+                "Session ended. The terminal can no longer send input to the shell.",
+            );
             return Err("terminal input is unavailable because its PTY writer stopped".to_string());
         };
         let failed = writer.write_all(bytes).is_err() || writer.flush().is_err();
@@ -1984,40 +2004,17 @@ const HISTORY_TRIM_SLACK: usize = 256;
 const HISTORY_TRIM_SLACK: usize = 8;
 
 impl TerminalWidget {
-    /// The find bar's match status, announced on its previous/next buttons.
-    fn find_result_summary(&self) -> String {
-        if self.find_query.is_empty() {
-            "Type to find in retained local scrollback".to_string()
-        } else if self.find_matches.is_empty() {
-            "No matches in retained local scrollback".to_string()
-        } else if self.find_matches.len() == MAX_FIND_MATCHES {
-            format!(
-                "Match {} of {} or more",
-                self.find_current + 1,
-                MAX_FIND_MATCHES
-            )
-        } else {
-            format!(
-                "Match {} of {}",
-                self.find_current + 1,
-                self.find_matches.len()
-            )
-        }
-    }
-}
-
-impl TerminalWidget {
-    /// Do `effect`, invoked by the palette, an agent or a script through the
-    /// host, or by the person's own gesture.
-    ///
-    /// # Errors
-    /// Returns why the effect was refused or failed.
     pub(crate) fn perform(
         &mut self,
         effect: crate::resource::TerminalEffect,
     ) -> Result<(), String> {
         use crate::resource::TerminalEffect as E;
         match effect {
+            E::InspectSession => {
+                return Err(
+                    "Inspect session is answered by the resource's read-only handler".into(),
+                );
+            }
             E::Send { text } => {
                 if text.is_empty() {
                     return Err("text to send cannot be empty".to_string());
@@ -2119,12 +2116,11 @@ impl TerminalWidget {
 
 impl TerminalWidget {
     /// Open the session, drain the PTY and mirror the document's screen.
-    fn sync_document(&mut self, state: &AppModel, root: &ModelPath) {
+    fn sync_document(&mut self, _state: &AppModel, _root: &ModelPath) {
         if self.sessions.is_live() {
             self.ensure_session();
         }
         self.poll_folder_picker();
-        self.find_input.sync(state, root);
         // Drain any bytes the PTY reader thread has queued and replay them
         // through the vte parser *here*. A host that never calls `update`
         // still advances the terminal: pumping from `sync`, driven by the
@@ -2251,9 +2247,7 @@ impl TerminalWidget {
         if self.grid.iter().any(|row| !row.trim().is_empty()) {
             self.ever_nonblank = true;
         }
-        if self.find_open {
-            self.refresh_find_matches();
-        }
+        self.content_revision = self.content_revision.wrapping_add(1);
     }
 
     /// Stage screenshot scenario `name`: the output its process printed,
@@ -2274,10 +2268,7 @@ impl TerminalWidget {
     fn stage_view(&mut self, name: &str) {
         match name {
             "scrollback" => self.scroll_up(20),
-            "find" => {
-                self.open_find();
-                self.set_find_query("build step 042");
-            }
+            "find" => self.find_request = true,
             "targets" => self.open_target_menu(),
             "environments" => {
                 self.open_environments_panel();
@@ -2298,8 +2289,41 @@ impl TerminalWidget {
     }
 }
 
+/// Find in the retained scrollback. The matches live in the widget, which
+/// paints them over the matched cells; the bar counts and steps through them.
+impl Findable for TerminalWidget {
+    fn find(&mut self, query: &str, options: FindOptions) -> Vec<ui::widget::FindMatch> {
+        self.find_current = 0;
+        self.scan_find_matches(query, options);
+        // A terminal's content is addressed by row and column; the bar only
+        // counts, so each match is reported as the row it is on.
+        self.find_matches
+            .iter()
+            .map(|found| ui::widget::FindMatch::new(found.row, found.row))
+            .collect()
+    }
+
+    fn reveal(&mut self, index: usize) {
+        self.find_current = index;
+        self.reveal_current_find_match();
+    }
+
+    fn clear_find(&mut self) {
+        self.find_matches.clear();
+        self.find_current = 0;
+    }
+
+    fn content_revision(&self) -> u64 {
+        self.content_revision
+    }
+}
+
 impl Widget for TerminalWidget {
-    ui::provides!(dyn ui::presence::capability::PublishesPresence);
+    ui::provides!(
+        dyn Findable,
+        dyn ui::AppWidget,
+        dyn ui::presence::capability::PublishesPresence
+    );
 
     fn test_id(&self) -> Option<&str> {
         Some("terminal")
@@ -2311,28 +2335,19 @@ impl Widget for TerminalWidget {
         _available: taffy::Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        // `measure` does not receive a theme; read the cached font size set
-        // by the most recent `draw` (which pulls from
-        // `theme.tokens.font_size_base`). Before the first draw the cache is
-        // 0.0 and we keep the constructor-seeded char_w/char_h so layout still
-        // yields a usable grid.
+        // `measure` does not receive a theme; read the style cached by the
+        // most recent `build_layout` or `draw`. Before the first layout the
+        // cache is empty and the constructor-seeded char_w/char_h keep layout
+        // yielding a usable grid.
         if self.forced_cell {
             return taffy::Size::ZERO;
         }
-        let font_size = if self.theme_font_size > 0.0 {
-            text_renderer
-                .renderer_input_style(&TextStyle::new(self.theme_font_size))
-                .size
-        } else if self.font_size > 0.0 {
-            self.font_size
-        } else {
-            ui::tokens::TypeScale::default().base
-        };
-        let (w, h) =
-            text_renderer.measure_styled(" ", font_size, None, TextWeight::Regular, false, true);
-        if w > 0.0 && h > 0.0 {
-            self.char_w = f64::from(w).max(1.0);
-            self.char_h = Self::cell_h(h);
+        if let Some(style) = &self.cell_style {
+            let (w, h) = text_renderer.measure_style(" ", None, style);
+            if w > 0.0 && h > 0.0 {
+                self.char_w = f64::from(w).max(1.0);
+                self.char_h = Self::cell_h(h);
+            }
         }
         taffy::Size::ZERO
     }
@@ -2379,7 +2394,7 @@ impl Widget for TerminalWidget {
         // than waiting for `draw`: at a large accessibility text scale, the
         // old default 18px row height produced too many blank PTY rows, and
         // the actual output landed above the first painted viewport.
-        self.theme_font_size = theme.tokens.font_size_base;
+        self.cell_style = Some(theme.text(TextRole::Code));
         // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
         // cannot actually return `Err` for a fresh leaf (see the
         // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
@@ -2415,7 +2430,7 @@ impl Widget for TerminalWidget {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "Terminal painting intentionally keeps grid, selection, cursor, and local find overlays in one ordered compositing pass"
+        reason = "Terminal painting intentionally keeps grid, selection, cursor, and the find and session bands in one ordered compositing pass"
     )]
     fn draw(
         &mut self,
@@ -2423,57 +2438,33 @@ impl Widget for TerminalWidget {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
+        _presence: &ui::presence::PresenceCtx,
     ) {
-        // Pull every visual parameter from design tokens. Nothing in this
-        // method may hard-code a color, font size, or padding — the OS owns
-        // the theme and swapping it must reflect in the rendered output.
-        let font_size = text_renderer
-            .renderer_input_style(&TextStyle::new(theme.tokens.font_size_base))
-            .size;
-        let palette = &theme.tokens.terminal_palette;
-        // Horizontal gutter between the terminal's left edge and the first
-        // glyph column. Sourced from the shared spacing scale (`s1` == 4px
-        // in the default tokens) so the OS can tune it centrally.
-        let padding_x = f64::from(theme.tokens.spacing.s1);
-        // Cache the real gutter so pointer hit-testing (which has no `Theme`)
-        // maps clicks to the same column the glyphs were painted at.
-        self.last_padding_x = padding_x;
-
-        // Cache the theme-derived font size so `measure` (which runs before
-        // `draw` each frame and does not receive a theme) can size the grid
-        // from the same value.
-        self.font_size = font_size;
-
+        // Every visual parameter comes from the theme. The grid is document
+        // content in the `Code` role; the window ground under it is the
+        // framework's, so nothing here fills the widget.
+        let cell_style = theme.text(TextRole::Code);
+        self.palette = Self::grid_palette(theme);
         // Refresh the body geometry from the theme and re-derive the inner grid
         // rect (inside the padding, minus the scrollbar gutter) — the same
         // `grid_content_rect` `set_geometry` and pointer hit-testing use, so the
         // grid origin is single-sourced. `set_geometry` and hit-testing read the
-        // cached metrics — neither sees a `Theme` — mirroring `last_padding_x`.
+        // cached metrics — neither sees a `Theme`.
         self.refresh_chrome_metrics(theme);
 
-        // The terminal body fills the whole widget in the theme's terminal
-        // background (a deliberate deep surface, not an accidental void). No
-        // header/tab bar — the compositor owns the window-group decoration.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            palette.bg_default,
-            None,
-            &self.rect,
-        );
-
-        // Resolve the terminal font: the theme's named monospace face when it is
-        // installed, else the generic monospace family — never the proportional
-        // default cosmic-text would silently substitute. Measure that exact
-        // family's advance so `char_w` equals the width every glyph is drawn at;
-        // if the two disagreed, each colour run would be positioned on a grid
-        // finer than its glyphs and the row would smear over itself.
-        let mono = self.resolve_mono(theme, text_renderer);
-        let (w, h) =
-            text_renderer.measure_font(" ", font_size, None, TextWeight::Regular, false, &mono);
+        // Measure the cell advance of the exact style the glyphs are drawn in
+        // so `char_w` equals the width every glyph is drawn at; if the two
+        // disagreed, each colour run would be positioned on a grid finer than
+        // its glyphs and the row would smear over itself. `measure` reads the
+        // cached style for the next layout.
+        let (w, h) = text_renderer.measure_style(" ", None, &cell_style);
         self.char_w = f64::from(w).max(1.0);
         self.char_h = Self::cell_h(h);
+        self.cell_style = Some(cell_style.clone());
+
+        // The find bar and the session banner stand above the grid; lay them
+        // out first so the grid and the PTY size are derived under them.
+        self.layout_top_bands(theme, text_renderer);
 
         // `measure` happens before we can resolve the theme's actual
         // monospace face. Reconcile the PTY geometry after that exact
@@ -2485,7 +2476,7 @@ impl Widget for TerminalWidget {
         let grid_rect = self.grid_rect;
 
         let visible_rows = (grid_rect.height() / self.char_h).floor() as usize;
-        let max_top = self.grid.len().saturating_sub(visible_rows);
+        let max_top = self.view_rows().saturating_sub(visible_rows);
         // Alt screen has no scrollback; clamp the offset for the main buffer.
         let scroll = if self.alt_active {
             0
@@ -2503,37 +2494,24 @@ impl Widget for TerminalWidget {
 
         // Cursor/palette colour caches update every frame regardless of what
         // is painted (empty state, hidden cursor, cursor scrolled off screen).
-        let cursor_color = cursor_from_palette(palette);
+        let cursor_color = cursor_from_palette(&self.palette);
         self.last_cursor_color = cursor_color;
-        self.last_fg_default = palette.fg_default;
-        self.last_bg_default = palette.bg_default;
+        self.last_fg_default = self.palette.fg_default;
+        self.last_bg_default = self.palette.bg_default;
 
-        // Honest first-run empty state: before the session has ever produced
-        // output, paint a centred watermark instead of a blank void. Latched
-        // via `ever_nonblank` so it never covers a legitimately cleared screen
-        // (`clear`, `CSI 2J`) once the shell has printed anything.
+        // Latched via `ever_nonblank` so the empty state never covers a
+        // legitimately cleared screen (`clear`, `CSI 2J`) once the shell has
+        // printed anything.
         if !self.grid_is_blank() {
             self.ever_nonblank = true;
         }
         self.draw_target_header(scene, transform, text_renderer, theme);
-        if !self.alt_active && !self.ever_nonblank {
+        // With no shell behind the grid (or one that has already ended) and
+        // nothing ever printed, say so instead of showing a blank void. A live
+        // shell that has not drawn its prompt yet shows its blank grid.
+        if !self.alt_active && !self.ever_nonblank && (self.headless || self.is_disconnected()) {
             self.draw_empty_state(scene, transform, text_renderer, theme);
-            self.draw_disconnected_status(scene, transform, text_renderer, theme);
-            // An empty first-run surface is still fully interactive. In
-            // particular, right-click's shared Copy/Paste menu must remain
-            // visible rather than being hidden by this early return.
-            if self.context_menu.is_open() {
-                Widget::draw(
-                    &mut self.context_menu,
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    presence,
-                );
-            }
-            self.draw_find_overlay(scene, transform, text_renderer, theme, presence);
-            self.draw_environments_panel(scene, transform, text_renderer, theme, presence);
+            self.draw_top_bands(scene, transform, text_renderer, theme);
             return;
         }
 
@@ -2546,26 +2524,9 @@ impl Widget for TerminalWidget {
 
         // Paint the selection BEFORE the cell text so glyphs read on top of
         // the highlight.
-        self.draw_selection_highlight(
-            scene,
-            transform,
-            theme,
-            grid_rect,
-            padding_x,
-            start_y,
-            visible_rows,
-        );
-        self.draw_find_match_highlight(
-            scene,
-            transform,
-            theme,
-            grid_rect,
-            padding_x,
-            start_y,
-            visible_rows,
-        );
+        self.draw_selection_highlight(scene, transform, theme, grid_rect, start_y, visible_rows);
+        self.draw_find_match_highlight(scene, transform, theme, grid_rect, start_y, visible_rows);
 
-        let cell_style = TextStyle::new(font_size).with_family(mono);
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
         self.draw_cell_rows(&mut ctx, &cell_style, start_y, visible_rows);
         self.draw_block_cursor(&mut ctx, &cell_style, start_y, visible_rows);
@@ -2573,10 +2534,22 @@ impl Widget for TerminalWidget {
         // A themed scrollbar indicator in the reserved right gutter, shown only
         // when the buffer overflows the viewport.
         self.draw_scrollbar(scene, transform, theme, start_y, visible_rows);
+        self.draw_top_bands(scene, transform, text_renderer, theme);
+    }
 
-        // The right-click Copy/Paste menu draws on top of everything when open.
+    /// The right-click Copy/Paste menu is a floating Panel: it paints in the
+    /// top layer, over the grid and its bands, and on the empty first-run
+    /// surface as well.
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
         if self.context_menu.is_open() {
-            Widget::draw(
+            Widget::draw_overlay(
                 &mut self.context_menu,
                 scene,
                 transform,
@@ -2585,8 +2558,6 @@ impl Widget for TerminalWidget {
                 presence,
             );
         }
-        self.draw_disconnected_status(scene, transform, text_renderer, theme);
-        self.draw_find_overlay(scene, transform, text_renderer, theme, presence);
         self.draw_environments_panel(scene, transform, text_renderer, theme, presence);
     }
 
@@ -2616,28 +2587,6 @@ impl Widget for TerminalWidget {
         }
 
         if self.route_target_chrome(event, ctx) {
-            return;
-        }
-
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key,
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-            && self.find_shortcut_matches(ctx.modifiers.state())
-            && matches!(logical_key, Key::Character(key) if key.eq_ignore_ascii_case("f"))
-        {
-            self.open_find();
-            *ctx.handled = true;
-            return;
-        }
-
-        if self.find_open {
-            self.handle_find_event(event, ctx);
             return;
         }
 
@@ -2705,6 +2654,9 @@ impl Widget for TerminalWidget {
     fn name(&self) -> &'static str {
         "Terminal"
     }
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
@@ -2717,7 +2669,6 @@ impl Widget for TerminalWidget {
 
     fn set_platform_conventions(&mut self, conventions: ui::PlatformConventions) {
         self.conventions = conventions;
-        self.find_input.set_platform_conventions(conventions);
         self.context_menu.set_platform_conventions(conventions);
     }
 
@@ -2791,41 +2742,6 @@ impl Widget for TerminalWidget {
         transcript
             .children
             .extend(self.visible_link_accessibility());
-        if self.find_open {
-            let prefix = format!("terminal.find:{}", self.pane_id);
-            let result = self.find_result_summary();
-            transcript.children.push(
-                AccessNode::new(Role::Group)
-                    .with_name("Find in scrollback")
-                    .with_description("Local only. Find text and matches are not shared with collaborators or exposed as terminal resources.")
-                    .with_bounds(self.find_rect)
-                    .with_children(vec![
-                        AccessNode::new(Role::TextInput)
-                            .with_name("Find in scrollback")
-                            .with_value(self.find_input.value())
-                            .with_action_target(format!("{prefix}:query"))
-                            .with_bounds(self.find_input.get_rect())
-                            .with_state(AccessState::new().focusable(true).focused(self.find_input.is_focused())),
-                        AccessNode::new(Role::Button)
-                            .with_name("Previous match")
-                            .with_value(result.clone())
-                            .with_action_target(format!("{prefix}:previous"))
-                            .with_bounds(self.find_previous_rect)
-                            .with_state(AccessState::new().focusable(true)),
-                        AccessNode::new(Role::Button)
-                            .with_name("Next match")
-                            .with_value(result)
-                            .with_action_target(format!("{prefix}:next"))
-                            .with_bounds(self.find_next_rect)
-                            .with_state(AccessState::new().focusable(true)),
-                        AccessNode::new(Role::Button)
-                            .with_name("Close find")
-                            .with_action_target(format!("{prefix}:close"))
-                            .with_bounds(self.find_close_rect)
-                            .with_state(AccessState::new().focusable(true)),
-                    ]),
-            );
-        }
         if let Some(menu) = self.context_menu_accessibility() {
             transcript.children.push(menu);
         }
@@ -2884,33 +2800,7 @@ impl Widget for TerminalWidget {
             self.open_target_menu();
             return true;
         }
-        let find_prefix = format!("terminal.find:{}:", self.pane_id);
-        if let Some(control) = target.strip_prefix(&find_prefix) {
-            match (control, action) {
-                ("query", ui::a11y::Action::Focus | ui::a11y::Action::Activate) => {
-                    self.open_find();
-                    return true;
-                }
-                ("query", ui::a11y::Action::SetValue(value)) => {
-                    self.open_find();
-                    self.set_find_query(value);
-                    return true;
-                }
-                ("previous", ui::a11y::Action::Activate) => {
-                    self.step_find_match(true);
-                    return true;
-                }
-                ("next", ui::a11y::Action::Activate) => {
-                    self.step_find_match(false);
-                    return true;
-                }
-                ("close", ui::a11y::Action::Activate) => {
-                    self.close_find();
-                    return true;
-                }
-                _ => return false,
-            }
-        }
+
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
         }
@@ -3036,79 +2926,6 @@ impl TerminalWidget {
 }
 
 impl TerminalWidget {
-    /// Route the local find overlay before terminal input. Once Find is open,
-    /// keystrokes must not leak into the foreground process: the query is a
-    /// private viewport aid, not shell input. Enter cycles matches, Shift
-    /// Enter reverses, and Escape restores direct terminal typing.
-    fn handle_find_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor_pos =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-        }
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key,
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        {
-            match logical_key {
-                Key::Named(NamedKey::Escape) => {
-                    self.close_find();
-                    *ctx.handled = true;
-                    return;
-                }
-                Key::Named(NamedKey::Enter) => {
-                    self.step_find_match(ctx.modifiers.state().shift_key());
-                    *ctx.handled = true;
-                    return;
-                }
-                _ => {}
-            }
-        }
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            ..
-        } = event
-        {
-            if self.find_previous_rect.contains(self.last_cursor_pos) {
-                self.step_find_match(true);
-                *ctx.handled = true;
-                return;
-            }
-            if self.find_next_rect.contains(self.last_cursor_pos) {
-                self.step_find_match(false);
-                *ctx.handled = true;
-                return;
-            }
-            if self.find_close_rect.contains(self.last_cursor_pos) {
-                self.close_find();
-                *ctx.handled = true;
-                return;
-            }
-        }
-        let before = self.find_input.value().to_string();
-        let mut input_handled = false;
-        Widget::handle_event(
-            &mut self.find_input,
-            event,
-            &mut ui::widget::EventCtx {
-                handled: &mut input_handled,
-                ..ctx.reborrow(ctx.path, ctx.node_id)
-            },
-        );
-        if self.find_input.value() != before {
-            self.refresh_find_matches();
-        }
-        // A find overlay is a focus boundary. Even navigation keys and clicks
-        // outside its panel must not reach a running shell behind it.
-        *ctx.handled = true;
-    }
-
     /// Helper for [`Widget::handle_event`]'s `WindowEvent::MouseWheel` arm.
     fn handle_wheel_event(
         &mut self,
@@ -3380,18 +3197,6 @@ impl TerminalWidget {
         }
     }
 
-    /// Find uses a desktop command chord, leaving terminal Ctrl+F and
-    /// Meta-Ctrl+F available to the foreground program on every platform.
-    fn find_shortcut_matches(&self, modifiers: winit::keyboard::ModifiersState) -> bool {
-        if !self.conventions.command_modifier_down(modifiers) || modifiers.alt_key() {
-            return false;
-        }
-        match self.conventions.platform() {
-            ui::Platform::MacOs => !modifiers.control_key() && !modifiers.shift_key(),
-            _ => modifiers.shift_key() && !modifiers.super_key(),
-        }
-    }
-
     /// Helper for [`Widget::handle_event`]'s `WindowEvent::KeyboardInput` arm.
     fn handle_key_press_event(
         &mut self,
@@ -3535,249 +3340,118 @@ impl TerminalWidget {
         transform: Affine,
         theme: &Theme,
         grid_rect: Rect,
-        padding_x: f64,
         start_y: usize,
         visible_rows: usize,
     ) {
         let Some(sel) = self.selection else { return };
-        // A slightly stronger tint than a hover veneer so a live selection
-        // reads clearly over black, still translucent so glyphs show.
-        let sel_color = theme.accent_primary.with_alpha_factor(0.35);
+        // The selection tint is already translucent, so glyphs show through.
+        let sel_color = theme.tokens.colors.intent.selection_tint;
         for (row, start_col, end_col) in selection_row_spans(&sel, self.width) {
             if row < start_y || row >= start_y + visible_rows {
                 continue;
             }
             let vrow = row - start_y;
             let py = (grid_rect.y0 + vrow as f64 * self.char_h).floor();
-            let x0 = grid_rect.x0 + padding_x + start_col as f64 * self.char_w;
-            let x1 = grid_rect.x0 + padding_x + end_col as f64 * self.char_w;
-            let band = Rect::new(x0, py, x1, py + self.char_h);
+            let x0 = grid_rect.x0 + start_col as f64 * self.char_w;
+            let x1 = grid_rect.x0 + end_col as f64 * self.char_w;
+            let band = snap_to_device_pixels(transform, Rect::new(x0, py, x1, py + self.char_h));
             scene.fill(Fill::NonZero, transform, sel_color, None, &band);
         }
     }
 
-    /// Paint only the active find match. The index remains local and the
-    /// overlay never serializes query/match information into the shared
-    /// transcript; this is a visual locator over already-rendered cells.
+    /// Paint the visible find matches over their glyphs, the current one
+    /// emphasised. The matches stay local and are never serialized into the
+    /// shared transcript; this is a visual locator over already-rendered
+    /// cells.
     fn draw_find_match_highlight(
         &self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
         grid_rect: Rect,
-        padding_x: f64,
         start_y: usize,
         visible_rows: usize,
     ) {
-        let Some(found) = self.find_matches.get(self.find_current).copied() else {
-            return;
-        };
-        if found.row < start_y || found.row >= start_y.saturating_add(visible_rows) {
-            return;
+        let end_y = start_y.saturating_add(visible_rows);
+        for (index, found) in self.find_matches.iter().enumerate() {
+            if found.row < start_y || found.row >= end_y {
+                continue;
+            }
+            let row = found.row - start_y;
+            let x0 = grid_rect.x0 + found.start_col as f64 * self.char_w;
+            let x1 = grid_rect.x0 + found.end_col as f64 * self.char_w;
+            let y0 = grid_rect.y0 + row as f64 * self.char_h;
+            let marker = snap_to_device_pixels(
+                transform,
+                Rect::new(x0, y0, x1.max(x0 + self.char_w), y0 + self.char_h),
+            );
+            paint_find_match(scene, transform, marker, index == self.find_current, theme);
         }
-        let row = found.row - start_y;
-        let x0 = grid_rect.x0 + padding_x + found.start_col as f64 * self.char_w;
-        let x1 = grid_rect.x0 + padding_x + found.end_col as f64 * self.char_w;
-        let y0 = grid_rect.y0 + row as f64 * self.char_h;
-        let marker = Rect::new(x0, y0, x1.max(x0 + self.char_w), y0 + self.char_h);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.semantic.warning.with_alpha_factor(0.38),
-            None,
-            &marker,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.semantic.warning,
-            None,
-            &marker,
-        );
     }
 
-    /// Shared-text-input find overlay. On narrow or large-text layouts the
-    /// field occupies its own row and the three explicit controls stack below
-    /// it, avoiding tiny/overlapping targets at 200% text.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "The overlay owns a single responsive geometry and paint path so its focus targets cannot diverge from its visible controls"
-    )]
-    fn draw_find_overlay(
-        &mut self,
+    /// Lay out the bands that stand above the grid: the target header, then
+    /// the session banner. Records where they are and how much of the widget
+    /// they take, which the grid geometry subtracts.
+    fn layout_top_bands(&mut self, theme: &Theme, tr: &mut TextRenderer) {
+        let gutter = f64::from(theme.tokens.spacing.s3);
+        // The header with the session's target comes first.
+        let mut y = self.rect.y0 + self.header_h();
+        self.banner_rect = Rect::ZERO;
+        if self.is_disconnected() && self.rect.width() > gutter * 2.0 {
+            let width = self.rect.width() - gutter * 2.0;
+            let height = Self::banner_height(&self.disconnected_message(), width, theme, tr);
+            self.banner_rect = Rect::new(
+                self.rect.x0 + gutter,
+                y + gutter,
+                self.rect.x1 - gutter,
+                y + gutter + height,
+            );
+            y += gutter + height;
+        }
+        self.chrome_top_band = y - self.rect.y0;
+    }
+
+    /// The height a banner reading `message` needs in `width`.
+    fn banner_height(message: &str, width: f64, theme: &Theme, tr: &mut TextRenderer) -> f64 {
+        Banner::height(
+            &BannerContent::new(BannerKind::Warning, message),
+            width,
+            tr,
+            theme,
+        )
+    }
+
+    /// Paint the session banner laid out by
+    /// [`layout_top_bands`](Self::layout_top_bands).
+    fn draw_top_bands(
+        &self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
     ) {
-        if !self.find_open {
-            return;
+        if self.banner_rect.width() > 0.0 {
+            // Persistent, not a toast: when a shell exits there is no live
+            // process to recover by retrying, so both sighted users and
+            // assistive technology need a stable explanation beside the
+            // preserved transcript. The accessibility tree carries the same
+            // message as a live region.
+            let message = self.disconnected_message();
+            let mut ctx = PaintCtx::new(scene, transform, tr, theme);
+            Banner::paint(
+                &mut ctx,
+                self.banner_rect,
+                &BannerContent::new(BannerKind::Warning, &message),
+                self.last_cursor_pos,
+            );
         }
-        let scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
-        let compact = self.rect.width() < 620.0 || scale >= 1.5;
-        let margin = 8.0 * scale.min(1.25);
-        let panel_w = (340.0 * scale)
-            .min(self.rect.width() - margin * 2.0)
-            .max(0.0);
-        let panel_h = if compact {
-            104.0 * scale.min(1.35)
-        } else {
-            42.0 * scale
-        };
-        let x1 = self.rect.x1 - margin;
-        self.find_rect = Rect::new(
-            x1 - panel_w,
-            self.rect.y0 + margin,
-            x1,
-            self.rect.y0 + margin + panel_h,
-        );
-        let panel = RoundedRect::from_rect(self.find_rect, f64::from(theme.tokens.radii.md));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &panel,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_focus,
-            None,
-            &panel,
-        );
+    }
 
-        let gap = 6.0 * scale.min(1.25);
-        let button = 28.0 * scale.min(1.25);
-        if compact {
-            self.find_input.apply_layout_external(Rect::new(
-                self.find_rect.x0 + gap,
-                self.find_rect.y0 + gap,
-                self.find_rect.x1 - gap,
-                self.find_rect.y0 + gap + 34.0 * scale.min(1.25),
-            ));
-            let y = self.find_input.get_rect().y1 + gap;
-            self.find_previous_rect = Rect::new(
-                self.find_rect.x0 + gap,
-                y,
-                self.find_rect.x0 + gap + button,
-                y + button,
-            );
-            self.find_next_rect = Rect::new(
-                self.find_previous_rect.x1 + gap,
-                y,
-                self.find_previous_rect.x1 + gap + button,
-                y + button,
-            );
-            self.find_close_rect = Rect::new(
-                self.find_rect.x1 - gap - button,
-                y,
-                self.find_rect.x1 - gap,
-                y + button,
-            );
-        } else {
-            self.find_close_rect = Rect::new(
-                self.find_rect.x1 - gap - button,
-                self.find_rect.y0 + (panel_h - button) / 2.0,
-                self.find_rect.x1 - gap,
-                self.find_rect.y0 + f64::midpoint(panel_h, button),
-            );
-            self.find_next_rect = Rect::new(
-                self.find_close_rect.x0 - gap - button,
-                self.find_close_rect.y0,
-                self.find_close_rect.x0 - gap,
-                self.find_close_rect.y1,
-            );
-            self.find_previous_rect = Rect::new(
-                self.find_next_rect.x0 - gap - button,
-                self.find_close_rect.y0,
-                self.find_next_rect.x0 - gap,
-                self.find_close_rect.y1,
-            );
-            self.find_input.apply_layout_external(Rect::new(
-                self.find_rect.x0 + gap,
-                self.find_rect.y0 + gap,
-                self.find_previous_rect.x0 - gap,
-                self.find_rect.y1 - gap,
-            ));
-        }
-        self.find_input.draw(scene, transform, tr, theme, presence);
-        if self.find_input.value().is_empty() && !self.find_input.is_focused() {
-            tr.draw_text(
-                scene,
-                "Find in scrollback",
-                12.0,
-                theme.tokens.colors.text_dim,
-                transform
-                    * Affine::translate((
-                        self.find_input.get_rect().x0 + 10.0,
-                        self.find_input.get_rect().center().y - 7.0,
-                    )),
-                None,
-            );
-        }
-        for (rect, icon) in [
-            (self.find_previous_rect, Icon::ChevronUp),
-            (self.find_next_rect, Icon::ChevronDown),
-            (self.find_close_rect, Icon::X),
-        ] {
-            let active = rect.contains(self.last_cursor_pos);
-            let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if active {
-                    theme.tokens.colors.overlay_medium
-                } else {
-                    theme.tokens.colors.overlay_subtle
-                },
-                None,
-                &shape,
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                theme.tokens.colors.border_standard,
-                None,
-                &shape,
-            );
-            draw_icon(
-                scene,
-                transform,
-                rect.inset(5.0),
-                icon,
-                theme.tokens.colors.text_primary,
-                1.5,
-            );
-        }
-        let count = if self.find_query.is_empty() {
-            "Type to find".to_string()
-        } else if self.find_matches.is_empty() {
-            "No matches".to_string()
-        } else if self.find_matches.len() == MAX_FIND_MATCHES {
-            format!("{} / {}+", self.find_current + 1, MAX_FIND_MATCHES)
-        } else {
-            format!("{} / {}", self.find_current + 1, self.find_matches.len())
-        };
-        let count_x = if compact {
-            self.find_next_rect.x1 + gap + 2.0
-        } else {
-            self.find_input.get_rect().x1 - 58.0 * scale
-        };
-        let count_y = if compact {
-            self.find_next_rect.center().y - 7.0
-        } else {
-            self.find_input.get_rect().center().y - 7.0
-        };
-        tr.draw_text(
-            scene,
-            &count,
-            10.0,
-            theme.tokens.colors.text_dim,
-            transform * Affine::translate((count_x, count_y)),
-            None,
-        );
+    /// The terminal's palette in `theme`. Its default background is the
+    /// window ground, so a default-background cell is the surface the
+    /// framework already painted and a reverse-video cell inverts against it.
+    pub(crate) fn grid_palette(theme: &Theme) -> ui::tokens::TerminalPalette {
+        theme.tokens.terminal_palette.clone()
     }
 
     /// Decode and paint graphics only when their buffer rows are visible.  The
@@ -3822,7 +3496,7 @@ impl TerminalWidget {
             if outside_horizontal || outside_vertical {
                 continue;
             }
-            let left = grid_rect.x0 + self.last_padding_x + placement.col as f64 * self.char_w;
+            let left = grid_rect.x0 + placement.col as f64 * self.char_w;
             let top = grid_rect.y0 + placement.row.saturating_sub(start_y) as f64 * self.char_h;
             let right = (left + columns as f64 * self.char_w).min(grid_rect.x1);
             let bottom = (top + rows as f64 * self.char_h).min(grid_rect.y1);
@@ -3858,7 +3532,7 @@ impl TerminalWidget {
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.0),
                     transform,
-                    theme.text_tertiary.with_alpha_factor(0.55),
+                    theme.text_tertiary,
                     None,
                     &rect,
                 );
@@ -3878,7 +3552,6 @@ impl TerminalWidget {
         visible_rows: usize,
     ) {
         let grid_rect = self.grid_rect;
-        let padding_x = self.last_padding_x;
         for (y, line_text) in self
             .grid
             .iter()
@@ -3913,7 +3586,7 @@ impl TerminalWidget {
                             cell_style,
                             &current_run,
                             prev_attr,
-                            Point::new(run_start_cell_idx as f64 * self.char_w + padding_x, py),
+                            Point::new(run_start_cell_idx as f64 * self.char_w, py),
                         );
                     }
                     current_run.clear();
@@ -3931,7 +3604,7 @@ impl TerminalWidget {
                     cell_style,
                     &current_run,
                     prev_attr,
-                    Point::new(run_start_cell_idx as f64 * self.char_w + padding_x, py),
+                    Point::new(run_start_cell_idx as f64 * self.char_w, py),
                 );
             }
         }
@@ -3952,11 +3625,10 @@ impl TerminalWidget {
             scene,
             transform,
             text: text_renderer,
-            theme,
+            ..
         } = ctx.reborrow();
-        let palette = &theme.tokens.terminal_palette;
+        let palette = &self.palette;
         let grid_rect = self.grid_rect;
-        let padding_x = self.last_padding_x;
         let scroll = self.scroll_offset;
         let cursor_color = self.last_cursor_color;
         // Absolute grid row of the cursor → visible row (may be scrolled off).
@@ -3968,14 +3640,12 @@ impl TerminalWidget {
             && cursor_abs < start_y + visible_rows.max(1)
         {
             let cy_local = cursor_abs - start_y;
-            let cx = grid_rect.x0 + padding_x + self.cursor_x as f64 * self.char_w;
+            let cx = grid_rect.x0 + self.cursor_x as f64 * self.char_w;
             let cy = (grid_rect.y0 + cy_local as f64 * self.char_h).floor();
-            // A rounded, slightly inset caret reads softer than a hard-edged
-            // full-cell block while staying an unmistakable, theme-coloured
-            // "inverted cell" cursor.
-            let cursor_rect = RoundedRect::from_rect(
-                Rect::new(cx, cy + 0.5, cx + self.char_w, cy + self.char_h - 0.5),
-                2.0,
+            // An unmistakable, theme-coloured "inverted cell" cursor.
+            let cursor_rect = snap_to_device_pixels(
+                transform,
+                Rect::new(cx, cy, cx + self.char_w, cy + self.char_h),
             );
             scene.fill(Fill::NonZero, transform, cursor_color, None, &cursor_rect);
 
@@ -4015,9 +3685,9 @@ impl TerminalWidget {
             scene,
             transform,
             text: text_renderer,
-            theme,
+            ..
         } = ctx.reborrow();
-        let palette = &theme.tokens.terminal_palette;
+        let palette = &self.palette;
         let (rx, py) = (at.x, at.y);
         let (mut fg, bg_opt) = resolve_pair(attr, palette);
         // SGR 2 (faint): blend the foreground toward the background so it
@@ -4042,7 +3712,10 @@ impl TerminalWidget {
         }
 
         if let Some(bg_color) = bg_opt {
-            let bg_rect = Rect::new(tx, py, tx + visual_width + 0.5, py + self.char_h + 0.5);
+            let bg_rect = snap_to_device_pixels(
+                transform,
+                Rect::new(tx, py, tx + visual_width, py + self.char_h),
+            );
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -4072,46 +3745,17 @@ impl TerminalWidget {
 
         if attr.underline || is_link {
             let uy = py + self.char_h - 1.5;
-            let line = Rect::new(tx, uy, tx + visual_width, uy + 1.0);
+            let line =
+                snap_to_device_pixels(transform, Rect::new(tx, uy, tx + visual_width, uy + 1.0));
             scene.fill(vello::peniko::Fill::NonZero, transform, fg, None, &line);
         }
         if attr.strike {
             // A crossed-out line through the vertical centre of the cell.
             let sy = (py + self.char_h * 0.5).floor();
-            let line = Rect::new(tx, sy, tx + visual_width, sy + 1.0);
+            let line =
+                snap_to_device_pixels(transform, Rect::new(tx, sy, tx + visual_width, sy + 1.0));
             scene.fill(vello::peniko::Fill::NonZero, transform, fg, None, &line);
         }
-    }
-
-    /// Resolve the terminal's monospace [`FontChoice`] from the theme, caching
-    /// the result against the theme's mono family name. The theme's named mono
-    /// face is used when it is actually installed; otherwise the generic
-    /// monospace family, which the platform resolves to a real fixed-width font.
-    /// The fallback is the whole point: a `Named` face that is *not* installed
-    /// makes cosmic-text silently substitute a proportional default whose space
-    /// glyph is far narrower than its letters, so the cell advance
-    /// (`measure_font(" ")`) no longer matches the width glyphs are drawn at and
-    /// every multi-colour run smears over itself.
-    fn resolve_mono(&mut self, theme: &Theme, tr: &TextRenderer) -> FontChoice {
-        let fam = theme.tokens.font_mono.family.trim();
-        if let Some((cached, choice)) = &self.mono_choice
-            && cached == fam
-        {
-            return choice.clone();
-        }
-        let choice = if fam.is_empty() || fam.eq_ignore_ascii_case("monospace") {
-            FontChoice::Monospace
-        } else if tr
-            .system_families()
-            .iter()
-            .any(|f| f.eq_ignore_ascii_case(fam))
-        {
-            FontChoice::Named(fam.to_string())
-        } else {
-            FontChoice::Monospace
-        };
-        self.mono_choice = Some((fam.to_string(), choice.clone()));
-        choice
     }
 
     /// Rows of the buffer that carry anything: the last row with text on it,
@@ -4132,6 +3776,22 @@ impl TerminalWidget {
         written.max(cursor_abs + 1)
     }
 
+    /// How many rows the view scrolls over: the whole buffer, minus blank rows
+    /// below the last thing on it. A session allocates a full screen of rows
+    /// up front, and a band above the grid (the find bar, the session banner)
+    /// shows fewer rows than that screen. Anchoring the view to the bottom of
+    /// the allocation would then hide the first lines of a short transcript
+    /// behind the band, so the view only reaches past what is on screen when
+    /// there is something there. The alternate screen is always shown whole.
+    fn view_rows(&self) -> usize {
+        if self.alt_active {
+            return self.grid.len();
+        }
+        self.content_rows()
+            .max(self.current_visible_rows())
+            .min(self.grid.len())
+    }
+
     /// Whether the scrollbar represents anything, for a viewport of
     /// `visible_rows` rows. The predicate [`Self::draw_scrollbar`] gates on.
     ///
@@ -4145,15 +3805,12 @@ impl TerminalWidget {
     /// goes from blank to blank. A scrollbar is a claim about content, so
     /// it appears only when there is content to reach.
     pub(crate) fn scrollbar_visible(&self, visible_rows: usize) -> bool {
-        !self.alt_active
-            && visible_rows > 0
-            && self.grid.len() > visible_rows
-            && self.content_rows() > visible_rows
+        !self.alt_active && visible_rows > 0 && self.content_rows() > visible_rows
     }
 
-    /// A themed scrollbar in the reserved right gutter, drawn only when the
-    /// buffer overflows the viewport. Brighter while the user is scrolled back
-    /// into history, faint when pinned to the live bottom.
+    /// The shared scrollbar thumb in the reserved right gutter, drawn only
+    /// when the buffer overflows the viewport. The toolkit brightens it while
+    /// it is hovered or dragged.
     fn draw_scrollbar(
         &self,
         scene: &mut Scene,
@@ -4165,40 +3822,20 @@ impl TerminalWidget {
         if !self.scrollbar_visible(visible_rows) {
             return;
         }
-        let track = self.scrollbar_track();
-        let track_w = track.width();
-
-        // Faint track groove so the bar has a visible extent even when pinned.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.lift(0.2),
-            None,
-            &RoundedRect::from_rect(track, track_w / 2.0),
-        );
-
-        let thumb_alpha = if self.scrollbar.is_active() || self.scroll_offset > 0 {
-            0.9
-        } else {
-            0.4
-        };
         let metrics =
-            ScrollMetrics::new(self.grid.len() as f64, visible_rows as f64, start_y as f64);
-        let Some(thumb_rect) = self.scrollbar.thumb_rect(track, metrics) else {
-            return;
-        };
-        let thumb = RoundedRect::from_rect(thumb_rect, track_w / 2.0);
-        scene.fill(
-            Fill::NonZero,
+            ScrollMetrics::new(self.view_rows() as f64, visible_rows as f64, start_y as f64);
+        self.scrollbar.draw(
+            scene,
             transform,
-            theme.text_dim.with_alpha_factor(thumb_alpha),
-            None,
-            &thumb,
+            self.scrollbar_track(),
+            metrics,
+            theme,
+            false,
         );
     }
 
-    /// Honest first-run empty state: a centred, muted watermark shown before
-    /// the session has ever produced output — a themed placeholder, not a void.
+    /// What the grid says while no shell runs behind it: the toolkit's empty
+    /// state over the grid area.
     fn draw_empty_state(
         &self,
         scene: &mut Scene,
@@ -4206,99 +3843,34 @@ impl TerminalWidget {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let gr = self.grid_rect;
-        if gr.width() <= 0.0 || gr.height() <= 0.0 {
+        let area = self.grid_rect;
+        if area.width() <= 0.0 || area.height() <= 0.0 {
             return;
         }
-        let cx = gr.x0 + gr.width() / 2.0;
-        let cy = gr.y0 + gr.height() / 2.0;
-
-        let icon_side = 44.0_f64.min(gr.width() * 0.4).min(gr.height() * 0.4);
-        let icon_rect = Rect::new(
-            cx - icon_side / 2.0,
-            cy - icon_side - 4.0,
-            cx + icon_side / 2.0,
-            cy - 4.0,
+        let mut ctx = PaintCtx::new(scene, transform, tr, theme);
+        // An ended session already says why in the banner above, so the grid
+        // only reports that the shell left nothing behind; a widget that never
+        // had a process explains where output will appear. A session that is
+        // still waiting for the person's allow, or whose target could not be
+        // opened, never ran a shell: the banner says why.
+        let shell_ran = matches!(
+            self.sessions.state,
+            crate::sessions::OpenState::Open | crate::sessions::OpenState::Fixed
         );
-        draw_icon(
-            scene,
-            transform,
-            icon_rect,
-            Icon::ChevronRight,
-            theme.text_dim.with_alpha_factor(0.4),
-            2.0,
-        );
-
-        let label = "Tilo Terminal";
-        let size = tr
-            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.lg))
-            .size;
-        let (lw, _) = tr.measure(label, size, None);
-        tr.draw_text_weighted(
-            scene,
-            label,
-            size,
-            theme.text_dim.with_alpha_factor(0.7),
-            transform * Affine::translate((cx - f64::from(lw) / 2.0, cy + 4.0)),
-            None,
-            TextWeight::Medium,
-        );
-    }
-
-    /// Persistent, token-driven terminal lifecycle state. This deliberately is
-    /// not a transient toast: when a shell exits there is no live process to
-    /// recover by retrying, so both sighted users and assistive technology need
-    /// a stable explanation beside the preserved transcript.
-    fn draw_disconnected_status(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if !self.is_disconnected() || self.grid_rect.width() <= 0.0 {
-            return;
-        }
-        let label = self.disconnected_message();
-        let label = label.as_str();
-        let size = tr
-            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-            .size;
-        let pad = f64::from(theme.tokens.spacing.s2);
-        // Reuse the renderer's shared elision behaviour instead of letting a
-        // lifecycle message run under the scrollbar or off a narrow / 200%
-        // text-scale surface. The complete state remains in accessibility;
-        // this is only the one-line visual badge.
-        let label = tr.elide_to_width(
-            label,
-            size,
-            (self.grid_rect.width() - pad * 4.0).max(0.0) as f32,
-        );
-        let (label_w, label_h) = tr.measure(&label, size, None);
-        let height = f64::from(label_h) + pad;
-        let width = (f64::from(label_w) + pad * 2.0).min(self.grid_rect.width());
-        let rect = Rect::new(
-            self.grid_rect.x0 + pad,
-            self.grid_rect.y1 - height - pad,
-            self.grid_rect.x0 + pad + width,
-            self.grid_rect.y1 - pad,
-        );
-        ui::surface::card(
-            scene,
-            transform,
-            rect,
-            f64::from(theme.tokens.spacing.s1),
-            theme.tokens.colors.lift(0.3),
-        );
-        tr.draw_text_weighted(
-            scene,
-            &label,
-            size,
-            theme.text_primary,
-            transform * Affine::translate((rect.x0 + pad, rect.y0 + pad / 2.0)),
-            None,
-            TextWeight::Medium,
-        );
+        let content = if self.is_disconnected() && shell_ran {
+            EmptyStateContent {
+                icon: Some(Icon::Terminal),
+                message: Some("The shell exited before it printed anything."),
+                ..EmptyStateContent::new("No output")
+            }
+        } else {
+            EmptyStateContent {
+                icon: Some(Icon::Terminal),
+                message: Some("Output appears here once a shell session starts."),
+                ..EmptyStateContent::new("No shell running")
+            }
+        };
+        EmptyState::paint(&mut ctx, area, &content, self.last_cursor_pos);
     }
 
     /// Convert a logical pointer position into a **buffer-absolute**
@@ -4309,10 +3881,7 @@ impl TerminalWidget {
     /// visible cell — matching xterm's behaviour during a drag-select that
     /// leaves the terminal area.
     fn pos_from_logical(&self, p: Point) -> GridPos {
-        // Match the padding used in `draw` so a click on column 0 lands
-        // on column 0 and not -1 due to the leading gutter.
-        let padding_x = self.last_padding_x();
-        let local_x = (p.x - self.grid_rect.x0 - padding_x).max(0.0);
+        let local_x = (p.x - self.grid_rect.x0).max(0.0);
         let local_y = (p.y - self.grid_rect.y0).max(0.0);
         let col = (local_x / self.char_w.max(1.0)).floor() as usize;
         let vrow = (local_y / self.char_h.max(1.0)).floor() as usize;
@@ -4527,7 +4096,7 @@ impl TerminalWidget {
             return None;
         }
         let vrow = cell.row - start_y;
-        let x = self.grid_rect.x0 + self.last_padding_x + cell.col as f64 * self.char_w;
+        let x = self.grid_rect.x0 + cell.col as f64 * self.char_w;
         let y = (self.grid_rect.y0 + vrow as f64 * self.char_h).floor();
         Some(Rect::new(x, y, x + 2.0, y + self.char_h))
     }
@@ -4548,19 +4117,11 @@ impl TerminalWidget {
             }
             let vrow = row - start_y;
             let py = (self.grid_rect.y0 + vrow as f64 * self.char_h).floor();
-            let x0 = self.grid_rect.x0 + self.last_padding_x + start_col as f64 * self.char_w;
-            let x1 = self.grid_rect.x0 + self.last_padding_x + end_col as f64 * self.char_w;
+            let x0 = self.grid_rect.x0 + start_col as f64 * self.char_w;
+            let x1 = self.grid_rect.x0 + end_col as f64 * self.char_w;
             rects.push(Rect::new(x0, py, x1, py + self.char_h));
         }
         rects
-    }
-
-    /// The horizontal glyph gutter the last `draw` actually used. Cached from
-    /// the theme each frame so pointer hit-testing (which never receives a
-    /// `Theme`) stays pixel-aligned with the painted columns even if the OS
-    /// retunes `spacing.s1`.
-    fn last_padding_x(&self) -> f64 {
-        self.last_padding_x
     }
 
     /// Build + open the shared terminal context menu at the cached cursor.
@@ -4609,16 +4170,11 @@ impl TerminalWidget {
         // can fit the copy/paste/selection/process essentials, not another
         // row plus separator; its keyboard shortcut and desktop-sized menu
         // still expose the toggle.
+        self.copy_on_select_menu_index = None;
         if self.rect.height() >= 180.0 {
             menu.push(MenuItem::separator());
-            menu.push(MenuItem::action(
-                if self.select_to_copy {
-                    "Copy on select: On"
-                } else {
-                    "Copy on select: Off"
-                },
-                || {},
-            ));
+            self.copy_on_select_menu_index = Some(menu.items().len());
+            menu.push(MenuItem::action("Copy on select", || {}).with_checked(self.select_to_copy));
         }
         // Keep the shared popup aware of the terminal's real viewport. The
         // popup refreshes its geometry when the current theme applies an
@@ -4668,16 +4224,10 @@ impl TerminalWidget {
             return;
         }
         if self.find_menu_index == Some(index) {
-            self.open_find();
+            self.find_request = true;
             return;
         }
-        let label = self
-            .context_menu
-            .items()
-            .get(index)
-            .and_then(MenuItem::label)
-            .map(str::to_owned);
-        if let Some("Copy on select: On" | "Copy on select: Off") = label.as_deref() {
+        if self.copy_on_select_menu_index == Some(index) {
             self.select_to_copy = !self.select_to_copy;
         }
     }
@@ -6172,11 +5722,29 @@ pub(crate) fn resolve_pair(
 /// Kept as a free function so the rule "the cursor always tracks the theme"
 /// is a single obvious call site and tests can invoke it directly.
 pub(crate) fn cursor_from_palette(palette: &ui::tokens::TerminalPalette) -> Color {
-    // A near-solid block (90% alpha) reads as a firm caret while the glyph
-    // beneath it is re-drawn in the background color for an inverted-cell look.
-    // The hue comes from the theme's default foreground so the cursor tracks
-    // palette swaps rather than a hard-coded grey.
-    palette.fg_default.with_alpha_factor(230.0 / 255.0)
+    // An opaque inverted cell: the block is the theme's default foreground and
+    // the glyph beneath it is re-drawn in the background colour. Taking the hue
+    // from the palette keeps the cursor tracking theme swaps.
+    palette.fg_default.with_alpha_factor(1.0)
+}
+
+/// Snap `rect` to whole device pixels under `transform`, so a cell fill has
+/// crisp edges instead of an anti-aliased fringe. Edges are rounded as device
+/// coordinates, so two rects that meet at one coordinate still meet after
+/// snapping: adjacent runs and rows tile without a seam or an overlap.
+/// `transform` is the paint transform of an axis-aligned scale and offset.
+pub(crate) fn snap_to_device_pixels(transform: Affine, rect: Rect) -> Rect {
+    let [sx, _, _, sy, tx, ty] = transform.as_coeffs();
+    if sx == 0.0 || sy == 0.0 {
+        return rect;
+    }
+    let snap = |v: f64, scale: f64, offset: f64| ((v * scale + offset).round() - offset) / scale;
+    Rect::new(
+        snap(rect.x0, sx, tx),
+        snap(rect.y0, sy, ty),
+        snap(rect.x1, sx, tx),
+        snap(rect.y1, sy, ty),
+    )
 }
 
 /// Resolve the user's native shell for the standalone fallback path.
@@ -6966,12 +6534,14 @@ impl TerminalWidget {
     fn without_process(content: ContentStore) -> Self {
         let writer: Box<dyn Write + Send> = Box::new(std::io::sink());
         let (_tx, output_rx) = sync_channel(1);
-        TerminalWidget::new(
+        let widget = TerminalWidget::new(
             std::sync::Arc::new(std::sync::Mutex::new(writer)),
             std::sync::Arc::new(std::sync::Mutex::new(Box::new(NullMaster))),
             output_rx,
             content,
-        )
+        );
+        widget.mark_disconnected("Terminal process has not opened — input unavailable");
+        widget
     }
 
     /// Put a freshly opened process behind this widget: its writer, master
@@ -7007,9 +6577,9 @@ impl TerminalWidget {
                 .name("tilo-terminal-child-wait".into())
                 .spawn(move || {
                     let message = if child.wait().is_ok() {
-                        "Session ended — input unavailable"
+                        SESSION_ENDED_MESSAGE
                     } else {
-                        "Terminal process status failed — input unavailable"
+                        "Session ended. The shell's exit status could not be read."
                     };
                     set_terminal_disconnected(&disconnected, &status, message);
                     request_terminal_wake(&waker);
@@ -7019,7 +6589,9 @@ impl TerminalWidget {
                 if let Some(killer) = &mut widget.child_killer {
                     let _ = killer.kill();
                 }
-                widget.mark_disconnected("Terminal unavailable — process monitor could not start");
+                widget.mark_disconnected(
+                    "Session unavailable. The terminal could not watch the shell for exit.",
+                );
             }
         }
         // Share the waker with the reader thread so fresh PTY output wakes an
@@ -7053,7 +6625,7 @@ impl TerminalWidget {
                         set_terminal_disconnected(
                             &session_disconnected,
                             &session_status_message,
-                            "Terminal reader failed — session unavailable",
+                            "Session ended. The terminal can no longer read from the shell.",
                         );
                         request_terminal_wake(&waker);
                         break;
@@ -7069,7 +6641,7 @@ impl TerminalWidget {
                             set_terminal_disconnected(
                                 &session_disconnected,
                                 &session_status_message,
-                                "Session ended — input unavailable",
+                                SESSION_ENDED_MESSAGE,
                             );
                             request_terminal_wake(&waker);
                             break;
@@ -7150,7 +6722,9 @@ impl TerminalWidget {
     ///
     /// This function should not fail under normal circumstances as it uses a null backend.
     pub fn spawn_headless() -> anyhow::Result<Self> {
-        Ok(Self::without_process(ContentStore::memory()))
+        let mut widget = Self::without_process(ContentStore::memory());
+        widget.headless = true;
+        Ok(widget)
     }
 
     /// Keep the pictures programs show in `content`: the store the host

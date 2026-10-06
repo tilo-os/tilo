@@ -1,4 +1,3 @@
-canvas-title = Canvas
 canvas-tool-select = Select
 canvas-tool-brush = Brush
 canvas-tool-rect = Rectangle
@@ -59,6 +58,7 @@ canvas-layer-clip = Clip to the layer below
 canvas-medium-mask = Mask
 canvas-tool-eraser = Eraser
 canvas-colour = Colour
+canvas-artwork-colours = Artwork colours
 canvas-brush = Brush
 canvas-brush-size = Size
 canvas-brush-load = Load
@@ -114,7 +114,6 @@ canvas-artwork-title = Artwork title
 canvas-zoom-in = Zoom in
 canvas-zoom-out = Zoom out
 canvas-zoom-fit = Fit to window
-canvas-sidebar = Show or hide the panels
 canvas-well = Brush loaded with { $paint }, { $size } wide
 canvas-artwork-width = Width
 canvas-artwork-height = Height
@@ -374,3 +373,12 @@ canvas-chooser-gone = the file chooser went away
 canvas-files-failed = Files could not answer: { $why }
 canvas-picture-failed = The picture was not added: { $why }
 canvas-export-edited = { $title } edited
+
+canvas-rendering-artwork = Rendering the artwork…
+canvas-finding-busy = An area is already being found
+canvas-finding-changed = The artwork changed while the area was being found. Try again.
+canvas-finding-read-only = The artwork is read-only now
+
+canvas-brush-pixel = Pixel
+canvas-brush-pixel-eraser = Pixel eraser
+canvas-picture-pixelated = Crisp pixels

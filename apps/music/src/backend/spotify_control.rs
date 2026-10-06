@@ -259,6 +259,34 @@ impl SpotifyBackend {
         }
     }
 
+    fn preflight_remote_account(&self) -> Result<(), BackendError> {
+        let profile = self.get("me", &[])?;
+        if !profile.is_object() {
+            return Err(BackendError(
+                "Spotify returned an invalid account profile".into(),
+            ));
+        }
+        match profile.get("product").filter(|value| !value.is_null()) {
+            Some(Value::String(product)) if product == "premium" => {}
+            Some(Value::String(product)) if matches!(product.as_str(), "free" | "open") => {
+                return Err(BackendError(
+                    "Spotify Connect controls require Premium".into(),
+                ));
+            }
+            Some(_) => {
+                return Err(BackendError(
+                    "Spotify returned invalid subscription metadata".into(),
+                ));
+            }
+            // Development-mode profiles omit this deprecated field. Unknown
+            // stays unknown: the authenticated Player API must accept the
+            // command and its read-back must confirm the requested state.
+            // We never publish or cache a Premium claim from its absence.
+            None => {}
+        }
+        Ok(())
+    }
+
     fn remote_operation(
         &self,
         operation: &SpotifyOperation,
@@ -267,11 +295,7 @@ impl SpotifyBackend {
         if device.is_empty() || device.len() > 512 {
             return Err(BackendError("Invalid Spotify device identity".into()));
         }
-        if self.get("me", &[])?.get("product").and_then(Value::as_str) != Some("premium") {
-            return Err(BackendError(
-                "Spotify Connect controls require Premium".into(),
-            ));
-        }
+        self.preflight_remote_account()?;
         let mut devices = self.devices()?;
         if !devices
             .iter()

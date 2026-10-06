@@ -98,8 +98,10 @@ Rename checks ownership; song edits require ownership or collaboration before
 sending the write. Saving somebody else’s playlist never grants editing rights.
 
 Spotify devices offers official discovery, output selection, play and pause.
-Premium is checked before a control command, and restricted/unavailable devices
-are refused. A 204 response is only an acknowledgement: Music reads the player
+An explicit Free/Open profile is refused before a control command. Missing or
+null subscription metadata remains unknown: the authenticated Player API enforces
+account eligibility, and restricted/unavailable devices are refused. Provider
+denials and failures are surfaced without retrying the command. A 204 response is only an acknowledgement: Music reads the player
 state and confirms the device, track and playing state before reporting success.
 Confirmed remote play pauses Music's local transport. Spotify owns the remote
 queue; Music does not claim local reorder/remove controls edit that queue.
@@ -229,7 +231,9 @@ allowlist limits and grandfathered registration differences apply. Verify the
 selected registration's endpoint availability and whether it returns subscription
 eligibility. Missing Web API product metadata does not establish Premium: native
 audio requires a confirmed Premium product from the authenticated session, while
-official Connect commands still require explicit Web API eligibility. Start browser
+official Connect requires a successful provider command and matching player
+read-back. Missing profile metadata neither establishes Premium nor rejects an
+otherwise eligible account. Start browser
 PKCE only with explicit approval, authorize the catalogue and streaming grants
 for the same account, and use the system secret store. Never paste tokens,
 passwords or client secrets into chat. The client ID is public configuration.

@@ -52,7 +52,7 @@ pub enum StreamRequest {
         query: String,
         request_id: u64,
     },
-    /// A deep per-type "see all" search for the given filter tab.
+    /// A deep per-type "see all" search for one kind of result.
     SearchMore {
         query: String,
         kind: SearchKind,
@@ -111,7 +111,7 @@ pub enum StreamUpdate {
         request_id: u64,
         error: String,
     },
-    /// A deep per-type "see all" result for a filter tab.
+    /// A deep per-type "see all" result for one kind of result.
     SearchMore {
         query: String,
         kind: SearchKind,
