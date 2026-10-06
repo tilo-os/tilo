@@ -818,3 +818,6 @@ mod tests {
         ));
     }
 }
+
+/// Typed local-speech configuration and its private worker wire format.
+pub mod speech;

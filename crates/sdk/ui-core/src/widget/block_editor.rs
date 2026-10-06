@@ -8760,6 +8760,70 @@ impl Widget for BlockEditor {
         Widget::ime_cursor_rect(&block.line)
     }
 
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        if self.read_only {
+            return None;
+        }
+        self.ime_cursor_rect()?;
+        let (scope, field) = if self.find_visible {
+            if self.replace_enabled && self.replace_field.is_focused() {
+                (
+                    b"replace".as_slice(),
+                    self.replace_field.ime_edit_fingerprint(key)?,
+                )
+            } else {
+                (
+                    b"find".as_slice(),
+                    self.find_field.ime_edit_fingerprint(key)?,
+                )
+            }
+        } else if self.link_popover.is_visible() {
+            (
+                b"link".as_slice(),
+                self.link_popover.ime_edit_fingerprint(key)?,
+            )
+        } else if self.slash_menu.is_visible() {
+            (
+                b"slash".as_slice(),
+                self.slash_menu.ime_edit_fingerprint(key)?,
+            )
+        } else {
+            let block = self.blocks.get(self.focused?)?;
+            let field = if let Some(table) = self
+                .table_editors
+                .get(&block.id)
+                .filter(|table| table.projected_ime_rect().is_some())
+            {
+                table.projected_ime_fingerprint(key)?
+            } else {
+                block.line.ime_edit_fingerprint(key)?
+            };
+            (block.id.as_bytes(), field)
+        };
+        let mut stamp = crate::ime::scoped_fingerprint(scope, field, key);
+        if let Some(selection) = self.document_selection {
+            for offset in [
+                selection.anchor.block,
+                selection.anchor.byte,
+                selection.cursor.block,
+                selection.cursor.byte,
+            ] {
+                stamp = crate::ime::scoped_fingerprint(&offset.to_le_bytes(), stamp, key);
+            }
+        }
+        match &self.retained_block_selection {
+            Some(RetainedBlockSelection::Active(ids)) => {
+                stamp = crate::ime::scoped_fingerprint(b"retained", stamp, key);
+                for id in ids {
+                    stamp = crate::ime::scoped_fingerprint(id.as_bytes(), stamp, key);
+                }
+            }
+            Some(RetainedBlockSelection::Refused) => return None,
+            None => {}
+        }
+        Some(stamp)
+    }
+
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         Some(winit::window::ImePurpose::Normal)
     }

@@ -197,6 +197,7 @@ namespaces but never the contact address. Nothing is approved over HTTP:
 
 ```
 tilo-registry-server applications list
+tilo-registry-server applications show <pubkey> --json
 tilo-registry-server applications approve <pubkey> --reviewer <name>
 tilo-registry-server applications reject <pubkey> --reviewer <name> --reason <text>
 ```
@@ -205,6 +206,56 @@ tilo-registry-server applications reject <pubkey> --reviewer <name> --reason <te
 waited fails the approval and changes nothing. Otherwise it allowlists the key
 with `--can-add-new` for the proven namespaces, adding them to any it already
 had.
+
+For a UI or a script that decides what it previously displayed, take `review_id`
+from `applications show --json` and pass it to either decision:
+
+```
+tilo-registry-server applications approve <pubkey> --reviewer <name> --review-id <id>
+tilo-registry-server applications reject <pubkey> --reviewer <name> --reason <text> --review-id <id>
+```
+
+The id identifies the complete stored application, including its signed claims
+and review state. If the publisher replaces it, refresh and review the new
+request; an old decision changes neither the allowlist nor the replacement.
+Approval also compares the reviewed snapshot under the transaction lock after
+checking proofs, so a replacement arriving during a DNS/HTTPS check cannot be
+overwritten. Rust callers use `applications::approve_reviewed` or
+`applications::reject_reviewed` with the displayed `StoredApplication`.
+The original CLI forms remain supported. These commands use existing local
+operator access; they introduce no remotely callable approval endpoint.
+
+## Native operator review
+
+On the registry host, the native operator tool uses the same local review
+library as the CLI. Build it with `cargo build --locked -p registry-review`,
+then open an explicitly private window:
+
+```bash
+target/debug/tilo-registry-review --private --registry-dir /path/to/registry
+```
+
+Choose **Refresh applications**, inspect the signed request, its exact
+namespaces, contact, note and proof locations, then name the reviewer.
+**Approve namespaces** checks ownership proofs again. **Reject with feedback**
+returns the written reason through the publisher's existing status endpoint.
+Both decisions require confirmation and refuse a replacement application;
+refresh and inspect the new request before deciding again.
+
+The pending queue is device-local view state. Only reviewer/feedback drafts
+use the SDK document and its undo/history on a disposable private profile;
+no registry queue or contact data is synced. Revoking owner access hides the
+review pane and refuses its actions. A shared launch reads no registry data.
+The tool needs the operator's existing filesystem access to an initialized
+registry; it grants no access, opens no approval service and holds no registry
+signing key. Public publication still uses the registry's existing signing
+workflow. Package submission review remains available through `review` CLI.
+
+The action surface is `Refresh`, `Inspect {publisher}`, followed by
+`Approve {publisher, review_id, reviewer}` or
+`Reject {publisher, review_id, reviewer, reason}`. `Inspect` returns the exact
+snapshot and review id; automated operators use the same confirmation and
+stale-review checks as the controls. Queue pages contain at most 20 rows.
 
 ## Bootstrapping your own instance
 
