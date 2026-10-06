@@ -178,6 +178,8 @@ pub mod tests {
     ) -> Vec<crate::shell::search::SearchResult> {
         let chrome = chrome.borrow();
         provider.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle: "open",
             wanted: &[],
             chrome: &chrome,
