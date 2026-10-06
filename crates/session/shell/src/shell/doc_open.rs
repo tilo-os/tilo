@@ -1227,11 +1227,27 @@ mod tests {
                 );
             }
 
-            let started: Vec<String> = launcher::drain_events()
-                .into_iter()
-                .filter(|e| matches!(e.kind, launcher::LaunchEventKind::Started { .. }))
-                .map(|e| e.package_id)
-                .collect();
+            // A child can write its recording log before the launch thread
+            // publishes Started. Observe the production event queue separately;
+            // seeing argv is not evidence that every event has arrived.
+            let deadline = std::time::Instant::now() + HANG_BOUND;
+            let mut started = Vec::new();
+            loop {
+                started.extend(
+                    launcher::drain_events()
+                        .into_iter()
+                        .filter(|e| matches!(e.kind, launcher::LaunchEventKind::Started { .. }))
+                        .map(|e| e.package_id),
+                );
+                if cases
+                    .iter()
+                    .all(|(_, package)| started.iter().any(|p| p == package))
+                    || std::time::Instant::now() >= deadline
+                {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
             for (_, package) in cases {
                 assert!(
                     started.iter().any(|p| p == package),

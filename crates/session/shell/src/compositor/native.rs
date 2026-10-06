@@ -2741,6 +2741,14 @@ impl ControlState for FrameBuilderControlState<'_> {
     /// Enumerate the exported action surface through the *same* provider
     /// registry that feeds the Ctrl+K palette — but renders nothing.
     fn enumerate_actions(&self, query: &str) -> Result<serde_json::Value, String> {
+        self.enumerate_actions_with_programmatic(query, false)
+    }
+
+    fn enumerate_actions_with_programmatic(
+        &self,
+        query: &str,
+        include_programmatic: bool,
+    ) -> Result<serde_json::Value, String> {
         let (doc, root) = self
             .doc
             .ok_or_else(|| "control state has no live document".to_string())?;
@@ -2748,9 +2756,19 @@ impl ControlState for FrameBuilderControlState<'_> {
         // The borrow lives only for the closure; `ActionCatalog` owns its results
         // outright, so the catalogue outlives the guards it was built through.
         let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
-            self.fb
-                .host()
-                .action_catalog(query, chrome, doc, root, gate)
+            self.fb.host().action_catalog_query(
+                &crate::shell::search::QueryArgs {
+                    needle: query,
+                    scope: crate::shell::chrome_state::SearchScope::All,
+                    active_provider_id: None,
+                    wanted_kinds: &[],
+                    chrome,
+                    doc,
+                    doc_root: root,
+                },
+                gate,
+                include_programmatic,
+            )
         })?;
         let actions: Vec<serde_json::Value> = catalog
             .enumerate()
@@ -9751,7 +9769,7 @@ pub fn run() {
         }
         input_steps.step("settings");
         input_methods.follow_input(&mut state, &test_control_ctx.input);
-        input_methods.tick();
+        input_methods.tick(&mut state);
         for (output, on) in state.output_management.take_power_requests() {
             backend.set_output_power(output, on);
         }
@@ -10277,7 +10295,14 @@ pub fn run() {
             }
         }
         if let Some(proxy) = shell_text_input.as_mut() {
-            let mut typed = proxy.sync(&mut state, shell_field);
+            let identity = if frame_builder.host().palette_visible() {
+                Some(crate::compositor::shell_text_input::NativeFieldId::Palette)
+            } else {
+                test_control_ctx.focus.map(|node| {
+                    crate::compositor::shell_text_input::NativeFieldId::Widget(u64::from(node))
+                })
+            };
+            let mut typed = proxy.sync_for_field(&mut state, shell_field, identity);
             state.shell_field_active = proxy.holds_focus(&state);
             typed.append(&mut state.shell_field_keys);
             for event in &typed {
@@ -10292,6 +10317,11 @@ pub fn run() {
             if !typed.is_empty() {
                 injected_redraw_pending = true;
             }
+            if state.has_dictation_target() && shell_field.is_some() {
+                let stamp = frame_builder
+                    .focused_ime_edit_stamp(test_control_ctx.focus, &test_control_ctx.doc);
+                proxy.observe_edit_stamp(&mut state, stamp);
+            }
         }
         frame_builder.set_osk_surface(
             state.osk_surface,
@@ -10299,6 +10329,50 @@ pub fn run() {
             state.shell_field_active.then_some(shell_field).flatten(),
             state.text_input_active() && input_methods.osk_shown(),
         );
+        let dictation_blocked =
+            session.is_locked() || !frame_builder.host().dictation_input_available();
+        let dictation_changed = {
+            let surface = frame_builder.host_mut().dictation_surface_mut();
+            crate::compositor::dictation::frontend::service(
+                &mut state,
+                surface,
+                Instant::now(),
+                dictation_blocked,
+            );
+            surface.take_changed()
+        };
+        if dictation_changed {
+            frame_builder.with_chrome(crate::shell::chrome_state::ChromeState::bump);
+        }
+        if state.take_native_dictation_commit() {
+            let events = display.flush_clients().ok().and_then(|()| {
+                shell_text_input.as_mut().and_then(
+                    crate::compositor::shell_text_input::ShellTextInput::drain_dictation_commit,
+                )
+            });
+            if let Some(events) = events {
+                for event in &events {
+                    frame_builder.dispatch_event(
+                        event,
+                        &test_control_ctx.modifiers,
+                        &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
+                        &test_control_ctx.root_obj,
+                        &mut test_control_ctx.focus,
+                    );
+                }
+                injected_redraw_pending = true;
+            } else {
+                // Disconnect the old bridge so an incomplete result cannot
+                // arrive next turn after the target's selection has changed.
+                shell_text_input = None;
+                state.shell_field_active = false;
+                frame_builder
+                    .host_mut()
+                    .dictation_surface_mut()
+                    .failure(crate::compositor::dictation::DictationError::RecognizerUnavailable);
+                frame_builder.with_chrome(crate::shell::chrome_state::ChromeState::bump);
+            }
+        }
         frame_builder.set_osk_commits(state.osk_commits);
         pump_checkpoint!("session-focus-and-surfaces");
         let floating_surfaces = state
@@ -12057,6 +12131,10 @@ pub fn run() {
                     wayland_client_service_deadline(wayland_client_wake, park_now),
                 ),
                 ("text-commit", state.text_commit_deadline()),
+                (
+                    "dictation-service",
+                    state.dictation_service_deadline(park_now),
+                ),
                 (
                     "presentation-feedback",
                     state.presentation_feedback.next_deadline(),

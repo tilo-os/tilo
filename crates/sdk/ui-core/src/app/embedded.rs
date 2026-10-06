@@ -359,13 +359,40 @@ impl Widget for EmbeddedApp {
 
     fn ime_cursor_rect(&self) -> Option<KurboRect> {
         self.app
-            .root_widget
-            .ime_cursor_rect()
+            .inspect_node(self.app.focused_node?, |widget| widget.ime_cursor_rect())
+            .ok()
+            .flatten()
             .map(|rect| rect + vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0))
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        self.app.ime_window_state().map(|field| field.purpose)
+    }
+
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        let node = self.app.focused_node?;
+        let field = self
+            .app
+            .inspect_node(node, |widget| widget.ime_edit_fingerprint(key))
+            .ok()??;
+        let document = self
+            .app
+            .bindings
+            .document_edit_stamp(node, &self.app.state.doc)
+            .ok()?;
+        Some(document.bind_fingerprint(node, field, key))
     }
 
     fn needs_redraw(&self) -> bool {
         self.wants_frame.get()
+    }
+
+    fn has_pending_visual_work(&self) -> bool {
+        self.app.root_widget.has_pending_visual_work()
+    }
+
+    fn has_transient_feedback(&self) -> bool {
+        self.app.root_widget.has_transient_feedback()
     }
 
     /// The host's presentation preferences are the app's.

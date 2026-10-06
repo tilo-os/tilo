@@ -86,13 +86,17 @@ pub enum ModelArtifactFormat {
     /// runs on the CPU. It needs no signed runtime, container or service
     /// start: the verified content-addressed object is the whole install.
     OnnxFile,
+    /// One whisper.cpp GGML speech graph. Its format is the signed declaration
+    /// of speech recognition; it is never treated as a chat model or launched
+    /// by the vLLM supervisor. The consumer checks its language capabilities.
+    WhisperGgml,
 }
 
 impl ModelArtifactFormat {
     /// Whether models of this format run inside the process that uses them
     /// rather than behind a supervised vLLM runtime.
     pub const fn runs_in_process(self) -> bool {
-        matches!(self, Self::OnnxFile)
+        matches!(self, Self::OnnxFile | Self::WhisperGgml)
     }
 }
 
@@ -103,6 +107,9 @@ impl ModelArtifactFormat {
 pub enum InProcessCapability {
     /// Salient-object segmentation: one image in, a foreground mask out.
     Segmentation,
+    /// On-device speech recognition; the native consumer owns microphone
+    /// permission and inference cancellation, not the model installer.
+    SpeechRecognition,
 }
 
 impl InProcessCapability {
@@ -189,6 +196,9 @@ impl LocalModelRelease {
         if self.segmentation {
             capabilities.push(InProcessCapability::Segmentation);
         }
+        if self.artifact_format == ModelArtifactFormat::WhisperGgml {
+            capabilities.push(InProcessCapability::SpeechRecognition);
+        }
         capabilities
     }
 
@@ -202,6 +212,11 @@ impl LocalModelRelease {
     ///
     /// Returns an error naming the first contradiction.
     pub fn validate_shape(&self) -> Result<(), ProvisionError> {
+        if self.artifact_format == ModelArtifactFormat::WhisperGgml && self.segmentation {
+            return Err(ProvisionError::InvalidCatalog(
+                "speech graph cannot claim segmentation",
+            ));
+        }
         if self.runs_in_process() {
             if !self.allowed_runtimes.is_empty() {
                 return Err(ProvisionError::InvalidCatalog(
@@ -699,6 +714,37 @@ mod tests {
             vision: false,
             face_recognition: false,
             segmentation: true,
+        }
+    }
+
+    #[test]
+    fn speech_graph_is_native_and_never_a_chat_or_segmentation_model() {
+        let mut speech = segmentation_model();
+        speech.id = "speech".into();
+        speech.artifact_format = ModelArtifactFormat::WhisperGgml;
+        speech.segmentation = false;
+        speech.validate_shape().unwrap();
+        assert_eq!(
+            speech.in_process_capabilities(),
+            [InProcessCapability::SpeechRecognition]
+        );
+        let mut catalog = catalog();
+        catalog.models.push(speech.clone());
+        catalog.validate().unwrap();
+        assert_eq!(
+            catalog.recommend(&cpu(), RuntimeKind::Cpu).unwrap().id,
+            "tiny-q4"
+        );
+        for contradiction in 0..5 {
+            let mut invalid = speech.clone();
+            match contradiction {
+                0 => invalid.context_window = 1,
+                1 => invalid.allowed_runtimes = [RuntimeKind::Cpu].into(),
+                2 => invalid.vision = true,
+                3 => invalid.face_recognition = true,
+                _ => invalid.segmentation = true,
+            }
+            assert!(invalid.validate_shape().is_err());
         }
     }
     fn cpu() -> HardwareSnapshot {
