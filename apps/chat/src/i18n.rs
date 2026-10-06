@@ -58,10 +58,12 @@ mod tests {
             "chat-context-stop",
             "chat-header-call-open",
             "chat-header-voice-call",
+            "chat-attachment-no-access",
             "chat-call-connected",
             "chat-call-reconnecting",
             "chat-call-joining",
             "chat-call-unavailable",
+            "chat-call-voice-unavailable",
             "chat-call-open",
             "chat-call-join",
             "chat-call-leave-action",
@@ -127,18 +129,5 @@ mod call_title_tests {
         assert!(title.contains("standup"));
         assert!(!title.contains("chat-call-title"));
         assert!(!title.contains("$channel"));
-    }
-    #[test]
-    fn stream_status_interpolates_the_inventory_and_state() {
-        let status = super::t("chat-call-reconnecting");
-        let text = super::t_args(
-            "chat-call-stream-status",
-            &[("count", "2".into()), ("status", status.clone().into())],
-        );
-        assert!(text.contains('2'));
-        assert!(text.contains(&status));
-        assert!(!text.contains("chat-call-stream-status"));
-        assert!(!text.contains("$count"));
-        assert!(!text.contains("$status"));
     }
 }

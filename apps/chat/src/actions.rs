@@ -205,8 +205,8 @@ pub enum ChatAction {
     /// summons posts its reply *before* it has an answer, and the states it
     /// then passes through are not revisions of a sentence: routing them
     /// through `EditMessage` would archive each one into the message's edit
-    /// history, flag the reply `edited`, and hang an "(edited) · view
-    /// history" affordance off an outcome nobody had rewritten. The body is
+    /// history, flag the reply `edited`, and hang an "Edited" marker off an
+    /// outcome nobody had rewritten. The body is
     /// written once, when there is one; the state is a separate fact with a
     /// separate field.
     SetAgentWork {
@@ -936,14 +936,15 @@ fn annotate_contracts(resource: &mut Resource) {
     }
 }
 
-/// A channel's label: `#name` for text, a speaker glyph for voice.
+/// A channel's palette label: `#name` for text, named as a voice channel
+/// for voice.
 fn channel_label(ch: &ChannelResource) -> String {
     let name = if ch.name.trim().is_empty() {
         "channel"
     } else {
         ch.name.trim()
     };
-    format!("{} {}", ch.kind.glyph(), name)
+    ch.kind.label(name)
 }
 
 fn channel_resource(channel: &crate::model::Channel) -> ChannelResource {
@@ -1037,7 +1038,7 @@ fn publish_channel(
         "rename",
         "Rename channel",
         "Name",
-        "channel name…",
+        "Channel name",
         ExecutionLocus::ClientLocal,
         {
             let cid = ch.id.clone();
@@ -1210,7 +1211,7 @@ fn publish_message(m: &MessageResource) -> Resource {
         "edit",
         "Edit message",
         "Message",
-        "new text…",
+        "Message text",
         ExecutionLocus::ClientLocal,
         {
             let cid = m.channel.clone();
@@ -1277,8 +1278,12 @@ fn publish_reaction(
     Resource::new(
         format!("chat.reaction:{}:{}", m.id, reaction.emoji),
         "chat.reaction",
-        format!("{} · {}", reaction.emoji, reaction.count),
+        reaction.emoji.clone(),
     )
+    .with_presentation(ui::tilo_actions::ResourcePresentation {
+        detail: Some(format!("{} reactions", reaction.count)),
+        ..Default::default()
+    })
     .with_action(reveal)
     .with_action(immediate_spec(
         "add",
@@ -1309,7 +1314,7 @@ fn publish_category(category: &CategoryResource) -> Resource {
         "rename",
         "Rename category",
         "Name",
-        "category name…",
+        "Category name",
         ExecutionLocus::ClientLocal,
         {
             let id = category.id.clone();
@@ -1487,7 +1492,7 @@ fn new_channel_action_spec(workspace_id: &str) -> ActionSpec {
         "new-channel",
         "New channel",
         "Name",
-        "channel name…",
+        "Channel name",
         ExecutionLocus::ClientLocal,
         {
             let ws = workspace_id.to_string();
@@ -1512,14 +1517,14 @@ fn new_category_action_spec(workspace_id: &str) -> ActionSpec {
         "new-category",
         "New category",
         "Name",
-        "category name…",
+        "Category name",
         ExecutionLocus::ClientLocal,
         {
             let workspace = workspace_id.to_string();
             move |name: &str| {
                 let name = name.trim();
                 let name = if name.is_empty() {
-                    "New Category"
+                    "New category"
                 } else {
                     name
                 };

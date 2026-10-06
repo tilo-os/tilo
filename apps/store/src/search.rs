@@ -120,7 +120,7 @@ fn app_entry(item: &StoreItem) -> SearchEntry {
         .invoking(ActionAddress::new(resource_id(item), "show-details"))
         .grouped("Apps")
         .subtitled(format!(
-            "{} · {} · {}",
+            "Version {2} from {0}. Trust: {1}.",
             item.source.short_label(),
             item.trust.label(),
             item.latest_version()
@@ -206,7 +206,7 @@ mod tests {
             let directory = StoreDirectory::default();
             directory.sync(&items);
             let provider = source(&directory);
-            let first = provider.search_page("example", None, 9, 4);
+            let first = provider.search_page(&ui::search::SearchQuery::new("example"), None, 9, 4);
             assert!(first.inspected <= 9);
             assert_eq!(first.results.len(), 4);
             assert!(first.next.is_some());

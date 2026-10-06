@@ -354,8 +354,6 @@ const CARD_GAP: f32 = 12.0;
 /// Breathing room around the card on compact displays. The card itself can
 /// narrow to the remaining width rather than extending beyond the viewport.
 const VIEWPORT_PADDING: f32 = 16.0;
-/// Reserved lane for the always-visible compact-view scrollbar.
-const SCROLLBAR_GUTTER: f32 = 14.0;
 /// Height of the install status log box.
 const STATUS_LOG_HEIGHT: f32 = 200.0;
 
@@ -766,7 +764,13 @@ impl Widget for Card {
         presence: &PresenceCtx,
     ) {
         let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
-        scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &shape);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &shape,
+        );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -2297,7 +2301,7 @@ impl InstallerApp {
         if !self.status.is_empty() {
             children.push(Box::new(
                 Text::new(&self.status)
-                    .with_size(theme.tokens.typography.scale.sm)
+                    .with_role(TextRole::Caption)
                     .with_color(theme.tokens.colors.semantic.danger)
                     .with_live(Politeness::Assertive),
             ));
@@ -2307,7 +2311,6 @@ impl InstallerApp {
         Box::new(
             Scrollable::new_vertical()
                 .fill_parent_height()
-                .with_content_gutter(SCROLLBAR_GUTTER)
                 .with_persisted_offset(Rc::clone(&self.viewport_offset))
                 .always_visible()
                 .with_child(Box::new(ViewportStage::new(card))),
@@ -2316,21 +2319,20 @@ impl InstallerApp {
 
     fn compose_network_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
         let dim = theme.text_dim;
-        let xl = theme.tokens.typography.scale.xl;
-        let base = theme.tokens.typography.scale.base;
-        let sm = theme.tokens.typography.scale.sm;
 
-        children.push(Box::new(Text::new("Connect to a network").with_size(xl)));
+        children.push(Box::new(
+            Text::new("Connect to a network").with_role(TextRole::Title),
+        ));
         children.push(Box::new(
             Text::new(
                 "Optional — Tilo installs from this medium and does not require internet access.",
             )
-            .with_size(sm)
+            .with_role(TextRole::Caption)
             .with_color(dim),
         ));
         children.push(Box::new(
             Text::new(&self.network.notice)
-                .with_size(base)
+                .with_role(TextRole::Body)
                 .with_color(theme.text_primary),
         ));
 
@@ -2339,9 +2341,13 @@ impl InstallerApp {
                 NetworkPhase::Connecting(ssid) => format!("Connecting to {ssid}…"),
                 _ => "Checking networks…".to_string(),
             };
-            children.push(Box::new(Row::new().push(Box::new(Spinner::new())).push(
-                Box::new(Text::new(&operation).with_size(sm).with_color(dim)),
-            )));
+            children.push(Box::new(
+                Row::new().push(Box::new(Spinner::new())).push(Box::new(
+                    Text::new(&operation)
+                        .with_role(TextRole::Caption)
+                        .with_color(dim),
+                )),
+            ));
         }
 
         self.compose_network_choices(theme, children);
@@ -2350,7 +2356,9 @@ impl InstallerApp {
             && !selected.connected
         {
             if selected.secure {
-                children.push(Box::new(Text::new("Wi-Fi password").with_size(base)));
+                children.push(Box::new(
+                    Text::new("Wi-Fi password").with_role(TextRole::Body),
+                ));
                 children.push(Box::new(
                     TextInput::new(Vec::new())
                         .with_id("installer.wifi_password")
@@ -2368,12 +2376,12 @@ impl InstallerApp {
         if let Some(uri) = self.network.snapshot.portal_uri.as_deref() {
             children.push(Box::new(
                 Text::new(&format!("Network sign-in address: {uri}"))
-                    .with_size(sm)
+                    .with_role(TextRole::Caption)
                     .with_color(theme.text_primary),
             ));
             children.push(Box::new(
                 Text::new("For safety, the privileged live installer does not open portal web content. Continue offline, then open this address after first boot.")
-                    .with_size(sm)
+                    .with_role(TextRole::Caption)
                     .with_color(dim),
             ));
         } else if let Some(error) = self.network.snapshot.portal_error.as_deref() {
@@ -2381,14 +2389,14 @@ impl InstallerApp {
                 Text::new(&format!(
                     "A sign-in page was detected but cannot be opened: {error}"
                 ))
-                .with_size(sm)
+                .with_role(TextRole::Caption)
                 .with_color(dim),
             ));
         }
 
         children.push(Box::new(
             Text::new("Wi-Fi connections made here are saved for first boot. You can also continue without one.")
-                .with_size(sm)
+                .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
         children.push(Box::new(
@@ -2410,12 +2418,11 @@ impl InstallerApp {
     /// Add the Wi-Fi error or the currently visible network choices.
     fn compose_network_choices(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
         let dim = theme.text_dim;
-        let sm = theme.tokens.typography.scale.sm;
 
         if let Some(error) = self.network.snapshot.wifi_error.as_deref() {
             children.push(Box::new(
                 Text::new(&format!("Wi-Fi controls unavailable: {error}"))
-                    .with_size(sm)
+                    .with_role(TextRole::Caption)
                     .with_color(dim),
             ));
         } else {
@@ -2452,11 +2459,10 @@ impl InstallerApp {
 
     fn compose_disk_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
         let danger = theme.tokens.colors.semantic.danger;
-        let xl = theme.tokens.typography.scale.xl;
-        let base = theme.tokens.typography.scale.base;
-        let sm = theme.tokens.typography.scale.sm;
 
-        children.push(Box::new(Text::new("Install Tilo").with_size(xl)));
+        children.push(Box::new(
+            Text::new("Install Tilo").with_role(TextRole::Title),
+        ));
         self.compose_install_method(theme, children);
         children.push(Box::new(
             ActionButton::new(
@@ -2468,7 +2474,7 @@ impl InstallerApp {
         if self.disks.is_empty() {
             children.push(Box::new(
                 Text::new("No disks found — is this running on real hardware?")
-                    .with_size(base)
+                    .with_role(TextRole::Body)
                     .with_color(danger),
             ));
         } else {
@@ -2492,7 +2498,7 @@ impl InstallerApp {
         if read_only {
             children.push(Box::new(
                 Text::new("This disk is hardware or policy write-protected.")
-                    .with_size(sm)
+                    .with_role(TextRole::Caption)
                     .with_color(danger),
             ));
         }
@@ -2503,7 +2509,9 @@ impl InstallerApp {
         {
             let message = self.alongside_unavailable_message(&guided_plans);
             children.push(Box::new(
-                Text::new(&message).with_size(sm).with_color(danger),
+                Text::new(&message)
+                    .with_role(TextRole::Caption)
+                    .with_color(danger),
             ));
         } else if self.install_method == InstallMethod::Alongside
             && self.uses_guided_alongside()
@@ -2515,7 +2523,7 @@ impl InstallerApp {
                     plan.free_size_bytes / (1024 * 1024 * 1024),
                     plan.root_size_bytes / (1024 * 1024 * 1024)
                 ))
-                    .with_size(sm)
+                    .with_role(TextRole::Caption)
                     .with_color(theme.status_success),
             ));
         }
@@ -2532,7 +2540,6 @@ impl InstallerApp {
     fn compose_install_method(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
         let dim = theme.text_dim;
         let danger = theme.tokens.colors.semantic.danger;
-        let sm = theme.tokens.typography.scale.sm;
         if let Some(host) = self
             .internal_host()
             .filter(|_| self.selected_disk_hosts_installer())
@@ -2543,7 +2550,7 @@ impl InstallerApp {
                     host.display_name(),
                     host.display_name()
                 ))
-                .with_size(sm)
+                .with_role(TextRole::Caption)
                 .with_color(dim),
             ));
         } else {
@@ -2573,13 +2580,15 @@ impl InstallerApp {
         } else {
             "Alongside preserves existing partitions. Tilo can use one unallocated GPT extent (35 GiB+) or prepared Tilo partitions. It never shrinks, moves, or deletes an existing partition."
         };
-        children.push(Box::new(Text::new(guidance).with_size(sm).with_color(
-            if self.install_method == InstallMethod::Erase {
-                danger
-            } else {
-                dim
-            },
-        )));
+        children.push(Box::new(
+            Text::new(guidance).with_role(TextRole::Caption).with_color(
+                if self.install_method == InstallMethod::Erase {
+                    danger
+                } else {
+                    dim
+                },
+            ),
+        ));
     }
 
     fn windows_alongside_preparation(&self, theme: &Theme) -> Option<Box<dyn Widget>> {
@@ -2590,7 +2599,7 @@ impl InstallerApp {
         .then(|| {
             Box::new(
                 Text::new(WINDOWS_ALONGSIDE_PREPARATION)
-                    .with_size(theme.tokens.typography.scale.sm)
+                    .with_role(TextRole::Caption)
                     .with_color(theme.tokens.colors.semantic.warning),
             ) as Box<dyn Widget>
         })
@@ -2619,8 +2628,7 @@ impl InstallerApp {
         plans: &[GuidedAlongsidePlan],
     ) {
         children.push(Box::new(
-            Text::new("Choose the exact unallocated region for Tilo")
-                .with_size(theme.tokens.typography.scale.base),
+            Text::new("Choose the exact unallocated region for Tilo").with_role(TextRole::Body),
         ));
         for (index, plan) in plans.iter().enumerate() {
             let start_gib = plan.free_start_bytes / (1024 * 1024 * 1024);
@@ -2640,16 +2648,13 @@ impl InstallerApp {
         }
         children.push(Box::new(
             Text::new("The location is measured from the start of the selected disk. Existing partitions between free regions remain untouched.")
-                .with_size(theme.tokens.typography.scale.sm)
+                .with_role(TextRole::Caption)
                 .with_color(theme.text_dim),
         ));
     }
 
     fn compose_account_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
         let dim = theme.text_dim;
-        let xl = theme.tokens.typography.scale.xl;
-        let base = theme.tokens.typography.scale.base;
-        let sm = theme.tokens.typography.scale.sm;
 
         let completion = self.profile_completion.unwrap_or_default();
         let identity_complete = self
@@ -2661,21 +2666,23 @@ impl InstallerApp {
             } else {
                 "Create your account"
             })
-            .with_size(xl),
+            .with_role(TextRole::Title),
         ));
         if self.profile_completion.is_none() || !completion.username.is_complete() {
-            children.push(Box::new(Text::new("Username").with_size(base)));
+            children.push(Box::new(Text::new("Username").with_role(TextRole::Body)));
             children.push(Box::new(
                 TextInput::from_state(&self.username).with_id("installer.username"),
             ));
             children.push(Box::new(
                 Text::new("Used to sign in and for your home directory.")
-                    .with_size(sm)
+                    .with_role(TextRole::Caption)
                     .with_color(dim),
             ));
         }
         if self.profile_completion.is_none() || !completion.full_name.is_complete() {
-            children.push(Box::new(Text::new("Full name (optional)").with_size(base)));
+            children.push(Box::new(
+                Text::new("Full name (optional)").with_role(TextRole::Body),
+            ));
             children.push(Box::new(
                 TextInput::from_state(&self.full_name).with_id("installer.full_name"),
             ));
@@ -2690,7 +2697,7 @@ impl InstallerApp {
             } else {
                 "Startup and unlock passphrase"
             })
-            .with_size(base),
+            .with_role(TextRole::Body),
         ));
         children.push(Box::new(
             TextInput::new(Vec::new())
@@ -2704,7 +2711,7 @@ impl InstallerApp {
             } else {
                 "Choose at least 15 characters, ideally several unrelated words. It decrypts the disk at startup and unlocks your session later."
             })
-            .with_size(sm)
+            .with_role(TextRole::Caption)
             .with_color(dim),
         ));
         children.push(Box::new(
@@ -2713,7 +2720,7 @@ impl InstallerApp {
             } else {
                 "Confirm startup and unlock passphrase"
             })
-            .with_size(base),
+            .with_role(TextRole::Body),
         ));
         children.push(Box::new(
             TextInput::new(Vec::new())
@@ -2726,13 +2733,13 @@ impl InstallerApp {
 
     fn compose_keyboard_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
         let dim = theme.text_dim;
-        let xl = theme.tokens.typography.scale.xl;
-        let sm = theme.tokens.typography.scale.sm;
 
-        children.push(Box::new(Text::new("Keyboard layout").with_size(xl)));
+        children.push(Box::new(
+            Text::new("Keyboard layout").with_role(TextRole::Title),
+        ));
         children.push(Box::new(
             Text::new("Pick the layout that matches your keyboard. The preview below shows exactly what each key will type.")
-                .with_size(sm)
+                .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
         children.push(Box::new(
@@ -2743,7 +2750,7 @@ impl InstallerApp {
         children.push(Box::new(KeyboardView::new(&self.keymap)));
         children.push(Box::new(
             Text::new("Need files from this computer, or removing an alongside Tilo install? Press Ctrl+Alt+F2 for recovery tools; Ctrl+Alt+F1 returns here.")
-                .with_size(sm)
+                .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
         children.push(self.nav_row(Step::Keyboard, self.next_control(), "Next", false));
@@ -2755,30 +2762,33 @@ impl InstallerApp {
     )]
     fn compose_options_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
         let dim = theme.text_dim;
-        let xl = theme.tokens.typography.scale.xl;
-        let base = theme.tokens.typography.scale.base;
-        let sm = theme.tokens.typography.scale.sm;
         let completion = self.profile_completion.unwrap_or_default();
 
-        children.push(Box::new(Text::new("Installation options").with_size(xl)));
+        children.push(Box::new(
+            Text::new("Installation options").with_role(TextRole::Title),
+        ));
 
         if self.profile_completion.is_none() || !completion.filesystem.is_complete() {
             self.compose_filesystem_choice(theme, children);
         }
 
-        children.push(Box::new(Text::new("Disk encryption").with_size(base)));
+        children.push(Box::new(
+            Text::new("Disk encryption").with_role(TextRole::Body),
+        ));
         children.push(Box::new(
             Text::new("Always on · LUKS2")
-                .with_size(base)
+                .with_role(TextRole::Body)
                 .with_color(theme.status_success),
         ));
         children.push(Box::new(
             Text::new(encrypt_description(self.verified_boot_state()))
-                .with_size(sm)
+                .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
 
-        children.push(Box::new(Text::new("Security key").with_size(base)));
+        children.push(Box::new(
+            Text::new("Security key").with_role(TextRole::Body),
+        ));
         children.push(Box::new(
             SegChoice::new(
                 FIDO2_LABELS
@@ -2800,24 +2810,26 @@ impl InstallerApp {
         ));
         children.push(Box::new(
             Text::new("Optionally enroll a FIDO2 security key (e.g. a YubiKey) as another way to unlock. Plug it in before installing.")
-                .with_size(sm)
+                .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
 
         if self.profile_completion.is_none() || !completion.hostname.is_complete() {
-            children.push(Box::new(Text::new("Hostname").with_size(base)));
+            children.push(Box::new(Text::new("Hostname").with_role(TextRole::Body)));
             children.push(Box::new(
                 TextInput::from_state(&self.hostname).with_id("installer.hostname"),
             ));
             children.push(Box::new(
                 Text::new("The name your computer uses on the network.")
-                    .with_size(sm)
+                    .with_role(TextRole::Caption)
                     .with_color(dim),
             ));
         }
 
         if self.profile_completion.is_none() || !completion.locale.is_complete() {
-            children.push(Box::new(Text::new("Language & locale").with_size(base)));
+            children.push(Box::new(
+                Text::new("Language & locale").with_role(TextRole::Body),
+            ));
             children.push(Box::new(
                 Dropdown::from_state(crate::locales::list(), &self.locale)
                     .with_id("installer.locale")
@@ -2826,13 +2838,13 @@ impl InstallerApp {
             ));
             children.push(Box::new(
                 Text::new("This controls language, formatting, and regional conventions after installation.")
-                    .with_size(sm)
+                    .with_role(TextRole::Caption)
                     .with_color(dim),
             ));
         }
 
         if self.profile_completion.is_none() || !completion.timezone.is_complete() {
-            children.push(Box::new(Text::new("Time zone").with_size(base)));
+            children.push(Box::new(Text::new("Time zone").with_role(TextRole::Body)));
             children.push(Box::new(
                 Dropdown::from_state(self.timezones.clone(), &self.timezone)
                     .with_id("installer.timezone")
@@ -2841,12 +2853,14 @@ impl InstallerApp {
             ));
             children.push(Box::new(
                 Text::new("Pick from the list — start typing to filter (IANA name, e.g. Europe/Amsterdam or UTC).")
-                    .with_size(sm)
+                    .with_role(TextRole::Caption)
                     .with_color(dim),
             ));
         }
 
-        children.push(Box::new(Text::new("Media codecs").with_size(base)));
+        children.push(Box::new(
+            Text::new("Media codecs").with_role(TextRole::Body),
+        ));
         children.push(Box::new(
             SegChoice::new(
                 CODECS_LABELS
@@ -2867,7 +2881,9 @@ impl InstallerApp {
             .with_test_id("codecs_choice"),
         ));
         children.push(Box::new(
-            Text::new(CODECS_DESCRIPTION).with_size(sm).with_color(dim),
+            Text::new(CODECS_DESCRIPTION)
+                .with_role(TextRole::Caption)
+                .with_color(dim),
         ));
 
         children.push(self.nav_row(
@@ -2879,14 +2895,12 @@ impl InstallerApp {
     }
 
     fn compose_filesystem_choice(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
-        let base = theme.tokens.typography.scale.base;
-        let sm = theme.tokens.typography.scale.sm;
-        children.push(Box::new(Text::new("Filesystem").with_size(base)));
+        children.push(Box::new(Text::new("Filesystem").with_role(TextRole::Body)));
         let choices = self.available_filesystem_indices();
         if choices.is_empty() {
             children.push(Box::new(
                 Text::new(&self.filesystem_policy_message())
-                    .with_size(sm)
+                    .with_role(TextRole::Caption)
                     .with_color(theme.tokens.colors.semantic.danger),
             ));
             return;
@@ -2915,7 +2929,7 @@ impl InstallerApp {
         )));
         children.push(Box::new(
             Text::new(fs_description(self.selected_fs))
-                .with_size(sm)
+                .with_role(TextRole::Caption)
                 .with_color(theme.text_dim),
         ));
     }
@@ -2941,7 +2955,7 @@ impl InstallerApp {
         };
         children.push(Box::new(
             Text::new(&format!("Type {expected} to confirm the {operation}"))
-                .with_size(theme.tokens.typography.scale.sm)
+                .with_role(TextRole::Caption)
                 .with_color(theme.text_dim),
         ));
         children.push(Box::new(
@@ -2958,11 +2972,10 @@ impl InstallerApp {
     fn compose_review_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
         let dim = theme.text_dim;
         let danger = theme.tokens.colors.semantic.danger;
-        let xl = theme.tokens.typography.scale.xl;
-        let base = theme.tokens.typography.scale.base;
-        let sm = theme.tokens.typography.scale.sm;
 
-        children.push(Box::new(Text::new("Review your choices").with_size(xl)));
+        children.push(Box::new(
+            Text::new("Review your choices").with_role(TextRole::Title),
+        ));
 
         let dev = self
             .selected_dev()
@@ -3085,14 +3098,14 @@ impl InstallerApp {
         ));
         children.push(Box::new(
             Text::new("This install uses the Tilo image on this medium; it does not download an update. Future system updates come from the signature-required Tilo repository and are checked automatically after first boot whenever the computer is online.")
-                .with_size(sm)
+                .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
 
         if let Some(percent) = (self.power_probe)() {
             children.push(Box::new(
                 Text::new(&connect_power_message(percent))
-                    .with_size(base)
+                    .with_role(TextRole::Body)
                     .with_color(theme.tokens.colors.semantic.warning),
             ));
         }
@@ -3103,7 +3116,9 @@ impl InstallerApp {
             format!("This will ERASE {dev} and all data on it.")
         };
         children.push(Box::new(
-            Text::new(&impact).with_size(base).with_color(danger),
+            Text::new(&impact)
+                .with_role(TextRole::Body)
+                .with_color(danger),
         ));
         self.compose_destructive_confirmation(theme, children, &dev);
 
@@ -3113,7 +3128,7 @@ impl InstallerApp {
         // data with no warning.
         children.push(Box::new(
             Text::new("A recovery key will be shown during install — it is your only backup if the TPM is reset or fails. Save it somewhere safe.")
-                .with_size(sm)
+                .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
         let ack_label = if self.recovery_ack {
@@ -3150,15 +3165,13 @@ impl InstallerApp {
     fn compose_install_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
         let dim = theme.text_dim;
         let danger = theme.tokens.colors.semantic.danger;
-        let xl = theme.tokens.typography.scale.xl;
-        let sm = theme.tokens.typography.scale.sm;
         let friendly_status = friendly_install_status(&self.status_lines);
 
         match self.install_state {
             InstallState::Done => {
                 children.push(Box::new(
                     Text::new("Tilo is installed")
-                        .with_size(xl)
+                        .with_role(TextRole::Title)
                         .with_color(theme.status_success)
                         .with_role(TextRole::Title)
                         .with_live(Politeness::Polite),
@@ -3171,7 +3184,9 @@ impl InstallerApp {
                     None => "Installation complete. Remove the installer medium, then reboot. Signed system updates will be checked automatically after first boot when online; no update was downloaded during this install.".to_string(),
                 };
                 children.push(Box::new(
-                    Text::new(&completion).with_size(sm).with_color(dim),
+                    Text::new(&completion)
+                        .with_role(TextRole::Caption)
+                        .with_color(dim),
                 ));
                 if self.install_method == InstallMethod::Alongside {
                     children.push(Box::new(
@@ -3180,7 +3195,7 @@ impl InstallerApp {
                         } else {
                             "The Tilo boot menu includes each unambiguous Windows or Linux loader found on the shared EFI partition; firmware choices remain available too."
                         })
-                        .with_size(sm)
+                        .with_role(TextRole::Caption)
                         .with_color(dim),
                     ));
                 }
@@ -3189,7 +3204,7 @@ impl InstallerApp {
                 if !self.status.is_empty() {
                     children.push(Box::new(
                         Text::new(&self.status)
-                            .with_size(sm)
+                            .with_role(TextRole::Caption)
                             .with_color(theme.tokens.colors.semantic.warning)
                             .with_live(Politeness::Assertive),
                     ));
@@ -3199,17 +3214,21 @@ impl InstallerApp {
             InstallState::Failed => {
                 children.push(Box::new(
                     Text::new("Installation failed")
-                        .with_size(xl)
+                        .with_role(TextRole::Title)
                         .with_color(danger)
                         .with_role(TextRole::Title)
                         .with_live(Politeness::Assertive),
                 ));
                 children.push(Box::new(
                     Text::new("The installer stopped before it could confirm a bootable system. The destination may already contain a partial encrypted installation. Tilo will not treat on-disk names, labels, or metadata as permission to erase it. Save the recovery key below if one was generated, then review storage or use Ctrl+Alt+F2 for recovery tools.")
-                        .with_size(sm)
+                        .with_role(TextRole::Caption)
                         .with_color(dim),
                 ));
-                children.push(Box::new(Text::new("Details").with_size(sm).with_color(dim)));
+                children.push(Box::new(
+                    Text::new("Details")
+                        .with_role(TextRole::Caption)
+                        .with_color(dim),
+                ));
                 self.compose_recovery_key(theme, children);
                 children.push(Box::new(StatusLog::new(
                     self.status_lines.clone(),
@@ -3223,13 +3242,13 @@ impl InstallerApp {
             _ => {
                 children.push(Box::new(
                     Text::new("Installing Tilo…")
-                        .with_size(xl)
+                        .with_role(TextRole::Title)
                         .with_role(TextRole::Title),
                 ));
                 children.push(Box::new(
                     Row::new().push(Box::new(Spinner::new())).push(Box::new(
                         Text::new("Working — this can take a few minutes. Don't power off.")
-                            .with_size(sm)
+                            .with_role(TextRole::Caption)
                             .with_color(dim),
                     )),
                 ));
@@ -3243,13 +3262,12 @@ impl InstallerApp {
         let Some(key) = &self.recovery_key else {
             return;
         };
-        let sm = theme.tokens.typography.scale.sm;
         children.push(Box::new(
             Text::new("Recovery key — save this somewhere off-device")
-                .with_size(sm)
+                .with_role(TextRole::Caption)
                 .with_color(theme.status_success),
         ));
-        children.push(Box::new(Text::new(key).with_size(sm)));
+        children.push(Box::new(Text::new(key).with_role(TextRole::Caption)));
         children.push(Box::new(
             ActionButton::new(
                 if self.recovery_key_copied {
@@ -3267,7 +3285,7 @@ impl InstallerApp {
             } else {
                 "Copy it into a password manager or an encrypted note on another drive. The installer clears its clipboard copy when you reboot or power off."
             })
-            .with_size(sm)
+            .with_role(TextRole::Caption)
             .with_color(if self.recovery_key_copied {
                 theme.status_success
             } else {
@@ -3323,16 +3341,14 @@ fn local_text(state: &ui::LocalState<String>) -> String {
 
 /// One `label: value` review line (label dim, value primary).
 fn summary_row(theme: &Theme, label: &str, value: &str) -> Box<dyn Widget> {
-    let sm = theme.tokens.typography.scale.sm;
-    let base = theme.tokens.typography.scale.base;
     Box::new(
         Row::new()
             .push(Box::new(
                 Text::new(&format!("{label}:"))
-                    .with_size(sm)
+                    .with_role(TextRole::Caption)
                     .with_color(theme.text_dim),
             ))
-            .push(Box::new(Text::new(value).with_size(base))),
+            .push(Box::new(Text::new(value).with_role(TextRole::Body))),
     )
 }
 
@@ -3712,7 +3728,13 @@ impl Widget for InstallerApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        scene.fill(Fill::NonZero, transform, theme.bg_app, None, &self.rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.content,
+            None,
+            &self.rect,
+        );
         if let Some(c) = &mut self.composed {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
@@ -5734,8 +5756,11 @@ mod tests {
                 .find(|child| child.test_id() == Some("recovery_ack"))
                 .expect("recovery-key acknowledgement");
             let nav = controls.last().expect("review navigation");
+            // Full height is the toolkit's regular control height, the
+            // height every single-line field takes.
+            let full = ui::widget::ControlSize::Regular.height(&Theme::dark());
             assert!(
-                input.get_rect().height() >= 38.0,
+                input.get_rect().height() >= full - 0.5,
                 "confirmation input collapsed: {:?}",
                 input.get_rect()
             );
@@ -5782,12 +5807,13 @@ mod tests {
             app.step = Step::Account;
             let (_taffy, _root) = build(&mut app);
 
-            // Username + optional full name + password + confirmation, each
-            // password with its show/hide control, + Back + Next.
+            // Username + optional full name + password + confirmation, + Back
+            // + Next. A password's show/hide control is an inline accessory,
+            // not a Tab stop.
             assert_eq!(
                 count_focusable(&app),
-                8,
-                "4 inputs, 2 show/hide controls and 2 nav buttons must be focusable"
+                6,
+                "4 inputs and 2 nav buttons must be focusable"
             );
         }
         // Phase `keyboard_step_has_dropdown_and_nav_and_a_preview`.

@@ -7,7 +7,8 @@
 //!   * [`fetch`]  — HTTP (`tilo_net` + feed-rs) and gemini (TLS) on the app runtime.
 //!   * [`html`] / [`gemtext`] — body → renderable [`model::ContentBlock`]s.
 //!   * [`opml`]   — subscription import/export.
-//!   * [`app`]    — the three-pane root [`app::FeedsApp`] widget.
+//!   * [`app`]    — the root [`app::FeedsApp`]: the window shell around the
+//!     sidebar of places, the article list and the reader.
 //!
 //!   * [`resource`] — the resource, its effects and the framework app.
 //!
@@ -40,18 +41,20 @@
 
 pub mod actions;
 pub mod app;
+mod chrome;
 pub mod doc;
 pub mod fetch;
 pub mod gemtext;
 pub mod html;
-pub mod icons;
-pub mod list_layout;
+mod list_pane;
 pub mod modal;
 pub mod model;
 pub mod opml;
+mod reader_pane;
 pub mod reader_theme;
 pub mod resource;
 pub mod sample;
+mod sidebar;
 
 pub use app::FeedsApp;
 pub use model::{Article, Feed, FeedKind, Filter, Folder, Store};

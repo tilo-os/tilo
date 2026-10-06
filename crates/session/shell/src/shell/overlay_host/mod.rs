@@ -30,6 +30,7 @@ use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::shell::quick_settings::actions::QsActions as _;
+use ui::TextRole;
 
 mod controller;
 mod device_fabric;
@@ -134,6 +135,7 @@ use tilo_desktop::workspace_settings::overlay::{
     EventOutcome as WorkspaceSettingsOutcome, MemberSheetKey, WorkspaceSettingsOverlay,
 };
 use tilo_desktop::workspace_settings::{CapEdit, EXPIRY_CHOICES};
+use ui::widget::ButtonRole;
 
 #[derive(Debug)]
 struct SessionActionResult {
@@ -477,6 +479,9 @@ pub struct ShellOverlayHost {
     /// construction — providers are stateful (own background indexers),
     /// so re-registration would leak worker threads.
     search_registry: crate::shell::search::SearchRegistry,
+    /// The live application directory, kept to narrow search to one part of
+    /// an app when the app asks (`AppHostIntent::OpenSearch`).
+    app_actions: Option<std::rc::Rc<crate::shell::search::providers::LiveAppActionsProvider>>,
     /// Starts an installed desktop app through the session launcher. Kept as
     /// an explicit service so fixture hosts can remain process-free.
     app_launcher: AppLauncher,
@@ -592,7 +597,7 @@ pub struct ShellOverlayHost {
     /// the notification-history geometry — resolved before a frame has a
     /// theme, like the root's — measures the type it actually draws, with
     /// the ui scale and the text scale both included.
-    qs_type_px: (f32, f32),
+    qs_type_lines: (f64, f64),
     /// Offset into the separate clipboard history. Clipboard and notification
     /// panes retain independent positions when the person switches between
     /// them.
@@ -895,6 +900,49 @@ pub struct ShellSceneSections {
     pub quick_settings: Scene,
     pub above_quick_settings: Scene,
     pub quick_settings_bounds: Option<Rect>,
+}
+
+/// Backdrop layers ([`ui::backdrop::layer_scene`]) of the sections
+/// [`ShellOverlayHost::draw_scene_sections`] draws, one per section. The
+/// sections are composed in this order, so a floating surface's layer names
+/// which of them lie below it.
+mod backdrop_layer {
+    pub const BACKDROP: u32 = 0;
+    pub const WORKSPACE: u32 = 1;
+    pub const TOPBAR: u32 = 2;
+    pub const QUICK_SETTINGS: u32 = 3;
+    pub const ABOVE_QUICK_SETTINGS: u32 = 4;
+}
+
+impl ShellSceneSections {
+    /// Name each section's backdrop layer for the active recording. The
+    /// sections must stay where they are while floating surfaces are drawn
+    /// into them.
+    pub fn register_backdrop_layers(&self) {
+        ui::backdrop::layer_scene(&self.backdrop, backdrop_layer::BACKDROP);
+        ui::backdrop::layer_scene(&self.workspace, backdrop_layer::WORKSPACE);
+        ui::backdrop::layer_scene(&self.topbar, backdrop_layer::TOPBAR);
+        ui::backdrop::layer_scene(&self.quick_settings, backdrop_layer::QUICK_SETTINGS);
+        ui::backdrop::layer_scene(
+            &self.above_quick_settings,
+            backdrop_layer::ABOVE_QUICK_SETTINGS,
+        );
+    }
+
+    /// The sections composed below a floating surface drawn into backdrop
+    /// `layer`'s section, bottom to top.
+    pub fn below_layer(&self, layer: u32) -> Option<Vec<&Scene>> {
+        let order = [
+            &self.backdrop,
+            &self.workspace,
+            &self.topbar,
+            &self.quick_settings,
+            &self.above_quick_settings,
+        ];
+        order
+            .get(..usize::try_from(layer).ok()?)
+            .map(<[&Scene]>::to_vec)
+    }
 }
 
 /// Action emitted by a search-provider callback into `ChromeState` when the
@@ -1445,33 +1493,6 @@ fn prepare_status_evidence(
     (fallback, newest_first)
 }
 
-// Surface and scrim alphas. The pinned Vello has no backdrop filter, so
-// chrome surfaces are opaque and scrims carry the depth instead.
-// Centralised so `shell_chrome_test` can pin the numeric values.
-
-/// Alpha of the collaborator and `QuickSettings` popover surfaces.
-/// Opaque, deferring to the toolkit's chrome constant so a popover can't
-/// drift from the bar it hangs off — the pinned Vello has no backdrop
-/// filter, so a translucent tint here would just lose contrast.
-pub const POPOVER_SURFACE_ALPHA: f32 = ui::chrome::shell::CHROME_SURFACE_ALPHA;
-
-/// Alpha of the search palette and Workspace-Settings modal
-/// surfaces. Paints solid rather than the design's translucent tint,
-/// since translucency drops legibility of long rows; the scrim beneath
-/// sells the depth instead.
-pub const MODAL_SURFACE_ALPHA: f32 = 1.0;
-
-/// Alpha of the scrim beneath the `WorkspaceSettings` modal. The design
-/// calls for a blurred `0.30`; the pinned Vello has no blur layer, so
-/// `0.45` is the empirical alpha at which an un-blurred scrim reads the
-/// same. Pinned by `tests::palette_scrim_alpha_matches_concept`.
-pub const MODAL_SCRIM_ALPHA: f32 = 0.45;
-
-/// Alpha of the scrim beneath the search palette and Overview
-/// view. Same value and same reasoning as [`MODAL_SCRIM_ALPHA`]. Pinned
-/// by `tests::palette_scrim_alpha_reads_like_the_blurred_concept`.
-pub const PALETTE_SCRIM_ALPHA: f32 = 0.45;
-
 /// What the palette's filter band shows: each registered kind with its
 /// label, the chosen kinds, and each scope with its label.
 #[derive(Clone, Debug, PartialEq)]
@@ -1562,48 +1583,55 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
-    ) -> ShellSceneSections {
-        let mut backdrop = Scene::new();
-        let mut topbar = Scene::new();
-        let mut workspace = Scene::new();
-        let mut quick_settings = Scene::new();
-        let mut above_quick_settings = Scene::new();
+    ) -> Box<ShellSceneSections> {
+        // Boxed so each section keeps its address while the caller draws
+        // into it too: a floating surface's backdrop layer is found by the
+        // scene it is drawn into.
+        let mut sections = Box::new(ShellSceneSections {
+            backdrop: Scene::new(),
+            topbar: Scene::new(),
+            workspace: Scene::new(),
+            topbar_bounds: None,
+            quick_settings: Scene::new(),
+            above_quick_settings: Scene::new(),
+            quick_settings_bounds: None,
+        });
+        sections.register_backdrop_layers();
+        let ShellSceneSections {
+            backdrop,
+            topbar,
+            workspace,
+            quick_settings,
+            above_quick_settings,
+            ..
+        } = &mut *sections;
         let contextual_tour = self
             .onboarding
             .as_ref()
             .is_some_and(crate::onboarding_view::OnboardingView::presents_desktop_context);
         if !contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
-            onboarding.draw(&mut backdrop, transform, text_renderer, theme, presence);
-            self.draw_portal_dialog_sheet(&mut backdrop, transform, text_renderer, theme);
-            return ShellSceneSections {
-                backdrop,
-                topbar,
-                workspace,
-                topbar_bounds: None,
-                quick_settings,
-                above_quick_settings,
-                quick_settings_bounds: None,
-            };
+            onboarding.draw(backdrop, transform, text_renderer, theme, presence);
+            return sections;
         }
 
         let flags = self.overlay_flags();
         let topbar_bounds = self.draw_workspace_sections(
-            &mut backdrop,
-            &mut topbar,
-            &mut workspace,
+            backdrop,
+            topbar,
+            workspace,
             transform,
             text_renderer,
             theme,
             presence,
         );
-        self.draw_desktop_extras(&mut workspace, transform, text_renderer, theme, presence);
+        self.draw_desktop_extras(workspace, transform, text_renderer, theme, presence);
         let rows: Vec<_> = self.group_row_ptrs.values().copied().collect();
         for row in rows {
             // SAFETY: identical sequential traversal to `Widget::draw` above.
             unsafe {
                 ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
                     &mut *row,
-                    &mut workspace,
+                    workspace,
                     transform,
                     text_renderer,
                     theme,
@@ -1612,7 +1640,7 @@ impl ShellOverlayHost {
             }
         }
         self.draw_overview_and_ws_settings_overlays(
-            &mut workspace,
+            workspace,
             transform,
             text_renderer,
             theme,
@@ -1621,13 +1649,13 @@ impl ShellOverlayHost {
         self.prepare_quick_settings_transition(theme, flags);
         let quick_settings_transition_visible = self.qs_transition.is_visible(Instant::now());
         let quick_settings_bounds =
-            self.draw_quick_settings_dropdown(&mut quick_settings, transform, text_renderer, theme);
+            self.draw_quick_settings_dropdown(quick_settings, transform, text_renderer, theme);
         // Keep the strip in the retained QS section even while the dropdown
         // is closed. Opening QS then changes one bounded section rather than
         // removing chrome from the opaque workspace section, which preserves
         // sparse damage eligibility without changing the final scene order.
         self.draw_strip_chrome(
-            &mut quick_settings,
+            quick_settings,
             transform,
             theme,
             flags,
@@ -1641,7 +1669,7 @@ impl ShellOverlayHost {
         self.layers.draw(
             LayerId::PowerMenu,
             &mut LayerPaint {
-                scene: &mut above_quick_settings,
+                scene: above_quick_settings,
                 transform,
                 text_renderer,
                 theme,
@@ -1651,7 +1679,7 @@ impl ShellOverlayHost {
             },
         );
         self.draw_collaborators_dropdown(
-            &mut above_quick_settings,
+            above_quick_settings,
             transform,
             text_renderer,
             theme,
@@ -1659,7 +1687,7 @@ impl ShellOverlayHost {
             flags,
         );
         self.draw_room_activity_sheet(
-            &mut above_quick_settings,
+            above_quick_settings,
             transform,
             text_renderer,
             theme,
@@ -1667,7 +1695,7 @@ impl ShellOverlayHost {
             flags,
         );
         self.draw_projection_sheet(
-            &mut above_quick_settings,
+            above_quick_settings,
             transform,
             text_renderer,
             theme,
@@ -1675,7 +1703,7 @@ impl ShellOverlayHost {
             flags,
         );
         self.draw_top_overlays(
-            &mut above_quick_settings,
+            above_quick_settings,
             transform,
             text_renderer,
             theme,
@@ -1683,42 +1711,31 @@ impl ShellOverlayHost {
         );
         if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.draw(
-                &mut above_quick_settings,
+                above_quick_settings,
                 transform,
                 text_renderer,
                 theme,
                 presence,
             );
-            self.draw_portal_dialog_sheet(
-                &mut above_quick_settings,
-                transform,
-                text_renderer,
-                theme,
-            );
+            self.draw_portal_dialog_sheet(above_quick_settings, transform, text_renderer, theme);
         }
         self.pairing.draw(
-            &mut above_quick_settings,
+            above_quick_settings,
             transform,
             text_renderer,
             theme,
             presence,
         );
         self.capture_studio.draw(
-            &mut above_quick_settings,
+            above_quick_settings,
             transform,
             text_renderer,
             theme,
             presence,
         );
-        ShellSceneSections {
-            backdrop,
-            topbar,
-            workspace,
-            topbar_bounds,
-            quick_settings,
-            above_quick_settings,
-            quick_settings_bounds,
-        }
+        sections.topbar_bounds = topbar_bounds;
+        sections.quick_settings_bounds = quick_settings_bounds;
+        sections
     }
 
     /// The open overlays, topmost first — the order the synthetic
@@ -1783,9 +1800,12 @@ impl ShellOverlayHost {
         self.search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ShortcutsProvider::new(broker.clone()),
         ));
-        self.search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::LiveAppActionsProvider::new(broker),
-        ));
+        let app_actions =
+            std::rc::Rc::new(crate::shell::search::providers::LiveAppActionsProvider::new(broker));
+        self.search_registry
+            .register(std::rc::Rc::clone(&app_actions)
+                as std::rc::Rc<dyn crate::shell::search::SearchProvider>);
+        self.app_actions = Some(app_actions);
         self.last_search_query = "\u{0}app-action-provider-attached\u{0}".into();
     }
 
@@ -2018,6 +2038,7 @@ impl ShellOverlayHost {
             sidebar: None,
             outputs: Vec::new(),
             palette,
+            app_actions: None,
             palette_visible: false,
             search_registry: inputs.search_registry,
             app_launcher: inputs.app_launcher,
@@ -2058,10 +2079,7 @@ impl ShellOverlayHost {
             content_rebuild_owes_scene: false,
             qs_was_open: false,
             notification_center: NotificationCenter::new(),
-            qs_type_px: (
-                ui::tokens::TypeScale::default().xs,
-                ui::tokens::TypeScale::default().sm,
-            ),
+            qs_type_lines: CenterLayout::type_lines(&Theme::dark()),
             qs_clipboard_history_start: 0,
             qs_clipboard_wheel_remainder: 0.0,
             qs_selected_clipboard: None,
@@ -4297,6 +4315,9 @@ impl ShellOverlayHost {
                         },
                     ));
                 }
+                ui::widget::AppHostIntent::OpenSearch(request) => {
+                    self.open_app_search(source_tab, &request);
+                }
                 ui::widget::AppHostIntent::AllowHostShell { reply } => {
                     let (prompt, pending) = crate::shell::host_shell_allow::prompt(reply);
                     let mut st = chrome.borrow_mut();
@@ -5831,7 +5852,7 @@ impl ShellOverlayHost {
                 crate::shell::trusted_ui::seal_band(
                     surface,
                     thickness,
-                    f64::from(theme.tokens.radii.md),
+                    f64::from(theme.tokens.radii.control),
                 ),
             ));
         }
@@ -7117,6 +7138,71 @@ impl ShellOverlayHost {
 
     pub fn member_sheet_is_open_for_tests(&self) -> bool {
         self.workspace_settings_overlay.member_sheet_is_open()
+    }
+
+    /// Open search the way an app asked (`AppHostIntent::OpenSearch`): focus
+    /// the app's tab, open the palette scoped to that app — or drilled into
+    /// the part of it the request names — and start with its query. Unlike
+    /// the shortcut, a repeated request never closes the palette.
+    pub(crate) fn open_app_search(
+        &mut self,
+        source_tab: crate::shell::state::TabId,
+        request: &ui::search::SearchRequest,
+    ) {
+        use crate::shell::chrome_state::SearchScope;
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let location = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            tree.desktop.active_workspace().and_then(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .find(|group| group.tabs.iter().any(|tab| tab.id == source_tab))
+                        .map(|group| (workspace.id, strip.id, group.id))
+                })
+            })
+        };
+        // A tab outside the workspace in front asks for nothing the person
+        // can see; drop the request rather than switch workspaces.
+        let Some((workspace, strip, group)) = location else {
+            return;
+        };
+        chrome
+            .borrow_mut()
+            .focus_tab(workspace, strip, group, source_tab);
+        let resource_scope = request.resource_scope().and_then(|scope| {
+            let state = chrome.borrow();
+            let app_id = state.tab_app_id(strip, group, source_tab)?;
+            self.app_actions.as_ref()?.resource_scope_for(
+                &state,
+                &app_id,
+                &scope.anchor,
+                &scope.label,
+            )
+        });
+        if !self.palette_visible || chrome.borrow().search_scope != SearchScope::ActiveApp {
+            self.open_palette_with_scope(SearchScope::ActiveApp);
+        }
+        let query = request.query.clone().unwrap_or_default();
+        if let Some(scope) = resource_scope {
+            let label = scope.label.clone();
+            {
+                let mut state = chrome.borrow_mut();
+                state.search_resource_scope = Some(scope);
+                state.bump();
+            }
+            self.palette.set_query_placeholder(t_args(
+                "host-search-in",
+                &[("scope", label.as_str().into())],
+            ));
+            self.last_search_query = "\0resource-scope-enter\0".into();
+        }
+        self.palette.set_query(&query);
+        self.palette_visible = true;
     }
 
     /// Open the palette in `scope`, or close it if the same scope fires
@@ -8982,7 +9068,7 @@ impl ShellOverlayHost {
     }
 
     fn overview_header_font_size_for(tokens: &ui::tokens::Tokens) -> f32 {
-        tokens.typography.scale.x3l
+        tokens.typography.size(TextRole::Display)
     }
 
     fn overlay_flags(&self) -> crate::shell::chrome_state::OverlayFlags {
@@ -9096,7 +9182,7 @@ impl ShellOverlayHost {
             }
             QsLevel::Notifications => self
                 .notification_center
-                .preferred_height(state.notification_log(), self.qs_type_px),
+                .preferred_height(state.notification_log(), self.qs_type_lines),
             QsLevel::Clipboard => {
                 let rows = self.filtered_clipboard_history().len().min(7);
                 (70.0 + 70.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
@@ -9130,7 +9216,7 @@ impl ShellOverlayHost {
     /// The notification centre's geometry for the current panel and text
     /// scale — the one oracle paint, hit-testing and sizing read.
     fn qs_notification_layout(&self) -> CenterLayout {
-        CenterLayout::new(self.quick_settings_rect(), self.qs_type_px)
+        CenterLayout::new(self.quick_settings_rect(), self.qs_type_lines)
     }
 
     /// Scroll the notification centre from a pointer wheel over the open
@@ -11836,17 +11922,6 @@ impl ShellOverlayHost {
             .find(|action| shortcut_pressed(*action))
         {
             self.run_navigation_shortcut(action, repeat);
-            *handled = true;
-            return true;
-        }
-        // Super+Space remains an immutable, hardware-neutral global-search
-        // escape hatch. Alt+Space is configurable-free application input.
-        let is_space = matches!(logical_key, Key::Named(NamedKey::Space));
-        if is_space && super_down {
-            if !repeat {
-                self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
-                self.refresh_search_results(state, path);
-            }
             *handled = true;
             return true;
         }
@@ -15657,8 +15732,33 @@ impl ShellOverlayHost {
             // open the menu in the same dispatch so it is on screen — and
             // in the accessibility tree — by the time this event returns.
             self.harvest_pending_tab_context_menus();
+            // `/` the app did not type opens search of that app, as Ctrl+K
+            // does. A focused field or terminal takes `/` as text.
+            if !*ctx.handled
+                && !self.palette_visible
+                && is_plain_slash(event, ctx.modifiers.state())
+                && self.content.ime_cursor_rect().is_none()
+            {
+                self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::ActiveApp);
+                *ctx.handled = true;
+            }
         }
     }
+}
+
+/// An unmodified `/` press (Shift allowed: some layouts type `/` with it).
+fn is_plain_slash(event: &WindowEvent, modifiers: winit::keyboard::ModifiersState) -> bool {
+    matches!(
+        event,
+        WindowEvent::KeyboardInput {
+            event: winit::event::KeyEvent {
+                logical_key: winit::keyboard::Key::Character(character),
+                state: ElementState::Pressed,
+                ..
+            },
+            ..
+        } if character.as_str() == "/"
+    ) && !(modifiers.control_key() || modifiers.alt_key() || modifiers.super_key())
 }
 
 /// The tab right-click menu: request harvest, routing, actions, semantics
@@ -15896,10 +15996,10 @@ struct OverviewMetrics {
     pad: f64,
     /// Gap between the "you are here" block and the room list (§9.6: `s4`).
     section_gap: f64,
-    /// Corner radius of the panel (Panel role, `radii.xl`).
+    /// Corner radius of the panel (Panel role, `radii.panel`).
     panel_radius: f64,
     /// Corner radius of a room row and the selection frame (Control role,
-    /// `radii.lg`).
+    /// `radii.control`).
     row_radius: f64,
     /// Line height of the current room's name (`x3l`); the face stack is
     /// centred on it.
@@ -15928,7 +16028,7 @@ struct OverviewMetrics {
     window_title_gap: f64,
     /// Line height of a preview tile's `sm` title.
     window_title_lh: f64,
-    /// Corner radius of a preview well (`radii.md`).
+    /// Corner radius of a preview well (`radii.control`).
     window_radius: f64,
     /// The air closing the "you are here" block (`s6`); the preview row
     /// takes its place.
@@ -15939,28 +16039,26 @@ impl OverviewMetrics {
     fn for_theme(theme: &Theme) -> Self {
         let tokens = &theme.tokens;
         let spacing = &tokens.spacing;
-        let scale = &tokens.typography.scale;
-        // The single-line height the renderer will measure for this size:
-        // `TextStyle::new` is the style every `measure`/`draw_text` call
-        // in this panel resolves to.
-        let lh = |size: f32| f64::from(ui::TextStyle::new(size).line_height_px());
+        // The single-line height of a role: the resolved style every
+        // `measure_style`/`draw_style` call in this panel paints with.
+        let lh = |role| f64::from(tokens.typography.style(role).line_height_px());
         let s1 = f64::from(spacing.s1);
         let s2 = f64::from(spacing.s2);
         let s3 = f64::from(spacing.s3);
         let s4 = f64::from(spacing.s4);
         let s6 = f64::from(spacing.s6);
-        let name_lh = lh(scale.x3l);
-        let access_lh = lh(scale.base);
-        let caption_lh = lh(scale.sm);
-        let body_lh = lh(scale.base);
-        let row_name_lh = lh(scale.lg);
-        let row_sub_lh = lh(scale.sm);
+        let name_lh = lh(TextRole::Display);
+        let access_lh = lh(TextRole::Body);
+        let caption_lh = lh(TextRole::Caption);
+        let body_lh = lh(TextRole::Body);
+        let row_name_lh = lh(TextRole::Heading);
+        let row_sub_lh = lh(TextRole::Caption);
         Self {
             margin: f64::from(spacing.s12),
             pad: s4,
             section_gap: s4,
-            panel_radius: f64::from(tokens.radii.xl),
-            row_radius: f64::from(tokens.radii.lg),
+            panel_radius: f64::from(tokens.radii.panel),
+            row_radius: f64::from(tokens.radii.control),
             name_lh,
             here_h: name_lh + s1 + access_lh + s6,
             caption_h: s2 + caption_lh + s1,
@@ -15969,11 +16067,11 @@ impl OverviewMetrics {
             room_row_h: row_name_lh + s1 + row_sub_lh + 2.0 * s3,
             room_row_gap: s2,
             row_pad: s4,
-            chip_h: lh(scale.sm) + s2,
+            chip_h: lh(TextRole::Caption) + s2,
             window_gap: s3,
             window_title_gap: s1,
-            window_title_lh: lh(scale.sm),
-            window_radius: f64::from(tokens.radii.md),
+            window_title_lh: lh(TextRole::Caption),
+            window_radius: f64::from(tokens.radii.control),
             here_air: s6,
         }
     }
@@ -16745,10 +16843,7 @@ impl Widget for ShellOverlayHost {
         // has a default-height card and clips its two-line controls.
         self.refresh_active_tab_presence();
         self.qs_root.set_layout_text_scale(theme.text_scale);
-        self.qs_type_px = (
-            theme.tokens.typography.scale.xs,
-            theme.tokens.typography.scale.sm,
-        );
+        self.qs_type_lines = CenterLayout::type_lines(theme);
         if let Some(chrome) = self.chrome.as_ref() {
             // A live projection holds notification banners back so their
             // contents never reach the room.
@@ -18985,18 +19080,6 @@ fn app_kind_filter() -> Vec<crate::shell::search::ResourceKind> {
     vec![ResourceKind::Application, ResourceKind::HostApplication]
 }
 
-/// [`draw_scrim`] scaled by `openness` so the palette/overview scrim
-/// fades with its surface.
-fn draw_scrim_at(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32, theme: &Theme) {
-    fill_scrim(
-        scene,
-        transform,
-        rect,
-        PALETTE_SCRIM_ALPHA * openness,
-        theme,
-    );
-}
-
 /// The modal scrim, scaled by `openness` in `0.0..=1.0` so it fades in
 /// with the modal opening and out with it closing.
 fn draw_modal_scrim_at(
@@ -19006,31 +19089,7 @@ fn draw_modal_scrim_at(
     openness: f32,
     theme: &Theme,
 ) {
-    fill_scrim(scene, transform, rect, MODAL_SCRIM_ALPHA * openness, theme);
-}
-
-/// Paint `rect` in the theme's scrim hue at `strength`. Uses
-/// `surfaces.scrim` rather than a literal black, since a light theme's
-/// scrim is a different colour from a dark theme's.
-pub(crate) fn fill_scrim(
-    scene: &mut Scene,
-    transform: Affine,
-    rect: Rect,
-    strength: f32,
-    theme: &Theme,
-) {
-    let alpha = f32_to_u8_saturating((strength.clamp(0.0, 1.0) * 255.0).round());
-    if alpha == 0 {
-        return;
-    }
-    let c = theme.tokens.colors.surfaces.scrim.to_rgba8();
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        Color::from_rgba8(c.r, c.g, c.b, alpha),
-        None,
-        &rect,
-    );
+    ui::overlay::scrim::modal(scene, transform, rect, openness, theme);
 }
 
 /// Synthesises a persisted [`crate::shell::state::WindowGroup`] from a
@@ -19102,14 +19161,6 @@ fn mix_toward(a: Color, b: Color, t: f32) -> Color {
     Color::from_rgb8(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b))
 }
 
-/// The surface every floating chrome panel is painted on — quick
-/// settings, the collaborators popover, workspace-settings, peer-sync.
-/// Uses the theme's own popover tier (not a raw colour ramp slot) so
-/// panels stay the same material as the bar they hang off (HIG §9.2).
-fn panel_surface(theme: &Theme, alpha: f32) -> Color {
-    ui::chrome::shell::panel_ground(theme).with_alpha_factor(alpha)
-}
-
 /// Pick the [`crate::shell::search::SearchProvider`] that owns the
 /// currently focused tab, if any. Seeds `active_provider_id` for
 /// [`crate::shell::search::SearchRegistry::query`] under
@@ -19127,13 +19178,13 @@ fn active_tab_provider_id(
     None
 }
 
-/// Clones `theme` with `surfaces.raised` re-tinted to a translucent glass
-/// slate-900 — how `CommandPalette` (which paints from `surfaces.raised`)
-/// gets a translucent fill without a per-draw override plumbed into a
-/// shared widget. The stroke keeps `border_standard` from the original.
-fn palette_surface_theme(theme: &Theme, alpha: f32) -> Theme {
+/// Clones `theme` with `surfaces.raised` set to the panel ground, so the
+/// fields and wells `CommandPalette` paints from `surfaces.raised` sit on
+/// its panel rather than reading as raised cards. The palette's own body is
+/// the floating material.
+fn palette_surface_theme(theme: &Theme) -> Theme {
     let mut themed = theme.clone();
-    themed.tokens.colors.surfaces.raised = panel_surface(theme, alpha);
+    themed.tokens.colors.surfaces.raised = ui::chrome::shell::panel_ground(theme);
     themed
 }
 
@@ -19196,7 +19247,7 @@ fn scene_damage_rect(rect: Rect) -> Option<vello::FineDamageRect> {
 }
 
 fn scrim_rgba(theme: &Theme, openness: f32) -> [u8; 4] {
-    let strength = (MODAL_SCRIM_ALPHA * openness).clamp(0.0, 1.0);
+    let strength = (theme.tokens.colors.surfaces.scrim_strength * openness).clamp(0.0, 1.0);
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -19267,7 +19318,7 @@ impl ShellOverlayHost {
                 transform,
                 surface,
                 theme,
-                f64::from(theme.tokens.radii.md),
+                f64::from(theme.tokens.radii.control),
             );
         }
 
@@ -19309,7 +19360,7 @@ impl ShellOverlayHost {
             scene.stroke(
                 &vello::kurbo::Stroke::new(7.0),
                 transform,
-                theme.tokens.colors.accent[5],
+                theme.tokens.colors.intent.inverted,
                 None,
                 &edge,
             );
@@ -19376,7 +19427,7 @@ impl ShellOverlayHost {
     /// Shadow falloff plus the rise, so one dirty rectangle covers every
     /// frame of the fade without leaving the previous position behind.
     fn overview_shadow_outset(theme: &Theme) -> f64 {
-        let token = &theme.tokens.elevation.e4;
+        let token = &theme.tokens.elevation.floating;
         ui::surface::std_dev_for(token.blur) * 2.5 + f64::from(token.offset_y) + 2.0
     }
 
@@ -19946,7 +19997,8 @@ impl ShellOverlayHost {
                 .next()
                 .unwrap_or('\u{2022}')
                 .to_ascii_uppercase();
-            let (red, green, blue) = ui::presence::user_color(&own_id);
+            let (red, green, blue) =
+                ui::presence::identity_rgb(crate::shell::state::local_presence_hue());
             self.collaborators_overlay.draw(
                 scene,
                 transform,
@@ -19956,7 +20008,7 @@ impl ShellOverlayHost {
                     host: self.rect,
                     rows: &rows,
                     own_initial,
-                    own_color: Color::from_rgb8(red, green, blue),
+                    own_color: theme.tokens.colors.presence.of_rgb((red, green, blue)),
                     unavailable: unavailable.as_deref(),
                     followed_id: self.followed_peer.as_deref(),
                     following_pairs: &following_pairs,
@@ -20070,16 +20122,16 @@ impl ShellOverlayHost {
                 transform
             };
             // A Panel casts `e4` (HIG §9.1), following the outline the
-            // sheet paints itself with (`radii.lg` in `room_activity.rs`);
+            // sheet paints itself with (`radii.control` in `room_activity.rs`);
             // the token's own colour, not a ramp slot, and its strength
             // fades in with the sheet.
-            let mut sheet_shadow = theme.tokens.elevation.e4;
+            let mut sheet_shadow = theme.tokens.elevation.floating;
             sheet_shadow.color = sheet_shadow.color.with_alpha_factor(alpha);
             ui::surface::shadow(
                 scene,
                 sheet_xform,
                 sheet,
-                f64::from(theme.tokens.radii.lg),
+                f64::from(theme.tokens.radii.control),
                 &sheet_shadow,
             );
             self.room_activity
@@ -20200,7 +20252,7 @@ impl ShellOverlayHost {
             // (`ChromeRole::Panel.radius`, the radius
             // `draw_quick_settings_card_background` paints), fading in
             // with the panel.
-            let mut qs_shadow = theme.tokens.elevation.e4;
+            let mut qs_shadow = theme.tokens.elevation.floating;
             qs_shadow.color = qs_shadow.color.with_alpha_factor(openness);
             ui::surface::shadow(
                 scene,
@@ -20292,10 +20344,10 @@ impl ShellOverlayHost {
         if self.shortcut_help_button_is_suppressed() {
             return;
         }
-        let size = theme.tokens.typography.scale.sm / text_renderer.text_scale();
+        let style = theme.text(TextRole::Label).strong();
         let label = t("help-pill");
         let label = label.as_str();
-        let (w, h) = text_renderer.measure_weighted(label, size, None, TextWeight::Semibold);
+        let (w, h) = text_renderer.measure_style(label, None, &style);
         // Label padding `s6` across / `s3` down, `s4` off the display
         // corner (the same pixels as before, now the theme's steps). The
         // pill is at least the §9.6 pointer floor plus `s1` tall (36 at
@@ -20330,10 +20382,9 @@ impl ShellOverlayHost {
             None,
             &pill,
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             label,
-            size,
             colors.ink_on(
                 surface,
                 colors.text_primary,
@@ -20347,7 +20398,7 @@ impl ShellOverlayHost {
                     .into(),
             ),
             None,
-            TextWeight::Semibold,
+            &style,
         );
     }
 
@@ -20417,7 +20468,7 @@ impl ShellOverlayHost {
         draw_modal_scrim_at(scene, transform, self.rect, 1.0, theme);
         let panel = self.shortcut_help_panel_rect();
         let colors = &theme.tokens.colors;
-        // The guide is a Panel (HIG §9.1): `radii.xl`, the panel ground
+        // The guide is a Panel (HIG §9.1): `radii.panel`, the panel ground
         // from the semantic surface tier (never `neutral[0]`, §9.2), a
         // derived hairline edge, and an `e4` shadow along that outline.
         // Was an 18 px radius — off the 4/8/12/24 scale — on a ramp slot
@@ -20430,7 +20481,7 @@ impl ShellOverlayHost {
             transform,
             panel,
             panel_radius,
-            &theme.tokens.elevation.e4,
+            &theme.tokens.elevation.floating,
         );
         scene.fill(
             Fill::NonZero,
@@ -20446,18 +20497,17 @@ impl ShellOverlayHost {
             None,
             &panel_shape,
         );
-        let title_size = theme.tokens.typography.scale.xl;
+        let title_style = theme.text(TextRole::Title);
         let title = t("guide-title");
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &title,
-            title_size,
             colors.text_primary,
             transform.pre_translate((panel.x0 + 24.0, panel.y0 + 20.0).into()),
             Some(f64_to_f32_lossy(panel.width() - 140.0)),
-            TextWeight::Semibold,
+            &title_style,
         );
-        let (title_width, _) = text_renderer.measure(&title, title_size, None);
+        let (title_width, _) = text_renderer.measure_style(&title, None, &title_style);
         let f1_hint = Rect::new(
             panel.x0 + 34.0 + f64::from(title_width),
             panel.y0 + 22.0,
@@ -20471,12 +20521,11 @@ impl ShellOverlayHost {
             None,
             &RoundedRect::from_rect(f1_hint, 7.0),
         );
-        let f1_size = theme.tokens.typography.scale.xs;
-        let (f1_width, f1_height) = text_renderer.measure("F1", f1_size, None);
-        text_renderer.draw_text_weighted(
+        let f1_style = theme.text(TextRole::Caption);
+        let (f1_width, f1_height) = text_renderer.measure_style("F1", None, &f1_style);
+        text_renderer.draw_style(
             scene,
             "F1",
-            f1_size,
             colors.text_primary,
             transform.pre_translate(
                 (
@@ -20486,22 +20535,22 @@ impl ShellOverlayHost {
                     .into(),
             ),
             None,
-            TextWeight::Semibold,
+            &f1_style.clone().with_weight(TextWeight::Semibold),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("guide-reopen-hint"),
-            theme.tokens.typography.scale.sm,
             colors.text_dim,
             transform.pre_translate((panel.x0 + 24.0, panel.y0 + 54.0).into()),
             Some(f64_to_f32_lossy(panel.width() - 56.0)),
+            &theme.text(TextRole::Caption),
         );
 
         let done = self.shortcut_help_done_rect();
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+            colors.intent.inverted,
             None,
             &RoundedRect::from_rect(done, 10.0),
         );
@@ -20514,13 +20563,12 @@ impl ShellOverlayHost {
                 &RoundedRect::from_rect(done.inflate(3.0, 3.0), 12.0),
             );
         }
-        let label_size = theme.tokens.typography.scale.sm;
+        let label_style = theme.text(TextRole::Caption);
         let done_label = t("guide-done");
-        let (done_w, done_h) = text_renderer.measure(&done_label, label_size, None);
-        text_renderer.draw_text_weighted(
+        let (done_w, done_h) = text_renderer.measure_style(&done_label, None, &label_style);
+        text_renderer.draw_style(
             scene,
             &done_label,
-            label_size,
             colors.text_primary,
             transform.pre_translate(
                 (
@@ -20530,7 +20578,7 @@ impl ShellOverlayHost {
                     .into(),
             ),
             None,
-            TextWeight::Semibold,
+            &label_style.clone().with_weight(TextWeight::Semibold),
         );
 
         use crate::compositor::controller_nav::{FaceRole, face_button};
@@ -20570,13 +20618,13 @@ impl ShellOverlayHost {
                 self.shortcut_rebind_message.clone()
             };
             if let Some(feedback) = feedback {
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     &feedback,
-                    theme.tokens.typography.scale.sm,
                     colors.text_primary,
                     transform.pre_translate((body.x0, panel.y0 + 76.0).into()),
                     Some(f64_to_f32_lossy(body.width())),
+                    &theme.text(TextRole::Caption),
                 );
             }
         }
@@ -20591,13 +20639,13 @@ impl ShellOverlayHost {
                     theme,
                 );
                 let guide = ControllerButton::Guide.label(family);
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     &t_args("guide-controller-intro", &[("guide", guide.into())]),
-                    theme.tokens.typography.scale.sm,
                     colors.text_primary,
                     transform.pre_translate((body.x0 + 104.0, body.y0 + 8.0).into()),
                     Some(f64_to_f32_lossy(body.width() - 104.0)),
+                    &theme.text(TextRole::Caption),
                 );
                 let one = |button| (vec![button], vec![button]);
                 let chord = |first, second| {
@@ -20665,13 +20713,13 @@ impl ShellOverlayHost {
                     let row = index.checked_rem(per_column).unwrap_or(index);
                     let x = body.x0 + usize_to_f64_lossy(column) * (body.width() / 2.0);
                     let y = body.y0 + 66.0 + usize_to_f64_lossy(row) * row_step;
-                    text_renderer.draw_text(
+                    text_renderer.draw_style(
                         scene,
                         &t(label),
-                        theme.tokens.typography.scale.sm,
                         colors.text_primary,
                         transform.pre_translate((x, y).into()),
                         None,
+                        &theme.text(TextRole::Caption),
                     );
                     InputHint::paint_controller_choice_at(
                         &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
@@ -20687,13 +20735,13 @@ impl ShellOverlayHost {
                 }
             }
             ui::InputModality::Touch => {
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     &t("guide-touch-intro"),
-                    theme.tokens.typography.scale.sm,
                     colors.text_dim,
                     transform.pre_translate((body.x0, body.y0).into()),
                     None,
+                    &theme.text(TextRole::Caption),
                 );
                 let gestures = [
                     (
@@ -20731,13 +20779,13 @@ impl ShellOverlayHost {
                     let y = body.y0
                         + if narrow { 36.0 } else { 52.0 }
                         + usize_to_f64_lossy(row) * if narrow { 54.0 } else { 82.0 };
-                    text_renderer.draw_text(
+                    text_renderer.draw_style(
                         scene,
                         &t(label),
-                        theme.tokens.typography.scale.sm,
                         colors.text_primary,
                         transform.pre_translate((x, y).into()),
                         None,
+                        &theme.text(TextRole::Caption),
                     );
                     InputHint::paint_at(
                         &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
@@ -20785,14 +20833,15 @@ impl ShellOverlayHost {
                     None,
                     &RoundedRect::from_rect(navigation_surface, 14.0),
                 );
-                text_renderer.draw_text_weighted(
+                text_renderer.draw_style(
                     scene,
                     &t("guide-navigation-heading"),
-                    theme.tokens.typography.scale.xs,
                     colors.text_dim,
                     transform.pre_translate((body.x0 + 14.0, body.y0 + 11.0).into()),
                     None,
-                    TextWeight::Semibold,
+                    &theme
+                        .text(TextRole::Caption)
+                        .with_weight(TextWeight::Semibold),
                 );
                 for (index, (label, previous, next)) in rows.iter().enumerate() {
                     let column = index % 2;
@@ -20803,13 +20852,13 @@ impl ShellOverlayHost {
                         + usize_to_f64_lossy(column) * (column_width + 8.0);
                     let y =
                         navigation_surface.y0 + 31.0 + usize_to_f64_lossy(row) * navigation_step;
-                    text_renderer.draw_text(
+                    text_renderer.draw_style(
                         scene,
                         &t(label),
-                        theme.tokens.typography.scale.sm,
                         colors.text_primary,
                         transform.pre_translate((x, y).into()),
                         None,
+                        &theme.text(TextRole::Caption),
                     );
                     let actions = [*previous, *next];
                     let hit_rects = InputHint::paint_keyboard_choice_at(
@@ -20834,7 +20883,7 @@ impl ShellOverlayHost {
                             scene.stroke(
                                 &Stroke::new(if active || focused { 2.0 } else { 1.0 }),
                                 transform,
-                                colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+                                colors.intent.inverted,
                                 None,
                                 &RoundedRect::from_rect(hit, 8.0),
                             );
@@ -20871,17 +20920,17 @@ impl ShellOverlayHost {
                             scene.stroke(
                                 &Stroke::new(2.0),
                                 transform,
-                                colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+                                colors.intent.inverted,
                                 None,
                                 &RoundedRect::from_rect(reset.inflate(2.0, 2.0), 8.0),
                             );
                         }
-                        let reset_size = theme.tokens.typography.scale.base;
-                        let (reset_w, reset_h) = text_renderer.measure("↶", reset_size, None);
-                        text_renderer.draw_text(
+                        let reset_style = theme.text(TextRole::Body);
+                        let (reset_w, reset_h) =
+                            text_renderer.measure_style("↶", None, &reset_style);
+                        text_renderer.draw_style(
                             scene,
                             "↶",
-                            reset_size,
                             colors.text_primary,
                             transform.pre_translate(
                                 (
@@ -20891,19 +20940,21 @@ impl ShellOverlayHost {
                                     .into(),
                             ),
                             None,
+                            &reset_style,
                         );
                         self.shortcut_reset_rects.push((*previous, *next, reset));
                     }
                 }
                 let essentials_y = navigation_surface.y1 + 12.0;
-                text_renderer.draw_text_weighted(
+                text_renderer.draw_style(
                     scene,
                     &t("guide-essentials-heading"),
-                    theme.tokens.typography.scale.xs,
                     colors.text_dim,
                     transform.pre_translate((body.x0, essentials_y).into()),
                     None,
-                    TextWeight::Semibold,
+                    &theme
+                        .text(TextRole::Caption)
+                        .with_weight(TextWeight::Semibold),
                 );
                 let references = shortcut_reference_rows(shortcuts);
                 let reference_columns = shortcut_reference_columns(body.width());
@@ -20928,13 +20979,13 @@ impl ShellOverlayHost {
                         x + reference_width,
                         reference_top + reference_height,
                     );
-                    // A keycap is a detail inside the guide (`radii.sm`) on
+                    // A keycap is a detail inside the guide (`radii.detail`) on
                     // the Control floor with its derived edge (HIG §9.5).
                     ui::surface::card(
                         scene,
                         transform,
                         group,
-                        f64::from(theme.tokens.radii.sm),
+                        f64::from(theme.tokens.radii.detail),
                         qs::control_fill(theme, false),
                     );
                     #[expect(
@@ -20942,21 +20993,22 @@ impl ShellOverlayHost {
                         reason = "shortcut_reference_rows yields 18 rows, so chunks(6) gives exactly one group per title (pinned by shortcut_reference_columns_stay_semantically_grouped)"
                     )]
                     let group_title = group_titles[group_index];
-                    text_renderer.draw_text_weighted(
+                    text_renderer.draw_style(
                         scene,
                         &t(group_title),
-                        theme.tokens.typography.scale.xs,
                         colors.text_dim,
                         transform.pre_translate((group.x0 + 12.0, group.y0 + 10.0).into()),
                         Some(f64_to_f32_lossy(group.width() - 24.0)),
-                        TextWeight::Semibold,
+                        &theme
+                            .text(TextRole::Caption)
+                            .with_weight(TextWeight::Semibold),
                     );
                     for (row_index, (label, chord)) in group_rows.iter().enumerate() {
                         let entry_y =
                             group.y0 + 29.0 + usize_to_f64_lossy(row_index) * reference_step;
-                        let chord_size = theme.tokens.typography.scale.xs;
+                        let chord_style = theme.text(TextRole::Caption);
                         let (chord_width, chord_height) =
-                            text_renderer.measure(chord, chord_size, None);
+                            text_renderer.measure_style(chord, None, &chord_style);
                         let pill_height = f64::from(chord_height) + 6.0;
                         let pill = Rect::new(
                             group.x0 + 12.0,
@@ -20964,13 +21016,13 @@ impl ShellOverlayHost {
                             (group.x0 + 28.0 + f64::from(chord_width)).min(group.x1 - 12.0),
                             entry_y + 13.0 + pill_height,
                         );
-                        text_renderer.draw_text(
+                        text_renderer.draw_style(
                             scene,
                             label,
-                            chord_size,
                             colors.text_primary,
                             transform.pre_translate((group.x0 + 12.0, entry_y).into()),
                             Some(f64_to_f32_lossy(group.width() - 24.0)),
+                            &chord_style,
                         );
                         scene.fill(
                             Fill::NonZero,
@@ -20979,14 +21031,13 @@ impl ShellOverlayHost {
                             None,
                             &RoundedRect::from_rect(pill, 5.0),
                         );
-                        text_renderer.draw_text_weighted(
+                        text_renderer.draw_style(
                             scene,
                             chord,
-                            chord_size,
                             colors.text_primary,
                             transform.pre_translate((pill.x0 + 6.0, pill.y0 + 3.0).into()),
                             Some(f64_to_f32_lossy((pill.width() - 12.0).max(0.0))),
-                            TextWeight::Semibold,
+                            &chord_style.clone().with_weight(TextWeight::Semibold),
                         );
                     }
                 }
@@ -21001,34 +21052,34 @@ impl ShellOverlayHost {
                         0.0,
                         ui::chrome::ChromeRole::Panel.surface(theme),
                     );
-                    text_renderer.draw_text(
+                    text_renderer.draw_style(
                         scene,
                         &t("guide-pointer"),
-                        theme.tokens.typography.scale.xs,
                         colors.text_primary,
                         transform.pre_translate((body.x0, pointer_y + 14.0).into()),
                         Some(f64_to_f32_lossy(body.width())),
+                        &theme.text(TextRole::Caption),
                     );
                     if let Some(summary) = shortcut_action_summary(shortcuts)
                         && pointer_y + 40.0 < body.y1
                     {
-                        text_renderer.draw_text(
+                        text_renderer.draw_style(
                             scene,
                             &summary,
-                            theme.tokens.typography.scale.xs,
                             colors.text_primary,
                             transform.pre_translate((body.x0, pointer_y + 32.0).into()),
                             Some(f64_to_f32_lossy(body.width())),
+                            &theme.text(TextRole::Caption),
                         );
                     }
                     if self.desktop_controls.config().vim_mode && pointer_y + 58.0 < body.y1 {
-                        text_renderer.draw_text(
+                        text_renderer.draw_style(
                             scene,
                             &t("guide-vim-mode"),
-                            theme.tokens.typography.scale.xs,
                             colors.text_primary,
                             transform.pre_translate((body.x0, pointer_y + 50.0).into()),
                             None,
+                            &theme.text(TextRole::Caption),
                         );
                     }
                 }
@@ -21086,7 +21137,7 @@ impl ShellOverlayHost {
         let palette_now = Instant::now();
         if self.palette_transition.is_visible(palette_now) {
             let openness = self.palette_transition.value(palette_now);
-            draw_scrim_at(scene, transform, self.rect, openness, theme);
+            draw_modal_scrim_at(scene, transform, self.rect, openness, theme);
             let (alpha, dy, scale) = self.palette_transition.modal_curve(palette_now, 0.96);
             let in_flight = alpha < 1.0;
             let palette_rect = self.palette.get_rect();
@@ -21112,19 +21163,19 @@ impl ShellOverlayHost {
             // A Panel casts `e4` (HIG §9.1): the token's own offset, blur
             // and strength, following the card's rounded outline. While
             // the palette is still arriving the shadow fades in with it.
-            let mut shadow = theme.tokens.elevation.e4;
+            let mut shadow = theme.tokens.elevation.floating;
             shadow.color = shadow.color.with_alpha_factor(alpha);
             ui::surface::shadow(
                 scene,
                 palette_xform,
                 palette_rect,
-                self.palette.surface_radius_px(),
+                ui::widget::command_palette::CommandPalette::surface_radius_px(theme),
                 &shadow,
             );
             // A cloned theme with `surfaces.raised` pre-tinted, since
             // `CommandPalette` (in `quick-ui`) paints its own surface from
             // there and has no override plumbed in.
-            let palette_theme = palette_surface_theme(theme, MODAL_SURFACE_ALPHA);
+            let palette_theme = palette_surface_theme(theme);
             self.palette.draw(
                 scene,
                 palette_xform,
@@ -21199,239 +21250,251 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let Some(view) = self.portal_dialogs.view() else {
-            return;
-        };
-        let Some(layout) = self.portal_dialogs.layout(self.rect) else {
-            return;
-        };
-        draw_scrim_at(scene, transform, self.rect, 1.0, theme);
-        // A review sheet is a Panel (HIG §9.1): `radii.xl` and an `e4`
-        // shadow along that outline, painted before the surface so the
-        // sheet sits on its shadow rather than under it. Was a 16 px
-        // radius (off the scale) with a sprite shadow on a ramp slot until
-        // 2026-09-17 (S1-26); the sheet's other literals (title 20 px,
-        // `surfaces.raised` body) belong to the portal owner (S2).
-        let sheet_radius = ui::chrome::ChromeRole::Panel.radius(theme, layout.sheet.height());
-        let sheet = RoundedRect::from_rect(layout.sheet, sheet_radius);
-        ui::surface::shadow(
-            scene,
-            transform,
-            layout.sheet,
-            sheet_radius,
-            &theme.tokens.elevation.e4,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &sheet,
-        );
-        crate::shell::trusted_ui::paint_seal(scene, transform, layout.sheet, theme, sheet_radius);
-        text_renderer.draw_text(
-            scene,
-            &view.title(),
-            20.0,
-            theme.tokens.colors.text_primary,
-            transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 22.0).into()),
-            None,
-        );
-        text_renderer.draw_text(
-            scene,
-            &view.app_name(),
-            14.0,
-            theme.tokens.colors.text_dim,
-            transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 50.0).into()),
-            None,
-        );
-        text_renderer.draw_text(
-            scene,
-            &view.detail(),
-            14.0,
-            theme.tokens.colors.text_dim,
-            transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 74.0).into()),
-            None,
-        );
-        for (index, (choice, rect)) in view.choices().iter().zip(&layout.choices).enumerate() {
-            let selected = index == self.portal_dialogs.selected();
-            draw_filter_chip(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                *rect,
-                choice,
-                theme.tokens.typography.scale.base,
-                ui::chrome::SelectionState::active(selected),
-            );
-        }
-        // USB is intentionally a real multi-select sheet, rather than a
-        // generic all-or-nothing permission prompt.  A row click or Space
-        // toggles only that device; Enter commits the resulting subset.
-        let usb_start = self.portal_dialogs.visible_selection_start();
-        for (visible_index, (device, rect)) in view
-            .usb_devices()
-            .iter()
-            .skip(usb_start)
-            .zip(&layout.choices)
-            .enumerate()
-        {
-            let index = usb_start.saturating_add(visible_index);
-            let access_key = if device.writable {
-                "portal-usb-row-read-write"
-            } else {
-                "portal-usb-row-read-only"
+        // A review sheet is a security surface: the app, the files and the
+        // devices it names are read letter by letter.
+        text_renderer.security_surface(|text_renderer| {
+            let Some(view) = self.portal_dialogs.view() else {
+                return;
             };
-            let label = format!(
-                "[{}] {}",
-                if device.selected { "✓" } else { " " },
-                crate::shell::i18n::t_args(access_key, &[("device", device.label.as_str().into())])
-            );
-            let focused = index == self.portal_dialogs.selected();
-            draw_filter_chip(
+            let Some(layout) = self.portal_dialogs.layout(self.rect) else {
+                return;
+            };
+            draw_modal_scrim_at(scene, transform, self.rect, 1.0, theme);
+            // A review sheet is a Panel (HIG §9.1): `radii.panel` and an `e4`
+            // shadow along that outline, painted before the surface so the
+            // sheet sits on its shadow rather than under it. Was a 16 px
+            // radius (off the scale) with a sprite shadow on a ramp slot until
+            // 2026-09-17 (S1-26); the sheet's other literals (title 20 px,
+            // `surfaces.raised` body) belong to the portal owner (S2).
+            let sheet_radius = ui::chrome::ChromeRole::Panel.radius(theme, layout.sheet.height());
+            let sheet = RoundedRect::from_rect(layout.sheet, sheet_radius);
+            ui::surface::shadow(
                 scene,
                 transform,
-                text_renderer,
-                theme,
-                *rect,
-                &label,
-                theme.tokens.typography.scale.base,
-                ui::chrome::SelectionState::active(focused),
+                layout.sheet,
+                sheet_radius,
+                &theme.tokens.elevation.floating,
             );
-        }
-        if let Some(editor) = view.launcher_editor() {
-            // A shortcut step's answer is a real text field, painted below.
-            if let Some(name_rect) = layout.launcher_name
-                && !matches!(
-                    view,
-                    crate::shell::portal_dialog::DialogView::ShortcutStep { .. }
-                )
-            {
-                let focused = self.portal_dialogs.launcher_name_focused();
-                draw_filter_chip(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    name_rect,
-                    self.portal_dialogs.launcher_name().unwrap_or(editor.name),
-                    theme.tokens.typography.scale.base,
-                    ui::chrome::SelectionState::active(focused),
-                );
-            }
-            for (index, (label, rect)) in editor
-                .icon_choices
-                .iter()
-                .zip(&layout.launcher_icons)
-                .enumerate()
-            {
-                let selected = self.portal_dialogs.launcher_icon() == Some(index);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.raised,
+                None,
+                &sheet,
+            );
+            crate::shell::trusted_ui::paint_seal(
+                scene,
+                transform,
+                layout.sheet,
+                theme,
+                sheet_radius,
+            );
+            text_renderer.draw_text(
+                scene,
+                &view.title(),
+                20.0,
+                theme.tokens.colors.text_primary,
+                transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 22.0).into()),
+                None,
+            );
+            text_renderer.draw_text(
+                scene,
+                &view.app_name(),
+                14.0,
+                theme.tokens.colors.text_dim,
+                transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 50.0).into()),
+                None,
+            );
+            text_renderer.draw_text(
+                scene,
+                &view.detail(),
+                14.0,
+                theme.tokens.colors.text_dim,
+                transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 74.0).into()),
+                None,
+            );
+            for (index, (choice, rect)) in view.choices().iter().zip(&layout.choices).enumerate() {
+                let selected = index == self.portal_dialogs.selected();
                 draw_filter_chip(
                     scene,
                     transform,
                     text_renderer,
                     theme,
                     *rect,
-                    label,
-                    theme.tokens.typography.scale.base,
+                    choice,
+                    &theme.text(TextRole::Body),
                     ui::chrome::SelectionState::active(selected),
                 );
             }
-        }
-        // The sheet's text fields: an authentication answer, a shortcut
-        // step's, or one row per network secret labelled by its
-        // placeholder. Secret ones stay hidden until their own show/hide
-        // control is used.
-        let presence = PresenceCtx::default();
-        for field in self.portal_dialogs.place_fields(&layout) {
-            field.draw(scene, transform, text_renderer, theme, &presence);
-        }
-        if let (Some(rect), Some((remember, focused))) =
-            (layout.remember, self.portal_dialogs.remember_display())
-        {
-            let label = format!(
-                "[{}] {}",
-                if remember { "✓" } else { " " },
-                crate::shell::i18n::t("portal-remember-device")
-            );
-            draw_filter_chip(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                rect,
-                &label,
-                theme.tokens.typography.scale.base,
-                ui::chrome::SelectionState::active(focused),
-            );
-        }
-        if let Some(error) = self.portal_dialogs.entry_error() {
-            text_renderer.draw_text(
-                scene,
-                error,
-                12.0,
-                theme.tokens.colors.semantic.warning,
-                transform.pre_translate((layout.sheet.x0 + 24.0, layout.cancel.y0 - 22.0).into()),
-                None,
-            );
-        }
-        for (index, (row, rect)) in view.shortcut_rows().iter().zip(&layout.choices).enumerate() {
-            let accelerator = row.accelerator.as_deref().map_or_else(
-                || crate::shell::i18n::t("portal-shortcut-not-set"),
-                crate::portal::global_shortcuts::display_accelerator,
-            );
-            let label = if row.description.is_empty() {
-                format!("{}  —  {accelerator}", row.id)
-            } else {
-                format!("{}  —  {accelerator}", row.description)
-            };
-            let selected = index == self.portal_dialogs.selected();
-            draw_filter_chip(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                *rect,
-                &label,
-                theme.tokens.typography.scale.base,
-                ui::chrome::SelectionState::active(selected),
-            );
-            if let Some(status) = &row.status {
+            // USB is intentionally a real multi-select sheet, rather than a
+            // generic all-or-nothing permission prompt.  A row click or Space
+            // toggles only that device; Enter commits the resulting subset.
+            let usb_start = self.portal_dialogs.visible_selection_start();
+            for (visible_index, (device, rect)) in view
+                .usb_devices()
+                .iter()
+                .skip(usb_start)
+                .zip(&layout.choices)
+                .enumerate()
+            {
+                let index = usb_start.saturating_add(visible_index);
+                let access_key = if device.writable {
+                    "portal-usb-row-read-write"
+                } else {
+                    "portal-usb-row-read-only"
+                };
+                let label = format!(
+                    "[{}] {}",
+                    if device.selected { "✓" } else { " " },
+                    crate::shell::i18n::t_args(
+                        access_key,
+                        &[("device", device.label.as_str().into())]
+                    )
+                );
+                let focused = index == self.portal_dialogs.selected();
+                draw_filter_chip(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    *rect,
+                    &label,
+                    &theme.text(TextRole::Body),
+                    ui::chrome::SelectionState::active(focused),
+                );
+            }
+            if let Some(editor) = view.launcher_editor() {
+                // A shortcut step's answer is a real text field, painted below.
+                if let Some(name_rect) = layout.launcher_name
+                    && !matches!(
+                        view,
+                        crate::shell::portal_dialog::DialogView::ShortcutStep { .. }
+                    )
+                {
+                    let focused = self.portal_dialogs.launcher_name_focused();
+                    draw_filter_chip(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        name_rect,
+                        self.portal_dialogs.launcher_name().unwrap_or(editor.name),
+                        &theme.text(TextRole::Body),
+                        ui::chrome::SelectionState::active(focused),
+                    );
+                }
+                for (index, (label, rect)) in editor
+                    .icon_choices
+                    .iter()
+                    .zip(&layout.launcher_icons)
+                    .enumerate()
+                {
+                    let selected = self.portal_dialogs.launcher_icon() == Some(index);
+                    draw_filter_chip(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        *rect,
+                        label,
+                        &theme.text(TextRole::Body),
+                        ui::chrome::SelectionState::active(selected),
+                    );
+                }
+            }
+            // The sheet's text fields: an authentication answer, a shortcut
+            // step's, or one row per network secret labelled by its
+            // placeholder. Secret ones stay hidden until their own show/hide
+            // control is used.
+            let presence = PresenceCtx::default();
+            for field in self.portal_dialogs.place_fields(&layout) {
+                field.draw(scene, transform, text_renderer, theme, &presence);
+            }
+            if let (Some(rect), Some((remember, focused))) =
+                (layout.remember, self.portal_dialogs.remember_display())
+            {
+                let label = format!(
+                    "[{}] {}",
+                    if remember { "✓" } else { " " },
+                    crate::shell::i18n::t("portal-remember-device")
+                );
+                draw_filter_chip(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    rect,
+                    &label,
+                    &theme.text(TextRole::Body),
+                    ui::chrome::SelectionState::active(focused),
+                );
+            }
+            if let Some(error) = self.portal_dialogs.entry_error() {
                 text_renderer.draw_text(
                     scene,
-                    status,
-                    11.0,
+                    error,
+                    12.0,
                     theme.tokens.colors.semantic.warning,
-                    transform.pre_translate((rect.x0 + 10.0, rect.y1 - 10.0).into()),
+                    transform
+                        .pre_translate((layout.sheet.x0 + 24.0, layout.cancel.y0 - 22.0).into()),
                     None,
                 );
             }
-        }
-        // The sheet's two buttons are the shared `Button` (never a chip
-        // painter wearing button colours): Cancel neutral, the commit
-        // primary, both at the Control radius. Was `surfaces.base` /
-        // `accent[5]` pills at a literal 14 px until 2026-09-17 (S1-26).
-        let button_radius = ui::chrome::ChromeRole::Control.radius(theme, layout.cancel.height());
-        Button::paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &ButtonFace::new(layout.cancel, &view.cancel_label())
-                .radius(button_radius)
-                .hovered(self.last_cursor.is_some_and(|p| layout.cancel.contains(p))),
-        );
-        Button::paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &ButtonFace::new(layout.confirm, &view.confirm_label())
-                .primary()
-                .radius(button_radius)
-                .hovered(self.last_cursor.is_some_and(|p| layout.confirm.contains(p))),
-        );
+            for (index, (row, rect)) in view.shortcut_rows().iter().zip(&layout.choices).enumerate()
+            {
+                let accelerator = row.accelerator.as_deref().map_or_else(
+                    || crate::shell::i18n::t("portal-shortcut-not-set"),
+                    crate::portal::global_shortcuts::display_accelerator,
+                );
+                let label = if row.description.is_empty() {
+                    format!("{}  —  {accelerator}", row.id)
+                } else {
+                    format!("{}  —  {accelerator}", row.description)
+                };
+                let selected = index == self.portal_dialogs.selected();
+                draw_filter_chip(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    *rect,
+                    &label,
+                    &theme.text(TextRole::Body),
+                    ui::chrome::SelectionState::active(selected),
+                );
+                if let Some(status) = &row.status {
+                    text_renderer.draw_text(
+                        scene,
+                        status,
+                        11.0,
+                        theme.tokens.colors.semantic.warning,
+                        transform.pre_translate((rect.x0 + 10.0, rect.y1 - 10.0).into()),
+                        None,
+                    );
+                }
+            }
+            // The sheet's two buttons are the shared `Button` (never a chip
+            // painter wearing button colours): Cancel neutral, the commit
+            // primary, both at the Control radius. Was `surfaces.base` /
+            // `accent[5]` pills at a literal 14 px until 2026-09-17 (S1-26).
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(layout.cancel, &view.cancel_label())
+                    .hovered(self.last_cursor.is_some_and(|p| layout.cancel.contains(p))),
+            );
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(layout.confirm, &view.confirm_label())
+                    .role(ButtonRole::Primary)
+                    .hovered(self.last_cursor.is_some_and(|p| layout.confirm.contains(p))),
+            );
+        });
     }
 
     /// Paints an overlapping stack of member faces, right-aligned at
@@ -21478,27 +21541,18 @@ impl ShellOverlayHost {
                 .unwrap_or('?')
                 .to_ascii_uppercase()
                 .to_string();
-            ui::widget::Avatar::draw_ringed_at(
-                ctx,
-                Rect::new(cx - r, cy - r, cx + r, cy + r),
-                &initial,
-                fill,
-                ui::widget::AvatarRing {
-                    color: ground,
-                    width: 2.0,
-                },
-            );
+            ui::widget::AvatarFace::new(&initial, "")
+                .presence(fill)
+                .ringed_on(ground)
+                .paint(ctx, Rect::new(cx - r, cy - r, cx + r, cy + r));
         }
         if overflow > 0 {
             let cx = right;
-            ui::widget::Avatar::draw_overflow_at(
+            ui::widget::AvatarFace::paint_overflow(
                 ctx,
                 Rect::new(cx - r, cy - r, cx + r, cy + r),
                 overflow,
-                ui::widget::AvatarRing {
-                    color: ground,
-                    width: 2.0,
-                },
+                Some(ground),
             );
         }
         right - usize_to_f64_lossy(slots.saturating_sub(1)) * step - r
@@ -21540,7 +21594,7 @@ impl ShellOverlayHost {
             (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let ground = panel_surface(theme, MODAL_SURFACE_ALPHA);
+        let ground = ui::chrome::shell::panel_ground(theme);
         let hover = self.last_cursor.is_some_and(|c| rect.contains(c));
         let m = self.overview_metrics;
 
@@ -21610,16 +21664,11 @@ impl ShellOverlayHost {
             Self::draw_overview_app_marks(scene, transform, theme, anchor, &card.apps());
         let text_w = (marks_left - s3 - x0).max(40.0);
 
-        let name_size = tokens.typography.scale.lg;
-        let name = text_renderer.elide_to_width_weighted(
-            &card.name,
-            name_size,
-            f64_to_f32_lossy(text_w),
-            TextWeight::Semibold,
-        );
-        let (_, name_h) =
-            text_renderer.measure_weighted(&name, name_size, None, TextWeight::Semibold);
-        let sub_size = tokens.typography.scale.sm;
+        let name_style = tokens.typography.style(TextRole::Heading);
+        let name =
+            text_renderer.elide_to_width_style(&card.name, f64_to_f32_lossy(text_w), &name_style);
+        let (_, name_h) = text_renderer.measure_style(&name, None, &name_style);
+        let sub_style = tokens.typography.style(TextRole::Caption);
         // Who's in the room now outranks who could be; access is what
         // the line says when it's empty.
         let mut sub = tilo_desktop::overview::room_presence_label(card)
@@ -21627,28 +21676,27 @@ impl ShellOverlayHost {
         if let Some(shares) = tilo_desktop::overview::room_shares_label(card) {
             sub = format!("{sub} · {shares}");
         }
-        let sub = text_renderer.elide_to_width(&sub, sub_size, f64_to_f32_lossy(text_w));
-        let (_, sub_h) = text_renderer.measure(&sub, sub_size, None);
+        let sub = text_renderer.elide_to_width_style(&sub, f64_to_f32_lossy(text_w), &sub_style);
+        let (_, sub_h) = text_renderer.measure_style(&sub, None, &sub_style);
         // Name and sub-line are one stack, `s1` apart, centred on the row.
         let line_gap = f64::from(tokens.spacing.s1);
         let stack_h = f64::from(name_h) + line_gap + f64::from(sub_h);
         let top = rect.center().y - stack_h / 2.0;
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &name,
-            name_size,
             colors.text_primary,
             transform.pre_translate((x0, top).into()),
             None,
-            TextWeight::Semibold,
+            &name_style,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &sub,
-            sub_size,
             colors.text_dim,
             transform.pre_translate((x0, top + f64::from(name_h) + line_gap).into()),
             None,
+            &sub_style,
         );
     }
 
@@ -21708,16 +21756,16 @@ impl ShellOverlayHost {
         // Same fill/hairline/lift as the workspace-settings modal: one
         // floating-surface language across the shell's overlays.
         let panel = self.overview_panel_rect();
-        let ground = panel_surface(theme, MODAL_SURFACE_ALPHA);
+        let ground = ui::chrome::shell::panel_ground(theme);
         let m = self.overview_metrics;
-        // A Panel (HIG §9.1): `radii.xl`, and a shadow that follows its own
+        // A Panel (HIG §9.1): `radii.panel`, and a shadow that follows its own
         // rounded outline rather than a square field.
         ui::surface::shadow(
             scene,
             transform,
             panel,
             m.panel_radius,
-            &tokens.elevation.e4,
+            &tokens.elevation.floating,
         );
         let card_rr = RoundedRect::from_rect(panel, m.panel_radius);
         scene.fill(Fill::NonZero, transform, ground, None, &card_rr);
@@ -21733,7 +21781,7 @@ impl ShellOverlayHost {
         let content = self.overview_content_rect();
         let here_idx = self.overview_here_index();
         let here_rect = self.overview_here_rect();
-        let caption_size = tokens.typography.scale.sm;
+        let caption_style = tokens.typography.style(TextRole::Caption);
 
         self.draw_overview_here_section(
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
@@ -21754,10 +21802,9 @@ impl ShellOverlayHost {
         );
 
         // -- Where else you can go ----------------------------------------
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("overview-go-to"),
-            caption_size,
             colors.text_tertiary,
             transform.pre_translate(
                 (
@@ -21767,6 +21814,7 @@ impl ShellOverlayHost {
                     .into(),
             ),
             None,
+            &caption_style,
         );
 
         let band = Rect::new(
@@ -21807,7 +21855,7 @@ impl ShellOverlayHost {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let m = self.overview_metrics;
-        let title_size = tokens.typography.scale.sm;
+        let title_style = tokens.typography.style(TextRole::Caption);
         let mark = f64::from(tokens.metrics.icon_lg);
         let s1 = f64::from(tokens.spacing.s1);
         let carried = self
@@ -21866,15 +21914,14 @@ impl ShellOverlayHost {
                 window,
                 &mut self.window_previews,
             );
-            let title = text_renderer.elide_to_width(
+            let title = text_renderer.elide_to_width_style(
                 &window.title,
-                title_size,
                 f64_to_f32_lossy(bounds.width()),
+                &title_style,
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &title,
-                title_size,
                 if state.active {
                     colors.text_primary
                 } else {
@@ -21882,6 +21929,7 @@ impl ShellOverlayHost {
                 },
                 transform.pre_translate((well.x0, well.y1 + m.window_title_gap).into()),
                 None,
+                &title_style,
             );
             if is_carried {
                 scene.pop_layer();
@@ -21925,7 +21973,7 @@ impl ShellOverlayHost {
             transform,
             well,
             m.window_radius,
-            &theme.tokens.elevation.e3,
+            &theme.tokens.elevation.floating,
         );
         let _ = tilo_desktop::window_switcher::draw_preview_well(
             scene,
@@ -21993,20 +22041,19 @@ impl ShellOverlayHost {
         card: &tilo_desktop::overview::RoomCard,
         name_size: f32,
     ) {
-        use ui::widget::{Chip, ChipLead, ChipStyle};
+        use ui::widget::{ChipFace, ChipLead, ChipStyle, Tone};
 
         let (scene, transform, text_renderer, theme) =
             (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
 
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let accent = colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX];
-        let ground = panel_surface(theme, MODAL_SURFACE_ALPHA);
+        let ground = ui::chrome::shell::panel_ground(theme);
         let m = self.overview_metrics;
         let s3 = f64::from(tokens.spacing.s3);
         let s4 = f64::from(tokens.spacing.s4);
 
-        self.draw_overview_here_selection(scene, transform, theme, content, here_rect, hi, accent);
+        self.draw_overview_here_selection(scene, transform, theme, content, here_rect, hi, ground);
 
         // Faces claim the right edge, centred on the name line; the name
         // is elided against the room they leave rather than sliding under
@@ -22020,13 +22067,12 @@ impl ShellOverlayHost {
             ground,
         );
 
-        // "You are here" states which of these rooms you are in, in
-        // the same tinted-chip language every other current-state
-        // marker in the shell uses.
+        // "You are here" states which of these rooms you are in: a chip
+        // tinted with your own colour, the colour your presence has.
         let chip_h = m.chip_h;
         let here_label = t("overview-you-are-here");
         let chip_w =
-            Chip::natural_width_at(&here_label, chip_h, ChipLead::None, theme, text_renderer);
+            ChipFace::intrinsic_width(&here_label, ChipLead::None, false, text_renderer, theme);
         let anchor = (faces_left - s4, here_rect.y0 + m.name_lh / 2.0);
         let marks_left =
             Self::draw_overview_app_marks(scene, transform, theme, anchor, &card.apps());
@@ -22049,9 +22095,7 @@ impl ShellOverlayHost {
             TextWeight::Bold,
         );
         let chip_x0 = content.x0 + f64::from(name_w) + s3;
-        Chip::draw_at(
-            scene,
-            transform,
+        ChipFace::new(
             Rect::new(
                 chip_x0,
                 here_rect.y0 + f64::from(name_h) / 2.0 - chip_h / 2.0,
@@ -22059,17 +22103,14 @@ impl ShellOverlayHost {
                 here_rect.y0 + f64::from(name_h) / 2.0 + chip_h / 2.0,
             ),
             &here_label,
-            ChipLead::None,
-            ChipStyle::tinted(accent),
-            theme,
-            text_renderer,
-        );
+        )
+        .style(ChipStyle::Tinted(Tone::Presence(colors.you)))
+        .paint(scene, transform, text_renderer, theme);
 
         let access = tilo_desktop::overview::room_access_label(card);
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &access,
-            tokens.typography.scale.base,
             colors.text_dim,
             transform.pre_translate(
                 (
@@ -22079,6 +22120,7 @@ impl ShellOverlayHost {
                     .into(),
             ),
             None,
+            &tokens.typography.style(TextRole::Body),
         );
     }
 
@@ -22093,7 +22135,7 @@ impl ShellOverlayHost {
         content: Rect,
         here_rect: Rect,
         hi: usize,
-        accent: Color,
+        ground: Color,
     ) {
         if self.overview_selection != Some(hi) {
             return;
@@ -22108,18 +22150,14 @@ impl ShellOverlayHost {
             content.x1 + s2,
             here_rect.y1 - s2,
         );
+        // The keyboard's choice is a lift of the panel, with its edge.
         let sel_rr = RoundedRect::from_rect(sel, self.overview_metrics.row_radius);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            accent.with_alpha_factor(0.10),
-            None,
-            &sel_rr,
-        );
+        let fill = theme.tokens.colors.lift_on(ground, 1.0);
+        scene.fill(Fill::NonZero, transform, fill, None, &sel_rr);
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            accent.with_alpha_factor(0.55),
+            ui::surface::edge_on(fill),
             None,
             &sel_rr,
         );
@@ -22139,17 +22177,17 @@ impl ShellOverlayHost {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let caption_size = tokens.typography.scale.sm;
+        let caption_style = tokens.typography.style(TextRole::Caption);
 
         let m = self.overview_metrics;
         let shares_top = self.overview_shares_top();
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("overview-shared-out"),
-            caption_size,
             colors.text_tertiary,
             transform.pre_translate((content.x0, shares_top + m.caption_text_dy).into()),
             None,
+            &caption_style,
         );
         let row_h = m.share_row_h;
         let sy = shares_top + m.caption_h;
@@ -22198,9 +22236,9 @@ impl ShellOverlayHost {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let body_size = tokens.typography.scale.base;
+        let body_style = tokens.typography.style(TextRole::Body);
         let glyph = 14.0_f64;
-        let (_, body_h) = text_renderer.measure("Ag", body_size, None);
+        let (_, body_h) = text_renderer.measure_style("Ag", None, &body_style);
         let cy = sy + row_h / 2.0;
         let glyph_rect = Rect::new(
             content.x0,
@@ -22216,10 +22254,9 @@ impl ShellOverlayHost {
             colors.text_tertiary,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("overview-nothing-shared"),
-            body_size,
             colors.text_dim,
             transform.pre_translate(
                 (
@@ -22229,6 +22266,7 @@ impl ShellOverlayHost {
                     .into(),
             ),
             None,
+            &body_style,
         );
     }
 
@@ -22262,11 +22300,14 @@ impl ShellOverlayHost {
         let hidden = here_card.shares.len().saturating_sub(shown);
         if hidden > 0 {
             let more = t_args("overview-more-shares", &[("count", hidden.into())]);
-            let (_, more_h) = text_renderer.measure(&more, tokens.typography.scale.sm, None);
-            text_renderer.draw_text(
+            let (_, more_h) = text_renderer.measure_style(
+                &more,
+                None,
+                &tokens.typography.style(TextRole::Caption),
+            );
+            text_renderer.draw_style(
                 scene,
                 &more,
-                tokens.typography.scale.sm,
                 colors.text_tertiary,
                 transform.pre_translate(
                     (
@@ -22276,6 +22317,7 @@ impl ShellOverlayHost {
                         .into(),
                 ),
                 None,
+                &tokens.typography.style(TextRole::Caption),
             );
         }
     }
@@ -22292,8 +22334,8 @@ impl ShellOverlayHost {
         let (content, sy, row_h) = (row, row.y0, row.height());
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let body_size = tokens.typography.scale.base;
-        let (_, body_h) = text_renderer.measure("Ag", body_size, None);
+        let body_style = tokens.typography.style(TextRole::Body);
+        let (_, body_h) = text_renderer.measure_style("Ag", None, &body_style);
         let body_top = sy + (row_h - f64::from(body_h)) / 2.0;
         let cy = sy + row_h / 2.0;
         let glyph_rect = Rect::new(
@@ -22337,12 +22379,11 @@ impl ShellOverlayHost {
         } else {
             with
         };
-        let with_size = tokens.typography.scale.sm;
-        let (with_w, with_h) = text_renderer.measure(&with, with_size, None);
-        text_renderer.draw_text(
+        let with_style = tokens.typography.style(TextRole::Caption);
+        let (with_w, with_h) = text_renderer.measure_style(&with, None, &with_style);
+        text_renderer.draw_style(
             scene,
             &with,
-            with_size,
             colors.text_dim,
             transform.pre_translate(
                 (
@@ -22352,19 +22393,23 @@ impl ShellOverlayHost {
                     .into(),
             ),
             None,
+            &with_style,
         );
         let what_x = content.x0 + glyph + f64::from(tokens.spacing.s2);
         let what_avail =
             (content.x1 - f64::from(with_w) - f64::from(tokens.spacing.s3) - what_x).max(40.0);
-        let what =
-            text_renderer.elide_to_width(&share.what, body_size, f64_to_f32_lossy(what_avail));
-        text_renderer.draw_text(
+        let what = text_renderer.elide_to_width_style(
+            &share.what,
+            f64_to_f32_lossy(what_avail),
+            &body_style,
+        );
+        text_renderer.draw_style(
             scene,
             &what,
-            body_size,
             colors.text_primary,
             transform.pre_translate((what_x, body_top).into()),
             None,
+            &body_style,
         );
     }
 
@@ -22411,7 +22456,7 @@ impl ShellOverlayHost {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let accent = colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX];
+        let accent = colors.intent.inverted;
 
         let m = self.overview_metrics;
         let add_rect = self.overview_add_workspace_rect_for(cards_len);
@@ -22434,13 +22479,12 @@ impl ShellOverlayHost {
             add_color,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        let add_size = tokens.typography.scale.base;
+        let add_style = tokens.typography.style(TextRole::Body);
         let add_label = t("overview-new-workspace");
-        let (_, add_h) = text_renderer.measure(&add_label, add_size, None);
-        text_renderer.draw_text(
+        let (_, add_h) = text_renderer.measure_style(&add_label, None, &add_style);
+        text_renderer.draw_style(
             scene,
             &add_label,
-            add_size,
             add_color,
             transform.pre_translate(
                 (
@@ -22450,6 +22494,7 @@ impl ShellOverlayHost {
                     .into(),
             ),
             None,
+            &add_style,
         );
         self.add_workspace_rect = add_rect;
     }
@@ -22466,7 +22511,7 @@ impl ShellOverlayHost {
         if self.overview_max_scroll_y() > 0.5 {
             let fade_y1 = band.y1;
             let fade_y0 = fade_y1 - OVERVIEW_SCROLL_FADE_PX;
-            let ground = panel_surface(theme, MODAL_SURFACE_ALPHA);
+            let ground = ui::chrome::shell::panel_ground(theme);
             let grad = vello::peniko::Gradient::new_linear(
                 Point::new(band.x0, fade_y0),
                 Point::new(band.x0, fade_y1),
@@ -22582,43 +22627,42 @@ impl ShellOverlayHost {
             self.follow_chip_rect.x0 + 38.0,
             self.follow_chip_rect.y1 - 10.0,
         );
-        ui::widget::Avatar::draw_at(
-            scene,
-            transform,
-            avatar_rect,
-            &row.initial.to_string(),
-            row.color,
-            theme,
-            text_renderer,
-        );
+        ui::widget::AvatarFace::new(&row.initial.to_string(), "")
+            .presence(row.color)
+            .paint(
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                avatar_rect,
+            );
         let label_x = self.follow_chip_rect.x0 + 48.0;
         let label_budget = (detach_rect.x0 - label_x - 8.0).max(0.0);
         #[allow(
             clippy::cast_possible_truncation,
             reason = "the follow banner is a few hundred logical pixels wide"
         )]
-        let label = text_renderer.elide_to_width_weighted(
+        let label = text_renderer.elide_to_width_style(
             &label,
-            theme.tokens.typography.scale.sm,
             label_budget as f32,
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &label,
-            theme.tokens.typography.scale.sm,
             theme.tokens.colors.text_primary,
             transform.pre_translate((label_x, y0 + 8.0).into()),
             None,
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             detail,
-            theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             transform.pre_translate((self.follow_chip_rect.x0 + 48.0, y0 + 27.0).into()),
             None,
+            &theme.text(TextRole::Caption),
         );
         if self.followed_peer.is_some() {
             Button::paint(
@@ -22627,7 +22671,6 @@ impl ShellOverlayHost {
                 text_renderer,
                 theme,
                 &ButtonFace::new(detach_rect, &t("follow-stop"))
-                    .radius(f64::from(theme.tokens.radii.sm))
                     .hovered(self.last_cursor.is_some_and(|p| detach_rect.contains(p))),
             );
             // The cross is the primary detach affordance; the word keeps the
@@ -23046,12 +23089,12 @@ impl ShellOverlayHost {
         let radius = ui::chrome::ChromeRole::Panel.radius(theme, rect.height());
         let card = RoundedRect::from_rect(rect, radius);
         ui::chrome::shell::panel_shadow(scene, transform, rect, radius, theme, 1.0);
-        scene.fill(
-            Fill::NonZero,
+        ui::floating_surface::paint_material(
+            scene,
             transform,
-            panel_surface(theme, POPOVER_SURFACE_ALPHA),
-            None,
             &card,
+            ui::floating_surface::Material::Floating,
+            theme,
         );
         // The Panel edge is derived (HIG §9.5): `border_standard` sat three
         // shades off the ground on dark and vanished. Stroked half a pixel
@@ -23064,6 +23107,7 @@ impl ShellOverlayHost {
             None,
             &ui::surface::edge_outline(rect, radius),
         );
+        ui::surface::floating_edge(scene, transform, rect, radius, theme);
     }
 
     /// Root level renders the action row + sliders + toggles below;
@@ -23406,13 +23450,13 @@ impl ShellOverlayHost {
             &t_args("a11y-bluetooth-move", &[("accessory", name.into())]),
         );
         let panel = self.quick_settings_rect();
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("qs-bluetooth-move-note"),
-            theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             transform.pre_translate((panel.x0 + 12.0, panel.y0 + 56.0).into()),
             Some(f64_to_f32_lossy(panel.width() - 24.0)),
+            &theme.text(TextRole::Caption),
         );
         let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) else {
             self.draw_qs_drill_in_empty(
@@ -23474,27 +23518,26 @@ impl ShellOverlayHost {
                 theme.tokens.colors.text_primary,
                 ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &title,
-                theme.tokens.typography.scale.sm,
                 theme.tokens.colors.text_primary,
                 transform.pre_translate((row.x0 + 42.0, row.y0 + 10.0).into()),
                 Some(f64_to_f32_lossy(row.width() - 54.0)),
-                TextWeight::Medium,
+                &theme.text(TextRole::Label),
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &detail,
-                theme.tokens.typography.scale.xs,
                 theme.tokens.colors.text_dim,
                 transform.pre_translate((row.x0 + 42.0, row.y0 + 32.0).into()),
                 Some(f64_to_f32_lossy(row.width() - 54.0)),
+                &theme.text(TextRole::Caption),
             );
         }
         if rows.len() > visible_rows {
             let shown = visible_rows.min(rows.len().saturating_sub(self.qs_device_fabric_start));
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &t_args(
                     "qs-devices-showing",
@@ -23510,10 +23553,10 @@ impl ShellOverlayHost {
                         ("total", rows.len().into()),
                     ],
                 ),
-                theme.tokens.typography.scale.xs,
                 theme.tokens.colors.text_dim,
                 transform.pre_translate((panel.x0 + 12.0, panel.y1 - 14.0).into()),
                 Some(f64_to_f32_lossy(panel.width() - 24.0)),
+                &theme.text(TextRole::Caption),
             );
         }
     }
@@ -23553,13 +23596,13 @@ impl ShellOverlayHost {
                 .iter()
                 .find(|media| &media.session_id == id)
         });
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("qs-devices-note"),
-            theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             transform.pre_translate((panel.x0 + 12.0, panel.y0 + 56.0).into()),
             Some(f64_to_f32_lossy(panel.width() - 24.0)),
+            &theme.text(TextRole::Caption),
         );
         let realtime = self
             .realtime_continuity_call(RealtimeContinuityUiAction::Snapshot)
@@ -24167,7 +24210,7 @@ impl ShellOverlayHost {
                 .disabled(!enabled)
                 .accessible_name(&accessible);
             if selected_row {
-                face = face.primary();
+                face = face.role(ButtonRole::Primary);
             }
             Button::paint(scene, transform, text_renderer, theme, &face);
             let tethering_consent = matches!(
@@ -24201,37 +24244,36 @@ impl ShellOverlayHost {
                 Rect::new(row.x0 + 12.0, row.y0 + 15.0, row.x0 + 32.0, row.y0 + 35.0),
                 icon,
                 if selected_row {
-                    theme.tokens.colors.on_accent(4.5)
+                    theme.tokens.colors.intent.on_inverted
                 } else {
                     theme.tokens.colors.text_primary
                 },
                 1.5,
             );
             let text_color = if selected_row {
-                theme.tokens.colors.on_accent(4.5)
+                theme.tokens.colors.intent.on_inverted
             } else {
                 theme.tokens.colors.text_primary
             };
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &title,
-                theme.tokens.typography.scale.sm,
                 text_color,
                 transform.pre_translate((row.x0 + 42.0, row.y0 + 10.0).into()),
                 Some(f64_to_f32_lossy(row.width() - 54.0 - trailing)),
-                TextWeight::Medium,
+                &theme.text(TextRole::Label),
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &detail,
-                theme.tokens.typography.scale.xs,
                 if selected_row {
-                    theme.tokens.colors.on_accent(4.5)
+                    theme.tokens.colors.intent.on_inverted
                 } else {
                     theme.tokens.colors.text_dim
                 },
                 transform.pre_translate((row.x0 + 42.0, row.y0 + 32.0).into()),
                 Some(f64_to_f32_lossy(row.width() - 54.0 - trailing)),
+                &theme.text(TextRole::Caption),
             );
             if tethering_consent
                 || matches!(
@@ -24251,7 +24293,7 @@ impl ShellOverlayHost {
                     text_renderer,
                     theme,
                     &ButtonFace::new(allow, "")
-                        .ghost()
+                        .role(ButtonRole::Plain)
                         .icon(ui::icons::Icon::Check)
                         .hovered(self.last_cursor.is_some_and(|point| allow.contains(point)))
                         .accessible_name(&match item {
@@ -24278,7 +24320,7 @@ impl ShellOverlayHost {
                     text_renderer,
                     theme,
                     &ButtonFace::new(decline, "")
-                        .ghost()
+                        .role(ButtonRole::Plain)
                         .icon(ui::icons::Icon::X)
                         .hovered(
                             self.last_cursor
@@ -24314,7 +24356,7 @@ impl ShellOverlayHost {
                         text_renderer,
                         theme,
                         &ButtonFace::new(rect, "")
-                            .ghost()
+                            .role(ButtonRole::Plain)
                             .icon(icon)
                             .hovered(self.last_cursor.is_some_and(|point| rect.contains(point)))
                             .accessible_name(&name),
@@ -24350,7 +24392,7 @@ impl ShellOverlayHost {
                         text_renderer,
                         theme,
                         &ButtonFace::new(rect, "")
-                            .ghost()
+                            .role(ButtonRole::Plain)
                             .icon(icon)
                             .hovered(
                                 device.online
@@ -24367,7 +24409,7 @@ impl ShellOverlayHost {
                     t("a11y-control-allow")
                 };
                 let mut control_face = ButtonFace::new(control, "")
-                    .ghost()
+                    .role(ButtonRole::Plain)
                     .icon(ui::icons::Icon::Mouse)
                     .hovered(
                         device.online
@@ -24378,7 +24420,7 @@ impl ShellOverlayHost {
                     .disabled(device.is_local || !device.online)
                     .accessible_name(&control_name);
                 if device.controls_local {
-                    control_face = control_face.primary();
+                    control_face = control_face.role(ButtonRole::Primary);
                 }
                 Button::paint(scene, transform, text_renderer, theme, &control_face);
             }
@@ -24399,13 +24441,13 @@ impl ShellOverlayHost {
                     ("total", rows.len().into()),
                 ],
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &position,
-                theme.tokens.typography.scale.xs,
                 theme.tokens.colors.text_dim,
                 transform.pre_translate((panel.x0 + 12.0, panel.y1 - 22.0).into()),
                 Some(f64_to_f32_lossy(panel.width() - 24.0)),
+                &theme.text(TextRole::Caption),
             );
         }
     }
@@ -24440,10 +24482,9 @@ impl ShellOverlayHost {
             None,
             &RoundedRect::from_rect(search, 7.0),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             label,
-            theme.tokens.typography.scale.xs,
             if self.qs_clipboard_query.is_empty() {
                 theme.tokens.colors.text_dim
             } else {
@@ -24451,6 +24492,7 @@ impl ShellOverlayHost {
             },
             transform.pre_translate((search.x0 + 9.0, search.y0 + 5.0).into()),
             Some(f64_to_f32_lossy(search.width() - 18.0)),
+            &theme.text(TextRole::Caption),
         );
     }
 
@@ -24533,8 +24575,7 @@ impl ShellOverlayHost {
             theme,
             &ButtonFace::new(clear, &t("qs-clipboard-clear"))
                 .hovered(self.last_cursor.is_some_and(|point| clear.contains(point)))
-                .accessible_name(&t("qs-clipboard-clear-a11y"))
-                .text_size(theme.tokens.typography.scale.xs),
+                .accessible_name(&t("qs-clipboard-clear-a11y")),
         );
         for (visible_index, item) in history.iter().skip(start).take(visible_rows).enumerate() {
             let row = self.qs_clipboard_row_rect(visible_index);
@@ -24569,14 +24610,13 @@ impl ShellOverlayHost {
                 },
                 |text| text.split_whitespace().collect::<Vec<_>>().join(" "),
             );
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &preview,
-                theme.tokens.typography.scale.sm,
                 colors.text_primary,
                 transform.pre_translate((body.x0 + 12.0, body.y0 + 14.0).into()),
                 Some(f64_to_f32_lossy(body.width() - 24.0)),
-                TextWeight::Medium,
+                &theme.text(TextRole::Label),
             );
             let source = clipboard_history_source_label(item, fabric.as_ref());
             let age = clipboard_history_relative_time(item.created_unix_ms, now_unix_ms);
@@ -24588,13 +24628,13 @@ impl ShellOverlayHost {
                     ("bytes", item.byte_len.to_string().into()),
                 ],
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &detail,
-                theme.tokens.typography.scale.xs,
                 colors.text_dim,
                 transform.pre_translate((body.x0 + 12.0, body.y0 + 40.0).into()),
                 Some(f64_to_f32_lossy(body.width() - 24.0)),
+                &theme.text(TextRole::Caption),
             );
             Button::paint(
                 scene,
@@ -24934,14 +24974,16 @@ impl ShellOverlayHost {
             colors.text_dim,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &t("qs-wifi-protected"),
-            tokens.typography.scale.xs,
             colors.text_dim,
             transform.pre_translate((lock_box.x1 + 8.0, sub_y + 1.0).into()),
             None,
-            TextWeight::Medium,
+            &tokens
+                .typography
+                .style(TextRole::Caption)
+                .with_weight(TextWeight::Medium),
         );
 
         let field =
@@ -25001,24 +25043,28 @@ impl ShellOverlayHost {
         // A failed attempt says so where the eye already is, rather than
         // as a toast that would outlive the prompt.
         if let Some(err) = prompt.error.as_ref() {
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 err,
-                tokens.typography.scale.xs,
                 colors.semantic.danger,
                 transform.pre_translate((field.x0 + 2.0, field.y1 + 8.0).into()),
                 None,
-                TextWeight::Medium,
+                &tokens
+                    .typography
+                    .style(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
         } else if prompt.connecting {
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &t("qs-connecting"),
-                tokens.typography.scale.xs,
                 colors.text_dim,
                 transform.pre_translate((field.x0 + 2.0, field.y1 + 8.0).into()),
                 None,
-                TextWeight::Medium,
+                &tokens
+                    .typography
+                    .style(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
         }
     }
@@ -25039,7 +25085,6 @@ impl ShellOverlayHost {
             text_renderer,
             theme,
             &ButtonFace::new(cancel, &t("portal-cancel"))
-                .radius(10.0)
                 .hovered(self.last_cursor.is_some_and(|point| cancel.contains(point))),
         );
         Button::paint(
@@ -25055,8 +25100,7 @@ impl ShellOverlayHost {
                     t("portal-connect")
                 },
             )
-            .primary()
-            .radius(10.0)
+            .role(ButtonRole::Primary)
             .disabled(!prompt.can_submit(self.wifi_password_input.value()))
             .hovered(
                 self.last_cursor
@@ -25110,8 +25154,8 @@ impl ShellOverlayHost {
 /// token's own — the same `ui::surface::shadow` call paints it — so this
 /// is derived from the token rather than restating a sprite's spread.
 fn quick_settings_settled_bounds(rect: Rect, theme: &Theme, transform: Affine) -> Rect {
-    let panel_reach = ui::surface::std_dev_for(theme.tokens.elevation.e4.blur) * 3.0
-        + f64::from(theme.tokens.elevation.e4.offset_y)
+    let panel_reach = ui::surface::std_dev_for(theme.tokens.elevation.floating.blur) * 3.0
+        + f64::from(theme.tokens.elevation.floating.offset_y)
         + 0.5;
     transform.transform_rect_bbox(rect.inflate(panel_reach, panel_reach))
 }
