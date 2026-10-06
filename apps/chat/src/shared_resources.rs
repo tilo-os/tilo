@@ -134,8 +134,8 @@ impl ChatApp {
         let output = link.and_then(|link| {
             if pending.open {
                 ui::widget::try_open_external_url(&link).map_err(|error| error.to_string())?;
-            } else {
-                ui::clipboard_copy(&link);
+            } else if !ui::try_clipboard_copy(&link) {
+                return Err("The system clipboard did not accept the resource link".into());
             }
             Ok(tilo_actions::ActionOutput {
                 value: Some(serde_json::json!({"url": link})),
@@ -250,6 +250,52 @@ mod tests {
     use super::*;
     use tilo_actions::remote::{CatalogueResource, CatalogueRow, ResourceViewLocator};
 
+    #[derive(Default)]
+    struct Clipboard(std::sync::Mutex<Option<String>>);
+
+    impl ui::clipboard::ClipboardBackend for Clipboard {
+        fn set_text(&self, _: ui::clipboard::ClipboardTarget, text: &str) -> bool {
+            *self.0.lock().unwrap() = Some(text.into());
+            true
+        }
+
+        fn text(&self, _: ui::clipboard::ClipboardTarget) -> Option<String> {
+            self.0.lock().unwrap().clone()
+        }
+
+        fn name(&self) -> &'static str {
+            "shared-resource-test-clipboard"
+        }
+    }
+
+    fn assert_copy_refused(
+        app: &mut ui::framework::testing::TestApp<crate::resource::ChatShell>,
+        target: &str,
+        effect: &ChatEffect,
+    ) {
+        let services = ui::host::HostServices::null();
+        let _scope = ui::host::enter(&services);
+        app.start_effect_on(target, effect).unwrap();
+        let surface = app.surface_mut::<ChatApp>();
+        let correlation = surface
+            .resource_navigation
+            .pending
+            .as_ref()
+            .unwrap()
+            .correlation;
+        surface.complete_resource_navigation(&RemoteActionMessage::CatalogueResponse {
+            correlation,
+            result: Ok(page()),
+        });
+        app.settle();
+        assert!(
+            app.effect_progress()
+                .iter()
+                .any(|update| matches!(update, tilo_actions::InvocationUpdate::Failed { .. }))
+        );
+        assert!(ui::clipboard_paste().is_none());
+    }
+
     fn page() -> CataloguePage {
         use tilo_actions::{Resource, ResourceViewRangeSpec, ResourceViewSpec};
         use ui::tilo_resource::Effect as _;
@@ -341,6 +387,9 @@ mod tests {
         use crate::resource::ChatShell;
         use ui::framework::testing::TestApp;
         let mut app = TestApp::<ChatShell>::new().unwrap();
+        let services = ui::host::HostServices::null()
+            .with_clipboard(std::sync::Arc::new(Clipboard::default()));
+        let _scope = ui::host::enter(&services);
         let reference = serde_json::json!({"kind":"chat.message", "id":"chat.message:message", "label":"Fixture", "span":{"start":6,"end":7,"unit":"Chars"}});
         app.call_on("chat.channel:c_general", "share-resource", serde_json::json!({
             "reference":reference, "sourceProvider":"record:so.tilo.chat:discussion", "text":"Discuss resource"
@@ -380,6 +429,7 @@ mod tests {
                 .starts_with("https://cloud.example/qos-runtime/resource.html#resource=")
         );
         println!("NATIVE_RESOURCE_LINK={}", ui::clipboard_paste().unwrap());
+        assert_copy_refused(&mut app, &target, &effect);
         ui::clipboard_copy("sentinel");
         let invocation = app.start_effect_on(&target, &effect).unwrap();
         let correlation = app
