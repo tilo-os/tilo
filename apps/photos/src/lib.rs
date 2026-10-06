@@ -111,18 +111,17 @@ pub fn camera_import_photo(
                     .bytes()
                     .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         })
-        .ok_or_else(|| "invalid Camera media identity".to_owned())?;
+        .ok_or_else(|| crate::strings::tr("photos-camera-error-identity"))?;
     // The store verifies what it reads against the hash; content that fails
     // that check reads as absent.
-    let bytes = store.read(hash).ok_or_else(|| {
-        "Camera media bytes are not available on this device; retry after they sync".to_owned()
-    })?;
+    let bytes = store
+        .read(hash)
+        .ok_or_else(|| crate::strings::tr("photos-camera-error-not-here"))?;
     if bytes.is_empty() || bytes.len() > 64 * 1024 * 1024 {
-        return Err("Camera media bytes failed integrity validation".to_owned());
+        return Err(crate::strings::tr("photos-camera-error-integrity"));
     }
-    let image = pixels::decode(&bytes).ok_or_else(|| {
-        "Camera media is not a supported, safely decodable still image".to_owned()
-    })?;
+    let image = pixels::decode(&bytes)
+        .ok_or_else(|| crate::strings::tr("photos-camera-error-unsupported"))?;
     let open = OpenImage {
         path: name.to_owned(),
         name: name.to_owned(),

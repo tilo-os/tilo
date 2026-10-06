@@ -83,7 +83,7 @@ fn remote_cursor_moves_populate_and_update_presence() {
             collaborators: vec![Collaborator {
                 id: "agent@release".into(),
                 name: "Release assistant".into(),
-                color: [0.3, 0.4, 0.9],
+                colour: None,
                 is_agent: true,
                 is_self: false,
             }],

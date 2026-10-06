@@ -160,7 +160,7 @@ fn configured_theme_file_change_rethemes_an_open_app() {
 
     let write = |theme: &str| {
         let mut values = serde_json::Map::new();
-        values.insert("theme".into(), serde_json::Value::String(theme.into()));
+        values.insert("mode".into(), serde_json::Value::String(theme.into()));
         values.insert("high_contrast".into(), serde_json::Value::Bool(false));
         settings_store::update_section("appearance", values).expect("write appearance");
     };
@@ -178,7 +178,7 @@ fn configured_theme_file_change_rethemes_an_open_app() {
     );
     app.apply_configured_theme();
     app.rebuild_theme();
-    let dark_bg = app.theme.bg_app;
+    let dark_bg = app.theme.tokens.colors.surfaces.content;
     let dark_name = app.theme.name.clone();
 
     write("light");
@@ -189,7 +189,7 @@ fn configured_theme_file_change_rethemes_an_open_app() {
         app.reconcile_configured_theme(),
         "an appearance file write must retheme the next tick"
     );
-    let light_bg = app.theme.bg_app;
+    let light_bg = app.theme.tokens.colors.surfaces.content;
     assert_ne!(
         (light_bg, app.theme.name.as_str()),
         (dark_bg, dark_name.as_str()),
@@ -214,7 +214,7 @@ fn settings_file_write_rethemes_the_sampled_app_surface() {
 
     let write = |theme: &str| {
         let mut values = serde_json::Map::new();
-        values.insert("theme".into(), serde_json::Value::String(theme.into()));
+        values.insert("mode".into(), serde_json::Value::String(theme.into()));
         values.insert("high_contrast".into(), serde_json::Value::Bool(false));
         settings_store::update_section("appearance", values).expect("write appearance");
         assert_eq!(
@@ -237,7 +237,7 @@ fn settings_file_write_rethemes_the_sampled_app_surface() {
     );
     app.apply_configured_theme();
     app.rebuild_theme();
-    let dark_bg = app.theme.bg_app;
+    let dark_bg = app.theme.tokens.colors.surfaces.content;
     let dark_y = crate::a11y::relative_luminance(dark_bg);
 
     write("light");
@@ -248,7 +248,7 @@ fn settings_file_write_rethemes_the_sampled_app_surface() {
         app.reconcile_configured_theme(),
         "a session-file theme write must retheme the next tick"
     );
-    let light_bg = app.theme.bg_app;
+    let light_bg = app.theme.tokens.colors.surfaces.content;
     let light_y = crate::a11y::relative_luminance(light_bg);
     assert_ne!(
         (light_bg, app.theme.name.as_str()),
@@ -284,7 +284,7 @@ fn settings_keeps_the_session_theme_when_the_host_scheme_is_unset() {
 
     let write = |theme: &str| {
         let mut values = serde_json::Map::new();
-        values.insert("theme".into(), serde_json::Value::String(theme.into()));
+        values.insert("mode".into(), serde_json::Value::String(theme.into()));
         values.insert("high_contrast".into(), serde_json::Value::Bool(false));
         settings_store::update_section("appearance", values).expect("write appearance");
     };
@@ -363,7 +363,7 @@ fn prepared_presentation_replaces_effective_factors_across_runners_and_setters()
                 app.set_ui_scale(1.5);
                 app.set_ui_scale(1.5);
                 app.set_high_contrast(true);
-                assert_eq!(app.theme.name, "High Contrast");
+                assert_eq!(app.theme.name, "High contrast");
                 assert_eq!(app.theme.text_scale, 0.75);
                 assert_eq!(app.theme.ui_scale, 1.5);
                 app.set_high_contrast(false);
@@ -433,6 +433,7 @@ fn assert_saved_body(
 
 fn edit_bound_record(app: &mut App, binding: &crate::bound_dispatch::CallbackBinding) {
     let target = crate::bound_dispatch::BoundActionTarget {
+        physical_text: false,
         binding: binding.clone(),
         address: crate::bound_dispatch::BoundActionAddress {
             instance_id: binding.instance_id,

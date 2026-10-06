@@ -102,11 +102,13 @@ fn scope_kind(scopes: &ScopeStack) -> Option<TokenKind> {
             // `storage.type` names storage keywords (`let`, `fn`, `struct`) in
             // most grammars; genuine type names carry the scopes above.
             Some(TokenKind::Keyword)
+        } else if is("entity.name.tag") || is("punctuation.definition.tag") {
+            Some(TokenKind::Tag)
         } else if is("entity.name.macro")
             || is("support.macro")
             || is("meta.attribute")
             || is("meta.annotation")
-            || is("entity.name.tag")
+            || is("entity.other.attribute-name")
             || is("punctuation.definition.annotation")
         {
             Some(TokenKind::Attribute)
@@ -147,15 +149,39 @@ impl SyntaxState {
         let mut kind = scope_kind(&self.scopes).unwrap_or(TokenKind::Text);
         for (offset, op) in ops {
             let offset = offset.min(line.len());
-            push_run(&mut spans, start, offset, kind);
+            push_run(
+                &mut spans,
+                start,
+                offset,
+                word_operator(kind, line, start, offset),
+            );
             start = start.max(offset);
             if self.scopes.apply(&op).is_err() {
                 continue;
             }
             kind = scope_kind(&self.scopes).unwrap_or(TokenKind::Text);
         }
-        push_run(&mut spans, start, line.len(), kind);
+        push_run(
+            &mut spans,
+            start,
+            line.len(),
+            word_operator(kind, line, start, line.len()),
+        );
         spans
+    }
+}
+
+/// An operator spelled as a word (Dockerfile's `AS`, SQL's `AND`, Python's
+/// `not`) reads as a keyword, and is coloured as one.
+fn word_operator(kind: TokenKind, line: &str, start: usize, end: usize) -> TokenKind {
+    if kind != TokenKind::Operator {
+        return kind;
+    }
+    let word = line.get(start..end).unwrap_or("").trim();
+    if !word.is_empty() && word.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        TokenKind::Keyword
+    } else {
+        kind
     }
 }
 

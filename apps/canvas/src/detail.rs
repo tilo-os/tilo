@@ -32,7 +32,7 @@ use ui::vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
 /// A tile's side, in cells of its level.
 pub const TILE: usize = 256; // a simulation unit, not on-screen spacing
 /// The finest a painted layer is simulated, in cells per artwork unit.
-const FINEST: f64 = 8.0; // a simulation budget, not on-screen spacing
+use crate::content_geometry::FINEST;
 /// Tiles kept between frames.
 const KEEP: usize = 240;
 /// How much coarser than a pixel the coarse picture may be before a finer

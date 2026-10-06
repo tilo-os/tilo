@@ -30,7 +30,7 @@ use crate::widget::identity_flow::sheet::{
     paint_check_row, paint_text, paragraph_height, resolve, with_layout_renderer,
 };
 use crate::widget::identity_flow::{IdentityRecord, ScreenOutcome};
-use crate::widget::modal_frame::ModalAction;
+use crate::widget::modal_dialog::ModalAction;
 
 const TITLE_READY: &str = "Your recovery words";
 const TITLE_UNAVAILABLE: &str = "Recovery is not ready yet";
@@ -432,53 +432,57 @@ impl Widget for RecoveryShareScreen {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let resolved = self.resolve(theme, text_renderer);
-        let actions = self.actions();
-        let spec = SheetSpec {
-            title: self.title(),
-            max_width: GRID_SHEET_WIDTH,
-            actions: &actions,
-        };
-        let sheet = &resolved.sheet;
-        let plan = &resolved.plan;
-        let control_h = sheet.control_height(theme);
+        // Identity ceremonies, invites and joins are security surfaces:
+        // every look-alike letter is set apart.
+        text_renderer.security_surface(|text_renderer| {
+            let resolved = self.resolve(theme, text_renderer);
+            let actions = self.actions();
+            let spec = SheetSpec {
+                title: self.title(),
+                max_width: GRID_SHEET_WIDTH,
+                actions: &actions,
+            };
+            let sheet = &resolved.sheet;
+            let plan = &resolved.plan;
+            let control_h = sheet.control_height(theme);
 
-        sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
-        sheet.clip_body(scene, transform);
-        paint_text(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            plan.explanation,
-            self.explanation(),
-            Role::Body,
-            Align::Start,
-            true,
-        );
-        if let Some(area) = plan.grid {
-            self.draw_word_grid(scene, transform, text_renderer, theme, area, control_h);
-        }
-        let ack_hovered = self.ack_hit_rect.contains(self.last_cursor);
-        paint_check_row(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            plan.ack_row,
-            self.acknowledged,
-            ack_hovered,
-            ACK_LABEL,
-        );
-        if let (Some(rect), Some(msg)) = (plan.clipboard, self.clipboard_message.as_deref()) {
+            sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
+            sheet.clip_body(scene, transform);
             paint_text(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                rect,
-                msg,
-                Role::Caption,
+                plan.explanation,
+                self.explanation(),
+                Role::Body,
                 Align::Start,
                 true,
             );
-        }
-        scene.pop_layer();
-        sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
+            if let Some(area) = plan.grid {
+                self.draw_word_grid(scene, transform, text_renderer, theme, area, control_h);
+            }
+            let ack_hovered = self.ack_hit_rect.contains(self.last_cursor);
+            paint_check_row(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                plan.ack_row,
+                self.acknowledged,
+                ack_hovered,
+                ACK_LABEL,
+            );
+            if let (Some(rect), Some(msg)) = (plan.clipboard, self.clipboard_message.as_deref()) {
+                paint_text(
+                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                    rect,
+                    msg,
+                    Role::Caption,
+                    Align::Start,
+                    true,
+                );
+            }
+            scene.pop_layer();
+            sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
+        });
     }
 
     fn name(&self) -> &'static str {
@@ -592,14 +596,14 @@ mod tests {
                     node,
                     Size {
                         width: taffy::AvailableSpace::Definite(1280.0),
-                        height: taffy::AvailableSpace::Definite(800.0),
+                        height: taffy::AvailableSpace::Definite(420.0),
                     },
                 )
                 .expect("layout");
             s.apply_layout(&taffy, node, Point::ORIGIN);
             assert!(
                 s.scroll.max() > 0.0,
-                "24 words at 2× do not fit an 800 px window"
+                "24 words at 2× do not fit a 420 px window"
             );
             let actions = Rect::new(
                 s.copy_rect.x0.min(s.continue_rect.x0),

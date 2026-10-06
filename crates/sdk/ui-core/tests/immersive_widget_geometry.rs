@@ -233,7 +233,8 @@ fn immersive_widgets_render_reachable_geometry_at_every_size() {
                 &theme,
                 &peers,
             );
-            let rgba = OffscreenRenderer::new(w, h).render_resilient(&scene, theme.bg_app);
+            let rgba = OffscreenRenderer::new(w, h)
+                .render_resilient(&scene, theme.tokens.colors.surfaces.content);
             evidence(&format!("presence-pills-{scale}x"), w, h, &rgba);
         }
     }
@@ -295,7 +296,8 @@ fn immersive_widgets_render_reachable_geometry_at_every_size() {
             tr.set_text_scale(scale);
             let mut scene = Scene::new();
             s.draw_recording_indicator(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-            let rgba = OffscreenRenderer::new(1400, 200).render_resilient(&scene, theme.bg_app);
+            let rgba = OffscreenRenderer::new(1400, 200)
+                .render_resilient(&scene, theme.tokens.colors.surfaces.content);
             evidence(
                 &format!("capture-studio-recording-pill-{scale}x"),
                 1400,

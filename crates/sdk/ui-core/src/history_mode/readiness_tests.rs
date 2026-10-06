@@ -98,7 +98,9 @@ fn readiness_refuses_review_refresh_and_confirmation_without_head_change() {
         if introduced_after_review {
             assert!(driver.a11y_node_named("Restore version").is_some());
             pending.set(true);
-            driver.key("Enter");
+            driver
+                .click_named("history-restore-review.primary")
+                .unwrap();
         }
         assert_eq!(driver.state_mut().doc.base_heads(), heads);
         assert!(
@@ -108,14 +110,18 @@ fn readiness_refuses_review_refresh_and_confirmation_without_head_change() {
                 .contains("Return to live to finish pending preferences")
         );
         assert!(driver.a11y_node_named("Restore version").is_none());
-        driver.key("Enter");
+        driver
+            .click_named("history-restore-review.primary")
+            .unwrap();
         assert!(driver.a11y_node_named("Restore version").is_none());
         assert!(calls.get() >= 2);
         driver.key("Escape");
         assert!(driver.a11y_node_named("Refresh review").is_none());
         pending.set(false);
         driver.click_named("history-restore").unwrap();
-        driver.key("Enter");
+        driver
+            .click_named("history-restore-review.primary")
+            .unwrap();
         assert_eq!(
             crate::state::owned_restore_tests::value(&driver.state_mut().doc),
             "old"
@@ -218,7 +224,9 @@ fn readiness_component_tile_checks_retained_child_at_confirmation() {
     driver.click_named("history-restore").unwrap();
     assert!(driver.a11y_node_named("Restore version").is_some());
     pending.set(true);
-    driver.key("Enter");
+    driver
+        .click_named("history-restore-review.primary")
+        .unwrap();
     assert!(
         driver
             .inspection_json()
@@ -237,8 +245,12 @@ fn readiness_component_tile_checks_retained_child_at_confirmation() {
         "live"
     );
     pending.set(false);
-    driver.key("Enter");
-    driver.key("Enter");
+    driver
+        .click_named("history-restore-review.primary")
+        .unwrap();
+    driver
+        .click_named("history-restore-review.primary")
+        .unwrap();
     assert_eq!(
         binding
             .records
