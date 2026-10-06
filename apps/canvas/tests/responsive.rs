@@ -111,6 +111,13 @@ fn the_layer_footer_can_be_scrolled_into_a_short_window_and_edited() {
     let dock = app.harness().targets()["canvas-dock"];
     let mut reached = false;
     for _ in 0..8 {
+        let targets = app.harness().targets();
+        let tree = targets["canvas-layer-tree"];
+        let opacity = targets["canvas-layer-opacity"];
+        assert!(
+            tree.height() >= 160.0 && tree.y1 <= opacity.y0,
+            "layer rows must end before their controls: tree {tree:?}, opacity {opacity:?}"
+        );
         let target = app.harness().targets()["canvas-layer-folder"];
         if target.y0 >= dock.y1 && target.y1 <= 534.0 {
             app.harness().click_at(target.center().x, target.center().y);

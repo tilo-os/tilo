@@ -113,15 +113,11 @@ pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
             .with_intrinsic_height()
             .with_gap(0.0)
             .push(Box::new(
-                Scrollable::new_vertical()
-                    .with_max_height(LIST)
-                    .with_child(Box::new(
-                        Column::new()
-                            .with_intrinsic_height()
-                            .with_vertical_padding(4.0)
-                            .with_horizontal_padding(8.0, 8.0)
-                            .push(list),
-                    )),
+                Column::new()
+                    .with_intrinsic_height()
+                    .with_vertical_padding(4.0)
+                    .with_horizontal_padding(8.0, 8.0)
+                    .push(list),
             ))
             .push(Box::new(ui::widget::Divider::horizontal()))
             .push(Box::new(
