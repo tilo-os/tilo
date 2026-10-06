@@ -7,7 +7,7 @@ Chromecast's device-auth challenge, display decoding, discovery or certification
 A disposable self-signed TLS certificate deliberately exposes the SDK's present
 endpoint-authentication boundary: TLS encryption is observed, authentication is
 not claimed. The production controller is not replaced or duplicated.
-Requires a prebuilt tilo-projector and openssl; builds belong to rcargo.
+Requires a prebuilt tilo-projector and openssl; builds use an authorized Cargo drop-in.
 """
 
 import argparse
