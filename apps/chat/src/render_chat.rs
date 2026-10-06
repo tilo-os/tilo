@@ -103,7 +103,7 @@ fn agent_task_status(
     tasks: &ui::agent_task_frontier::AgentTaskFrontiers,
     stopping: bool,
 ) -> String {
-    use ui::agent_task_frontier::{AgentDirectionState, AgentTaskDiscovery};
+    use ui::agent_task_frontier::AgentTaskDiscovery;
 
     let context = tasks.context_task();
     let mut status = context.as_ref().map_or_else(
@@ -115,24 +115,7 @@ fn agent_task_status(
             }
         },
         |task| {
-            let state = if stopping {
-                crate::i18n::t("chat-agent-task-stopping")
-            } else {
-                match tasks.direction_state() {
-                    AgentDirectionState::Saved { .. } => {
-                        crate::i18n::t("chat-agent-direction-saved")
-                    }
-                    AgentDirectionState::Applied { .. } => {
-                        crate::i18n::t("chat-agent-direction-applied")
-                    }
-                    AgentDirectionState::NeedsRefresh(_) => {
-                        crate::i18n::t("chat-agent-task-attention")
-                    }
-                    AgentDirectionState::Draft | AgentDirectionState::Submitting => {
-                        crate::i18n::t("chat-agent-task-working")
-                    }
-                }
-            };
+            let state = agent_task_run_state(tasks.direction_state(), stopping);
             crate::i18n::t_args(
                 "chat-agent-task-status",
                 &[
@@ -155,6 +138,35 @@ fn agent_task_status(
         };
     }
     status
+}
+
+fn agent_task_run_state(
+    direction: &ui::agent_task_frontier::AgentDirectionState,
+    stopping: bool,
+) -> String {
+    use ui::agent_task_frontier::AgentDirectionState;
+
+    let run = if stopping {
+        crate::i18n::t("chat-agent-task-stopping")
+    } else if matches!(direction, AgentDirectionState::NeedsRefresh(_)) {
+        crate::i18n::t("chat-agent-task-attention")
+    } else {
+        crate::i18n::t("chat-agent-task-working")
+    };
+    let receipt = match direction {
+        AgentDirectionState::Saved { .. } => Some(crate::i18n::t("chat-agent-direction-saved")),
+        AgentDirectionState::Applied { .. } => Some(crate::i18n::t("chat-agent-direction-applied")),
+        AgentDirectionState::Draft
+        | AgentDirectionState::Submitting
+        | AgentDirectionState::NeedsRefresh(_) => None,
+    };
+    match receipt {
+        Some(receipt) => crate::i18n::t_args(
+            "chat-agent-task-run-with-receipt",
+            &[("run", run.into()), ("receipt", receipt.into())],
+        ),
+        None => run,
+    }
 }
 
 impl ChatApp {
@@ -3725,13 +3737,44 @@ impl RowM {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentWorkLineStyle, AgentWorkPresentation, RowM, media_face, media_meta};
+    use super::{
+        AgentWorkLineStyle, AgentWorkPresentation, RowM, agent_task_run_state, media_face,
+        media_meta,
+    };
     use crate::model::{
         AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState,
         Attachment,
     };
     use ui::theme::Theme;
     use ui::widget::{MediaArt, MediaSize};
+
+    #[test]
+    fn direction_receipts_do_not_replace_the_truthful_run_state() {
+        use ui::agent_task_frontier::AgentDirectionState;
+
+        let saved = AgentDirectionState::Saved {
+            task_id: "task-1".into(),
+            run_epoch: 2,
+            revision: 3,
+        };
+        let applied = AgentDirectionState::Applied {
+            task_id: "task-1".into(),
+            run_epoch: 2,
+            revision: 3,
+        };
+        assert_eq!(
+            agent_task_run_state(&saved, false),
+            "Working. Direction saved"
+        );
+        assert_eq!(
+            agent_task_run_state(&applied, false),
+            "Working. Direction applied"
+        );
+        assert_eq!(
+            agent_task_run_state(&saved, true),
+            "Stopping. Direction saved"
+        );
+    }
 
     #[test]
     fn media_cards_keep_the_picture_shape_inside_a_regular_card() {

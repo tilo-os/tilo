@@ -136,7 +136,8 @@ chat-agent-task-stopping = Stopping
 chat-agent-task-attention = Needs attention
 chat-agent-direction-saved = Direction saved
 chat-agent-direction-applied = Direction applied
-chat-agent-task-status = { $state } · { $title }
+chat-agent-task-run-with-receipt = { $run }. { $receipt }
+chat-agent-task-status = { $state }: { $title }
 chat-agent-task-queued-count = { $count ->
     [one] 1 queued task
    *[other] { $count } queued tasks
