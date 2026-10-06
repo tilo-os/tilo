@@ -193,6 +193,18 @@ Steps 3-6 live in `crates/session/shell/src/network/input_firewall.rs`. Every on
 ## Host overrides
 
 - **Session lock.** While the lock surface is up, every remote event is refused. A locked machine has no driver.
+  Native compositor restarts retain this state within the authenticated PAM
+  login. `tilo-session` initializes `lock-state` in its new private logout-channel
+  directory; it does not import this channel into the user manager or D-Bus
+  activation environment. Before admitting input or painting, the compositor
+  validates the owner-only channel and arms a locked recovery record. TERM, INT
+  and HUP wake ordered teardown, which publishes the final lock state only after
+  presentation, clients and control endpoints stop. A crash, missing record,
+  corrupt record or incomplete teardown recovers locked; an invalid owner or
+  redirected channel refuses startup. A new authenticated login gets its own
+  directory. This is local session state, outside collaborative documents and
+  undo. Recovery uses the existing password verifier; there is no new unlock
+  action, environment switch, credential or sandbox permission.
 - **Physical priority.** Physical input from the host's seat causes a 500 ms block on all remote input — the user can always grab control. Stamped at the backend event funnel in `compositor/native.rs`, so branches that never reach the client router (the lock screen, the VT chord, the power key) still count as the host taking over.
 - **Kill switch (`Super+Esc`).** Stops every peer's input at once: the firewall
   latches, held remote keys are released, peer-seat attribution is dropped, every
