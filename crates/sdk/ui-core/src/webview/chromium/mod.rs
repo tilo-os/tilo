@@ -34,6 +34,7 @@ struct NavigationRequests {
 #[derive(Default)]
 struct Shared {
     text_input: Mutex<super::text_input::Transactions>,
+    native_edit_history: AtomicBool,
     open_tabs: Mutex<VecDeque<(String, bool)>>,
     frames: FrameSlot,
     events: Mutex<VecDeque<WebViewEvent>>,
@@ -462,6 +463,7 @@ impl UnavailableEngine {
             message,
             shared: Shared {
                 text_input: Mutex::default(),
+                native_edit_history: AtomicBool::new(false),
                 open_tabs: Mutex::default(),
                 frames: Arc::new(Mutex::new(None)),
                 events: Mutex::new(VecDeque::new()),
@@ -978,6 +980,19 @@ impl ChromiumEngine {
 }
 
 impl WebViewEngine for ChromiumEngine {
+    fn handle_undo_request(&self, request: crate::undo::UndoRequest) -> bool {
+        if !self.supports_text_input() || !self.shared.native_edit_history.load(Ordering::Acquire) {
+            return false;
+        }
+        let direction = match request {
+            crate::undo::UndoRequest::Undo => "undo",
+            crate::undo::UndoRequest::Redo => "redo",
+        };
+        self.tx
+            .push(json!({"op":"edit_history","tab":self.tab,"direction":direction}))
+            .is_ok()
+    }
+
     fn supports_text_input(&self) -> bool {
         !self.shared.failed.load(Ordering::Acquire) && !self.shared.stopping.load(Ordering::Acquire)
     }
@@ -1293,6 +1308,12 @@ fn route_native_event(
         }
     };
     if let Some(shared) = endpoint {
+        if matches!(event_name, "ready" | "tab_ready") {
+            shared.native_edit_history.store(
+                value["native_edit_history"].as_bool() == Some(true),
+                Ordering::Release,
+            );
+        }
         if let Some(outbox) = &shared.remote {
             outbox.event(value.clone());
             return Ok(());
@@ -1522,7 +1543,16 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                     .as_str()
                     .is_some_and(|error| error.len() <= 1024)
         }
-        "ready" => text("cef_version") && text("chromium_version"),
+        "ready" => {
+            text("cef_version")
+                && text("chromium_version")
+                && value
+                    .get("native_edit_history")
+                    .is_none_or(Value::is_boolean)
+        }
+        "tab_ready" => value
+            .get("native_edit_history")
+            .is_none_or(Value::is_boolean),
         "open_tab" => {
             value["url"].as_str().is_some_and(|url| url.len() <= 8192)
                 && value["background"].is_boolean()

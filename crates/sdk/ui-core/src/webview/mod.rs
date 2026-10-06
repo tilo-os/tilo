@@ -545,6 +545,14 @@ pub trait WebViewEngine: Send + Sync {
             .is_some_and(|engine| engine.supports_text_input())
     }
 
+    /// Offer system Undo/Redo to this page's native editing history.
+    /// True means the backend consumed the request, not that a history entry
+    /// existed or that an asynchronous edit has already completed.
+    fn handle_undo_request(&self, request: crate::undo::UndoRequest) -> bool {
+        self.wrapped()
+            .is_some_and(|engine| engine.handle_undo_request(request))
+    }
+
     /// Private text transactions never enter the app event or page-agent stream.
     fn text_input(&self, request: text_input::Request) -> Option<text_input::Receipt> {
         self.wrapped()?.text_input(request)

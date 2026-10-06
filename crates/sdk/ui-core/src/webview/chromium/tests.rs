@@ -2187,3 +2187,53 @@ fn private_text_input_receipts_route_only_to_the_original_tab_without_public_eve
         Some(Err(super::super::text_input::Failure::Unknown))
     ));
 }
+
+#[test]
+fn native_history_capability_is_optional_strict_and_per_tab() {
+    let first = Arc::new(Shared::default());
+    let second = Arc::new(Shared::default());
+    let routes = Arc::new(Mutex::new(HashMap::from([
+        (1, Arc::downgrade(&first)),
+        (2, Arc::downgrade(&second)),
+    ])));
+    let downloads = Mutex::default();
+    let (ready, _receiver) = sync_channel(1);
+    assert!(!first.native_edit_history.load(Ordering::Acquire));
+    route_native_event(&json!({"event":"ready","cef_version":"152","chromium_version":"152","native_edit_history":true}), &routes, &downloads, &ready).unwrap();
+    assert!(first.native_edit_history.load(Ordering::Acquire));
+    route_native_event(
+        &json!({"event":"tab_ready","tab":2}),
+        &routes,
+        &downloads,
+        &ready,
+    )
+    .unwrap();
+    assert!(!second.native_edit_history.load(Ordering::Acquire));
+    assert!(first.native_edit_history.load(Ordering::Acquire));
+    route_native_event(
+        &json!({"event":"tab_ready","tab":2,"native_edit_history":true}),
+        &routes,
+        &downloads,
+        &ready,
+    )
+    .unwrap();
+    assert!(second.native_edit_history.load(Ordering::Acquire));
+    assert!(
+        route_native_event(
+            &json!({"event":"tab_ready","tab":2,"native_edit_history":"true"}),
+            &routes,
+            &downloads,
+            &ready
+        )
+        .is_err()
+    );
+    route_native_event(
+        &json!({"event":"ready","cef_version":"152","chromium_version":"152"}),
+        &routes,
+        &downloads,
+        &ready,
+    )
+    .unwrap();
+    assert!(!first.native_edit_history.load(Ordering::Acquire));
+    assert!(second.native_edit_history.load(Ordering::Acquire));
+}

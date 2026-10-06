@@ -321,8 +321,22 @@ impl crate::widget::NativeViewLifecycle for WebView {
     fn native_view_frame_start(&mut self) {}
 }
 
+impl crate::undo::LocalUndo for WebView {
+    fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
+        if !self.focused || !self.engine.handle_undo_request(request) {
+            return false;
+        }
+        // Editing the page retires any original-field speech reservation.
+        self.text_input.invalidate(&self.engine);
+        true
+    }
+}
+
 impl Widget for WebView {
-    crate::provides!(dyn crate::widget::NativeViewLifecycle);
+    crate::provides!(
+        dyn crate::widget::NativeViewLifecycle,
+        dyn crate::undo::LocalUndo
+    );
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.text_input.pump(
@@ -720,6 +734,59 @@ mod tests {
     use automerge::AutoCommit;
     use std::sync::Arc;
     use winit::event::{DeviceId, ElementState, WindowEvent};
+
+    struct NativeHistory {
+        inner: crate::webview::SharedEngine,
+        requests: std::sync::Mutex<Vec<crate::undo::UndoRequest>>,
+    }
+    impl WebViewEngine for NativeHistory {
+        fn send(&self, command: WebViewCommand) {
+            self.inner.send(command);
+        }
+        fn frames(&self) -> crate::webview::FrameSlot {
+            self.inner.frames()
+        }
+        fn drain_events(&self) -> Vec<crate::webview::WebViewEvent> {
+            self.inner.drain_events()
+        }
+        fn wrapped(&self) -> Option<&crate::webview::SharedEngine> {
+            Some(&self.inner)
+        }
+        fn handle_undo_request(&self, request: crate::undo::UndoRequest) -> bool {
+            self.requests
+                .lock()
+                .expect("native history fixture")
+                .push(request);
+            true
+        }
+    }
+
+    #[test]
+    fn system_undo_delegates_only_to_focused_native_page() {
+        use crate::undo::{UndoRequest, handle_local_undo_request};
+        let engine = Arc::new(NativeHistory {
+            inner: TestEngine::new(),
+            requests: Default::default(),
+        });
+        let mut page = WebView::new(engine.clone());
+        assert!(!handle_local_undo_request(&mut page, UndoRequest::Undo));
+        assert!(engine.requests.lock().expect("fixture").is_empty());
+        page.set_focus(true);
+        assert!(handle_local_undo_request(&mut page, UndoRequest::Undo));
+        assert!(handle_local_undo_request(&mut page, UndoRequest::Redo));
+        page.set_focus(false);
+        assert!(!handle_local_undo_request(&mut page, UndoRequest::Redo));
+        assert_eq!(
+            *engine.requests.lock().expect("fixture"),
+            [UndoRequest::Undo, UndoRequest::Redo]
+        );
+        let mut unsupported = WebView::new(TestEngine::new());
+        unsupported.set_focus(true);
+        assert!(!handle_local_undo_request(
+            &mut unsupported,
+            UndoRequest::Undo
+        ));
+    }
 
     #[test]
     fn keyboard_focus_is_forwarded_to_the_page() {
