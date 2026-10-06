@@ -19,6 +19,7 @@ use tilo_desktop_model::{
 
 pub const TASK_CONTROL_KEY: &str = "task_control_v1";
 const MAX_TASK_TITLE_CHARS: usize = 240;
+const MAX_TASK_INSTRUCTION_CHARS: usize = 8_000;
 const MAX_TASK_RECEIPTS: usize = 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -147,6 +148,15 @@ pub enum WorkspaceTaskCommand {
         sequence: u64,
         phase: WorkspaceTaskExecutionPhase,
     },
+    /// Queue a task whose complete instruction is independent of its short
+    /// Task Center title. Appended to preserve encoded command indices.
+    QueueTask {
+        title: String,
+        instruction: String,
+        assigned_agent: String,
+        route: WorkspaceTaskRoute,
+        resource: Option<Box<WorkspaceTaskResource>>,
+    },
 }
 
 impl WorkspaceTaskCommand {
@@ -154,6 +164,7 @@ impl WorkspaceTaskCommand {
     pub fn agent(&self) -> Option<&str> {
         match self {
             Self::Queue { assigned_agent, .. }
+            | Self::QueueTask { assigned_agent, .. }
             | Self::StartRun {
                 agent_id: assigned_agent,
                 ..
@@ -254,20 +265,9 @@ fn dispatch(
     command: &WorkspaceTaskCommand,
 ) -> Result<(String, WorkspaceTaskMutationResult), String> {
     match command {
-        WorkspaceTaskCommand::Queue {
-            title,
-            assigned_agent,
-            route,
-            resource,
-        } => queue(
-            tasks,
-            controls,
-            context,
-            title,
-            assigned_agent,
-            *route,
-            resource.as_deref().cloned(),
-        ),
+        WorkspaceTaskCommand::Queue { .. } | WorkspaceTaskCommand::QueueTask { .. } => {
+            dispatch_queue(tasks, controls, context, command)
+        }
         WorkspaceTaskCommand::StartRun { task_id, agent_id } => start_run(
             tasks,
             controls,
@@ -335,6 +335,55 @@ fn dispatch(
     }
 }
 
+fn dispatch_queue(
+    tasks: &mut Vec<WorkspaceTask>,
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    context: &CommandContext<'_>,
+    command: &WorkspaceTaskCommand,
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    let (title, instruction, assigned_agent, route, resource) = match command {
+        WorkspaceTaskCommand::Queue {
+            title,
+            assigned_agent,
+            route,
+            resource,
+        } => (
+            title,
+            resource
+                .as_deref()
+                .and_then(|value| value.agent_request.as_ref())
+                .map(|request| request.instruction.as_str()),
+            assigned_agent,
+            route,
+            resource,
+        ),
+        WorkspaceTaskCommand::QueueTask {
+            title,
+            instruction,
+            assigned_agent,
+            route,
+            resource,
+        } => (
+            title,
+            Some(instruction.as_str()),
+            assigned_agent,
+            route,
+            resource,
+        ),
+        _ => return Err("task queue command changed during dispatch".into()),
+    };
+    queue(
+        tasks,
+        controls,
+        context,
+        title,
+        instruction,
+        assigned_agent,
+        *route,
+        resource.as_deref().cloned(),
+    )
+}
+
 fn dispatch_agent_report(
     tasks: &mut [WorkspaceTask],
     controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
@@ -394,6 +443,7 @@ fn queue(
     controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
     context: &CommandContext<'_>,
     title: &str,
+    instruction: Option<&str>,
     assigned_agent: &str,
     route: WorkspaceTaskRoute,
     resource: Option<WorkspaceTaskResource>,
@@ -410,6 +460,16 @@ fn queue(
         || route == WorkspaceTaskRoute::Manual
     {
         return Err("queued agent task has no valid agent route".into());
+    }
+    if let Some(instruction) = instruction {
+        bounded(
+            instruction,
+            MAX_WORKSPACE_TASK_INSTRUCTION_BYTES,
+            "task instruction",
+        )?;
+        if instruction.chars().count() > MAX_TASK_INSTRUCTION_CHARS {
+            return Err("task instruction exceeds 8000 characters".into());
+        }
     }
     if let Some(request) = resource
         .as_ref()
@@ -454,7 +514,14 @@ fn queue(
             summary: format!("Created task · {title}"),
         }],
     });
-    controls.insert(task_id.clone(), WorkspaceTaskControl::default());
+    controls.insert(
+        task_id.clone(),
+        WorkspaceTaskControl {
+            instruction: instruction.map(str::to_owned),
+            instruction_required: instruction.is_some(),
+            ..WorkspaceTaskControl::default()
+        },
+    );
     Ok((
         task_id.clone(),
         WorkspaceTaskMutationResult::Queued { task_id },
@@ -514,6 +581,9 @@ fn start_run(
         return Err("task cannot start for that agent".into());
     }
     let control = controls.entry(task_id.to_owned()).or_default();
+    if control.instruction_required && control.instruction.is_none() {
+        return Err("task lost its required execution instruction".into());
+    }
     if control.active_run.is_some() {
         return Err("task already has an active run".into());
     }
@@ -1326,6 +1396,14 @@ mod tests {
     fn exact_queue_replay_is_stable_and_conflicting_reuse_is_refused() {
         let mut doc = AutoCommit::new();
         let command = queue_command();
+        let legacy_bytes = postcard::to_allocvec(&command).unwrap();
+        assert_eq!(legacy_bytes[0], 0);
+        let WorkspaceTaskCommand::Queue { title, .. } =
+            postcard::from_bytes::<WorkspaceTaskCommand>(&legacy_bytes).unwrap()
+        else {
+            panic!("legacy queue variant changed")
+        };
+        assert_eq!(title, "Prepare the release notes");
         let first = run(&mut doc, 1, 7, &person(), &command).unwrap();
         assert!(first.changed);
         let WorkspaceTaskMutationResult::Queued { task_id } = first.result else {
@@ -1341,6 +1419,84 @@ mod tests {
         );
         assert_eq!(snapshot(&reopened).unwrap().tasks.len(), 1);
         assert!(run(&mut reopened, 1, 8, &person(), &command).is_err());
+    }
+
+    #[test]
+    fn queued_instruction_is_byte_exact_bounded_and_survives_reopen() {
+        let instruction = "𐐀".repeat(MAX_TASK_INSTRUCTION_CHARS);
+        assert_eq!(instruction.len(), 32_000);
+        let command = WorkspaceTaskCommand::QueueTask {
+            title: "Review release".into(),
+            instruction: instruction.clone(),
+            assigned_agent: "scribe".into(),
+            route: WorkspaceTaskRoute::Model,
+            resource: None,
+        };
+        assert_eq!(postcard::to_allocvec(&command).unwrap()[0], 8);
+        let mut doc = AutoCommit::new();
+        let queued = run(&mut doc, 21, 21, &person(), &command).unwrap();
+        let WorkspaceTaskMutationResult::Queued { task_id } = queued.result else {
+            panic!("queue result")
+        };
+        let mut reopened = AutoCommit::load(&doc.save()).unwrap();
+        let state = snapshot(&reopened).unwrap();
+        let control = &state.controls[&task_id];
+        assert_eq!(control.instruction.as_deref(), Some(instruction.as_str()));
+        assert!(control.instruction_required);
+        assert!(
+            !run(&mut reopened, 21, 21, &person(), &command)
+                .unwrap()
+                .changed
+        );
+
+        let mut too_many_chars = command.clone();
+        let WorkspaceTaskCommand::QueueTask { instruction, .. } = &mut too_many_chars else {
+            panic!("queue task variant changed")
+        };
+        instruction.push('x');
+        let before = reopened.save();
+        assert!(run(&mut reopened, 22, 22, &person(), &too_many_chars).is_err());
+        assert_eq!(reopened.save(), before);
+    }
+
+    #[test]
+    fn required_instruction_cannot_silently_fall_back_to_title() {
+        let mut doc = AutoCommit::new();
+        let queued = run(
+            &mut doc,
+            31,
+            31,
+            &person(),
+            &WorkspaceTaskCommand::QueueTask {
+                title: "Short display title".into(),
+                instruction: "Complete exact private instruction".into(),
+                assigned_agent: "scribe".into(),
+                route: WorkspaceTaskRoute::Model,
+                resource: None,
+            },
+        )
+        .unwrap();
+        let WorkspaceTaskMutationResult::Queued { task_id } = queued.result else {
+            panic!("queue result")
+        };
+        let mut controls = controls_of(&doc).unwrap();
+        controls.get_mut(&task_id).unwrap().instruction = None;
+        project_controls(&mut doc, &controls).unwrap();
+        let before = doc.save();
+        assert!(
+            run(
+                &mut doc,
+                32,
+                32,
+                &host(),
+                &WorkspaceTaskCommand::StartRun {
+                    task_id,
+                    agent_id: "scribe".into(),
+                },
+            )
+            .is_err()
+        );
+        assert_eq!(doc.save(), before);
     }
 
     #[test]

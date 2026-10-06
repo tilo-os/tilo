@@ -2805,10 +2805,22 @@ pub struct TaskRunEnvelope {
     pub version: u16,
     pub task_id: String,
     pub title: String,
+    /// Exact person-authored instruction. Absent only for explicitly legacy
+    /// title-only tasks produced before instruction retention existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction: Option<String>,
     pub run_id: u64,
     pub lease: String,
     pub planning: TaskRunPlanning,
     pub action_context: serde_json::Value,
+}
+
+impl TaskRunEnvelope {
+    /// Exact execution input, falling back only for legacy title-only runs.
+    #[must_use]
+    pub fn execution_instruction(&self) -> &str {
+        self.instruction.as_deref().unwrap_or(&self.title)
+    }
 }
 
 /// How the task owner allowed its delegated agent to choose actions.
@@ -2871,6 +2883,7 @@ mod task_run_tests {
             version: 1,
             task_id: "task:1".into(),
             title: "Review proposal".into(),
+            instruction: Some("Review the complete proposal and cite risks.".into()),
             run_id: 7,
             lease: "broker-lease".into(),
             planning: TaskRunPlanning::RulesOnly,
@@ -3759,6 +3772,7 @@ mod enrolled_tests {
                 version: 1,
                 task_id: "task-1".into(),
                 title: "Private instruction".into(),
+                instruction: None,
                 run_id: 9,
                 lease: "lease-1".into(),
                 planning: TaskRunPlanning::Model,

@@ -720,8 +720,11 @@ impl Session {
             LoopEnd::Failed(message) => format!("(failed) {message}"),
             LoopEnd::Cancelled(message) => format!("(cancelled) {message}"),
         };
-        self.memory
-            .remember(&run.title, std::mem::take(&mut state.actions), &reply);
+        self.memory.remember(
+            run.execution_instruction(),
+            std::mem::take(&mut state.actions),
+            &reply,
+        );
         Ok(end)
     }
 
@@ -744,7 +747,7 @@ impl Session {
         let catalogue = self.task_catalogue();
         // "ping/tell/notify … in Chat" requires a successful Chat operation,
         // whatever the model later claims.
-        let request = run.title.to_lowercase();
+        let request = run.execution_instruction().to_lowercase();
         if request.contains("chat")
             && NOTIFY_WORDS.iter().any(|word| request.contains(word))
             && let Some(chat) = catalogue
@@ -788,7 +791,7 @@ impl Session {
         let user_turn = format!(
             "Operations published right now:\n\n{summary}\n{}The request:\n\n{}",
             self.memory.render(),
-            run.title.trim()
+            run.execution_instruction().trim()
         );
         let mut conversation = Conversation::new(protocol, &model, LOOP_SYSTEM, &user_turn);
         for turn in 0..MAX_LOOP_TURNS {
@@ -1287,7 +1290,7 @@ impl Session {
         };
         let instruction = match Instruction::from_answer(
             &invocation.operation,
-            &run.title,
+            run.execution_instruction(),
             Some(&invocation.arguments),
             &catalogue.offers,
         ) {
@@ -2436,6 +2439,7 @@ mod tests {
             version: 1,
             task_id: "task:loop".into(),
             title: title.into(),
+            instruction: None,
             run_id: 7,
             lease: "broker-minted-lease".into(),
             planning: runtime_collab::TaskRunPlanning::Model,

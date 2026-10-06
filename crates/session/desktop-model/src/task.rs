@@ -58,6 +58,22 @@ impl WorkspaceTaskRoute {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::WorkspaceTaskControl;
+
+    #[test]
+    fn legacy_task_control_decodes_as_explicit_title_only() {
+        let control: WorkspaceTaskControl = serde_json::from_str(
+            r#"{"run_epoch":3,"active_run":null,"directions":[],"receipts":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(control.run_epoch, 3);
+        assert!(control.instruction.is_none());
+        assert!(!control.instruction_required);
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceTaskResource {
     pub app_id: Option<String>,
@@ -195,6 +211,14 @@ pub struct WorkspaceTaskMutationReceipt {
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceTaskControl {
     pub run_epoch: u64,
+    /// Full person-authored instruction, independent of the short display
+    /// title and any application-specific source resource.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction: Option<String>,
+    /// New queue commands require an exact retained instruction. False marks
+    /// an explicitly legacy title-only task, whose title remains its prompt.
+    #[serde(default)]
+    pub instruction_required: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_run: Option<WorkspaceTaskActiveRun>,
     /// Missing means no authenticated phase is known, not "working".

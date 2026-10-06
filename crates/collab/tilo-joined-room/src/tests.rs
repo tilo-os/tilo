@@ -322,6 +322,10 @@ fn typed_task_queue_and_exact_retry_survive_owner_restart() {
         .with_current(joined.room, |view| Ok(view.device().clone()))
         .unwrap();
     let invocation = uuid::Uuid::from_u128(91);
+    let instruction = format!(
+        "Preserve every line exactly.\n\n{}\nFinal line.",
+        "𐐀".repeat(7_900)
+    );
     let request = OwnerCommitRequest {
         room: ROOM.into(),
         operation: CommitOperation::WorkspaceTaskCommand {
@@ -329,8 +333,9 @@ fn typed_task_queue_and_exact_retry_survive_owner_restart() {
             authority: WorkspaceTaskAuthority::Person {
                 caller: caller.clone(),
             },
-            command: WorkspaceTaskCommand::Queue {
+            command: WorkspaceTaskCommand::QueueTask {
                 title: "Prepare the release notes".into(),
+                instruction: instruction.clone(),
                 assigned_agent: "scribe".into(),
                 route: tilo_desktop_model::WorkspaceTaskRoute::Model,
                 resource: None,
@@ -364,12 +369,55 @@ fn typed_task_queue_and_exact_retry_survive_owner_restart() {
     let snapshot = reopened.workspace_task_snapshot(joined.room).unwrap();
     assert_eq!(snapshot.tasks.len(), 1);
     assert_eq!(snapshot.tasks[0].assigned_agent.as_deref(), Some("scribe"));
+    let control = snapshot.controls.values().next().unwrap();
+    assert_eq!(control.instruction.as_deref(), Some(instruction.as_str()));
+    assert!(control.instruction_required);
     assert!(
         reopened
             .workspace_task_result(joined.room, id)
             .unwrap()
             .is_some()
     );
+
+    let mut conflicting = request_for_task_replay(caller, invocation, instruction);
+    let CommitOperation::WorkspaceTaskCommand { command, .. } = &mut conflicting.operation else {
+        panic!("workspace task operation changed")
+    };
+    let WorkspaceTaskCommand::QueueTask { instruction, .. } = command else {
+        panic!("queue task command changed")
+    };
+    instruction.push_str(" changed");
+    let before = reopened.workspace_task_snapshot(joined.room).unwrap();
+    assert!(
+        reopened
+            .commit_workspace_task_command(conflicting, joined.now)
+            .is_err()
+    );
+    assert_eq!(
+        reopened.workspace_task_snapshot(joined.room).unwrap(),
+        before
+    );
+}
+
+fn request_for_task_replay(
+    caller: tilo_user_identity::DeviceCert,
+    invocation: uuid::Uuid,
+    instruction: String,
+) -> OwnerCommitRequest {
+    OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation,
+            authority: WorkspaceTaskAuthority::Person { caller },
+            command: WorkspaceTaskCommand::QueueTask {
+                title: "Prepare the release notes".into(),
+                instruction,
+                assigned_agent: "scribe".into(),
+                route: tilo_desktop_model::WorkspaceTaskRoute::Model,
+                resource: None,
+            },
+        },
+    }
 }
 
 #[test]
