@@ -353,6 +353,10 @@ impl ChatApp {
             self.request_relayout();
             *handled = true;
         }
+        if self.agent_conversation_drag.is_some() {
+            self.update_agent_conversation_drag(self.last_mouse);
+            *handled = true;
+        }
         let hovered = if self.call.placement.is_dragging() {
             None
         } else {
@@ -412,6 +416,10 @@ impl ChatApp {
                 );
                 *handled = true;
             }
+            Some(Hit::AgentDragHandle) => {
+                self.begin_agent_conversation_drag(self.last_mouse);
+                *handled = true;
+            }
             Some(Hit::Channel(id)) => {
                 // Arm a potential swipe on the row; a plain click still
                 // resolves on release if it didn't travel.
@@ -464,6 +472,7 @@ impl ChatApp {
         handled: &mut bool,
     ) {
         self.call.placement.end_drag(self.desktop_floating_bounds());
+        self.end_agent_conversation_drag();
         // End any composer drag-selection in progress.
         self.forward_release_to_text_inputs(event, scale, modifiers, doc);
         if let Some(sw) = self.swipe.take() {
@@ -932,6 +941,13 @@ impl ChatApp {
                         .stop();
                 }
             }
+            Hit::AgentWorkToggle(message) => {
+                self.agent_work_expanded.update(|expanded| {
+                    if !expanded.remove(&message) {
+                        expanded.insert(message);
+                    }
+                });
+            }
             Hit::VoiceChannel(id) => self.join_voice(&id, doc),
             Hit::CategoryToggle(id) => self.toggle_category(&id),
             Hit::EditSave => self.commit_edit(doc),
@@ -1025,8 +1041,8 @@ impl ChatApp {
             Hit::ToggleLeftFlap => self.left_flap.toggle(),
             Hit::ToggleRightFlap => self.right_flap.toggle(),
             Hit::Dismiss => self.on_hit_dismiss(),
-            // MessageMenu is a right-click affordance and CallDragHandle is
-            // handled at press time; permission-gated fallthroughs are no-ops.
+            // MessageMenu and floating-surface drag handles are handled at
+            // press time; permission-gated fallthroughs are no-ops.
             _ => {}
         }
         self.reload(doc);
@@ -2294,7 +2310,7 @@ mod tests {
             &mut ui::widget::Edits::lend(&mut doc),
         );
         type_str(&mut app, &mut doc, "Inspect the compact layout");
-        app.send_focused(&mut ui::widget::Edits::lend(&mut doc));
+        app.on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
         assert!(matches!(
             tasks.borrow().queue_state(),
             AgentQueueState::Queued { .. }
@@ -2323,7 +2339,7 @@ mod tests {
             &mut ui::widget::Edits::lend(&mut doc),
         );
         type_str(&mut app, &mut doc, "Include keyboard evidence");
-        app.send_focused(&mut ui::widget::Edits::lend(&mut doc));
+        app.on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
         assert!(matches!(
             tasks.borrow().direction_state(),
             AgentDirectionState::Saved { revision: 5, .. }
@@ -2343,6 +2359,60 @@ mod tests {
             tasks.borrow().stop_state(),
             AgentStopState::Stopping { run_epoch: 7, .. }
         ));
+    }
+
+    #[test]
+    fn agent_conversation_drag_uses_the_shared_surface_handoff() {
+        use ui::Widget;
+
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.room_names
+            .insert("agent:scribe".into(), "Scribe".into());
+        app.reload(&doc);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        type_str(&mut app, &mut doc, "Keep the exact private selection");
+        render_frame(&mut app, 800.0, 600.0);
+        let handle = app
+            .hits
+            .iter()
+            .find_map(|(rect, hit)| matches!(hit, Hit::AgentDragHandle).then_some(rect.center()))
+            .expect("the direct conversation exposes the shared drag grip");
+        feed(&mut app, &mut doc, &cursor(handle.x, handle.y));
+        feed(
+            &mut app,
+            &mut doc,
+            &mouse(ElementState::Pressed, MouseButton::Left),
+        );
+        assert!(Widget::wants_pointer_capture(&app));
+        let outside = Point::new(app.rect.x1 + 40.0, handle.y + 18.0);
+        feed(&mut app, &mut doc, &cursor(outside.x, outside.y));
+        assert!(app.direct_agent.is_none(), "the primary source is cleared");
+        let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
+        let surface = app
+            .agent_surfaces
+            .get(&channel)
+            .expect("crossing the boundary creates the one Agent surface");
+        assert!(surface.placement.is_dragging());
+        assert_eq!(
+            surface.view.composer_main.private_plain().as_deref(),
+            Some("Keep the exact private selection")
+        );
+        assert!(
+            ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app).is_some(),
+            "the drag crosses the same compositor adoption door as Float"
+        );
+        feed(
+            &mut app,
+            &mut doc,
+            &mouse(ElementState::Released, MouseButton::Left),
+        );
+        assert!(!Widget::wants_pointer_capture(&app));
     }
 
     #[test]
@@ -4100,7 +4170,6 @@ mod tests {
 
     #[test]
     fn agent_work_thread_survives_pointer_navigation_and_projects_updates() {
-        use crate::model::{AgentStepOutcome, AgentWork, AgentWorkState};
         use ui::Widget;
 
         for (width, height) in [(1600.0, 900.0), (800.0, 600.0)] {
@@ -4129,6 +4198,33 @@ mod tests {
             };
             assert!(description(&app).contains("Latest intent: Add function"));
             assert!(description(&app).contains("Requested: Add function"));
+            assert!(
+                !app.agent_work_expanded
+                    .with(|messages| messages.contains("m_agent_reply")),
+                "the factual summary starts calm and collapsed"
+            );
+            let activity = app
+                .hits
+                .iter()
+                .find_map(|(rect, hit)| {
+                    matches!(hit, Hit::AgentWorkToggle(id) if id == "m_agent_reply")
+                        .then_some(rect.center())
+                })
+                .expect("the recorded action trail has one semantic disclosure control");
+            click_point(&mut app, &mut doc, activity);
+            assert!(
+                app.agent_work_expanded
+                    .with(|messages| messages.contains("m_agent_reply"))
+            );
+            render_frame(&mut app, width, height);
+            assert_eq!(
+                count_hits(
+                    &app,
+                    |hit| matches!(hit, Hit::AgentWorkToggle(id) if id == "m_agent_reply")
+                ),
+                1,
+                "expansion preserves one accessibility/automation door"
+            );
 
             let close = app
                 .hits
@@ -4155,37 +4251,7 @@ mod tests {
             click_point(&mut app, &mut doc, open);
             assert_eq!(app.thread_open.as_deref(), Some("m_agent_request"));
 
-            let mut applied_step = app
-                .messages
-                .iter()
-                .find(|message| message.id == "m_agent_reply")
-                .unwrap()
-                .work
-                .as_ref()
-                .unwrap()
-                .trace[0]
-                .clone();
-            applied_step.outcome = AgentStepOutcome::Applied;
-            crate::actions::apply_as(
-                &mut doc,
-                "agent-task:11111111-1111-4111-8111-111111111111",
-                &crate::actions::set_agent_work_action(
-                    "c_crit",
-                    "m_agent_reply",
-                    AgentWork::new(
-                        AgentWorkState::Done {
-                            did: "Revenue curve added".into(),
-                        },
-                        crate::doc::NOW,
-                    )
-                    .with_trace(vec![applied_step]),
-                    None,
-                ),
-            )
-            .unwrap();
-            app.land(&mut doc);
-            app.sync(&doc, &automerge::ROOT);
-            render_frame(&mut app, width, height);
+            complete_agent_work(&mut app, &mut doc, width, height);
             assert_eq!(
                 description(&app),
                 "Completed: Revenue curve added; Applied: Add function",
@@ -4202,6 +4268,41 @@ mod tests {
                 "work updates do not overwrite authored text"
             );
         }
+    }
+
+    fn complete_agent_work(app: &mut ChatApp, doc: &mut AutoCommit, width: f64, height: f64) {
+        use crate::model::{AgentStepOutcome, AgentWork, AgentWorkState};
+        use ui::Widget;
+
+        let mut applied_step = app
+            .messages
+            .iter()
+            .find(|message| message.id == "m_agent_reply")
+            .and_then(|message| message.work.as_ref())
+            .and_then(|work| work.trace.first())
+            .cloned()
+            .expect("the staged reply records one requested action");
+        applied_step.outcome = AgentStepOutcome::Applied;
+        crate::actions::apply_as(
+            doc,
+            "agent-task:11111111-1111-4111-8111-111111111111",
+            &crate::actions::set_agent_work_action(
+                "c_crit",
+                "m_agent_reply",
+                AgentWork::new(
+                    AgentWorkState::Done {
+                        did: "Revenue curve added".into(),
+                    },
+                    crate::doc::NOW,
+                )
+                .with_trace(vec![applied_step]),
+                None,
+            ),
+        )
+        .unwrap();
+        app.land(doc);
+        app.sync(doc, &automerge::ROOT);
+        render_frame(app, width, height);
     }
 
     fn count_hits(app: &ChatApp, pred: impl Fn(&Hit) -> bool) -> usize {
@@ -4232,6 +4333,16 @@ mod tests {
         )
         .unwrap();
         app.sync(&doc, &automerge::ROOT);
+        render_frame(&mut app, 800.0, 600.0);
+        let disclosure = app
+            .hits
+            .iter()
+            .find_map(|(rect, hit)| {
+                matches!(hit, Hit::AgentWorkToggle(id) if id == "m_agent_reply")
+                    .then_some(rect.center())
+            })
+            .expect("the compact thread exposes its factual activity trail");
+        click_point(&mut app, &mut doc, disclosure);
         render_frame(&mut app, 800.0, 600.0);
         let region = app.primary_vertical_scroll().unwrap();
         assert_eq!(region.key, "thread");

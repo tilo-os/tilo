@@ -1172,6 +1172,13 @@ impl ChatApp {
             if self.conversation_surface {
                 return cluster_left;
             }
+            let drag = square(
+                Point::new(cluster_left - f64::from(sp.s2) - control / 2.0, cy),
+                control,
+            );
+            ui::surface::floating_drag_grip(scene, tf, drag, theme.text_dim);
+            ChatApp::push_hit(hits, drag, Hit::AgentDragHandle);
+            cluster_left = drag.x0;
         }
         // Calls and the people roster matter once a workspace is shared. In
         // a private workspace the unadorned conversation header is the
@@ -1195,7 +1202,25 @@ impl ChatApp {
             ChatApp::push_hit(hits, people, Hit::ToggleRightFlap);
             return people.x0;
         }
-        let right = search.x0 - f64::from(sp.s2);
+        self.draw_human_header_buttons(
+            PaintCtx::new(scene, tf, tr, theme),
+            (right, cy, control),
+            hits,
+        )
+    }
+
+    fn draw_human_header_buttons(
+        &self,
+        paint: PaintCtx<'_>,
+        (right, cy, control): (f64, f64, f64),
+        hits: &mut Vec<(Rect, Hit)>,
+    ) -> f64 {
+        let PaintCtx {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let call_label = crate::i18n::t(if self.call.active {
             "chat-header-call-open"
         } else {
@@ -1219,7 +1244,10 @@ impl ChatApp {
         ChatApp::push_hit(hits, call, Hit::StartCall);
 
         let people = square(
-            Point::new(call.x0 - f64::from(sp.s2) - control / 2.0, cy),
+            Point::new(
+                call.x0 - f64::from(theme.tokens.spacing.s2) - control / 2.0,
+                cy,
+            ),
             control,
         );
         let open = self.right_flap_open() && self.thread_open.is_none();
@@ -1273,13 +1301,46 @@ impl ChatApp {
             .direct_agent
             .as_deref()
             .map(|agent| self.agent_display_name(agent));
-        let direct_title = agent_name
-            .as_deref()
-            .map(|name| crate::i18n::t_args("chat-agent-empty-title", &[("name", name.into())]));
-        let direct_message = self
-            .direct_agent
-            .as_ref()
-            .map(|_| crate::i18n::t("chat-agent-empty-message"));
+        let (direct_title, direct_message) = agent_name.as_deref().map_or_else(
+            || (None, None),
+            |name| {
+                let name_arg = [("name", name.into())];
+                match self.direct_agent_intent() {
+                    crate::app::AgentComposerIntent::Message => (
+                        Some(crate::i18n::t_args("chat-agent-empty-title", &name_arg)),
+                        Some(crate::i18n::t("chat-agent-empty-message")),
+                    ),
+                    crate::app::AgentComposerIntent::Queue => (
+                        Some(crate::i18n::t_args(
+                            "chat-agent-empty-queue-title",
+                            &name_arg,
+                        )),
+                        Some(crate::i18n::t("chat-agent-empty-queue-message")),
+                    ),
+                    crate::app::AgentComposerIntent::Steer => {
+                        let stopping = self.direct_agent_tasks().is_some_and(|tasks| {
+                            use ui::agent_task_frontier::AgentStopState;
+                            let tasks = tasks.borrow();
+                            tasks
+                                .context_task()
+                                .is_some_and(|task| task.cancellation_requested)
+                                || matches!(tasks.stop_state(), AgentStopState::Stopping { .. })
+                        });
+                        (
+                            Some(crate::i18n::t_args(
+                                "chat-agent-empty-steer-title",
+                                &name_arg,
+                            )),
+                            Some(crate::i18n::t(if stopping {
+                                "chat-agent-empty-steer-stopping"
+                            } else {
+                                "chat-agent-empty-steer-message"
+                            })),
+                        )
+                    }
+                }
+            },
+        );
         let title = if let Some(title) = direct_title.as_deref() {
             title
         } else if self.can_participate() {
@@ -1554,9 +1615,17 @@ impl ChatApp {
         let work_h = if editing {
             0.0
         } else {
-            m.work
-                .as_ref()
-                .map_or(0.0, |work| measure_agent_work(tr, theme, work, text_w))
+            m.work.as_ref().map_or(0.0, |work| {
+                measure_agent_work(
+                    tr,
+                    theme,
+                    work,
+                    text_w,
+                    self.agent_work_expanded
+                        .with(|expanded| expanded.contains(&m.id)),
+                    true,
+                )
+            })
         };
         // The header, reaction and thread bands are measured through the same
         // helpers the draw pass uses, so the reserved height is the painted
@@ -1678,6 +1747,9 @@ impl ChatApp {
         if !rm.editing
             && let Some(work) = &m.work
         {
+            let expanded = self
+                .agent_work_expanded
+                .with(|messages| messages.contains(&m.id));
             Self::draw_agent_work(
                 PaintCtx::new(scene, tf, tr, theme),
                 work,
@@ -1687,6 +1759,8 @@ impl ChatApp {
                     column.text_x + f64::from(column.text_width),
                     *y + rm.work_h,
                 ),
+                expanded,
+                Some((&m.id, hits)),
             );
             *y += rm.work_h;
         }
@@ -1812,7 +1886,13 @@ impl ChatApp {
     /// still communicated by presence. The rationale is the agent's public
     /// explanation, never hidden chain-of-thought, and trace rows exist only
     /// for operations the dispatch path actually attempted.
-    fn draw_agent_work(mut paint: PaintCtx<'_>, work: &AgentWork, card: Rect) {
+    fn draw_agent_work(
+        mut paint: PaintCtx<'_>,
+        work: &AgentWork,
+        card: Rect,
+        expanded: bool,
+        toggle: Option<(&str, &mut Vec<(Rect, Hit)>)>,
+    ) {
         let theme = paint.theme;
         let spacing = &theme.tokens.spacing;
         CardFace::new().paint(&mut paint, card);
@@ -1828,15 +1908,41 @@ impl ChatApp {
             Point::new(card.x0 + inset, y),
             width,
         );
-        for line in presentation.details {
-            y += f64::from(spacing.s2);
-            y += draw_agent_work_line(
-                &mut paint,
-                &line.text,
-                line.style,
-                Point::new(card.x0 + inset, y),
-                width,
+        if expanded {
+            for line in &presentation.details {
+                y += f64::from(spacing.s2);
+                y += draw_agent_work_line(
+                    &mut paint,
+                    &line.text,
+                    line.style,
+                    Point::new(card.x0 + inset, y),
+                    width,
+                );
+            }
+        }
+        if let Some((message, hits)) = toggle
+            && !presentation.details.is_empty()
+        {
+            let label = crate::i18n::t(if expanded {
+                "chat-agent-work-hide-details"
+            } else {
+                "chat-agent-work-show-details"
+            });
+            let button_h = ButtonFace::height(ControlSize::Small, theme);
+            let button = Rect::new(
+                card.x0 + inset,
+                card.y1 - inset - button_h,
+                card.x1 - inset,
+                card.y1 - inset,
             );
+            Button::paint(
+                paint.scene,
+                paint.transform,
+                paint.text,
+                theme,
+                &ButtonFace::new(button, &label).control_size(ControlSize::Small),
+            );
+            ChatApp::push_hit(hits, button, Hit::AgentWorkToggle(message.into()));
         }
     }
 
@@ -2305,7 +2411,11 @@ impl ChatApp {
             };
             self.composer_main.set_placeholder(&placeholder);
         }
-        let send_enabled = !draft.trim().is_empty();
+        let send_enabled = !draft.trim().is_empty()
+            && (self.direct_agent_intent() != crate::app::AgentComposerIntent::Steer
+                || self
+                    .direct_agent_tasks()
+                    .is_some_and(|tasks| tasks.borrow().can_steer()));
         let inner = self.draw_input_box(
             PaintCtx::new(scene, tf, tr, theme),
             input,
@@ -2431,7 +2541,12 @@ impl ChatApp {
         let segments = vec![
             Segment::new(crate::i18n::t("chat-agent-mode-message")),
             Segment::new(crate::i18n::t("chat-agent-mode-queue")),
-            Segment::new(crate::i18n::t("chat-agent-mode-steer")).with_enabled(tasks.can_steer()),
+            Segment::new(crate::i18n::t(if tasks.can_steer() {
+                "chat-agent-mode-steer"
+            } else {
+                "chat-agent-mode-steer-unavailable"
+            }))
+            .with_enabled(tasks.can_steer()),
         ];
         let parts = SegmentedFace::partition_segments(
             rect,
@@ -2565,15 +2680,33 @@ impl ChatApp {
             tx = plus.x1 + f64::from(sp.s1);
         }
 
-        let send = square(Point::new(rect.x1 - inset - btn / 2.0, cy), btn);
         let send_label = match self.direct_agent_intent() {
             crate::app::AgentComposerIntent::Message => crate::i18n::t("chat-agent-send-message"),
             crate::app::AgentComposerIntent::Queue => crate::i18n::t("chat-agent-send-queue"),
             crate::app::AgentComposerIntent::Steer => crate::i18n::t("chat-agent-send-steer"),
         };
-        let send_face = ButtonFace::icon_only(send, Icon::Send, &send_label)
-            .role(ButtonRole::Primary)
-            .hovered(self.hovered(send));
+        let labelled_send = self.direct_agent.is_some();
+        let send_face = if labelled_send {
+            ButtonFace::new(Rect::ZERO, &send_label).icon(Icon::Send)
+        } else {
+            ButtonFace::icon_only(Rect::ZERO, Icon::Send, &send_label)
+        }
+        .control_size(ControlSize::Regular);
+        let send_w = send_face.intrinsic_width(tr, theme);
+        let send = Rect::new(
+            rect.x1 - inset - send_w,
+            cy - btn / 2.0,
+            rect.x1 - inset,
+            cy + btn / 2.0,
+        );
+        let send_face = if labelled_send {
+            ButtonFace::new(send, &send_label).icon(Icon::Send)
+        } else {
+            ButtonFace::icon_only(send, Icon::Send, &send_label)
+        }
+        .control_size(ControlSize::Regular)
+        .role(ButtonRole::Primary)
+        .hovered(self.hovered(send));
         Button::paint(
             scene,
             tf,
@@ -2643,7 +2776,7 @@ impl ChatApp {
             panel.x1,
             comp.y0 - f64::from(theme.tokens.spacing.s2),
         );
-        self.draw_thread_body(PaintCtx::new(scene, tf, tr, theme), body, &parent_id);
+        self.draw_thread_body(PaintCtx::new(scene, tf, tr, theme), body, &parent_id, hits);
         if !self.can_participate() {
             self.composer_thread.set_focus(false);
             Self::draw_read_only_composer(scene, tf, tr, theme, comp);
@@ -2786,7 +2919,13 @@ impl ChatApp {
 
     /// The thread: the parent message, a "N replies" divider, then every
     /// reply in order, clipped between the header and the thread composer.
-    fn draw_thread_body(&mut self, paint: PaintCtx<'_>, body: Rect, parent_id: &str) {
+    fn draw_thread_body(
+        &mut self,
+        paint: PaintCtx<'_>,
+        body: Rect,
+        parent_id: &str,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
         let PaintCtx {
             scene,
             transform: tf,
@@ -2821,7 +2960,13 @@ impl ChatApp {
         );
         let mut y = body.y0 + f64::from(sp.s4) - f64::from(self.thread_scroll.offset_y());
         if let Some(parent) = parent {
-            y = self.draw_thread_message(PaintCtx::new(scene, tf, tr, theme), &parent, column, y);
+            y = self.draw_thread_message(
+                PaintCtx::new(scene, tf, tr, theme),
+                &parent,
+                column,
+                y,
+                hits,
+            );
             let n = model::reply_count(&self.messages, parent_id);
             let label = crate::i18n::t_args("chat-thread-replies", &[("count", n.into())]);
             let style = theme.text(TextRole::Caption);
@@ -2851,7 +2996,7 @@ impl ChatApp {
             y = band.y1;
         }
         for r in &replies {
-            y = self.draw_thread_message(PaintCtx::new(scene, tf, tr, theme), r, column, y);
+            y = self.draw_thread_message(PaintCtx::new(scene, tf, tr, theme), r, column, y, hits);
         }
         scene.pop_layer();
         self.thread_scroll.draw_bar_overlay(scene, tf, theme);
@@ -2880,7 +3025,10 @@ impl ChatApp {
             height += self.layout_body(message, Point::ZERO, width, theme, tr) + f64::from(sp.s1);
         }
         if let Some(work) = &message.work {
-            height += measure_agent_work(tr, theme, work, width);
+            let expanded = self
+                .agent_work_expanded
+                .with(|messages| messages.contains(&message.id));
+            height += measure_agent_work(tr, theme, work, width, expanded, true);
         }
         if let Some(attachment) = &message.attachment {
             height += self.attachment_flow_height(attachment, f64::from(width), tr, theme);
@@ -2894,7 +3042,14 @@ impl ChatApp {
 
     /// One message in a thread: avatar, author and time, body, attachment and
     /// reactions, on one left edge. Returns the y after it.
-    fn draw_thread_message(&self, paint: PaintCtx<'_>, m: &Message, column: Rect, y: f64) -> f64 {
+    fn draw_thread_message(
+        &self,
+        paint: PaintCtx<'_>,
+        m: &Message,
+        column: Rect,
+        y: f64,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) -> f64 {
         let PaintCtx {
             scene,
             transform: tf,
@@ -2940,11 +3095,16 @@ impl ChatApp {
             yy += body_h + f64::from(sp.s1);
         }
         if let Some(work) = &m.work {
-            let height = measure_agent_work(tr, theme, work, tw);
+            let expanded = self
+                .agent_work_expanded
+                .with(|messages| messages.contains(&m.id));
+            let height = measure_agent_work(tr, theme, work, tw, expanded, true);
             Self::draw_agent_work(
                 PaintCtx::new(scene, tf, tr, theme),
                 work,
                 Rect::new(tx, yy, tx + f64::from(tw), yy + height),
+                expanded,
+                Some((&m.id, hits)),
             );
             yy += height;
         }
@@ -3461,7 +3621,14 @@ fn agent_work_text_style(style: AgentWorkLineStyle, theme: &Theme) -> ui::TextSt
     }
 }
 
-fn measure_agent_work(tr: &mut TextRenderer, theme: &Theme, work: &AgentWork, width: f32) -> f64 {
+fn measure_agent_work(
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    work: &AgentWork,
+    width: f32,
+    expanded: bool,
+    toggle: bool,
+) -> f64 {
     let presentation = AgentWorkPresentation::from(work);
     let inset = f64::from(theme.tokens.spacing.s3);
     let gap = f64::from(theme.tokens.spacing.s2);
@@ -3475,16 +3642,21 @@ fn measure_agent_work(tr: &mut TextRenderer, theme: &Theme, work: &AgentWork, wi
         )
         .1,
     );
-    for line in presentation.details {
-        height += gap;
-        height += f64::from(
-            tr.measure_style(
-                &line.text,
-                Some(text_width),
-                &agent_work_text_style(line.style, theme),
-            )
-            .1,
-        );
+    if expanded {
+        for line in &presentation.details {
+            height += gap;
+            height += f64::from(
+                tr.measure_style(
+                    &line.text,
+                    Some(text_width),
+                    &agent_work_text_style(line.style, theme),
+                )
+                .1,
+            );
+        }
+    }
+    if toggle && !presentation.details.is_empty() {
+        height += gap + ButtonFace::height(ControlSize::Small, theme);
     }
     height + gap
 }
