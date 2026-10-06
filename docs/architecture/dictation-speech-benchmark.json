@@ -1221,7 +1221,608 @@
         "final_ms": 4827,
         "auto_ms": 9078
       },
-      "qualification": "Intermittent allocation failure unresolved. Preserve the previous completed receipt, but do not claim current Small stability or use this partial run as a complete comparison."
+      "qualification": "Intermittent allocation failure unresolved. Preserve the previous completed receipt, but do not claim current Small stability or use this partial run as a complete comparison.",
+      "missing_case_followup": {
+        "qualification": "successful observations across the original aborted batch and a separate missing-case follow-up; not a successful 21-case batch or stability qualification",
+        "original_aborted_batch_successes": 13,
+        "missing_case_followup_successes": 8,
+        "original_failure_retained": true,
+        "model_sha256": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+        "production_memory_limit_bytes": 1073741824,
+        "configuration_changed": false,
+        "minimum_observed_headroom_mib": 1.59765625,
+        "memory_probes": [
+          {
+            "run": 0,
+            "case": "ar_eg-1",
+            "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+            "exit": 0,
+            "last_phase": "final-auto-language",
+            "peak": {
+              "VmPeak": 1043140,
+              "VmSize": 1030336,
+              "VmHWM": 512444,
+              "VmRSS": 512444,
+              "Threads": 2
+            },
+            "phase_peaks": {
+              "loading": {
+                "VmPeak": 391448,
+                "VmSize": 391448,
+                "VmHWM": 387928,
+                "VmRSS": 387928,
+                "Threads": 1
+              },
+              "draft-fixed-language": {
+                "VmPeak": 1041340,
+                "VmSize": 1028536,
+                "VmHWM": 497216,
+                "VmRSS": 497216,
+                "Threads": 2
+              },
+              "final-fixed-language": {
+                "VmPeak": 1042200,
+                "VmSize": 1029396,
+                "VmHWM": 501440,
+                "VmRSS": 501440,
+                "Threads": 2
+              },
+              "final-auto-language": {
+                "VmPeak": 1043140,
+                "VmSize": 1030336,
+                "VmHWM": 512444,
+                "VmRSS": 512444,
+                "Threads": 2
+              }
+            },
+            "sample_interval_ms": 20,
+            "memory_limit_bytes": 1073741824,
+            "allocator": "default",
+            "memory_values_unit": "KiB except Threads"
+          },
+          {
+            "run": 1,
+            "case": "ar_eg-2",
+            "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+            "exit": 0,
+            "last_phase": "final-auto-language",
+            "peak": {
+              "VmPeak": 1043428,
+              "VmSize": 1030624,
+              "VmHWM": 512608,
+              "VmRSS": 512608,
+              "Threads": 2
+            },
+            "phase_peaks": {
+              "loading": {
+                "VmPeak": 391564,
+                "VmSize": 391564,
+                "VmHWM": 387856,
+                "VmRSS": 387856,
+                "Threads": 1
+              },
+              "draft-fixed-language": {
+                "VmPeak": 1041456,
+                "VmSize": 1028652,
+                "VmHWM": 497208,
+                "VmRSS": 497208,
+                "Threads": 2
+              },
+              "final-fixed-language": {
+                "VmPeak": 1042488,
+                "VmSize": 1029684,
+                "VmHWM": 501604,
+                "VmRSS": 501604,
+                "Threads": 2
+              },
+              "final-auto-language": {
+                "VmPeak": 1043428,
+                "VmSize": 1030624,
+                "VmHWM": 512608,
+                "VmRSS": 512608,
+                "Threads": 2
+              }
+            },
+            "sample_interval_ms": 20,
+            "memory_limit_bytes": 1073741824,
+            "allocator": "default",
+            "memory_values_unit": "KiB except Threads"
+          },
+          {
+            "run": 2,
+            "case": "cmn_hans_cn-0",
+            "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+            "exit": 0,
+            "last_phase": "final-auto-language",
+            "peak": {
+              "VmPeak": 1041608,
+              "VmSize": 1028804,
+              "VmHWM": 500932,
+              "VmRSS": 500932,
+              "Threads": 2
+            },
+            "phase_peaks": {
+              "loading": {
+                "VmPeak": 391212,
+                "VmSize": 391212,
+                "VmHWM": 387912,
+                "VmRSS": 387912,
+                "Threads": 1
+              },
+              "draft-fixed-language": {
+                "VmPeak": 1041104,
+                "VmSize": 1028300,
+                "VmHWM": 497064,
+                "VmRSS": 497064,
+                "Threads": 2
+              },
+              "final-fixed-language": {
+                "VmPeak": 1041608,
+                "VmSize": 1028804,
+                "VmHWM": 500932,
+                "VmRSS": 500932,
+                "Threads": 2
+              },
+              "final-auto-language": {
+                "VmPeak": 1041608,
+                "VmSize": 1028804,
+                "VmHWM": 500932,
+                "VmRSS": 500932,
+                "Threads": 2
+              }
+            },
+            "sample_interval_ms": 20,
+            "memory_limit_bytes": 1073741824,
+            "allocator": "default",
+            "memory_values_unit": "KiB except Threads"
+          },
+          {
+            "run": 3,
+            "case": "cmn_hans_cn-1",
+            "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+            "exit": 0,
+            "last_phase": "final-auto-language",
+            "peak": {
+              "VmPeak": 1042244,
+              "VmSize": 1029440,
+              "VmHWM": 511616,
+              "VmRSS": 511616,
+              "Threads": 2
+            },
+            "phase_peaks": {
+              "loading": {
+                "VmPeak": 391080,
+                "VmSize": 391080,
+                "VmHWM": 387648,
+                "VmRSS": 387648,
+                "Threads": 1
+              },
+              "draft-fixed-language": {
+                "VmPeak": 1040972,
+                "VmSize": 1028168,
+                "VmHWM": 496916,
+                "VmRSS": 496916,
+                "Threads": 2
+              },
+              "final-fixed-language": {
+                "VmPeak": 1042244,
+                "VmSize": 1029440,
+                "VmHWM": 511616,
+                "VmRSS": 511616,
+                "Threads": 2
+              },
+              "final-auto-language": {
+                "VmPeak": 1042244,
+                "VmSize": 1029440,
+                "VmHWM": 511616,
+                "VmRSS": 511616,
+                "Threads": 2
+              }
+            },
+            "sample_interval_ms": 20,
+            "memory_limit_bytes": 1073741824,
+            "allocator": "default",
+            "memory_values_unit": "KiB except Threads"
+          },
+          {
+            "run": 4,
+            "case": "cmn_hans_cn-2",
+            "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+            "exit": 0,
+            "last_phase": "final-auto-language",
+            "peak": {
+              "VmPeak": 1042152,
+              "VmSize": 1029348,
+              "VmHWM": 501316,
+              "VmRSS": 501316,
+              "Threads": 2
+            },
+            "phase_peaks": {
+              "loading": {
+                "VmPeak": 391428,
+                "VmSize": 391428,
+                "VmHWM": 387856,
+                "VmRSS": 387856,
+                "Threads": 1
+              },
+              "draft-fixed-language": {
+                "VmPeak": 1041320,
+                "VmSize": 1028516,
+                "VmHWM": 497124,
+                "VmRSS": 497124,
+                "Threads": 2
+              },
+              "final-fixed-language": {
+                "VmPeak": 1042152,
+                "VmSize": 1029348,
+                "VmHWM": 501316,
+                "VmRSS": 501316,
+                "Threads": 2
+              },
+              "final-auto-language": {
+                "VmPeak": 1042152,
+                "VmSize": 1029348,
+                "VmHWM": 501316,
+                "VmRSS": 501316,
+                "Threads": 2
+              }
+            },
+            "sample_interval_ms": 20,
+            "memory_limit_bytes": 1073741824,
+            "allocator": "default",
+            "memory_values_unit": "KiB except Threads"
+          },
+          {
+            "run": 5,
+            "case": "long-en",
+            "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+            "exit": 0,
+            "last_phase": "final-auto-language",
+            "peak": {
+              "VmPeak": 1045736,
+              "VmSize": 1040012,
+              "VmHWM": 584644,
+              "VmRSS": 584644,
+              "Threads": 2
+            },
+            "phase_peaks": {
+              "loading": {
+                "VmPeak": 395844,
+                "VmSize": 395844,
+                "VmHWM": 391572,
+                "VmRSS": 391572,
+                "Threads": 1
+              },
+              "draft-fixed-language": {
+                "VmPeak": 1045736,
+                "VmSize": 1032932,
+                "VmHWM": 500788,
+                "VmRSS": 500788,
+                "Threads": 2
+              },
+              "final-fixed-language": {
+                "VmPeak": 1045736,
+                "VmSize": 1039028,
+                "VmHWM": 572976,
+                "VmRSS": 572976,
+                "Threads": 2
+              },
+              "final-auto-language": {
+                "VmPeak": 1045736,
+                "VmSize": 1040012,
+                "VmHWM": 584644,
+                "VmRSS": 584644,
+                "Threads": 2
+              }
+            },
+            "sample_interval_ms": 20,
+            "memory_limit_bytes": 1073741824,
+            "allocator": "default",
+            "memory_values_unit": "KiB except Threads"
+          },
+          {
+            "run": 6,
+            "case": "long-fr",
+            "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+            "exit": 0,
+            "last_phase": "final-auto-language",
+            "peak": {
+              "VmPeak": 1044468,
+              "VmSize": 1044468,
+              "VmHWM": 613196,
+              "VmRSS": 613196,
+              "Threads": 2
+            },
+            "phase_peaks": {
+              "loading": {
+                "VmPeak": 398964,
+                "VmSize": 398964,
+                "VmHWM": 392332,
+                "VmRSS": 392332,
+                "Threads": 1
+              },
+              "draft-fixed-language": {
+                "VmPeak": 1036716,
+                "VmSize": 1036716,
+                "VmHWM": 509780,
+                "VmRSS": 509780,
+                "Threads": 2
+              },
+              "final-fixed-language": {
+                "VmPeak": 1044468,
+                "VmSize": 1044468,
+                "VmHWM": 610432,
+                "VmRSS": 610432,
+                "Threads": 2
+              },
+              "final-auto-language": {
+                "VmPeak": 1044468,
+                "VmSize": 1044468,
+                "VmHWM": 613196,
+                "VmRSS": 613196,
+                "Threads": 2
+              }
+            },
+            "sample_interval_ms": 20,
+            "memory_limit_bytes": 1073741824,
+            "allocator": "default",
+            "memory_values_unit": "KiB except Threads"
+          },
+          {
+            "run": 7,
+            "case": "long-zh",
+            "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+            "exit": 0,
+            "last_phase": "final-auto-language",
+            "peak": {
+              "VmPeak": 1046940,
+              "VmSize": 1046940,
+              "VmHWM": 618928,
+              "VmRSS": 618928,
+              "Threads": 3
+            },
+            "phase_peaks": {
+              "loading": {
+                "VmPeak": 472300,
+                "VmSize": 472300,
+                "VmHWM": 392512,
+                "VmRSS": 392512,
+                "Threads": 1
+              },
+              "draft-fixed-language": {
+                "VmPeak": 1038032,
+                "VmSize": 1038032,
+                "VmHWM": 501884,
+                "VmRSS": 501884,
+                "Threads": 2
+              },
+              "final-fixed-language": {
+                "VmPeak": 1045980,
+                "VmSize": 1045980,
+                "VmHWM": 602580,
+                "VmRSS": 602580,
+                "Threads": 3
+              },
+              "final-auto-language": {
+                "VmPeak": 1046940,
+                "VmSize": 1046940,
+                "VmHWM": 618928,
+                "VmRSS": 618928,
+                "Threads": 2
+              }
+            },
+            "sample_interval_ms": 20,
+            "memory_limit_bytes": 1073741824,
+            "allocator": "default",
+            "memory_values_unit": "KiB except Threads"
+          }
+        ],
+        "successful_observation_quality": {
+          "short": {
+            "en": {
+              "cases": 3,
+              "text_wer": 0.1096,
+              "auto_text_wer": 0.1096,
+              "text_cer": 0.0341,
+              "auto_text_cer": 0.0341,
+              "draft_prefix_revision_fraction": 0.0263,
+              "draft_ms": {
+                "median": 4264,
+                "max": 4326
+              },
+              "final_ms": {
+                "median": 4353,
+                "max": 4528
+              },
+              "auto_ms": {
+                "median": 8573,
+                "max": 8575
+              },
+              "audio_seconds": 30.78
+            },
+            "de": {
+              "cases": 3,
+              "text_wer": 0.0161,
+              "auto_text_wer": 0.0161,
+              "text_cer": 0.0058,
+              "auto_text_cer": 0.0058,
+              "draft_prefix_revision_fraction": 0.1364,
+              "draft_ms": {
+                "median": 4242,
+                "max": 4333
+              },
+              "final_ms": {
+                "median": 4492,
+                "max": 4561
+              },
+              "auto_ms": {
+                "median": 8661,
+                "max": 8665
+              },
+              "audio_seconds": 41.52
+            },
+            "fr": {
+              "cases": 3,
+              "text_wer": 0.0917,
+              "auto_text_wer": 0.0917,
+              "text_cer": 0.0402,
+              "auto_text_cer": 0.0402,
+              "draft_prefix_revision_fraction": 0.0526,
+              "draft_ms": {
+                "median": 4251,
+                "max": 4421
+              },
+              "final_ms": {
+                "median": 4520,
+                "max": 5098
+              },
+              "auto_ms": {
+                "median": 8581,
+                "max": 9160
+              },
+              "audio_seconds": 41.88
+            },
+            "es": {
+              "cases": 3,
+              "text_wer": 0.0294,
+              "auto_text_wer": 0.0294,
+              "text_cer": 0.0062,
+              "auto_text_cer": 0.0062,
+              "draft_prefix_revision_fraction": 0.0,
+              "draft_ms": {
+                "median": 4287,
+                "max": 4449
+              },
+              "final_ms": {
+                "median": 4620,
+                "max": 4840
+              },
+              "auto_ms": {
+                "median": 8694,
+                "max": 8869
+              },
+              "audio_seconds": 43.92
+            },
+            "ar": {
+              "cases": 3,
+              "text_wer": 0.3188,
+              "auto_text_wer": 0.3188,
+              "text_cer": 0.0973,
+              "auto_text_cer": 0.0973,
+              "draft_prefix_revision_fraction": 0.2,
+              "draft_ms": {
+                "median": 4499,
+                "max": 4518
+              },
+              "final_ms": {
+                "median": 4770,
+                "max": 4789
+              },
+              "auto_ms": {
+                "median": 8977,
+                "max": 8993
+              },
+              "audio_seconds": 38.34
+            },
+            "zh": {
+              "cases": 3,
+              "text_wer": 0.9474,
+              "auto_text_wer": 0.9474,
+              "text_cer": 0.1481,
+              "auto_text_cer": 0.1481,
+              "draft_prefix_revision_fraction": 0.5574,
+              "draft_ms": {
+                "median": 4316,
+                "max": 10002
+              },
+              "final_ms": {
+                "median": 4585,
+                "max": 4762
+              },
+              "auto_ms": {
+                "median": 8651,
+                "max": 8656
+              },
+              "audio_seconds": 32.52
+            }
+          },
+          "long": {
+            "en": {
+              "cases": 1,
+              "text_wer": 0.1731,
+              "auto_text_wer": 0.1731,
+              "text_cer": 0.1133,
+              "auto_text_cer": 0.1133,
+              "draft_prefix_revision_fraction": 0.0,
+              "draft_ms": {
+                "median": 4406,
+                "max": 4406
+              },
+              "final_ms": {
+                "median": 14837,
+                "max": 14837
+              },
+              "auto_ms": {
+                "median": 19147,
+                "max": 19147
+              },
+              "audio_seconds": 70.04
+            },
+            "fr": {
+              "cases": 1,
+              "text_wer": 0.2629,
+              "auto_text_wer": 0.2629,
+              "text_cer": 0.176,
+              "auto_text_cer": 0.176,
+              "draft_prefix_revision_fraction": 1.0,
+              "draft_ms": {
+                "median": 4312,
+                "max": 4312
+              },
+              "final_ms": {
+                "median": 21408,
+                "max": 21408
+              },
+              "auto_ms": {
+                "median": 25794,
+                "max": 25794
+              },
+              "audio_seconds": 87.66
+            },
+            "zh": {
+              "cases": 1,
+              "text_wer": 0.9412,
+              "auto_text_wer": 0.9412,
+              "text_cer": 0.149,
+              "auto_text_cer": 0.149,
+              "draft_prefix_revision_fraction": 0.5,
+              "draft_ms": {
+                "median": 4456,
+                "max": 4456
+              },
+              "final_ms": {
+                "median": 21646,
+                "max": 21646
+              },
+              "auto_ms": {
+                "median": 25184,
+                "max": 25184
+              },
+              "audio_seconds": 89.76
+            }
+          }
+        },
+        "logs": [
+          {
+            "name": "tilo-dictation-current-small-benchmark.log",
+            "sha256": "6cc421cb5dfc58ed49c33f925090f24a6f0125dc140744807f55c38427ed20d5"
+          },
+          {
+            "name": "tilo-dictation-small-remainder.log",
+            "sha256": "3891461508742802948cde1d2691e083ddcf5ffb18941477433932a7e1b96e64"
+          }
+        ]
+      }
     },
     "model_selection": "The existing signed installed-model service chooses the most recently installed valid SpeechRecognition model. Language is persisted independently in Settings. No new model preference, signing, installation or publication is included.",
     "limits": "Decoder timings exclude cold loading, capture completion and editable-field ACK. No live microphone, older-device, Arm or end-to-end Flow-parity claim.",

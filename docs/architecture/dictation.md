@@ -719,3 +719,50 @@ both field values unchanged; these were active-audio cancellation assertions.
 These hardware-isolated journeys used no physical microphone, external network,
 user trust, published model catalogue or device permission. They do not establish
 support in every text field, real-device latency, or Flow-level recognition.
+
+### Missing-case and field-surface follow-up (6 October 2026)
+
+Eight separate current-production Small probes completed the cases absent from
+its aborted batch: Arabic 1/2, Mandarin 0/1/2, and long English/French/Mandarin.
+The existing reviewed weights and corpus receipts were reverified; configuration,
+two decoder threads and the 1 GiB confinement limit were unchanged. Actual child
+memory counters were sampled every 20 ms. Minimum observed headroom fell to
+**1.60 MiB** in the long probes, below even the earlier short-probe margin.
+
+Together with the 13 successful observations preceding the original abort,
+these observations reproduce Small's short English/German/French/Spanish/Arabic
+WER of 10.96%/1.61%/9.17%/2.94%/31.88% and Mandarin CER of 14.81%. Long
+English/French/Mandarin errors are 17.31% WER / 26.29% WER / 14.90% CER;
+fixed-language final times are 14.84/21.41/21.65 seconds. This is an aggregate
+of successful observations across two runs, **not a successful 21-case batch**.
+The original `ar_eg-1` allocation abort remains in the qualification record;
+passing its separate follow-up does not resolve that failure or establish
+stability. No model catalogue, default, allocator policy or selection changed.
+
+A focused actual CEF regression now observes focused `email` and `number`
+inputs returning null selection endpoints. Both reject deferred preparation
+with `not_editable`, preserve both field values and leave no lease blocking a
+supported successor: a text input then completes original-field Start and
+Commit acknowledgements. The test passes in a non-root namespace with no
+physical devices or external network. It qualifies rejection and recovery,
+**not support for these fields**. Removing the selection guard would weaken
+original-caret binding and is not a compatibility fix. CEF's native
+[selection-change callback](https://cef-builds.spotifycdn.com/docs/152.0/classCefRenderHandler.html)
+is a candidate source of range information; its completeness, freshness and
+binding to the renderer's original field require independent qualification
+before enabling selection-less fields.
+
+The assembled browser journey was also repeated with action enumeration after
+successful insertion. Querying Undo returned only the shell's activity-history
+`history.undo`; querying Redo returned no actions. Keyboard Undo/Redo still
+passed. This fixture did not establish broker-acknowledged publication of the
+application's resources, so its catalogue result cannot prove discovery
+behavior in every registered app. Independently, the SDK host's
+`focused_undo_status` still reads document history rather than the native
+frame's history, and the backend's `native_edit_history` flag reports command
+support, not available entries. Native menu/action availability remains
+unqualified; enabling actions from queue admission would make an unsupported
+promise. Production CEF's native
+[context-menu edit-state flags](https://cef-builds.spotifycdn.com/docs/144.0/classCefContextMenuParams.html)
+are scoped to the node on which that menu was invoked, so they do not alone
+supply a continuously fresh focused-field history status.
