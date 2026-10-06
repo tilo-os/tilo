@@ -3166,6 +3166,304 @@
         "minimum_observed_headroom_mib": 72.26953125,
         "limits": "Four independent public probes only; sampling is not a proof of worst-case allocation or older-device reliability."
       }
+    },
+    "serial_mel_allocation_containment": {
+      "model_sha256": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+      "cap_bytes": 1073741824,
+      "decoder_threads": 2,
+      "mel_threads": 1,
+      "allocator": "default",
+      "controlled_failure": {
+        "before_signal": 6,
+        "after_exit": 1,
+        "after_error": "draft recognition failed",
+        "injected_allocation_bytes": 3200,
+        "phase": "draft-fixed-language",
+        "case": "ar_eg-1",
+        "upstream_allocation": "whisper.cpp 1.8.3 log_mel_spectrogram_worker_thread fft_in (line 3107)",
+        "scope": "test-only LD_PRELOAD on public corpus; not an original-crash root-cause proof"
+      },
+      "full_batch": {
+        "completed": 21,
+        "exit": 0,
+        "draft_final_auto_text_identical_to_prior_complete_diagnostic_batch": true,
+        "new_observer": null,
+        "comparison_sources": "13 successes from the original aborted default batch plus 8 successful separate follow-ups; not an earlier successful full batch",
+        "draft_final_auto_text_identical_to_original_default_observations": true
+      },
+      "logs": {
+        "fft-fault-before": {
+          "sha256": "4b7c3e2bff7c2997b8d39764f2896afea2f1cda18235b8f6fa5f17c4444aeb04"
+        },
+        "fft-fault-after": {
+          "sha256": "3e79079c3fe36b258d28c9160cab01dc020d9a33a43c91fa0c400ddd0d0d22df"
+        },
+        "fft-fault-after-symbols": {
+          "sha256": "7ada14bdd40aa4632cacbc5c2638ea1440d811a77e99665be0acbd8213b6a87c"
+        },
+        "small-batch-exception": {
+          "sha256": "d12b06b128596685d777e57ef57707ca7bdd67a02ca5ded0ca4856aa95664f7d"
+        },
+        "small-serial-mel": {
+          "sha256": "953fd7c5fe5efbc77088e38725dae33ad3966e75760f451d47f523a851ba647f"
+        },
+        "current-small-benchmark": {
+          "sha256": "6cc421cb5dfc58ed49c33f925090f24a6f0125dc140744807f55c38427ed20d5"
+        },
+        "small-remainder": {
+          "sha256": "3891461508742802948cde1d2691e083ddcf5ffb18941477433932a7e1b96e64"
+        }
+      },
+      "original_intermittent_abort_resolved": false,
+      "memory_followup": {
+        "probes": [
+          {
+            "run": 0,
+            "case": "ar_eg-1",
+            "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+            "exit": 0,
+            "last_phase": "final-auto-language",
+            "peak": {
+              "VmPeak": 1030336,
+              "VmSize": 1030336,
+              "VmHWM": 512564,
+              "VmRSS": 512564,
+              "Threads": 2
+            },
+            "phase_peaks": {
+              "loading": {
+                "VmPeak": 569560,
+                "VmSize": 569560,
+                "VmHWM": 388132,
+                "VmRSS": 388132,
+                "Threads": 1
+              },
+              "draft-fixed-language": {
+                "VmPeak": 1028536,
+                "VmSize": 1028536,
+                "VmHWM": 497336,
+                "VmRSS": 497336,
+                "Threads": 2
+              },
+              "final-fixed-language": {
+                "VmPeak": 1029396,
+                "VmSize": 1029396,
+                "VmHWM": 501560,
+                "VmRSS": 501560,
+                "Threads": 2
+              },
+              "final-auto-language": {
+                "VmPeak": 1030336,
+                "VmSize": 1030336,
+                "VmHWM": 512564,
+                "VmRSS": 512564,
+                "Threads": 2
+              }
+            },
+            "sample_interval_ms": 20,
+            "memory_limit_bytes": 1073741824,
+            "allocator": "default+serial-mel",
+            "memory_values_unit": "KiB except Threads"
+          },
+          {
+            "run": 1,
+            "case": "ar_eg-1",
+            "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+            "exit": 0,
+            "last_phase": "final-auto-language",
+            "peak": {
+              "VmPeak": 1030336,
+              "VmSize": 1030336,
+              "VmHWM": 512436,
+              "VmRSS": 512436,
+              "Threads": 2
+            },
+            "phase_peaks": {
+              "loading": {
+                "VmPeak": 391448,
+                "VmSize": 391448,
+                "VmHWM": 387940,
+                "VmRSS": 387940,
+                "Threads": 1
+              },
+              "draft-fixed-language": {
+                "VmPeak": 1028536,
+                "VmSize": 1028536,
+                "VmHWM": 497208,
+                "VmRSS": 497208,
+                "Threads": 2
+              },
+              "final-fixed-language": {
+                "VmPeak": 1029396,
+                "VmSize": 1029396,
+                "VmHWM": 501432,
+                "VmRSS": 501432,
+                "Threads": 2
+              },
+              "final-auto-language": {
+                "VmPeak": 1030336,
+                "VmSize": 1030336,
+                "VmHWM": 512436,
+                "VmRSS": 512436,
+                "Threads": 2
+              }
+            },
+            "sample_interval_ms": 20,
+            "memory_limit_bytes": 1073741824,
+            "allocator": "default+serial-mel",
+            "memory_values_unit": "KiB except Threads"
+          },
+          {
+            "run": 2,
+            "case": "long-en",
+            "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+            "exit": 0,
+            "last_phase": "final-auto-language",
+            "peak": {
+              "VmPeak": 1040012,
+              "VmSize": 1040012,
+              "VmHWM": 584716,
+              "VmRSS": 584716,
+              "Threads": 3
+            },
+            "phase_peaks": {
+              "loading": {
+                "VmPeak": 467200,
+                "VmSize": 467200,
+                "VmHWM": 391572,
+                "VmRSS": 391572,
+                "Threads": 1
+              },
+              "draft-fixed-language": {
+                "VmPeak": 1032932,
+                "VmSize": 1032932,
+                "VmHWM": 500876,
+                "VmRSS": 500876,
+                "Threads": 2
+              },
+              "final-fixed-language": {
+                "VmPeak": 1039028,
+                "VmSize": 1039028,
+                "VmHWM": 573064,
+                "VmRSS": 573064,
+                "Threads": 2
+              },
+              "final-auto-language": {
+                "VmPeak": 1040012,
+                "VmSize": 1040012,
+                "VmHWM": 584716,
+                "VmRSS": 584716,
+                "Threads": 3
+              }
+            },
+            "sample_interval_ms": 20,
+            "memory_limit_bytes": 1073741824,
+            "allocator": "default+serial-mel",
+            "memory_values_unit": "KiB except Threads"
+          },
+          {
+            "run": 3,
+            "case": "long-fr",
+            "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+            "exit": 0,
+            "last_phase": "final-auto-language",
+            "peak": {
+              "VmPeak": 1044468,
+              "VmSize": 1044468,
+              "VmHWM": 613368,
+              "VmRSS": 613368,
+              "Threads": 2
+            },
+            "phase_peaks": {
+              "loading": {
+                "VmPeak": 398964,
+                "VmSize": 398964,
+                "VmHWM": 392540,
+                "VmRSS": 392540,
+                "Threads": 1
+              },
+              "draft-fixed-language": {
+                "VmPeak": 1036716,
+                "VmSize": 1036716,
+                "VmHWM": 509968,
+                "VmRSS": 509968,
+                "Threads": 2
+              },
+              "final-fixed-language": {
+                "VmPeak": 1044468,
+                "VmSize": 1044468,
+                "VmHWM": 611248,
+                "VmRSS": 611248,
+                "Threads": 2
+              },
+              "final-auto-language": {
+                "VmPeak": 1044468,
+                "VmSize": 1044468,
+                "VmHWM": 613368,
+                "VmRSS": 613368,
+                "Threads": 2
+              }
+            },
+            "sample_interval_ms": 20,
+            "memory_limit_bytes": 1073741824,
+            "allocator": "default+serial-mel",
+            "memory_values_unit": "KiB except Threads"
+          },
+          {
+            "run": 4,
+            "case": "long-zh",
+            "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+            "exit": 0,
+            "last_phase": "final-auto-language",
+            "peak": {
+              "VmPeak": 1046940,
+              "VmSize": 1046940,
+              "VmHWM": 619236,
+              "VmRSS": 619236,
+              "Threads": 2
+            },
+            "phase_peaks": {
+              "loading": {
+                "VmPeak": 400944,
+                "VmSize": 400944,
+                "VmHWM": 392736,
+                "VmRSS": 392736,
+                "Threads": 1
+              },
+              "draft-fixed-language": {
+                "VmPeak": 1038032,
+                "VmSize": 1038032,
+                "VmHWM": 502120,
+                "VmRSS": 502120,
+                "Threads": 2
+              },
+              "final-fixed-language": {
+                "VmPeak": 1045980,
+                "VmSize": 1045980,
+                "VmHWM": 602816,
+                "VmRSS": 602816,
+                "Threads": 2
+              },
+              "final-auto-language": {
+                "VmPeak": 1046940,
+                "VmSize": 1046940,
+                "VmHWM": 619236,
+                "VmRSS": 619236,
+                "Threads": 2
+              }
+            },
+            "sample_interval_ms": 20,
+            "memory_limit_bytes": 1073741824,
+            "allocator": "default+serial-mel",
+            "memory_values_unit": "KiB except Threads"
+          }
+        ],
+        "all_completed": true,
+        "minimum_observed_margin_mib": 1.59765625,
+        "observer": "actual decoder /proc/<pid>/status sampled at 20 ms",
+        "raw_log_sha256": "9163dce5c9709e774bdec35a49bf4f3e07ca6a6abcb48450fa7ff74d13c14983",
+        "stability_qualified": false
+      }
     }
   }
 }
