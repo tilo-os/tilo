@@ -117,7 +117,8 @@ impl AudioCapture {
 
     /// Start only after the user requested dictation and its edit target and
     /// trusted speech engine are ready. `PipeWire` performs mono conversion and
-    /// resampling; no samples are skipped by this process.
+    /// resampling; no samples are skipped by this process. The spawning
+    /// thread must stay alive until capture stops: parent death kills capture.
     pub fn start_dictation_microphone() -> Result<Self, String> {
         Self::start_for(AudioSource::Microphone, CapturePurpose::Dictation)
     }
@@ -132,7 +133,12 @@ impl AudioCapture {
                 "{ node.name = tilo-dictation-microphone node.description = \"Tilo dictation microphone\" }".into(),
             ],
         };
-        let mut child = Command::new("pw-record")
+        let mut recorder = Command::new(if matches!(purpose, CapturePurpose::Dictation) {
+            "/usr/bin/pw-record"
+        } else {
+            "pw-record"
+        });
+        recorder
             .args(args)
             .args(purpose.format_args())
             .args([
@@ -152,7 +158,14 @@ impl AudioCapture {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .process_group(0)
+            .process_group(0);
+        if matches!(purpose, CapturePurpose::Dictation) {
+            #[cfg(target_os = "linux")]
+            bind_recorder_to_owner(&mut recorder);
+            #[cfg(not(target_os = "linux"))]
+            return Err("Dictation capture requires Linux parent-death protection".into());
+        }
+        let mut child = recorder
             .spawn()
             .map_err(|error| format!("start PipeWire {} capture: {error}", source.track_name()))?;
         let stdout = child
@@ -240,6 +253,28 @@ impl Drop for AudioCapture {
     }
 }
 
+/// A dictation recorder must not survive its owner disappearing, even when
+/// Rust Drop cannot run. The exec target is an ordinary image binary; no
+/// elevated/capability-bearing program may replace it.
+#[cfg(target_os = "linux")]
+fn bind_recorder_to_owner(command: &mut Command) {
+    // SAFETY: getpid is an argument-free identity query and cannot fail.
+    let parent = unsafe { libc::getpid() };
+    // SAFETY: this callback performs only async-signal-safe identity queries
+    // and syscalls after fork. It allocates nothing and locks no Rust state.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::getppid() != parent {
+                return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+            }
+            Ok(())
+        });
+    }
+}
+
 fn read_audio(
     mut stdout: impl Read,
     sender: &SyncSender<Vec<u8>>,
@@ -316,6 +351,28 @@ fn parse_object_serial(inspect: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dictation_recorder_arms_real_kernel_parent_death_protection() {
+        let mut recorder = Command::new("true");
+        bind_recorder_to_owner(&mut recorder);
+        // SAFETY: query the actual child kernel state after the production
+        // callback and before exec; no microphone, allocation or lock is used.
+        unsafe {
+            recorder.pre_exec(|| {
+                let mut signal: libc::c_int = 0;
+                if libc::prctl(libc::PR_GET_PDEATHSIG, &raw mut signal, 0, 0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if signal != libc::SIGKILL {
+                    return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
+                }
+                Ok(())
+            });
+        }
+        assert!(recorder.status().expect("run protected child").success());
+    }
 
     #[test]
     fn dictation_overflow_is_reported_instead_of_silently_dropping_audio() {

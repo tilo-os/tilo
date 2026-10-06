@@ -29,7 +29,10 @@ mono S16LE directly from PipeWire, which performs conversion and resampling.
 Reader EOF or failure is an interruption even before the process reports exit.
 The recorder subprocess has a distinct dictation node identity. Drop terminates
 and reaps only its owned process group and joins the reader; failed reader startup
-also reaps the child. Source probing must run off the compositor thread.
+also reaps the child. Dictation executes the immutable `/usr/bin/pw-record`
+with kernel parent-death termination armed before exec, so a crashed compositor
+cannot leave its microphone running. Its spawning thread must remain alive for
+the capture lifetime. Source probing must run off the compositor thread.
 
 Live captions already report unavailable until the image includes a local
 speech engine/model lifecycle (`system-settings-services.md`). Dictation should
