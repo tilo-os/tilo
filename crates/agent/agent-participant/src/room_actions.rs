@@ -24,8 +24,10 @@
 //!   accepted at once and runs on the service's own thread; `Observe`
 //!   reports where it stands, and `Cancel` stops one that has not started.
 //!
-//! Only the host user's own devices are served: the principal must be the
-//! person whose root the host chains to. Agents use their own mounts.
+//! Document invocations serve only the host user's own devices. Exact local
+//! View discovery also serves currently certified room readers, through the
+//! host's canonical Read policy; that grants no document invocation authority.
+//! Agents use their own mounts.
 //!
 //! The service joins each room as the host's own device ([`RoomMember`], from
 //! the [`RoomRecordsLink`] the host supplies): a member of the room's
@@ -107,6 +109,14 @@ impl ViewReadPolicy {
     }
 }
 
+/// An existing verified source snapshot for internal view discovery only.
+pub struct ViewDocument {
+    /// Replayed snapshot; never returned in the public metadata response.
+    pub bytes: Vec<u8>,
+    /// Content revision for catalogue freshness.
+    pub revision: String,
+}
+
 /// What the service needs of its host. Methods block; they are called from
 /// the service's own thread, never from the host's runtime.
 pub trait RoomRecordsLink: Send + Sync {
@@ -124,6 +134,22 @@ pub trait RoomRecordsLink: Send + Sync {
         _record: &str,
     ) -> Option<ViewReadPolicy> {
         None
+    }
+    /// Read an exact existing source using already-owned host keys. The host
+    /// must check current certified Read under its room lock before key access
+    /// and again before returning. Missing keys never cause enrollment.
+    ///
+    /// # Errors
+    ///
+    /// Refuses missing/currently unauthorized sources, unavailable existing keys,
+    /// invalid signatures, incomplete replay or exceeded read budgets.
+    fn view_document(
+        &self,
+        _workspace: u64,
+        _caller: &Caller,
+        _source: &DocumentRoute,
+    ) -> Result<ViewDocument, String> {
+        Err("existing view documents unavailable".into())
     }
     /// The listener-owned public locator; absence cannot mint a browser link.
     fn view_locator(
@@ -466,8 +492,6 @@ struct Mounted {
     seen: HashSet<[u8; 32]>,
     used: u64,
 }
-
-const MAX_VIEW_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 
 /// One change of a record: a digest naming it, and its bytes.
 type Change = ([u8; 32], Vec<u8>);
@@ -841,7 +865,7 @@ impl Worker {
     }
 
     fn view_catalogue_page(
-        &mut self,
+        &self,
         workspace: u64,
         caller: &Caller,
         query: &CatalogueQuery,
@@ -853,29 +877,13 @@ impl Worker {
         let first = link
             .view_read_policy(workspace, caller, &route_hint.app_id, &route_hint.record)
             .ok_or_else(refuse)?;
-        let state = self.refresh(workspace)?;
-        if state.room.as_deref() != Some(first.room.as_str()) {
-            return Err(ActionHostError::Unavailable {
-                reason: "the authorized room has no retained document yet".into(),
-            });
-        }
         let route = record_of(provider, &first.room).ok_or_else(refuse)?;
-        if !self.records(&state).contains(&route) {
-            return Err(refuse());
-        }
+        let source = link
+            .view_document(workspace, caller, &route)
+            .map_err(|reason| ActionHostError::Unavailable { reason })?;
         let mut doc = automerge::AutoCommit::new();
-        let changes = state.records.get(&route).ok_or_else(refuse)?;
-        // View discovery is a bounded, read-only replay, never an app launch.
-        let bytes = changes
-            .iter()
-            .try_fold(0usize, |total, (_, change)| total.checked_add(change.len()))
-            .ok_or_else(refuse)?;
-        if bytes > MAX_VIEW_DOCUMENT_BYTES {
-            return Err(refuse());
-        }
-        for (_, change) in changes {
-            tilo_automerge::ApplyIncoming::load_incoming(&mut doc, change).map_err(|_| refuse())?;
-        }
+        tilo_automerge::ApplyIncoming::load_incoming(&mut doc, &source.bytes)
+            .map_err(|_| refuse())?;
         let descriptors =
             self.catalogue
                 .resource_views(&route.app_id, &doc, wanted, &first.permissions());
@@ -910,7 +918,7 @@ impl Worker {
                 visibility: None,
             })
             .collect();
-        let mut page = CataloguePage::from_rows(state.revision.to_string(), rows, query);
+        let mut page = CataloguePage::from_rows(source.revision, rows, query);
         if !page.rows.is_empty() {
             page.locator = link.view_locator(&fresh.room, provider);
         }

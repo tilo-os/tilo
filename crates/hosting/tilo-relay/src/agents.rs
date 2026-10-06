@@ -175,6 +175,20 @@ impl RoomRecordsLink for RelayRecordsLink {
         )
     }
 
+    fn view_document(
+        &self,
+        workspace: u64,
+        caller: &tilo_actions::remote::Caller,
+        source: &tilo_browser_peer::DocumentRoute,
+    ) -> Result<tilo_agent_participant::room_actions::ViewDocument, String> {
+        self.member.runtime.block_on(
+            self.rooms
+                .as_ref()
+                .ok_or("governed rooms unavailable")?
+                .resource_view_document(workspace, caller, source),
+        )
+    }
+
     fn view_locator(
         &self,
         room: &str,
