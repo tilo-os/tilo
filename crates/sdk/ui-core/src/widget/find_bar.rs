@@ -955,6 +955,18 @@ impl Widget for FindBar {
         }
     }
 
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        let (scope, field) = if self.replace_focused {
+            (
+                b"replace".as_slice(),
+                self.replace_field.ime_edit_fingerprint(key)?,
+            )
+        } else {
+            (b"find".as_slice(), self.field.ime_edit_fingerprint(key)?)
+        };
+        Some(crate::ime::scoped_fingerprint(scope, field, key))
+    }
+
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         self.field.ime_purpose()
     }

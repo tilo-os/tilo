@@ -176,6 +176,8 @@ pub enum Intent {
 /// queued by the control and applied by the app with the document in hand.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
+    /// Browse explicit shared address-book recipient and sender choices.
+    ContactRecipients,
     /// Show `folder` of account `index`.
     OpenFolder(usize, Folder),
     /// Open the account sheet for an account (`None` adds one).

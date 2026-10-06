@@ -1,19 +1,19 @@
 /// Version string of the form "librespot-\<sha\>"
 pub const VERSION_STRING: &str = concat!("librespot-", env!("VERGEN_GIT_SHA"));
 
-/// Generate a timestamp string representing the build date (UTC).
+/// Upstream build date, or "unknown" when publication metadata omits it.
 pub const BUILD_DATE: &str = env!("VERGEN_BUILD_DATE");
 
-/// Short sha of the latest git commit.
+/// Short sha of the vendored upstream source revision.
 pub const SHA_SHORT: &str = env!("VERGEN_GIT_SHA");
 
-/// Date of the latest git commit.
+/// Upstream commit date, or "unknown" when publication metadata omits it.
 pub const COMMIT_DATE: &str = env!("VERGEN_GIT_COMMIT_DATE");
 
 /// Librespot crate version.
 pub const SEMVER: &str = env!("CARGO_PKG_VERSION");
 
-/// A random build id.
+/// Stable identity of the vendored package version and upstream source revision.
 pub const BUILD_ID: &str = env!("LIBRESPOT_BUILD_ID");
 
 /// The protocol version of the Spotify desktop client.

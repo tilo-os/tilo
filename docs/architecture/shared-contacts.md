@@ -8,7 +8,7 @@ rather than workspace collaborators. Capture surfaces never publish fixtures.
 No additional filesystem access, account-editor permission or credentials are
 introduced. The UI crate split is unaffected.
 
-The directory has stable Contacts UUIDs, labels, phone hints, deletion state and
+The directory has stable Contacts UUIDs, labels, phone and email hints, deletion state and
 confirmed service endpoints. Labels and hints never authenticate a person.
 A Tilo endpoint represents a stable user identity, not a device key. Association
 never grants a workspace role, resource access, or cryptographic trust.
@@ -27,8 +27,8 @@ constraints, not a claim that all providers expose reassignment evidence.
 
 ## Contacts projection and confirmation
 
-The live Contacts surface projects labels, telephone hints and deletion
-UUIDs with `PROJECT_CONTACT`, `PROJECT_PHONES` and `REMOVE_CONTACT`.
+The live Contacts surface projects labels, telephone/email hints and deletion
+UUIDs with `PROJECT_CONTACT`, `PROJECT_PHONES`, `PROJECT_EMAILS` and `REMOVE_CONTACT`.
 `phone_candidates` returns every exact international-number candidate, even
 when there is only one. It never creates an endpoint. National numbers, suffix
 matching and extensions do not guess an identity. Importing a vCard supplies
@@ -105,3 +105,35 @@ mounted while accounts are edited, preserving unsaved drafts. Messages owns its
 confirmation UI, account selector, transports and service histories. This crate
 provides no messaging transport, identity proof, credential custody, or automatic
 cross-service group mapping. An unavailable shared record stays unavailable.
+
+## Mail address-book selection
+
+Mail reads the same Contacts-owned person record without an editor grant. Its
+Contacts recipients header action opens system search scoped to `mail.contacts`.
+Every `mail.contact-draft` resource is one explicit person UUID, mailbox hint and
+sending-account choice. Duplicate names and addresses remain separate choices;
+there is no first-match or active-account fallback. The resource's confirmed
+`prepare-contact-draft` action prepares a local draft, never sends it. Agents and
+accessibility invoke that same row-bound action. The review description names all
+three choices. Changed/deleted contact hints or changed/removed sender accounts
+remove the old row and refuse its action; existing drafts are never overwritten.
+
+`email_candidates` returns all matching live person IDs, including a unique
+candidate. `canonical_email_hint` accepts conservative ASCII dot-atom mailboxes,
+preserves local-part case and folds only the DNS domain, following
+[RFC 5321 section 2.4](https://www.rfc-editor.org/rfc/rfc5321#section-2.4). It is
+lookup normalization, not deliverability validation or identity proof. Provider
+dot/plus aliases, display-name parsing, quoted local parts and internationalized
+mailboxes are not guessed; Mail's existing manual entry remains available.
+
+A Contacts draft retains its reviewed sending-account ID and email through
+saving/reopening, including the Drafts-folder projection. That projection reuses
+one row and reads the canonical draft metadata rather than reconstructing it
+from message headers. Sending refuses if the current account differs, rather than
+following a later sidebar selection. The outbox delivery also matches the
+reviewed account ID and email; two accounts sharing an email cannot substitute
+for one another, and removal of the reviewed account refuses delivery. This is an address-book selection, not a
+confirmed endpoint, provider identity proof, workspace permission or SMTP grant.
+No credentials are stored in the directory or draft. Calendar attendee lookup
+and other non-messaging consumers remain to be integrated; provider evidence
+and live Messages journeys remain with the Messages task.

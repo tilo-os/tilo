@@ -1878,6 +1878,17 @@ impl FileExplorerWidget {
             .map(|entry| entry.path.clone())
     }
 
+    /// Recent actions name only a currently presented, still-existing row.
+    /// A retained address cannot navigate or edit another location's history.
+    fn recent_entry_path(&self, resource_id: &str) -> Result<PathBuf, String> {
+        if !self.is_recent_view() {
+            return Err(t("files-recent-action-unavailable"));
+        }
+        self.visible_entry_path(resource_id)
+            .filter(|path| path.exists())
+            .ok_or_else(|| t("files-recent-action-unavailable"))
+    }
+
     /// Do `effect`: show a folder, copy or paste, open or share a file. A job (sending to a nearby device, creating a share link)
     /// answers later through the reply [`Self::await_effect`] keeps.
     ///
@@ -2010,6 +2021,16 @@ impl FileExplorerWidget {
                 self.reveal_record(&record)?;
                 None
             }
+            FilesEffect::RevealRecent { entry } => {
+                let path = self.recent_entry_path(&entry)?;
+                self.apply_command(FileCommand::RevealInFolder(path));
+                None
+            }
+            FilesEffect::ForgetRecent { entry } => {
+                let path = self.recent_entry_path(&entry)?;
+                self.apply_command(FileCommand::ForgetRecent(path));
+                None
+            }
             FilesEffect::NewFromTemplate { template } => {
                 let target = self
                     .available_templates()
@@ -2139,6 +2160,15 @@ impl FileExplorerWidget {
             FilesEffect::DeclineNearby { transfer } => {
                 self.decide_nearby(transfer, None)?;
                 None
+            }
+            FilesEffect::InspectNearby { transfer } => {
+                let status = self
+                    .nearby_send
+                    .transfers()
+                    .iter()
+                    .find(|candidate| candidate.handle == transfer)
+                    .ok_or_else(|| t("files-nearby-transfer-unavailable"))?;
+                Some(serde_json::json!({"transfer": status}))
             }
             FilesEffect::RetryNearby { transfer } => {
                 if !self.nearby_send.transfers().iter().any(|candidate| {
@@ -5134,6 +5164,41 @@ impl FileExplorerWidget {
     pub fn stage_scenario(&mut self, scenario: Option<&str>) {
         let rect = self.rect;
         match scenario {
+            Some(name @ ("recent" | "recent-menu" | "recent-revealed" | "recent-forgotten")) => {
+                // Capture-only files from the prepared scratch home. Use the
+                // same Recent setting and commands as the live window.
+                let home = self.current_path.clone();
+                let target = home.join("Quarterly report.pdf");
+                self.note_recent(&home.join("Notes.txt"), crate::recent::RecentUse::Opened);
+                self.note_recent(&target, crate::recent::RecentUse::Opened);
+                self.navigate(crate::recent::location());
+                let row = crate::search_provider::entry_resource_id(&target);
+                match name {
+                    "recent-menu" => {
+                        self.debug_select(&[0]);
+                        self.open_context_menu(Point::new(
+                            rect.x0 + rect.width() * 0.45,
+                            rect.y0 + rect.height() * 0.34,
+                        ));
+                        self.context_menu.focus_first_action();
+                    }
+                    "recent-revealed" => {
+                        if let Err(error) = self
+                            .run_effect(crate::effects::FilesEffect::RevealRecent { entry: row })
+                        {
+                            self.set_external_status(error);
+                        }
+                    }
+                    "recent-forgotten" => {
+                        if let Err(error) = self
+                            .run_effect(crate::effects::FilesEffect::ForgetRecent { entry: row })
+                        {
+                            self.set_external_status(error);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             Some("grid") => self.set_view_mode(ViewMode::Grid),
             Some("thumbnails" | "thumbnails-fs") => {
                 self.set_view_mode(ViewMode::Grid);
@@ -7958,9 +8023,9 @@ impl FileExplorerWidget {
 
     fn append_nearby_receiver_resources(&self, folder: &mut Resource) {
         for transfer in self.nearby_send.transfers() {
-            if let Some(resource) = self.nearby_receiver_resource(transfer) {
-                folder.children.push(resource);
-            }
+            folder
+                .children
+                .push(self.nearby_receiver_resource(transfer));
         }
     }
 
@@ -7971,7 +8036,7 @@ impl FileExplorerWidget {
     fn nearby_receiver_resource(
         &self,
         transfer: &ui::collaboration::NearbyTransferStatus,
-    ) -> Option<Resource> {
+    ) -> Resource {
         use ui::collaboration::NearbyTransferPhase;
 
         let mut resource = Resource::new(
@@ -7982,6 +8047,15 @@ impl FileExplorerWidget {
             "files.nearby-transfer",
             transfer.name.clone(),
         );
+        let mut inspect = crate::effects::row_action(
+            &crate::effects::FilesEffect::InspectNearby {
+                transfer: transfer.handle,
+            },
+            "status",
+            t("files-nearby-status"),
+        );
+        inspect.description = Some(t("files-nearby-status-detail"));
+        resource.actions.push(inspect);
         self.append_nearby_decision_actions(&mut resource, transfer);
         if transfer.phase == NearbyTransferPhase::Failed {
             resource.actions.push(crate::effects::row_action(
@@ -8004,7 +8078,7 @@ impl FileExplorerWidget {
                 t("files-nearby-cancelled"),
             ));
         }
-        (!resource.actions.is_empty()).then_some(resource)
+        resource
     }
 
     #[allow(
@@ -8074,7 +8148,18 @@ impl FileExplorerWidget {
             },
             entry.name.clone(),
         );
-        if let Some(record_id) = record_id {
+        if self.is_recent_view() {
+            resource.actions.push(row_action(
+                &FilesEffect::RevealRecent { entry: id() },
+                crate::search_provider::REVEAL_ACTION,
+                t("files-recent-reveal"),
+            ));
+            resource.actions.push(row_action(
+                &FilesEffect::ForgetRecent { entry: id() },
+                "forget-recent",
+                t("files-recent-forget"),
+            ));
+        } else if let Some(record_id) = record_id {
             resource.actions.push(row_action(
                 &FilesEffect::Reveal {
                     record: record_id.to_string(),

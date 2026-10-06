@@ -34,6 +34,34 @@ nav = "Templates and examples"
 description = "The four templates an app starts from and the runnable examples that each teach one idea."
 
 [[page]]
+slug = "task-start"
+source = "docs/developers/tasks/start.md"
+section = "Quick tasks"
+nav = "Start and reload"
+description = "The offline tilo-app guide start workflow."
+
+[[page]]
+slug = "task-actions"
+source = "docs/developers/tasks/actions.md"
+section = "Quick tasks"
+nav = "Add a capability"
+description = "The offline tilo-app guide actions workflow."
+
+[[page]]
+slug = "task-verify"
+source = "docs/developers/tasks/verify.md"
+section = "Quick tasks"
+nav = "Verify an app"
+description = "The offline tilo-app guide verify workflow."
+
+[[page]]
+slug = "task-publish"
+source = "docs/developers/tasks/publish.md"
+section = "Quick tasks"
+nav = "Submit a release"
+description = "The offline tilo-app guide publish workflow."
+
+[[page]]
 slug = "build-an-app"
 source = "docs/app-development.md"
 section = "Guides"
