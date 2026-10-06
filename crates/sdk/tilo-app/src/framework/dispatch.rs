@@ -61,6 +61,9 @@ pub struct Dispatcher<R: Resource> {
     resource_id: Rc<str>,
     /// Who edits through this dispatcher; `None` in a view of a past version.
     me: Option<Rc<str>>,
+    /// A dispatcher lent to an admitted effect keeps its original custody.
+    /// Clones cannot turn later work into the host participant's invocation.
+    custody: Option<ui_core::invocation_scope::ResourceInvocationScope>,
     /// Each queued invocation with the effect invocation it continues,
     /// when an effect's handler or completion queued it.
     queue: Rc<RefCell<VecDeque<AttributedControlInvocation>>>,
@@ -125,6 +128,7 @@ impl<R: Resource> Clone for Dispatcher<R> {
             app_id: self.app_id,
             resource_id: Rc::clone(&self.resource_id),
             me: self.me.clone(),
+            custody: self.custody.clone(),
             queue: Rc::clone(&self.queue),
             group: Rc::clone(&self.group),
             read_only: self.read_only.clone(),
@@ -146,6 +150,37 @@ impl<R: Resource> Clone for Dispatcher<R> {
 }
 
 impl<R: Resource> Dispatcher<R> {
+    pub(crate) fn for_custody(
+        &self,
+        custody: ui_core::invocation_scope::ResourceInvocationScope,
+    ) -> Self {
+        let mut dispatcher = self.clone();
+        dispatcher.custody = Some(custody);
+        // An effect's group cannot absorb the person's unrelated input.
+        dispatcher.group = Rc::default();
+        dispatcher
+    }
+
+    fn queue_invocation(
+        &self,
+        address: ActionAddress,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) {
+        let on_behalf_of = match &self.custody {
+            Some(custody) => {
+                if let Err(error) = custody.check() {
+                    self.refuse(&address.action, error);
+                    return;
+                }
+                Some(custody.invocation())
+            }
+            None => super::effect::acting_for(),
+        };
+        self.queue
+            .borrow_mut()
+            .push_back((ControlInvocation { address, arguments }, on_behalf_of));
+    }
+
     pub(crate) fn new(
         app_id: &'static str,
         resource_id: &str,
@@ -156,6 +191,7 @@ impl<R: Resource> Dispatcher<R> {
             app_id,
             resource_id: Rc::from(resource_id),
             me: me.map(Rc::from),
+            custody: None,
             queue: Rc::default(),
             group: Rc::default(),
             read_only: LocalState::new(read_only),
@@ -327,13 +363,10 @@ impl<R: Resource> Dispatcher<R> {
     /// checked, then its handler runs. A participant who may only view still
     /// invokes the effects declared `permission = "read"`.
     pub fn effect<E: Effect>(&self, effect: &E) {
-        self.queue.borrow_mut().push_back((
-            ControlInvocation {
-                address: ActionAddress::new(self.resource_id.as_ref(), effect.id()),
-                arguments: effect.arguments(),
-            },
-            super::effect::acting_for(),
-        ));
+        self.queue_invocation(
+            ActionAddress::new(self.resource_id.as_ref(), effect.id()),
+            effect.arguments(),
+        );
     }
 
     /// Invoke `effect` as the live row `row` offers it
@@ -341,19 +374,19 @@ impl<R: Resource> Dispatcher<R> {
     /// contract, so a confirmation the row asks for (typing the name of the
     /// device it erases) is asked here too.
     pub fn effect_on<E: Effect>(&self, row: &str, effect: &E) {
-        self.queue.borrow_mut().push_back((
-            ControlInvocation {
-                address: ActionAddress::new(row, effect.id()),
-                arguments: serde_json::Map::new(),
-            },
-            super::effect::acting_for(),
-        ));
+        self.queue_invocation(ActionAddress::new(row, effect.id()), serde_json::Map::new());
     }
 
     /// Invoke a declared action (`dispatcher.invoke(Note::EDIT.with(text))`),
     /// or an effect ([`Invoke::effect`]), which reaches its handler as
     /// [`Self::effect`] does.
     pub fn invoke(&self, invoke: Invoke<R>) {
+        if let Some(custody) = &self.custody
+            && let Err(error) = custody.check()
+        {
+            self.refuse(invoke.id, error);
+            return;
+        }
         if invoke.is_effect() {
             self.submit(invoke);
             return;
@@ -373,13 +406,10 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     fn submit(&self, invoke: Invoke<R>) {
-        self.queue.borrow_mut().push_back((
-            ControlInvocation {
-                address: ActionAddress::new(self.resource_id.as_ref(), invoke.id),
-                arguments: invoke.arguments,
-            },
-            super::effect::acting_for(),
-        ));
+        self.queue_invocation(
+            ActionAddress::new(self.resource_id.as_ref(), invoke.id),
+            invoke.arguments,
+        );
     }
 
     /// Whether the participant may take `invoke`: what its declaration, or
@@ -420,10 +450,7 @@ impl<R: Resource> Dispatcher<R> {
         if self.read_only() {
             return;
         }
-        self.queue.borrow_mut().push_back((
-            ControlInvocation { address, arguments },
-            super::effect::acting_for(),
-        ));
+        self.queue_invocation(address, arguments);
     }
 
     /// Submit one typed action value — an edit with no named declaration,
@@ -510,6 +537,11 @@ impl<R: Resource> Dispatcher<R> {
         action: &R::Action,
         context: ActionContext,
     ) -> Result<(), ActionError> {
+        if self.custody.is_some() {
+            return Err(ActionError::Refused(
+                "caller-scoped effects submit document changes through queued actions".into(),
+            ));
+        }
         if !self.may_apply(action) {
             return Err(ActionError::Refused(Self::not_allowed((self
                 .permission_of)(
@@ -577,6 +609,7 @@ impl<R: Resource> Dispatcher<R> {
         Dispatcher {
             app_id: self.app_id,
             me: self.me.clone(),
+            custody: self.custody.clone(),
             resource_id: Rc::from(id),
             queue: Rc::clone(&self.queue),
             group: Rc::default(),
