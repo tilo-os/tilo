@@ -164,8 +164,14 @@ mod qualification {
             )?,
         )?;
         let verified = local_model_service::catalog::VerifiedCatalog::load(&catalog, &keys)?;
-        local_model_service::speech::speech_model_bytes(&root, &verified)
-            .map_err(|_| "qualification store receipt failed")?;
+        let (_, _, verified_bytes) =
+            local_model_service::speech::speech_model_bytes(&root, &verified)
+                .map_err(|_| "qualification store receipt failed")?;
+        if verified_bytes.len() != model.len()
+            || verified_bytes.capacity() > model.len().saturating_add(1)
+        {
+            return Err("verified model buffer exceeds its exact receipt allocation".into());
+        }
         Ok(Fixture {
             _directory: fixture,
             root,

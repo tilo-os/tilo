@@ -6,6 +6,11 @@ publish.workspace = true
 license.workspace = true
 description = "Verified, content-addressed local-model runtime service for Tilo."
 
+# Fast quality reports cc unused despite build.rs using it for compiler
+# discovery and C++ bridge compilation; retain that required build dependency.
+[package.metadata.cargo-machete]
+ignored = ["cc"]
+
 [lib]
 name = "local_model_service"
 path = "src/lib.rs"
