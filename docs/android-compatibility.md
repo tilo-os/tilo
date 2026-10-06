@@ -230,8 +230,9 @@ revocation of already-open descriptors, persisted URI grants or cold P2P hydrati
 
 The first real run found source corruption: automatic app workspace authorship
 matched external filesystem resources and upgraded a nominated read-only bind to
-write. `Scope::Workspace` now matches only room resources, as the capability model's
-enforcement boundary documents. Production-decider and launcher tests preserve
+write. App and agent `Scope::Workspace` grants now authorize only room resources.
+Unrestricted local-user grants retain their existing semantics, and workspace
+restrictions still clamp filesystem writes for read-only participants. Production-decider and launcher tests preserve
 workspace authorship and explicit file reads while rejecting external writes,
 siblings, devices and network authority. The complete APK run now confirms the
 read-only source and canary remain byte-for-byte unchanged.
@@ -257,7 +258,7 @@ The test key stays only in the disposable remote build container and is destroye
 with that container. No key, runtime or APK binary is committed.
 
 Validation includes 21 Python admission/archive tests, 21 remote external AT-SPI
-client tests, focused capability-decider and launcher regressions, mandatory remote
+client tests, all 82 capability-model tests and 132 launcher unit tests, mandatory remote
 shell/launcher test-target compilation, strict remote lint, complete framework and
 strict C builds, SDK signature verification, all three actual APK journeys and
 visual inspection of the owned fixture PNGs. All Rust builds/tests run remotely

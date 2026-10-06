@@ -302,8 +302,7 @@ impl Scope {
 
     /// Does this scope cover `resource`?
     ///
-    /// Scopes nest within an enforcement point: `Workspace` covers room
-    /// resources, `App(a)` covers every
+    /// Scopes nest: `Workspace` covers everything, `App(a)` covers every
     /// artifact/action of `a`, `FsPath(p)` covers every path under `p`. A
     /// scope from a different enforcement point than the resource simply
     /// doesn't match — inert, never permissive.
@@ -323,7 +322,7 @@ impl Scope {
     )]
     pub fn matches_resource(&self, resource: &ResourceRef) -> bool {
         match (self, resource) {
-            (Scope::Workspace, _) => role_base_applies(resource),
+            (Scope::Workspace, _) => true,
 
             (
                 Scope::App(a),
@@ -786,6 +785,21 @@ pub fn decide_actor(
         {
             continue;
         }
+        // App/agent workspace grants authorize room authorship, not external
+        // storage, devices or network. In particular they must never upgrade
+        // an explicit read-only file grant. Keep workspace restrictions broad
+        // so read-only participation still clamps all writes; unrestricted
+        // local-user grants retain their existing semantics.
+        if ov.effect == Effect::Grant
+            && ov.scope == Scope::Workspace
+            && matches!(
+                ov.subject,
+                Subject::Principal(Principal::App(_) | Principal::Agent(_))
+            )
+            && !role_base_applies(resource)
+        {
+            continue;
+        }
         match ov.effect {
             Effect::Grant if ov.verb.implies(required) => granted = true,
             Effect::Restrict if !ov.verb.implies(required) => restricted = true,
@@ -857,41 +871,45 @@ mod tests {
 
     #[test]
     fn workspace_authorship_cannot_upgrade_external_file_device_or_network_grants() {
-        let actor = Actor::app("so.tilo.books");
-        let caps = vec![
-            CapOverride::grant(Subject::app("so.tilo.books"), Scope::Workspace, Verb::Write),
-            CapOverride::grant(
-                Subject::app("so.tilo.books"),
-                Scope::FsPath("/approved/book.txt".into()),
-                Verb::Read,
-            ),
-        ];
-        assert_eq!(
-            decide_capability(&actor, &ResourceRef::Workspace, Verb::Write, &caps, None),
-            CapDecision::Allow
-        );
-        assert_eq!(
-            decide_capability(
-                &actor,
-                &ResourceRef::FsPath("/approved/book.txt".into()),
-                Verb::Read,
-                &caps,
-                None,
-            ),
-            CapDecision::Allow
-        );
-        for resource in [
-            ResourceRef::FsPath("/approved/book.txt".into()),
-            ResourceRef::FsPath("/approved/sibling.txt".into()),
-            ResourceRef::Device("camera".into()),
-            ResourceRef::NetHost("example.com".into()),
-            ResourceRef::FsRecord("file-1".into()),
+        for (actor, subject) in [
+            (Actor::app("so.tilo.books"), Subject::app("so.tilo.books")),
+            (Actor::agent("reader"), Subject::agent("reader")),
         ] {
-            assert_ne!(
-                decide_capability(&actor, &resource, Verb::Write, &caps, None),
-                CapDecision::Allow,
-                "workspace authorship must not authorize external resource {resource:?}"
+            let caps = vec![
+                CapOverride::grant(subject.clone(), Scope::Workspace, Verb::Write),
+                CapOverride::grant(
+                    subject,
+                    Scope::FsPath("/approved/book.txt".into()),
+                    Verb::Read,
+                ),
+            ];
+            assert_eq!(
+                decide_capability(&actor, &ResourceRef::Workspace, Verb::Write, &caps, None),
+                CapDecision::Allow
             );
+            assert_eq!(
+                decide_capability(
+                    &actor,
+                    &ResourceRef::FsPath("/approved/book.txt".into()),
+                    Verb::Read,
+                    &caps,
+                    None,
+                ),
+                CapDecision::Allow
+            );
+            for resource in [
+                ResourceRef::FsPath("/approved/book.txt".into()),
+                ResourceRef::FsPath("/approved/sibling.txt".into()),
+                ResourceRef::Device("camera".into()),
+                ResourceRef::NetHost("example.com".into()),
+                ResourceRef::FsRecord("file-1".into()),
+            ] {
+                assert_ne!(
+                    decide_capability(&actor, &resource, Verb::Write, &caps, None),
+                    CapDecision::Allow,
+                    "workspace authorship must not authorize external resource {resource:?}"
+                );
+            }
         }
     }
 

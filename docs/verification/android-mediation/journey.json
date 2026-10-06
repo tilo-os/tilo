@@ -1,14 +1,14 @@
 {
   "schema": 1,
-  "completed_at_utc": "2026-10-06T03:28:24.225199+00:00",
+  "completed_at_utc": "2026-10-06T03:50:03.912586+00:00",
   "execution": "headless production Tilo, actual Android ART, x86_64 software graphics",
   "production_binaries": {
-    "shell": "18d9e6493e16c043243bfeb73ace75ac21d6bcc4fee5a25d3543cb0ac1adbf01",
-    "tilo-launcher": "40a06a23424e9857fd8c734e29cb495313f573e523cdf0f02e768219762dd563"
+    "shell": "52532568caf1d2dca0930fa2a8c91912c98ca15e51c9ed9a2a934427b22e395c",
+    "tilo-launcher": "f3d7e43041afc20d2f5d97bca93e01117cb68cf3cff0d41c1441632761152453"
   },
   "apk_sha256": "dedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4",
   "runtime_receipt_sha256": "b139102cb605c839ad4d152c0ee7fd364eb55208000d56b6dd9fcd77473ef090",
-  "room": "0945ce74-c0ce-48b3-ba18-aedc17e669e0",
+  "room": "732a35e2-241d-415a-b1e3-406d62387b17",
   "android_results": [
     "notification-capability=unavailable;backend=filtered-Tilo",
     "permissions=denied;callback=19",
@@ -39,7 +39,7 @@
     "presented": true,
     "opening": false
   },
-  "png_sha256": "384051a4a896f7ea5be690644f36ede1724e97c93c68558577f8da24bd76f6ab",
+  "png_sha256": "d1e70a2de9ddc21a0f4fe8c950912b8a2614768fc0858dc74f6bbfdc78c7359f",
   "additional_grants": false,
   "real_device": false,
   "approved_file_access": false,

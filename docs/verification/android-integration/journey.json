@@ -1,14 +1,14 @@
 {
   "schema": 1,
-  "completed_at_utc": "2026-10-06T03:32:08.699115+00:00",
+  "completed_at_utc": "2026-10-06T03:49:53.154828+00:00",
   "execution": "headless production Tilo, actual ART, x86_64 software graphics",
   "production_binaries": {
-    "shell": "18d9e6493e16c043243bfeb73ace75ac21d6bcc4fee5a25d3543cb0ac1adbf01",
-    "tilo-launcher": "40a06a23424e9857fd8c734e29cb495313f573e523cdf0f02e768219762dd563"
+    "shell": "52532568caf1d2dca0930fa2a8c91912c98ca15e51c9ed9a2a934427b22e395c",
+    "tilo-launcher": "f3d7e43041afc20d2f5d97bca93e01117cb68cf3cff0d41c1441632761152453"
   },
   "apk_sha256": "dedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4",
   "runtime_receipt_sha256": "b139102cb605c839ad4d152c0ee7fd364eb55208000d56b6dd9fcd77473ef090",
-  "room": "6276f13d-650d-46d1-83d7-546c2aa559af",
+  "room": "08a61a8e-ec79-4a74-bfe5-3ba612af342e",
   "presented_frame": {
     "surface_id": 4294967333,
     "app_id": "so.tilo.android.qualify.hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4",
@@ -47,9 +47,9 @@
   "fixture_grants_only": true,
   "real_device": false,
   "png_sha256": {
-    "notification-and-picker.png": "707a249eeb6f5de41624cae8d331b0201da84444c7e030780babf1e6e49b999b",
-    "document-complete.png": "04b994d3c0d83ea79523a6b7f56383a7f5c01652aa59cd814fc944f884e1041e",
-    "revocation.png": "1dde09447188baca24f93aa3d525b4e327103773e1fbe3e270bc2b62ed21e226"
+    "notification-and-picker.png": "94d68c72f42b602d8d3de7ba74580e5336393f1001e662bb0a72b6712c03dede",
+    "document-complete.png": "ff60479385d1b3c610379a8ba250a313fdaab9fe7037091ed7d3dd74bf3a3046",
+    "revocation.png": "462b7779e8f220a28234b893e30b382377b3dde411703af89396eed3312a6b97"
   },
   "owned_compositor_and_bus_stopped": true
 }
