@@ -100,10 +100,16 @@ fn package(layer: &Path, work: &Path, version: &str, case: &str) -> InstalledPac
     let payload = work.join("payload");
     fs::create_dir_all(payload.join("bin")).unwrap();
     let binary = payload.join("bin/fixture");
-    fs::write(&binary, app_elf(case == "arch")).unwrap();
+    fs::write(
+        &binary,
+        app_elf(matches!(case, "arch" | "empty_isa_foreign")),
+    )
+    .unwrap();
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
     let dual = matches!(case, "dual_isa" | "service");
-    let isa = if dual {
+    let isa = if matches!(case, "empty_isa" | "empty_isa_foreign") {
+        ""
+    } else if dual {
         "x86_64 = \"baseline\"\naarch64 = \"armv8-a\""
     } else if (std::env::consts::ARCH == "aarch64") != (case == "missing_isa") {
         "aarch64 = \"aarch64\""
@@ -148,6 +154,9 @@ type = "{entry_type}"
     );
     let identity = SigningIdentity::from_seed(&[23; 32]);
     let mut manifest = Manifest::from_toml_str(&source).unwrap();
+    if matches!(case, "empty_isa" | "empty_isa_foreign") {
+        tilo_app_package::desktop::validate_native_host(&manifest).unwrap();
+    }
     let publisher = hex::encode(identity.public_key_bytes());
     manifest.publisher.identity = format!("ed25519:{publisher}");
     let packed = tilo_app_package::pack(&payload, &manifest, &identity).unwrap();
@@ -260,7 +269,7 @@ fn verify_subject(root: &Path, case: &str) {
         &root.join("base"),
         std::env::consts::ARCH,
     );
-    if matches!(case, "valid" | "dual_isa" | "service") {
+    if matches!(case, "valid" | "dual_isa" | "service" | "empty_isa") {
         assert!(result.is_ok(), "{}", result.err().unwrap());
         let cohort = result.unwrap();
         let mut provenance = tilo_vm_protocol::Provenance::local("apps+runtime");
@@ -311,6 +320,8 @@ fn complete_cohort_replays_real_signatures_payload_and_native_closure() {
         "valid",
         "dual_isa",
         "service",
+        "empty_isa",
+        "empty_isa_foreign",
         "missing_isa",
         "platform",
         "publisher",
