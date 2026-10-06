@@ -29,6 +29,7 @@ const SLOT_USER_GROUPS: &str = "tilo-identity,video";
 
 pub struct SystemdApply {
     layers_dir: PathBuf,
+    views_dir: PathBuf,
     boot: Boot,
 }
 
@@ -36,6 +37,7 @@ impl SystemdApply {
     pub fn new(root: &Path) -> Self {
         Self {
             layers_dir: root.join("layers"),
+            views_dir: root.join("views"),
             boot: Boot::new(root),
         }
     }
@@ -354,6 +356,22 @@ fn uid_of(user: &str) -> Option<u32> {
 }
 
 impl Apply for SystemdApply {
+    fn session_layer_dropin(
+        &mut self,
+        slot: &str,
+        generation: u64,
+        layers: &[PathBuf],
+    ) -> Result<String, DaemonError> {
+        let view = crate::session_view::prepare(&self.views_dir, slot, layers)?;
+        Ok(format!(
+            "# Written by tilo-vmd: slot {slot}, generation {generation}. Do not edit.\n[Service]\nExtensionDirectories=\nBindReadOnlyPaths={}/usr:/usr {}/opt:/opt\n",
+            view.display(),
+            view.display()
+        ))
+    }
+    fn remove_session_view(&mut self, slot: &str) -> Result<(), DaemonError> {
+        crate::session_view::remove(&self.views_dir, slot)
+    }
     fn boot_kernel(
         &mut self,
         layer: Option<&Path>,

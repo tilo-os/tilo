@@ -18,6 +18,7 @@ mod linker;
 pub mod locks;
 pub mod packages;
 pub mod server;
+mod session_view;
 pub mod slots;
 pub mod systemd;
 pub mod targets;

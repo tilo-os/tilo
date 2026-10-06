@@ -111,6 +111,14 @@ pub trait Apply {
     fn remove_user(&mut self, user: &str) -> Result<(), DaemonError>;
     fn write_dropin(&mut self, unit: &str, file: &str, contents: &str) -> Result<(), DaemonError>;
     fn remove_dropin(&mut self, unit: &str, file: &str) -> Result<(), DaemonError>;
+    /// Prepare one readonly combined filesystem view for a stand-in slot.
+    fn session_layer_dropin(
+        &mut self,
+        slot: &str,
+        generation: u64,
+        layers: &[PathBuf],
+    ) -> Result<String, DaemonError>;
+    fn remove_session_view(&mut self, slot: &str) -> Result<(), DaemonError>;
     /// `systemctl daemon-reload`.
     fn reload(&mut self) -> Result<(), DaemonError>;
     fn start_unit(&mut self, unit: &str) -> Result<(), DaemonError>;
@@ -444,7 +452,7 @@ pub fn activate(
         record.seat = Some(seat);
     }
 
-    let dropin = layers_dropin(&record.name, generation.number, layers);
+    let dropin = apply.session_layer_dropin(&record.name, generation.number, layers)?;
     for unit in layered_units(&session, uid) {
         apply.write_dropin(&unit, LAYERS_DROPIN, &dropin)?;
         actions.push(Action::WriteDropIn { unit });
@@ -607,6 +615,7 @@ pub fn deactivate(apply: &mut dyn Apply, record: &SlotRecord) -> Result<Vec<Acti
     let uid = apply.ensure_user(&user)?;
     let user_manager = user_unit(uid);
     apply.stop_unit(&user_manager)?;
+    apply.remove_session_view(&record.name)?;
     actions.push(Action::StopUnit {
         unit: user_manager.clone(),
     });
@@ -638,6 +647,7 @@ pub struct RecordingApply {
     users: BTreeMap<String, u32>,
     units: BTreeMap<String, bool>,
     pub sysext: Vec<PathBuf>,
+    pub prepared_session_layers: Vec<(String, Vec<PathBuf>)>,
     /// The kernel layer the next boot runs; `None` for the image's.
     pub next_kernel: Option<PathBuf>,
     /// Answers for the next `control` calls, in order; an echo of the
@@ -693,6 +703,19 @@ impl RecordingApply {
 }
 
 impl Apply for RecordingApply {
+    fn session_layer_dropin(
+        &mut self,
+        slot: &str,
+        generation: u64,
+        layers: &[PathBuf],
+    ) -> Result<String, DaemonError> {
+        self.prepared_session_layers
+            .push((slot.to_owned(), layers.to_vec()));
+        Ok(layers_dropin(slot, generation, layers))
+    }
+    fn remove_session_view(&mut self, _slot: &str) -> Result<(), DaemonError> {
+        Ok(())
+    }
     fn ensure_user(&mut self, user: &str) -> Result<u32, DaemonError> {
         self.call(format!("ensure_user {user}"));
         let next = u32::try_from(self.users.len())
