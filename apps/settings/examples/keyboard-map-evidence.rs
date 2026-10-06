@@ -30,7 +30,7 @@ fn main() -> Result<(), String> {
         ("light", Theme::light()),
         ("high-contrast", Theme::high_contrast()),
     ] {
-        for width in [600, 1100] {
+        for (width, height) in [(600, 240), (1100, 440)] {
             for (source, model, pressed) in [("us", "pc104", false), ("de", "pc105", true)] {
                 let map = keyboard_preview::preview_layout(
                     source,
@@ -38,12 +38,8 @@ fn main() -> Result<(), String> {
                     &settings_store::hardware::RichInputConfig::default(),
                     format!("{source} {model}"),
                 )?;
-                let mut frame = FrameHarness::for_root(
-                    State::new(),
-                    map,
-                    (width, width * 2 / 5),
-                    theme.clone(),
-                );
+                let mut frame =
+                    FrameHarness::for_root(State::new(), map, (width, height), theme.clone());
                 frame.click_named("input.keyboard_map")?;
                 if pressed {
                     // German Z arrives at the physical US Y position. Neither the
