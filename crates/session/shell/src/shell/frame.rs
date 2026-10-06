@@ -3183,7 +3183,7 @@ impl FrameBuilder {
             .collect()
     }
 
-    pub(crate) fn open_workspace_tasks(&mut self, task_id: Option<String>) {
+    pub(crate) fn open_workspace_tasks(&self, task_id: Option<String>) {
         self.chrome.borrow_mut().open_room_activity(Some(
             crate::shell::chrome_state::ActivityFocus {
                 task_id,

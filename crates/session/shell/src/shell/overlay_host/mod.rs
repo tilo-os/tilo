@@ -17931,13 +17931,13 @@ impl Widget for ShellOverlayHost {
             self.agent_quick_composer.dismiss();
             self.open_agent_conversation_from_user_navigation(&room, &[(agent.clone(), agent)]);
         }
-        if let Some(task_id) = self.agent_quick_composer.take_task_center_request()
+        if let Some(request) = self.agent_quick_composer.take_task_center_request()
             && let Some(chrome) = self.chrome.as_ref()
         {
             self.agent_quick_composer.dismiss();
             chrome.borrow_mut().open_room_activity(Some(
                 crate::shell::chrome_state::ActivityFocus {
-                    task_id,
+                    task_id: request.task_id,
                     ..crate::shell::chrome_state::ActivityFocus::default()
                 },
             ));

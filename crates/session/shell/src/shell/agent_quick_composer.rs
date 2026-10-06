@@ -28,6 +28,23 @@ pub(crate) enum ComposerIntent {
     Steer,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct TaskCenterRequest {
+    pub(crate) task_id: Option<String>,
+}
+
+struct ComposerControls<'a> {
+    intent: &'a LocalState<ComposerIntent>,
+    draft: &'a LocalState<String>,
+    title: &'a LocalState<String>,
+    status: &'a LocalState<String>,
+    send_enabled: &'a LocalState<bool>,
+    send_requested: &'a LocalState<bool>,
+    conversation_requested: &'a LocalState<bool>,
+    task_center_requested: &'a LocalState<bool>,
+    close_requested: &'a LocalState<bool>,
+}
+
 struct PendingMessage {
     state: AgentMessageSubmission,
     deadline: std::time::Instant,
@@ -493,75 +510,17 @@ impl Default for AgentQuickComposer {
         let task_center_requested = LocalState::new(false);
         let close_requested = LocalState::new(false);
 
-        let send_signal = send_requested.clone();
-        let conversation_signal = conversation_requested.clone();
-        let task_center_signal = task_center_requested.clone();
-        let close_signal = close_requested.clone();
-        let mode = ToggleGroup::from_state(
-            vec![
-                (
-                    ComposerIntent::Message,
-                    Segment::new(t("agent-quick-message")),
-                ),
-                (ComposerIntent::Queue, Segment::new(t("agent-quick-queue"))),
-                (ComposerIntent::Steer, Segment::new(t("agent-quick-steer"))),
-            ],
-            &intent,
-        )
-        .fill()
-        .with_accessible_name(t("agent-quick-intent"));
-        let editor = TextInput::from_state(&draft)
-            .with_id("agent-quick-editor")
-            .with_placeholder(&t("agent-quick-placeholder"))
-            .with_accessible_name(t("agent-quick-editor-name"))
-            .multiline(true)
-            .with_min_lines(3)
-            .with_enter_submits(true);
-        let actions = Row::new()
-            .with_rhythm(ui::tokens::Rhythm::Tight)
-            .push(Box::new(
-                Button::new("agent-quick-send", &t("agent-quick-send"))
-                    .with_icon(ui::icons::Icon::Send)
-                    .role(ButtonRole::Primary)
-                    .enabled_from(&send_enabled)
-                    .on_click(move || send_signal.set(true)),
-            ))
-            .push(Box::new(
-                Button::new(
-                    "agent-quick-open-conversation",
-                    &t("agent-quick-open-conversation"),
-                )
-                .with_icon(ui::icons::Icon::MessageSquare)
-                .on_click(move || conversation_signal.set(true)),
-            ))
-            .push(Box::new(
-                Button::new("agent-quick-open-tasks", &t("agent-quick-open-tasks"))
-                    .with_icon(ui::icons::Icon::List)
-                    .on_click(move || task_center_signal.set(true)),
-            ))
-            .push(Box::new(
-                Button::new("agent-quick-close", &t("agent-quick-close"))
-                    .with_icon(ui::icons::Icon::X)
-                    .on_click(move || close_signal.set(true)),
-            ));
-        let body = Column::new()
-            .with_rhythm(ui::tokens::Rhythm::Related)
-            .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Related)
-            .push(Box::new(
-                Text::from_state(&title, Clone::clone).with_role(ui::tokens::TextRole::Heading),
-            ))
-            .push(Box::new(Text::from_state(&status, Clone::clone).dimmed()))
-            .push(Box::new(mode))
-            .push(Box::new(editor))
-            .push(Box::new(actions));
-        let content = Container::new()
-            .with_no_padding()
-            .with_width(ui::tokens::Metrics::BASE.panel_width_utility)
-            .with_child(Box::new(body));
-        let popover = Popover::with_content(content)
-            .side(PopoverSide::Right)
-            .confined_to_viewport()
-            .with_label(t("agent-quick-accessible-name"));
+        let popover = quick_composer_popover(&ComposerControls {
+            intent: &intent,
+            draft: &draft,
+            title: &title,
+            status: &status,
+            send_enabled: &send_enabled,
+            send_requested: &send_requested,
+            conversation_requested: &conversation_requested,
+            task_center_requested: &task_center_requested,
+            close_requested: &close_requested,
+        });
         Self {
             popover,
             room: String::new(),
@@ -592,6 +551,80 @@ impl Default for AgentQuickComposer {
             retained_sessions: HashMap::new(),
         }
     }
+}
+
+fn quick_composer_popover(controls: &ComposerControls<'_>) -> Popover<Container> {
+    let send_signal = controls.send_requested.clone();
+    let conversation_signal = controls.conversation_requested.clone();
+    let task_center_signal = controls.task_center_requested.clone();
+    let close_signal = controls.close_requested.clone();
+    let mode = ToggleGroup::from_state(
+        vec![
+            (
+                ComposerIntent::Message,
+                Segment::new(t("agent-quick-message")),
+            ),
+            (ComposerIntent::Queue, Segment::new(t("agent-quick-queue"))),
+            (ComposerIntent::Steer, Segment::new(t("agent-quick-steer"))),
+        ],
+        controls.intent,
+    )
+    .fill()
+    .with_accessible_name(t("agent-quick-intent"));
+    let editor = TextInput::from_state(controls.draft)
+        .with_id("agent-quick-editor")
+        .with_placeholder(&t("agent-quick-placeholder"))
+        .with_accessible_name(t("agent-quick-editor-name"))
+        .multiline(true)
+        .with_min_lines(3)
+        .with_enter_submits(true);
+    let actions = Row::new()
+        .with_rhythm(ui::tokens::Rhythm::Tight)
+        .push(Box::new(
+            Button::new("agent-quick-send", &t("agent-quick-send"))
+                .with_icon(ui::icons::Icon::Send)
+                .role(ButtonRole::Primary)
+                .enabled_from(controls.send_enabled)
+                .on_click(move || send_signal.set(true)),
+        ))
+        .push(Box::new(
+            Button::new(
+                "agent-quick-open-conversation",
+                &t("agent-quick-open-conversation"),
+            )
+            .with_icon(ui::icons::Icon::MessageSquare)
+            .on_click(move || conversation_signal.set(true)),
+        ))
+        .push(Box::new(
+            Button::new("agent-quick-open-tasks", &t("agent-quick-open-tasks"))
+                .with_icon(ui::icons::Icon::List)
+                .on_click(move || task_center_signal.set(true)),
+        ))
+        .push(Box::new(
+            Button::new("agent-quick-close", &t("agent-quick-close"))
+                .with_icon(ui::icons::Icon::X)
+                .on_click(move || close_signal.set(true)),
+        ));
+    let body = Column::new()
+        .with_rhythm(ui::tokens::Rhythm::Related)
+        .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Related)
+        .push(Box::new(
+            Text::from_state(controls.title, Clone::clone).with_role(ui::tokens::TextRole::Heading),
+        ))
+        .push(Box::new(
+            Text::from_state(controls.status, Clone::clone).dimmed(),
+        ))
+        .push(Box::new(mode))
+        .push(Box::new(editor))
+        .push(Box::new(actions));
+    let content = Container::new()
+        .with_no_padding()
+        .with_width(ui::tokens::Metrics::BASE.panel_width_utility)
+        .with_child(Box::new(body));
+    Popover::with_content(content)
+        .side(PopoverSide::Right)
+        .confined_to_viewport()
+        .with_label(t("agent-quick-accessible-name"))
 }
 
 impl AgentQuickComposer {
@@ -751,7 +784,7 @@ impl AgentQuickComposer {
         requested
     }
 
-    pub(crate) fn take_task_center_request(&self) -> Option<Option<String>> {
+    pub(crate) fn take_task_center_request(&self) -> Option<TaskCenterRequest> {
         if !self.task_center_requested.get() {
             return None;
         }
@@ -760,7 +793,7 @@ impl AgentQuickComposer {
             AgentTaskChoice::One(task) | AgentTaskChoice::Selected(task) => Some(task.task_id),
             AgentTaskChoice::None | AgentTaskChoice::Choose(_) => None,
         });
-        Some(task)
+        Some(TaskCenterRequest { task_id: task })
     }
 
     pub(crate) fn target(&self) -> Option<(&str, &str)> {
@@ -1622,7 +1655,9 @@ mod tests {
         ));
         assert_eq!(
             composer.take_task_center_request(),
-            Some(Some("task-a".into()))
+            Some(TaskCenterRequest {
+                task_id: Some("task-a".into())
+            })
         );
         assert_eq!(composer.take_task_center_request(), None);
     }
