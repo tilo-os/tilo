@@ -10,6 +10,7 @@ or every app has been exercised.
 | Select several files, open their menu without a pointer, reveal a search hit, undo a file operation | Files has selection-aware menu construction, Context Menu keyboard handling, Reveal and framework-history journeys (`files_app/tests.rs`, `framework_history_tests.rs`, `search_provider.rs`) | These are not missing wholesale; no duplicate implementation |
 | Discover what can be done with the focused shell tab without knowing individual chords or positioning a pointer | `TabBar` only queues a menu on right-click; shell harvests those requests. Menu arrows, accessible rows, Close / Split Right / Move to New Group already exist | Implement a keyboard and published-action entrance |
 | Carry resources between apps and share them with collaborators | Apps publish typed children and effects; Files has scoped grant/revoke menus. Chat #2912 and Contacts #2910 own their resource changes | Cross-app journey audit is a follow-up, not permission to invent a second sharing protocol |
+| Cancel an accidental tab drag before releasing the pointer | A real pointer/key journey at `90add8ad64` starts a drag, then Escape is unhandled; releasing can still commit the drop | Next slice: cancel the shared pending gesture and expose the same cancellation action |
 | Touch text entry | Existing OSK work has a separate owner | No OSK edits |
 
 ## Before and after
@@ -53,3 +54,28 @@ frames. These are production offscreen frames, never the user's desktop.
 Actual results and any unrun checks belong in the PR description. Native screen
 reader, real touch/keyboard hardware and older-machine latency remain device
 validation, not inferred passes from these tests.
+
+
+## Cancelling a tab drag
+
+With a tab lifted, press Escape to abandon its pending drop immediately. The
+later pointer release cannot move or detach it. `actions` / `tab.drag.cancel`
+requests the same host cancellation for automation and assistive technology;
+locked sessions refuse that request. With no pending tab gesture, Escape keeps
+its existing menu/dialog/application meaning.
+
+Cancellation clears the existing shared tab bar gesture and the shell's
+in-strip/cross-strip feedback. It preserves every live tab host and does not
+write the replicated window topology. A carried handle remains visible even
+when an inactive app has not been laid out: the shared tab ghost is painted
+without forcing the app to render a cold preview. The carried handle uses the
+shared themed surface, and forced-colour themes keep its contrast opaque. This slice does not change group
+reordering, resize gestures or application-owned drags.
+
+The regression journey uses actual pointer press/move, Escape and release,
+asserts that a drag started, then checks the live widget and durable tree.
+Run `cargo test --locked -p shell --lib tab_drag_ -j 4` and the existing
+`cargo test --locked -p shell --test it cross_strip_drag:: -j 4` regression.
+The `tab_drag_cancel` offscreen scenario records before, lifted, cancelled and
+released frames. Physical touch, keyboard and screen-reader qualification
+remain separate device checks.

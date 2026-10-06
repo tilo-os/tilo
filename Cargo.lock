@@ -12826,6 +12826,7 @@ dependencies = [
  "tilo-oauth",
  "tilo-pdf",
  "tilo-relay-protocol",
+ "tilo-spotify",
  "tilo-subject",
  "tilo-thumbnail",
  "tilo-ui",

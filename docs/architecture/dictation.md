@@ -409,8 +409,8 @@ and notice publication, and first signed-candidate review must be implemented
 before the unchanged reproduction gate can publish new image inputs. Review
 signing must produce an artifact for review first, followed by committing and
 reproducing those signed bytes; removing the comparison is not that workflow.
-The current draft/hold and explicit no-merge/no-deploy scope prohibit dispatching
-this protected-main release during this task. Microphone consent is a separate
+The publisher runs only from protected main after normal integration and an
+explicit release dispatch. Microphone consent is a separate
 one-session decision after installation; it is not a prerequisite for reviewing
 or releasing the licensed model. Recognition quality is the current model
 selection blocker, rather than missing account or signing access.
@@ -468,7 +468,8 @@ proof of Wispr Flow parity.
 
 The pinned multilingual small-q5_1 model (190,085,487 bytes) was also verified
 and tried. It failed native allocation under the unchanged 1 GiB address-space
-limit before decoding. No accuracy claim is made and no limit was raised. A
+limit before decoding, including with only one 10.56-second clip loaded; bulk
+benchmark preload did not cause that failure. No accuracy claim is made and no limit was raised. A
 future stronger tier needs bounded memory planning and separate device evidence.
 Base initially failed loading with geometric model-buffer growth; reserving the
 exact signed receipt size plus one overflow byte allowed it to load and finish
