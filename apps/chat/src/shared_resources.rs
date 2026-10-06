@@ -47,7 +47,8 @@ impl ChatApp {
             .source_provider
             .clone()
             .ok_or("This older reference has no source record provider")?;
-        let correlation = uuid::Uuid::new_v4().as_u64_pair().0;
+        // Browser peers carry this through JSON numbers; keep it exactly representable.
+        let correlation = uuid::Uuid::new_v4().as_u64_pair().0 & ((1_u64 << 53) - 1);
         self.resource_navigation
             .requests
             .push(ui::collaboration::CollabRequest::RemoteAction {
@@ -340,7 +341,7 @@ mod tests {
         use crate::resource::ChatShell;
         use ui::framework::testing::TestApp;
         let mut app = TestApp::<ChatShell>::new().unwrap();
-        let reference = serde_json::json!({"kind":"chat.message", "id":"chat.message:message", "label":"Fixture"});
+        let reference = serde_json::json!({"kind":"chat.message", "id":"chat.message:message", "label":"Fixture", "span":{"start":6,"end":7,"unit":"Chars"}});
         app.call_on("chat.channel:c_general", "share-resource", serde_json::json!({
             "reference":reference, "sourceProvider":"record:so.tilo.chat:discussion", "text":"Discuss resource"
         })).unwrap();
@@ -365,6 +366,9 @@ mod tests {
             .as_ref()
             .unwrap()
             .correlation;
+        assert!(correlation < (1_u64 << 53));
+        let browser_number = serde_json::from_str::<f64>(&correlation.to_string()).unwrap();
+        assert_eq!(browser_number as u64, correlation);
         surface.complete_resource_navigation(&RemoteActionMessage::CatalogueResponse {
             correlation,
             result: Ok(page()),
@@ -375,6 +379,7 @@ mod tests {
                 .unwrap()
                 .starts_with("https://cloud.example/qos-runtime/resource.html#resource=")
         );
+        println!("NATIVE_RESOURCE_LINK={}", ui::clipboard_paste().unwrap());
         ui::clipboard_copy("sentinel");
         let invocation = app.start_effect_on(&target, &effect).unwrap();
         let correlation = app
