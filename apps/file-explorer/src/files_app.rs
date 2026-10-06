@@ -2095,6 +2095,23 @@ impl FileExplorerWidget {
                 self.structure_dirty = true;
                 return Ok(Ran::Pending);
             }
+            FilesEffect::SendAirDrop {
+                entry,
+                address,
+                port,
+            } => {
+                self.refuse_while_answering()?;
+                let path = self
+                    .visible_entry_path(&entry)
+                    .ok_or_else(|| t("files-airdrop-source-unavailable"))?;
+                if !path.is_file() {
+                    return Err(t("files-airdrop-file-only"));
+                }
+                self.nearby_send.send_airdrop(&path, address, port)?;
+                self.status = Some(t("files-airdrop-verifying"));
+                self.structure_dirty = true;
+                return Ok(Ran::Pending);
+            }
             FilesEffect::ShareLink { entry } => {
                 self.refuse_while_answering()?;
                 let target = self
@@ -8085,6 +8102,32 @@ impl FileExplorerWidget {
                 "send-nearby",
                 t("files-menu-send-nearby"),
             ));
+            if entry.path.is_file() && self.nearby_send.airdrop_available() {
+                let effect = FilesEffect::SendAirDrop {
+                    entry: id(),
+                    address: String::new(),
+                    port: 0,
+                };
+                let mut params = effect.bound_asking(&["address", "port"]).params().to_vec();
+                for param in &mut params {
+                    let key = if &*param.name == "address" {
+                        "files-airdrop-address"
+                    } else {
+                        "files-airdrop-port"
+                    };
+                    param.description = t(key).into();
+                    param.schema = Some(if &*param.name == "port" {
+                        serde_json::json!({"minimum": 1, "maximum": 65535})
+                    } else {
+                        serde_json::json!({"minLength": 1, "maxLength": 64})
+                    });
+                }
+                let mut action = effect.bound_asking_params(params);
+                action.description = Some(t("files-airdrop-action-detail"));
+                action.id = "send-airdrop".into();
+                action.label = t("files-action-send-airdrop");
+                resource.actions.push(action);
+            }
             for target in self
                 .nearby_send
                 .targets()
@@ -8323,6 +8366,9 @@ impl Collaborative for FileExplorerWidget {
         let mut changed = self.handle_shortcut_event(event);
         for effect in self.nearby_send.handle_event(event) {
             match effect {
+                crate::nearby_send::NearbyUiEffect::AvailabilityChanged => {
+                    self.structure_dirty = true;
+                }
                 crate::nearby_send::NearbyUiEffect::OpenPicker(targets) => {
                     self.open_nearby_device_picker(&targets);
                     changed = true;

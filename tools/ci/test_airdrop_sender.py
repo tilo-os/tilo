@@ -179,6 +179,50 @@ class AirDropTests(unittest.TestCase):
                 sender.send("127.0.0.1", port, self.pins[0], fd, "report.bin")
             self.assertEqual(observed, ["/Discover", "/Ask"])
 
+    def test_bounded_child_staging_keeps_approved_bytes_for_opendrop(self):
+        import fcntl
+        import json
+        payload = b"immutable broker-approved bytes"
+        staged = os.memfd_create("isolated-airdrop-stage", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
+        readonly = None
+        source_path = self.directory / "broker-stage-source"
+        source_path.write_bytes(payload)
+        source = os.open(source_path, os.O_RDONLY | os.O_CLOEXEC)
+        previous = os.getcwd()
+        try:
+            command = [sys.executable, "-I", str(ROOT / "tools/protocols/airdrop_sender.py"),
+                       "127.0.0.1", "1", "stage", "--source-fd", str(source),
+                       "--staged-fd", str(staged), "--name=report.bin"]
+            reply = subprocess.run(command, pass_fds=(source, staged), check=True,
+                                   capture_output=True, text=True, timeout=10)
+            self.assertEqual(json.loads(reply.stdout)["bytes"], len(payload))
+            fcntl.fcntl(staged, fcntl.F_ADD_SEALS, fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW
+                        | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL)
+            readonly = os.open(f"/proc/self/fd/{staged}", os.O_RDONLY | os.O_CLOEXEC)
+            source_path.write_bytes(b"later unapproved source contents")
+            with tempfile.TemporaryDirectory(dir=self.directory) as destination:
+                os.chdir(destination)
+                with self.receiver() as (port, observed, _):
+                    sender.send("127.0.0.1", port, self.pins[0], readonly, "report.bin")
+                    self.assertEqual(observed, ["/Discover", "/Ask", "/Upload"])
+                    self.assertEqual(Path("report.bin").read_bytes(), payload)
+        finally:
+            os.chdir(previous)
+            os.close(source)
+            if readonly is not None:
+                os.close(readonly)
+            os.close(staged)
+
+    def test_staging_refuses_unapproved_writable_source_and_nonempty_destination(self):
+        with tempfile.TemporaryFile() as output, self.source(write=True) as (source, _):
+            with self.assertRaisesRegex(sender.TransferError, "read-only"):
+                sender.stage(source, output.fileno(), "report.bin")
+        with tempfile.TemporaryFile() as output, self.source() as (source, _):
+            output.write(b"existing")
+            output.flush()
+            with self.assertRaisesRegex(sender.TransferError, "empty writable"):
+                sender.stage(source, output.fileno(), "report.bin")
+
     def test_oversized_response_stops_before_ask(self):
         with self.source() as (fd, _), self.receiver("oversize") as (port, observed, _):
             with self.assertRaisesRegex(sender.TransferError, "protocol limit"):
@@ -190,7 +234,8 @@ class AirDropTests(unittest.TestCase):
             with self.assertRaisesRegex(sender.TransferError, "read-only"):
                 sender.send("127.0.0.1", 1, self.pins[0], fd, "report.bin")
         with self.source() as (fd, _):
-            for name in ("../escape", "/absolute", "a\\b", "..", "bad\nname", "x" * 256):
+            for name in ("../escape", "/absolute", "a\\b", "..", "bad\nname", "x" * 256,
+                         "spoof\u202etxt.exe", "spoof\u2066.txt"):
                 with self.assertRaises(sender.TransferError):
                     sender.send("127.0.0.1", 1, self.pins[0], fd, name)
             for pin in ("", "00", "g" * 64):

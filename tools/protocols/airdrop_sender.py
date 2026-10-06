@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded AirDrop wire sender; not yet a user-facing Files capability.
+"""Bounded AirDrop wire sender; release-unavailable Files lab capability.
 
 The broker must approve the endpoint and certificate fingerprint per attempt and
 pass a read-only regular-file descriptor. No discovery, AWDL setup, Apple account
@@ -26,6 +26,7 @@ import stat
 MAX_FILE_BYTES = 16 * 1024 * 1024
 MAX_RESPONSE_BYTES = 64 * 1024
 TIMEOUT_SECONDS = 15
+UNSAFE_REVIEW_CHARACTERS = "\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
 
 
 class TransferError(Exception):
@@ -94,7 +95,8 @@ def inspect_peer(address, port):
 def snapshot(fd, name):
     if not name or name in (".", "..") or "/" in name or "\\" in name:
         raise TransferError("source name must be one portable basename")
-    if any(ord(char) < 32 or ord(char) == 127 for char in name) or len(name.encode()) > 255:
+    if any(ord(char) < 32 or ord(char) == 127 or char in UNSAFE_REVIEW_CHARACTERS
+           for char in name) or len(name.encode()) > 255:
         raise TransferError("invalid source basename")
     before = os.fstat(fd)
     if not stat.S_ISREG(before.st_mode):
@@ -127,6 +129,26 @@ def archive(name, data):
         return prefix + b"\0" * (-len(prefix) % 4) + payload + b"\0" * (-len(payload) % 4)
     return gzip.compress(entry("./" + name, data, stat.S_IFREG | 0o600, 1)
                          + entry("TRAILER!!!", b"", 0, 0), mtime=0)
+
+
+def stage(source_fd, staged_fd, name):
+    """Copy one approved descriptor without network access; the host seals it.
+
+    Running staging as a bounded child also lets the host stop a stalled FUSE
+    hydration before presenting a consent sheet. No source path is reopened.
+    """
+    metadata = os.fstat(staged_fd)
+    if (not stat.S_ISREG(metadata.st_mode) or metadata.st_size != 0
+            or fcntl.fcntl(staged_fd, fcntl.F_GETFL) & os.O_ACCMODE != os.O_RDWR):
+        raise TransferError("staging descriptor must be an empty writable file")
+    data = snapshot(source_fd, name)
+    written = 0
+    while written < len(data):
+        count = os.pwrite(staged_fd, data[written:written + 64 * 1024], written)
+        if count <= 0:
+            raise TransferError("staging write failed")
+        written += count
+    return {"bytes": len(data), "content_hash": hashlib.sha256(data).hexdigest()}
 
 
 def post(connection, path, body, chunked=False):
@@ -176,15 +198,23 @@ def main():
     transfer.add_argument("--certificate-sha256", required=True)
     transfer.add_argument("--source-fd", type=int, required=True)
     transfer.add_argument("--name", required=True)
+    staging = sub.add_parser("stage")
+    staging.add_argument("--source-fd", type=int, required=True)
+    staging.add_argument("--staged-fd", type=int, required=True)
+    staging.add_argument("--name", required=True)
     args = parser.parse_args()
     def expired(_signal, _frame):
         raise TransferError("attempt exceeded the adapter deadline")
     signal.signal(signal.SIGALRM, expired)
     signal.setitimer(signal.ITIMER_REAL, 60)
     try:
-        result = ({"certificate_sha256": inspect_peer(args.address, args.port)}
-                  if args.operation == "inspect" else send(args.address, args.port,
-                      args.certificate_sha256, args.source_fd, args.name))
+        if args.operation == "stage":
+            result = stage(args.source_fd, args.staged_fd, args.name)
+        elif args.operation == "inspect":
+            result = {"certificate_sha256": inspect_peer(args.address, args.port)}
+        else:
+            result = send(args.address, args.port, args.certificate_sha256,
+                          args.source_fd, args.name)
         print(json.dumps(result))
     except (TransferError, OSError, http.client.HTTPException,
             plistlib.InvalidFileException, ValueError):

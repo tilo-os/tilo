@@ -23,6 +23,7 @@ const MAX_VISIBLE_HISTORY: usize = 32;
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Pending {
     Snapshot { open_picker: bool },
+    AirDropAvailability,
     Send,
     Decide,
     Cancel,
@@ -31,6 +32,7 @@ enum Pending {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NearbyUiEffect {
+    AvailabilityChanged,
     OpenPicker(Vec<NearbyTransferTarget>),
     Offer {
         transfer: NearbyTransferStatus,
@@ -50,6 +52,8 @@ pub struct NearbySendState {
     shown_offer: Option<NearbyTransferHandle>,
     observed_phases: BTreeMap<NearbyTransferHandle, NearbyTransferPhase>,
     history: VecDeque<NearbyTransferStatus>,
+    airdrop_available: bool,
+    queried_airdrop: bool,
 }
 
 impl Default for NearbySendState {
@@ -63,11 +67,41 @@ impl Default for NearbySendState {
             shown_offer: None,
             observed_phases: BTreeMap::new(),
             history: VecDeque::new(),
+            airdrop_available: false,
+            queried_airdrop: false,
         }
     }
 }
 
 impl NearbySendState {
+    pub fn airdrop_available(&self) -> bool {
+        self.airdrop_available
+    }
+
+    /// The app submits no certificate/trust assertion. Those are collected
+    /// on the compositor-owned verification sheet for this one attempt.
+    ///
+    /// # Errors
+    /// Returns a localized error if lab availability, Unix source-path
+    /// representation or the bounded literal endpoint is invalid.
+    pub fn send_airdrop(&mut self, path: &Path, address: String, port: u16) -> Result<(), String> {
+        if !self.airdrop_available {
+            return Err(crate::i18n::t("files-airdrop-unavailable"));
+        }
+        let Some(path) = host_fs::names::unix_path_bytes(path) else {
+            return Err(crate::i18n::t("files-share-not-available"));
+        };
+        let command = NearbyTransferCommand::SendAirDrop {
+            source_path: path.to_vec(),
+            address,
+            port,
+        };
+        if !command.valid() {
+            return Err(crate::i18n::t("files-airdrop-endpoint-invalid"));
+        }
+        self.queue(command, Pending::Send);
+        Ok(())
+    }
     fn queue(&mut self, command: NearbyTransferCommand, pending: Pending) {
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.wrapping_add(1).max(1);
@@ -154,6 +188,13 @@ impl NearbySendState {
             return;
         }
         self.next_poll = now + POLL_INTERVAL;
+        if !self.queried_airdrop {
+            self.queried_airdrop = true;
+            self.queue(
+                NearbyTransferCommand::AirDropAvailability,
+                Pending::AirDropAvailability,
+            );
+        }
         self.queue(
             NearbyTransferCommand::Snapshot,
             Pending::Snapshot { open_picker: false },
@@ -193,6 +234,13 @@ impl NearbySendState {
         let reply = match result {
             Ok(reply) => reply,
             Err(error) => {
+                if pending == Pending::AirDropAvailability {
+                    if self.airdrop_available {
+                        self.airdrop_available = false;
+                        return vec![NearbyUiEffect::AvailabilityChanged];
+                    }
+                    return Vec::new();
+                }
                 if pending == Pending::Send {
                     return vec![
                         NearbyUiEffect::SendResult(Err(error.clone())),
@@ -213,6 +261,17 @@ impl NearbySendState {
         reply: &NearbyTransferReply,
     ) -> Vec<NearbyUiEffect> {
         match (pending, reply) {
+            (
+                Pending::AirDropAvailability,
+                NearbyTransferReply::AirDropAvailability { available },
+            ) => {
+                self.queried_airdrop = false;
+                if self.airdrop_available == *available {
+                    return Vec::new();
+                }
+                self.airdrop_available = *available;
+                vec![NearbyUiEffect::AvailabilityChanged]
+            }
             (Pending::Snapshot { open_picker }, NearbyTransferReply::Snapshot { snapshot }) => {
                 self.apply_snapshot(snapshot.clone(), open_picker)
             }
@@ -279,10 +338,12 @@ impl NearbySendState {
         transfer: &NearbyTransferStatus,
         effects: &mut Vec<NearbyUiEffect>,
     ) {
-        if matches!(
-            transfer.phase,
-            NearbyTransferPhase::AwaitingConsent | NearbyTransferPhase::AwaitingDestination
-        ) && self.shown_offer != Some(transfer.handle)
+        if transfer.direction == ui::collaboration::NearbyTransferDirection::Receiving
+            && matches!(
+                transfer.phase,
+                NearbyTransferPhase::AwaitingConsent | NearbyTransferPhase::AwaitingDestination
+            )
+            && self.shown_offer != Some(transfer.handle)
         {
             self.shown_offer = Some(transfer.handle);
             effects.push(NearbyUiEffect::Offer {
@@ -342,6 +403,83 @@ impl NearbySendState {
 mod tests {
     use super::*;
     use ui::collaboration::{NearbyTransferDirection, NearbyTransferPhase, NearbyTransferReply};
+
+    #[test]
+    fn airdrop_availability_is_typed_and_failure_withdraws_the_action() {
+        let mut state = NearbySendState::default();
+        assert!(!state.airdrop_available());
+        assert!(
+            state
+                .send_airdrop(Path::new("/fixture"), "127.0.0.1".into(), 443)
+                .is_err()
+        );
+        state.poll_if_due(ui::time::now());
+        let requests = state.take_requests();
+        let request_id = requests
+            .iter()
+            .find_map(|request| match request {
+                CollabRequest::NearbyTransferCommand {
+                    request_id,
+                    command: NearbyTransferCommand::AirDropAvailability,
+                    ..
+                } => Some(*request_id),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            state.handle_event(&CollabEvent::NearbyTransferCommandResult {
+                request_id,
+                result: Ok(NearbyTransferReply::AirDropAvailability { available: true }),
+            }),
+            vec![NearbyUiEffect::AvailabilityChanged]
+        );
+        assert!(state.airdrop_available());
+        state.queue(
+            NearbyTransferCommand::AirDropAvailability,
+            Pending::AirDropAvailability,
+        );
+        let CollabRequest::NearbyTransferCommand { request_id, .. } =
+            state.take_requests().pop().unwrap()
+        else {
+            panic!("request")
+        };
+        assert_eq!(
+            state.handle_event(&CollabEvent::NearbyTransferCommandResult {
+                request_id,
+                result: Err("host disconnected".into()),
+            }),
+            vec![NearbyUiEffect::AvailabilityChanged]
+        );
+        assert!(!state.airdrop_available());
+        assert!(
+            state
+                .send_airdrop(Path::new("/fixture"), "127.0.0.1".into(), 443)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn outgoing_airdrop_consent_never_opens_a_receive_offer() {
+        let mut state = NearbySendState::default();
+        let snapshot = NearbyTransferSnapshot {
+            transfers: vec![NearbyTransferStatus {
+                handle: NearbyTransferHandle::from_issued_bytes([19; 16]),
+                name: "report.txt".into(),
+                device_label: "AirDrop · 127.0.0.1:443".into(),
+                direction: NearbyTransferDirection::Sending,
+                phase: NearbyTransferPhase::AwaitingConsent,
+                transferred_bytes: 0,
+                total_bytes: 8,
+            }],
+            ..Default::default()
+        };
+        assert!(
+            !state
+                .apply_snapshot(snapshot, false)
+                .iter()
+                .any(|effect| matches!(effect, NearbyUiEffect::Offer { .. }))
+        );
+    }
 
     /// Picker and receiver consent follow typed broker results and the receiver decision uses only opaque destination authority.
     #[test]

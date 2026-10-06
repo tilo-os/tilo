@@ -743,11 +743,13 @@ readers = ["apps/ebook/src/app/interaction_tests.rs"]
 package = "shell"
 inputs = [
   "apps/browser/tilo-app.toml",
+  "tools/protocols/airdrop_sender.py",
   "crates/sdk/ui-core/assets/fonts/",
   "dist/VERSION",
   "docs/shell-navigation-keyboard-map.md",
 ]
 readers = [
+  "crates/session/shell/src/shell/broker_services/airdrop_transfer.rs",
   "crates/session/shell/examples/support/populated_shell_fixture.rs",
   "crates/session/shell/src/linux_main.rs",
   "crates/session/shell/src/shell/fixed_chords.rs",

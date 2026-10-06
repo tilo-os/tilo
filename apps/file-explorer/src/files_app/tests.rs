@@ -2271,6 +2271,90 @@ mod command_path_tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn airdrop_file_action_requires_host_availability_and_cannot_submit_trust() {
+        use ui::collaboration::{
+            CollabEvent, CollabRequest, NearbyTransferCommand, NearbyTransferReply,
+        };
+        let (mut widget, config) = hermetic();
+        let source = config.path().join("report.txt");
+        std::fs::write(&source, b"approved source").unwrap();
+        widget.navigate(config.path().to_path_buf());
+        let mut document = automerge::AutoCommit::new();
+        let address = ui::tilo_actions::ActionAddress::new(
+            crate::search_provider::entry_resource_id(&source),
+            "send-airdrop",
+        );
+        let resources = crate::files_app::published::tree(&widget, &document);
+        assert!(ui::tilo_actions::door::resolve(&resources, &address).is_none());
+        widget.nearby_send.poll_if_due(ui::time::now());
+        let request_id = widget
+            .nearby_send
+            .take_requests()
+            .iter()
+            .find_map(|request| match request {
+                CollabRequest::NearbyTransferCommand {
+                    request_id,
+                    command: NearbyTransferCommand::AirDropAvailability,
+                    ..
+                } => Some(*request_id),
+                _ => None,
+            })
+            .unwrap();
+        widget
+            .nearby_send
+            .handle_event(&CollabEvent::NearbyTransferCommandResult {
+                request_id,
+                result: Ok(NearbyTransferReply::AirDropAvailability { available: true }),
+            });
+        let resources = crate::files_app::published::tree(&widget, &document);
+        let action = ui::tilo_actions::door::resolve(&resources, &address)
+            .expect("lab host publishes file action");
+        assert_eq!(
+            action
+                .params()
+                .iter()
+                .map(|param| &*param.name)
+                .collect::<Vec<_>>(),
+            ["address", "port"]
+        );
+        let mut args = serde_json::Map::new();
+        args.insert("address".into(), "127.0.0.1".into());
+        args.insert("port".into(), 443.into());
+        let encoded = action.build_json(&args).unwrap();
+        crate::files_app::published::start(
+            &mut widget,
+            action.kind,
+            &encoded.type_id,
+            &encoded.payload,
+            &mut document,
+            &automerge::ROOT,
+        )
+        .unwrap();
+        let requests = widget.nearby_send.take_requests();
+        assert!(
+            matches!(requests.as_slice(), [CollabRequest::NearbyTransferCommand {
+            command: NearbyTransferCommand::SendAirDrop { source_path, address, port: 443 }, ..
+        }] if source_path == source.as_os_str().as_encoded_bytes() && address == "127.0.0.1")
+        );
+        // Retaining an encoded action does not retain its source capability.
+        std::fs::remove_file(&source).unwrap();
+        widget.refresh();
+        assert!(
+            crate::files_app::published::start(
+                &mut widget,
+                action.kind,
+                &encoded.type_id,
+                &encoded.payload,
+                &mut document,
+                &automerge::ROOT
+            )
+            .is_err()
+        );
+        assert!(widget.nearby_send.take_requests().is_empty());
+    }
+
+    #[test]
     fn nearby_recovered_receive_decline_is_available_without_a_destination() {
         use ui::collaboration::{
             CollabRequest, NearbyTransferCommand, NearbyTransferDirection, NearbyTransferHandle,

@@ -746,6 +746,15 @@ pub enum NearbyTransferCommand {
     Retry {
         handle: NearbyTransferHandle,
     },
+    /// Local JSON broker extension, not a personal-fabric peer protocol.
+    AirDropAvailability,
+    /// A manually selected lab receiver. Certificate trust is collected only
+    /// by the compositor; applications cannot submit or reuse a trusted pin.
+    SendAirDrop {
+        source_path: Vec<u8>,
+        address: String,
+        port: u16,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -755,6 +764,7 @@ pub enum NearbyTransferReply {
     Queued { handle: NearbyTransferHandle },
     Accepted,
     Rejected { reason: String },
+    AirDropAvailability { available: bool },
 }
 
 impl NearbyTransferCommand {
@@ -763,7 +773,21 @@ impl NearbyTransferCommand {
     /// the app, source path, transfer id and device to its live route.
     pub fn valid(&self) -> bool {
         match self {
-            Self::Snapshot => true,
+            Self::Snapshot | Self::AirDropAvailability => true,
+            Self::SendAirDrop {
+                source_path,
+                address,
+                port,
+            } => {
+                !source_path.is_empty()
+                    && source_path.len() <= MAX_NEARBY_TRANSFER_PATH_BYTES
+                    && !source_path.contains(&0)
+                    && *port != 0
+                    && address.len() <= 64
+                    && address
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|ip| !ip.is_unspecified() && !ip.is_multicast())
+            }
             Self::Decide {
                 handle,
                 accept,
@@ -818,7 +842,7 @@ impl NearbyTransferReply {
                     })
             }
             Self::Queued { handle } => handle.valid(),
-            Self::Accepted => true,
+            Self::Accepted | Self::AirDropAvailability { .. } => true,
             Self::Rejected { reason } => {
                 !reason.is_empty() && reason.len() <= MAX_NEARBY_TRANSFER_LABEL_BYTES
             }
@@ -3314,6 +3338,34 @@ mod certified_join_tests {
 
 #[cfg(all(test, feature = "client"))]
 mod tests {
+    #[test]
+    fn airdrop_extension_preserves_old_json_and_accepts_no_application_trust_claim() {
+        use super::{NearbyTransferCommand as Command, NearbyTransferReply as Reply};
+        assert_eq!(
+            serde_json::to_string(&Command::Snapshot).unwrap(),
+            r#"{"command":"snapshot"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&Reply::Accepted).unwrap(),
+            r#"{"result":"accepted"}"#
+        );
+        let command = r#"{"command":"send-air-drop","source_path":[47,116,109,112,47,102],"address":"127.0.0.1","port":443}"#;
+        let parsed = serde_json::from_str::<Command>(command).unwrap();
+        assert!(parsed.valid());
+        for claimed in ["certificate_sha256", "verified", "person", "remember"] {
+            let value = command.strip_suffix('}').unwrap().to_owned()
+                + &format!(",\"{claimed}\":\"claimed\"}}");
+            assert!(serde_json::from_str::<Command>(&value).is_err());
+        }
+        for address in ["receiver.example", "0.0.0.0", "239.1.1.1", "::"] {
+            let mut value = serde_json::from_str::<serde_json::Value>(command).unwrap();
+            value["address"] = address.into();
+            assert!(!serde_json::from_value::<Command>(value).unwrap().valid());
+        }
+        let mut value = serde_json::from_str::<serde_json::Value>(command).unwrap();
+        value["port"] = 0.into();
+        assert!(!serde_json::from_value::<Command>(value).unwrap().valid());
+    }
     use super::*;
     use std::env;
 
