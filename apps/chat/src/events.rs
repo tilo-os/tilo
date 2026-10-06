@@ -3037,9 +3037,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_composer_uses_owner_queue_direction_and_stop_without_chat_writes() {
-        use ui::agent_task_frontier::{AgentDirectionState, AgentQueueState, AgentStopState};
-
+    fn agent_task_status_opens_task_center_by_keyboard_pointer_and_accessibility() {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
@@ -3153,6 +3151,30 @@ mod tests {
             })
                 if source == "agent:scribe"
         ));
+    }
+
+    #[test]
+    fn agent_composer_uses_owner_queue_direction_and_stop_without_chat_writes() {
+        use ui::agent_task_frontier::{AgentDirectionState, AgentQueueState, AgentStopState};
+
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.room_names
+            .insert("agent:scribe".into(), "Scribe".into());
+        let host = Arc::new(TaskControlHost::default());
+        app.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
+            Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
+            Caller::local_app("so.tilo.chat").in_room("ws_home"),
+        );
+        app.reload(&doc);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        app.poll_agent_tasks();
+        let tasks = app.direct_agent_tasks().expect("owner-backed task context");
 
         app.on_hit(
             Hit::AgentIntent(crate::app::AgentComposerIntent::Queue),
