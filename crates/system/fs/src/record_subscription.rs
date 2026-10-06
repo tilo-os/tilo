@@ -345,7 +345,7 @@ impl RecordSubscriptionStore {
         {
             std::fs::create_dir_all(parent)?;
         }
-        atomic_file::write_with_mode(&self.path, &bytes, 0o600)?;
+        tilo_files::native::atomic::write_with_mode(&self.path, &bytes, 0o600)?;
         Ok(())
     }
 }
@@ -539,7 +539,7 @@ mod tests {
         {
             let temp = tempfile::tempdir().unwrap();
             let malformed = temp.path().join("malformed.json");
-            atomic_file::write_with_mode(&malformed, b"{not-json", 0o600).unwrap();
+            tilo_files::native::atomic::write_with_mode(&malformed, b"{not-json", 0o600).unwrap();
             assert!(matches!(
                 RecordSubscriptionStore::open_at(&malformed, NOW),
                 Err(RecordSubscriptionStoreError::MalformedState)
@@ -575,8 +575,12 @@ mod tests {
             document
                 .subscriptions
                 .push(document.subscriptions[0].clone());
-            atomic_file::write_with_mode(&path, &serde_json::to_vec(&document).unwrap(), 0o600)
-                .unwrap();
+            tilo_files::native::atomic::write_with_mode(
+                &path,
+                &serde_json::to_vec(&document).unwrap(),
+                0o600,
+            )
+            .unwrap();
             assert!(matches!(
                 RecordSubscriptionStore::open_at(&path, NOW),
                 Err(RecordSubscriptionStoreError::DuplicateCollision(_))

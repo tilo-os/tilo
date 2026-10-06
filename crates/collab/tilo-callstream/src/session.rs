@@ -120,59 +120,58 @@ impl VideoStreamSender {
     }
 
     /// Offers a captured RGBA frame (`width * height * 4` bytes) at wall clock
-    /// `now`. Returns `Some(bytes)` — the [`SurfaceFrame`]-framed encoded
-    /// access unit — when the throttle admits it and the encoder produced a
-    /// non-empty NALU; `Ok(None)` if throttled, size-mismatched, or empty
-    /// output. A sequence-space or framing limit failure is returned visibly
-    /// and leaves the sender's throttle and sequence unchanged.
+    /// `now`. Returns the [`SurfaceFrame`]-framed bytes of every access unit
+    /// the encoder finished, in order: usually this frame's, plus any late
+    /// unit of an earlier frame, since every later unit references it. Empty
+    /// if throttled, size-mismatched, or the encoder is still working. A
+    /// sequence-space or framing limit failure is returned visibly and
+    /// leaves the sender's throttle and sequence unchanged.
     ///
     /// # Errors
     ///
     /// Returns [`FrameError::SequenceExhausted`] when this stream must be
     /// restarted instead of wrapping, or [`FrameError::PayloadTooLarge`] if
     /// the encoder output cannot be represented by the realtime wire budget.
-    pub fn offer_frame(
-        &mut self,
-        rgba: &[u8],
-        now: Instant,
-    ) -> Result<Option<Vec<u8>>, FrameError> {
+    pub fn offer_frame(&mut self, rgba: &[u8], now: Instant) -> Result<Vec<Vec<u8>>, FrameError> {
         if self.sequence == u64::MAX {
             return Err(FrameError::SequenceExhausted);
         }
         if !self.throttle.should_encode(now) {
-            return Ok(None);
+            return Ok(Vec::new());
         }
-        let Ok(Some(unit)) = self
-            .encoder
-            .encode_unit(rgba, self.sequence.saturating_mul(33))
-        else {
-            return Ok(None);
+        let Ok(units) = self.encoder.encode(rgba) else {
+            return Ok(Vec::new());
         };
-        if unit.data.is_empty() {
-            return Ok(None);
-        }
         let codec = self.encoder.codec();
-        let frame = SurfaceFrame {
-            sequence: self.sequence,
-            keyframe: unit.keyframe,
-            codec,
-            display_size: (codec != StreamCodec::H264).then(|| {
-                (
-                    u16::try_from(self.width).unwrap_or(u16::MAX),
-                    u16::try_from(self.height).unwrap_or(u16::MAX),
-                )
-            }),
-            payload: unit.data,
-        };
-        let bytes = frame.encode()?;
+        let display_size = (codec != StreamCodec::H264).then(|| {
+            (
+                u16::try_from(self.width).unwrap_or(u16::MAX),
+                u16::try_from(self.height).unwrap_or(u16::MAX),
+            )
+        });
+        let mut sequence = self.sequence;
+        let mut wire = Vec::with_capacity(units.len());
+        for unit in units.into_iter().filter(|unit| !unit.data.is_empty()) {
+            let frame = SurfaceFrame {
+                sequence,
+                keyframe: unit.keyframe,
+                codec,
+                display_size,
+                payload: unit.data,
+            };
+            wire.push(frame.encode()?);
+            sequence = sequence
+                .checked_add(1)
+                .ok_or(FrameError::SequenceExhausted)?;
+        }
+        if wire.is_empty() {
+            return Ok(wire);
+        }
         // Only consume the throttle slot after framing succeeded. A local
         // payload-limit failure must not suppress the next captured frame.
         self.throttle.mark_encoded(now);
-        self.sequence = self
-            .sequence
-            .checked_add(1)
-            .ok_or(FrameError::SequenceExhausted)?;
-        Ok(Some(bytes))
+        self.sequence = sequence;
+        Ok(wire)
     }
 
     /// The next sequence number this sender will mint. Diagnostic.
@@ -294,6 +293,7 @@ mod tests {
         let wire = sender
             .offer_frame(&gradient(W, H), now)
             .expect("sequence available")
+            .pop()
             .expect("throttle admits first frame + encoder emits a NALU");
         assert!(wire.len() > crate::stream::FRAME_HEADER_LEN, "framed bytes");
 
@@ -324,25 +324,26 @@ mod tests {
         let mut sender = VideoStreamSender::new(StreamCodec::Vp9, W, H, 30).expect("sender");
         let now = Instant::now();
         assert!(
-            sender
+            !sender
                 .offer_frame(&gradient(W, H), now)
                 .expect("sequence available")
-                .is_some()
+                .is_empty()
         );
         // 1 ms later — inside the ~33 ms interval — must be throttled.
         assert!(
             sender
                 .offer_frame(&gradient(W, H), now + Duration::from_millis(1))
                 .expect("sequence available")
-                .is_none()
+                .is_empty()
         );
-        // Past the interval, accepts again.
-        assert!(
-            sender
-                .offer_frame(&gradient(W, H), now + Duration::from_millis(40))
-                .expect("sequence available")
-                .is_some()
-        );
+        // Past the interval, accepts again: the encoder gets a second frame,
+        // whose unit comes back now or, from a busy encoder, at the end.
+        let mut units = 1 + sender
+            .offer_frame(&gradient(W, H), now + Duration::from_millis(40))
+            .expect("sequence available")
+            .len();
+        units += sender.encoder.finish().expect("finish").len();
+        assert_eq!(units, 2, "two frames were encoded");
     }
 
     fn first_frame_is_flagged_a_keyframe() {
@@ -352,6 +353,7 @@ mod tests {
         let wire = sender
             .offer_frame(&gradient(W, H), Instant::now())
             .expect("sequence available")
+            .pop()
             .expect("frame");
         let (frame, _) = SurfaceFrame::decode(&wire).expect("decode").expect("whole");
         assert!(frame.keyframe, "the first access unit is a keyframe");
@@ -362,12 +364,12 @@ mod tests {
 
     fn wrong_sized_buffer_yields_no_frame() {
         let mut sender = VideoStreamSender::new(StreamCodec::Vp9, 32, 32, 30).expect("sender");
-        // RGB (3 bytes/px), not RGBA — size mismatch folds to None.
+        // RGB (3 bytes/px), not RGBA — size mismatch yields no frame.
         assert!(
             sender
                 .offer_frame(&vec![0u8; 32 * 32 * 3], Instant::now())
                 .expect("sequence available")
-                .is_none()
+                .is_empty()
         );
     }
 
@@ -392,10 +394,10 @@ mod tests {
         // The rejected call did not consume a throttle slot.
         sender.sequence = 0;
         assert!(
-            sender
+            !sender
                 .offer_frame(&gradient(32, 32), now)
                 .expect("sequence reset for test")
-                .is_some()
+                .is_empty()
         );
     }
 }

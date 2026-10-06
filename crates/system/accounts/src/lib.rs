@@ -71,6 +71,8 @@ pub use secrets::{
     CredentialCandidate, CredentialGrant, GeneratedPasswordPolicy, SecretId, SecretItem,
     SecretItemKind, SecretStore,
 };
+#[cfg(feature = "person")]
+pub mod person;
 pub mod status;
 pub use status::{
     AccountSyncHealth, AccountSyncReporter, AccountSyncStatus, AccountSyncStatusStore,
@@ -209,6 +211,11 @@ pub struct AccountStore {
     /// The active account id per type. A type with no entry uses its first account.
     #[serde(default)]
     active: BTreeMap<AccountTypeId, AccountId>,
+    /// Whether this file is the projection of the person's accounts record
+    /// rather than accounts configured on this device alone, which the
+    /// record has yet to take in.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    projected: bool,
 }
 
 impl AccountStore {
@@ -257,7 +264,7 @@ impl AccountStore {
             std::fs::create_dir_all(parent)?;
         }
         let json = serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into());
-        atomic_file::write(&path, json.as_bytes())
+        tilo_files::native::atomic::write(&path, json.as_bytes())
     }
 
     /// Every account in the store, in insertion order.
@@ -346,6 +353,19 @@ impl AccountStore {
 
     pub fn is_empty(&self) -> bool {
         self.accounts.is_empty()
+    }
+
+    /// Whether this store is the projection of the person's accounts
+    /// record: what the record holds, not accounts it has yet to take in.
+    pub fn is_projection(&self) -> bool {
+        self.projected
+    }
+
+    /// This store, marked as the projection of the person's accounts.
+    #[must_use]
+    pub fn as_projection(mut self) -> Self {
+        self.projected = true;
+        self
     }
 
     pub fn len(&self) -> usize {

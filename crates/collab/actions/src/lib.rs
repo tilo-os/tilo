@@ -106,21 +106,21 @@ pub use action::{
     Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind,
 };
 pub use context::{
-    AGENT_TASK_PARTICIPANT_PREFIX, ActionApp, ActionContext, ActionFacet, ActionGroup,
+    AGENT_TASK_PARTICIPANT_PREFIX, ARGS_FACET, ActionApp, ActionContext, ActionFacet, ActionGroup,
     ActionInvoker, ActionResource, CHANGE_MESSAGE_PREFIX, ChangeKind, MAX_PARTICIPANT_ID_BYTES,
-    ParticipantId,
+    ParticipantId, args_summary,
 };
 pub use contract::{
     ARGUMENT_RISK_TAG, ActionContract, Availability, ConfirmationPolicy, DOCUMENT_READ_TAG,
-    DiscoveryScope, ExecutionMode, PROGRAMMATIC_TAG, PermissionRequirement, ResultSpec,
-    RetryPolicy, RiskLevel,
+    DiscoveryScope, ExecutionMode, LOCAL_DEVICE_ONLY, PROGRAMMATIC_TAG, PermissionRequirement,
+    ResultSpec, RetryPolicy, RiskLevel, UNTRUSTED_CONTENT_TAG,
 };
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec, ResourceViewDescriptor};
 pub use envelope::ActionEnvelope;
 pub use executor::{
     ActionTransport, Dispatched, HostDecision, LocalTransport, apply_local, apply_local_by,
     apply_local_with_context, dispatch, dispatch_by, dispatch_by_with_context,
-    dispatch_with_context, replay,
+    dispatch_with_context, invoking_context, replay,
 };
 pub use interaction::{
     INTERACTION_VERSION, InteractionAction, InteractionActor, InteractionActorKind,
@@ -139,11 +139,16 @@ pub use params::{
 };
 pub use protocol::{ContractViolation, validate_surface, validate_surface_contracts};
 pub use registry::ActionRegistry;
+#[allow(
+    deprecated,
+    reason = "existing app impls still name this trait until they publish through tilo_resource"
+)]
+pub use resource::ResourceProvider;
 pub use resource::{
     ActionBinding, ActionBindingError, ActionInput, ActionSpec, ArgsBuilder, Collects,
     ContinuationArguments, ContinuationEvidence, ContinuationKey, ContinuationQuery,
     ControlInvocation, FlatAction, KEY_SEP, PROMPTED_PARAM, Resource, ResourceId,
-    ResourcePresentation, ResourceProvider, ResourceViewMountSpec, ResourceViewSpec, flatten,
+    ResourcePresentation, ResourceViewMountSpec, ResourceViewSpec, flatten,
 };
 pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,
@@ -279,6 +284,32 @@ mod tests {
         .unwrap();
         assert_eq!(env.context, None, "content without context stays as it was");
         assert_eq!(last_message(&mut a), None);
+
+        // A context may say a content action is nobody's step this time; an
+        // action's own declaration is never overridden by a context.
+        let seeded = Counter::Put {
+            key: "score".into(),
+            value: 2,
+        };
+        let env = apply_local_with_context(
+            &mut a,
+            &seeded,
+            EncodedAction::encode(COUNTER_TYPE, &seeded).unwrap(),
+            None,
+            ActionContext::default().with_change(ChangeKind::External),
+        )
+        .unwrap();
+        assert_eq!(last_context(&mut a).unwrap().change, ChangeKind::External);
+        assert!(!env.context.unwrap().change.is_step());
+        apply_local_with_context(
+            &mut a,
+            &Seen(5),
+            EncodedAction::encode(SEEN_TYPE, &Seen(5)).unwrap(),
+            None,
+            ActionContext::default().with_change(ChangeKind::External),
+        )
+        .unwrap();
+        assert!(last_context(&mut a).unwrap().is_housekeeping());
     }
 
     /// Seed two independent replicas that share history (so a replayed

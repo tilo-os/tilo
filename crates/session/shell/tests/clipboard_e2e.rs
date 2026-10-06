@@ -924,6 +924,8 @@ struct ClientState {
 
     /// Set once `xdg_surface.configure` has been acked — the surface is mapped.
     configured: bool,
+    /// The newest non-zero size an `xdg_toplevel.configure` asked for.
+    toplevel_size: Option<(i32, i32)>,
     /// Set while this client holds keyboard focus, which gates `set_selection`.
     keyboard_focused: bool,
     /// The compositor requested that this exact xdg toplevel exit.  `close`
@@ -948,6 +950,8 @@ struct ClientState {
     /// Set after the seat advertised touch and this client issued
     /// `wl_seat.get_touch`; injection tests wait for this protocol precondition.
     touch_bound: bool,
+    /// Never ask for a `wl_touch`, like a toolkit without touch support.
+    refuse_touch: bool,
     /// Exact `wl_touch` events observed on the client connection.
     touch_events: Vec<TouchTrace>,
     /// Pointer traffic observed after the test clears setup noise.
@@ -999,11 +1003,107 @@ struct TestClient {
     app_id: String,
 }
 
+/// MIME-specific data from one actual Wayland source. Held descriptors model
+/// a copying application that never finishes its transfer.
+type HeldClipboardPipes = Arc<Mutex<Vec<(String, OwnedFd)>>>;
+
+struct RichSource {
+    html: String,
+    plain: String,
+    held: Option<HeldClipboardPipes>,
+}
+
+/// Keep the source responsive while the sink maps/focuses its window. The
+/// production reader's deadline must not depend on the test's dispatch order.
+struct ServingClipboard {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ServingClipboard {
+    fn start(mut client: TestClient, payload: RichSource) -> Self {
+        let held = payload.held.clone();
+        let manager = client.state.data_manager.as_ref().expect("data manager");
+        let source = manager.create_data_source(&client.qh, payload);
+        source.offer("text/html".into());
+        source.offer(TEXT_MIME.into());
+        client
+            .data_device
+            .as_ref()
+            .expect("source data device")
+            .set_selection(Some(&source), client.state.last_serial);
+        client.roundtrip();
+        if let Some(held) = held {
+            // The compositor mirrors each advertised MIME before the sink
+            // exists. Complete those requests first so later held pipes are
+            // unambiguously the app worker's own paired transfer.
+            client.wait_until(
+                |state| {
+                    state.send_requests.iter().any(|mime| mime == "text/html")
+                        && state.send_requests.iter().any(|mime| mime == TEXT_MIME)
+                },
+                "compositor mirror did not request both advertised formats",
+            );
+            held.lock().expect("mirror pipes").clear();
+        }
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            let started = Instant::now();
+            while !worker_stop.load(std::sync::atomic::Ordering::Acquire)
+                && started.elapsed() < deadline()
+            {
+                dispatch_any(&mut [&mut client], None, Duration::from_millis(5));
+            }
+        });
+        Self {
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for ServingClipboard {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let result = thread.join();
+            if !std::thread::panicking() {
+                result.expect("clipboard source dispatch thread");
+            }
+        }
+    }
+}
+
+fn wait_for_clipboard(client: &mut TestClient, condition: impl Fn() -> bool, failure: &str) {
+    let started = Instant::now();
+    while !condition() && started.elapsed() < deadline() {
+        dispatch_any(&mut [&mut *client], None, Duration::from_millis(5));
+    }
+    assert!(condition(), "{failure}");
+}
+
 impl TestClient {
     fn new(conn: Connection, app_id: &str) -> Self {
+        Self::with_state(conn, app_id, ClientState::default())
+    }
+
+    /// A client whose toolkit has no touch support: it never asks the seat
+    /// for a `wl_touch`.
+    fn without_touch(conn: Connection, app_id: &str) -> Self {
+        Self::with_state(
+            conn,
+            app_id,
+            ClientState {
+                refuse_touch: true,
+                ..ClientState::default()
+            },
+        )
+    }
+
+    fn with_state(conn: Connection, app_id: &str, mut state: ClientState) -> Self {
         let mut queue: EventQueue<ClientState> = conn.new_event_queue();
         let qh = queue.handle();
-        let mut state = ClientState::default();
         let _registry = conn.display().get_registry(&qh, ());
         // First roundtrip collects the global advertisements; the second lets
         // the binds made while handling them complete.
@@ -1152,6 +1252,35 @@ impl TestClient {
             self.app_id,
             compositor.debug_state(),
         );
+    }
+
+    /// Answer the compositor's configures with buffers of the asked size,
+    /// as an application does, until the compositor shows this window: a
+    /// window still waiting for a frame that fits its tab is not on screen,
+    /// so no pointer reaches it.
+    fn present(&mut self, compositor: &Compositor, surface_id: u64) {
+        let mut answered = None;
+        let started = Instant::now();
+        loop {
+            self.pump();
+            if let Some(size) = self.state.toplevel_size
+                && answered != Some(size)
+            {
+                self.attach_buffer(size.0, size.1);
+                answered = Some(size);
+            }
+            if foreign_frame_presented(compositor, surface_id) {
+                self.step("presented");
+                return;
+            }
+            assert!(
+                started.elapsed() < deadline(),
+                "`{}` (surface {surface_id}) was never shown after answering its configures \
+                 (waited out the hang bound).\n{}",
+                self.app_id,
+                compositor.debug_state(),
+            );
+        }
     }
 
     /// [`Self::pointer_target`] without the panic.
@@ -1562,6 +1691,194 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
     }
 }
 
+#[test]
+fn wayland_rich_clipboard_pairs_one_offer_and_clears_on_focus_loss() {
+    let compositor = Compositor::start();
+    let mut source = TestClient::new(compositor.connect(), "org.tilo.test.rich-source");
+    source.assert_is_tilo_compositor();
+    source.map_window(&compositor);
+    let _serving = ServingClipboard::start(
+        source,
+        RichSource {
+            html: "<p><strong>文🙂</strong></p>".into(),
+            plain: "same offer: 文🙂".into(),
+            held: None,
+        },
+    );
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.rich-sink");
+    app.assert_is_tilo_compositor();
+    let clipboard = ui::clipboard::WaylandClipboard::new_for_wayland_test(app.conn.clone());
+    app.map_window(&compositor);
+    // Exercise the real worker alongside the app's own connection and queue.
+    wait_for_clipboard(
+        &mut app,
+        || clipboard.rich_text().is_some(),
+        "rich offer missing",
+    );
+    let offer = clipboard.rich_text().expect("completed rich offer");
+    assert_eq!(offer.html, "<p><strong>文🙂</strong></p>");
+    assert_eq!(offer.plain.as_deref(), Some("same offer: 文🙂"));
+
+    let mut other = TestClient::new(compositor.connect(), "org.tilo.test.rich-focus-loss");
+    other.map_window(&compositor);
+    app.wait_until(|state| !state.keyboard_focused, "sink did not lose focus");
+    wait_for_clipboard(
+        &mut app,
+        || clipboard.rich_text().is_none(),
+        "rich cache survived Leave",
+    );
+}
+
+#[test]
+fn wayland_rich_clipboard_replacement_keeps_ordinary_plain_paste() {
+    let compositor = Compositor::start();
+    let mut source = TestClient::new(compositor.connect(), "org.tilo.test.rich-replace-source");
+    source.map_window(&compositor);
+    let _serving = ServingClipboard::start(
+        source,
+        RichSource {
+            html: "<b>old</b>".into(),
+            plain: "old fallback".into(),
+            held: None,
+        },
+    );
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.rich-replace-sink");
+    app.assert_is_tilo_compositor();
+    let clipboard = ui::clipboard::WaylandClipboard::new_for_wayland_test(app.conn.clone());
+    app.map_window(&compositor);
+    wait_for_clipboard(
+        &mut app,
+        || clipboard.rich_text().is_some(),
+        "initial rich offer missing",
+    );
+
+    let previous = app.state.clipboard_offer.clone();
+    compositor.chrome_copy("replacement plain 文🙂", false);
+    app.wait_until(
+        |state| state.clipboard_offer != previous,
+        "replacement offer missing",
+    );
+    assert_eq!(app.read_clipboard(None), "replacement plain 文🙂");
+    wait_for_clipboard(
+        &mut app,
+        || clipboard.rich_text().is_none(),
+        "superseded rich offer survived",
+    );
+}
+
+#[test]
+fn wayland_rich_clipboard_null_selection_clears_completed_offer() {
+    let compositor = Compositor::start();
+    let mut source = TestClient::new(compositor.connect(), "org.tilo.test.rich-null-source");
+    source.map_window(&compositor);
+    let _serving = ServingClipboard::start(
+        source,
+        RichSource {
+            html: "<b>before NULL</b>".into(),
+            plain: "before NULL".into(),
+            held: None,
+        },
+    );
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.rich-null-sink");
+    app.assert_is_tilo_compositor();
+    let clipboard = ui::clipboard::WaylandClipboard::new_for_wayland_test(app.conn.clone());
+    app.map_window(&compositor);
+    wait_for_clipboard(
+        &mut app,
+        || clipboard.rich_text().is_some(),
+        "initial rich offer missing",
+    );
+    app.data_device
+        .as_ref()
+        .expect("data device")
+        .set_selection(None, app.state.last_serial);
+    app.roundtrip();
+    app.wait_until(
+        |state| state.clipboard_offer.is_none(),
+        "NULL selection missing",
+    );
+    wait_for_clipboard(
+        &mut app,
+        || clipboard.rich_text().is_none(),
+        "NULL selection retained rich data",
+    );
+}
+
+#[test]
+fn wayland_rich_clipboard_deadline_closes_stalled_pipe_and_rejects_late_bytes() {
+    use std::io::Write as _;
+    use std::os::fd::AsRawFd as _;
+    let compositor = Compositor::start();
+    let held = Arc::new(Mutex::new(Vec::new()));
+    let mut source = TestClient::new(compositor.connect(), "org.tilo.test.rich-stall-source");
+    source.map_window(&compositor);
+    let _serving = ServingClipboard::start(
+        source,
+        RichSource {
+            html: "<b>late</b>".into(),
+            plain: "late".into(),
+            held: Some(Arc::clone(&held)),
+        },
+    );
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.rich-stall-sink");
+    app.assert_is_tilo_compositor();
+    let clipboard = ui::clipboard::WaylandClipboard::new_for_wayland_test(app.conn.clone());
+    app.map_window(&compositor);
+    wait_for_clipboard(
+        &mut app,
+        || {
+            let pipes = held.lock().expect("held pipes");
+            let paired = pipes.iter().any(|(mime, _)| mime == "text/html")
+                && pipes.iter().any(|(mime, _)| mime == TEXT_MIME);
+            drop(pipes);
+            paired
+        },
+        "worker did not request both formats",
+    );
+    // No focus/selection change occurs here: closure must come from the
+    // production deadline, not from a later replacement or test teardown.
+    wait_for_clipboard(
+        &mut app,
+        || {
+            let pipes = held.lock().expect("held pipes");
+            let closed = pipes.iter().all(|(_, fd)| {
+                let mut poll = libc::pollfd {
+                    fd: fd.as_raw_fd(),
+                    events: libc::POLLOUT,
+                    revents: 0,
+                };
+                // SAFETY: the mutex keeps the descriptor alive for this pollfd.
+                let ready = unsafe { libc::poll(&raw mut poll, 1, 0) };
+                assert!(ready >= 0, "poll held producer pipe");
+                ready > 0 && poll.revents & libc::POLLERR != 0
+            });
+            drop(pipes);
+            closed
+        },
+        "deadline did not close both stalled readers",
+    );
+    let expired_pipes = std::mem::take(&mut *held.lock().expect("held pipes"));
+    for (mime, fd) in expired_pipes {
+        let error = std::fs::File::from(fd)
+            .write_all(b"late")
+            .expect_err("expired pipe must be closed");
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::BrokenPipe,
+            "late {mime} data"
+        );
+    }
+    assert!(clipboard.rich_text().is_none());
+    let previous = app.state.clipboard_offer.clone();
+    compositor.chrome_copy("after stalled source", false);
+    app.wait_until(
+        |state| state.clipboard_offer != previous,
+        "post-timeout offer missing",
+    );
+    assert_eq!(app.read_clipboard(None), "after stalled source");
+    assert!(clipboard.rich_text().is_none());
+}
+
 /// A `wl_touch` client sees the partial two-contact stream, then exactly
 /// the protocol cancellation boundary when a third direct contact transfers
 /// ownership to the shell. This reaches the native Wayland seat; the headless
@@ -1677,6 +1994,51 @@ fn a_touch_tap_on_a_client_activates_it_once() {
         "a tap already delivered as wl_touch must not also click the client: {:?}",
         client.state.pointer_events
     );
+}
+
+/// A client that never asked for `wl_touch` still works under a finger: a
+/// tap on it arrives as exactly one pointer click, and no touch traffic.
+#[test]
+fn a_touch_tap_on_a_client_without_wl_touch_is_one_click() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::without_touch(compositor.connect(), "org.tilo.test.touch-less");
+    client.assert_is_tilo_compositor();
+    client.map_window(&compositor);
+    client.roundtrip();
+    assert!(!client.state.touch_bound);
+    let (x, y) = client.pointer_target(&compositor);
+    client.clear_touch_and_pointer_trace();
+
+    compositor.touch("e2e-panel", 0, "down", x, y);
+    compositor.touch("e2e-panel", 0, "frame", x, y);
+    compositor.touch("e2e-panel", 0, "up", x, y);
+    compositor.touch("e2e-panel", 0, "frame", x, y);
+    client.wait_until(
+        |state| {
+            state
+                .pointer_events
+                .iter()
+                .filter(|e| **e == "button")
+                .count()
+                >= 2
+        },
+        "the touch-less client never received the tap as a click",
+    );
+    client.roundtrip();
+    client.roundtrip();
+
+    let buttons = client
+        .state
+        .pointer_events
+        .iter()
+        .filter(|event| **event == "button")
+        .count();
+    assert_eq!(
+        buttons, 2,
+        "one press and one release: {:?}",
+        client.state.pointer_events
+    );
+    assert!(client.state.touch_events.is_empty());
 }
 
 /// The desktop help overlay speaks the input language in use. A headless
@@ -1864,7 +2226,7 @@ impl Dispatch<WlSeat, ()> for ClientState {
                 if caps.contains(wl_seat::Capability::Pointer) {
                     seat.get_pointer(qh, ());
                 }
-                if caps.contains(wl_seat::Capability::Touch) {
+                if caps.contains(wl_seat::Capability::Touch) && !state.refuse_touch {
                     state.touch = Some(seat.get_touch(qh, ()));
                     state.touch_bound = true;
                 }
@@ -2031,8 +2393,12 @@ impl Dispatch<XdgToplevel, ()> for ClientState {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if matches!(event, xdg_toplevel::Event::Close) {
-            state.toplevel_close_requested = true;
+        match event {
+            xdg_toplevel::Event::Close => state.toplevel_close_requested = true,
+            xdg_toplevel::Event::Configure { width, height, .. } if width > 0 && height > 0 => {
+                state.toplevel_size = Some((width, height));
+            }
+            _ => {}
         }
     }
 }
@@ -2110,6 +2476,30 @@ impl Dispatch<WlDataOffer, ()> for ClientState {
                 state.dnd_offer_mimes.push(mime_type);
             } else {
                 state.clipboard_offer_mimes.push(mime_type);
+            }
+        }
+    }
+}
+
+impl Dispatch<WlDataSource, RichSource> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &WlDataSource,
+        event: wl_data_source::Event,
+        payload: &RichSource,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_data_source::Event::Send { mime_type, fd } = event {
+            state.send_requests.push(mime_type.clone());
+            if let Some(held) = &payload.held {
+                held.lock()
+                    .expect("held producer pipes")
+                    .push((mime_type, fd));
+            } else if mime_type == "text/html" {
+                write_and_close(fd, &payload.html);
+            } else if mime_type == TEXT_MIME {
+                write_and_close(fd, &payload.plain);
             }
         }
     }
@@ -3251,6 +3641,8 @@ fn real_same_app_windows_close_exact_surface_without_resurrection_after_restart(
         first_surface, selected_surface,
         "the compositor must namespace equal protocol ids by client connection"
     );
+    first.present(&compositor, first_surface);
+    selected.present(&compositor, selected_surface);
     let initial = compositor.workspace_tree();
 
     // These go through the native test-control executor, its real
@@ -4326,6 +4718,21 @@ fn spawn_word_processor(
         }
     });
     (app, app_log)
+}
+
+/// Whether the compositor shows client surface `surface_id`'s window.
+fn foreign_frame_presented(compositor: &Compositor, surface_id: u64) -> bool {
+    compositor
+        .control(&serde_json::json!({ "op": "foreign_frames" }))
+        .get("foreign_frames")
+        .and_then(|payload| payload.get("frames"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|frames| {
+            frames.iter().any(|frame| {
+                frame.get("surface_id").and_then(serde_json::Value::as_u64) == Some(surface_id)
+                    && frame.get("presented").and_then(serde_json::Value::as_bool) == Some(true)
+            })
+        })
 }
 
 /// Whether any client surface has presented a frame yet.

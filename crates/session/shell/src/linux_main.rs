@@ -33,61 +33,6 @@ const SECRET_SERVICE_STARTUP_ATTEMPTS: usize = 8;
 const SECRET_SERVICE_STARTUP_RETRY_DELAY: std::time::Duration =
     std::time::Duration::from_millis(250);
 
-/// Install a panic hook that writes a crash report to
-/// `~/.cache/tilo/crashes/<timestamp>-<pid>.log` and echoes the panic message +
-/// log path to stderr — without this, a session launched outside a
-/// terminal (greetd, .desktop double-click) discards stderr, making "the shell just disappeared" unactionable.
-///
-/// Chains to the default hook AFTER writing the file so a developer running from a terminal still sees the colored panic + backtrace.
-///
-/// Reports carry backtraces and payloads, so they are private (0700 directory,
-/// 0600 file, never following a link). Without a home cache directory only the
-/// stderr copy is made: a shared fallback such as `/tmp` would let another user
-/// plant the path.
-fn install_crash_log_hook() {
-    let dir = xdg_paths::cache_dir()
-        .map(|cache| cache.join("tilo").join("crashes"))
-        .filter(|dir| private_fs::directory(dir).is_ok());
-    let default_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let ts = chrono::Local::now().format("%Y-%m-%d-%H%M%S");
-        let backtrace = std::backtrace::Backtrace::force_capture();
-        let payload = info
-            .payload()
-            .downcast_ref::<&str>()
-            .map(|s| (*s).to_string())
-            .or_else(|| info.payload().downcast_ref::<String>().cloned())
-            .unwrap_or_else(|| "<unknown payload>".to_string());
-        let loc = info.location().map_or_else(
-            || "<unknown location>".to_string(),
-            |l| format!("{}:{}:{}", l.file(), l.line(), l.column()),
-        );
-        let body = format!(
-            "tilo shell panic\n\
-             ===============\n\
-             timestamp: {ts}\n\
-             location:  {loc}\n\
-             message:   {payload}\n\n\
-             backtrace:\n{backtrace}\n"
-        );
-        if let Some(dir) = &dir {
-            use std::io::Write as _;
-            let path = dir.join(format!("{ts}-{}.log", std::process::id()));
-            let wrote = private_fs::create_new(&path)
-                .and_then(|mut file| file.write_all(body.as_bytes()))
-                .is_ok();
-            if wrote {
-                eprintln!("\n[tilo] crash log written to {}", path.display());
-            } else {
-                eprintln!("\n[tilo] FAILED to write crash log to {}", path.display());
-            }
-        } else {
-            eprintln!("\n[tilo] no private cache directory; crash log not written");
-        }
-        default_hook(info);
-    }));
-}
-
 /// The in-sandbox Landlock shim token. Only `tilo-launcher` implements it;
 /// the compositor never builds a sandbox.
 const SANDBOX_EXEC_SUBCOMMAND: &str = "__sandbox-exec";
@@ -383,6 +328,46 @@ fn verify_collaboration_identity_entrypoint(provision_requested: bool) -> std::p
     std::process::ExitCode::SUCCESS
 }
 
+/// Make the person's and this device's settings records the session's
+/// settings document. Readers and writers in this process go through them;
+/// `settings.json` becomes the copy other processes read and write, which
+/// the session keeps current and takes their writes in from.
+fn install_session_settings() {
+    let Some(paths) = settings_store::SessionPaths::configured() else {
+        tracing::warn!("no config directory; settings are not kept this session");
+        return;
+    };
+    let copy = paths.copy.clone();
+    match settings_store::SessionSettings::open(paths) {
+        Ok(session) => {
+            let session = std::sync::Arc::new(session);
+            // Another process writing the copy (Settings, a CLI) is taken in
+            // as it lands, which wakes every app following its settings.
+            let taken_in = std::sync::Arc::downgrade(&session);
+            match settings_store::watch::watch_settings_at(&copy, move || {
+                if let Some(session) = taken_in.upgrade() {
+                    session.refresh();
+                }
+            }) {
+                Ok(watch) => {
+                    static COPY_WATCH: std::sync::OnceLock<settings_store::watch::SettingsWatch> =
+                        std::sync::OnceLock::new();
+                    let _ = COPY_WATCH.set(watch);
+                }
+                Err(error) => tracing::warn!(
+                    %error,
+                    "settings copy watch unavailable; other processes' writes reach apps when the session next reads"
+                ),
+            }
+            settings_store::install_source(Some(session));
+        }
+        Err(error) => tracing::error!(
+            %error,
+            "cannot open the settings records; this session reads and writes settings.json itself"
+        ),
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "startup decisions must remain in one ordered, single-threaded entry point before the compositor and its long-lived services start"
@@ -462,7 +447,11 @@ pub fn run() -> std::process::ExitCode {
     let _warmup_handle = ui::warmup::spawn_warmup(!want_vello);
 
     tracing_subscriber::fmt::init();
-    install_crash_log_hook();
+    shell::crash_log::install("tilo shell panic");
+    // After the crash log: a panic outside a helper's panic boundary still
+    // ends the compositor, in every build. Inside one (the collaboration
+    // broker's thread) it unwinds to the helper's owner, which restarts it.
+    tilo_rt::panic_boundary::abort_outside_boundaries();
     log_gpu_pin(gpu_pin.as_ref());
     compositor::dev_env::report_build_mode();
 
@@ -540,7 +529,11 @@ pub fn run() -> std::process::ExitCode {
         }
     };
 
-    let enable_peer_sync = compositor::peer_sync_enabled_from_env_or_marker();
+    // After first boot has written what it imports, so the records take it
+    // in, and before the compositor's first read.
+    install_session_settings();
+
+    let enable_peer_sync = compositor::parse_peer_sync_from_args();
     let enable_portals = compositor::parse_portals_from_args();
     match compositor::parse_mode_from_args() {
         Mode::Hosted => compositor::hosted::run_with_full_options(HostedOptions {
@@ -556,6 +549,9 @@ pub fn run() -> std::process::ExitCode {
             compositor::native::run();
         }
     }
+    // Layout changes are saved on a background thread; the process must not
+    // exit ahead of them.
+    shell::shell::persist::wait_for_saves_within(std::time::Duration::from_secs(10));
     std::process::ExitCode::SUCCESS
 }
 

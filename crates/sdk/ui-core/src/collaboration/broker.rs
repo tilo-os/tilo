@@ -52,11 +52,6 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::task::LocalSet;
 
-/// Hard fail-closed timeout for an RPC request waiting to be handled on the
-/// application's owner thread.  The UI never blocks for it: the Cap'n Proto
-/// shovel awaits this reply on its own `LocalSet`.  A stopped app must look
-/// unavailable to the broker rather than leaving an RPC worker pinned.
-const ACTION_DIRECTORY_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 /// A disconnected/slow UI must apply backpressure to broker callbacks rather
 /// than allow an unbounded cross-thread queue to become a memory `DoS`.
 const ACTION_DIRECTORY_REQUEST_QUEUE: usize = 64;
@@ -191,6 +186,36 @@ pub fn speaker_command(
         .map_err(|_| "the speaker service did not respond".to_string())?
 }
 
+/// Have the connected transport's worker send the app's unsent settings
+/// writes ([`super::channel_settings`]). Without a connected transport they
+/// wait for the primary route, whose join sends them.
+pub(super) fn flush_settings() {
+    let Some(sender) = SETTINGS_COMMAND_BRIDGE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|bridge| bridge.as_ref().and_then(tokio_mpsc::WeakSender::upgrade))
+    else {
+        return;
+    };
+    let _ = enqueue_sdk_command(&sender, SdkCommand::FlushSettings, &BridgeState::new());
+}
+
+/// Have the connected transport's worker send the app's live activity
+/// ([`super::channel_live_activity`]). Without a connected transport it waits
+/// for the primary route, whose join sends it.
+pub(super) fn flush_live_activity() {
+    let Some(sender) = SETTINGS_COMMAND_BRIDGE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|bridge| bridge.as_ref().and_then(tokio_mpsc::WeakSender::upgrade))
+    else {
+        return;
+    };
+    let _ = enqueue_sdk_command(&sender, SdkCommand::FlushLiveActivity, &BridgeState::new());
+}
+
 /// Owned mpsc pair + shovel-thread handle for SDK mode. Both directions are
 /// bounded. Durable overflow makes the bridge unavailable rather than
 /// silently losing an action or invocation transition; a document change
@@ -244,11 +269,12 @@ impl BrokerTransport {
 
 impl CollabTransport for BrokerTransport {
     fn status(&self) -> TransportStatus {
-        if self.worker_stopped {
-            return TransportStatus::Closed("collaboration worker stopped".into());
-        }
         match self.state.connect_phase() {
+            // Why the worker stopped, when it stopped setting up.
             ConnectPhase::Failed(reason) => TransportStatus::Closed(reason),
+            _ if self.worker_stopped => {
+                TransportStatus::Closed("collaboration worker stopped".into())
+            }
             _ if !self.state.is_healthy() => {
                 TransportStatus::Closed("bounded bridge overloaded or disconnected".into())
             }
@@ -481,6 +507,10 @@ enum SdkCommand {
         command: runtime_collab::SpeakerCommand,
         reply: mpsc::SyncSender<Result<runtime_collab::SpeakerReply, String>>,
     },
+    /// Send the app's unsent settings writes over the primary route.
+    FlushSettings,
+    /// Send the app's live activity over the primary route.
+    FlushLiveActivity,
 }
 
 struct PrimaryHello {
@@ -528,6 +558,10 @@ impl SdkCommand {
             | Self::ToRoute(_, CollabRequest::Document { mutation, .. }) => {
                 Some(mutation.data().len())
             }
+            // Content a record references travels like its documents: its
+            // own budget, retried when full, never closing the connection.
+            Self::Primary(CollabRequest::OfferContent { bytes, .. })
+            | Self::ToRoute(_, CollabRequest::OfferContent { bytes, .. }) => Some(bytes.len()),
             _ => None,
         }
     }
@@ -724,7 +758,22 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
                 meter.string_capacity(content_hash);
             }
         }
+        CollabRequest::LaunchInstalledApplication {
+            app_id,
+            package_root,
+            ..
+        } => {
+            meter.string_capacity(app_id);
+            if let Some(root) = package_root {
+                meter.string_capacity(root);
+            }
+        }
         CollabRequest::RemoteAction { message } => serialized_bytes(message, &mut meter),
+        CollabRequest::OfferContent { hash, bytes } => {
+            meter.string_capacity(hash);
+            meter.bytes(bytes);
+        }
+        CollabRequest::WantContent { hash } => meter.string_capacity(hash),
         CollabRequest::PublishActions { app_id, actions } => {
             meter.string_capacity(app_id);
             meter.add_product(actions.capacity(), std::mem::size_of::<ExportedAction>());
@@ -882,9 +931,10 @@ fn command_bytes(command: &SdkCommand) -> Option<usize> {
             }
             meter.finish()
         }
-        SdkCommand::PrimaryReady(_) | SdkCommand::PublicationBarrier(_) => {
-            Some(std::mem::size_of::<SdkCommand>())
-        }
+        SdkCommand::PrimaryReady(_)
+        | SdkCommand::PublicationBarrier(_)
+        | SdkCommand::FlushSettings
+        | SdkCommand::FlushLiveActivity => Some(std::mem::size_of::<SdkCommand>()),
         // The group was allocated by the caller before entering the bridge,
         // and installation is synchronous under `&mut self`, so at most one
         // is ever queued. Only the command itself is counted: reserving the
@@ -1190,7 +1240,8 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
         },
         #[cfg(unix)]
         CollabEvent::ManagedInvocationObservation { result } => meter.add(result.meter_bytes()),
-        CollabEvent::PublishedInvocationResult { result, .. } => match result {
+        CollabEvent::PublishedInvocationResult { result, .. }
+        | CollabEvent::InstalledApplicationLaunchResult { result, .. } => match result {
             Ok((_, update)) => serialized_bytes(update, &mut meter),
             Err(error) => meter.string_capacity(error),
         },
@@ -1227,6 +1278,14 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             Ok(reply) => serialized_bytes(reply, &mut meter),
             Err(error) => meter.string_capacity(error),
         },
+        CollabEvent::RecordContent { route, hash, bytes } => {
+            meter.string_capacity(&route.app_id);
+            if let Some(record) = &route.record {
+                meter.string_capacity(record);
+            }
+            meter.string_capacity(hash);
+            meter.bytes(bytes);
+        }
         CollabEvent::RealtimeCommandResult { result, .. } => match result {
             Ok(reply) => serialized_bytes(reply, &mut meter),
             Err(error) => meter.string_capacity(error),
@@ -1712,10 +1771,32 @@ impl InboundBridge {
         event: CollabEvent,
         turn: Option<tokio::sync::OwnedSemaphorePermit>,
     ) -> bool {
-        let Some(reservation) = self.state.event_bytes.reserve(
-            event_bytes(&event).unwrap_or(usize::MAX),
-            SDK_EVENT_QUEUE_BYTES,
-        ) else {
+        let required_bytes = event_bytes(&event).unwrap_or(usize::MAX);
+        let Some(reservation) = self
+            .state
+            .event_bytes
+            .reserve(required_bytes, SDK_EVENT_QUEUE_BYTES)
+        else {
+            let (event_kind, surface_count, action_count) = match &event {
+                CollabEvent::ActionCatalogue { surfaces } => (
+                    "action_catalogue",
+                    surfaces.len(),
+                    surfaces
+                        .iter()
+                        .map(|surface| surface.actions.len())
+                        .sum::<usize>(),
+                ),
+                _ => ("control", 0, 0),
+            };
+            tracing::error!(
+                event_kind,
+                required_bytes,
+                reserved_bytes = self.state.event_bytes.0.load(Ordering::Acquire),
+                limit_bytes = SDK_EVENT_QUEUE_BYTES,
+                surface_count,
+                action_count,
+                "collab: inbound control event exceeds its retained byte budget"
+            );
             self.state.fail_closed("inbound event byte budget");
             return false;
         };
@@ -2424,6 +2505,7 @@ impl CollaborationManager {
             return Ok(Self::disabled());
         }
         let (app, room) = auto_hello_env();
+        super::channel_settings::install(&app);
         Self::for_route_from(
             SdkConnectSource::Env,
             app,
@@ -2539,8 +2621,8 @@ impl CollaborationManager {
     }
 
     /// Wait until the shovel has processed the initial `Hello`, admitted its
-    /// primary route, and queued the route's initial action catalogue. Without
-    /// this barrier a caller can publish transient presence immediately after
+    /// primary route (including the initial decision catalogue for an agent).
+    /// Without this barrier a caller can publish transient presence immediately after
     /// construction, before the broker knows where to deliver it.
     fn await_primary_route(&mut self) -> Result<(), runtime_portal::NotAvailable> {
         self.primary_route.accepted = None;
@@ -2638,6 +2720,7 @@ impl CollaborationManager {
             return Self::disabled();
         }
         let (app_id, cluster_id) = auto_hello_env();
+        super::channel_settings::install(&app_id);
         Self::connect_in_background(
             SdkConnectSource::Env,
             SdkIdentitySource::Inherited(cluster_id),
@@ -2648,6 +2731,25 @@ impl CollaborationManager {
             },
             record_kind,
             presence_handle_env(),
+        )
+    }
+
+    /// A manager on `route`, reached through the host's `connector` as an
+    /// app it launched, connecting in the background: the manager reports
+    /// [`super::CollaborationState::Connecting`] until the broker
+    /// acknowledges the route. For a host showing an app inside its own
+    /// process.
+    pub(crate) fn for_route_host_in_background(
+        connector: HostSessionConnector,
+        route: RouteSpec,
+        record_kind: Option<String>,
+    ) -> Self {
+        Self::connect_in_background(
+            SdkConnectSource::Host(connector, route.clone()),
+            SdkIdentitySource::Ready(None),
+            route,
+            record_kind,
+            None,
         )
     }
 
@@ -3069,6 +3171,11 @@ async fn drive_shovel(
     let mut primary: Option<String> = None;
     let mut participant_handle: Option<String> = None;
     let mut primary_result = Err("primary collaboration route was not announced".to_string());
+    // The app's settings over the primary route, when the shell keeps them.
+    let mut settings_link: Option<SettingsLink> = None;
+    // The app's live activity over the primary route, when the shell
+    // presents live activities.
+    let mut live_activity_link: Option<LiveActivityLink> = None;
     // The first document mutation since the last publication barrier that
     // did not reach the broker, reported to (and cleared by) that barrier.
     let mut unpublished: Option<String> = None;
@@ -3137,6 +3244,16 @@ async fn drive_shovel(
                     Err(_) => Err(PRIMARY_ROUTE_TIMED_OUT.to_string()),
                 };
                 primary = primary_result.is_ok().then_some(key);
+                if let Some(route) = primary.as_ref().and_then(|key| routes.get(key)) {
+                    settings_link = link_settings(&route.channel, &inbound_tx).await;
+                    if let Some(link) = settings_link.as_ref() {
+                        link.flush(&inbound_tx).await;
+                    }
+                    live_activity_link = link_live_activity(&route.channel, &inbound_tx).await;
+                    if let Some(link) = live_activity_link.as_ref() {
+                        link.flush(true).await;
+                    }
+                }
             }
             SdkCommand::Primary(request) => {
                 if let Some(route) = primary.as_ref().and_then(|key| routes.get_mut(key)) {
@@ -3299,6 +3416,16 @@ async fn drive_shovel(
                 };
                 let _ = reply.send(result);
             }
+            SdkCommand::FlushSettings => {
+                if let Some(link) = settings_link.as_ref() {
+                    link.flush(&inbound_tx).await;
+                }
+            }
+            SdkCommand::FlushLiveActivity => {
+                if let Some(link) = live_activity_link.as_ref() {
+                    link.flush(false).await;
+                }
+            }
         }
         if document && !published && unpublished.is_none() {
             unpublished = Some("a document mutation did not reach the broker".into());
@@ -3402,15 +3529,21 @@ async fn ensure_sdk_route(
             tracing::warn!(
                 "collab: joining channel {channel_id} failed ({error}); route unavailable"
             );
-            return Err(format!("joining collaboration route failed: {error}"));
+            return Err(format!("{}: {error}", super::ROUTE_JOIN_FAILED));
         }
     };
 
-    // The catalogue is level-triggered and its first snapshot is the route's
-    // decision baseline. Enqueue it before subscribing to document traffic,
-    // so a backlogged snapshot cannot make an agent decide against stale
-    // local fallback data immediately after construction.
-    spawn_action_catalogue_stream(&channel, inbound_tx).await?;
+    // Only the explicit agent constructors consume the eager workspace
+    // decision catalogue. Ordinary App owners discard that event and expose
+    // their own actions through publication and the bounded pull directory;
+    // acquiring every other app's inventory can prevent an unrelated app from
+    // starting. This selects a consumer, not authority: broker admission and
+    // per-action permissions are unchanged.
+    if participant_kind == "agent" {
+        // Queue the first decision baseline before document traffic so an
+        // agent cannot start deciding against stale local fallback data.
+        spawn_action_catalogue_stream(&channel, inbound_tx).await?;
+    }
     let committed = committed_document::install(&channel, spec, inbound_tx).await?;
     // A committed route's owner admits and applies each edit itself, and a
     // committing host holds no channel keys: it could neither open a sealed
@@ -3444,6 +3577,7 @@ async fn ensure_sdk_route(
         },
         spawn_presence_stream(&channel, inbound_tx),
     );
+    spawn_content_stream(&channel, spec.clone(), inbound_tx).await;
     // Subscriptions are installed first so an existing holder's response
     // cannot race ahead of our document stream.
     if !committed && let Err(error) = channel.request_document_snapshot().await {
@@ -3463,6 +3597,41 @@ async fn ensure_sdk_route(
         },
     );
     Ok(())
+}
+
+/// Bridge content arriving for `channel`'s record into
+/// [`CollabEvent::RecordContent`] on `inbound_tx`. A host that keeps no
+/// record content refuses the subscription, and its apps keep their content
+/// to themselves.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+)]
+async fn spawn_content_stream(
+    channel: &runtime_collab::ChannelHandle,
+    route: RouteSpec,
+    inbound_tx: &InboundBridge,
+) {
+    let Ok(stream) = channel.subscribe_blobs().await else {
+        return;
+    };
+    super::record_content::ContentLane::of(&route.app_id, route.record.as_deref().unwrap_or(""))
+        .serve();
+    let inbound_tx = inbound_tx.clone();
+    tokio::task::spawn_local(async move {
+        while let Ok(event) = stream.read().await {
+            if !inbound_tx
+                .send_document(CollabEvent::RecordContent {
+                    route: route.clone(),
+                    hash: event.hash,
+                    bytes: event.bytes,
+                })
+                .await
+            {
+                break;
+            }
+        }
+    });
 }
 
 /// Bridge `channel`'s doc/incremental op stream into [`CollabEvent`]s on
@@ -3649,6 +3818,175 @@ async fn spawn_invocation_stream(
     }
 }
 
+/// The primary route's live-activity capability and the task following the
+/// controls pressed on it.
+struct LiveActivityLink {
+    handle: runtime_collab::LiveActivityHandle,
+    follower: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for LiveActivityLink {
+    fn drop(&mut self) {
+        self.follower.abort();
+    }
+}
+
+impl LiveActivityLink {
+    /// Send the app's activity if it changed, or again after a join.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    )]
+    async fn flush(&self, resend: bool) {
+        let Some(unsent) = super::channel_live_activity::take_unsent(resend) else {
+            return;
+        };
+        if let Err(error) = self.handle.show(unsent.activity.as_ref()).await {
+            tracing::warn!(%error, "live activity: the shell did not take it");
+        }
+    }
+}
+
+/// Open the primary route's live activity and follow the controls pressed
+/// on it, waking the owner on each.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+)]
+async fn link_live_activity(
+    channel: &runtime_collab::ChannelHandle,
+    inbound_tx: &InboundBridge,
+) -> Option<LiveActivityLink> {
+    let handle = match channel.live_activity().await {
+        Ok(handle) => handle,
+        Err(error) => {
+            tracing::debug!(%error, "live activity: the shell presents none for this app");
+            return None;
+        }
+    };
+    let follower = {
+        let handle = handle.clone();
+        let wake = inbound_tx.state.owner_wake.clone();
+        tokio::task::spawn_local(async move {
+            let mut after = 0;
+            loop {
+                match handle.controls(after).await {
+                    Ok((serial, controls)) => {
+                        after = serial;
+                        super::channel_live_activity::received(controls);
+                        wake.wake();
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "live activity: following its controls stopped");
+                        break;
+                    }
+                }
+            }
+        })
+    };
+    Some(LiveActivityLink { handle, follower })
+}
+
+/// The primary route's settings capability and the task following it.
+struct SettingsLink {
+    handle: runtime_collab::AppSettingsHandle,
+    settings: Arc<super::channel_settings::ChannelSettings>,
+    follower: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for SettingsLink {
+    fn drop(&mut self) {
+        self.follower.abort();
+    }
+}
+
+fn settings_view(
+    view: &runtime_collab::SettingsView,
+) -> Result<(u64, serde_json::Map<String, serde_json::Value>), String> {
+    match serde_json::from_slice(&view.document_json) {
+        Ok(serde_json::Value::Object(document)) => Ok((view.revision, document)),
+        _ => Err("the shell's settings view is not a JSON object".into()),
+    }
+}
+
+impl SettingsLink {
+    /// Send the app's unsent writes, oldest first, and show the shell's
+    /// answers.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    )]
+    async fn flush(&self, inbound_tx: &InboundBridge) {
+        for (section, values) in self.settings.take_outbox() {
+            let unanswered = super::channel_settings::Unanswered::new(&self.settings);
+            let answer = match serde_json::to_vec(&values) {
+                Ok(values) => self
+                    .handle
+                    .update(&section, &values)
+                    .await
+                    .map_err(|error| error.to_string())
+                    .and_then(|view| settings_view(&view)),
+                Err(error) => Err(error.to_string()),
+            };
+            if unanswered.answer(answer) {
+                inbound_tx.state.owner_wake.wake();
+            }
+        }
+    }
+}
+
+/// Open the primary route's settings for the installed channel settings
+/// and follow the shell's view of them, waking the owner on each change.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+)]
+async fn link_settings(
+    channel: &runtime_collab::ChannelHandle,
+    inbound_tx: &InboundBridge,
+) -> Option<SettingsLink> {
+    let settings = super::channel_settings::installed()?;
+    let handle = match channel.settings().await {
+        Ok(handle) => handle,
+        Err(error) => {
+            tracing::warn!(%error, "settings: the shell keeps no settings for this app");
+            return None;
+        }
+    };
+    settings.linked();
+    let follower = {
+        let handle = handle.clone();
+        let settings = Arc::clone(&settings);
+        let wake = inbound_tx.state.owner_wake.clone();
+        tokio::task::spawn_local(async move {
+            let mut after = 0;
+            loop {
+                let view = match handle.read(after).await {
+                    Ok(view) => view,
+                    Err(error) => {
+                        tracing::warn!(%error, "settings: following the shell's settings stopped");
+                        break;
+                    }
+                };
+                after = view.revision;
+                match settings_view(&view) {
+                    Ok((revision, view)) => {
+                        if settings.received(revision, view) {
+                            wake.wake();
+                        }
+                    }
+                    Err(error) => tracing::warn!(%error, "settings: ignoring a view"),
+                }
+            }
+        })
+    };
+    Some(SettingsLink {
+        handle,
+        settings,
+        follower,
+    })
+}
+
 #[allow(
     clippy::future_not_send,
     reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
@@ -3708,15 +4046,27 @@ async fn spawn_action_catalogue_stream(
         .map_err(|error| format!("reading initial action catalogue failed: {error}"))?;
     let catalogue = serde_json::from_str::<BrokerActionCatalogueWire>(&initial)
         .map_err(|error| format!("decoding initial action catalogue failed: {error}"))?;
-    if !inbound_tx.send_durable(CollabEvent::ActionCatalogue {
-        surfaces: catalogue.surfaces,
-    }) {
+    // The initial baseline occupies the same turn as subsequent watched
+    // snapshots. Otherwise a busy constructor retains both before its first
+    // owner poll, which can exhaust the bridge despite each baseline fitting.
+    let turns = Arc::new(tokio::sync::Semaphore::new(1));
+    let turn = turns
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !inbound_tx.send_durable_turn(
+        CollabEvent::ActionCatalogue {
+            surfaces: catalogue.surfaces,
+        },
+        Some(turn),
+    ) {
         return Err("delivering initial action catalogue failed".to_string());
     }
 
     let tx = inbound_tx.clone();
     tokio::task::spawn_local(async move {
-        forward_action_catalogues(async || stream.read().await.map_err(|_| ()), &tx).await;
+        forward_action_catalogues(async || stream.read().await.map_err(|_| ()), &tx, turns).await;
     });
     Ok(())
 }
@@ -3731,8 +4081,8 @@ async fn spawn_action_catalogue_stream(
 async fn forward_action_catalogues(
     mut read: impl AsyncFnMut() -> Result<String, ()>,
     tx: &InboundBridge,
+    turns: Arc<tokio::sync::Semaphore>,
 ) {
-    let turns = Arc::new(tokio::sync::Semaphore::new(1));
     loop {
         let Ok(turn) = turns.clone().acquire_owned().await else {
             break;
@@ -4642,12 +4992,13 @@ impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryS
             .map_err(|_| {
                 capnp::Error::failed("application action directory is busy or unavailable".into())
             })?;
-            let page = tokio::time::timeout(ACTION_DIRECTORY_REPLY_TIMEOUT, response)
-                .await
-                .map_err(|_| capnp::Error::failed("application action directory timed out".into()))?
-                .map_err(|_| {
-                    capnp::Error::failed("application action directory is unavailable".into())
-                })?;
+            // Answered on the owner's next turn, however long its current one
+            // runs (a heavy action or frame): a busy app is not a gone one. The
+            // asker owns the deadline; when it stops waiting it cancels this
+            // call, which drops this future. A stopped owner drops `reply`.
+            let page = response.await.map_err(|_| {
+                capnp::Error::failed("application action directory is unavailable".into())
+            })?;
             let mut out = results.get().init_page();
             out.set_revision(&page.revision);
             out.set_next_cursor(&page.next_cursor);
@@ -4711,11 +5062,8 @@ impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryS
             {
                 directory_unavailable()
             } else {
-                tokio::time::timeout(ACTION_DIRECTORY_REPLY_TIMEOUT, response)
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .unwrap_or_else(directory_unavailable)
+                // As for a query: the asker's deadline, not one of ours.
+                response.await.unwrap_or_else(|_| directory_unavailable())
             };
             let mut out = results.get().init_resolution();
             match reply_value {
@@ -4815,6 +5163,16 @@ async fn dispatch_sdk_request(
             return send_document_mutation(route, signer, mutation, authorization, inbound_tx)
                 .await
                 .is_ok();
+        }
+        CollabRequest::OfferContent { hash, bytes } => {
+            if let Err(error) = route.channel.offer_blob(&hash, &bytes).await {
+                tracing::debug!(%error, %hash, "collab: offering record content failed");
+            }
+        }
+        CollabRequest::WantContent { hash } => {
+            if let Err(error) = route.channel.want_blob(&hash).await {
+                tracing::debug!(%error, %hash, "collab: asking for record content failed");
+            }
         }
         CollabRequest::RequestDocumentSnapshot => {
             if route.committed {
@@ -5313,6 +5671,30 @@ async fn dispatch_sdk_request(
             let _ = inbound_tx
                 .send_durable(CollabEvent::PublishedInvocationResult { request_id, result });
         }
+        CollabRequest::LaunchInstalledApplication {
+            request_id,
+            app_id,
+            package_root,
+            on_behalf_of,
+        } => {
+            let result = route
+                .channel
+                .launch_installed_application_for(
+                    &app_id,
+                    None,
+                    package_root.as_deref(),
+                    on_behalf_of.map(|id| *id.0.as_bytes()),
+                )
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|(id, update)| {
+                    serde_json::from_str(&update)
+                        .map(|update| (id, update))
+                        .map_err(|error| error.to_string())
+                });
+            let _ = inbound_tx
+                .send_durable(CollabEvent::InstalledApplicationLaunchResult { request_id, result });
+        }
         CollabRequest::SubscribeEnrolledTasks { request_id } => {
             let result = route
                 .channel
@@ -5777,6 +6159,10 @@ mod tests {
     struct Captures {
         /// How long after it is asked for the op stream hands out each op.
         op_stream_delay: Option<Duration>,
+        /// The app and the records whose settings the channel hands out.
+        settings: Option<(String, Arc<dyn settings_store::SettingsSource>)>,
+        /// The app and the board whose live activity the channel hands out.
+        live_activities: Option<(String, Arc<runtime_collab::LiveActivities>)>,
         #[cfg(unix)]
         directory: DirectoryCaptures,
         committed_history_fixture: Option<Vec<u8>>,
@@ -5810,6 +6196,9 @@ mod tests {
         refuse_action_publications: usize,
         refused_action_publications: usize,
         action_directories: Vec<String>,
+        action_catalogue_fixture: Option<Vec<String>>,
+        action_catalogue_subscriptions: usize,
+        action_catalogue_reads: usize,
     }
 
     struct DocumentSendGate {
@@ -6081,7 +6470,8 @@ mod tests {
     }
 
     struct FakeActionCatalogueStream {
-        initial: RefCell<Option<String>>,
+        backlog: RefCell<std::collections::VecDeque<String>>,
+        captures: SharedCaptures,
     }
 
     impl action_catalogue_stream::Server for FakeActionCatalogueStream {
@@ -6090,9 +6480,10 @@ mod tests {
             _params: action_catalogue_stream::ReadParams,
             mut results: action_catalogue_stream::ReadResults,
         ) -> Promise<(), capnp::Error> {
-            let Some(initial) = self.initial.borrow_mut().take() else {
+            let Some(initial) = self.backlog.borrow_mut().pop_front() else {
                 return Promise::from_future(std::future::pending::<Result<(), capnp::Error>>());
             };
+            self.captures.lock().unwrap().action_catalogue_reads += 1;
             results.get().set_catalogue_json(&initial);
             Promise::ok(())
         }
@@ -6145,6 +6536,42 @@ mod tests {
     }
 
     impl channel_handle::Server for FakeChannel {
+        fn settings(
+            self: Rc<Self>,
+            _params: channel_handle::SettingsParams,
+            mut results: channel_handle::SettingsResults,
+        ) -> Promise<(), capnp::Error> {
+            let Some((app, source)) = self.captures.lock().unwrap().settings.clone() else {
+                return Promise::err(capnp::Error::unimplemented("no settings".into()));
+            };
+            let settings: runtime_collab::collab_capnp::app_settings::Client =
+                capnp_rpc::new_client(runtime_collab::settings::host::AppSettingsServer::new(
+                    app,
+                    source,
+                    Arc::new(|| Ok(())),
+                ));
+            results.get().set_settings(settings);
+            Promise::ok(())
+        }
+
+        fn live_activity(
+            self: Rc<Self>,
+            _params: channel_handle::LiveActivityParams,
+            mut results: channel_handle::LiveActivityResults,
+        ) -> Promise<(), capnp::Error> {
+            let Some((app, board)) = self.captures.lock().unwrap().live_activities.clone() else {
+                return Promise::err(capnp::Error::unimplemented("no live activities".into()));
+            };
+            let activity: runtime_collab::collab_capnp::live_activity::Client =
+                capnp_rpc::new_client(runtime_collab::live_activity::LiveActivityServer::new(
+                    app,
+                    board,
+                    Arc::new(|| Ok(())),
+                ));
+            results.get().set_activity(activity);
+            Promise::ok(())
+        }
+
         fn publish_actions(
             self: Rc<Self>,
             params: channel_handle::PublishActionsParams,
@@ -6410,11 +6837,20 @@ mod tests {
             _params: channel_handle::SubscribeActionCatalogueParams,
             mut results: channel_handle::SubscribeActionCatalogueResults,
         ) -> Promise<(), capnp::Error> {
+            let snapshots = {
+                let mut captures = self.captures.lock().unwrap();
+                captures.action_catalogue_subscriptions += 1;
+                captures
+                    .action_catalogue_fixture
+                    .clone()
+                    .unwrap_or_else(|| {
+                        vec![serde_json::json!({"version": 1, "surfaces": []}).to_string()]
+                    })
+            };
             let client: action_catalogue_stream::Client =
                 capnp_rpc::new_client(FakeActionCatalogueStream {
-                    initial: RefCell::new(Some(
-                        serde_json::json!({"version": 1, "surfaces": []}).to_string(),
-                    )),
+                    backlog: RefCell::new(snapshots.into()),
+                    captures: self.captures.clone(),
                 });
             results.get().set_stream(client);
             Promise::ok(())
@@ -8396,6 +8832,148 @@ mod tests {
         CollaborationManager::from_sdk_fd_for_test(fd, app, room)
     }
 
+    #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+    struct MonitorPrefs {
+        confirm_kill: bool,
+        interval_ms: u64,
+    }
+
+    impl crate::storage::SettingsSchema for MonitorPrefs {
+        const SCOPE: crate::storage::Scope = crate::storage::Scope::Personal;
+    }
+
+    /// Wait for `done`, polling: the worker and the fake broker run on their
+    /// own threads.
+    fn eventually(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = tilo_test_env::hang_deadline();
+        while !done() {
+            assert!(crate::time::now() < deadline, "{what}");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_apps_settings_reach_the_shells_records_and_follow_them() {
+        use settings_store::{SessionPaths, SessionSettings, SettingsSource};
+        const APP: &str = "so.tilo.monitor";
+        let dir = tempfile::tempdir().unwrap();
+        let records = Arc::new(
+            SessionSettings::open(SessionPaths::beside(dir.path().join("settings.json"))).unwrap(),
+        );
+        let paths = records.paths().clone();
+        records
+            .update_section(
+                "app_personal",
+                serde_json::from_value(serde_json::json!({APP: {"interval_ms": 1000}})).unwrap(),
+            )
+            .unwrap();
+        let captures = Captures {
+            settings: Some((
+                APP.to_owned(),
+                Arc::clone(&records) as Arc<dyn SettingsSource>,
+            )),
+            ..Captures::default()
+        };
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(captures)),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, _, _thread) = stand_up_fake_broker(broker);
+        super::super::channel_settings::install(APP);
+        let _manager = CollaborationManager::from_sdk_fd_for_test(fd, APP, Uuid::new_v4());
+        let prefs = crate::storage::Settings::<MonitorPrefs>::for_app(APP);
+
+        eventually("the shell's view reaches the app", || {
+            prefs.get().interval_ms == 1000
+        });
+
+        // The app's write lands in the person's record, which roams, and in
+        // the copy every other process reads.
+        prefs.update(|prefs| prefs.confirm_kill = true).unwrap();
+        eventually("the write reaches the person's record", || {
+            settings_store::load_at(&paths.person)["app_personal"][APP]["confirm_kill"] == true
+        });
+        assert_eq!(
+            settings_store::load_at(&paths.copy)["app_personal"][APP]["interval_ms"],
+            1000
+        );
+
+        // Another device's write, as the device fabric applies it, reaches
+        // the app's settings.
+        let before = prefs.revision();
+        records
+            .update_section(
+                "app_personal",
+                serde_json::from_value(
+                    serde_json::json!({APP: {"confirm_kill": true, "interval_ms": 3000}}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        eventually("the record's change reaches the app", || {
+            prefs.get().interval_ms == 3000
+        });
+        assert_ne!(prefs.revision(), before, "views following it refresh");
+
+        // Another app's settings are out of reach.
+        let error = crate::storage::Settings::<MonitorPrefs>::for_app("so.tilo.notes")
+            .set(&MonitorPrefs::default())
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(
+            records.load()["app_personal"]
+                .get("so.tilo.notes")
+                .is_none()
+        );
+        super::super::channel_settings::uninstall();
+    }
+
+    #[test]
+    fn an_apps_live_activity_reaches_the_shell_and_its_controls_come_back() {
+        const APP: &str = "so.tilo.clocks";
+        let board = Arc::new(runtime_collab::LiveActivities::default());
+        let captures = Captures {
+            live_activities: Some((APP.to_owned(), Arc::clone(&board))),
+            ..Captures::default()
+        };
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(captures)),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, _, _thread) = stand_up_fake_broker(broker);
+        // Shown before the channel joins: the join sends it.
+        super::super::channel_live_activity::show(Some(serde_json::json!({"label": "Tea"})));
+        let _manager = CollaborationManager::from_sdk_fd_for_test(fd, APP, Uuid::new_v4());
+        eventually("the activity reaches the shell", || {
+            board.activity(APP) == Some(serde_json::json!({"label": "Tea"}))
+        });
+
+        super::super::channel_live_activity::show(Some(serde_json::json!({"label": "Eggs"})));
+        eventually("a change reaches the shell", || {
+            board.activity(APP) == Some(serde_json::json!({"label": "Eggs"}))
+        });
+
+        board.press(APP, serde_json::json!({"command": "toggle"}));
+        let mut taken = Vec::new();
+        eventually("the control comes back to the app", || {
+            taken.extend(super::super::channel_live_activity::take_controls());
+            !taken.is_empty()
+        });
+        assert_eq!(taken, vec![serde_json::json!({"command": "toggle"})]);
+
+        super::super::channel_live_activity::show(None);
+        eventually("ending it takes it off the shell", || {
+            board.activity(APP).is_none()
+        });
+    }
+
     #[cfg(unix)]
     pub(super) fn connecting_manager() -> (
         CollaborationManager,
@@ -8992,11 +9570,7 @@ mod tests {
             let manager = CollaborationManager::from_sdk_fd_for_test(fd, &app_id, Uuid::new_v4());
             let mut app = crate::App::with_collaboration_manager(
                 crate::State::new(),
-                Box::new(crate::widget::Button::new(
-                    "complete",
-                    "Complete",
-                    Some("completed"),
-                )),
+                Box::new(crate::widget::Button::new("complete", "Complete").on_view(|| {})),
                 manager,
             );
             assert!(captures.lock().unwrap().action_publications.is_empty());
@@ -9011,7 +9585,7 @@ mod tests {
                         && seen.action_publications.iter().any(|(id, actions)| {
                             id == &app_id
                                 && actions.iter().any(|(label, action)| {
-                                    label == "Complete" && action == "activate"
+                                    label == "Complete" && !action.is_empty()
                                 })
                         })
                 },
@@ -9033,11 +9607,7 @@ mod tests {
             let manager = CollaborationManager::from_sdk_fd_for_test(fd, &app_id, Uuid::new_v4());
             let mut app = crate::App::with_collaboration_manager(
                 crate::State::new(),
-                Box::new(crate::widget::Button::new(
-                    "complete",
-                    "Complete",
-                    Some("completed"),
-                )),
+                Box::new(crate::widget::Button::new("complete", "Complete").on_view(|| {})),
                 manager,
             );
             crate::app::draw_prepared_component_test_frame(&mut app);
@@ -9055,7 +9625,7 @@ mod tests {
                         id == &app_id
                             && actions
                                 .iter()
-                                .any(|(label, action)| label == "Complete" && action == "activate")
+                                .any(|(label, action)| label == "Complete" && !action.is_empty())
                     })
                 },
             );
@@ -10089,6 +10659,7 @@ mod tests {
                         Ok(snapshot(next))
                     },
                     &forwarder,
+                    Arc::new(tokio::sync::Semaphore::new(1)),
                 )
                 .await;
             });
@@ -10116,6 +10687,226 @@ mod tests {
         });
         assert_eq!(published.get(), 2, "no read while a catalogue is queued");
     }
+    fn notebook_action_catalogue_fixture(cluster: Uuid, count: usize) -> String {
+        let actions: Vec<_> = (0..count).map(|index| serde_json::json!({
+            "resource": format!("notes.page:{index:032x}"),
+            "action": "open", "resource_kind": "note",
+            "resource_label": format!("Notebook page {index}"),
+            "action_label": "Open page", "description": "Open this page in its notebook",
+            "operation_kind": tilo_actions::OperationKind::View,
+            "params": [tilo_actions::ActionParam::required("page", tilo_actions::ParamType::Resource, "The page to open")],
+            "contract": tilo_actions::ActionContract::view(),
+            "input": {"kind": "none"}
+        })).collect();
+        serde_json::json!({"version": 1, "surfaces": [{
+            "peer_id": 1, "app_id": "so.tilo.notes", "cluster_id": cluster.to_string(),
+            "record_id": "notebook", "live": true, "actions": actions
+        }]})
+        .to_string()
+    }
+
+    /// Production SDK socket, join and initial/watch delivery; this fixture
+    /// does not certify broker authorization.
+    #[test]
+    #[cfg(unix)]
+    fn initial_catalogue_and_watch_share_one_turn_for_a_busy_native_owner() {
+        let cluster = Uuid::new_v4();
+        let snapshot = notebook_action_catalogue_fixture(cluster, 1025);
+        let decoded: BrokerActionCatalogueWire = serde_json::from_str(&snapshot).unwrap();
+        let retained = event_bytes(&CollabEvent::ActionCatalogue {
+            surfaces: decoded.surfaces,
+        })
+        .expect("the declared catalogue has a finite retained size");
+        eprintln!(
+            "catalogue fixture serialized_bytes={} retained_bytes={retained}",
+            snapshot.len()
+        );
+        assert!(
+            retained < SDK_EVENT_QUEUE_BYTES,
+            "the complete baseline fits"
+        );
+        assert!(
+            retained * 2 > SDK_EVENT_QUEUE_BYTES,
+            "initial plus watch would overflow"
+        );
+        let mut updated: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
+        updated["surfaces"][0]["peer_id"] = serde_json::json!(2);
+        let captures = Captures {
+            action_catalogue_fixture: Some(vec![snapshot, updated.to_string()]),
+            ..Captures::default()
+        };
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(captures)),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, worker) = stand_up_fake_broker(broker);
+        let sdk = CollaborationManager::spawn_sdk(
+            SdkConnectSource::Fd(fd),
+            Some(SdkJoinIdentity {
+                presentation: Vec::new(),
+                participant_kind: "agent",
+                signer: harness_document_signer(),
+            }),
+        )
+        .unwrap();
+        let mut manager = CollaborationManager::with_transport(Box::new(sdk));
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: "so.tilo.notes".into(),
+            cluster_id: cluster,
+            record: None,
+            record_kind: None,
+            handle: None,
+        }));
+        let admission = manager.await_primary_route();
+        let state = broker_state(&manager);
+        let healthy = state.is_healthy();
+        let initial_reads = captures.lock().unwrap().action_catalogue_reads;
+        let initial = manager.poll().into_iter().find_map(|event| match event {
+            CollabEvent::ActionCatalogue { surfaces } => Some(surfaces),
+            _ => None,
+        });
+        // The first normal owner poll releases the initial turn. The broker
+        // watch can then deliver its complete next baseline without overflow.
+        let mut watched = None;
+        if healthy {
+            eventually(
+                "the watched catalogue reaches the ordinary owner poll",
+                || {
+                    watched = manager.poll().into_iter().find_map(|event| match event {
+                        CollabEvent::ActionCatalogue { surfaces } => Some(surfaces),
+                        _ => None,
+                    });
+                    watched.is_some()
+                },
+            );
+        }
+        drop(manager);
+        worker.join().unwrap();
+        assert!(
+            admission.is_ok(),
+            "startup must admit the route: {admission:?}"
+        );
+        assert!(
+            healthy,
+            "initial and watched baselines must not disconnect the application"
+        );
+        assert_eq!(
+            initial_reads, 1,
+            "do not read a watched snapshot while initial is queued"
+        );
+        assert_eq!(
+            initial.unwrap()[0].actions.len(),
+            1025,
+            "complete first baseline"
+        );
+        let watched = watched.unwrap();
+        assert_eq!(watched[0].actions.len(), 1025, "complete watched baseline");
+        assert_eq!(
+            watched[0].peer_id, 2,
+            "the watch delivered its next snapshot"
+        );
+        assert!(state.is_healthy());
+    }
+
+    /// Ordinary application startup must not acquire an unrelated workspace's
+    /// eager discovery inventory. Discovery remains on the published directory;
+    /// this socket fixture certifies transport readiness, not broker authority.
+    #[test]
+    #[cfg(unix)]
+    fn ordinary_application_starts_with_an_oversized_workspace_catalogue() {
+        let cluster = Uuid::new_v4();
+        let snapshot = notebook_action_catalogue_fixture(cluster, 2049);
+        let decoded: BrokerActionCatalogueWire = serde_json::from_str(&snapshot).unwrap();
+        let retained = event_bytes(&CollabEvent::ActionCatalogue {
+            surfaces: decoded.surfaces,
+        })
+        .unwrap();
+        eprintln!(
+            "startup fixture serialized_bytes={} retained_bytes={retained}",
+            snapshot.len()
+        );
+        assert!(
+            retained > SDK_EVENT_QUEUE_BYTES,
+            "prove the existing bound matters"
+        );
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures {
+                action_catalogue_fixture: Some(vec![snapshot]),
+                ..Captures::default()
+            })),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, worker) = stand_up_fake_broker(broker);
+        let sdk = CollaborationManager::spawn_sdk(
+            SdkConnectSource::Fd(fd),
+            Some(SdkJoinIdentity {
+                presentation: Vec::new(),
+                participant_kind: "person",
+                signer: harness_document_signer(),
+            }),
+        )
+        .unwrap();
+        let mut manager = CollaborationManager::with_transport(Box::new(sdk));
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: "so.tilo.browser".into(),
+            cluster_id: cluster,
+            record: None,
+            record_kind: None,
+            handle: None,
+        }));
+        let admission = manager.await_primary_route();
+        let healthy = broker_state(&manager).is_healthy();
+        let subscriptions = captures.lock().unwrap().action_catalogue_subscriptions;
+        if admission.is_ok() && healthy {
+            // This unbound shared widget uses the normal local publication
+            // identity; the broker connection still belongs to the Browser route.
+            let publication_app_id = crate::collaboration::local_app_id();
+            let mut app = crate::App::with_collaboration_manager(
+                crate::State::new(),
+                Box::new(crate::widget::Button::new("complete", "Complete").on_view(|| {})),
+                manager,
+            );
+            crate::app::draw_prepared_component_test_frame(&mut app);
+            eventually(
+                "ordinary first frame publishes its actions and pull directory",
+                || {
+                    let seen = captures.lock().unwrap();
+                    seen.action_directories
+                        .iter()
+                        .any(|id| id == &publication_app_id)
+                        && seen.action_publications.iter().any(|(id, actions)| {
+                            id == &publication_app_id
+                                && actions.iter().any(|(label, action)| {
+                                    label == "Complete" && !action.is_empty()
+                                })
+                        })
+                },
+            );
+            drop(app);
+        } else {
+            drop(manager);
+        }
+        worker.join().unwrap();
+        assert!(
+            admission.is_ok(),
+            "ordinary route must become ready: {admission:?}"
+        );
+        assert!(
+            healthy,
+            "unconsumed metadata must not disconnect the application"
+        );
+        assert_eq!(
+            subscriptions, 0,
+            "ordinary startup does not subscribe to eager discovery"
+        );
+    }
+
     /// SDK transport/owner ordering only. This uncertified test endpoint cannot
     /// construct broker NativeDocumentReadContext and is not native authority proof.
     #[test]
@@ -10195,5 +10986,112 @@ mod tests {
                     .channel_id(),
             )
         });
+    }
+
+    /// A native window that shows another record in its component's place
+    /// moves its live broker connection to that record's route: one inherited
+    /// transport, a second route joined with the record's kind, and the
+    /// window's primary route then the new record's.
+    #[test]
+    #[cfg(unix)]
+    fn a_native_window_showing_another_record_joins_its_route_on_the_live_broker() {
+        use crate::application::{LaunchTarget, RestoreInput};
+        use crate::application_test_support::{
+            DEVICE, runner_inputs, runner_permissions, runner_probe_definition,
+        };
+        let cluster = Uuid::new_v4();
+        let captures = Captures {
+            committed_history_fixture: Some(automerge::AutoCommit::new().save()),
+            ..Captures::default()
+        };
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(captures)),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, _thread) = stand_up_fake_broker(broker);
+        let definition = runner_probe_definition();
+        let shown = crate::record::RecordId::minted();
+        let manager = CollaborationManager::for_route_from(
+            SdkConnectSource::Fd(fd),
+            definition.app_id.to_owned(),
+            cluster,
+            Some(shown.as_str().to_owned()),
+            None,
+            None,
+            "person",
+        )
+        .unwrap();
+        assert!(manager.has_native_committed_primary());
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("state");
+        let mut owners = crate::record::RecordOwners::new(root.clone());
+        let records = owners
+            .open(definition.app_id, &cluster.to_string())
+            .unwrap();
+        let views = std::rc::Rc::new(
+            crate::application_view::InstanceViewStore::new(root, DEVICE, &cluster.to_string())
+                .unwrap(),
+        );
+        let context = crate::application::HostContext::prepare_new_record(
+            definition,
+            crate::application::HostContextInputs {
+                records,
+                views,
+                device_id: DEVICE.into(),
+                instance_id: 41,
+                permissions: runner_permissions(),
+                author: crate::permissions::UserId("probe-author".into()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
+            shown,
+        )
+        .unwrap();
+        let reopener = context.reopener();
+        let component = definition
+            .instantiate(context, LaunchTarget::New, RestoreInput::None)
+            .unwrap();
+        let mut app =
+            crate::App::from_component_with_collaboration(component, runner_inputs(), manager)
+                .unwrap();
+        assert_eq!(captures.lock().unwrap().joined.len(), 1, "the launch route");
+
+        let wanted = crate::record::RecordId::minted();
+        let (next, target) = reopener.prepare(definition, wanted.clone()).unwrap();
+        let replacement = definition
+            .instantiate(next, target, RestoreInput::None)
+            .unwrap();
+        let outcome = reopener.replace(replacement, vec![]);
+        assert!(app.swap_requested_component());
+        assert_eq!(outcome.get(), Some(Ok(())));
+        assert_eq!(
+            captures.lock().unwrap().joined.len(),
+            2,
+            "the record's route shares the one inherited transport"
+        );
+        assert_eq!(
+            captures
+                .lock()
+                .unwrap()
+                .joined_record_kinds
+                .last()
+                .map(String::as_str),
+            Some(definition.record_kind.as_str()),
+            "the record route names its kind for the owner"
+        );
+        assert_eq!(
+            app.collaboration_manager()
+                .primary_route
+                .accepted
+                .as_ref()
+                .and_then(|route| route.route.record.clone())
+                .as_deref(),
+            Some(wanted.as_str()),
+            "the window's primary route is the record it shows now"
+        );
+        app.close_components();
     }
 }

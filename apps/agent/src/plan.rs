@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use qdoc::snapshot::{AttrVal, BlockView, DocSnapshot};
+use tilo_doc::snapshot::{AttrVal, BlockView, DocSnapshot};
 
 use crate::surface::{self, NoMatch, Offer};
 
@@ -627,10 +627,10 @@ mod tests {
     /// actually exports.
     fn surveyed() -> Vec<Offer> {
         let mut doc = automerge::AutoCommit::new();
-        let c = qdoc::model::init(&mut doc, &automerge::ROOT);
-        let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
+        let c = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+        let mut ids = tilo_doc::model::seeded_id_gen(&doc, &c);
         {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut doc,
                 c: &c,
                 ids: &mut ids,
@@ -642,11 +642,7 @@ mod tests {
         doc.commit();
         let wp = &surface::CONTRACTS[0];
         assert_eq!(wp.namespace, "word-processor");
-        surface::offers(
-            &[(wp, &doc)],
-            &surface::View::default(),
-            &permitting("word-processor"),
-        )
+        surface::offers(&[(wp, &doc)], &[], &permitting("so.tilo.word-processor"))
     }
 
     fn permitting(app: &str) -> ui::permissions::PermissionContext {
@@ -746,10 +742,11 @@ mod tests {
             ));
 
             // There is no agent-only vocabulary: "table" means whatever the app
-            // publishes for it — its own insert-table — never a compiled-in recipe.
-            let table = Instruction::from_floor("turn the bullets into a table", &offers);
+            // publishes for it — here its own table of contents — never a
+            // compiled-in recipe.
+            let table = Instruction::from_floor("turn the headings into a table", &offers);
             assert!(
-                matches!(&table, Instruction::Perform { id, .. } if id.ends_with("#insert-table")),
+                matches!(&table, Instruction::Perform { id, .. } if id.ends_with("#generate-toc")),
                 "{table:?}"
             );
         }

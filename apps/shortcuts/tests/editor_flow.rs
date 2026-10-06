@@ -284,17 +284,6 @@ fn the_app_starts_empty_and_reads_the_door_as_itself() {
 fn every_operation_is_a_published_action() {
     let (_host, _guard, mut app) = open();
     let resources = app.harness().resources();
-    let door = resources
-        .iter()
-        .find(|resource| resource.id.as_str() == "shortcuts.door:root")
-        .expect("the door operations are published");
-    let mut actions: Vec<&str> = door
-        .actions
-        .iter()
-        .map(|action| action.id.as_str())
-        .collect();
-    actions.sort_unstable();
-    assert_eq!(actions, ["delete", "describe", "refresh", "run", "save"]);
     let workbench = resources
         .iter()
         .find(|resource| resource.kind == "shortcuts.workbench")
@@ -311,6 +300,21 @@ fn every_operation_is_a_published_action() {
             "`{action}` is published"
         );
     }
+    // The door's effects are published on the drafts, beside their edits.
+    let mut effects: Vec<&str> = workbench
+        .actions
+        .iter()
+        .filter(|spec| spec.kind == ui::tilo_actions::OperationKind::Effect)
+        .map(|spec| spec.id.as_str())
+        .collect();
+    effects.sort_unstable();
+    assert_eq!(effects, ["delete", "describe", "refresh", "run", "save"]);
+    assert!(
+        resources
+            .iter()
+            .all(|resource| resource.id.as_str() != "shortcuts.door:root"),
+        "no second root carries them"
+    );
 }
 
 #[test]

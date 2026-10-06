@@ -218,7 +218,7 @@ fn canonical(room_id: &str, app: &str, record: &str, doc: &AutoCommit) -> Result
             "Chat canonical schema absent"
         );
     } else {
-        qdoc::model::open(doc, &automerge::ROOT)?;
+        tilo_doc::model::open(doc, &automerge::ROOT)?;
     }
     Ok(())
 }
@@ -544,8 +544,8 @@ fn inspect(auth: &PublicEnrollment, sources: &[Source]) -> Result<Recovered> {
 /// A readable projection accompanies, never replaces, the complete CRDT bytes.
 fn readable(app: &str, doc: &AutoCommit) -> Result<Value> {
     if app == "so.tilo.word-processor" {
-        let containers = qdoc::model::open(doc, &automerge::ROOT)?;
-        let snapshot = qdoc::model::materialize(doc, &containers);
+        let containers = tilo_doc::model::open(doc, &automerge::ROOT)?;
+        let snapshot = tilo_doc::model::materialize(doc, &containers);
         let text = snapshot
             .blocks
             .iter()

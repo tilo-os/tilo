@@ -823,7 +823,8 @@ fn validate_one_of(
 }
 
 /// Whether `value` carries what tells `alternative` apart: the values of its
-/// constant properties (a tag), or else all of its required keys.
+/// constant or enumerated properties (a tag, or one of several), or else all
+/// of its required keys.
 fn selects(value: &serde_json::Value, alternative: &serde_json::Value) -> bool {
     let Some(schema) = alternative.as_object() else {
         return false;
@@ -839,12 +840,18 @@ fn selects(value: &serde_json::Value, alternative: &serde_json::Value) -> bool {
         .and_then(serde_json::Value::as_object)
         .into_iter()
         .flatten()
-        .filter_map(|(key, property)| Some((key, property.get("const")?)))
+        .filter(|(_, property)| property.get("const").is_some() || property.get("enum").is_some())
         .collect();
     if !tags.is_empty() {
-        return tags
-            .iter()
-            .all(|(key, expected)| object.get(key.as_str()) == Some(*expected));
+        return tags.iter().all(|(key, property)| {
+            object.get(key.as_str()).is_some_and(|given| {
+                property.get("const") == Some(given)
+                    || property
+                        .get("enum")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|names| names.contains(given))
+            })
+        });
     }
     let required = schema
         .get("required")
@@ -1208,6 +1215,26 @@ mod rich_schema_tests {
         resource_datetime_secret_and_nullable_values_round_trip();
         malformed_schema_is_rejected_before_it_describes_values();
         unique_array_items_are_published_and_enforced();
+    }
+
+    #[test]
+    fn a_refusal_names_the_alternative_an_enumerated_tag_selects() {
+        let schema = json!({"oneOf": [
+            {"type": "object", "required": ["action"], "properties": {
+                "action": {"enum": ["draw", "paint"]}, "args": {"type": "object"}
+            }, "additionalProperties": false},
+            {"type": "object", "required": ["action", "args"], "properties": {
+                "action": {"const": "apply"}, "args": {"type": "object", "required": ["action"]}
+            }, "additionalProperties": false},
+        ]});
+        assert!(validate_schema(&json!({"action": "draw", "args": {}}), &schema).is_ok());
+        let refused = validate_schema(&json!({"action": "apply", "args": {}}), &schema);
+        assert_eq!(
+            refused,
+            Err("as `apply`: property `args` must contain property `action`".into())
+        );
+        let refused = validate_schema(&json!({"action": "paint", "args": 3}), &schema).unwrap_err();
+        assert!(refused.contains("property `args`"), "{refused}");
     }
 
     fn structured_arguments_are_typed_and_recursively_validated() {

@@ -29,6 +29,7 @@ ReadOnlyPaths=/etc/tilo /var/lib/tilo
 ReadWritePaths=/var/lib/tilo/full-replica
 CapabilityBoundingSet=
 AmbientCapabilities=
+ProtectProc=invisible
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

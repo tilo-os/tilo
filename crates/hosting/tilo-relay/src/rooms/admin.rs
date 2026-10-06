@@ -377,6 +377,7 @@ impl RoomAdminClient {
                         recipient_user_public_key: recipient,
                         invitee_name: None,
                         expires_at_ns,
+                        inviter_name: None,
                     },
                 },
             )

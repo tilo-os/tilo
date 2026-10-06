@@ -24,7 +24,7 @@ use tilo_relay::{Inbound as HostInbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
-use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg};
+use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg, SurfaceId};
 use neighbour_wire::{Retention, retention};
 
 #[cfg(test)]
@@ -61,12 +61,31 @@ pub enum PersonalFabricPayload {
     /// The surrounding personal-fabric route authenticates the source device;
     /// the receiver additionally verifies the final content hash before use.
     MediaTransfer(PersonalMediaTransferFrame),
-    /// Shell-owned display session traffic. Frames are exact-target and
-    /// ephemeral; authorization is rechecked against saved placement state.
-    Display(crate::shell::device_fabric::PersonalDisplayMessage),
     /// Resumable generic Nearby object data. Offers and resume checkpoints
     /// travel as authenticated actions; this lane carries bounded bytes only.
     NearbyTransfer(PersonalNearbyTransferFrame),
+    /// One signed mutation of a record in the person's own room. Its room is
+    /// implied by the route: the fabric only ever joins one person's devices.
+    /// `record_id` is the sealed wire name, as on a room topic.
+    Document {
+        app_id: String,
+        record_id: String,
+        envelope: Box<collab_types::SignedOp>,
+    },
+    /// A device of the person asking for content one of `app_id`'s person
+    /// records references. Its room is the person's, implied by the route.
+    RecordContentWant {
+        app_id: String,
+        hash: String,
+    },
+    /// One bounded piece of that content, for the device that asked alone.
+    RecordContentPiece {
+        app_id: String,
+        hash: String,
+        total: u64,
+        offset: u64,
+        bytes: Vec<u8>,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -171,8 +190,24 @@ pub enum NetCmd {
         ws: u64,
         msg: NeighbourMsg,
     },
+    /// A message for `ws`'s workspace hosts only, held until a host session
+    /// is up, never gossiped: what only the hosts of the person's own
+    /// continuity topic may keep for their other devices.
+    PublishToHosts {
+        ws: u64,
+        msg: NeighbourMsg,
+    },
     NativeMedia(super::native_media::Command),
     NativeEnrollment(super::invite::enrollment_driver::Command),
+    /// Ask the room authority of the relay at `relay`, as `certificate`, from
+    /// this device's own endpoint: the relay accepts only the certificate of
+    /// the endpoint it authenticated.
+    RoomAdmin {
+        relay: EndpointAddr,
+        certificate: DeviceCert,
+        command: Box<tilo_relay::rooms::RoomCommand>,
+        reply: std::sync::mpsc::SyncSender<Result<tilo_relay::rooms::RoomReply, String>>,
+    },
     JoinWorkspace {
         ws: WorkspaceId,
         on_event: mpsc::Sender<NetEvent>,
@@ -183,6 +218,15 @@ pub enum NetCmd {
     Publish {
         ws: WorkspaceId,
         msg: NeighbourMsg,
+    },
+    /// Send one shared window's stream (its start, frames, end and control
+    /// grants) to exactly the viewers named by their peer handles, over the
+    /// authenticated direct media route. No other participant of the
+    /// workspace, its gossip topic or its workspace host receives any of it.
+    PublishSurfaceTo {
+        ws: WorkspaceId,
+        msg: NeighbourMsg,
+        viewers: Vec<crate::network::protocol::PeerId>,
     },
     /// Publish live workspace-control traffic over the route selected by the
     /// canonical device mesh. Direct input uses the authenticated exact-target
@@ -201,6 +245,8 @@ pub enum NetCmd {
         target: EndpointId,
         msg: NeighbourMsg,
     },
+    /// Send one piece of a record's content to the device that asked for it.
+    PublishRecordContent(RecordContentDelivery),
     /// Publish a shell-tree message that is known to contain the complete
     /// room history. Only the deliberate `HostReady` baseline uses this;
     /// ordinary `SyncResp` messages may be partial anti-entropy responses.
@@ -262,6 +308,17 @@ pub enum NetCmd {
         host: uuid::Uuid,
         rooms: Vec<uuid::Uuid>,
     },
+}
+
+/// A piece of a record's content on its way to the device of the room that
+/// asked: over the direct plane when that device is a live peer of the
+/// room's topic, else through the room's workspace hosts, which hand it to
+/// that device alone and keep nothing, else on the topic itself.
+#[derive(Debug)]
+pub struct RecordContentDelivery {
+    pub ws: WorkspaceId,
+    pub target: Option<EndpointId>,
+    pub msg: NeighbourMsg,
 }
 
 /// One immutable Nearby spool object and the receiver-confirmed checkpoint
@@ -472,6 +529,7 @@ struct SurfaceFanoutOutcome {
 enum HostEvent {
     NativeInput(native_ingress::Input),
     Ready,
+    Voice(tilo_relay::coedit::VoiceEvent),
     Live {
         from: [u8; 32],
         frame: Vec<u8>,
@@ -500,6 +558,21 @@ struct HostRuntime {
     pump: tokio::task::JoinHandle<()>,
     /// Set while the host writes a replay, until its `Ready`.
     replaying: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Early boot of another of the person's devices asking for its sibling
+/// half. The peer is not authenticated by transport: the boot key
+/// certificate and the challenge are what the sibling checks.
+#[derive(Clone, Debug)]
+struct DeviceUnlockProtocol;
+
+impl ProtocolHandler for DeviceUnlockProtocol {
+    async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
+        tokio::spawn(crate::shell::device_unlock_runtime::serve_connection(
+            connection,
+        ));
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -538,8 +611,12 @@ impl ProtocolHandler for SurfaceStreamProtocol {
                 if !matches!(
                     frame.message,
                     NeighbourMsg::SurfaceFrame { .. }
+                        | NeighbourMsg::SurfaceStreamStart { .. }
+                        | NeighbourMsg::SurfaceStreamEnd { .. }
+                        | NeighbourMsg::PermissionGrant { .. }
                         | NeighbourMsg::RemoteInput { .. }
                         | NeighbourMsg::RemoteAction { .. }
+                        | NeighbourMsg::RecordContentPiece { .. }
                 ) {
                     tracing::warn!(peer = %peer, "invalid message on direct surface/control ALPN");
                     continue;
@@ -576,12 +653,18 @@ async fn enqueue_surface_event(
     input_tx: &mpsc::Sender<InternalEvent>,
     event: InternalEvent,
 ) -> bool {
-    // Remote-action frames are requests and answers, not media: they take
-    // the reliable queue with input.
+    // Remote-action frames are requests and answers, not media, and a
+    // stream's start, end and grants are its control: they take the
+    // reliable queue with input.
     let is_input = matches!(
         &event,
         InternalEvent::SurfaceFrame {
-            msg: NeighbourMsg::RemoteInput { .. } | NeighbourMsg::RemoteAction { .. },
+            msg: NeighbourMsg::RemoteInput { .. }
+                | NeighbourMsg::RemoteAction { .. }
+                | NeighbourMsg::RecordContentPiece { .. }
+                | NeighbourMsg::SurfaceStreamStart { .. }
+                | NeighbourMsg::SurfaceStreamEnd { .. }
+                | NeighbourMsg::PermissionGrant { .. },
             ..
         }
     );
@@ -754,7 +837,7 @@ struct ActorState {
     recent: HashSet<(WorkspaceId, [u8; 32])>,
     recent_order: VecDeque<(WorkspaceId, [u8; 32])>,
     /// When each recent remote-input message arrived (see [`mark_new_input`]).
-    recent_input: HashMap<(WorkspaceId, [u8; 32]), Instant>,
+    recent_input: HashMap<(WorkspaceId, [u8; 32]), (EndpointId, Instant)>,
     /// Channel governance this device published to each room, by retention
     /// channel (see [`remember_governance`]).
     governance: HashMap<WorkspaceId, GovernanceLog>,
@@ -765,12 +848,17 @@ struct ActorState {
     /// Long-lived direct media connections. One unidirectional QUIC stream
     /// per frame avoids head-of-line blocking between viewers and frames.
     surface_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
-    /// At most one direct surface fanout per workspace may be dialing or
+    /// At most one direct fanout per shared window may be dialing or
     /// writing. A producer can submit frames faster than an unreachable peer's
-    /// dial timeout; retain only the newest pending frame instead of stalling
-    /// the actor or building an unbounded queue of obsolete video.
-    surface_fanout_tasks: HashMap<WorkspaceId, tokio::task::JoinHandle<()>>,
-    pending_surface_frames: HashMap<WorkspaceId, NeighbourMsg>,
+    /// dial timeout; retain only the newest pending frame of that window
+    /// instead of stalling the actor or building an unbounded queue of
+    /// obsolete video. Windows are independent, so one window's frames never
+    /// displace another's.
+    surface_fanout_tasks: HashMap<(WorkspaceId, SurfaceId), tokio::task::JoinHandle<()>>,
+    pending_surface_frames: HashMap<(WorkspaceId, SurfaceId), NeighbourMsg>,
+    /// Windows streamed to named viewers only: their frames go to exactly
+    /// these devices and never fall back to the workspace's gossip topic.
+    surface_fanout_viewers: HashMap<(WorkspaceId, SurfaceId), Vec<EndpointId>>,
     personal_fabric_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
     active_personal_media: HashMap<(EndpointId, [u8; 16]), ActivePersonalMediaTransfer>,
     next_personal_media_generation: u64,
@@ -931,9 +1019,13 @@ impl ActorState {
     )]
     async fn handle_command(&mut self, command: Option<NetCmd>) -> bool {
         match command {
-            Some(NetCmd::NativeMedia(command)) => self
-                .native_media
-                .handle(command, self.host_identity.as_ref()),
+            Some(NetCmd::NativeMedia(command)) => {
+                let sessions = &self.host_sessions;
+                self.native_media
+                    .handle(command, self.host_identity.as_ref(), &|ws| {
+                        native_ingress::native_session(sessions, ws)
+                    });
+            }
             Some(NetCmd::NativeConnect(connect)) => self.native_connect(connect),
             Some(NetCmd::GovernorAction { ws, room, request }) => {
                 self.governor_action(ws, room, request);
@@ -944,6 +1036,19 @@ impl ActorState {
                 self.endpoint.clone(),
                 self.host_identity.as_ref(),
             ),
+            Some(NetCmd::RoomAdmin {
+                relay,
+                certificate,
+                command,
+                reply,
+            }) => {
+                let client =
+                    tilo_relay::rooms::RoomAdminClient::new(self.endpoint.clone(), certificate);
+                tokio::spawn(async move {
+                    let answer = client.send(relay, *command).await;
+                    let _ = reply.send(answer.map_err(|error| error.to_string()));
+                });
+            }
             Some(NetCmd::AttachActionBroker { queue, host, rooms }) => {
                 let rooms: HashMap<_, _> = rooms
                     .into_iter()
@@ -987,10 +1092,16 @@ impl ActorState {
                 }
                 self.subscribers.remove(&ws);
                 self.peers_seen.retain(|(peer_ws, _), _| *peer_ws != ws);
-                self.pending_surface_frames.remove(&ws);
-                if let Some(task) = self.surface_fanout_tasks.remove(&ws) {
-                    task.abort();
-                }
+                self.pending_surface_frames
+                    .retain(|(frame_ws, _), _| *frame_ws != ws);
+                self.surface_fanout_viewers
+                    .retain(|(frame_ws, _), _| *frame_ws != ws);
+                self.surface_fanout_tasks.retain(|(task_ws, _), task| {
+                    if *task_ws == ws {
+                        task.abort();
+                    }
+                    *task_ws != ws
+                });
                 if let Some(topic) = self.topics.remove(&ws) {
                     topic.pump.abort();
                 }
@@ -1037,6 +1148,15 @@ impl ActorState {
             Some(NetCmd::Publish { ws, msg }) => {
                 remember_governance(&mut self.governance, ws, &msg);
                 if self.native_routes.contains(ws)
+                    && matches!(&msg, NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_some())
+                {
+                    // A sealed write in a room whose records are sealed
+                    // channels: the governor never admits it, the relay
+                    // retains it for the record's channel members.
+                    self.publish_sealed_native(ws, &msg);
+                    return true;
+                }
+                if self.native_routes.contains(ws)
                     && matches!(
                         &msg,
                         NeighbourMsg::AppDocument { .. }
@@ -1050,6 +1170,8 @@ impl ActorState {
                     return true;
                 }
                 if matches!(msg, NeighbourMsg::SurfaceFrame { .. }) {
+                    self.surface_fanout_viewers
+                        .remove(&(ws, fanout_surface(&msg)));
                     // The host plane is already connected and independently
                     // useful. Enqueue it before any direct-peer dial timeout;
                     // only the compatibility gossip fallback depends on the
@@ -1091,6 +1213,19 @@ impl ActorState {
                 }
             }
             Some(NetCmd::SetWake(LoopWake(wake))) => self.wake = Some(wake),
+            Some(NetCmd::PublishToHosts { ws, msg }) => {
+                self.hold_for_host(ws, &msg, false);
+                publish(
+                    &self.topics,
+                    &self.host_sessions,
+                    ws,
+                    msg,
+                    false,
+                    false,
+                    true,
+                )
+                .await;
+            }
             Some(NetCmd::PublishHostedTopology { ws, msg }) => {
                 if matches!(msg, NeighbourMsg::SyncResp { .. }) {
                     publish(
@@ -1108,8 +1243,14 @@ impl ActorState {
             Some(NetCmd::PublishWorkspaceControl { ws, msg, route }) => {
                 self.publish_workspace_control(ws, msg, route).await;
             }
+            Some(NetCmd::PublishSurfaceTo { ws, msg, viewers }) => {
+                self.publish_surface_to(ws, msg, &viewers).await;
+            }
             Some(NetCmd::PublishRemoteAction { ws, target, msg }) => {
                 self.publish_remote_action(ws, target, msg).await;
+            }
+            Some(NetCmd::PublishRecordContent(delivery)) => {
+                self.publish_record_content(delivery).await;
             }
             Some(NetCmd::PublishCheckpoint { ws, msg }) => {
                 if self.native_routes.contains(ws) {
@@ -1276,8 +1417,9 @@ impl ActorState {
     /// retains gossip as a compatibility fallback. The workspace host is
     /// still published to separately.
     fn start_surface_fanout(&mut self, ws: WorkspaceId, msg: NeighbourMsg) -> bool {
-        if self.surface_fanout_tasks.contains_key(&ws) {
-            self.pending_surface_frames.insert(ws, msg);
+        let key = (ws, fanout_surface(&msg));
+        if self.surface_fanout_tasks.contains_key(&key) {
+            self.pending_surface_frames.insert(key, msg);
             return true;
         }
         let wire = SurfaceWireFrame {
@@ -1291,17 +1433,22 @@ impl ActorState {
             tracing::warn!(ws, bytes = bytes.len(), "surface frame exceeds wire limit");
             return false;
         }
-        let workspace_peer_count = self
-            .peers_seen
-            .keys()
-            .filter(|(peer_ws, _)| *peer_ws == ws)
-            .count();
+        let only = self.surface_fanout_viewers.get(&key);
         let targets: Vec<_> = self
             .peers
             .values()
             .filter(|addr| self.peers_seen.contains_key(&(ws, addr.id)))
+            .filter(|addr| only.is_none_or(|viewers| viewers.contains(&addr.id)))
             .cloned()
             .collect();
+        let workspace_peer_count = match only {
+            Some(_) => targets.len(),
+            None => self
+                .peers_seen
+                .keys()
+                .filter(|(peer_ws, _)| *peer_ws == ws)
+                .count(),
+        };
         // Each viewer is an independent QUIC route. Dial/write them
         // concurrently so one unreachable peer cannot add 300ms in front of
         // every healthy viewer (or block later collaboration commands once
@@ -1370,7 +1517,7 @@ impl ActorState {
                 })
                 .await;
         });
-        self.surface_fanout_tasks.insert(ws, task);
+        self.surface_fanout_tasks.insert(key, task);
         true
     }
 
@@ -1701,6 +1848,37 @@ impl ActorState {
         }
     }
 
+    /// [`NetCmd::PublishSurfaceTo`]: one window's stream to exactly its
+    /// viewers. Frames take the per-window media fanout restricted to them;
+    /// the stream's start, end and control grants go to each directly.
+    async fn publish_surface_to(&mut self, ws: WorkspaceId, msg: NeighbourMsg, viewers: &[u64]) {
+        let targets = self
+            .peers
+            .keys()
+            .filter(|peer| self.peers_seen.contains_key(&(ws, **peer)))
+            .filter(|peer| viewers.contains(&crate::network::behaviour::peer_liveness_handle(peer)))
+            .copied()
+            .collect::<Vec<_>>();
+        match msg {
+            NeighbourMsg::SurfaceFrame { .. } => {
+                let key = (ws, fanout_surface(&msg));
+                self.surface_fanout_viewers.insert(key, targets);
+                let _ = self.start_surface_fanout(ws, msg);
+            }
+            NeighbourMsg::SurfaceStreamStart { .. }
+            | NeighbourMsg::SurfaceStreamEnd { .. }
+            | NeighbourMsg::PermissionGrant { .. } => {
+                if let NeighbourMsg::SurfaceStreamEnd { surface, .. } = &msg {
+                    self.surface_fanout_viewers.remove(&(ws, *surface));
+                }
+                for target in targets {
+                    let _ = self.publish_direct(ws, target, msg.clone()).await;
+                }
+            }
+            _ => tracing::warn!(ws, "refused a non-stream message on the viewer route"),
+        }
+    }
+
     /// Send a remote-action frame to exactly `target`: directly when the
     /// device is live on this workspace's mesh, otherwise through an
     /// authenticated workspace host, which routes it to that device alone.
@@ -1745,6 +1923,50 @@ impl ActorState {
         }
     }
 
+    async fn publish_record_content(&mut self, delivery: RecordContentDelivery) {
+        let RecordContentDelivery { ws, target, msg } = delivery;
+        if !matches!(msg, NeighbourMsg::RecordContentPiece { .. }) {
+            tracing::warn!(
+                ws,
+                "refused a non-content message on the record-content route"
+            );
+            return;
+        }
+        if let Some(target) = target
+            && self.peers_seen.contains_key(&(ws, target))
+            && self.publish_direct(ws, target, msg.clone()).await
+        {
+            return;
+        }
+        // The workspace hosts route it to that device alone when it is
+        // connected to them.
+        if let Some(target) = target
+            && let Ok(frame) = postcard::to_allocvec(&msg)
+            && self
+                .host_sessions
+                .iter()
+                .filter(|((session_ws, _), _)| *session_ws == ws)
+                .any(|(_, runtime)| {
+                    runtime
+                        .session
+                        .publish_record_content(*target.as_bytes(), frame.clone())
+                        .is_ok()
+                })
+        {
+            return;
+        }
+        publish(
+            &self.topics,
+            &self.host_sessions,
+            ws,
+            msg,
+            false,
+            true,
+            false,
+        )
+        .await;
+    }
+
     /// Deliver one message to exactly `target` on the authenticated direct
     /// surface/control plane. The peer must be live on this workspace.
     /// Returns whether the message was written.
@@ -1760,7 +1982,10 @@ impl ActorState {
         }
         // Input must land within an interactive frame budget or not at all;
         // an action frame (up to a catalogue page) is worth waiting for.
-        let budget = if matches!(msg, NeighbourMsg::RemoteAction { .. }) {
+        let budget = if matches!(
+            msg,
+            NeighbourMsg::RemoteAction { .. } | NeighbourMsg::RecordContentPiece { .. }
+        ) {
             Duration::from_secs(2)
         } else {
             Duration::from_millis(40)
@@ -1810,6 +2035,35 @@ impl ActorState {
     /// to keep that dispatcher short.
     async fn handle_join_workspace(&mut self, ws: WorkspaceId, on_event: mpsc::Sender<NetEvent>) {
         self.subscribers.insert(ws, on_event);
+        self.subscribe_topic(ws).await;
+        if !self.native_routes.contains(ws)
+            && let Some(identity) = self.host_identity.as_ref()
+        {
+            let mut routes = HostRouteScheduler {
+                endpoint: &self.endpoint,
+                identity,
+                internal_tx: &self.internal_tx,
+                sessions: &self.host_sessions,
+                connecting: &mut self.connecting_hosts,
+                content_discovery_tasks: &mut self.content_discovery_tasks,
+            };
+            for (addr, expectation) in self.hosts.values().cloned() {
+                routes.schedule(
+                    ws,
+                    addr.clone(),
+                    expectation,
+                    self.action_broker
+                        .as_ref()
+                        .is_some_and(|(_, _, rooms)| rooms.contains_key(&ws)),
+                );
+            }
+        }
+    }
+
+    /// Subscribe to `ws`'s gossip topic unless a subscription is running.
+    /// A subscribe that failed, or one whose stream has closed, is retried
+    /// from the heartbeat while the workspace is still wanted.
+    async fn subscribe_topic(&mut self, ws: WorkspaceId) {
         if let std::collections::hash_map::Entry::Vacant(e) = self.topics.entry(ws) {
             let bootstrap = self.peers.keys().copied().collect();
             match self.gossip.subscribe(topic_id(ws), bootstrap).await {
@@ -1837,26 +2091,38 @@ impl ActorState {
                 Err(error) => tracing::warn!(ws, %error, "could not join iroh workspace topic"),
             }
         }
-        if !self.native_routes.contains(ws)
-            && let Some(identity) = self.host_identity.as_ref()
-        {
-            let mut routes = HostRouteScheduler {
-                endpoint: &self.endpoint,
-                identity,
-                internal_tx: &self.internal_tx,
-                sessions: &self.host_sessions,
-                connecting: &mut self.connecting_hosts,
-                content_discovery_tasks: &mut self.content_discovery_tasks,
-            };
-            for (addr, expectation) in self.hosts.values().cloned() {
-                routes.schedule(
-                    ws,
-                    addr.clone(),
-                    expectation,
-                    self.action_broker
-                        .as_ref()
-                        .is_some_and(|(_, _, rooms)| rooms.contains_key(&ws)),
-                );
+    }
+
+    /// Workspaces that are joined but have no running gossip subscription.
+    async fn resubscribe_missing_topics(&mut self) {
+        let missing: Vec<_> = self
+            .subscribers
+            .keys()
+            .copied()
+            .filter(|ws| !self.topics.contains_key(ws))
+            .collect();
+        for ws in missing {
+            self.subscribe_topic(ws).await;
+        }
+    }
+
+    /// Known direct peers are joined when they are first learned. A device
+    /// whose network came up after that attempt never appears, so ask again
+    /// on each topic until the peer is actually seen there.
+    async fn retry_direct_peers(&self) {
+        let local = self.endpoint.id();
+        for (ws, topic) in &self.topics {
+            let absent: Vec<_> = self
+                .peers
+                .keys()
+                .copied()
+                .filter(|id| *id != local && !self.peers_seen.contains_key(&(*ws, *id)))
+                .collect();
+            if absent.is_empty() {
+                continue;
+            }
+            if let Err(error) = topic.sender.join_peers(absent).await {
+                tracing::debug!(ws, %error, "direct peer join will be retried");
             }
         }
     }
@@ -2068,9 +2334,10 @@ impl ActorState {
         outcomes: Vec<SurfaceFanoutOutcome>,
         all_delivered: bool,
     ) {
-        self.surface_fanout_tasks.remove(&ws);
+        let key = (ws, fanout_surface(&msg));
+        self.surface_fanout_tasks.remove(&key);
         if !self.subscribers.contains_key(&ws) {
-            self.pending_surface_frames.remove(&ws);
+            self.pending_surface_frames.remove(&key);
             return;
         }
         for outcome in outcomes {
@@ -2082,7 +2349,10 @@ impl ActorState {
                 self.surface_connections.remove(&outcome.peer);
             }
         }
-        if !all_delivered {
+        // A window streamed to named viewers only never falls back to the
+        // workspace topic: a frame that missed them is superseded by the next.
+        let targeted = self.surface_fanout_viewers.contains_key(&key);
+        if !all_delivered && !targeted {
             publish(
                 &self.topics,
                 &self.host_sessions,
@@ -2094,8 +2364,9 @@ impl ActorState {
             )
             .await;
         }
-        if let Some(next) = self.pending_surface_frames.remove(&ws)
+        if let Some(next) = self.pending_surface_frames.remove(&key)
             && !self.start_surface_fanout(ws, next.clone())
+            && !targeted
         {
             publish(
                 &self.topics,
@@ -2366,6 +2637,14 @@ impl ActorState {
                 Some(NetEvent::HostReady { ws, peer })
             }
             HostEvent::Live { from, frame } => Some(NetEvent::Live { ws, from, frame }),
+            HostEvent::Voice(event) => {
+                let session = self
+                    .host_sessions
+                    .get(&(ws, peer))
+                    .map(|runtime| runtime.session.clone());
+                self.native_media.voice(ws, &event, session.as_deref());
+                None
+            }
             HostEvent::Message {
                 author,
                 replayed: true,
@@ -2398,9 +2677,13 @@ impl ActorState {
                 // before on purpose too: the broker drops what it holds.
                 let new = match msg {
                     NeighbourMsg::RemoteAction { .. } => true,
-                    NeighbourMsg::RemoteInput { .. } => {
-                        mark_new_input(ws, fingerprint, Instant::now(), &mut self.recent_input)
-                    }
+                    NeighbourMsg::RemoteInput { .. } => mark_new_input(
+                        ws,
+                        peer,
+                        fingerprint,
+                        Instant::now(),
+                        &mut self.recent_input,
+                    ),
                     _ => {
                         mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order)
                     }
@@ -2482,6 +2765,8 @@ impl ActorState {
     /// yet connected, and broadcast this device's identity + a liveness
     /// heartbeat on every joined topic.
     async fn run_heartbeat_tick(&mut self) {
+        self.resubscribe_missing_topics().await;
+        self.retry_direct_peers().await;
         self.retry_native_routes();
         let rooms: Vec<_> = self.host_sessions.keys().map(|(ws, _)| *ws).collect();
         for ws in rooms {
@@ -2603,6 +2888,18 @@ impl ActorState {
         else {
             return;
         };
+        self.hold_backlog(ws, channel, kind, bytes);
+    }
+
+    /// Keep one message for room `ws`'s host until its session is up, the
+    /// oldest dropped past the room's bounds.
+    fn hold_backlog(
+        &mut self,
+        ws: WorkspaceId,
+        channel: [u8; 32],
+        kind: Retention,
+        bytes: Vec<u8>,
+    ) {
         let backlog = self.host_backlog.entry(ws).or_default();
         backlog.bytes = backlog.bytes.saturating_add(bytes.len());
         backlog.entries.push_back((channel, kind, bytes));
@@ -3011,6 +3308,10 @@ async fn personal_media_cancelled(cancel: &mut tokio::sync::watch::Receiver<bool
     let _ = cancel.changed().await;
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the actor's state is built in one literal so every field's starting value reads together"
+)]
 async fn run(
     endpoint: Endpoint,
     lookup: MemoryLookup,
@@ -3040,6 +3341,7 @@ async fn run(
                 next_connection_incarnation: Arc::new(AtomicU64::new(1)),
             },
         )
+        .accept(tilo_unlock_protocol::UNLOCK_ALPN, DeviceUnlockProtocol)
         .spawn();
     let mut state = ActorState {
         endpoint,
@@ -3070,6 +3372,7 @@ async fn run(
         wake: None,
         surface_connections: HashMap::new(),
         surface_fanout_tasks: HashMap::new(),
+        surface_fanout_viewers: HashMap::new(),
         pending_surface_frames: HashMap::new(),
         personal_fabric_connections: HashMap::new(),
         active_personal_media: HashMap::new(),
@@ -3119,6 +3422,15 @@ async fn run(
         task.abort();
     }
     let _ = router.shutdown().await;
+}
+
+/// The window a direct fanout carries: each shared window is fanned out on
+/// its own, so its frames are coalesced only with its own.
+fn fanout_surface(msg: &NeighbourMsg) -> SurfaceId {
+    match msg {
+        NeighbourMsg::SurfaceFrame { surface, .. } => *surface,
+        _ => 0,
+    }
 }
 
 async fn publish(
@@ -3247,22 +3559,28 @@ fn message_fingerprint(bytes: &[u8]) -> [u8; 32] {
 }
 
 /// Remote input is not deduplicated for good: a second click or key press is
-/// byte-identical to the first. Only a copy arriving within [`INPUT_COPY`]
-/// (the same event over another route to this room) is dropped.
+/// byte-identical to the first. Only a copy that another host session
+/// delivers within [`INPUT_COPY`] (the same event over another route to this
+/// room) is dropped; one session delivers each event once, in order, so
+/// identical events over it (a doubled letter in one batch) are all new.
 fn mark_new_input(
     ws: WorkspaceId,
+    host: EndpointId,
     fingerprint: [u8; 32],
     now: Instant,
-    recent: &mut HashMap<(WorkspaceId, [u8; 32]), Instant>,
+    recent: &mut HashMap<(WorkspaceId, [u8; 32]), (EndpointId, Instant)>,
 ) -> bool {
     const INPUT_COPY: Duration = Duration::from_millis(30);
     if recent.len() > 256 {
-        recent.retain(|_, seen| now.saturating_duration_since(*seen) < INPUT_COPY);
+        recent.retain(|_, (_, seen)| now.saturating_duration_since(*seen) < INPUT_COPY);
     }
-    match recent.insert((ws, fingerprint), now) {
-        Some(seen) => now.saturating_duration_since(seen) >= INPUT_COPY,
-        None => true,
+    let copy = recent.get(&(ws, fingerprint)).is_some_and(|(via, seen)| {
+        *via != host && now.saturating_duration_since(*seen) < INPUT_COPY
+    });
+    if !copy {
+        recent.insert((ws, fingerprint), (host, now));
     }
+    !copy
 }
 
 fn mark_new_message(
@@ -3652,6 +3970,7 @@ fn spawn_host_pump(
                     HostEvent::Ready
                 }
                 HostInbound::Live { from, frame } => HostEvent::Live { from, frame },
+                HostInbound::Voice(event) => HostEvent::Voice(event),
                 HostInbound::RemoteAction { from, frame } => {
                     let Ok(author) = EndpointId::from_bytes(&from) else {
                         continue;
@@ -3663,6 +3982,12 @@ fn spawn_host_pump(
                         replayed: false,
                         msg: NeighbourMsg::RemoteAction { frame },
                     }
+                }
+                HostInbound::RecordContent { from, frame } => {
+                    let Some(event) = record_content_event(&from, &frame) else {
+                        continue;
+                    };
+                    event
                 }
                 HostInbound::Delta { author, data } if native_scope.is_some() => {
                     let Ok(msg) = postcard::from_bytes(&data) else {
@@ -3721,6 +4046,19 @@ fn spawn_host_pump(
     })
 }
 
+/// A piece of a record's content a workspace host handed this device from
+/// `from`; `None` for anything else.
+fn record_content_event(from: &[u8; 32], frame: &[u8]) -> Option<HostEvent> {
+    let author = EndpointId::from_bytes(from).ok()?;
+    let msg = postcard::from_bytes(frame).ok()?;
+    matches!(msg, NeighbourMsg::RecordContentPiece { .. }).then(|| HostEvent::Message {
+        author,
+        fingerprint: message_fingerprint(frame),
+        replayed: false,
+        msg,
+    })
+}
+
 fn topic_id(ws: WorkspaceId) -> TopicId {
     let mut hasher = blake3::Hasher::new_derive_key("tilo-workspace-gossip-v1");
     hasher.update(&ws.to_le_bytes());
@@ -3739,22 +4077,50 @@ mod tests {
     #[test]
     fn a_repeated_click_is_new_but_its_copy_over_another_route_is_not() {
         let mut recent = HashMap::new();
+        let host = iroh::SecretKey::from_bytes(&[0xA1; 32]).public();
+        let other = iroh::SecretKey::from_bytes(&[0xA2; 32]).public();
         let start = Instant::now();
-        assert!(mark_new_input(1, [7; 32], start, &mut recent));
+        assert!(mark_new_input(1, host, [7; 32], start, &mut recent));
         assert!(
-            !mark_new_input(1, [7; 32], start + Duration::from_millis(1), &mut recent),
+            !mark_new_input(
+                1,
+                other,
+                [7; 32],
+                start + Duration::from_millis(1),
+                &mut recent
+            ),
             "the same event arriving over a second relay session"
         );
         assert!(
-            mark_new_input(1, [7; 32], start + Duration::from_millis(200), &mut recent),
+            mark_new_input(
+                1,
+                host,
+                [7; 32],
+                start + Duration::from_millis(200),
+                &mut recent
+            ),
             "a second, byte-identical click"
         );
         assert!(mark_new_input(
             2,
+            host,
             [7; 32],
             start + Duration::from_millis(200),
             &mut recent
         ));
+        // "ll" typed in one batch: both strokes come over one session at once.
+        for _ in 0..2 {
+            assert!(
+                mark_new_input(
+                    1,
+                    host,
+                    [9; 32],
+                    start + Duration::from_millis(300),
+                    &mut recent
+                ),
+                "a repeated key over the same session"
+            );
+        }
     }
 
     fn active_personal_media(generation: u64) -> ActivePersonalMediaTransfer {
@@ -3987,6 +4353,7 @@ mod tests {
                         since: vec![],
                         room: String::new(),
                         invite_id: None,
+                        nonce: 0,
                     },
                 })
                 .await
@@ -4188,6 +4555,7 @@ mod tests {
                         since: vec![],
                         room: "responsive".into(),
                         invite_id: None,
+                        nonce: 0,
                     },
                 })
                 .await
@@ -4600,12 +4968,21 @@ mod tests {
         a_pub: [u8; 32],
         b_pub: [u8; 32],
     ) -> (Relay, tempfile::TempDir, DeviceCert) {
+        spawn_pinned_relay_for_members_on(root, 42, a_pub, b_pub).await
+    }
+
+    async fn spawn_pinned_relay_for_members_on(
+        root: &ed25519_dalek::SigningKey,
+        ws: WorkspaceId,
+        a_pub: [u8; 32],
+        b_pub: [u8; 32],
+    ) -> (Relay, tempfile::TempDir, DeviceCert) {
         let (host_key, host_cert) = enrol(root, DeviceCapabilities::host(), "host");
         let state = tempfile::tempdir().unwrap();
         let config = RelayConfig {
             state_root: state.path().to_path_buf(),
             workspaces: vec![WorkspaceBinding {
-                id: 42,
+                id: ws,
                 pin: true,
                 replication: ReplicationIntent::FullWorkspace,
                 admitted_users: Vec::new(),
@@ -4626,7 +5003,7 @@ mod tests {
         .await
         .unwrap();
         relay
-            .set_workspace_membership(42, true, vec![a_pub, b_pub], state.path().to_path_buf())
+            .set_workspace_membership(ws, true, vec![a_pub, b_pub], state.path().to_path_buf())
             .await
             .unwrap();
         (relay, state, host_cert)
@@ -4807,6 +5184,7 @@ mod tests {
                         since: vec![],
                         room: "hosted".into(),
                         invite_id: None,
+                        nonce: 0,
                     },
                 })
                 .await
@@ -5557,6 +5935,152 @@ mod tests {
         .await;
     }
 
+    /// The person's always-on host keeps a record of their own room that one
+    /// of their devices published to it, and hands it to another of their
+    /// devices that connects after the first went away; only to hosts, on
+    /// the person's continuity topic.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a host, two of one person's devices and the first leaving before the second arrives in one scenario"
+    )]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_persons_host_keeps_their_records_for_a_device_that_comes_later() {
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let user = root.verifying_key().to_bytes();
+        let continuity = tilo_relay_protocol::personal_continuity_workspace_id(&user);
+        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "laptop");
+        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "phone");
+        let (relay, _state, _host_cert) = spawn_pinned_relay_for_members_on(
+            &root,
+            continuity,
+            a_key.verifying_key().to_bytes(),
+            b_key.verifying_key().to_bytes(),
+        )
+        .await;
+        let identity = |key, cert| HostIdentity {
+            device_cert: cert,
+            device_signing_key: key,
+            workspace_device_certs: HashMap::new(),
+            workspace_revocations: HashMap::new(),
+            identity_paths: None,
+        };
+        let cluster = collab_types::person_room(&user).to_string();
+        let mut op = collab_types::SignedOp::new_unsigned(
+            collab_types::DocumentMutation::Snapshot(b"watched one video".to_vec())
+                .encode()
+                .unwrap(),
+            collab_types::document_artifact_id("so.tilo.tube", &cluster, "history"),
+            collab_types::Ed25519PublicKey::from_bytes(a_key.verifying_key().to_bytes()),
+            collab_types::document_attestation_id("so.tilo.tube", &cluster, "history"),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::now(),
+            1,
+        );
+        collab_types::sign_op(&mut op, &a_key).unwrap();
+
+        let (a, lookup_a) = identified_endpoint(&a_key).await;
+        let (cmd_a, task_a) = Actor::spawn_reporting_addrs(
+            a,
+            lookup_a,
+            Some(identity(a_key, a_cert)),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let (events_a, mut rx_a) = mpsc::channel(16);
+        cmd_a
+            .send(NetCmd::JoinWorkspace {
+                ws: continuity,
+                on_event: events_a,
+            })
+            .await
+            .unwrap();
+        cmd_a
+            .send(NetCmd::ConnectHost {
+                addr: relay.node_addr(),
+                expectation: None,
+            })
+            .await
+            .unwrap();
+        cmd_a
+            .send(NetCmd::PublishToHosts {
+                ws: continuity,
+                msg: NeighbourMsg::AppDocument {
+                    peer: 7,
+                    app_id: "so.tilo.tube".into(),
+                    cluster_id: cluster.clone(),
+                    record_id: "history".into(),
+                    envelope: Box::new(op.clone()),
+                },
+            })
+            .await
+            .unwrap();
+        tilo_test_env::within("the laptop's host session is ready", async {
+            while !matches!(rx_a.recv().await, Some(NetEvent::HostReady { .. })) {}
+        })
+        .await;
+        // The host has it once the session is up; the laptop goes away.
+        tilo_test_env::within("the host retains the laptop's record", async {
+            while relay
+                .room_records()
+                .retained(continuity)
+                .await
+                .unwrap_or_default()
+                .is_empty()
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        drop(cmd_a);
+        task_a.abort();
+
+        let (b, lookup_b) = identified_endpoint(&b_key).await;
+        let (cmd_b, _task_b) = Actor::spawn_reporting_addrs(
+            b,
+            lookup_b,
+            Some(identity(b_key, b_cert)),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let (events_b, mut rx_b) = mpsc::channel(16);
+        cmd_b
+            .send(NetCmd::JoinWorkspace {
+                ws: continuity,
+                on_event: events_b,
+            })
+            .await
+            .unwrap();
+        cmd_b
+            .send(NetCmd::ConnectHost {
+                addr: relay.node_addr(),
+                expectation: None,
+            })
+            .await
+            .unwrap();
+        tilo_test_env::within(
+            "the phone receives the laptop's record from the host",
+            async {
+                loop {
+                    if let Some(NetEvent::Msg {
+                        ws,
+                        msg:
+                            NeighbourMsg::AppDocument {
+                                envelope,
+                                cluster_id,
+                                ..
+                            },
+                        ..
+                    }) = rx_b.recv().await
+                        && *envelope == op
+                    {
+                        assert_eq!(ws, continuity);
+                        assert_eq!(cluster_id, cluster);
+                        break;
+                    }
+                }
+            },
+        )
+        .await;
+    }
+
     /// Native shells are live members of their workspace host: a presence
     /// frame one publishes reaches the other attributed to its device, the
     /// same plane browsers and agents publish on.
@@ -5592,7 +6116,19 @@ mod tests {
             HEARTBEAT_INTERVAL,
         )
         .await;
-        let frame = tilo_relay_protocol::live::LiveFrame::Presence(
+        // A sealed frame: the host relays its bytes unchanged.
+        let frame = tilo_relay_protocol::live::SealedLiveFrame {
+            kind: tilo_relay_protocol::live::LiveKind::Presence,
+            seq: 1,
+            record: [3; 32],
+            channel: [7; 16],
+            epoch: 1,
+            payload: vec![0xa5; 48],
+        }
+        .encode()
+        .unwrap();
+        // A frame in the clear never leaves.
+        let cleartext = tilo_relay_protocol::live::LiveFrame::Presence(
             tilo_relay_protocol::live::PresenceFrame {
                 seq: 1,
                 sent_at_ms: 1,
@@ -5608,13 +6144,12 @@ mod tests {
         // The live join follows the subscription; resend until it is in.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         loop {
-            cmd_a
-                .send(NetCmd::PublishLive {
-                    ws: 42,
-                    frame: frame.clone(),
-                })
-                .await
-                .unwrap();
+            for frame in [cleartext.clone(), frame.clone()] {
+                cmd_a
+                    .send(NetCmd::PublishLive { ws: 42, frame })
+                    .await
+                    .unwrap();
+            }
             match tokio::time::timeout(Duration::from_millis(200), rx_b.recv()).await {
                 Ok(Some(NetEvent::Live {
                     ws,
@@ -5751,6 +6286,7 @@ mod tests {
                     since: vec![],
                     room: "after-ready".into(),
                     invite_id: None,
+                    nonce: 0,
                 },
             })
             .await

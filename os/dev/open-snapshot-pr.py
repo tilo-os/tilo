@@ -30,10 +30,9 @@ import urllib.request
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 KERNEL_REF = re.compile(r"^registry\.tilo\.so/tilo/tilo-kernel@sha256:([0-9a-f]{64})$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
-WPE_REF = re.compile(r"^registry\.tilo\.so/tilo/tilo-wpe-buildroot@sha256:([0-9a-f]{64})$")
 KERNEL_BUILDROOT_REF = re.compile(
     r"^registry\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:([0-9a-f]{64})$")
-WPE_STAGE_REF = re.compile(r"^registry\.tilo\.so/tilo/tilo-wpe-stage@sha256:([0-9a-f]{64})$")
+LEGACY_GUEST_REF = re.compile(r"^registry\.tilo\.so/tilo/legacy-guest@sha256:([0-9a-f]{64})$")
 # Forgejo reports a repository the token cannot see as 404, not 403.
 ACCESS_DENIED = (401, 403, 404)
 TOKEN_HINT = ("set the workflow's FORGEJO_TOKEN to secrets.RELEASE_TOKEN, a token "
@@ -55,18 +54,6 @@ def kernel_contents(x86_ref: str, arm_ref: str) -> str:
     ))
 
 
-
-def wpe_contents(x86_ref: str, arm_ref: str) -> str:
-    """Return the canonical os/wpe-buildroot-snapshot.env for both buildroots."""
-    return "\n".join((
-        "# Per-architecture WPE buildroots, signed and pinned by digest.",
-        "# Updated atomically by build-buildroots.yml after both native builds verify.",
-        f"WPE_BUILDROOT_X86_64_REF={x86_ref}",
-        f"WPE_BUILDROOT_AARCH64_REF={arm_ref}",
-        "",
-    ))
-
-
 def kernel_buildroot_contents(x86_ref: str, arm_ref: str) -> str:
     """Return the canonical os/kernel-buildroot-snapshot.env for both buildroots."""
     return "\n".join((
@@ -74,17 +61,6 @@ def kernel_buildroot_contents(x86_ref: str, arm_ref: str) -> str:
         "# Updated atomically by build-buildroots.yml after both native builds verify.",
         f"KERNEL_BUILDROOT_X86_64_REF={x86_ref}",
         f"KERNEL_BUILDROOT_AARCH64_REF={arm_ref}",
-        "",
-    ))
-
-
-def wpe_stage_contents(x86_ref: str, arm_ref: str) -> str:
-    """Return the canonical os/wpe-stage-snapshot.env for both engines."""
-    return "\n".join((
-        "# Per-architecture WPE WebKit engine stages, signed and pinned by digest.",
-        "# Updated atomically by build-buildroots.yml after both native builds verify.",
-        f"WPE_STAGE_X86_64_REF={x86_ref}",
-        f"WPE_STAGE_AARCH64_REF={arm_ref}",
         "",
     ))
 
@@ -107,41 +83,6 @@ def kernel_snapshot(args, parser) -> tuple[str, dict]:
 
 
 
-def wpe_snapshot(args, parser) -> tuple[str, dict]:
-    x86 = WPE_REF.fullmatch(args.x86_ref)
-    arm = WPE_REF.fullmatch(args.arm_ref)
-    if x86 is None or arm is None:
-        parser.error("WPE refs must be immutable tilo-wpe-buildroot sha256 references")
-    if x86.group(1) == arm.group(1):
-        parser.error("native WPE buildroot refs must have distinct digests")
-    return wpe_contents(args.x86_ref, args.arm_ref), {
-        "label": "WPE buildroot",
-        "branch_prefix": "automation/wpe-buildroot-snapshot-",
-        "title": "build(os): refresh native WPE buildroot snapshots",
-        "summary": ("Automated atomic promotion of the signed native x86-64 and "
-                    "ARM64 WPE buildroots, each audited for its architecture "
-                    "marker and the absence of Fedora repositories."),
-    }
-
-
-def wpe_stage_snapshot(args, parser) -> tuple[str, dict]:
-    x86 = WPE_STAGE_REF.fullmatch(args.x86_ref)
-    arm = WPE_STAGE_REF.fullmatch(args.arm_ref)
-    if x86 is None or arm is None:
-        parser.error("WPE stage refs must be immutable tilo-wpe-stage sha256 references")
-    if x86.group(1) == arm.group(1):
-        parser.error("native WPE stage refs must have distinct digests")
-    return wpe_stage_contents(args.x86_ref, args.arm_ref), {
-        "label": "WPE engine",
-        "branch_prefix": "automation/wpe-stage-snapshot-",
-        "title": "build(os): refresh native WPE engine stages",
-        "summary": ("Automated atomic promotion of the signed native x86-64 and "
-                    "ARM64 WPE WebKit engine stages, each compiled from the "
-                    "pinned WPE buildroot and labelled with its inputs. OS image "
-                    "builds take the engine from these instead of compiling it."),
-    }
-
-
 def kernel_buildroot_snapshot(args, parser) -> tuple[str, dict]:
     x86 = KERNEL_BUILDROOT_REF.fullmatch(args.x86_ref)
     arm = KERNEL_BUILDROOT_REF.fullmatch(args.arm_ref)
@@ -159,6 +100,30 @@ def kernel_buildroot_snapshot(args, parser) -> tuple[str, dict]:
                     "Fedora repositories.\n\n"
                     "After this merges, build-kernel.yml rebuilds both native "
                     "kernels on these buildroots."),
+    }
+
+
+def legacy_guest_contents(x86_ref: str) -> str:
+    """Return the canonical os/legacy-guest-snapshot.env."""
+    return "\n".join((
+        "# The Linux legacy VM guest image, pinned by digest and signed with the",
+        "# release key. Written by .forgejo/workflows/build-legacy-guest.yml's promote",
+        "# job; `tilo-legacy` compiles it in and fetches nothing else.",
+        f"LEGACY_GUEST_X86_64_REF={x86_ref}",
+        "",
+    ))
+
+
+def legacy_guest_snapshot(args, parser) -> tuple[str, dict]:
+    if LEGACY_GUEST_REF.fullmatch(args.x86_ref) is None:
+        parser.error("legacy guest ref must be an immutable legacy-guest sha256 reference")
+    return legacy_guest_contents(args.x86_ref), {
+        "label": "Legacy guest",
+        "branch_prefix": "automation/legacy-guest-snapshot-",
+        "title": "build(os): pin the Linux legacy VM guest image",
+        "summary": ("Automated promotion of the signed Linux legacy VM guest disk, "
+                    "booted once in CI until its agent served vsock.\n\n"
+                    "After this merges, `tilo-legacy` creates new VMs from it."),
     }
 
 
@@ -204,13 +169,15 @@ def add_kinds(parser) -> None:
     kinds = parser.add_subparsers(dest="kind", required=True)
     for name, snapshot, help in (
             ("kernel", kernel_snapshot, "both native kernel RPM repositories"),
-            ("wpe", wpe_snapshot, "both native WPE buildroots"),
-            ("wpe-stage", wpe_stage_snapshot, "both native WPE engine stages"),
             ("kernel-buildroot", kernel_buildroot_snapshot, "both native kernel buildroots")):
         kind = kinds.add_parser(name, help=help)
         kind.add_argument("--x86-ref", required=True)
         kind.add_argument("--arm-ref", required=True)
         kind.set_defaults(snapshot=snapshot)
+    # The legacy VM guest is published for x86-64 only.
+    kind = kinds.add_parser("legacy-guest", help="the x86-64 Linux legacy VM guest disk")
+    kind.add_argument("--x86-ref", required=True)
+    kind.set_defaults(snapshot=legacy_guest_snapshot)
 
 
 def pins(argv: list[str]) -> int:

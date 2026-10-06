@@ -14,7 +14,7 @@ use std::time::Duration;
 use iroh::endpoint::{Endpoint, RecvStream, SendStream, presets};
 use iroh::protocol::{AcceptError, DynProtocolHandler, ProtocolHandler, Router};
 use iroh_base::{EndpointAddr, PublicKey};
-use tilo_clock::{unix_now, unix_now_ms, unix_now_ns};
+use tilo_clock::{Clock, unix_now, unix_now_ns};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
 
@@ -27,7 +27,7 @@ use crate::client::RelayClient;
 use crate::compute_session::ComputeProtocol;
 use crate::compute_transport::COMPUTE_ALPN;
 use crate::compute_worker::{ProductionComputeWorkerConfig, run_production_compute_worker};
-use crate::config::{PeerRelayConfig, RelayConfig};
+use crate::config::{PeerRelayConfig, RelayConfig, WorkspaceBinding};
 use crate::metrics::Metrics;
 use crate::peer::{
     PeerContext, WorkspaceAutobind, WorkspaceRegistry, get_or_autobind_workspace, run_peer_version,
@@ -48,16 +48,26 @@ struct FullReplicaStatusProof {
     filesystem_endpoints: Vec<EndpointAddr>,
 }
 
-fn full_replica_proof(path: &std::path::Path) -> Option<FullReplicaStatusProof> {
-    std::fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<FullReplicaStatusProof>(&bytes).ok())
-        .filter(|proof| {
-            proof.state == "ready"
-                && proof.full_content_replication
-                && !proof.filesystem_endpoints.is_empty()
-                && unix_now_ms().saturating_sub(proof.updated_at_ms) <= 5_000
-        })
+/// The headless replica's completeness proof: the status file it keeps
+/// restamping, honoured only while its stamp is recent by `clock`.
+#[derive(Clone)]
+struct ReplicaProof {
+    path: PathBuf,
+    clock: Arc<dyn Clock>,
+}
+
+impl ReplicaProof {
+    fn current(&self) -> Option<FullReplicaStatusProof> {
+        std::fs::read(&self.path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<FullReplicaStatusProof>(&bytes).ok())
+            .filter(|proof| {
+                proof.state == "ready"
+                    && proof.full_content_replication
+                    && !proof.filesystem_endpoints.is_empty()
+                    && self.clock.now_ms().saturating_sub(proof.updated_at_ms) <= 5_000
+            })
+    }
 }
 
 /// Failure modes for `Relay::start`.
@@ -261,7 +271,7 @@ pub struct Relay {
     /// with the verified certificate at startup.
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
     /// Atomic filesystem completeness proof shared with the headless replica.
-    full_replica_status: PathBuf,
+    full_replica: ReplicaProof,
     /// What the browser carriers need to serve sessions of this relay.
     #[cfg_attr(
         not(feature = "web"),
@@ -291,12 +301,21 @@ pub struct Relay {
 pub(crate) struct WebContext {
     pub(crate) relay: RelayProtocol,
     pub(crate) certification: crate::certification::CertificationProtocol,
+    /// The device of the session beside this node, once named.
+    pub(crate) node_session: Arc<std::sync::OnceLock<[u8; 32]>>,
 }
 
 impl Relay {
     #[cfg(feature = "web")]
     pub(crate) fn web_context(&self) -> &WebContext {
         &self.web
+    }
+
+    /// Name the device of the session beside this node (the shell that runs
+    /// the person's apps), which pages address to open apps there. Named
+    /// once; a later call keeps the first.
+    pub fn set_node_session(&self, device: [u8; 32]) {
+        let _ = self.web.node_session.set(device);
     }
 }
 
@@ -338,7 +357,7 @@ pub struct RelayHandle {
     pub metrics: Arc<Metrics>,
     /// Effective device-mesh policy for routing and replication consumers.
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
-    full_replica_status: PathBuf,
+    full_replica: ReplicaProof,
     compute_ready: Arc<AtomicBool>,
 }
 
@@ -379,6 +398,7 @@ impl Relay {
             Vec::new(),
             RelayStartupMode::CertifiedHost,
             None,
+            Arc::new(tilo_clock::SystemClock),
         ))
         .await
     }
@@ -410,6 +430,7 @@ impl Relay {
             vec![(alpn.to_vec(), Box::<dyn DynProtocolHandler>::from(handler))],
             RelayStartupMode::CertifiedHost,
             None,
+            Arc::new(tilo_clock::SystemClock),
         ))
         .await
     }
@@ -443,6 +464,7 @@ impl Relay {
             protocols,
             RelayStartupMode::CertifiedHost,
             None,
+            Arc::new(tilo_clock::SystemClock),
         ))
         .await
     }
@@ -471,6 +493,7 @@ impl Relay {
             protocols,
             RelayStartupMode::NativeInteractiveWorkspaceOwner,
             None,
+            Arc::new(tilo_clock::SystemClock),
         ))
         .await
     }
@@ -524,6 +547,31 @@ impl Relay {
             Vec::new(),
             RelayStartupMode::CertifiedHost,
             app_serving,
+            Arc::new(tilo_clock::SystemClock),
+        ))
+        .await
+    }
+
+    /// [`Relay::start`], judging how recent the full-replica status stamp
+    /// is by `replica_clock` instead of the wall clock.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Relay::start`].
+    pub async fn start_with_replica_clock(
+        cfg: RelayConfig,
+        identity: RelayIdentity,
+        replica_clock: Arc<dyn Clock>,
+    ) -> Result<Self, RelayError> {
+        Box::pin(Self::start_inner(
+            cfg,
+            identity,
+            None,
+            None,
+            Vec::new(),
+            RelayStartupMode::CertifiedHost,
+            None,
+            replica_clock,
         ))
         .await
     }
@@ -543,6 +591,7 @@ impl Relay {
         additional_protocols: Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>,
         startup_mode: RelayStartupMode,
         app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+        replica_clock: Arc<dyn Clock>,
     ) -> Result<Self, RelayError> {
         validate_additional_protocols(&additional_protocols)?;
         let operator_trust_policy = cfg.trust_policy.clone();
@@ -576,6 +625,14 @@ impl Relay {
             .authorized_by(&identity.device_cert.capabilities)
             .limited_to(&available_services);
         let app_serving = app_serving.filter(|_| cfg.services.app_serving);
+        // Reject unavailable local backends before binding endpoints, publishing
+        // capabilities or starting background tasks.
+        let environments = crate::environment_host::worker_environments(
+            cfg.environments.as_ref().filter(|_| cfg.services.compute),
+            &cfg.state_root.join("environments"),
+            &identity.device_signing_key,
+            &tilo_user_identity::IdentityPaths::under(&cfg.identity_root).device_privkey,
+        )?;
         let compute_ready = Arc::new(AtomicBool::new(false));
         let mesh_profile = Arc::new(crate::mesh::DeviceMeshProfile {
             device: identity.device_cert.device_public_key,
@@ -589,6 +646,10 @@ impl Relay {
             filesystem_endpoints: Vec::new(),
         });
         std::fs::create_dir_all(&cfg.state_root)?;
+        let full_replica = ReplicaProof {
+            path: cfg.full_replica_status.clone(),
+            clock: replica_clock,
+        };
         let endpoint = match endpoint {
             Some(endpoint) => endpoint,
             None => bind_endpoint(&cfg, &identity.device_signing_key, relay_mode).await?,
@@ -672,7 +733,7 @@ impl Relay {
             own_cert: identity.device_cert.clone(),
             own_sk: identity.device_signing_key.clone(),
             mesh_profile: mesh_profile.clone(),
-            full_replica_status: cfg.full_replica_status.clone(),
+            full_replica: full_replica.clone(),
             compute_ready: Arc::clone(&compute_ready),
             home_peer_bundle: cfg.home_peer_bundle.clone(),
             autobind: (startup_mode == RelayStartupMode::CertifiedHost
@@ -688,16 +749,21 @@ impl Relay {
             own_sk: identity.device_signing_key.clone(),
             revocations: revocations.clone(),
             mesh_profile: mesh_profile.clone(),
-            full_replica_status: cfg.full_replica_status.clone(),
+            full_replica: full_replica.clone(),
             compute_ready: Arc::clone(&compute_ready),
             state_root: cfg.state_root.clone(),
+            workspaces: workspaces.clone(),
         };
         let compute = ComputeProtocol::new(
             workspaces.clone(),
-            identity.user_public_key,
-            identity.device_cert.clone(),
-            identity.device_signing_key.clone(),
+            crate::compute_session::ComputeIdentity {
+                user_public_key: identity.user_public_key,
+                cert: identity.device_cert.clone(),
+                signing_key: identity.device_signing_key.clone(),
+            },
             revocations.clone(),
+            live_trust_policy.clone(),
+            Arc::new(crate::environment_host::TracingMetering),
         );
         let certification = crate::certification::CertificationProtocol::new(
             identity.user_public_key,
@@ -708,6 +774,7 @@ impl Relay {
         let web = Box::new(WebContext {
             relay: handler.clone(),
             certification: certification.clone(),
+            node_session: Arc::default(),
         });
         let governed_access_update = Arc::new(AsyncMutex::new(()));
         // A certified host governs the rooms it creates, unless its embedder
@@ -805,6 +872,7 @@ impl Relay {
                 workspaces: cfg.workspaces.iter().map(|binding| binding.id).collect(),
                 state_root: cfg.state_root.join("compute-worker"),
                 readiness: Arc::clone(&compute_ready),
+                environments,
             };
             let worker_task = tokio::spawn(async move {
                 if let Err(error) = run_production_compute_worker(worker_config).await {
@@ -842,7 +910,7 @@ impl Relay {
             live_revocations: revocations,
             peer_relay_tasks,
             mesh_profile,
-            full_replica_status: cfg.full_replica_status.clone(),
+            full_replica: full_replica.clone(),
             web,
             compute_ready,
             handshake_trust,
@@ -954,7 +1022,7 @@ impl Relay {
             node_addr: self.endpoint.addr(),
             metrics: self.metrics.clone(),
             mesh_profile: self.mesh_profile.clone(),
-            full_replica_status: self.full_replica_status.clone(),
+            full_replica: self.full_replica.clone(),
             compute_ready: Arc::clone(&self.compute_ready),
         }
     }
@@ -1274,7 +1342,8 @@ impl RelayHandle {
     /// heartbeat. Consumers use these for blob and namespace protocols while
     /// retaining `node_addr` for relay traffic.
     pub fn filesystem_endpoints(&self) -> Vec<EndpointAddr> {
-        full_replica_proof(&self.full_replica_status)
+        self.full_replica
+            .current()
             .map(|proof| {
                 proof
                     .filesystem_endpoints
@@ -1379,15 +1448,16 @@ fn build_workspace_registry(
 ) -> Result<WorkspaceRegistry, RelayError> {
     let mut wsmap: HashMap<u64, SharedWorkspace> = HashMap::new();
     for binding in &cfg.workspaces {
-        let runtime = initialize_workspace_runtime(cfg, binding, require_durable_snapshot)?;
+        let runtime = open_bound_workspace(cfg, binding, require_durable_snapshot)?;
         wsmap.insert(binding.id, Arc::new(AsyncMutex::new(runtime)));
     }
     Ok(Arc::new(AsyncMutex::new(wsmap)))
 }
 
-fn initialize_workspace_runtime(
+/// Open the runtime of one configured workspace binding.
+fn open_bound_workspace(
     cfg: &RelayConfig,
-    binding: &crate::config::WorkspaceBinding,
+    binding: &WorkspaceBinding,
     require_durable_snapshot: bool,
 ) -> Result<WorkspaceRuntime, RelayError> {
     let mut rt = if require_durable_snapshot {
@@ -1530,7 +1600,7 @@ fn persist_authority_high_water(
     let bytes = postcard::to_allocvec(&high_water)
         .map_err(|error| format!("could not encode authority high-water mark: {error}"))?;
     let path = authority_high_water_path(cache_dir);
-    atomic_file::write_creating_parent(&path, &bytes)
+    tilo_files::native::atomic::write_creating_parent(&path, &bytes)
         .map_err(|error| format!("could not persist {}: {error}", path.display()))
 }
 
@@ -1982,10 +2052,25 @@ struct DiscoveryProtocol {
     own_cert: DeviceCert,
     own_sk: ed25519_dalek::SigningKey,
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
-    full_replica_status: PathBuf,
+    full_replica: ReplicaProof,
     compute_ready: Arc<AtomicBool>,
     home_peer_bundle: PathBuf,
     autobind: Option<WorkspaceAutobind>,
+}
+
+/// What this relay's workers run for environments, across its workspaces.
+async fn environment_offer(
+    workspaces: &WorkspaceRegistry,
+) -> tilo_relay_protocol::RelayEnvironments {
+    let bound: Vec<SharedWorkspace> = workspaces.lock().await.values().cloned().collect();
+    let now_ms = tilo_clock::unix_now_ms();
+    let mut offer = tilo_relay_protocol::RelayEnvironments::default();
+    for workspace in bound {
+        let here = workspace.lock().await.compute.environment_offer(now_ms);
+        offer.sessions |= here.sessions;
+        offer.legacy_apps |= here.legacy_apps;
+    }
+    offer
 }
 
 #[derive(Clone)]
@@ -1996,9 +2081,10 @@ struct ManagementProtocol {
     own_sk: ed25519_dalek::SigningKey,
     revocations: Arc<std::sync::RwLock<RevocationList>>,
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
-    full_replica_status: PathBuf,
+    full_replica: ReplicaProof,
     compute_ready: Arc<AtomicBool>,
     state_root: PathBuf,
+    workspaces: WorkspaceRegistry,
 }
 
 impl std::fmt::Debug for ManagementProtocol {
@@ -2073,7 +2159,7 @@ impl ProtocolHandler for ManagementProtocol {
                         "home-peer name must be 1 to 80 bytes",
                     )));
                 }
-                atomic_file::write_with_mode(
+                tilo_files::native::atomic::write_with_mode(
                     &self.state_root.join("home-peer-name"),
                     label.as_bytes(),
                     0o644,
@@ -2108,7 +2194,7 @@ impl ProtocolHandler for ManagementProtocol {
                         |error| AcceptError::from_err(std::io::Error::other(error.to_string())),
                     )?;
                 }
-                atomic_file::write_with_mode(
+                tilo_files::native::atomic::write_with_mode(
                     &self.state_root.join("decommissioned"),
                     b"decommissioned\n",
                     0o600,
@@ -2121,7 +2207,8 @@ impl ProtocolHandler for ManagementProtocol {
             .ok()
             .filter(|label| !label.trim().is_empty())
             .unwrap_or_else(|| self.own_cert.device_label.clone());
-        let files_ready = full_replica_proof(&self.full_replica_status).is_some();
+        let files_ready = self.full_replica.current().is_some();
+        let environments = environment_offer(&self.workspaces).await;
         write_frame(
             &mut send,
             &postcard::to_allocvec(&HomePeerManagementResponse {
@@ -2130,6 +2217,7 @@ impl ProtocolHandler for ManagementProtocol {
                 label: label.trim().to_string(),
                 files_ready,
                 services,
+                environments,
                 decommissioned,
             })
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?,
@@ -2251,7 +2339,7 @@ impl ProtocolHandler for DiscoveryProtocol {
         }
         let mut profile = (*self.mesh_profile).clone();
         profile.services.compute &= self.compute_ready.load(Ordering::Acquire);
-        let proof = full_replica_proof(&self.full_replica_status);
+        let proof = self.full_replica.current();
         profile.filesystem_endpoints = proof
             .as_ref()
             .map(|proof| {
@@ -3028,50 +3116,45 @@ mod tests {
         }
     }
 
-    /// The full replica's status heartbeat: rewrites `status` every 250 ms
-    /// until dropped, as the live replica does, so a proof stays fresh however
-    /// long the relay takes to start or a discovery takes to answer.
-    struct StatusHeartbeat {
-        stop: Arc<std::sync::atomic::AtomicBool>,
-        beat: Option<std::thread::JoinHandle<()>>,
+    /// Write `status` as the full replica does, once, and return a clock
+    /// stopped at its stamp: the proof stays as recent as when it was written
+    /// however long starting the relay or answering a discovery takes.
+    fn publish_status(
+        path: &std::path::Path,
+        status: &fs::full_replica::FullReplicaStatus,
+    ) -> Arc<dyn Clock> {
+        fs::full_replica::save_status(path, status).unwrap();
+        let stamped = fs::full_replica::load_status(path)
+            .unwrap()
+            .unwrap()
+            .updated_at_ms;
+        Arc::new(tilo_clock::FixedClock(stamped))
     }
 
-    impl StatusHeartbeat {
-        fn start(path: &std::path::Path, status: &fs::full_replica::FullReplicaStatus) -> Self {
-            publish_status(path, status);
-            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let (path, status, stopped) = (path.to_path_buf(), status.clone(), Arc::clone(&stop));
-            let beat = std::thread::spawn(move || {
-                while !stopped.load(Ordering::Acquire) {
-                    std::thread::sleep(Duration::from_millis(250));
-                    publish_status(&path, &status);
-                }
-            });
-            Self {
-                stop,
-                beat: Some(beat),
+    #[test]
+    fn a_replica_proof_lapses_five_seconds_after_its_stamp() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("status.json");
+        let mut status = fs::full_replica::FullReplicaStatus::syncing();
+        status.state = "ready".into();
+        status.full_content_replication = true;
+        status.filesystem_endpoints.push(EndpointAddr::new(
+            iroh::SecretKey::from_bytes(&[7; 32]).public(),
+        ));
+        fs::full_replica::save_status(&path, &status).unwrap();
+        let stamped = fs::full_replica::load_status(&path)
+            .unwrap()
+            .unwrap()
+            .updated_at_ms;
+        let proof_at = |now_ms: u64| {
+            ReplicaProof {
+                path: path.clone(),
+                clock: Arc::new(tilo_clock::FixedClock(now_ms)),
             }
-        }
-    }
-
-    /// Replace the status file with a freshly stamped record. Not fsynced: a
-    /// durable write stalled on a slow disk would age the record past the
-    /// relay's 5 s freshness bound, and these tests only read it.
-    fn publish_status(path: &std::path::Path, status: &fs::full_replica::FullReplicaStatus) {
-        let mut status = status.clone();
-        status.updated_at_ms = tilo_clock::unix_now_ms();
-        let staged = path.with_extension("staged");
-        std::fs::write(&staged, serde_json::to_vec(&status).unwrap()).unwrap();
-        std::fs::rename(&staged, path).unwrap();
-    }
-
-    impl Drop for StatusHeartbeat {
-        fn drop(&mut self) {
-            self.stop.store(true, Ordering::Release);
-            if let Some(beat) = self.beat.take() {
-                let _ = beat.join();
-            }
-        }
+            .current()
+        };
+        assert!(proof_at(stamped.saturating_add(5_000)).is_some());
+        assert!(proof_at(stamped.saturating_add(5_001)).is_none());
     }
 
     #[tokio::test]
@@ -3122,8 +3205,8 @@ mod tests {
             status
                 .filesystem_endpoints
                 .push(filesystem_endpoint.clone());
-            let _heartbeat = StatusHeartbeat::start(&status_path, &status);
-            let relay = Relay::start(
+            let status_clock = publish_status(&status_path, &status);
+            let relay = Relay::start_with_replica_clock(
                 RelayConfig {
                     state_root: temp.path().join("relay-state"),
                     full_replica_status: status_path.clone(),
@@ -3132,6 +3215,7 @@ mod tests {
                     ..RelayConfig::default()
                 },
                 relay_identity,
+                status_clock,
             )
             .await
             .unwrap();
@@ -3188,7 +3272,7 @@ mod tests {
             status.state = "ready".into();
             status.full_content_replication = true;
             status.filesystem_endpoints.push(filesystem.clone());
-            let _heartbeat = StatusHeartbeat::start(&status_path, &status);
+            let status_clock = publish_status(&status_path, &status);
             let owner_endpoint = EndpointAddr::new(iroh::SecretKey::from_bytes(&[91; 32]).public());
             let workspace_topic = [29; 32];
             let bundle_path = temp.path().join("home-peer.toml");
@@ -3209,7 +3293,7 @@ mod tests {
                 }],
             };
             std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
-            let relay = Relay::start(
+            let relay = Relay::start_with_replica_clock(
                 RelayConfig {
                     state_root: temp.path().join("relay"),
                     full_replica_status: status_path.clone(),
@@ -3233,6 +3317,7 @@ mod tests {
                     device_cert: host_cert,
                     revocations: RevocationList::new(),
                 },
+                status_clock,
             )
             .await
             .unwrap();

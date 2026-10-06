@@ -16,6 +16,9 @@
 //! drive an incremental, case-insensitive substring filter (Backspace edits
 //! it) so hundred-entry lists stay usable without endless scrolling.
 //!
+//! [`Dropdown::as_menu`] makes it a menu button instead: an icon that opens
+//! a list of choices, each one a command rather than a value it keeps.
+//!
 //! While open the widget reports [`Widget::wants_pointer_capture`] so its
 //! container routes all events to it exclusively — how the out-of-layout
 //! list becomes hit-testable and click-outside dismissal works.
@@ -51,6 +54,9 @@ const PAD_X: f64 = 10.0;
 const CHEVRON_W: f64 = 30.0;
 const FONT: f32 = 15.0;
 const LINE_PX: f32 = 60.0;
+/// The narrowest a menu button's list opens, so its choices read in full
+/// beside an icon-sized trigger.
+const MENU_MIN_WIDTH: f64 = 240.0;
 
 type SelectionChangeCallback = Box<dyn FnMut(&str)>;
 
@@ -95,6 +101,9 @@ pub struct Dropdown {
     /// The legacy constructor uses equal value/label pairs.
     values: Vec<String>,
     options: Vec<String>,
+    /// The keys that do what an option does, by its value, shown at the
+    /// row's end so a menu teaches its shortcuts.
+    shortcuts: Vec<(String, String)>,
     /// Where the selected value lives: a document key or process-local state.
     binding: Option<BoxedBinding<String>>,
     on_change: Option<SelectionChangeCallback>,
@@ -129,6 +138,12 @@ pub struct Dropdown {
     /// When `false`: skipped by focus, rejects input, renders dimmed.
     /// Default `true`.
     enabled: bool,
+    /// A menu button's icon: the control is that icon, and a choice is a
+    /// command it reports rather than a value it shows.
+    menu: Option<crate::icons::Icon>,
+    /// What the last painted frame showed, so an unchanged control reports
+    /// no damage.
+    drawn: Option<u64>,
 }
 
 impl Dropdown {
@@ -143,7 +158,8 @@ impl Dropdown {
             accessible_name: None,
             values: options.clone(),
             options,
-            binding: Some(crate::doc_binding::text_key(value_path)),
+            shortcuts: Vec::new(),
+            binding: Some(crate::doc_source::text_key(value_path)),
             on_change: None,
             action: None,
             placeholder: String::new(),
@@ -161,7 +177,33 @@ impl Dropdown {
             last_cursor: Point::ZERO,
             viewport: None,
             enabled: true,
+            menu: None,
+            drawn: None,
         }
+    }
+
+    /// Everything the control's paint depends on.
+    fn visual_signature(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (
+            &self.selected,
+            &self.options,
+            &self.placeholder,
+            self.open,
+            self.highlight,
+            &self.filter,
+            self.scroll.to_bits(),
+            self.is_focused,
+            self.is_hovered,
+            self.effectively_enabled(),
+        )
+            .hash(&mut hasher);
+        [self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y1]
+            .map(f64::to_bits)
+            .hash(&mut hasher);
+        crate::i18n::I18nManager::revision().hash(&mut hasher);
+        hasher.finish()
     }
 
     /// Create a dropdown bound to typed process-local selected state.
@@ -216,11 +258,31 @@ impl Dropdown {
         self
     }
 
+    /// A menu button: the control is `icon` alone, its list opens at least
+    /// [`MENU_MIN_WIDTH`] wide aligned to the control's trailing edge, and
+    /// choosing an option reports it (to [`Self::on_action`], or to the
+    /// view state of [`Self::from_state`]) without the control keeping it as
+    /// its value.
+    /// Name it with [`Self::with_accessible_name`]: it shows no text.
+    #[must_use]
+    pub fn as_menu(mut self, icon: crate::icons::Icon) -> Self {
+        self.menu = Some(icon);
+        self
+    }
+
     /// Text shown (dimmed) when no value is selected yet.
     #[must_use]
     pub fn with_placeholder(mut self, placeholder: &str) -> Self {
         self.placeholder = placeholder.to_string();
         self
+    }
+
+    /// Update the localized empty-value label without replacing the control.
+    pub fn set_placeholder(&mut self, placeholder: &str) {
+        if self.placeholder != placeholder {
+            placeholder.clone_into(&mut self.placeholder);
+            self.drawn = None;
+        }
     }
 
     /// Set the enabled state at build time; see the `enabled` field.
@@ -291,6 +353,19 @@ impl Dropdown {
         self.values = values;
         self.options = labels;
         self.highlight = self.highlight.min(self.options.len().saturating_sub(1));
+    }
+
+    /// The keys that do what each option does, by value: shown at the
+    /// end of its row (`Ctrl+S`). Options without one show none.
+    pub fn set_option_shortcuts<'a>(
+        &mut self,
+        shortcuts: impl IntoIterator<Item = (&'a str, &'a str)>,
+    ) {
+        self.shortcuts = shortcuts
+            .into_iter()
+            .filter(|(_, keys)| !keys.is_empty())
+            .map(|(value, keys)| (value.to_owned(), keys.to_owned()))
+            .collect();
     }
 
     /// Open the shared searchable, scrollable menu and align its highlight to
@@ -413,6 +488,15 @@ impl Dropdown {
             }
             _ => below,
         };
+        if self.menu.is_some() {
+            // Hangs from the trigger's trailing edge, kept inside the window.
+            let width = self.rect.width().max(MENU_MIN_WIDTH);
+            let mut x0 = self.rect.x1 - width;
+            if let Some(vp) = self.viewport {
+                x0 = x0.min(vp.x1 - width).max(vp.x0);
+            }
+            return Rect::new(x0, y0, x0 + width, y0 + h);
+        }
         Rect::new(self.rect.x0, y0, self.rect.x1, y0 + h)
     }
 
@@ -465,6 +549,68 @@ impl Dropdown {
         self.ensure_visible(self.highlight, filtered.len());
     }
 
+    /// A menu button's face: its icon on the ghost button's grounds, with
+    /// hover, open and focus each visible.
+    fn draw_menu_trigger(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        icon: crate::icons::Icon,
+    ) {
+        let radius = f64::from(theme.tokens.radii.md);
+        let shape = RoundedRect::from_rect(self.rect, radius);
+        let disabled = !self.effectively_enabled();
+        let ground = if self.open {
+            Some(theme.bg_active)
+        } else if self.is_hovered && !disabled {
+            Some(theme.bg_hover)
+        } else {
+            None
+        };
+        if let Some(ground) = ground {
+            scene.fill(Fill::NonZero, transform, ground, None, &shape);
+        }
+        if self.is_focused && !self.open {
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                theme.border_focus,
+                None,
+                &crate::surface::edge_outline(self.rect, radius),
+            );
+        }
+        let ink = theme.tokens.colors.ink_on_any(
+            &[
+                theme.tokens.colors.surfaces.base,
+                theme.bg_hover,
+                theme.bg_active,
+            ],
+            theme.text_primary,
+            crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+        );
+        let ink = if disabled {
+            ink.with_alpha_factor(crate::widget::DISABLED_ALPHA)
+        } else {
+            ink
+        };
+        let edge = (self.rect.height() * 0.5).min(20.0);
+        let at = self.rect.center();
+        crate::icons::draw_icon(
+            scene,
+            transform,
+            Rect::new(
+                at.x - edge / 2.0,
+                at.y - edge / 2.0,
+                at.x + edge / 2.0,
+                at.y + edge / 2.0,
+            ),
+            icon,
+            ink,
+            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+    }
+
     /// Close the options overlay without changing its selected value.
     pub fn close(&mut self) {
         self.open = false;
@@ -475,11 +621,23 @@ impl Dropdown {
     }
 
     /// Store `value` through the binding and mirror it locally.
-    fn commit_value(&mut self, value: &str, state: &mut AppModel, root: &ModelPath) {
+    fn commit_value(&mut self, value: &str, _state: &AppModel, _root: &ModelPath) {
+        if self.menu.is_some() {
+            // A menu's choice is a command: reported, never kept. A menu
+            // bound to view state reports it there, for the view to act on.
+            if let Some(action) = &mut self.action {
+                let _ = action.emit(value.to_string());
+            } else if let Some(callback) = self.on_change.as_mut() {
+                callback(value);
+            } else if let Some(binding) = &mut self.binding {
+                binding.publish(&value.to_string());
+            }
+            return;
+        }
         if let Some(action) = &mut self.action {
             let _ = action.emit(value.to_string());
         } else if let Some(binding) = &mut self.binding {
-            binding.push(state, root, &value.to_string());
+            binding.publish(&value.to_string());
         }
         self.selected = value.to_string();
         if self.action.is_none() {
@@ -493,7 +651,7 @@ impl Dropdown {
     }
 
     /// Select the highlighted option (if any) and close.
-    fn select_highlighted(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn select_highlighted(&mut self, state: &AppModel, root: &ModelPath) {
         let filtered = self.filtered();
         if let Some(&opt_idx) = filtered.get(self.highlight)
             && let Some(value) = self.values.get(opt_idx).cloned()
@@ -529,7 +687,7 @@ impl Dropdown {
     /// clicked row, close on a click outside the list, or open when closed.
     fn on_left_press(
         &mut self,
-        state: &mut AppModel,
+        state: &AppModel,
         root: &ModelPath,
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
@@ -580,7 +738,7 @@ impl Dropdown {
         event: &WindowEvent,
         ke: &KeyEvent,
         modifiers: Modifiers,
-        state: &mut AppModel,
+        state: &AppModel,
         root: &ModelPath,
         handled: &mut bool,
     ) {
@@ -612,6 +770,8 @@ impl Dropdown {
                     self.close();
                     *handled = true;
                 }
+                // A menu shows no query to type into.
+                _ if self.menu.is_some() => {}
                 _ => {
                     let change = self.filter_composition.handle_event(
                         event,
@@ -645,7 +805,15 @@ impl Dropdown {
 impl Widget for Dropdown {
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn needs_redraw(&self) -> bool {
+        self.drawn != Some(self.visual_signature())
+    }
+
+    fn mark_drawn(&mut self) {
+        self.drawn = Some(self.visual_signature());
+    }
+
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if let Some(binding) = &mut self.binding
             && let Pulled::Value(selected) = binding.pull(state, root)
         {
@@ -674,10 +842,23 @@ impl Widget for Dropdown {
         // `flex_shrink: 0` a dropdown claimed the whole row and pushed every
         // later sibling past the edge to zero width. The floor keeps the
         // chevron slot and padding so a squeezed control is still a control.
+        let side = px(f64::from(theme.tokens.metrics.bar_height));
+        if self.menu.is_some() {
+            let node = taffy.leaf_node(Style {
+                size: Size {
+                    width: Dimension::length(side),
+                    height: Dimension::length(side),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            });
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            return node;
+        }
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::percent(1.0),
-                height: Dimension::length(px(f64::from(theme.tokens.metrics.bar_height))),
+                height: Dimension::length(side),
             },
             min_size: Size {
                 width: Dimension::length(px(PAD_X + CHEVRON_W)),
@@ -710,6 +891,10 @@ impl Widget for Dropdown {
     ) {
         if let Some(viewport) = presence.viewport.get() {
             self.viewport = Some(viewport);
+        }
+        if let Some(icon) = self.menu {
+            self.draw_menu_trigger(scene, transform, theme, icon);
+            return;
         }
         let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
         // Disabled widgets paint their (forced-idle) look under a reduced
@@ -891,10 +1076,11 @@ impl Widget for Dropdown {
                     continue;
                 };
                 let row = Rect::new(list.x0, row_top, list.x1, row_bottom);
-                let is_selected = self
-                    .values
-                    .get(opt_idx)
-                    .is_some_and(|value| *value == self.selected);
+                let is_selected = self.menu.is_none()
+                    && self
+                        .values
+                        .get(opt_idx)
+                        .is_some_and(|value| *value == self.selected);
                 if vi == self.highlight {
                     scene.fill(Fill::NonZero, transform, theme.accent_primary, None, &row);
                 } else if is_selected {
@@ -914,12 +1100,43 @@ impl Widget for Dropdown {
                 } else {
                     theme.text_primary
                 };
+                // The keys that do the same at the row's end, quieter than
+                // the label unless the row is highlighted.
+                let mut label_end = list.x1 - PAD_X;
+                let keys = self.values.get(opt_idx).and_then(|value| {
+                    self.shortcuts
+                        .iter()
+                        .find(|(of, _)| of == value)
+                        .map(|(_, keys)| keys.as_str())
+                });
+                if let Some(keys) = keys {
+                    let (keys_w, keys_h) = text_renderer.measure(keys, FONT, None);
+                    let keys_x = label_end - f64::from(keys_w);
+                    let keys_color = if vi == self.highlight {
+                        color
+                    } else {
+                        theme.text_dim
+                    };
+                    text_renderer.draw_text(
+                        scene,
+                        keys,
+                        FONT,
+                        keys_color,
+                        translated(
+                            transform,
+                            keys_x,
+                            row_top + (ITEM_HEIGHT - f64::from(keys_h)) / 2.0,
+                        ),
+                        None,
+                    );
+                    label_end = keys_x - PAD_X;
+                }
                 // Rows are one `ITEM_HEIGHT` tall, so a long option elides
                 // rather than wrapping into the row beneath it.
                 let shown = text_renderer.elide_to_width(
                     opt,
                     FONT,
-                    px((list.width() - PAD_X * 2.0).max(0.0)),
+                    px((label_end - list.x0 - PAD_X).max(0.0)),
                 );
                 let (_, opt_h) = text_renderer.measure(&shown, FONT, None);
                 let ty = row_top + (ITEM_HEIGHT - f64::from(opt_h)) / 2.0;
@@ -975,7 +1192,7 @@ impl Widget for Dropdown {
                 ..
             } => {
                 self.on_left_press(
-                    ctx.state,
+                    ctx.state.doc(),
                     ctx.path,
                     ctx.handled,
                     ctx.focus_target,
@@ -993,7 +1210,14 @@ impl Widget for Dropdown {
                     },
                 ..
             } if self.is_focused => {
-                self.on_key(event, ke, *ctx.modifiers, ctx.state, ctx.path, ctx.handled);
+                self.on_key(
+                    event,
+                    ke,
+                    *ctx.modifiers,
+                    ctx.state.doc(),
+                    ctx.path,
+                    ctx.handled,
+                );
             }
             _ => {}
         }
@@ -1058,7 +1282,13 @@ impl Widget for Dropdown {
         } else {
             (!self.selected.is_empty()).then(|| self.selected_label().to_string())
         };
-        let mut node = AccessNode::new(Role::ComboBox)
+        let role = if self.menu.is_some() {
+            Role::Button
+        } else {
+            Role::ComboBox
+        };
+        let value = if self.menu.is_some() { None } else { value };
+        let mut node = AccessNode::new(role)
             .with_optional_name(name)
             .with_optional_value(value)
             .with_state(AccessState {
@@ -1086,7 +1316,7 @@ impl Widget for Dropdown {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
@@ -1117,7 +1347,7 @@ impl Widget for Dropdown {
                 let Some(value) = self.values.get(index).cloned() else {
                     return false;
                 };
-                self.commit_value(&value, state, root);
+                self.commit_value(&value, state.doc(), root);
                 self.close();
                 true
             }
@@ -1189,6 +1419,22 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn updating_placeholder_does_not_select_or_replace_a_private_value() {
+        let selection = crate::LocalState::new(String::new());
+        let mut dropdown = Dropdown::from_state(opts(), &selection);
+        dropdown.set_placeholder("Waiting for tasks");
+        assert_eq!(
+            dropdown.accessibility().unwrap().name.as_deref(),
+            Some("Waiting for tasks")
+        );
+        assert!(selection.with(String::is_empty));
+        dropdown.set_selected("UTC");
+        dropdown.set_placeholder("Choose a task");
+        assert_eq!(dropdown.selected(), "UTC");
+        assert_eq!(selection.with(Clone::clone), "UTC");
+    }
+
     /// CRDT doc with `tz` seeded as a Text object holding `value`.
     fn doc_with_tz(value: &str) -> (AutoCommit, ObjId) {
         let mut doc = AutoCommit::new();
@@ -1226,7 +1472,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: doc,
+                state: crate::widget::Edits::lend(doc),
                 path: root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1242,15 +1488,15 @@ mod tests {
         fn starts_closed_and_reads_value_on_sync() {
             let mut dd = Dropdown::new(opts(), "tz");
             assert!(!dd.is_open());
-            let (mut doc, root) = doc_with_tz("Asia/Tokyo");
-            dd.sync(&mut doc, &root);
+            let (doc, root) = doc_with_tz("Asia/Tokyo");
+            dd.sync(&doc, &root);
             assert_eq!(dd.selected(), "Asia/Tokyo");
         }
 
         fn down_opens_when_closed_and_focused() {
             let mut dd = Dropdown::new(opts(), "tz");
             let (mut doc, root) = doc_with_tz("UTC");
-            dd.sync(&mut doc, &root);
+            dd.sync(&doc, &root);
             dd.set_focus(true);
             assert!(feed_key(
                 &mut dd,
@@ -1266,7 +1512,7 @@ mod tests {
         fn arrows_move_highlight_while_open() {
             let mut dd = Dropdown::new(opts(), "tz");
             let (mut doc, root) = doc_with_tz("UTC");
-            dd.sync(&mut doc, &root);
+            dd.sync(&doc, &root);
             dd.set_focus(true);
             dd.do_open();
             feed_key(
@@ -1291,10 +1537,18 @@ mod tests {
             assert_eq!(dd.highlight_index(), 1);
         }
 
-        fn enter_selects_writes_value_and_closes() {
-            let mut dd = Dropdown::new(opts(), "tz");
+        fn enter_emits_selection_action_and_closes() {
+            let mut dd =
+                Dropdown::new(opts(), "tz").on_action(crate::widget::test_string_action_binding());
+            crate::widget::controls::refresh_control_action_availability(
+                &mut dd,
+                &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
+                    "test:control",
+                    "set",
+                )]),
+            );
             let (mut doc, root) = doc_with_tz("UTC");
-            dd.sync(&mut doc, &root);
+            dd.sync(&doc, &root);
             dd.set_focus(true);
             dd.do_open();
             // Move to "America/New_York" (index 2) and select it.
@@ -1318,17 +1572,23 @@ mod tests {
             ));
             assert!(!dd.is_open(), "selecting closes the list");
             assert_eq!(dd.selected(), "America/New_York");
-            // The value landed in the CRDT Text object the host reads.
+            assert_eq!(
+                crate::widget::controls::take_control_invocation(&mut dd)
+                    .unwrap()
+                    .arguments["value"],
+                "America/New_York"
+            );
             assert_eq!(
                 crate::doc::read_str_or_text(&doc, &root, "tz").as_deref(),
-                Some("America/New_York")
+                Some("UTC"),
+                "selecting submits an action and preserves the read model"
             );
         }
 
         fn escape_closes_without_changing_value() {
             let mut dd = Dropdown::new(opts(), "tz");
             let (mut doc, root) = doc_with_tz("UTC");
-            dd.sync(&mut doc, &root);
+            dd.sync(&doc, &root);
             dd.set_focus(true);
             dd.do_open();
             feed_key(
@@ -1353,8 +1613,8 @@ mod tests {
 
         fn open_builder_aligns_highlight_to_selection_on_sync() {
             let mut dd = Dropdown::new(opts(), "tz").open();
-            let (mut doc, root) = doc_with_tz("Asia/Tokyo");
-            dd.sync(&mut doc, &root);
+            let (doc, root) = doc_with_tz("Asia/Tokyo");
+            dd.sync(&doc, &root);
             assert!(dd.is_open());
             assert_eq!(
                 dd.highlight_index(),
@@ -1366,7 +1626,7 @@ mod tests {
         starts_closed_and_reads_value_on_sync();
         down_opens_when_closed_and_focused();
         arrows_move_highlight_while_open();
-        enter_selects_writes_value_and_closes();
+        enter_emits_selection_action_and_closes();
         escape_closes_without_changing_value();
         open_builder_aligns_highlight_to_selection_on_sync();
     }
@@ -1376,7 +1636,7 @@ mod tests {
         fn typing_filters_options_case_insensitively() {
             let mut dd = Dropdown::new(opts(), "tz");
             let (mut doc, root) = doc_with_tz("UTC");
-            dd.sync(&mut doc, &root);
+            dd.sync(&doc, &root);
             dd.set_focus(true);
             dd.do_open();
             assert_eq!(dd.visible_count(), 4);
@@ -1433,7 +1693,7 @@ mod tests {
         fn backspace_edits_the_filter() {
             let mut dd = Dropdown::new(opts(), "tz");
             let (mut doc, root) = doc_with_tz("UTC");
-            dd.sync(&mut doc, &root);
+            dd.sync(&doc, &root);
             dd.set_focus(true);
             dd.do_open();
             feed_key(
@@ -1463,7 +1723,7 @@ mod tests {
         fn backspace_deletes_one_extended_grapheme_from_the_filter() {
             let mut dd = Dropdown::new(opts(), "tz");
             let (mut doc, root) = doc_with_tz("UTC");
-            dd.sync(&mut doc, &root);
+            dd.sync(&doc, &root);
             dd.set_focus(true);
             dd.do_open();
             let cluster = "👩🏽‍💻";
@@ -1487,7 +1747,7 @@ mod tests {
         fn typing_replaces_the_selected_filter_range() {
             let mut dd = Dropdown::new(opts(), "tz");
             let (mut doc, root) = doc_with_tz("UTC");
-            dd.sync(&mut doc, &root);
+            dd.sync(&doc, &root);
             dd.set_focus(true);
             dd.do_open();
             dd.filter = "Europe".into();
@@ -1570,8 +1830,8 @@ mod tests {
     fn open_list_pointer_capture_focus_and_placement() {
         fn losing_focus_closes_the_list() {
             let mut dd = Dropdown::new(opts(), "tz");
-            let (mut doc, root) = doc_with_tz("UTC");
-            dd.sync(&mut doc, &root);
+            let (doc, root) = doc_with_tz("UTC");
+            dd.sync(&doc, &root);
             dd.set_focus(true);
             dd.do_open();
             assert!(dd.is_open());
@@ -1668,9 +1928,9 @@ mod tests {
             use crate::widget::{Button, Row};
             let mut row = Row::new()
                 .no_wrap()
-                .push(Box::new(Button::new("left", "Left", None)))
+                .push(Box::new(Button::new("left", "Left")))
                 .push(Box::new(Dropdown::new(opts(), "tz")))
-                .push(Box::new(Button::new("right", "Right", None)));
+                .push(Box::new(Button::new("right", "Right")));
             let theme = Theme::dark();
             let mut taffy = TaffyTree::<()>::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -1733,71 +1993,7 @@ mod tests {
     }
 
     #[test]
-    fn commit_writes_minimal_crdt_diffs_and_binds_state() {
-        fn commit_creates_text_object_when_absent() {
-            // No `tz` key seeded: commit must create the Text object.
-            let mut dd = Dropdown::new(opts(), "tz");
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            dd.commit_value("Europe/Amsterdam", &mut doc, &root);
-            assert_eq!(
-                crate::doc::read_str_or_text(&doc, &root, "tz").as_deref(),
-                Some("Europe/Amsterdam")
-            );
-        }
-
-        fn repeated_selection_splices_the_diff_not_the_whole_value() {
-            // Committing by deleting the old value and reinserting the new one
-            // leaves a tombstone per character per selection, so a settings pane
-            // toggled back and forth bloats its document without bound.
-            let long: Vec<String> = (0..4)
-                .map(|i| format!("Europe/Amsterdam/very/long/option/label/number/{i}"))
-                .collect();
-            let mut dd = Dropdown::new(long.clone(), "tz");
-            let (mut doc, root) = doc_with_tz(&long[0]);
-            dd.sync(&mut doc, &root);
-            let baseline = doc.save().len();
-
-            // Alternate between two options that share a 46-char prefix.
-            for i in 0..60 {
-                dd.commit_value(&long[i % 2], &mut doc, &root);
-            }
-            let grown = doc.save().len() - baseline;
-
-            assert_eq!(
-                crate::doc::read_str_or_text(&doc, &root, "tz").as_deref(),
-                Some(long[1].as_str()),
-                "the last committed option must be what the document holds"
-            );
-            assert!(
-                grown < 8 * long[0].len(),
-                "60 selections grew the document by {grown} bytes for a {}-char label \
-             — commit_value is rewriting the whole value",
-                long[0].len()
-            );
-        }
-
-        fn recommitting_the_current_value_is_free() {
-            let mut dd = Dropdown::new(opts(), "tz");
-            let (mut doc, root) = doc_with_tz("Asia/Tokyo");
-            dd.sync(&mut doc, &root);
-            let before = doc.save().len();
-
-            for _ in 0..25 {
-                dd.commit_value("Asia/Tokyo", &mut doc, &root);
-            }
-
-            assert_eq!(
-                crate::doc::read_str_or_text(&doc, &root, "tz").as_deref(),
-                Some("Asia/Tokyo")
-            );
-            assert_eq!(
-                doc.save().len(),
-                before,
-                "re-selecting the already-selected option must not grow the document"
-            );
-        }
-
+    fn committed_selection_binds_process_local_state() {
         fn local_state_binding_is_two_way_across_dropdowns() {
             let state = crate::LocalState::new(String::from("UTC"));
             let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -1808,8 +2004,8 @@ mod tests {
             let mut document = AutoCommit::new();
 
             state.set(String::from("Asia/Tokyo"));
-            Widget::sync(&mut first, &mut document, &automerge::ROOT);
-            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            Widget::sync(&mut first, &document, &automerge::ROOT);
+            Widget::sync(&mut second, &document, &automerge::ROOT);
             assert_eq!(first.selected(), "Asia/Tokyo");
             assert_eq!(second.selected(), "Asia/Tokyo");
             assert!(changes.borrow().is_empty(), "model sync is not user intent");
@@ -1817,25 +2013,82 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &crate::a11y::Action::SetValue(String::from("Europe/Amsterdam")),
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
             assert_eq!(state.get(), "Europe/Amsterdam");
             assert_eq!(&*changes.borrow(), &["Europe/Amsterdam"]);
-            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            Widget::sync(&mut second, &document, &automerge::ROOT);
             assert_eq!(second.selected(), "Europe/Amsterdam");
 
             second.set_selected("America/New_York");
             assert_eq!(state.get(), "America/New_York");
-            Widget::sync(&mut first, &mut document, &automerge::ROOT);
+            Widget::sync(&mut first, &document, &automerge::ROOT);
             assert_eq!(first.selected(), "America/New_York");
             assert_eq!(&*changes.borrow(), &["Europe/Amsterdam"]);
         }
 
-        commit_creates_text_object_when_absent();
-        repeated_selection_splices_the_diff_not_the_whole_value();
-        recommitting_the_current_value_is_free();
         local_state_binding_is_two_way_across_dropdowns();
+    }
+
+    #[test]
+    fn a_menu_button_reports_a_choice_without_keeping_it() {
+        let state = crate::LocalState::new(String::new());
+        let chosen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured = std::rc::Rc::clone(&chosen);
+        let mut menu = Dropdown::from_state(opts(), &state)
+            .as_menu(crate::icons::Icon::Plus)
+            .on_change(move |value| captured.borrow_mut().push(value.to_owned()));
+        menu.rect = Rect::new(560.0, 100.0, 592.0, 132.0);
+        let mut document = AutoCommit::new();
+        let root = automerge::ROOT;
+
+        // The list hangs from the icon's trailing edge, wide enough to read.
+        let list = menu.list_rect(opts().len());
+        assert!((list.x1 - menu.rect.x1).abs() < 1e-6, "{list:?}");
+        assert!(list.width() >= MENU_MIN_WIDTH);
+        menu.set_viewport(Rect::new(0.0, 0.0, 400.0, 800.0));
+        let kept = menu.list_rect(opts().len());
+        assert!(
+            kept.x1 <= 400.0 && kept.x0 >= 0.0,
+            "kept in the window: {kept:?}"
+        );
+
+        // Typing does not filter: a menu shows no query.
+        menu.set_focus(true);
+        assert!(feed_key(
+            &mut menu,
+            &key(Key::Named(NamedKey::Enter), None),
+            &mut document,
+            &root
+        ));
+        assert!(menu.is_open());
+        feed_key(
+            &mut menu,
+            &key(Key::Character("a".into()), Some("a")),
+            &mut document,
+            &root,
+        );
+        assert_eq!(menu.visible_count(), opts().len());
+        feed_key(
+            &mut menu,
+            &key(Key::Named(NamedKey::ArrowDown), None),
+            &mut document,
+            &root,
+        );
+        feed_key(
+            &mut menu,
+            &key(Key::Named(NamedKey::Enter), None),
+            &mut document,
+            &root,
+        );
+
+        assert_eq!(&*chosen.borrow(), &["Europe/Amsterdam"]);
+        assert!(!menu.is_open());
+        assert_eq!(menu.selected(), "", "a command is not kept as a value");
+        assert_eq!(state.get(), "");
+        let node = menu.accessibility().expect("a menu button is announced");
+        assert_eq!(node.role, crate::a11y::Role::Button);
     }
 
     #[test]
@@ -1845,26 +2098,26 @@ mod tests {
 
             let mut dropdown = Dropdown::new(opts(), "tz");
             let (mut document, root) = doc_with_tz("UTC");
-            Widget::sync(&mut dropdown, &mut document, &root);
+            Widget::sync(&mut dropdown, &document, &root);
 
             assert!(Widget::perform_action(
                 &mut dropdown,
                 &Action::Expand,
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &root,
             ));
             assert!(dropdown.is_open());
             assert!(Widget::perform_action(
                 &mut dropdown,
                 &Action::Collapse,
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &root,
             ));
             assert!(!dropdown.is_open());
             assert!(!Widget::perform_action(
                 &mut dropdown,
                 &Action::SetValue(String::from("not an option")),
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &root,
             ));
             assert_eq!(dropdown.selected(), "UTC");
@@ -1886,7 +2139,7 @@ mod tests {
         fn disabled_dropdown_does_not_open() {
             let mut dd = Dropdown::new(opts(), "tz").with_enabled(false);
             let (mut doc, root) = doc_with_tz("UTC");
-            dd.sync(&mut doc, &root);
+            dd.sync(&doc, &root);
             dd.set_focus(true);
             let handled = feed_key(
                 &mut dd,
@@ -1906,8 +2159,8 @@ mod tests {
         fn accessibility_reports_combobox_role_value_and_collapsed() {
             use crate::a11y::Role;
             let mut dd = Dropdown::new(opts(), "tz");
-            let (mut doc, root) = doc_with_tz("Asia/Tokyo");
-            dd.sync(&mut doc, &root);
+            let (doc, root) = doc_with_tz("Asia/Tokyo");
+            dd.sync(&doc, &root);
             let node = Widget::accessibility(&dd).expect("dropdown is not presentational");
             assert_eq!(node.role, Role::ComboBox);
             assert_eq!(node.name.as_deref(), Some("Asia/Tokyo"));
@@ -1936,8 +2189,8 @@ mod tests {
 
         fn accessibility_reflects_open_and_disabled() {
             let mut dd = Dropdown::new(opts(), "tz");
-            let (mut doc, root) = doc_with_tz("UTC");
-            dd.sync(&mut doc, &root);
+            let (doc, root) = doc_with_tz("UTC");
+            dd.sync(&doc, &root);
             dd.set_focus(true);
             dd.do_open();
             let node = Widget::accessibility(&dd).unwrap();
@@ -1970,7 +2223,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut dropdown,
                 &crate::a11y::Action::SetValue("Asia/Tokyo".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());

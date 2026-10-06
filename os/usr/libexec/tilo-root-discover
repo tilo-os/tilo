@@ -29,7 +29,10 @@ runtime="${TILO_ROOT_RUNTIME:-/run}"
 lsblk_bin="${TILO_ROOT_LSBLK:-lsblk}"
 cryptsetup_bin="${TILO_ROOT_CRYPTSETUP:-systemd-cryptsetup}"
 cryptsetup_probe="${TILO_ROOT_CRYPTSETUP_PROBE:-cryptsetup}"
+plymouth_bin="${TILO_ROOT_PLYMOUTH:-plymouth}"
 unlock_bin="${TILO_ROOT_UNLOCK:-/usr/libexec/tilo-rollback-initrd-unlock}"
+sibling_bin="${TILO_ROOT_SIBLING_UNLOCK:-tilo-sibling-unlock}"
+systemctl_bin="${TILO_ROOT_SYSTEMCTL:-systemctl}"
 
 die() { printf 'tilo-root: %s\n' "$*" >&2; exit 1; }
 
@@ -85,8 +88,37 @@ root="${roots[0]}"
 install -d -m 0700 "$runtime/tilo-root" "$runtime/cryptsetup-keys.d"
 if "$cryptsetup_probe" isLuks "$root" >/dev/null 2>&1; then
   "$unlock_bin" "$root" root || true
-  "$cryptsetup_bin" attach root "$root" - 'tpm2-device=auto,fido2-device=auto' \
-    || die "encrypted Tilo root did not unlock"
+  # A root enrolled for unlocking with another of the owner's devices asks
+  # them while the prompt below is up; the person can still type the
+  # passphrase meanwhile, and whichever answers first opens the volume. The
+  # attempt is stopped, and everything it held wiped, once the volume is open.
+  sibling_unit=""
+  if "$sibling_bin" probe "$root" >/dev/null 2>&1; then
+    sibling_unit="tilo-sibling-unlock@$(systemd-escape --path "$root").service"
+    "$systemctl_bin" start --no-block "$sibling_unit" || sibling_unit=""
+  fi
+  stop_sibling() {
+    [ -z "$sibling_unit" ] || "$systemctl_bin" stop "$sibling_unit" 2>/dev/null || true
+  }
+  trap stop_sibling EXIT
+  # Keep the graphical prompt available after a typo. Do not recycle a failed
+  # passphrase from the agent cache into the remaining attempts. TPM/FIDO
+  # enrollments and recovery keys remain available on functioning platforms.
+  # systemd-cryptsetup sends rejection details to its log, not to the
+  # graphical password agent. Preserve those logs and forward only an opaque
+  # retry event to Plymouth; no password is read or retained by this wrapper.
+  LC_ALL=C SYSTEMD_LOG_TARGET=console "$cryptsetup_bin" attach root "$root" - \
+    'tpm2-device=auto,fido2-device=auto,tries=0,timeout=0,password-cache=no' 2>&1 | \
+    while IFS= read -r message; do
+      printf '%s\n' "$message" >&2
+      case "$message" in
+        *'Failed to activate with specified passphrase. (Passphrase incorrect?)'*)
+          "$plymouth_bin" display-message --text=tilo-unlock-retry 2>/dev/null || true
+          ;;
+      esac
+    done || die "encrypted Tilo root did not unlock"
+  stop_sibling
+  "$plymouth_bin" display-message --text=tilo-unlock-success 2>/dev/null || true
   target="$devroot/mapper/root"
 else
   target="$root"

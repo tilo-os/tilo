@@ -1023,21 +1023,13 @@ fn spawn_workspace_authority_reload(
 }
 
 /// Serve document media from the content store (best-effort, like the other
-/// local sockets): collaborators' media is fetched through the workspace's
-/// known peers.
+/// local sockets). Content of another device's records reaches this store on
+/// the record's route, through the session.
 fn spawn_document_media(
     socket: &Path,
-    endpoint: &iroh::Endpoint,
-    identity: &FsTransportIdentity,
-    hydrator: &Arc<Hydrator>,
     store: &Arc<ContentStore>,
 ) -> Option<std::thread::JoinHandle<()>> {
-    let fetcher = fs::document_media::PeerMediaFetcher::new(
-        endpoint.clone(),
-        identity.clone(),
-        Arc::clone(hydrator),
-    );
-    let media = fs::document_media::DocumentMedia::new(Arc::clone(store), Some(Arc::new(fetcher)));
+    let media = fs::document_media::DocumentMedia::new(Arc::clone(store));
     match fs::document_media::serve_socket(socket, media) {
         Ok(handle) => Some(handle),
         Err(error) => {
@@ -1273,7 +1265,7 @@ fn export_home_peer(
             .map_or(true, |ticket| ticket.workspace != decoded_ticket.workspace)
     });
     bundle.workspaces.push(workspace);
-    atomic_file::write(output, toml::to_string_pretty(&bundle)?.as_bytes())?;
+    tilo_files::native::atomic::write(output, toml::to_string_pretty(&bundle)?.as_bytes())?;
     println!("exported home-peer bundle to {}", output.display());
     Ok(())
 }
@@ -1829,9 +1821,9 @@ async fn serve(
                 .map(|authority| authority.handle())
         })
         .or_else(|| acl.as_ref().map(|(handle, _)| handle.clone()));
-    let _media = blob_sock.as_deref().and_then(|socket| {
-        spawn_document_media(socket, &endpoint, &transport_identity, &hydrator, &store)
-    });
+    let _media = blob_sock
+        .as_deref()
+        .and_then(|socket| spawn_document_media(socket, &store));
     let (workspace, ticket, joined_remote) = match (record_services, remote_ticket) {
         (Some(records), Some(ticket)) => (
             Workspace::join_with_records(
@@ -1909,7 +1901,7 @@ async fn serve(
     }
     if let Some(cache_dir) = &cache_dir {
         let encoded = ticket.encode()?;
-        atomic_file::write(&workspace_ticket_path(cache_dir), encoded.as_bytes())?;
+        tilo_files::native::atomic::write(&workspace_ticket_path(cache_dir), encoded.as_bytes())?;
     }
     // Owner operations require the certified human root. Secondary devices
     // never substitute their device key and recipient mounts never host this
@@ -2082,7 +2074,7 @@ async fn mount(
     let (transport_gate, _transport_gate_task) = fs::transport_gate::spawn_from_env()?;
     let ticket = Ticket::decode(&ticket)?;
     if let Some(cache_dir) = &cache_dir {
-        atomic_file::write(
+        tilo_files::native::atomic::write(
             &workspace_ticket_path(cache_dir),
             ticket.encode()?.as_bytes(),
         )?;
@@ -2178,9 +2170,9 @@ async fn mount(
         .as_ref()
         .map(|records| Arc::clone(&records.repository));
     let workspace_args = acl.as_ref().map(|(handle, _)| handle.clone());
-    let _media = blob_sock.as_deref().and_then(|socket| {
-        spawn_document_media(socket, &endpoint, &transport_identity, &hydrator, &store)
-    });
+    let _media = blob_sock
+        .as_deref()
+        .and_then(|socket| spawn_document_media(socket, &store));
     let workspace = match record_services {
         Some(records) => {
             Workspace::join_with_records(
@@ -3148,7 +3140,7 @@ fn persist_now(namespace: &Arc<Mutex<Namespace>>, path: &Path) {
 /// ready NAS can always reopen the same namespace after a power loss.
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "The namespace lock must cover durable replacement so concurrent writers cannot reuse the process-scoped atomic-file temporary path."
+    reason = "The namespace lock must cover durable replacement so concurrent writers cannot reuse the process-scoped native::atomic temporary path."
 )]
 fn persist_namespace_generation(
     namespace: &Arc<Mutex<Namespace>>,
@@ -3156,7 +3148,7 @@ fn persist_namespace_generation(
 ) -> Result<[u8; 32]> {
     // Keep the namespace lock through the durable replacement. Transactional
     // projections use the same lock, preventing two same-process writers from
-    // sharing atomic-file's process-scoped temporary pathname.
+    // sharing native::atomic's process-scoped temporary pathname.
     let mut namespace = namespace
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -3757,7 +3749,7 @@ async fn seed_from_dir(
     store: &Arc<ContentStore>,
     root: &Path,
 ) -> Result<()> {
-    let registry = qdoc_codecs::builtin_registry();
+    let registry = tilo_doc_codecs::builtin_registry();
     let document_content = tilo_content::ContentStore::for_app();
     let mut stack = vec![(ROOT_INO, root.to_path_buf())];
     while let Some((parent_ino, dir)) = stack.pop() {
@@ -4039,7 +4031,7 @@ mod tests {
                 ticket: Some(ticket),
                 relay_service_id: None,
             }];
-            atomic_file::write(
+            tilo_files::native::atomic::write(
                 &fs::workspace_authority::content_peers_path(temp.path()),
                 &serde_json::to_vec(&peers).unwrap(),
             )

@@ -295,9 +295,9 @@ pub fn publisher_identity() -> std::io::Result<(u32, u64)> {
 }
 
 /// Readers cannot check a publisher through `/proc/<pid>`: the compositor
-/// makes itself non-dumpable while it holds identity keys, and the image
-/// mounts `/proc` with `hidepid=invisible`, which hides a non-dumpable
-/// process even from its own user. So the publisher holds an exclusive
+/// makes itself non-dumpable while it holds identity keys, so its `/proc`
+/// entries belong to root, and a `/proc` mounted with `hidepid` hides it even
+/// from its own user. So the publisher holds an exclusive
 /// `flock` on `publisher-<pid>-<start ticks>.lock` beside its snapshots for
 /// as long as it lives; the kernel releases it however the process ends, and
 /// a PID with a different start time names a different file.
@@ -2510,7 +2510,9 @@ impl ShortcutConfig {
         Self::from_section(super::load_section_at(path, "shortcuts"))
     }
 
-    fn from_section(section: serde_json::Map<String, serde_json::Value>) -> Self {
+    /// The configuration a `shortcuts` section holds, repaired as
+    /// [`Self::normalise`] repairs it.
+    pub fn from_section(section: serde_json::Map<String, serde_json::Value>) -> Self {
         let loaded: Self =
             serde_json::from_value(serde_json::Value::Object(section)).unwrap_or_default();
         Self::normalise(loaded)
@@ -2591,7 +2593,12 @@ impl ShortcutConfig {
         super::update_section_at(path, "shortcuts", self.section()?)
     }
 
-    fn section(&self) -> std::io::Result<serde_json::Map<String, serde_json::Value>> {
+    /// The `shortcuts` section holding this configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `self` can't be serialised.
+    pub fn section(&self) -> std::io::Result<serde_json::Map<String, serde_json::Value>> {
         let value = serde_json::to_value(self).map_err(std::io::Error::other)?;
         Ok(value.as_object().cloned().unwrap_or_default())
     }
@@ -3235,7 +3242,7 @@ mod tests {
     fn publisher_liveness_is_its_held_lease_not_its_proc_entry() {
         let dir = tempfile::tempdir().unwrap();
         // No process has this PID, so /proc cannot vouch for it, as it cannot
-        // for a non-dumpable compositor under hidepid. Holding its lease can.
+        // for a non-dumpable compositor. Holding its lease can.
         let (pid, start_ticks) = (4_000_000, 7);
         let lease_path = publisher_lease_path(dir.path(), pid, start_ticks);
         assert!(

@@ -131,6 +131,11 @@ impl Session {
         self._membership.clone()
     }
 
+    /// The identity service an app this session connects joins with.
+    pub fn identity_socket(&self) -> &Path {
+        &self.identity_socket
+    }
+
     /// Read document media an app in this session's room stored, through
     /// the same scoped capability the app holds.
     /// # Errors
@@ -182,6 +187,13 @@ impl RuntimeServices for Session {
     fn launch(&self, app_id: &str, command: Command) -> io::Result<Child> {
         Self::launch(self, app_id, command)
     }
+
+    fn media(&self) -> Option<std::sync::Arc<dyn tilo_runtime::MediaReader>> {
+        Some(std::sync::Arc::new(tilo_runtime::profile::BlobMedia::new(
+            &self.blob_socket,
+            &self.room,
+        )))
+    }
 }
 
 /// The desktop's peer network, attached when `TILO_COLLAB_HOST(S)` names a
@@ -232,6 +244,14 @@ impl PeerSync {
             stop,
             pump,
         })
+    }
+}
+
+impl Drop for Session {
+    /// The brokers save the workspace on the state writer thread; the next
+    /// session to take the profile lock must find those saves on disk.
+    fn drop(&mut self) {
+        persist::wait_for_saves_within(Duration::from_secs(10));
     }
 }
 

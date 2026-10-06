@@ -47,7 +47,7 @@ if exactly_once "$growfs_unit" 'ReadWritePaths=/sysroot' \
    && exactly_once "$growfs_unit" "ExecStart=/usr/bin/sh -c 'mount -o remount,rw /sysroot && exec /usr/lib/systemd/systemd-growfs /sysroot'" \
    && ! grep -q '^ExecStartPre=' "$growfs_unit" \
    && exactly_once "$growfs_unit" 'RestrictNamespaces=yes' \
-   && exactly_once "$growfs_unit" 'CapabilityBoundingSet=CAP_SYS_ADMIN' \
+   && exactly_once "$growfs_unit" 'CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_RESOURCE' \
    && exactly_once "$growfs_unit" 'AmbientCapabilities='; then
   ok 'background root growth remounts sysroot only in its slave namespace before resizing'
 else

@@ -2300,9 +2300,27 @@ fn dispatch_click(
     // Pointer motion can be consumed merely by hover handling, so only a button event qualifies
     // the action as delivered. The motion still precedes it exactly as it does on the native wire.
     let [cursor, press, release] = events;
-    let _ = frame.dispatch_event(&cursor, &modifiers, document, &ROOT, focus);
-    let pressed = frame.dispatch_event(&press, &modifiers, document, &ROOT, focus);
-    let released = frame.dispatch_event(&release, &modifiers, document, &ROOT, focus);
+    let _ = frame.dispatch_event(
+        &cursor,
+        &modifiers,
+        &mut ui::widget::Edits::lend(document),
+        &ROOT,
+        focus,
+    );
+    let pressed = frame.dispatch_event(
+        &press,
+        &modifiers,
+        &mut ui::widget::Edits::lend(document),
+        &ROOT,
+        focus,
+    );
+    let released = frame.dispatch_event(
+        &release,
+        &modifiers,
+        &mut ui::widget::Edits::lend(document),
+        &ROOT,
+        focus,
+    );
     if pressed || released {
         Ok(())
     } else {
@@ -3843,6 +3861,16 @@ mod tests {
         let len = pitch.checked_mul(height).expect("native output fits usize");
         let mut retained = VelloDrmBridge::new(WIDTH, HEIGHT).expect("retained bridge");
         let mut dense = VelloDrmBridge::new(WIDTH, HEIGHT).expect("dense oracle bridge");
+        // An exact comparison needs a repeatable oracle. Unordered, a tile's
+        // segments sum in GPU scheduling order, so two renders of one scene can
+        // differ by one level on a multi-threaded device
+        // (`native_4k_fixed_quick_settings_pose_225_segment_order_is_causal`).
+        for bridge in [&mut retained, &mut dense] {
+            bridge
+                .enable_canonical_segment_order()
+                .expect("canonical segment order");
+            assert!(bridge.canonical_segment_order_available());
+        }
         retained.set_phase_timing_enabled(true);
         let mut retained_pixels = vec![0_u8; len];
         let mut dense_pixels = vec![0_u8; len];
@@ -4057,16 +4085,12 @@ mod tests {
                 "row mask must not be reported without an available renderer opt-in"
             );
         }
-        if !canonical_segment_order_requested || !canonical_segment_order_available {
-            assert_eq!(
-                canonical_segment_order_selected_full_attempts, 0,
-                "canonical segment order must not be reported without an available renderer opt-in"
-            );
-            assert_eq!(
-                canonical_segment_order_selected_sparse_attempts, 0,
-                "canonical segment order must not be reported without an available renderer opt-in"
-            );
-        }
+        assert!(
+            canonical_segment_order_requested
+                && canonical_segment_order_available
+                && canonical_segment_order_selected_full_attempts > 0,
+            "the dense oracle must render in canonical segment order"
+        );
         if area_ppt8_requested && area_ppt8_available && !area_ppt8_preempted {
             assert!(
                 area_ppt8_selected_full_attempts.saturating_add(area_ppt8_selected_sparse_attempts)

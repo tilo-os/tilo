@@ -162,7 +162,7 @@ fn write_stamp(path: &Path, stamp: &ExtensionStamp) {
         return;
     }
     // A torn stamp only costs a rescan, so nothing is synced.
-    let _ = atomic_file::write_regenerable(path, encode_stamp(stamp).as_bytes());
+    let _ = tilo_files::native::atomic::write_regenerable(path, encode_stamp(stamp).as_bytes());
 }
 
 /// Drop every plugin this process has not loaded and rescan the plugin

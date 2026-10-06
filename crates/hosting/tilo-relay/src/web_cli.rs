@@ -60,11 +60,35 @@ pub struct WebArgs {
     /// `files:<chain.pem>,<key.pem>`.
     #[arg(long, default_value = "dev", value_name = "SOURCE")]
     pub tls: TlsArg,
+    /// The host name browsers reach this listener by (the certificate's
+    /// name), for `--tls files:…` on an unspecified address.
+    #[arg(long = "public-host", value_name = "NAME")]
+    pub public_host: Option<String>,
     /// Also serve the HTTPS routes as plain HTTP at this loopback address,
     /// so a local page needs no certificate exception (the live plane then
     /// uses the HTTPS stream fallback).
     #[arg(long = "web-plain", value_name = "ADDR")]
     pub web_plain: Option<SocketAddr>,
+    /// Without a device certificate yet, create the device key, print its
+    /// public half and serve only `/peer/v1/install` on `--web` until a
+    /// root-signed host certificate for it arrives with the token in this
+    /// file; then start as usual.
+    #[arg(long = "install-token-file", value_name = "PATH", requires = "web")]
+    pub install_token_file: Option<PathBuf>,
+    /// The device key (hex) of the session beside this node, the shell that
+    /// runs the person's apps: pages learn it on `/node` to open apps there.
+    /// While the node waits for its certificate, its root certifies the
+    /// session with it, as one of the person's devices, and the certificate
+    /// is written to `--session-cert-out`.
+    #[arg(long = "session-device", value_name = "HEX", requires = "web")]
+    pub session_device: Option<String>,
+    /// Where the session's certificate is written (canonical encoding).
+    #[arg(
+        long = "session-cert-out",
+        value_name = "PATH",
+        requires_all = ["session_device", "install_token_file"]
+    )]
+    pub session_cert_out: Option<PathBuf>,
     #[cfg(feature = "agents")]
     #[command(flatten)]
     pub agents: AgentArgs,
@@ -95,12 +119,6 @@ pub struct AgentArgs {
     /// `gpt-4.1-mini-2025-04-14`). Default `$TILO_AGENT_MODEL_NAME`.
     #[arg(long = "agent-model-name", value_name = "ID")]
     pub model_name: Option<String>,
-    /// Let agents' apps use this user's own files, Keychain or Secret
-    /// Service, as a person at this machine would. Without it each agent
-    /// has a profile of its own under the state directory and secrets
-    /// kept in memory.
-    #[arg(long = "agent-host-profile")]
-    pub host_profile: bool,
 }
 
 #[cfg(feature = "agents")]
@@ -135,7 +153,6 @@ impl AgentArgs {
         Ok(Some(tilo_relay::agents::AgentOptions {
             state_dir,
             model,
-            host_profile: self.host_profile,
             catalogue: None,
         }))
     }
@@ -205,6 +222,7 @@ fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) -> WebConfi
         TlsArg::Files { chain, key } => TlsSource::Files {
             certificate_chain: chain.clone(),
             private_key: key.clone(),
+            host: args.public_host.clone(),
         },
     };
     WebConfig {
@@ -219,6 +237,72 @@ fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) -> WebConfi
 ///
 /// # Errors
 /// The listener cannot bind or load its certificate.
+/// Before the relay starts: when `--install-token-file` is given and the
+/// identity under `identity_root` has no certificate yet, wait for one on
+/// the browser listener. Prints `{"event": "awaiting_certificate",
+/// "devicePublicKey": …}` while waiting.
+///
+/// # Errors
+///
+/// The token or device key cannot be read, or the listener fails.
+pub async fn await_certificate(
+    identity_root: &Path,
+    args: &WebArgs,
+    state_root: &Path,
+) -> anyhow::Result<()> {
+    let (Some(token_file), Some(listen)) = (&args.install_token_file, args.web) else {
+        return Ok(());
+    };
+    let paths = tilo_user_identity::IdentityPaths::under(identity_root);
+    if paths.device_cert.is_file() {
+        return Ok(());
+    }
+    let token = std::fs::read_to_string(token_file)
+        .with_context(|| format!("read {}", token_file.display()))?;
+    let (device, _) =
+        tilo_user_identity::load_or_create_device_key(&paths).context("create the device key")?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "event": "awaiting_certificate",
+            "devicePublicKey": hex::encode(device.verifying_key().to_bytes()),
+        })
+    );
+    let session = match (session_device(args)?, &args.session_cert_out) {
+        (Some(public_key), Some(cert_out)) => Some(tilo_relay::web::install::SessionDevice {
+            public_key,
+            cert_out: cert_out.clone(),
+        }),
+        _ => None,
+    };
+    let cert = tilo_relay::web::install::await_certificate(
+        &web_config(args, listen, state_root),
+        paths,
+        &token,
+        session,
+    )
+    .await
+    .context("wait for the device certificate")?;
+    tracing::info!(
+        user = %hex::encode(cert.user_public_key),
+        "device certificate installed"
+    );
+    Ok(())
+}
+
+/// `--session-device`, decoded.
+fn session_device(args: &WebArgs) -> anyhow::Result<Option<[u8; 32]>> {
+    args.session_device
+        .as_deref()
+        .map(|device| {
+            hex::decode(device.trim())
+                .ok()
+                .and_then(|bytes| bytes.try_into().ok())
+                .context("--session-device must be a 32-byte hex public key")
+        })
+        .transpose()
+}
+
 pub async fn serve(
     relay: &Relay,
     args: &WebArgs,
@@ -227,6 +311,9 @@ pub async fn serve(
     let Some(listen) = args.web else {
         return Ok(None);
     };
+    if let Some(device) = session_device(args)? {
+        relay.set_node_session(device);
+    }
     let web = relay
         .serve_web(web_config(args, listen, state_root))
         .await
@@ -253,7 +340,8 @@ fn dev_identity(state: &Path) -> anyhow::Result<[SigningKey; 3]> {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let seeds: Vec<u8> = (0..3).flat_map(|_| rand::random::<[u8; 32]>()).collect();
-            atomic_file::write_with_mode(&path, &seeds, 0o600).context("save the dev identity")?;
+            tilo_files::native::atomic::write_with_mode(&path, &seeds, 0o600)
+                .context("save the dev identity")?;
             seeds
         }
         Err(error) => return Err(error).context("read the dev identity"),

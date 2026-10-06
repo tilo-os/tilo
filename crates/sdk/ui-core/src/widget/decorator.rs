@@ -57,12 +57,16 @@
 //!   (`draw_with_presence` for painting in a live frame, and `draw` for
 //!   callers that paint directly). Input has a single entry point,
 //!   [`handle_event`](Widget::handle_event).
-//! * **The inner widget owns its layout node.** The inner widget registers
-//!   itself in the node map during `build_layout`, so hooks the host reaches
-//!   by sweeping or hit-testing that map (`cursor_shape`, `tooltip`,
-//!   `set_undo_status`, `take_undo_request`, `take_committed_action`) are
-//!   answered by the inner widget. A decorator that overrides one of those
-//!   registers itself for its node instead, with [`register_node`].
+//! * **The decorator stands in for its inner widget's layout node.** The
+//!   inner widget registers itself in the node map during `build_layout`;
+//!   the decorator then takes that entry, so a host that reaches a widget
+//!   through the map (an accessibility action, focused input, a cursor
+//!   shape, a tooltip, undo status) meets the decorator in the inner
+//!   widget's place, and everything it does not override still reaches the
+//!   inner widget. A node the inner widget handed to a widget of its own (a
+//!   field it lays out as itself) stays that widget's. A decorator that
+//!   builds a node of its own around the inner one registers itself for it
+//!   with [`register_node`].
 //! * **Method calls.** A decorator is both a [`Decorator`] and, through the
 //!   blanket impl, a [`Widget`]. With both traits imported, `self.get_rect()`
 //!   is ambiguous, so implement the trait by path (`impl
@@ -99,6 +103,27 @@ pub fn register_node<W: Widget + 'static, S: std::hash::BuildHasher>(
     widget: &mut W,
 ) {
     node_map.insert(node, std::ptr::from_mut::<dyn Widget>(widget));
+}
+
+/// Point `node` at `outer` when the inner widget whose address and type are
+/// `inner` registered itself for it: the decorator stands in for its inner
+/// widget.
+fn stand_in(
+    node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    node: NodeId,
+    inner: (*const (), &'static str),
+    outer: &mut (dyn Widget + 'static),
+) {
+    let Some(&registered) = node_map.get(&node) else {
+        return;
+    };
+    // SAFETY: `registered` was put in the map by the build_layout that just
+    // returned, for a widget inside `outer` that lives as long as this frame's
+    // layout; reading its type name neither retains nor mutates it.
+    let registered_type = unsafe { (*registered).concrete_type_name() };
+    if std::ptr::eq(registered.cast::<()>().cast_const(), inner.0) && registered_type == inner.1 {
+        node_map.insert(node, std::ptr::from_mut(outer));
+    }
 }
 
 /// A widget that extends another by overriding a few [`Widget`] methods and
@@ -153,6 +178,10 @@ pub trait Decorator {
         self.inner().history_owner()
     }
 
+    fn record_owners(&self) -> Vec<crate::history_mode::HistoryOwner> {
+        self.inner().record_owners()
+    }
+
     #[doc(hidden)]
     #[allow(
         private_interfaces,
@@ -184,12 +213,16 @@ pub trait Decorator {
         self.inner_mut().set_interaction_environment(environment);
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.inner_mut().sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.inner_mut().update(state, path)
+    }
+
+    fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, path: &automerge::ObjId) {
+        self.inner_mut().settle(edits, path);
     }
 
     fn build_layout(
@@ -309,6 +342,36 @@ pub trait Decorator {
         self.inner_mut().take_action_palette_request()
     }
 
+    fn take_search_request(&mut self) -> bool {
+        self.inner_mut().take_search_request()
+    }
+
+    fn take_action_revert(
+        &mut self,
+    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
+        self.inner_mut().take_action_revert()
+    }
+
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.inner_mut().take_committed_action()
+    }
+
+    fn keeps_undo_step_open(&self) -> bool {
+        self.inner().keeps_undo_step_open()
+    }
+
+    fn set_undo_status(&mut self, status: &mut dyn FnMut() -> crate::undo::UndoStatus) {
+        self.inner_mut().set_undo_status(status)
+    }
+
+    fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
+        self.inner_mut().take_undo_request()
+    }
+
+    fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
+        self.inner_mut().handle_local_undo_request(request)
+    }
+
     fn cursor_shape(&self, point: vello::kurbo::Point) -> Option<winit::window::CursorIcon> {
         self.inner().cursor_shape(point)
     }
@@ -319,6 +382,10 @@ pub trait Decorator {
 
     fn tooltip(&self) -> Option<&str> {
         self.inner().tooltip()
+    }
+
+    fn tooltip_side(&self) -> super::tooltip::TooltipSide {
+        self.inner().tooltip_side()
     }
 
     fn tooltip_target_at(
@@ -372,10 +439,14 @@ pub trait Decorator {
         self.inner().accessibility_child_path(child_index)
     }
 
+    fn accessibility_represents_child(&self, child_index: usize) -> bool {
+        self.inner().accessibility_represents_child(child_index)
+    }
+
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.inner_mut().perform_action(action, state, path)
@@ -385,7 +456,7 @@ pub trait Decorator {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.inner_mut()
@@ -396,7 +467,7 @@ pub trait Decorator {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.inner_mut()
@@ -423,14 +494,19 @@ pub trait Decorator {
         self.inner().text_review()
     }
 
-    fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
+    fn on_external_event(
+        &mut self,
+        payload: &str,
+        state: &mut crate::widget::Edits<'_>,
+        root: &ModelPath,
+    ) {
         self.inner_mut().on_external_event(payload, state, root);
     }
 
     fn on_nav_gesture(
         &mut self,
         dir: crate::gesture::NavDirection,
-        state: &mut AppModel,
+        state: &AppModel,
         path: &ModelPath,
     ) -> bool {
         self.inner_mut().on_nav_gesture(dir, state, path)
@@ -442,6 +518,10 @@ pub trait Decorator {
 
     fn take_focus_reset(&mut self) -> bool {
         self.inner_mut().take_focus_reset()
+    }
+
+    fn take_accessibility_request(&mut self) -> Option<crate::a11y::AccessibilityRequest> {
+        self.inner_mut().take_accessibility_request()
     }
 
     fn dev_route(&self) -> Option<super::router::RouteSnapshot> {
@@ -464,14 +544,19 @@ pub trait Decorator {
         self.inner().needs_idle_sync()
     }
 
-    fn apply_room_action(&mut self, doc: &mut AutoCommit, type_id: &str, payload: &[u8]) -> bool {
+    fn apply_room_action(
+        &mut self,
+        doc: &mut crate::widget::Edits<'_>,
+        type_id: &str,
+        payload: &[u8],
+    ) -> bool {
         self.inner_mut().apply_room_action(doc, type_id, payload)
     }
 
     fn start_operation(
         &mut self,
         op: &super::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         self.inner_mut().start_operation(op, doc, path)
@@ -492,7 +577,12 @@ pub trait Decorator {
         self.inner().accepts_drop(payload)
     }
 
-    fn on_drop(&mut self, payload: DragPayload, state: &mut AppModel, path: &ModelPath) {
+    fn on_drop(
+        &mut self,
+        payload: DragPayload,
+        state: &mut crate::widget::Edits<'_>,
+        path: &ModelPath,
+    ) {
         self.inner_mut().on_drop(payload, state, path);
     }
 
@@ -647,7 +737,7 @@ pub trait Decorator {
 
 /// Every decorator is a widget: each method is the decorator's own, which
 /// forwards to the inner widget unless the decorator overrides it.
-impl<T: Decorator> Widget for T {
+impl<T: Decorator + 'static> Widget for T {
     #[doc(hidden)]
     fn concrete_type_name(&self) -> &'static str {
         Decorator::concrete_type_name(self)
@@ -688,6 +778,10 @@ impl<T: Decorator> Widget for T {
         Decorator::history_owner(self)
     }
 
+    fn record_owners(&self) -> Vec<crate::history_mode::HistoryOwner> {
+        Decorator::record_owners(self)
+    }
+
     #[doc(hidden)]
     #[allow(
         private_interfaces,
@@ -719,12 +813,16 @@ impl<T: Decorator> Widget for T {
         Decorator::set_interaction_environment(self, environment);
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         Decorator::sync(self, state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         Decorator::update(self, state, path)
+    }
+
+    fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, path: &automerge::ObjId) {
+        Decorator::settle(self, edits, path);
     }
 
     fn build_layout(
@@ -733,7 +831,13 @@ impl<T: Decorator> Widget for T {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        Decorator::build_layout(self, taffy, theme, node_map)
+        let node = Decorator::build_layout(self, taffy, theme, node_map);
+        let inner = (
+            std::ptr::from_ref(self.inner()).cast::<()>(),
+            self.inner().concrete_type_name(),
+        );
+        stand_in(node_map, node, inner, self);
+        node
     }
 
     fn measure(
@@ -842,6 +946,36 @@ impl<T: Decorator> Widget for T {
         Decorator::take_action_palette_request(self)
     }
 
+    fn take_search_request(&mut self) -> bool {
+        Decorator::take_search_request(self)
+    }
+
+    fn take_action_revert(
+        &mut self,
+    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
+        Decorator::take_action_revert(self)
+    }
+
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        Decorator::take_committed_action(self)
+    }
+
+    fn keeps_undo_step_open(&self) -> bool {
+        Decorator::keeps_undo_step_open(self)
+    }
+
+    fn set_undo_status(&mut self, status: &mut dyn FnMut() -> crate::undo::UndoStatus) {
+        Decorator::set_undo_status(self, status)
+    }
+
+    fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
+        Decorator::take_undo_request(self)
+    }
+
+    fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
+        Decorator::handle_local_undo_request(self, request)
+    }
+
     fn cursor_shape(&self, point: vello::kurbo::Point) -> Option<winit::window::CursorIcon> {
         Decorator::cursor_shape(self, point)
     }
@@ -852,6 +986,10 @@ impl<T: Decorator> Widget for T {
 
     fn tooltip(&self) -> Option<&str> {
         Decorator::tooltip(self)
+    }
+
+    fn tooltip_side(&self) -> super::tooltip::TooltipSide {
+        Decorator::tooltip_side(self)
     }
 
     fn tooltip_target_at(
@@ -905,10 +1043,14 @@ impl<T: Decorator> Widget for T {
         Decorator::accessibility_child_path(self, child_index)
     }
 
+    fn accessibility_represents_child(&self, child_index: usize) -> bool {
+        Decorator::accessibility_represents_child(self, child_index)
+    }
+
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         Decorator::perform_action(self, action, state, path)
@@ -918,7 +1060,7 @@ impl<T: Decorator> Widget for T {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         Decorator::perform_action_at(self, action, key_path, state, path)
@@ -928,7 +1070,7 @@ impl<T: Decorator> Widget for T {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         Decorator::perform_semantic_action(self, target, action, state, path)
@@ -954,14 +1096,19 @@ impl<T: Decorator> Widget for T {
         Decorator::text_review(self)
     }
 
-    fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
+    fn on_external_event(
+        &mut self,
+        payload: &str,
+        state: &mut crate::widget::Edits<'_>,
+        root: &ModelPath,
+    ) {
         Decorator::on_external_event(self, payload, state, root);
     }
 
     fn on_nav_gesture(
         &mut self,
         dir: crate::gesture::NavDirection,
-        state: &mut AppModel,
+        state: &AppModel,
         path: &ModelPath,
     ) -> bool {
         Decorator::on_nav_gesture(self, dir, state, path)
@@ -973,6 +1120,10 @@ impl<T: Decorator> Widget for T {
 
     fn take_focus_reset(&mut self) -> bool {
         Decorator::take_focus_reset(self)
+    }
+
+    fn take_accessibility_request(&mut self) -> Option<crate::a11y::AccessibilityRequest> {
+        Decorator::take_accessibility_request(self)
     }
 
     fn dev_route(&self) -> Option<super::router::RouteSnapshot> {
@@ -995,14 +1146,19 @@ impl<T: Decorator> Widget for T {
         Decorator::needs_idle_sync(self)
     }
 
-    fn apply_room_action(&mut self, doc: &mut AutoCommit, type_id: &str, payload: &[u8]) -> bool {
+    fn apply_room_action(
+        &mut self,
+        doc: &mut crate::widget::Edits<'_>,
+        type_id: &str,
+        payload: &[u8],
+    ) -> bool {
         Decorator::apply_room_action(self, doc, type_id, payload)
     }
 
     fn start_operation(
         &mut self,
         op: &super::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         Decorator::start_operation(self, op, doc, path)
@@ -1022,7 +1178,12 @@ impl<T: Decorator> Widget for T {
         Decorator::accepts_drop(self, payload)
     }
 
-    fn on_drop(&mut self, payload: DragPayload, state: &mut AppModel, path: &ModelPath) {
+    fn on_drop(
+        &mut self,
+        payload: DragPayload,
+        state: &mut crate::widget::Edits<'_>,
+        path: &ModelPath,
+    ) {
         Decorator::on_drop(self, payload, state, path);
     }
 

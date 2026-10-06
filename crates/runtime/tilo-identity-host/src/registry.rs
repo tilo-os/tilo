@@ -218,6 +218,40 @@ fn read_import_record(source: &Path) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// Identity of an identity directory's contents, as far as rename-based
+/// writers can change it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DirStamp {
+    dev: u64,
+    ino: u64,
+    modified: std::time::SystemTime,
+}
+
+impl DirStamp {
+    #[cfg(unix)]
+    fn of(dir: &Path) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let meta = fs::metadata(dir).ok()?;
+        Some(Self {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            modified: meta.modified().ok()?,
+        })
+    }
+
+    #[cfg(not(unix))]
+    fn of(_dir: &Path) -> Option<Self> {
+        None
+    }
+
+    /// Old enough that a later write cannot share its timestamp.
+    fn settled(self) -> bool {
+        std::time::SystemTime::now()
+            .duration_since(self.modified)
+            .is_ok_and(|age| age >= std::time::Duration::from_secs(2))
+    }
+}
+
 /// Disk owner for the registry.
 #[derive(Clone, Debug)]
 pub struct IdentityRegistryStore {
@@ -292,7 +326,7 @@ impl IdentityRegistryStore {
         set_private_dir_mode(&self.identity_dir)?;
         let bytes = serde_json::to_vec_pretty(registry)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        atomic_file::write_with_mode(&self.registry_path, &bytes, 0o600)
+        tilo_files::native::atomic::write_with_mode(&self.registry_path, &bytes, 0o600)
     }
 
     /// Load the registry after registering every identity record in the
@@ -306,9 +340,20 @@ impl IdentityRegistryStore {
     /// Returns an error if loading the registry, listing identities, loading a record,
     /// setting permissions, or saving the registry fails.
     pub fn load_reconciled(&self) -> io::Result<IdentityRegistry> {
-        let mut registry = self.load()?;
         fs::create_dir_all(&self.identity_dir)?;
         set_private_dir_mode(&self.identity_dir)?;
+        let (registry, changed) = self.reconcile()?;
+        if changed {
+            self.save(&registry)?;
+        }
+        Ok(registry)
+    }
+
+    /// The registry with every record in the directory registered and the
+    /// runtime's active record as its default, and whether that differs from
+    /// the saved one. Reads only.
+    fn reconcile(&self) -> io::Result<(IdentityRegistry, bool)> {
+        let mut registry = self.load()?;
         let mut changed = false;
         for summary in runtime_identity::list_identities(&self.identity_dir)? {
             let id = hex::encode(summary.public_key);
@@ -338,8 +383,42 @@ impl IdentityRegistryStore {
             registry.default_identity = Some(id);
             changed = true;
         }
-        if changed {
-            self.save(&registry)?;
+        Ok((registry, changed))
+    }
+
+    /// [`Self::load_reconciled`] for read-only queries that run on every
+    /// painted frame and app launch (which identity a room presents). It
+    /// never writes the identity directory: the reconciled registry is
+    /// returned, not saved. Every writer in the identity directory replaces
+    /// files by rename, so an unchanged directory (same inode and
+    /// modification time) holds the registry the last reconcile produced. A
+    /// directory changed within the last two seconds is reconciled again on
+    /// each call: a coarse filesystem clock can give a write that lands right
+    /// after a reconcile the same time.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if loading the registry, listing identities or
+    /// resolving a record path fails.
+    pub fn load_reconciled_cached(&self) -> io::Result<IdentityRegistry> {
+        static CACHE: std::sync::Mutex<Option<(PathBuf, DirStamp, IdentityRegistry)>> =
+            std::sync::Mutex::new(None);
+        let before = DirStamp::of(&self.identity_dir);
+        if let Some(stamp) = before
+            && let Ok(cache) = CACHE.lock()
+            && let Some((dir, cached_stamp, registry)) = cache.as_ref()
+            && *dir == self.identity_dir
+            && *cached_stamp == stamp
+        {
+            return Ok(registry.clone());
+        }
+        let (registry, _) = self.reconcile()?;
+        if let Some(stamp) = DirStamp::of(&self.identity_dir)
+            && before == Some(stamp)
+            && stamp.settled()
+            && let Ok(mut cache) = CACHE.lock()
+        {
+            *cache = Some((self.identity_dir.clone(), stamp, registry.clone()));
         }
         Ok(registry)
     }
@@ -409,7 +488,7 @@ impl IdentityRegistryStore {
 /// Returns an error if loading the registry or migration fails.
 pub fn selected_identity_path(room: &str) -> io::Result<Option<PathBuf>> {
     let store = IdentityRegistryStore::from_env()?;
-    let registry = store.load_reconciled()?;
+    let registry = store.load_reconciled_cached()?;
     Ok(registry
         .selected_for_workspace(room)
         .map(|profile| profile.record_path.clone()))
@@ -422,7 +501,7 @@ pub fn selected_identity_path(room: &str) -> io::Result<Option<PathBuf>> {
 /// Returns an error if loading the registry or migration fails.
 pub fn selected_principal_id(room: &str) -> io::Result<Option<String>> {
     let store = IdentityRegistryStore::from_env()?;
-    let registry = store.load_reconciled()?;
+    let registry = store.load_reconciled_cached()?;
     Ok(registry
         .selected_for_workspace(room)
         .map(IdentityProfile::principal_id))
@@ -435,7 +514,7 @@ pub fn selected_principal_id(room: &str) -> io::Result<Option<String>> {
 /// Returns an error if loading the registry or migration fails.
 pub fn selected_identity_profile(room: &str) -> io::Result<Option<IdentityProfile>> {
     let store = IdentityRegistryStore::from_env()?;
-    let registry = store.load_reconciled()?;
+    let registry = store.load_reconciled_cached()?;
     Ok(registry.selected_for_workspace(room).cloned())
 }
 
@@ -540,6 +619,33 @@ mod tests {
         fs::write(path, record.to_json_bytes().expect("encode")).expect("write");
         #[cfg(unix)]
         fs::set_permissions(path, fs::Permissions::from_mode(0o600)).expect("private record");
+    }
+
+    /// The identity service answers every launch from the cached read; it
+    /// reconciles in memory and leaves saving to provisioning.
+    #[test]
+    fn the_per_launch_read_never_writes_the_identity_directory() {
+        let dir = temp_dir("read-only");
+        write_record(&dir.join(LEGACY_PRIMARY_FILE), &record("Alice", 8));
+        #[cfg(unix)]
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("mode");
+        let entries = || {
+            let mut names: Vec<_> = fs::read_dir(&dir)
+                .expect("list")
+                .map(|entry| entry.expect("entry").file_name())
+                .collect();
+            names.sort();
+            let meta = fs::metadata(&dir).expect("dir");
+            (names, meta.modified().expect("mtime"), meta.permissions())
+        };
+        let before = entries();
+        let store = IdentityRegistryStore::at(&dir);
+        let registry = store.load_reconciled_cached().expect("read");
+        let selected = registry.selected_for_workspace("room-a").expect("default");
+        assert_eq!(selected.display_name, "Alice");
+        assert_eq!(entries(), before);
+        assert!(!store.registry_path().exists());
+        fs::remove_dir_all(dir).expect("cleanup");
     }
 
     #[test]

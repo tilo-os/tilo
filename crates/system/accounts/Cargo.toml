@@ -22,7 +22,6 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # the key custody.
 tilo-secret-vault = { version = "0.1.0", path = "../secret-vault" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-tilo-atomic-file = { version = "0.1.0", path = "../../../crates/system/atomic-file" }
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
@@ -43,6 +42,13 @@ url.workspace = true
 # interface; the credential helper runs as a bounded child process.
 cloud-source = { version = "0.1.0", path = "../cloud-source" }
 bounded-command = { version = "0.1.0", path = "../../../crates/system/bounded-command" }
+
+# The person's accounts as a record of their own (`person`): the resource
+# layer, without any UI.
+tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional = true }
+
+[features]
+person = ["dep:tilo-resource"]
 
 [dev-dependencies]
 # Tests stage and inspect key files through the vault's own private-file

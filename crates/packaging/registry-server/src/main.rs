@@ -34,9 +34,9 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use registry_server::{
-    AppState, InspectionPolicy, ModerationService, PromotionJournal, PublisherAllowlist,
-    PublisherRow, ServerIdentity, StagedArtifact, StagedPromotion, Storage, default_data_dir,
-    inspect_bytes, run_server,
+    AppState, InspectionPolicy, ModerationService, PromotionJournal, PruneReport,
+    PublisherAllowlist, PublisherRow, ServerIdentity, StagedArtifact, StagedPromotion, Storage,
+    default_data_dir, run_server,
 };
 use registry_types::EntryAction;
 use registry_types::{
@@ -186,6 +186,24 @@ enum Cmd {
         #[arg(long, default_value_t = 86_400)]
         valid_for_seconds: u64,
     },
+    /// Delete staged packages, thin packages and payload blobs that no
+    /// published, quarantined or pending entry, retained snapshot or served
+    /// version index references any more, and keep remaining staged packages
+    /// as their thin form and shared blobs. Promotion does this after every
+    /// publish.
+    PruneStorage {
+        /// Report what would be deleted and change nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// With --dry-run, also report which published versions publishers
+        /// keeping this many releases per target would drop, and what
+        /// pruning would then delete.
+        #[arg(long, requires = "dry_run")]
+        keep_releases: Option<usize>,
+        /// As --keep-releases, for pre-releases.
+        #[arg(long, requires = "dry_run")]
+        keep_prereleases: Option<usize>,
+    },
     /// Refresh the current catalogue expiry with the networkless delegated
     /// channel key. Refuses to overtake staged promotion work.
     SignDelegatedSnapshot {
@@ -310,8 +328,11 @@ fn main() -> anyhow::Result<()> {
     tilo_rt::daemon("tilo-registry").run(serve_cli())?
 }
 
+#[allow(clippy::too_many_lines, reason = "one dispatch arm per subcommand")]
 async fn serve_cli() -> anyhow::Result<()> {
+    // Commands print their JSON result on stdout; logs go to stderr.
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
@@ -393,6 +414,17 @@ async fn serve_cli() -> anyhow::Result<()> {
             &reason,
             valid_for_seconds,
         ),
+        Cmd::PruneStorage {
+            dry_run,
+            keep_releases,
+            keep_prereleases,
+        } => {
+            if dry_run {
+                cmd_preview_prune(&storage, keep_releases, keep_prereleases)
+            } else {
+                cmd_prune_storage(&storage)
+            }
+        }
         Cmd::SignDelegatedSnapshot {
             channel_key_file,
             valid_for_seconds,
@@ -608,7 +640,13 @@ fn collect_submission_artifacts(
         // advertised URL stops serving them. They pass the same inspection.
         let inspection =
             if let Some(bytes) = storage.find_staged_artifact(&version.tapp_blake3_hex)? {
-                inspect_bytes(&pending.change.entry, version, &bytes)?
+                registry_server::inspect_stored_bytes(
+                    storage,
+                    &pending.change.entry,
+                    version,
+                    &bytes,
+                    Some(policy),
+                )?
             } else {
                 let (inspection, bytes) = registry_server::review_version_bytes(
                     storage,
@@ -780,6 +818,13 @@ fn cmd_sign_delegated_snapshot(
         candidate.issued_at_unix,
     )?;
     writer.publish(&candidate)?;
+    publish_compact(
+        &writer,
+        &candidate,
+        &channel_key,
+        &identity.owner_pubkey_hex,
+    )?;
+    writer.compact_history()?;
     drop(writer);
     println!("{}", serde_json::to_string_pretty(&candidate)?);
     Ok(())
@@ -810,7 +855,10 @@ fn cmd_publish_staged_first_party(
         )?;
         let moderation = ModerationService::new(storage.clone());
         moderation.complete_promotion_in_transaction(&writer, &journal.submissions)?;
+        let pruned = writer.prune_unreferenced()?;
+        let history = writer.compact_history()?;
         drop(writer);
+        let pruned = compact_after_prune(storage, pruned)?;
         println!(
             "{}",
             serde_json::json!({
@@ -818,6 +866,8 @@ fn cmd_publish_staged_first_party(
                 "promoted": journal.submissions.len(),
                 "sequence": journal.candidate_snapshot.sequence,
                 "snapshot_hash": registry_types::snapshot_hash(&journal.candidate_snapshot)?,
+                "pruned": pruned,
+                "history": history,
             })
         );
         return Ok(());
@@ -893,7 +943,13 @@ fn cmd_publish_staged_first_party(
                 );
             };
             let bytes = storage.load_staged_artifact(&artifact.blake3_hex)?;
-            let _inspection = inspect_bytes(&pending.change.entry, version, &bytes)?;
+            let _inspection = registry_server::inspect_stored_bytes(
+                storage,
+                &pending.change.entry,
+                version,
+                &bytes,
+                None,
+            )?;
         }
     }
     let expected_artifacts: usize = staged
@@ -917,6 +973,10 @@ fn cmd_publish_staged_first_party(
             &identity.owner_pubkey_hex,
             journal.candidate_snapshot.issued_at_unix,
         )?;
+        validate_new_native_runtimes(
+            &journal.candidate_snapshot.entries,
+            writer.current()?.as_ref(),
+        )?;
         journal
     } else {
         let current = writer.current()?;
@@ -932,6 +992,7 @@ fn cmd_publish_staged_first_party(
             .as_ref()
             .map_or_else(Vec::new, |snapshot| snapshot.entries.clone());
         apply_staged_changes(&mut entries, &staged.submissions)?;
+        validate_new_native_runtimes(&entries, current.as_ref())?;
         if entries.len() > authorization.max_snapshot_entries {
             anyhow::bail!("candidate exceeds delegated entry bound");
         }
@@ -963,8 +1024,17 @@ fn cmd_publish_staged_first_party(
         &allowlist,
     )?;
     writer.publish(&journal.candidate_snapshot)?;
+    publish_compact(
+        &writer,
+        &journal.candidate_snapshot,
+        &channel_key,
+        &identity.owner_pubkey_hex,
+    )?;
     moderation.complete_promotion_in_transaction(&writer, &journal.submissions)?;
+    let pruned = writer.prune_unreferenced()?;
+    let history = writer.compact_history()?;
     drop(writer);
+    let pruned = compact_after_prune(storage, pruned)?;
     println!(
         "{}",
         serde_json::json!({
@@ -972,7 +1042,60 @@ fn cmd_publish_staged_first_party(
             "promoted": reviews.len(),
             "sequence": journal.candidate_snapshot.sequence,
             "snapshot_hash": registry_types::snapshot_hash(&journal.candidate_snapshot)?,
+            "pruned": pruned,
+            "history": history,
         })
+    );
+    Ok(())
+}
+
+/// After pruning what no entry references any more, such as the versions a
+/// full entry just let go, compact staged packages one lock at a time.
+fn compact_after_prune(
+    storage: &Storage,
+    pruned: PruneReport,
+) -> anyhow::Result<serde_json::Value> {
+    let compacted = storage.compact_staged_artifacts()?;
+    Ok(serde_json::json!({
+        "staged_artifacts": pruned.staged_artifacts,
+        "thin_packages": pruned.thin_packages,
+        "payload_blobs": pruned.payload_blobs,
+        "bytes": pruned.bytes,
+        "compacted_staged_artifacts": compacted,
+    }))
+}
+
+fn cmd_prune_storage(storage: &Storage) -> anyhow::Result<()> {
+    let writer = storage.lock_snapshot()?;
+    let pruned = writer.prune_unreferenced()?;
+    let history = writer.compact_history()?;
+    drop(writer);
+    let pruned = compact_after_prune(storage, pruned)?;
+    println!(
+        "{}",
+        serde_json::json!({"status": "pruned", "pruned": pruned, "history": history})
+    );
+    Ok(())
+}
+
+fn cmd_preview_prune(
+    storage: &Storage,
+    keep_releases: Option<usize>,
+    keep_prereleases: Option<usize>,
+) -> anyhow::Result<()> {
+    let retention = (keep_releases.is_some() || keep_prereleases.is_some()).then(|| {
+        let default = registry_types::retention::RetentionPolicy::default();
+        registry_types::retention::RetentionPolicy {
+            releases: keep_releases.unwrap_or(default.releases),
+            prereleases: keep_prereleases.unwrap_or(default.prereleases),
+        }
+    });
+    let writer = storage.lock_snapshot()?;
+    let preview = writer.preview_prune(retention.as_ref())?;
+    drop(writer);
+    println!(
+        "{}",
+        serde_json::json!({"status": "dry-run", "preview": preview})
     );
     Ok(())
 }
@@ -1042,6 +1165,53 @@ fn apply_staged_changes(
         }
     }
     entries.sort_by(|left, right| left.package_id.cmp(&right.package_id));
+    Ok(())
+}
+
+/// A new thin app must be installable from the same registry. Collection can
+/// stage an app before its runtime arrives, or while that runtime's artifacts
+/// are unavailable; accepting the app submission does not prove its runtime is
+/// offered. Check the complete candidate before signing or reserving a journal.
+/// Retained versions keep their history when old runtimes leave under retention.
+fn validate_new_native_runtimes(
+    entries: &[registry_types::RegistryEntry],
+    previous: Option<&SignedRegistrySnapshot>,
+) -> anyhow::Result<()> {
+    for entry in entries {
+        if registry_types::is_runtime_package_id(&entry.package_id) {
+            continue;
+        }
+        let retained = previous.and_then(|snapshot| {
+            snapshot
+                .entries
+                .iter()
+                .find(|old| old.package_id == entry.package_id)
+        });
+        for version in &entry.versions {
+            if version.target.native_runtime().is_none()
+                || retained.is_some_and(|old| old.versions.contains(version))
+            {
+                continue;
+            }
+            let offered = entries.iter().any(|provider| {
+                registry_types::is_runtime_package_id(&provider.package_id)
+                    && provider.versions.iter().any(|provided| {
+                        provided.target.platform == version.target.platform
+                            && provided.target.architecture == version.target.architecture
+                            && provided.target.runtime == version.target.runtime
+                    })
+            });
+            if !offered {
+                anyhow::bail!(
+                    "{}@{} ({}) has no offered native runtime {}; keep the app pending until its runtime is collected",
+                    entry.package_id,
+                    version.version,
+                    version.target.architecture,
+                    version.target.runtime.as_deref().unwrap_or_default(),
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1141,6 +1311,8 @@ fn cmd_sign_snapshot(
     registry_types::sign_snapshot(&mut snapshot, &key)?;
     registry_types::verify_snapshot(&snapshot, &identity.owner_pubkey_hex, issued_at_unix)?;
     writer.publish(&snapshot)?;
+    publish_compact(&writer, &snapshot, &key, &identity.owner_pubkey_hex)?;
+    writer.compact_history()?;
     drop(writer);
     println!("{}", serde_json::to_string_pretty(&snapshot)?);
     Ok(())
@@ -1160,9 +1332,19 @@ fn cmd_rollback_snapshot(
     let key = load_owner_key(owner_key_file, &identity.owner_pubkey_hex)?;
     recover_snapshot_transaction(&writer, &identity.owner_pubkey_hex)?;
     refuse_active_promotion(storage)?;
-    let target = writer
-        .sequence(to_sequence)?
-        .ok_or_else(|| anyhow::anyhow!("snapshot sequence {to_sequence} is not retained"))?;
+    let target =
+        writer
+            .sequence(to_sequence)?
+            .ok_or_else(|| match storage.history_compaction() {
+                Ok(Some(compaction)) if to_sequence <= compaction.through_sequence => {
+                    anyhow::anyhow!(
+                        "snapshot sequence {to_sequence} was compacted (history is pruned through \
+                 {}); restore it from a backup",
+                        compaction.through_sequence
+                    )
+                }
+                _ => anyhow::anyhow!("snapshot sequence {to_sequence} is not retained"),
+            })?;
     let current = writer
         .current()?
         .ok_or_else(|| anyhow::anyhow!("no current snapshot to roll back"))?;
@@ -1211,8 +1393,25 @@ fn cmd_rollback_snapshot(
     registry_types::sign_snapshot(&mut snapshot, &key)?;
     registry_types::verify_snapshot(&snapshot, &identity.owner_pubkey_hex, issued_at_unix)?;
     writer.publish(&snapshot)?;
+    publish_compact(&writer, &snapshot, &key, &identity.owner_pubkey_hex)?;
+    writer.compact_history()?;
     drop(writer);
     println!("{}", serde_json::to_string_pretty(&snapshot)?);
+    Ok(())
+}
+
+/// Sign and publish the compact form of the snapshot just published, with
+/// the key that signed it.
+fn publish_compact(
+    writer: &registry_server::storage::SnapshotLock<'_>,
+    snapshot: &SignedRegistrySnapshot,
+    key: &ed25519_dalek::SigningKey,
+    owner_pubkey_hex: &str,
+) -> anyhow::Result<()> {
+    let (mut compact, indexes) = registry_types::compact_snapshot(snapshot)?;
+    registry_types::sign_compact_snapshot(&mut compact, key)?;
+    registry_types::verify_compact_snapshot(&compact, owner_pubkey_hex, compact.issued_at_unix)?;
+    writer.publish_compact(&compact, &indexes)?;
     Ok(())
 }
 
@@ -1782,6 +1981,7 @@ mod tests {
                 architecture: architecture.into(),
                 isa: architecture.into(),
                 runtime: None,
+                interfaces: Vec::new(),
             };
             let shared_bytes = b"same verified tapp".to_vec();
             let digest = blake3::hash(&shared_bytes).to_hex().to_string();
@@ -1963,6 +2163,7 @@ mod tests {
                 architecture: architecture.into(),
                 isa: isa.into(),
                 runtime: None,
+                interfaces: Vec::new(),
             };
             let key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
             let mut entry = publisher_entry(&key);
@@ -2054,6 +2255,7 @@ mod tests {
                     architecture: "x86_64".into(),
                     isa: "x86_64-v3".into(),
                     runtime: None,
+                    interfaces: Vec::new(),
                 },
             }],
             updated_at_unix: 1,

@@ -102,9 +102,9 @@ impl LocalVoice {
         }
         if self.pending.is_empty()
             && self.queued.is_empty()
-            && self.last_poll.is_none_or(|last| {
-                now.saturating_duration_since(last) >= Duration::from_millis(500)
-            })
+            && self
+                .last_poll
+                .is_none_or(|last| now.saturating_duration_since(last) >= self.status_interval())
         {
             let _ = self.submit(Command::Status);
         }
@@ -116,13 +116,23 @@ impl LocalVoice {
         }
         std::mem::take(&mut self.queued)
     }
-    pub(crate) fn complete(&mut self, request_id: u64, result: &Result<Snapshot, String>) {
+    fn status_interval(&self) -> Duration {
+        if self.channel.is_some() {
+            Duration::from_millis(500)
+        } else {
+            Duration::from_secs(5)
+        }
+    }
+
+    pub(crate) fn complete(&mut self, request_id: u64, result: &Result<Snapshot, String>) -> bool {
         if self.pending.remove(&request_id).is_none()
             || request_id < self.intent_floor
             || request_id < self.applied
         {
-            return;
+            return false;
         }
+        let before = self.snapshot.clone();
+        let before_channel = self.channel.clone();
         if self.pending.is_empty() {
             self.pending_since = None;
         }
@@ -136,11 +146,11 @@ impl LocalVoice {
         }
         let Ok(snapshot) = result else {
             self.invalidate();
-            return;
+            return before != self.snapshot || before_channel != self.channel;
         };
         if !snapshot.valid() {
             self.invalidate();
-            return;
+            return before != self.snapshot || before_channel != self.channel;
         }
         self.snapshot = snapshot.clone();
         if !self.unmute_requested {
@@ -158,6 +168,7 @@ impl LocalVoice {
             self.snapshot.muted = true;
             self.snapshot.capture_active = false;
         }
+        before != self.snapshot || before_channel != self.channel
     }
     /// Forget the service's state and leave the call, if there is one. With
     /// no channel there is nothing to leave: a Leave here would itself be
@@ -229,17 +240,16 @@ impl crate::app::ChatApp {
             self.call.leave();
         }
         self.media_error = snapshot.issue.map(|issue| {
-            match issue {
-                ui::native_media::Issue::Unavailable => "Voice is unavailable",
-                ui::native_media::Issue::Denied => "Call access was denied",
-                ui::native_media::Issue::PermissionDenied => "Microphone permission was denied",
-                ui::native_media::Issue::SourceLost => "Microphone disconnected",
-                ui::native_media::Issue::CaptureFailed => "Microphone could not start",
-                ui::native_media::Issue::TransportFailed => "Call disconnected",
-                ui::native_media::Issue::SessionEnded => "Call ended",
-                ui::native_media::Issue::Stale => "Call session expired",
-            }
-            .to_string()
+            crate::i18n::t(match issue {
+                ui::native_media::Issue::Unavailable => "chat-call-issue-unavailable",
+                ui::native_media::Issue::Denied => "chat-call-issue-denied",
+                ui::native_media::Issue::PermissionDenied => "chat-call-issue-permission-denied",
+                ui::native_media::Issue::SourceLost => "chat-call-issue-source-lost",
+                ui::native_media::Issue::CaptureFailed => "chat-call-issue-capture-failed",
+                ui::native_media::Issue::TransportFailed => "chat-call-issue-transport-failed",
+                ui::native_media::Issue::SessionEnded => "chat-call-issue-session-ended",
+                ui::native_media::Issue::Stale => "chat-call-issue-stale",
+            })
         });
         self.refresh_native_streams();
         self.request_relayout();
@@ -424,6 +434,55 @@ mod tests {
     }
 
     #[test]
+    fn idle_status_poll_backs_off_and_unchanged_replies_are_silent() {
+        let now = ui::time::now();
+        let mut voice = LocalVoice::default();
+        let first = voice.take_requests(now);
+        assert_eq!(first.len(), 1);
+        assert!(!voice.complete(request_id(&first[0]), &Ok(Snapshot::unavailable())));
+        assert!(
+            voice
+                .take_requests(now + Duration::from_millis(500))
+                .is_empty(),
+            "idle Chat does not poll voice status every 500 ms"
+        );
+        let later = voice.take_requests(now + Duration::from_secs(5));
+        assert_eq!(
+            later.len(),
+            1,
+            "an idle session still notices a late voice service"
+        );
+        assert!(!voice.complete(request_id(&later[0]), &Ok(Snapshot::unavailable())));
+
+        voice
+            .submit(Command::Join {
+                channel_id: "voice".into(),
+            })
+            .unwrap();
+        let join = voice.take_requests(now + Duration::from_secs(5));
+        assert!(voice.complete(request_id(&join[0]), &Ok(live())));
+        assert_eq!(
+            voice
+                .take_requests(now + Duration::from_secs(5) + Duration::from_millis(500))
+                .len(),
+            1,
+            "an active call still polls twice a second"
+        );
+
+        let same = live();
+        let mut voice = LocalVoice::default();
+        voice
+            .submit(Command::Join {
+                channel_id: "voice".into(),
+            })
+            .unwrap();
+        let join = voice.take_requests(now);
+        assert!(voice.complete(request_id(&join[0]), &Ok(same.clone())));
+        let status = voice.take_requests(now + Duration::from_millis(500));
+        assert!(!voice.complete(request_id(&status[0]), &Ok(same)));
+    }
+
+    #[test]
     fn status_polling_and_pending_commands_are_bounded_and_mute_always_fits() {
         let now = ui::time::now();
         let mut voice = LocalVoice::default();
@@ -449,24 +508,9 @@ mod tests {
     }
 
     #[test]
-    fn durable_voice_rows_never_project_as_current_streams() {
-        let mut doc = automerge::AutoCommit::new();
-        crate::doc::ChatDoc::seed_if_empty(&mut doc);
-        crate::doc::ChatDoc::voice_join(&mut doc, "c_standup", "u_remote");
-        let mut app = crate::app::ChatApp::new_ephemeral();
-        app.reload(&doc);
-        assert!(app.voice_in("c_standup").is_empty());
-        assert!(!app.call.active);
-        assert!(
-            !crate::doc::ChatDoc::list_voice_members(&doc, "c_standup").is_empty(),
-            "legacy history remains intact"
-        );
-    }
-
-    #[test]
     fn reader_pointer_and_resource_join_use_the_same_service_without_document_mutation() {
         use ui::permissions::{Actor, PermissionContext, Role};
-        use ui::{Widget, widget::Collaborative};
+        use ui::widget::Collaborative;
         let mut doc = automerge::AutoCommit::new();
         crate::doc::ChatDoc::seed_if_empty(&mut doc);
         let before = doc.save();
@@ -478,32 +522,19 @@ mod tests {
                 vec![],
             ),
         );
-        pointer.on_hit(crate::app::Hit::VoiceChannel("c_standup".into()), &mut doc);
+        pointer.on_hit(
+            crate::app::Hit::VoiceChannel("c_standup".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         let pointer_requests = pointer.take_collab_requests();
         let mut resource = crate::app::ChatApp::new_ephemeral();
         resource.reload(&doc);
         resource.perms = pointer.perms.clone();
-        let operation = crate::actions::ChatOperation::NativeVoice {
-            channel: "c_standup".into(),
-            request: Request::new(Command::Join {
-                channel_id: "c_standup".into(),
-            }),
-        };
-        assert!(
-            resource
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::Effect,
-                        crate::actions::CHAT_OPERATION_TYPE,
-                        &serde_json::to_vec(&operation).unwrap()
-                    ),
-                    &mut doc,
-                    &automerge::ROOT
-                )
-                .map(|started| started.is_some())
-                .unwrap()
-        );
+        resource
+            .answer_effect(crate::effects::ChatEffect::JoinCall {
+                channel: "c_standup".into(),
+            })
+            .unwrap();
         let resource_requests = resource.take_collab_requests();
         let command = |requests: Vec<CollabRequest>| match requests.into_iter().next().unwrap() {
             CollabRequest::NativeMediaCommand { command, .. } => command,

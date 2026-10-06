@@ -1047,14 +1047,14 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         self.visible_window_changed();
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.reconcile_mounted();
         for row in &mut self.mounted {
             row.widget.sync(state, path);
         }
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let now = crate::time::now();
         let elapsed = self
             .last_tick
@@ -1545,7 +1545,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
@@ -1827,8 +1827,8 @@ mod tests {
         list: &mut VirtualList<M>,
         width: f32,
     ) -> (TaffyTree<()>, NodeId) {
-        let mut doc = AutoCommit::new();
-        list.sync(&mut doc, &automerge::ROOT);
+        let doc = AutoCommit::new();
+        list.sync(&doc, &automerge::ROOT);
         let mut taffy = TaffyTree::new();
         let mut node_map = HashMap::new();
         let node = list.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
@@ -1874,7 +1874,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -1946,22 +1946,22 @@ mod tests {
                 pending: Rc::default(),
             };
             let mut list = VirtualList::new(model, 24.0, |_, _, key| {
-                Box::new(crate::widget::Button::new(&key.to_string(), "Row", None))
+                Box::new(crate::widget::Button::new(&key.to_string(), "Row"))
             })
             .with_viewport_height(48.0);
             let _ = lay_out(&mut list, 300.0);
             list.take_structure_dirty();
             let before = list.mounted[0].node;
             assert!(before.is_some());
-            let mut doc = AutoCommit::new();
-            list.sync(&mut doc, &automerge::ROOT);
+            let doc = AutoCommit::new();
+            list.sync(&doc, &automerge::ROOT);
             assert_eq!(
                 list.mounted[0].node, before,
                 "sync preserves a retained row's layout node"
             );
             list.take_structure_dirty();
             states.borrow_mut().insert(0, 1);
-            list.sync(&mut doc, &automerge::ROOT);
+            list.sync(&doc, &automerge::ROOT);
             assert!(list.mounted[0].node.is_none());
             assert!(
                 list.take_structure_dirty(),
@@ -1999,7 +1999,7 @@ mod tests {
                 &mut list,
                 "key:20",
                 &crate::a11y::Action::Focus,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(list.focused_key, Some(20));
@@ -2007,7 +2007,7 @@ mod tests {
                 &mut list,
                 "key:20",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert!(list.selection().is_selected(&20));
@@ -2144,7 +2144,7 @@ mod tests {
                 &mut list,
                 "key:0",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert!(Widget::needs_animation_frame(&list));
@@ -2154,7 +2154,7 @@ mod tests {
             changed.set(true);
             assert!(Widget::update(
                 &mut list,
-                &mut AutoCommit::new(),
+                &AutoCommit::new(),
                 &automerge::ROOT
             ));
             let _ = lay_out(&mut list, 300.0);
@@ -2171,7 +2171,7 @@ mod tests {
                 &mut list,
                 "key:0",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
 
@@ -2179,7 +2179,7 @@ mod tests {
             changed.set(true);
             assert!(Widget::update(
                 &mut list,
-                &mut AutoCommit::new(),
+                &AutoCommit::new(),
                 &automerge::ROOT
             ));
             let _ = lay_out(&mut list, 300.0);
@@ -2256,7 +2256,7 @@ mod tests {
                 .push(ListModelChange::RowsChanged { keys: vec![2] });
             assert!(Widget::update(
                 &mut list,
-                &mut AutoCommit::new(),
+                &AutoCommit::new(),
                 &automerge::ROOT,
             ));
             let _ = lay_out(&mut list, 300.0);

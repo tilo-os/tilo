@@ -1,7 +1,7 @@
 {
   "pod_name": "tilo-verifier-semantic-23012-x86",
   "pod_uid": "11761bc6-24cd-418f-99cd-b4118012bb47",
-  "node": "talos-2a014f9307124fd2",
+  "node": "native-x86-node",
   "phase": "Succeeded",
   "image": "code.tilo.so/tilo/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a",
   "image_id": "code.tilo.so/tilo/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a",

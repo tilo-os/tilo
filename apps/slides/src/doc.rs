@@ -26,10 +26,7 @@
 //! ```
 //!
 //! A text element's words are rich text: paragraphs with their marks, edited
-//! by the SDK editor through [`SlidesAction::EditElementText`]. Decks from
-//! before kept a plain `text` (Text) with the box's bold and italic as flags;
-//! [`SlidesDoc::upgrade`] rewrites them in place, once, stamping
-//! `deck.text_version`.
+//! by the SDK editor through [`SlidesAction::EditElementText`].
 //!
 //! [`SlidesAction::EditElementText`]: crate::actions::SlidesAction::EditElementText
 //!
@@ -50,9 +47,6 @@ use ui::widget::BlockContent;
 /// text/style edits. The large gap makes ordinary insert/reorder operations a
 /// single absolute write.
 const ORDER_GAP: i64 = 1_i64 << 32;
-
-/// The deck format whose text elements keep their words as rich text.
-pub const TEXT_VERSION: i64 = 2;
 
 pub struct SlidesDoc;
 
@@ -178,59 +172,14 @@ impl SlidesDoc {
         }
     }
 
-    /// Produce the one absolute order key for a user-authored reorder.  This
-    /// is deliberately a read-only calculation: an encoded action must carry
-    /// this value to every replica rather than asking each receiver to derive
-    /// a destination from its (possibly concurrently changed) local order.
-    pub fn rank_for_move(doc: &AutoCommit, from: usize, to: usize) -> Option<i64> {
-        let entries = Self::ordered_slides(doc);
-        if from >= entries.len() || to >= entries.len() || from == to {
-            return None;
-        }
-        let moved_id = entries.get(from)?.1.clone();
-        let remaining = entries
+    /// The slides' order keys, in deck order: what an author computes the
+    /// key of an inserted or moved slide from
+    /// ([`rank_for_insert`], [`rank_for_move`]).
+    pub fn slide_ranks(doc: &AutoCommit) -> Vec<i64> {
+        Self::ordered_slides(doc)
             .into_iter()
-            .filter(|(_, id, _)| id != &moved_id)
-            .collect::<Vec<_>>();
-        let slot = to.min(remaining.len());
-        let previous = slot
-            .checked_sub(1)
-            .and_then(|index| remaining.get(index).map(|entry| entry.0));
-        let next = remaining.get(slot).map(|entry| entry.0);
-        Some(match (previous, next) {
-            (None, Some(next)) => next.saturating_sub(ORDER_GAP),
-            (Some(previous), None) => previous.saturating_add(ORDER_GAP),
-            (Some(previous), Some(next)) if next.saturating_sub(previous) > 1 => {
-                previous + (next - previous) / 2
-            }
-            // Dense order keys remain deterministic.  Equal ranks are sorted
-            // by immutable slide id, so this is still a convergent absolute
-            // operation; a later local insert can rebalance scalar metadata.
-            (Some(previous), Some(_)) => previous,
-            (None, None) => 0,
-        })
-    }
-
-    /// Produce the absolute sparse key for an insertion at this authored
-    /// logical slot. This does not mutate the document; callers put the rank
-    /// into the durable action so a receiver never derives it from a changed
-    /// local slide list.
-    pub fn rank_for_insert(doc: &AutoCommit, at: usize) -> i64 {
-        let entries = Self::ordered_slides(doc);
-        let slot = at.min(entries.len());
-        let previous = slot
-            .checked_sub(1)
-            .and_then(|index| entries.get(index).map(|entry| entry.0));
-        let next = entries.get(slot).map(|entry| entry.0);
-        match (previous, next) {
-            (None, Some(next)) => next.saturating_sub(ORDER_GAP),
-            (Some(previous), None) => previous.saturating_add(ORDER_GAP),
-            (Some(previous), Some(next)) if next.saturating_sub(previous) > 1 => {
-                previous + (next - previous) / 2
-            }
-            (Some(previous), Some(_)) => previous,
-            (None, None) => 0,
-        }
+            .map(|(rank, _, _)| rank)
+            .collect()
     }
 
     /// Set a slide's already-authored absolute order key without replacing its
@@ -340,7 +289,7 @@ impl SlidesDoc {
         let Ok(body) = doc.put_object(element, "body", ObjType::Map) else {
             return;
         };
-        let written = qdoc_rich_text::RichText::initialize_under(doc, &body).is_ok()
+        let written = tilo_document::RichText::initialize_under(doc, &body).is_ok()
             && tilo_rich_text::fill_under(doc, &body, blocks).is_ok();
         if !written {
             tracing::warn!("text element body could not be written");
@@ -379,86 +328,31 @@ impl SlidesDoc {
         name: &str,
         on: bool,
     ) -> bool {
-        let Some((_, containers)) = Self::element_body_at(doc, slide_idx, elem_id) else {
+        let Some((body, containers)) = Self::element_body_at(doc, slide_idx, elem_id) else {
             return false;
         };
-        let blocks = qdoc::model::materialize_region(doc, &containers, qdoc::model::Region::Body);
-        let mut ids = qdoc::model::IdGen::new(doc.get_actor().to_hex_string());
-        let mut dm = qdoc::model::DocMut {
-            doc,
-            c: &containers,
-            ids: &mut ids,
+        let blocks =
+            tilo_doc::model::materialize_region(doc, &containers, tilo_doc::model::Region::Body);
+        let spans: Vec<tilo_document::action::Span> = blocks
+            .iter()
+            .filter(|block| !block.text.is_empty())
+            .map(|block| tilo_document::action::Span {
+                block: block.id.clone(),
+                start: 0,
+                end: block.text.chars().count(),
+            })
+            .collect();
+        if spans.is_empty() {
+            return true;
+        }
+        let action = tilo_document::RichTextAction::SetMark {
+            region: tilo_document::action::RegionKind::Body,
+            spans,
+            name: name.to_string(),
+            value: on.then_some(tilo_document::action::MarkVal::Bool(true)),
+            also_clear: Vec::new(),
         };
-        for block in blocks.iter().filter(|block| !block.text.is_empty()) {
-            let len = block.text.chars().count();
-            dm.remove_mark(&block.id, 0, len, name);
-            if on {
-                dm.add_mark(&block.id, 0, len, name, true);
-            }
-        }
-        true
-    }
-
-    /// Every text element Map still in the first format: a plain `text`
-    /// and no rich-text body.
-    fn first_format_elements(doc: &AutoCommit) -> Vec<ObjId> {
-        let mut out = Vec::new();
-        for (_, _, slide) in Self::ordered_slides(doc) {
-            let Ok(Some((Value::Object(ObjType::List), elements))) = doc.get(&slide, "elements")
-            else {
-                continue;
-            };
-            for j in 0..doc.length(&elements) {
-                let Ok(Some((Value::Object(ObjType::Map), element))) = doc.get(&elements, j) else {
-                    continue;
-                };
-                let text_kind = read_str(doc, &element, "kind").is_none_or(|kind| kind == "text");
-                let has_body = matches!(
-                    doc.get(&element, "body"),
-                    Ok(Some((Value::Object(ObjType::Map), _)))
-                );
-                if text_kind && !has_body {
-                    out.push(element);
-                }
-            }
-        }
-        out
-    }
-
-    /// Whether the deck still holds first-format text.
-    pub fn needs_upgrade(doc: &AutoCommit) -> bool {
-        Self::deck_get(doc).is_some_and(|deck| {
-            read_i64_coerced(doc, &deck, "text_version").unwrap_or(0) < TEXT_VERSION
-                || !Self::first_format_elements(doc).is_empty()
-        })
-    }
-
-    /// Rewrite first-format text elements as rich text, in place: each line
-    /// a paragraph, the box's bold and italic as marks over all of it.
-    /// Nothing written is dropped; a deck already upgraded is left alone.
-    /// Returns whether anything changed.
-    pub fn upgrade(doc: &mut AutoCommit) -> bool {
-        let Some(deck) = Self::deck_get(doc) else {
-            return false;
-        };
-        let pending = Self::first_format_elements(doc);
-        for element in &pending {
-            let text = read_str_or_text(doc, element, "text").unwrap_or_default();
-            let bold = read_bool(doc, element, "bold").unwrap_or(false);
-            let italic = read_bool(doc, element, "italic").unwrap_or(false);
-            Self::write_body(
-                doc,
-                element,
-                &crate::model::paragraphs_of(&text, bold, italic),
-            );
-            let _ = doc.put(element, "bold", false);
-            let _ = doc.put(element, "italic", false);
-        }
-        let stamped = read_i64_coerced(doc, &deck, "text_version").unwrap_or(0) >= TEXT_VERSION;
-        if !stamped {
-            let _ = doc.put(&deck, "text_version", TEXT_VERSION);
-        }
-        !pending.is_empty() || !stamped
+        action.apply_under(doc, &body).is_ok()
     }
 
     // `obj` is the slide Map the caller just created/fetched, and `elements`
@@ -504,7 +398,6 @@ impl SlidesDoc {
     )]
     pub fn seed(doc: &mut AutoCommit, deck: &Deck) {
         let deck_obj = Self::deck_ensure(doc);
-        let _ = doc.put(&deck_obj, "text_version", TEXT_VERSION);
         Self::write_text(doc, &deck_obj, "title", &deck.title);
         let _ = doc.put(&deck_obj, "palette", deck.palette.as_str());
         let slides = Self::slides_list_ensure(doc);
@@ -592,6 +485,33 @@ impl SlidesDoc {
             };
             let _ = doc.splice_text(&tid, char_pos, del as isize, ins);
         }
+    }
+
+    /// The text of slide `slide_id`'s speaker notes, as its editor and its
+    /// edits find it.
+    pub fn notes_text(doc: &AutoCommit, slide_id: &str) -> Option<ObjId> {
+        let slide = Self::slide_by_id(doc, slide_id)?;
+        match doc.get(&slide, "notes") {
+            Ok(Some((Value::Object(ObjType::Text), id))) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// The text of slide `slide_id`'s speaker notes, created when the slide
+    /// has none yet: where an edit of them applies.
+    pub fn notes_text_for_edit(doc: &mut AutoCommit, slide_id: &str) -> Option<ObjId> {
+        if let Some(notes) = Self::notes_text(doc, slide_id) {
+            return Some(notes);
+        }
+        let slide = Self::slide_by_id(doc, slide_id)?;
+        doc.put_object(&slide, "notes", ObjType::Text).ok()
+    }
+
+    fn slide_by_id(doc: &AutoCommit, slide_id: &str) -> Option<ObjId> {
+        Self::ordered_slides(doc)
+            .into_iter()
+            .find(|(_, id, _)| id == slide_id)
+            .map(|(_, _, object)| object)
     }
 
     /// Resolve (or create) the CRDT text backing one slide's speaker notes.
@@ -682,10 +602,11 @@ impl SlidesDoc {
         del: usize,
         ins: &str,
     ) {
-        let Some((_, containers)) = Self::element_body_at(doc, slide_idx, elem_id) else {
+        let Some((body, containers)) = Self::element_body_at(doc, slide_idx, elem_id) else {
             return;
         };
-        let blocks = qdoc::model::materialize_region(doc, &containers, qdoc::model::Region::Body);
+        let blocks =
+            tilo_doc::model::materialize_region(doc, &containers, tilo_doc::model::Region::Body);
         let mut at = char_pos;
         let Some((block, offset)) = blocks.iter().enumerate().find_map(|(index, block)| {
             let len = block.text.chars().count();
@@ -698,18 +619,14 @@ impl SlidesDoc {
         }) else {
             return;
         };
-        let mut ids = qdoc::model::IdGen::new(doc.get_actor().to_hex_string());
-        let mut dm = qdoc::model::DocMut {
-            doc,
-            c: &containers,
-            ids: &mut ids,
+        let action = tilo_document::RichTextAction::SpliceText {
+            region: tilo_document::action::RegionKind::Body,
+            block,
+            at: offset,
+            del,
+            ins: ins.to_string(),
         };
-        dm.splice_text(
-            &block,
-            offset,
-            isize::try_from(del).unwrap_or(isize::MAX),
-            ins,
-        );
+        let _ = action.apply_under(doc, &body);
     }
 
     /// The body of element `elem_id` on slide `slide_idx`, and its containers.
@@ -717,12 +634,12 @@ impl SlidesDoc {
         doc: &AutoCommit,
         slide_idx: usize,
         elem_id: &str,
-    ) -> Option<(ObjId, qdoc::model::Containers)> {
+    ) -> Option<(ObjId, tilo_doc::model::Containers)> {
         let element = Self::element_obj(doc, slide_idx, elem_id)?;
         let Ok(Some((Value::Object(ObjType::Map), body))) = doc.get(&element, "body") else {
             return None;
         };
-        let containers = qdoc::model::open(doc, &body).ok()?;
+        let containers = tilo_doc::model::open(doc, &body).ok()?;
         Some((body, containers))
     }
 
@@ -791,7 +708,7 @@ impl SlidesDoc {
         else {
             return;
         };
-        if let Some(rank) = Self::rank_for_move(doc, from, to) {
+        if let Some(rank) = rank_for_move(&Self::slide_ranks(doc), from, to) {
             let _ = Self::set_slide_order(doc, &id, rank);
         }
     }
@@ -880,125 +797,107 @@ impl SlidesDoc {
 // Field readers
 // ===========================================================================
 
+/// The one absolute order key for moving the slide at `from` to `to`, among
+/// slides whose keys in deck order are `ranks`. Computed once by the author:
+/// the action carries this value to every replica rather than asking each
+/// receiver to derive a destination from its (possibly concurrently changed)
+/// local order.
+pub fn rank_for_move(ranks: &[i64], from: usize, to: usize) -> Option<i64> {
+    if from >= ranks.len() || to >= ranks.len() || from == to {
+        return None;
+    }
+    let remaining: Vec<i64> = ranks
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != from)
+        .map(|(_, rank)| *rank)
+        .collect();
+    Some(rank_between(&remaining, to))
+}
+
+/// The absolute key of a slide inserted at slot `at` among slides whose keys
+/// in deck order are `ranks`.
+pub fn rank_for_insert(ranks: &[i64], at: usize) -> i64 {
+    rank_between(ranks, at)
+}
+
+fn rank_between(ranks: &[i64], slot: usize) -> i64 {
+    let slot = slot.min(ranks.len());
+    let previous = slot
+        .checked_sub(1)
+        .and_then(|index| ranks.get(index).copied());
+    let next = ranks.get(slot).copied();
+    match (previous, next) {
+        (None, Some(next)) => next.saturating_sub(ORDER_GAP),
+        (Some(previous), None) => previous.saturating_add(ORDER_GAP),
+        (Some(previous), Some(next)) if next.saturating_sub(previous) > 1 => {
+            previous + (next - previous) / 2
+        }
+        // Dense order keys remain deterministic. Equal ranks are sorted by
+        // immutable slide id, so this is still a convergent absolute
+        // operation.
+        (Some(previous), Some(_)) => previous,
+        (None, None) => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::{ElementKind, seed_deck};
     use tilo_automerge::ApplyIncoming;
 
-    /// A deck saved before text boxes were rich text: a plain `text` and the
-    /// box's bold and italic as flags.
-    fn first_format_deck() -> AutoCommit {
-        let mut doc = AutoCommit::new();
-        let deck = doc.put_object(ROOT, "deck", ObjType::Map).unwrap();
-        let title = doc.put_object(&deck, "title", ObjType::Text).unwrap();
-        doc.splice_text(&title, 0, 0, "Old deck").unwrap();
-        doc.put(&deck, "palette", "indigo").unwrap();
-        let slides = doc.put_object(&deck, "slides", ObjType::List).unwrap();
-        let slide = doc.insert_object(&slides, 0, ObjType::Map).unwrap();
-        doc.put(&slide, "id", "slide-1").unwrap();
-        doc.put(&slide, "layout", "title-content").unwrap();
-        doc.put(&slide, "background", "surface").unwrap();
-        doc.put_object(&slide, "notes", ObjType::Text).unwrap();
-        let elements = doc.put_object(&slide, "elements", ObjType::List).unwrap();
-        for (j, (id, kind, text, bold, italic)) in [
-            ("title", "text", "Quarterly review\nFirst line", true, false),
-            ("body", "text", "plain words", false, true),
-            ("box", "rect", "", false, false),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let e = doc.insert_object(&elements, j, ObjType::Map).unwrap();
-            doc.put(&e, "id", id).unwrap();
-            doc.put(&e, "kind", kind).unwrap();
-            for (key, value) in [("x", 10.0), ("y", 10.0), ("w", 400.0), ("h", 80.0)] {
-                doc.put(&e, key, value).unwrap();
-            }
-            doc.put(&e, "font_size", 32.0).unwrap();
-            doc.put(&e, "align", "left").unwrap();
-            doc.put(&e, "fill", "text").unwrap();
-            doc.put(&e, "stroke", "none").unwrap();
-            doc.put(&e, "bold", bold).unwrap();
-            doc.put(&e, "italic", italic).unwrap();
-            doc.put(&e, "z", 0_i64).unwrap();
-            let t = doc.put_object(&e, "text", ObjType::Text).unwrap();
-            doc.splice_text(&t, 0, 0, text).unwrap();
+    /// One slide `slide-1` with a two-line bold title `title`, an italic
+    /// body `body` and a shape `box`.
+    fn text_deck() -> AutoCommit {
+        let mut slide = Slide::new(Layout::TitleContent);
+        slide.id = "slide-1".into();
+        for (id, kind, text, bold, italic) in [
+            (
+                "title",
+                ElementKind::Text,
+                "Quarterly review\nFirst line",
+                true,
+                false,
+            ),
+            ("body", ElementKind::Text, "plain words", false, true),
+            ("box", ElementKind::Rect, "", false, false),
+        ] {
+            let mut element = if kind == ElementKind::Text {
+                Element::text(text, 10.0, 10.0, 400.0, 80.0, 32.0)
+            } else {
+                Element::shape(kind, 10.0, 10.0, 400.0, 80.0)
+            };
+            element.id = id.into();
+            element.bold = bold;
+            element.italic = italic;
+            slide.elements.push(element);
         }
+        let mut doc = AutoCommit::new();
+        SlidesDoc::seed(
+            &mut doc,
+            &Deck {
+                title: "Old deck".into(),
+                palette: PaletteKind::Indigo,
+                slides: vec![slide],
+            },
+        );
         doc.commit();
         doc
     }
 
     #[test]
-    fn first_format_text_comes_across_whole_marked_and_once() {
-        use ui::widget::marks::Mark;
-        let mut doc = first_format_deck();
-        // Read as it is, the words and the box's weight are there already.
-        let before = SlidesDoc::load(&doc).unwrap();
-        assert_eq!(
-            before.slides[0].elements[0].text,
-            "Quarterly review\nFirst line"
-        );
-        assert!(before.slides[0].elements[0].bold);
-        assert!(SlidesDoc::needs_upgrade(&doc));
-
-        assert!(SlidesDoc::upgrade(&mut doc));
-        assert!(!SlidesDoc::needs_upgrade(&doc));
-        let after = SlidesDoc::load(&doc).unwrap();
-        assert_eq!(after, before, "the upgrade changes how, not what");
-        let title = &after.slides[0].elements[0];
-        let lines: Vec<&str> = title
-            .blocks
-            .iter()
-            .map(|block| block.text.as_str())
-            .collect();
-        assert_eq!(
-            lines,
-            ["Quarterly review", "First line"],
-            "a paragraph per line"
-        );
-        assert!(
-            title
-                .blocks
-                .iter()
-                .all(|block| block.marks.iter().any(|span| span.mark == Mark::Bold)),
-            "the box's bold is a mark over all of it"
-        );
-        let body = &after.slides[0].elements[1];
-        assert_eq!(body.text, "plain words");
-        assert!(body.italic);
-        assert!(
-            body.blocks[0]
-                .marks
-                .iter()
-                .any(|span| span.mark == Mark::Italic)
-        );
-        // Shapes carry no words and gain none.
-        assert!(after.slides[0].elements[2].blocks.is_empty());
-
-        // Once is enough: a second pass writes nothing.
-        let heads = doc.get_heads();
-        assert!(!SlidesDoc::upgrade(&mut doc));
-        assert_eq!(doc.get_heads(), heads);
-        // A saved and reopened copy reads the same.
-        let reopened = AutoCommit::load(&doc.save()).unwrap();
-        assert_eq!(SlidesDoc::load(&reopened).unwrap(), after);
-    }
-
-    #[test]
     fn a_text_box_is_edited_by_rich_text_actions() {
         use tilo_actions::Action as _;
-        let mut doc = first_format_deck();
-        SlidesDoc::upgrade(&mut doc);
-        doc.commit();
+        let mut doc = text_deck();
         let body = SlidesDoc::element_body(&doc, "slide-1", "body").unwrap();
-        let state = qdoc_rich_text::RichText::read_under(&doc, &body).unwrap();
+        let state = tilo_document::RichText::read_under(&doc, &body).unwrap();
         let block = state.body().id_at(0).unwrap().to_owned();
         crate::actions::SlidesAction::EditElementText {
             slide_id: "slide-1".into(),
             element_id: "body".into(),
-            edit: qdoc_rich_text::RichTextAction::SpliceText {
-                region: qdoc_rich_text::action::RegionKind::Body,
+            edit: tilo_document::RichTextAction::SpliceText {
+                region: tilo_document::action::RegionKind::Body,
                 block,
                 at: 0,
                 del: 0,
@@ -1015,7 +914,7 @@ mod tests {
             crate::actions::SlidesAction::EditElementText {
                 slide_id: "slide-1".into(),
                 element_id: "gone".into(),
-                edit: qdoc_rich_text::RichTextAction::AppendParagraph { text: "x".into() },
+                edit: tilo_document::RichTextAction::AppendParagraph { text: "x".into() },
             }
             .apply(&mut doc)
             .is_err()
@@ -1026,9 +925,7 @@ mod tests {
     #[test]
     fn set_slide_text_rewrites_a_slides_title_and_body_by_number_or_id() {
         use tilo_actions::Action as _;
-        let mut doc = first_format_deck();
-        SlidesDoc::upgrade(&mut doc);
-        doc.commit();
+        let mut doc = text_deck();
         let set = |slide: &str, title: Option<&str>, body: Option<&str>| {
             crate::actions::SlidesAction::SetSlideText {
                 slide: slide.into(),

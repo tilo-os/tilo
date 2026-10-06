@@ -3,6 +3,7 @@
 //! `tilo-vm` runs over SSH.
 
 pub mod apply;
+pub mod awake;
 pub mod boot;
 pub mod daemon;
 pub mod display;
@@ -12,6 +13,7 @@ mod fsutil;
 pub mod input;
 pub mod jobs;
 pub mod layers;
+mod linker;
 pub mod locks;
 pub mod packages;
 pub mod server;

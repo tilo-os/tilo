@@ -36,6 +36,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
 mod native_file;
 pub use native_file::{FileHistoryReader, InitialFileHistory};
+pub mod person;
 pub mod transfer;
 
 /// Key, in a record's own document, of the map holding its identity.
@@ -403,9 +404,12 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 pub struct RecordKind(String);
 
 /// Kinds records were once stamped with, as the kind they are now. Writer's
-/// documents were `document` until its native app and its hosted and browser
-/// renderers settled on the rich-text resource kind they share.
-const FORMER_KINDS: [(&str, &str); 1] = [("document", "qdoc.rich-text")];
+/// documents were `document`, then `qdoc.rich-text`, until its native app and
+/// its hosted and browser renderers settled on `tilo.rich-text`.
+const FORMER_KINDS: [(&str, &str); 2] = [
+    ("document", "tilo.rich-text"),
+    ("qdoc.rich-text", "tilo.rich-text"),
+];
 
 impl RecordKind {
     /// A kind by name; a former name is the kind it became.
@@ -2169,6 +2173,30 @@ impl RecordOwners {
         package_id: &str,
         workspace_id: &str,
     ) -> Result<RecordStore, RecordOpenError> {
+        self.open_with(package_id, workspace_id, true)
+    }
+
+    /// The owner of `package_id`'s records in the person's own room `room`
+    /// ([`person`]). Unlike [`Self::open`] it never joins a native
+    /// component's construction: the person's records are opened beside the
+    /// component's own and are not the history it was launched to read.
+    ///
+    /// # Errors
+    /// Rejects an invalid package or room.
+    pub fn open_person(
+        &mut self,
+        package_id: &str,
+        room: &str,
+    ) -> Result<RecordStore, RecordOpenError> {
+        self.open_with(package_id, room, false)
+    }
+
+    fn open_with(
+        &mut self,
+        package_id: &str,
+        workspace_id: &str,
+        joins_construction: bool,
+    ) -> Result<RecordStore, RecordOpenError> {
         if self.portable.is_some() {
             app_state::validate_record_namespace(package_id, workspace_id)?;
         } else {
@@ -2195,9 +2223,7 @@ impl RecordOwners {
             portable: self.portable.clone(),
             pending: HashMap::new(),
             next_reservation: 0,
-            native_initial: self
-                .portable
-                .is_none()
+            native_initial: (joins_construction && self.portable.is_none())
                 .then(crate::collaboration::native_initial::capture_bridge)
                 .flatten(),
             file_mode_selected: false,
@@ -2450,15 +2476,32 @@ impl RecordReservation {
         &mut self,
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<(), RecordOpenError> {
+        self.initialize_seeded(initialize, |_| Ok(()))
+    }
+
+    /// [`Self::initialize`], then `seed` the record on this device: what it
+    /// starts with that depends on who creates it or where (the creator as
+    /// owner, settings that already exist). The seed is written after the
+    /// genesis, which stays the same on every device, and before the
+    /// record's undo history begins, so it is nobody's undo step.
+    ///
+    /// # Errors
+    /// As [`Self::initialize`]; a failing seed fails the initialization.
+    pub fn initialize_seeded(
+        &mut self,
+        initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+        seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+    ) -> Result<(), RecordOpenError> {
         if self.store.0.borrow().portable.is_some() {
-            return self.initialize_portable(initialize);
+            return self.initialize_portable(initialize, seed);
         }
-        self.initialize_with(initialize, app_state::DocWriter::start_new)
+        self.initialize_with(initialize, seed, app_state::DocWriter::start_new)
     }
 
     fn initialize_with(
         &self,
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+        seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
         start: impl FnOnce(
             &Rc<app_state::DocOwner>,
             &mut AutoCommit,
@@ -2483,6 +2526,7 @@ impl RecordReservation {
         };
         let mut doc = owner.new_document()?;
         genesis(&mut doc, &self.checkout, &workspace, initialize)?;
+        seed(&mut doc).map_err(RecordOpenError::Initialization)?;
         owner.validate_schema(&doc)?;
         validate_identity(&doc, &self.checkout, &workspace)?;
         doc.commit();
@@ -2646,6 +2690,12 @@ impl RecordStore {
     }
     /// The package and home workspace (room) this store's records belong
     /// to, which name their replication route.
+    /// The durable store this set's records live in, when it has one.
+    pub(crate) fn backend(&self) -> Option<Rc<dyn DurableStore>> {
+        let set = self.0.borrow();
+        set.backend.clone().or_else(|| set.documents.clone())
+    }
+
     pub fn package_and_home(&self) -> (String, String) {
         let set = self.0.borrow();
         (set.package_id.clone(), set.home.clone())
@@ -3594,9 +3644,14 @@ mod tests {
     /// as the rich-text kind, and opening it rewrites nothing.
     #[test]
     fn a_record_stamped_with_a_former_kind_opens_as_the_current_one() {
-        let current = RecordKind::new("qdoc.rich-text");
+        let current = RecordKind::new("tilo.rich-text");
         assert_eq!(RecordKind::new("document"), current);
-        assert!(current.names("document") && current.names("qdoc.rich-text"));
+        assert_eq!(RecordKind::new("qdoc.rich-text"), current);
+        assert!(
+            current.names("document")
+                && current.names("qdoc.rich-text")
+                && current.names("tilo.rich-text")
+        );
         let id = RecordId::for_tab(7);
         let mut doc = AutoCommit::new();
         init(&mut doc, &id, &current, "room");
@@ -3951,6 +4006,7 @@ mod tests {
                     put_text(doc, "discard", "private");
                     Ok(())
                 },
+                |_| Ok(()),
                 |_, _| {
                     Err(app_state::StoreError::Io {
                         context: "injected initial write refusal".into(),

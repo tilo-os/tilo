@@ -190,6 +190,15 @@ impl SshEndpoint {
             port,
         })
     }
+
+    /// `user@host`, with `:port` when it is not 22: what [`Self::parse`] reads.
+    pub fn ssh_spec(&self) -> String {
+        if self.port == 22 {
+            format!("{}@{}", self.user, self.host)
+        } else {
+            format!("{}@{}:{}", self.user, self.host, self.port)
+        }
+    }
 }
 
 /// What an adapter can do beyond the required five operations.
@@ -229,7 +238,13 @@ impl Vm<'_> {
     }
 
     fn memory(&self) -> u32 {
-        self.entry.memory_mb.unwrap_or(8192)
+        self.entry.memory_mb.unwrap_or_else(|| {
+            if self.entry.hypervisor == "whpx" {
+                3072
+            } else {
+                8192
+            }
+        })
     }
 
     fn cpus(&self) -> u32 {
@@ -252,6 +267,11 @@ pub trait Hypervisor {
     fn create(&self, vm: &Vm<'_>, root_key: &str) -> Result<Vec<CommandLine>, CliError>;
     fn start(&self, vm: &Vm<'_>) -> Vec<CommandLine>;
     fn stop(&self, vm: &Vm<'_>) -> Vec<CommandLine>;
+    /// A power-button event can suspend an ARM guest rather than power it off.
+    /// Prefer an explicit guest shutdown when this adapter has that behaviour.
+    fn guest_shutdown_first(&self) -> bool {
+        false
+    }
     /// Commands that unregister a VM that is off from the hypervisor. The
     /// files it owns ([`vm_files`]) are removed by the caller.
     fn destroy(&self, vm: &Vm<'_>) -> Vec<CommandLine>;
@@ -302,6 +322,28 @@ pub trait Hypervisor {
     fn power_off(&self, _vm: &Vm<'_>) -> Option<CommandLine> {
         None
     }
+    /// Commands that wake the VM from a suspend (ACPI S3) it went into
+    /// itself; `None` when this adapter cannot (a device is woken with its
+    /// magic packet instead).
+    fn wake(&self, _vm: &Vm<'_>) -> Option<Vec<CommandLine>> {
+        None
+    }
+    /// Is the VM suspended, as the hypervisor sees it? `None` when the
+    /// adapter cannot tell.
+    fn suspended(&self, _vm: &Vm<'_>, _runner: &mut dyn Runner) -> Option<bool> {
+        None
+    }
+    /// Can tilo-vm power the machine on? A physical device it only reaches
+    /// over SSH stays off once off, so it is restarted with a reboot.
+    fn powers_on(&self) -> bool {
+        true
+    }
+    /// Does a CI layer come out of an image this host pulls, rather than
+    /// one the guest pulls? A device's storage and network are a board's:
+    /// it gets only the layer, never the whole multi-gigabyte image.
+    fn ci_layers_from_host(&self) -> bool {
+        false
+    }
 }
 
 /// # Errors
@@ -313,10 +355,11 @@ pub fn adapter(name: &str) -> Result<Box<dyn Hypervisor>, CliError> {
         "utm" => Ok(Box::new(Utm)),
         "hyperv" => Ok(Box::new(HyperV)),
         "whpx" => Ok(Box::new(Whpx)),
+        DEVICE => Ok(Box::new(Device)),
         other => Err(CliError::Unsupported {
             what: format!("hypervisor '{other}'"),
-            alternative: "set `hypervisor` to libvirt, qemu, utm, hyperv or whpx in vms.toml"
-                .into(),
+            alternative:
+                "set `hypervisor` to libvirt, qemu, utm, hyperv, whpx or device in vms.toml".into(),
         }),
     }
 }
@@ -359,6 +402,71 @@ pub fn vm_files(disk: &str) -> Vec<String> {
             .map(|suffix| whpx_file(disk, suffix)),
     );
     files
+}
+
+// ---- a dev device reached over SSH (a board) ---------------------------------
+
+/// The adapter of a machine that already runs a Tilo dev image, such as a
+/// board installed from its board dev disk, registered with `vm add`.
+pub const DEVICE: &str = "device";
+
+/// No hypervisor: tilo-vm reaches the device only at its SSH address. It
+/// cannot create, power on or reset it; `vm stop` shuts it down over SSH
+/// and `vm restart` reboots it.
+pub struct Device;
+
+impl Hypervisor for Device {
+    fn name(&self) -> &'static str {
+        DEVICE
+    }
+
+    fn create(&self, vm: &Vm<'_>, _root_key: &str) -> Result<Vec<CommandLine>, CliError> {
+        Err(CliError::Unsupported {
+            what: format!("creating device {}", vm.name),
+            alternative: format!(
+                "register a running device instead: tilo-vm vm add {} --ssh root@<address>",
+                vm.name
+            ),
+        })
+    }
+
+    fn start(&self, _vm: &Vm<'_>) -> Vec<CommandLine> {
+        Vec::new()
+    }
+
+    fn stop(&self, _vm: &Vm<'_>) -> Vec<CommandLine> {
+        Vec::new()
+    }
+
+    fn guest_shutdown_first(&self) -> bool {
+        true
+    }
+
+    fn destroy(&self, _vm: &Vm<'_>) -> Vec<CommandLine> {
+        Vec::new()
+    }
+
+    fn ssh_endpoint(&self, vm: &Vm<'_>, _runner: &mut dyn Runner) -> Result<SshEndpoint, CliError> {
+        vm.entry
+            .ssh
+            .as_deref()
+            .and_then(SshEndpoint::parse)
+            .ok_or_else(|| CliError::Config {
+                path: crate::config::registry_path().display().to_string(),
+                detail: format!(
+                    "device '{}' has no `ssh` address; register it again: tilo-vm vm add {} --ssh <user>@<address>",
+                    vm.name, vm.name
+                ),
+            })
+    }
+
+    fn powers_on(&self) -> bool {
+        false
+    }
+
+    fn ci_layers_from_host(&self) -> bool {
+        true
+    }
 }
 
 // ---- libvirt (Linux) ----------------------------------------------------------
@@ -608,6 +716,18 @@ impl Hypervisor for Libvirt {
             .ok()
             .filter(|o| o.success)?;
         Some(output.stdout.lines().any(|l| l.trim() == vm.name))
+    }
+
+    fn wake(&self, vm: &Vm<'_>) -> Option<Vec<CommandLine>> {
+        Some(vec![Self::virsh(vm, &["dompmwakeup", vm.name])])
+    }
+
+    fn suspended(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Option<bool> {
+        let output = runner
+            .output(&Self::virsh(vm, &["domstate", vm.name]).env("LC_ALL", "C"))
+            .ok()
+            .filter(|o| o.success)?;
+        Some(output.stdout.trim() == "pmsuspended")
     }
 
     fn serial(&self, vm: &Vm<'_>) -> Option<CommandLine> {
@@ -1050,6 +1170,10 @@ impl Hypervisor for Whpx {
         vec![Self::qmp(vm, "system_powerdown")]
     }
 
+    fn guest_shutdown_first(&self) -> bool {
+        true
+    }
+
     fn destroy(&self, _vm: &Vm<'_>) -> Vec<CommandLine> {
         // QEMU keeps no registration: the VM is its files.
         Vec::new()
@@ -1078,8 +1202,10 @@ impl Hypervisor for Whpx {
         Capabilities {
             serial: true,
             credentials: Some("kernel command line (direct boot) or QEMU SMBIOS type 11"),
+            screenshot: true,
             direct_kernel: true,
             boot_esp: true,
+            control: Some("QEMU monitor (HMP over QMP)"),
             ..Capabilities::default()
         }
     }
@@ -1089,6 +1215,53 @@ impl Hypervisor for Whpx {
             "Get-Content -LiteralPath {} -Wait -Tail 100",
             ps_quote(&whpx_file(vm.entry.disk.as_deref()?, "ttyS0.log"))
         )))
+    }
+
+    fn screenshot(&self, vm: &Vm<'_>, out: &Path) -> Option<CommandLine> {
+        let script = format!(
+            "$ErrorActionPreference='Stop'; \
+             $out=[IO.Path]::GetFullPath({}); \
+             $null=[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($out)); \
+             $c=[Net.Sockets.TcpClient]::new('127.0.0.1',{}); \
+             try {{ $c.ReceiveTimeout=5000; $c.SendTimeout=5000; $s=$c.GetStream(); \
+             $r=[IO.StreamReader]::new($s); $w=[IO.StreamWriter]::new($s); $w.AutoFlush=$true; \
+             $null=$r.ReadLine(); \
+             foreach ($request in @(@{{execute='qmp_capabilities'}}, \
+                 @{{execute='screendump';arguments=@{{filename=$out;format='png'}}}})) {{ \
+               $w.WriteLine(($request | ConvertTo-Json -Compress -Depth 4)); \
+               do {{ $line=$r.ReadLine(); if ($null -eq $line) {{ throw 'QMP connection closed' }}; \
+                 $response=$line | ConvertFrom-Json; \
+               }} while ($response.PSObject.Properties.Name -notcontains 'return' -and \
+                        $response.PSObject.Properties.Name -notcontains 'error'); \
+               if ($response.error) {{ throw ('QMP screenshot failed: '+$response.error.desc) }}; \
+             }} }} finally {{ $c.Dispose() }}",
+            ps_quote(&out.display().to_string()),
+            Self::qmp_port(vm)
+        );
+        Some(powershell(&script))
+    }
+
+    fn control(&self, vm: &Vm<'_>, args: &[String]) -> Option<CommandLine> {
+        let command = ps_quote(&args.join(" "));
+        let script = format!(
+            "$ErrorActionPreference='Stop'; \
+             $c=[Net.Sockets.TcpClient]::new('127.0.0.1',{}); \
+             try {{ $c.ReceiveTimeout=5000; $c.SendTimeout=5000; $s=$c.GetStream(); \
+             $r=[IO.StreamReader]::new($s); $w=[IO.StreamWriter]::new($s); $w.AutoFlush=$true; \
+             $null=$r.ReadLine(); \
+             foreach ($request in @(@{{execute='qmp_capabilities'}}, \
+                 @{{execute='human-monitor-command';arguments=@{{'command-line'={command}}}}})) {{ \
+               $w.WriteLine(($request | ConvertTo-Json -Compress -Depth 4)); \
+               do {{ $line=$r.ReadLine(); if ($null -eq $line) {{ throw 'QMP connection closed' }}; \
+                 $response=$line | ConvertFrom-Json; \
+               }} while ($response.PSObject.Properties.Name -notcontains 'return' -and \
+                        $response.PSObject.Properties.Name -notcontains 'error'); \
+               if ($response.error) {{ throw ('QMP monitor failed: '+$response.error.desc) }}; \
+               if ($request.execute -eq 'human-monitor-command') {{ $response.return }}; \
+             }} }} finally {{ $c.Dispose() }}",
+            Self::qmp_port(vm)
+        );
+        Some(powershell(&script))
     }
 }
 
@@ -1233,6 +1406,21 @@ mod tests {
         }
     }
 
+    #[test]
+    fn whpx_monitor_keeps_command_arguments_in_a_literal() {
+        let entry = entry();
+        let vm = Vm {
+            name: "dev",
+            entry: &entry,
+        };
+        let command = Whpx
+            .control(&vm, &["help '; throw 'injected'; #".into()])
+            .expect("WHPX monitor is supported");
+        let script = command.args.last().expect("PowerShell script");
+        assert!(script.contains("'command-line'='help ''; throw ''injected''; #'"));
+        assert!(Whpx.capabilities().control.is_some());
+    }
+
     fn fake(stdout: &str) -> Fake {
         Fake(
             Vec::new(),
@@ -1255,6 +1443,22 @@ mod tests {
             ssh_port: Some(2223),
             ..VmEntry::default()
         }
+    }
+
+    #[test]
+    fn whpx_defaults_to_fast_memory_without_changing_explicit_or_other_vms() {
+        let memory = |entry: &VmEntry| Vm { name: "dev", entry }.memory();
+        let mut entry = entry();
+        entry.hypervisor = "whpx".into();
+        entry.memory_mb = None;
+        assert_eq!(memory(&entry), 3072);
+
+        entry.memory_mb = Some(8192);
+        assert_eq!(memory(&entry), 8192);
+
+        entry.hypervisor = "libvirt".into();
+        entry.memory_mb = None;
+        assert_eq!(memory(&entry), 8192);
     }
 
     /// WHPX uses a child, fresh vars and hardware acceleration, and headless direct boot preserves an

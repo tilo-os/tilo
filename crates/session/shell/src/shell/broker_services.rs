@@ -46,7 +46,7 @@ impl NativeOwnerCommitService {
 impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitService {
     fn requires_room(&self, room: &str) -> bool {
         super::state::RoomId::parse(room)
-            .is_some_and(|room| self.tree.read().requires_native_owner(room))
+            .is_some_and(|room| self.tree.read().commits_native_documents(room))
     }
     fn health(&self) -> Result<(), String> {
         self.owner
@@ -204,30 +204,47 @@ struct SessionContentStore;
 static SESSION_BLOBS: std::sync::Mutex<Option<runtime_fs::blobs::BlobClient>> =
     std::sync::Mutex::new(None);
 
+/// Run `call` against the filesystem daemon's content store as the desktop
+/// session, connecting on first use and again after the daemon went away.
+///
+/// # Errors
+/// Returns why the store could not be reached, or `call`'s refusal.
+pub(super) fn with_session_blobs<T>(
+    call: impl FnOnce(&runtime_fs::blobs::BlobClient) -> Result<T, runtime_fs::blobs::BlobError>,
+) -> Result<T, runtime_fs::blobs::BlobError> {
+    use runtime_fs::blobs::{BlobClient, BlobError};
+
+    let mut session = SESSION_BLOBS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let client = if let Some(client) = session.as_ref() {
+        client.clone()
+    } else {
+        let socket = ::launcher::services::blob_socket();
+        let client = BlobClient::connect_session(&socket)?;
+        *session = Some(client.clone());
+        client
+    };
+    drop(session);
+    let result = call(&client);
+    if matches!(result, Err(BlobError::Disconnected(_))) {
+        // Reconnect on the next call rather than keep a dead session.
+        *SESSION_BLOBS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+    result
+}
+
 impl LaunchContentReader for SessionContentStore {
     fn read(&self, room: &str, app: &str, hash: &str) -> Result<Vec<u8>, String> {
-        use runtime_fs::blobs::{BlobClient, BlobError, ReadOutcome};
+        use runtime_fs::blobs::ReadOutcome;
 
-        let mut session = SESSION_BLOBS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let client = if let Some(client) = session.as_ref() {
-            client.clone()
-        } else {
-            let socket = ::launcher::services::blob_socket();
-            let client = BlobClient::connect_session(&socket)
-                .map_err(|error| format!("launch content store: {error}"))?;
-            *session = Some(client.clone());
+        let result = with_session_blobs(|client| {
             client
-        };
-        let result = client
-            .scope(room, app)
-            .and_then(|scoped| scoped.read_all(hash));
-        if matches!(result, Err(BlobError::Disconnected(_))) {
-            // Reconnect on the next launch rather than keep a dead session.
-            *session = None;
-        }
-        drop(session);
+                .scope(room, app)
+                .and_then(|scoped| scoped.read_all(hash))
+        });
         match result {
             Ok(ReadOutcome::Ready { bytes, .. }) => Ok(bytes),
             Ok(ReadOutcome::Pending) => {
@@ -353,12 +370,16 @@ const GOVERNED_OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 
 impl NativeLauncher {
     /// Open `app` through the governor of `workspace`'s room, when another
-    /// device governs it. `None` when this session opens it itself.
+    /// device governs it and opens its apps. `None` when this session opens
+    /// it itself.
     ///
     /// Such a room only holds records its governor created, so a local
     /// launch would open an app whose document the room does not hold. The
     /// governor's open places the window in the room; the session then opens
-    /// its own instance of that window through [`super::peer_windows`].
+    /// its own instance of that window through [`super::peer_windows`]. A
+    /// host governing the room (a node's relay) runs no apps: the session
+    /// runs the app and publishes its window as its own, as it does a legacy
+    /// window, for the room's members to watch.
     fn open_through_governor(
         &self,
         app: &str,
@@ -371,7 +392,7 @@ impl NativeLauncher {
         let answer = self
             .1
             .as_ref()
-            .filter(|network| network.governed_elsewhere(workspace.room))?
+            .filter(|network| network.governor_opens_apps(workspace.room))?
             .invoke_governor(
                 workspace.room,
                 tilo_desktop_model::commands::APP_ID,
@@ -395,14 +416,7 @@ impl NativeLauncher {
         app: &str,
         workspace: &mut tilo_desktop_model::Workspace,
     ) {
-        use super::state::WorkspaceExt as _;
-        use collab_types::caps::{CapOverride, ResourceRef, Scope, Subject, Verb};
         let Some(tree) = &self.0 else { return };
-        let actor = workspace.actor_for_app(app);
-        if workspace.allows(&actor, &ResourceRef::Workspace, Verb::Write) {
-            return;
-        }
-        let grant = CapOverride::grant(Subject::app(app), Scope::Workspace, Verb::Write);
         let mut tree = tree.write();
         let Some(id) = tree
             .desktop
@@ -413,22 +427,11 @@ impl NativeLauncher {
         else {
             return;
         };
-        let Some(recorded) = tree.grant_in_workspace(id, &person.to_string(), grant) else {
+        let Some(stored) = tree.grant_app_authorship(id, &person.to_string(), app) else {
             return;
         };
-        let stored = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|candidate| candidate.id == id)
-            .and_then(|candidate| candidate.capabilities.iter().find(|cap| cap.id == recorded))
-            .cloned();
-        tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
-        tree.flush_to_disk();
         drop(tree);
-        if let Some(stored) = stored {
-            workspace.capabilities.push(stored);
-        }
+        workspace.capabilities.push(stored);
     }
 }
 
@@ -499,9 +502,65 @@ impl LauncherServices for NativeLauncher {
         if let Some(opened) = self.open_through_governor(app, workspace) {
             return opened;
         }
-        super::launcher::launch_in_workspace(app, workspace)
+        // Opening an app yourself makes it an author. A launch that only
+        // forwards the workspace's existing grants opens a viewer, and
+        // typing into it does nothing.
+        let mut workspace = workspace.clone();
+        let person = super::state::local_user_id_for_room(&workspace.room);
+        self.grant_authorship(&person, app, &mut workspace);
+        super::launcher::launch_in_workspace(app, &workspace)
             .map(|_| ())
             .map_err(|e| e.to_string())
+    }
+    fn begin_launch(
+        &self,
+        app: &str,
+        package_root: Option<&str>,
+        workspace: &tilo_desktop_model::Workspace,
+        author: Option<&str>,
+    ) -> Result<tilo_action_broker::services::LaunchReadiness, String> {
+        if let Some(desktop_id) = app.strip_prefix(HOST_APPLICATION_PREFIX) {
+            if package_root.is_some() {
+                return Err("a host application cannot name a Tilo package root".into());
+            }
+            return super::launch_readiness::observe(|| {
+                super::host_apps::launch(desktop_id, Some(workspace.room.to_string()))
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            });
+        }
+        if self
+            .1
+            .as_ref()
+            .is_some_and(|network| network.governor_opens_apps(workspace.room))
+        {
+            return Err(
+                "observed package startup must be requested from the workspace host".into(),
+            );
+        }
+        let catalog = package_store::Catalog::from_env().map_err(|error| error.to_string())?;
+        let selected = match package_root {
+            Some(root) => {
+                let root = root.parse().map_err(|_| "invalid installed package root")?;
+                tilo_installed_apps::read_exact(&catalog, app, root)
+                    .map_err(|error| error.to_string())?
+            }
+            None => tilo_installed_apps::read(&catalog)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .find(|installed| installed.package_id == app),
+        }
+        .ok_or_else(|| {
+            "the exact selected application package is no longer installed".to_string()
+        })?;
+        let mut workspace = workspace.clone();
+        if let Some(person) = author {
+            self.grant_authorship(person, app, &mut workspace);
+        }
+        super::launch_readiness::observe(|| {
+            super::launcher::launch_resolved_in_workspace(selected, &workspace)
+                .map_err(|error| error.to_string())
+        })
     }
     fn launch_content(
         &self,
@@ -528,6 +587,10 @@ impl LauncherServices for NativeLauncher {
     }
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
         super::launcher::attest_trusted_service_launch_for_pid(pid, app, room).is_some()
+            || super::launcher::consume_in_process_launch(pid, app, room)
+    }
+    fn note_acted_on(&self, app: &str, _room: &str) {
+        super::launcher::note_launch_acted_on(app);
     }
     fn closes_applications(&self) -> bool {
         super::app_close::installed()
@@ -769,7 +832,7 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
             tilo_actions::EffectReceiptStatus::Succeeded,
         );
         tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
-        tree.flush_to_disk();
+        tree.queue_save();
         drop(tree);
         Ok(())
     }
@@ -1018,7 +1081,7 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
             tilo_actions::EffectReceiptStatus::Succeeded,
         );
         tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
-        tree.flush_to_disk();
+        tree.queue_save();
         drop(tree);
         Some(id)
     }
@@ -1036,7 +1099,7 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
         if workspace.revoke_capability(capability) {
             tree.doc_revoke_capability(workspace_id, capability);
             tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
-            tree.flush_to_disk();
+            tree.queue_save();
         }
     }
 }
@@ -1163,6 +1226,9 @@ pub fn native_services(
             Arc::new(NativeWorkspaceControl(network)) as Arc<dyn WorkspaceControlServices>
         }),
         launchable_catalogue: launchable_catalogue_path(),
+        // The session's records, installed before any broker starts.
+        settings: settings_store::installed_source(),
+        live_activities: Some(super::live_activities::board()),
         ..Default::default()
     }
 }
@@ -1651,6 +1717,35 @@ mod tests {
         assert_eq!(
             handle.read().desktop.workspaces[0].capabilities.len(),
             stored,
+            "granted once"
+        );
+    }
+
+    /// Clicking or otherwise opening an app on this machine is the person
+    /// here granting authorship, once.
+    #[test]
+    fn the_person_here_authors_an_app_they_open() {
+        use super::super::state::WorkspaceExt as _;
+        use collab_types::caps::{ResourceRef, Verb};
+        let mut tree = crate::shell::state::WorkspaceTree::default();
+        let person = crate::shell::state::local_user_id();
+        let mut workspace =
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(9), "person open");
+        workspace.set_owner(person);
+        let id = workspace.id;
+        tree.desktop.workspaces.push(workspace);
+        tree.desktop.active = id;
+        let opened = tree
+            .workspace_after_opening_app("so.tilo.word-processor")
+            .expect("active workspace");
+        let actor = opened.actor_for_app("so.tilo.word-processor");
+        assert!(opened.allows(&actor, &ResourceRef::Workspace, Verb::Write));
+        let again = tree
+            .workspace_after_opening_app("so.tilo.word-processor")
+            .expect("still active");
+        assert_eq!(
+            again.capabilities.len(),
+            opened.capabilities.len(),
             "granted once"
         );
     }

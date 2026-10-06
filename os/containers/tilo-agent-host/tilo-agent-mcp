@@ -1,0 +1,53 @@
+#!/usr/bin/busybox sh
+# Headless agent-host entrypoint: enroll as a personal device (once), ensure an
+# MCP bearer token, then run tilo-runtime --daemon with loopback MCP HTTP.
+set -eu
+
+PROFILE="${TILO_RUNTIME_PROFILE:-/var/lib/tilo-runtime/profile}"
+IDENTITY="$PROFILE/identity"
+IDENTITY_DIR="$PROFILE/identity-projection"
+TOKEN_FILE="${TILO_RUNTIME_MCP_HTTP_TOKEN_FILE:-/run/tilo/mcp-token}"
+MCP_HTTP="${TILO_RUNTIME_MCP_HTTP:-127.0.0.1:7391}"
+LABEL="${TILO_DEVICE_NAME:-Agent host}"
+
+case "$MCP_HTTP" in
+  127.0.0.1:*|localhost:*|[::1]:*)
+    ;;
+  *)
+    if [ ! -s "$TOKEN_FILE" ] && [ ! -s "${TILO_RUNTIME_MCP_HTTP_TOKEN_FILE:-}" ]; then
+      echo "tilo-agent-mcp: non-loopback MCP requires a token file at $TOKEN_FILE" >&2
+      exit 1
+    fi
+    ;;
+esac
+
+/usr/bin/busybox mkdir -p "$PROFILE" "$IDENTITY_DIR" "$(/usr/bin/busybox dirname "$TOKEN_FILE")"
+/usr/bin/busybox chmod 700 "$PROFILE" 2>/dev/null || true
+
+if [ ! -s "$TOKEN_FILE" ]; then
+  umask 077
+  # 32 bytes of entropy as hex; runtime trims whitespace when reading.
+  /usr/bin/busybox dd if=/dev/urandom bs=32 count=1 2>/dev/null \
+    | /usr/bin/busybox sha256sum \
+    | /usr/bin/busybox cut -d' ' -f1 > "$TOKEN_FILE"
+  /usr/bin/busybox chmod 600 "$TOKEN_FILE"
+fi
+
+if [ ! -s "$IDENTITY/device/cert.bin" ]; then
+  enrollment_source="${TILO_ENROLLMENT_TOKEN_FILE:-/run/secrets/tilo-enrollment-token}"
+  if [ -s "$enrollment_source" ]; then
+    echo "tilo-agent-mcp: personal-device token join is not wired; use pair-device --headless" >&2
+    exit 1
+  fi
+  echo "tilo-agent-mcp: waiting to pair as personal device ($LABEL)" >&2
+  /usr/bin/tilo-enroll pair-device \
+    --identity-root "$IDENTITY" \
+    --identity-dir "$IDENTITY_DIR" \
+    --label "$LABEL" \
+    --headless \
+    --timeout "${TILO_ENROLL_TIMEOUT:-270}"
+fi
+
+export TILO_RUNTIME_MCP_HTTP="$MCP_HTTP"
+export TILO_RUNTIME_MCP_HTTP_TOKEN_FILE="$TOKEN_FILE"
+exec /usr/bin/tilo-runtime --profile "$PROFILE" --daemon

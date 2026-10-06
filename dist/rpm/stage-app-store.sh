@@ -162,3 +162,18 @@ find "$stage/usr/lib/tilo-runtime" -type f -exec sh -c '
         [ "$(dd if="$path" bs=4 count=1 2>/dev/null)" != "$(printf "\177ELF")" ] || chmod 0755 "$path"
     done
 ' sh {} +
+
+# The env-runtime environment image, so a first environment opens offline.
+# Installed after the mode normalisation above: an image's tree keeps the
+# execute bits and links its signature records, and nothing may flatten them.
+# TILO_ENV_RUNTIME_DIR is the published image's /env-runtime directory
+# (os/dev/fetch-env-runtime.sh); without one the package ships no runtime and
+# environments fetch it on first use.
+if [[ -n ${TILO_ENV_RUNTIME_DIR:-} ]]; then
+    "$repo_root/os/scripts/install-env-runtime.sh" "$TILO_ENV_RUNTIME_DIR" \
+        "$store" "$stage/usr/share/tilo-apps" "$bin_dir/tilo-install"
+    [[ ! -e $stage/usr/share/tilo-apps/image-publishers ]] \
+        || chmod 0644 "$stage/usr/share/tilo-apps/image-publishers"
+else
+    echo "warning: no TILO_ENV_RUNTIME_DIR; this package ships no env-runtime" >&2
+fi

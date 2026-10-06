@@ -37,36 +37,37 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
-use ui::time::{Duration, Instant};
+use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
 mod file_workflow;
 mod lsp_workflow;
+mod surface;
 #[cfg(test)]
 mod tests;
-use automerge::{AutoCommit, ChangeHash, ObjId};
+use automerge::transaction::Transactable as _;
+use automerge::{AutoCommit, ChangeHash};
 use taffy::style_helpers::length;
 use taffy::{Dimension, LengthPercentageAuto, NodeId, Size, Style, TaffyTree};
 use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::search::SearchCatalog;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tilo_resource::Effect as _;
 use ui::widget::{
-    Button, FlapState, ModalAction, ModalFrame, ModalSpec, SplitLayout, TabBar, TabDescriptor,
-    Widget,
+    Button, FlapState, ModalAction, ModalFrame, ModalSpec, SplitLayout, Text, Widget,
 };
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::Key;
 
 use crate::actions;
 use crate::bottom_panel::{BottomPanel, HitRow, PanelTab, SearchState};
-use crate::command_palette::{Command, CommandPalette, Entry, PaletteKind};
+use crate::commands::Command;
 use crate::disk;
 use crate::doc::EditorDoc;
 use crate::editor_view::{EditorView, LspAsk};
@@ -112,7 +113,7 @@ impl BottomPanelToggle {
 
     fn new(binding: tilo_actions::ActionBinding<()>) -> Self {
         Self {
-            button: Button::new(Self::ID, "", None)
+            button: Button::new(Self::ID, "")
                 .tooltip("Show bottom panel")
                 .with_size(PANEL_TOGGLE_W, EDITOR_CHROME_H)
                 .ghost()
@@ -138,7 +139,7 @@ impl BottomPanelToggle {
 impl Widget for BottomPanelToggle {
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.button.sync(state, path);
     }
 
@@ -229,7 +230,7 @@ impl Widget for BottomPanelToggle {
             )
             && self
                 .button
-                .perform_action(&ui::a11y::Action::Activate, ctx.state, ctx.path)
+                .perform_action(&ui::a11y::Action::Activate, &mut ctx.state, ctx.path)
         {
             *ctx.handled = true;
             return;
@@ -300,7 +301,7 @@ impl Widget for BottomPanelToggle {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.button.perform_action(action, state, path)
@@ -338,31 +339,23 @@ impl ui::widget::controls::ActionControls for BottomPanelToggle {
     }
 }
 
+/// A control's binding to one of Code's effects, published on the project
+/// resource beside its document actions.
 #[allow(
     clippy::expect_used,
-    reason = "the binding is built from the command action on the resource returned by the same catalogue function"
+    reason = "every effect of the vocabulary is published with no parameters left to supply"
 )]
-fn bottom_panel_toggle_binding(
-    project_name: &str,
-    project_id: &str,
-    next_file_id: &str,
-    next_folder_id: &str,
-    entry_count: usize,
+pub(crate) fn effect_binding(
+    effect: &crate::effects::CodeEditorEffect,
 ) -> tilo_actions::ActionBinding<()> {
-    let resource = actions::project_root(&actions::CodeEditorResourceCtx {
-        project_name: project_name.to_string(),
-        project_id: project_id.to_string(),
-        next_file_id: next_file_id.to_string(),
-        next_file_name: format!("untitled-{entry_count}.txt"),
-        next_folder_id: next_folder_id.to_string(),
-        next_folder_name: format!("untitled-folder-{entry_count}"),
-        open_files: Vec::new(),
-        folders: Vec::new(),
-        symbols: Vec::new(),
-        search_results: Vec::new(),
-    });
-    tilo_actions::ActionBinding::unit_for(&resource, "command-toggle-bottom-panel")
-        .expect("Toggle bottom panel is part of the Code command catalogue")
+    let resource = tilo_actions::Resource::new(
+        crate::resource::PROJECT_KIND,
+        crate::resource::PROJECT_KIND,
+        "Code",
+    )
+    .with_action(effect.bound());
+    tilo_actions::ActionBinding::unit_for(&resource, effect.id())
+        .expect("a bound effect takes no arguments")
 }
 
 /// Width assumed before the window has been measured (first `build_layout`,
@@ -381,19 +374,18 @@ fn themes() -> Vec<Theme> {
     ]
 }
 
-/// A tab's accent by the language of the buffer it holds, read entirely off
-/// theme tokens so it re-tints with every theme instead of a fixed palette
-/// of its own.
-fn lang_accent(language: Language, theme: &Theme) -> Color {
-    let c = &theme.tokens.colors;
-    match language {
-        Language::Rust | Language::JavaScript | Language::TypeScript => c.semantic.warning,
-        Language::Python | Language::C | Language::Cpp | Language::Go => c.semantic.info,
-        Language::Toml | Language::Yaml => c.accent[5],
-        Language::Json | Language::Shell => c.semantic.success,
-        Language::Markdown | Language::PlainText => c.text_dim,
-        Language::Html | Language::Css => c.semantic.danger,
-    }
+/// The editor header's file-name text, and the label it reads.
+fn file_header(session: &Session) -> (Text, std::rc::Rc<std::cell::RefCell<String>>) {
+    let label = std::rc::Rc::new(std::cell::RefCell::new(
+        session
+            .active_buffer()
+            .map_or_else(String::new, |buffer| buffer.name.clone()),
+    ));
+    let source = label.clone();
+    (
+        Text::dynamic(move || source.borrow().clone()).with_id("code-editor.file"),
+        label,
+    )
 }
 
 fn language_from_label(label: &str) -> Option<Language> {
@@ -436,6 +428,7 @@ struct SearchProjectionRevision {
     /// Collaborative text and durable file metadata are authoritative in the
     /// CRDT, so its heads cheaply cover every remote/local document edit.
     document_heads: Vec<ChangeHash>,
+    pending_ops: usize,
     /// Filesystem/project and streamed-result changes are local projections,
     /// not necessarily CRDT mutations.
     /// `None` means this local revision counter is exhausted. In that state we
@@ -463,12 +456,10 @@ pub struct CodeApp {
     /// expansion signals land in `explorer_events`.
     sidebar: Explorer,
     explorer_events: ExplorerEvents,
-    tabs: TabBar,
-    /// Sweep timer for a pill's close-fade, keyed by tab id (== node id).
-    /// `TabBar::start_closing` runs the fade on its own clock; this is only
-    /// so `reconcile_tabs` knows when to call `finalize_close` and free the
-    /// widget's bookkeeping, the same job `WindowGroup::closing_hosts` does.
-    closing_since: HashMap<u64, Instant>,
+    /// The editor header's file name. A window shows one file; other files
+    /// open beside it as desktop tabs, so there is no tab strip here.
+    header: Text,
+    header_label: std::rc::Rc<std::cell::RefCell<String>>,
     editor: EditorView,
     /// The caret / language / diagnostics readout, surfaced as a transient
     /// floating bubble (see `draw_status_bubble`) instead of a permanent bottom
@@ -483,27 +474,26 @@ pub struct CodeApp {
     shots_status: bool,
     panel: BottomPanel,
     panel_toggle: BottomPanelToggle,
-    palette: CommandPalette,
 
-    /// Framework-owned action dispatch (the Tilo resource + action model). The
-    /// only doc-mutating operation Code exports beyond raw text is materialising
-    /// a buffer (New file); it is dispatched through this host so it brackets one
-    /// undo boundary and replays byte-identically on peers, the same path a
-    /// Ctrl+K palette dispatch takes. See [`crate::actions`].
-    actions: ui::ActionHost,
-    /// Command selected through an exported resource action. Resource
-    /// operations intentionally receive an immutable document snapshot; the
-    /// next sync applies the command with mutable CRDT access.
-    pending_resource_command: Option<(String, Option<String>)>,
-    /// Tentative UUID used before the first sync persists it in the shared
-    /// document; afterwards this is always the document's project identity.
-    project_id: String,
-    /// The UUID captured in the exported New-file resource. It is rotated only
-    /// after dispatch, ensuring palette and on-screen activation use one
-    /// byte-identical canonical action without deriving identity from a local
-    /// tree arena slot.
-    next_new_file_id: String,
-    next_new_folder_id: String,
+    /// What a test runs with the document at the start of the next sync.
+    #[cfg(test)]
+    pub(crate) test_hook: Option<TestHook>,
+    /// Where every edit of the project goes: the framework's door, which
+    /// checks, applies, records and replicates it. `None` until the
+    /// framework mounts the editor; an editor that is not mounted edits
+    /// nothing.
+    dispatch: Option<ui::framework::Dispatcher<crate::resource::CodeEditor>>,
+    /// The project as it was last presented, and the live handle that asks
+    /// for the text of the file the window shows.
+    presented: std::rc::Rc<crate::resource::ProjectState>,
+    live_state: Option<ui::framework::Live<crate::resource::CodeEditor>>,
+    /// The file ids whose text the window demanded last.
+    demanded: Vec<String>,
+    /// A command invoked through its published effect. An effect handler has
+    /// no document, so the next sync runs the command with it.
+    pending_command: Option<Command>,
+    /// The file a New File command created, opened once its record arrives.
+    pending_open: Option<String>,
 
     /// Adaptive open/closed state of the file-tree sidebar (the shared flap
     /// kernel). Docked-open when wide, overlay-closed when narrow.
@@ -530,7 +520,8 @@ pub struct CodeApp {
 
     rect: Rect,
     sidebar_node: Option<NodeId>,
-    tabs_node: Option<NodeId>,
+    header_node: Option<NodeId>,
+    header_text_node: Option<NodeId>,
     editor_header_node: Option<NodeId>,
     panel_toggle_node: Option<NodeId>,
     editor_node: Option<NodeId>,
@@ -609,14 +600,11 @@ pub struct CodeApp {
     /// presentation-only derived data; edits themselves remain native CRDT
     /// text splices.
     search_symbols: Vec<actions::SymbolRef>,
-    /// Complete retained search namespace. It is updated from current
-    /// collaborative state during `sync`; Ctrl+K receives only a cheap handle
-    /// and never rebuilds files, symbols, result previews, or an LSP index.
-    search_catalog: SearchCatalog,
-    /// Canonical ids currently indexed in `search_catalog`, used to remove
-    /// deleted/obsolete rows without rebuilding the catalogue (and without
-    /// invalidating paging cursors unless the namespace actually changed).
-    search_catalog_ids: HashSet<String>,
+    /// The symbols and project-search results as search entries. They are
+    /// updated from current collaborative state during `sync`; a search only
+    /// reads them and never rebuilds files, symbols, result previews, or an
+    /// LSP index.
+    search_entries: Vec<ui::tilo_resource::SearchEntry>,
     /// Revision gate for the expensive complete projection above. An idle
     /// `sync` compares this tiny value and does no project/body traversal.
     search_projection_revision: Option<SearchProjectionRevision>,
@@ -624,12 +612,31 @@ pub struct CodeApp {
     #[cfg(test)]
     search_refresh_stats: SearchRefreshStats,
 
+    /// Whether the editor serves a window someone uses, and may start work
+    /// that reaches outside the process (a language server).
+    live: bool,
+    /// The person's preferences, once the framework mounted the editor.
+    settings: Option<ui::framework::Setting<crate::settings::CodeSettings>>,
+    /// The chrome laid out last (dock shown, its tab, the find bar), so a
+    /// change made outside an event (an effect, a staged scenario) rebuilds
+    /// the layout before it is drawn.
+    laid_out: (bool, PanelTab, bool),
+    structure_dirty: bool,
     /// A file picker in flight, and what the app asked for.
     portal: Option<ui::portal::PortalChannel>,
     portal_intent: Option<PortalIntent>,
-    resource_invocation: Option<tilo_actions::InvocationId>,
-    pending_resource_file: Option<(tilo_actions::InvocationId, ResourceFileOperation)>,
-    resource_result: Option<tilo_actions::InvocationUpdate>,
+    /// The answer owed to the effect that is opening or saving a file, given
+    /// once the picker or the write settles.
+    file_reply: Option<ui::framework::EffectReply>,
+    /// A save an effect asked for, written on the next sync, where the
+    /// buffer's text is.
+    pending_save: Option<(TreeId, Option<std::path::PathBuf>)>,
+    /// The screenshot scenario still being staged: the view state it shows is
+    /// set once the file it is about is open and bound.
+    staging: Option<Staging>,
+    /// Until when a staged scenario waits for a live source (the terminal's
+    /// shell) to draw.
+    staging_until: Option<Instant>,
 
     /// A save that stopped because the file changed on disk. Holds the buffer
     /// it was for, so the user's choice applies to the right one.
@@ -652,6 +659,16 @@ pub struct CodeApp {
     pending_jump: Option<(usize, usize)>,
 }
 
+/// What a test runs with the editor and its document.
+#[cfg(test)]
+pub(crate) type TestHook = Box<dyn FnOnce(&mut CodeApp, &mut ui::widget::Edits<'_>)>;
+
+/// A screenshot scenario being staged: `None` for a plain `--shots`.
+#[derive(Clone, Debug)]
+struct Staging {
+    scenario: Option<String>,
+}
+
 /// What a pending portal pick is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PortalIntent {
@@ -661,16 +678,6 @@ pub enum PortalIntent {
     OpenFile,
     /// Give this buffer a path and write it there.
     SaveAs(TreeId),
-}
-
-#[derive(Clone, Debug)]
-enum ResourceFileOperation {
-    OpenFile(std::path::PathBuf),
-    OpenFolder(std::path::PathBuf),
-    Save {
-        node: TreeId,
-        path: Option<std::path::PathBuf>,
-    },
 }
 
 /// A save refused because the file moved on underneath us.
@@ -696,6 +703,8 @@ enum ConflictChoice {
 struct ClosePrompt {
     node: TreeId,
     name: String,
+    /// The file to show once this one is saved or discarded.
+    then_open: Option<TreeId>,
 }
 
 /// The three ways out of an unsaved-close prompt.
@@ -872,41 +881,32 @@ impl CodeApp {
         let mut sidebar = explorer::explorer(&session.project, &explorer_events);
         explorer::set_current(&mut sidebar, default);
 
-        let mut tabs = TabBar::new("code-editor", Vec::new(), 0);
-        // Tabs here are document buffers, not windows — there is nothing for
-        // a maximize chip to do, and a chip that appears under the pointer
-        // and then does nothing is worse than no chip.
-        tabs.set_show_maximize(false);
+        let (header, header_label) = file_header(&session);
 
-        let project_id = Uuid::new_v4().to_string();
-        let next_new_file_id = Uuid::new_v4().to_string();
-        let next_new_folder_id = Uuid::new_v4().to_string();
-        let panel_toggle = BottomPanelToggle::new(bottom_panel_toggle_binding(
-            &session.project.name,
-            &project_id,
-            &next_new_file_id,
-            &next_new_folder_id,
-            session.project.nodes.len(),
+        let panel_toggle = BottomPanelToggle::new(effect_binding(
+            &crate::effects::CodeEditorEffect::ToggleBottomPanel,
         ));
 
         CodeApp {
             session,
             sidebar,
             explorer_events,
-            tabs,
-            closing_since: HashMap::new(),
+            header,
+            header_label,
             editor: EditorView::new(),
             status: StatusModel::new(),
             status_bubble: ui::StatusBubble::new(),
             shots_status: false,
             panel: BottomPanel::new(),
             panel_toggle,
-            palette: CommandPalette::new(),
-            actions: ui::ActionHost::new(),
-            pending_resource_command: None,
-            project_id,
-            next_new_file_id,
-            next_new_folder_id,
+            #[cfg(test)]
+            test_hook: None,
+            dispatch: None,
+            presented: std::rc::Rc::default(),
+            live_state: None,
+            demanded: Vec::new(),
+            pending_command: None,
+            pending_open: None,
             flap: FlapState::open_when_docked(),
             flap_tick: ui::time::now(),
             // Seed wide so the first frame of a desktop window (and `--shots`,
@@ -921,7 +921,8 @@ impl CodeApp {
             theme_index: None,
             rect: Rect::ZERO,
             sidebar_node: None,
-            tabs_node: None,
+            header_node: None,
+            header_text_node: None,
             editor_header_node: None,
             panel_toggle_node: None,
             editor_node: None,
@@ -953,17 +954,21 @@ impl CodeApp {
             search_files_scanned: 0,
             last_search_needle: String::new(),
             search_symbols: Vec::new(),
-            search_catalog: SearchCatalog::new("Code"),
-            search_catalog_ids: HashSet::new(),
+            search_entries: Vec::new(),
             search_projection_revision: None,
             search_projection_local_generation: Some(0),
             #[cfg(test)]
             search_refresh_stats: SearchRefreshStats::default(),
             portal: None,
             portal_intent: None,
-            resource_invocation: None,
-            pending_resource_file: None,
-            resource_result: None,
+            live: false,
+            settings: None,
+            laid_out: (false, PanelTab::Problems, false),
+            structure_dirty: false,
+            file_reply: None,
+            pending_save: None,
+            staging: None,
+            staging_until: None,
             conflict: None,
             conflict_hover: Point::new(-1.0, -1.0),
             conflict_buttons: Vec::new(),
@@ -1080,7 +1085,7 @@ impl CodeApp {
     fn draw_hamburger(&mut self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         // The bar is inset by HAMBURGER_W in overlay mode, so the hamburger
         // occupies the reserved strip from the window's left edge up to it.
-        let bar = self.tabs.get_rect();
+        let bar = self.header_rect();
         let left = self.rect.x0;
         let rect = Rect::new(left, bar.y0, left + HAMBURGER_W, bar.y1);
         self.hamburger_rect = rect;
@@ -1131,97 +1136,68 @@ impl CodeApp {
         }
     }
 
-    /// Seed every open buffer's text into the CRDT (idempotent) and bind the
-    /// editor to the active buffer's Text object.
-    fn ensure_buffers(&mut self, doc: &mut AutoCommit) {
-        self.project_id = EditorDoc::ensure_project_id(doc, &self.project_id);
-        self.import_project_file_records(doc);
-        self.sync_collaborative_files(doc);
-        // A Ctrl+K resource action can create the captured UUID without going
-        // through `apply_command`. Rotate only after its record is observable,
-        // so a palette refresh never re-publishes a duplicate CreateFile.
-        if EditorDoc::file(doc, &self.next_new_file_id).is_some() {
-            self.next_new_file_id = Uuid::new_v4().to_string();
+    /// Apply `action` to `doc` now, through the framework's door: within the
+    /// event, so the editor sees its own edit before the next keystroke.
+    fn submit_now(
+        &self,
+        doc: &mut ui::widget::Edits<'_>,
+        action: &actions::CodeEditorAction,
+    ) -> Result<(), tilo_actions::ActionError> {
+        match &self.dispatch {
+            Some(dispatch) => dispatch.apply_now(doc, action),
+            None => Err(tilo_actions::ActionError::Refused(
+                "the editor is not open on a project".into(),
+            )),
         }
-        if EditorDoc::file(doc, &self.next_new_folder_id).is_some() {
-            self.next_new_folder_id = Uuid::new_v4().to_string();
+    }
+
+    /// Submit `action` through the framework's door; it applies after the
+    /// event.
+    fn submit(&self, action: &actions::CodeEditorAction) {
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.apply(action);
         }
-        // Seed each open buffer's text into the document, reading the real file
-        // for a disk-backed node. This is the read half of "open a file": until
-        // it runs, a tab is bound to an empty Text.
-        //
-        // A read failure is recorded and the tab closed again — a file that
-        // opened as a silently empty buffer would be written back empty by the
-        // next Ctrl+S.
-        let mut failed: Vec<(TreeId, String)> = Vec::new();
-        for i in 0..self.session.open.len() {
-            let Some(node) = self.session.open.get(i).map(|b| b.node) else {
-                continue;
-            };
-            // The document already carrying text for this node is *not* proof
-            // that the file has been read. The document is persisted across
-            // launches, so on the next run it hands back the buffer while this
-            // session has taken no stamp — and `disk::save` treats a missing
-            // stamp as "no check requested" and writes unconditionally. That
-            // combination silently overwrote a real file with a previous
-            // session's contents: the exact clobber the stamp exists to refuse.
-            //
-            // So the condition to skip is having reconciled *in this session*,
-            // which is what holding a stamp means. When the document's text is
-            // already there it is kept — a peer's or a previous session's
-            // unsaved edits are not ours to discard — but the stamp and the
-            // on-disk comparison text come from the file, so the buffer shows
-            // as modified and the next save goes through the conflict check
-            // like any other.
-            let key = self.buffer_key(node);
-            let has_text = EditorDoc::buffer_text_key(doc, &key).is_some();
-            let reconciled = self.session.open.get(i).is_some_and(|b| b.stamp.is_some());
-            let disk_backed = self.session.project.disk_path_of(node).is_some();
-            if has_text && (reconciled || !disk_backed) {
-                continue;
-            }
-            match self.session.project.file_seed(node) {
-                Ok((text, stamp)) => {
-                    EditorDoc::ensure_buffer_key(doc, &key, &text);
-                    let Some(buf) = self.session.open.get_mut(i) else {
-                        continue;
-                    };
-                    buf.path = self.session.project.disk_path_of(node);
-                    buf.mark_saved(text, stamp);
-                }
-                Err(e) => {
-                    let name = self
-                        .session
-                        .open
-                        .get(i)
-                        .map_or_else(String::new, |b| b.name.clone());
-                    failed.push((node, format!("Could not open {name}: {e}")));
+    }
+
+    /// Keep the open buffers' saved-on-disk comparison current, and bind the
+    /// editor to the active buffer's text. Reads only: a buffer's text is
+    /// seeded when its file is opened ([`Self::open_node`]).
+    fn ensure_buffers(&mut self, doc: &AutoCommit) {
+        // A New File command opens the file it created once its record is in
+        // the project.
+        if let Some(id) = self.pending_open.clone()
+            && let Some(node) = self.session.project.node_for_resource(&id)
+        {
+            self.pending_open = None;
+            self.open_node(node);
+        }
+        if let Some(buffer) = self.session.buffer.as_mut() {
+            // A buffer with no file on disk (a scratch file, a collaborator's
+            // file) is saved when its text is first here: an untouched one is
+            // clean and closes without a prompt.
+            if buffer.stamp.is_none() && buffer.path.is_none() && buffer.saved_text.is_empty() {
+                let key = self
+                    .session
+                    .project
+                    .get(buffer.node)
+                    .map(|node| node.resource_id.clone());
+                if let Some(text) = key.and_then(|key| EditorDoc::read_buffer_key(doc, &key)) {
+                    buffer.mark_saved(text, None);
                 }
             }
-        }
-        for (node, message) in failed {
-            if let Some(idx) = self.session.open.iter().position(|b| b.node == node) {
-                self.session.close_tab(idx);
-                self.invalidate_search_projection();
-            }
-            self.note(message, true);
-            self.bound_node = None;
         }
         self.seeded = true;
 
         // Dirty is a comparison against the bytes on disk, recomputed here, so
         // undoing back to the original clears the indicator rather than leaving
         // it stuck on.
-        for i in 0..self.session.open.len() {
-            let Some(node) = self.session.open.get(i).map(|b| b.node) else {
-                continue;
-            };
-            let current =
-                EditorDoc::read_buffer_key(doc, &self.buffer_key(node)).unwrap_or_default();
-            let Some(buf) = self.session.open.get_mut(i) else {
-                continue;
-            };
-            buf.dirty = buf.is_dirty(&current);
+        if let Some(node) = self.session.active_buffer().map(|b| b.node) {
+            let key = self.buffer_key(node);
+            if let Some(current) = self.presented.buffers.get(&key)
+                && let Some(buf) = self.session.buffer.as_mut()
+            {
+                buf.dirty = buf.is_dirty(current);
+            }
         }
 
         // Bind the editor to the active buffer.
@@ -1244,72 +1220,155 @@ impl CodeApp {
         }
     }
 
-    /// Project opening is an external filesystem import, not a user/agent
-    /// mutation. Project it once into durable records so every existing file,
-    /// not only newly-created scratch files, has an addressable resource and a
-    /// validated action target. IDs are UUIDs persisted in the shared document;
-    /// absolute disk locations stay solely in `disk_path` local provenance.
-    fn import_project_file_records(&self, doc: &mut AutoCommit) {
-        let records: Vec<_> = self
+    /// Ask for the text of the file the window shows, and only that.
+    fn demand_open_buffers(&mut self, doc: &AutoCommit) {
+        let open: Vec<String> = self
             .session
-            .project
-            .nodes
-            .values()
-            .map(|node| match &node.kind {
-                NodeKind::File { language, .. } => crate::doc::CollaborativeFile {
-                    id: node.resource_id.clone(),
-                    kind: "file".into(),
-                    name: node.name.clone(),
-                    path: self.session.project.path_of(node.id),
-                    parent: node.parent.and_then(|parent| {
-                        self.session
-                            .project
-                            .get(parent)
-                            .map(|parent| parent.resource_id.clone())
-                    }),
-                    language: language.label().to_string(),
-                    order: i64::try_from(node.id).unwrap_or(i64::MAX),
-                    deleted: false,
-                    name_revision: 0,
-                    structure_revision: 0,
-                    language_revision: 0,
-                    deletion_revision: 0,
-                },
-                NodeKind::Folder { .. } => crate::doc::CollaborativeFile {
-                    id: node.resource_id.clone(),
-                    kind: "folder".into(),
-                    name: node.name.clone(),
-                    path: self.session.project.path_of(node.id),
-                    parent: node.parent.and_then(|parent| {
-                        self.session
-                            .project
-                            .get(parent)
-                            .map(|parent| parent.resource_id.clone())
-                    }),
-                    language: String::new(),
-                    order: i64::try_from(node.id).unwrap_or(i64::MAX),
-                    deleted: false,
-                    name_revision: 0,
-                    structure_revision: 0,
-                    language_revision: 0,
-                    deletion_revision: 0,
-                },
-            })
+            .buffer
+            .iter()
+            .map(|buffer| self.buffer_key(buffer.node))
             .collect();
-        for record in records {
-            if EditorDoc::file(doc, &record.id).is_none() {
-                EditorDoc::create_file_record(doc, &record);
+        if open == self.demanded {
+            return;
+        }
+        self.demanded.clone_from(&open);
+        if let Some(live) = &self.live_state
+            && let Err(error) = live.demand(doc, ui::tilo_resource::Demand::none().with_keys(open))
+        {
+            tracing::warn!(%error, "open files not read");
+        }
+    }
+
+    /// Read a disk-backed file into its buffer the first time this session
+    /// opens it. The document may already hold text for it — a collaborator's
+    /// or a previous session's unsaved edits, which are not ours to discard —
+    /// so the seed only creates text that is missing; the file's bytes and
+    /// stamp become the comparison a save is checked against either way.
+    ///
+    /// A read failure closes the tab again: a file that opened as a silently
+    /// empty buffer would be written back empty by the next Ctrl+S.
+    fn seed_buffer(&mut self, node: TreeId) {
+        let Some(buffer) = self.session.buffer_of(node) else {
+            return;
+        };
+        if buffer.stamp.is_some() || self.session.project.disk_path_of(node).is_none() {
+            return;
+        }
+        let name = buffer.name.clone();
+        match self.session.project.file_seed(node) {
+            Ok((text, stamp)) => {
+                self.submit(&actions::CodeEditorAction::EnsureBuffer {
+                    key: self.buffer_key(node),
+                    seed: text.clone(),
+                });
+                let path = self.session.project.disk_path_of(node);
+                if let Some(buffer) = self.session.buffer_of_mut(node) {
+                    buffer.path = path;
+                    buffer.mark_saved(text, stamp);
+                }
+            }
+            Err(error) => {
+                if self.session.buffer_of(node).is_some() {
+                    self.session.close_file(node);
+                    self.invalidate_search_projection();
+                }
+                self.note(format!("Could not open {name}: {error}"), true);
+                self.bound_node = None;
             }
         }
     }
 
-    /// Project-tree synchronization is a pure projection from the durable
-    /// resource records. The local arena id may vary by replica; every record
-    /// is matched through its UUID and deleted records stay tombstoned in the
-    /// CRDT rather than being silently resurrected by a local cache.
-    fn sync_collaborative_files(&mut self, doc: &AutoCommit) {
-        let mut files = EditorDoc::files(doc);
-        files.sort_by_key(|file| file.path.matches('/').count());
+    /// Record the files and folders the editor read from disk since it last
+    /// looked — the folder it opened, a folder expanded, the way to a search
+    /// hit — so each is a file of the project its collaborators, the palette
+    /// and agents address. One step of content from outside, nobody's undo.
+    fn record_disk_entries(&mut self) {
+        let fresh = self.session.project.take_read_from_disk();
+        if fresh.is_empty() || self.dispatch.is_none() {
+            return;
+        }
+        let entries: Vec<actions::CodeEditorAction> = fresh
+            .into_iter()
+            .filter_map(|id| {
+                let node = self.session.project.get(id)?;
+                if self
+                    .presented
+                    .files
+                    .iter()
+                    .any(|file| file.id == node.resource_id)
+                {
+                    return None;
+                }
+                let parent = node.parent.and_then(|parent| {
+                    self.session
+                        .project
+                        .get(parent)
+                        .map(|parent| parent.resource_id.clone())
+                });
+                let (kind, language) = match &node.kind {
+                    NodeKind::File { language, .. } => {
+                        (actions::EntryKind::File, language.label().to_string())
+                    }
+                    NodeKind::Folder { .. } => (actions::EntryKind::Folder, String::new()),
+                };
+                Some(actions::CodeEditorAction::ImportEntry {
+                    id: node.resource_id.clone(),
+                    kind,
+                    name: node.name.clone(),
+                    parent,
+                    language,
+                    order: i64::try_from(id).unwrap_or(i64::MAX),
+                })
+            })
+            .collect();
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.group(|| {
+                for entry in &entries {
+                    dispatch.apply(entry);
+                }
+            });
+        }
+    }
+
+    /// Project durable file records into the local tree. An empty list does not
+    /// wipe a project that has not been published yet.
+    /// Adopt the project as last presented again: after a folder or file
+    /// was opened, its tree meets the records the project already holds.
+    fn adopt_presented(&mut self) {
+        let state = std::rc::Rc::clone(&self.presented);
+        self.adopt_resource_state(&state);
+    }
+
+    pub(crate) fn adopt_resource_state(
+        &mut self,
+        state: &std::rc::Rc<crate::resource::ProjectState>,
+    ) {
+        self.presented = std::rc::Rc::clone(state);
+        if state.files.is_empty() && !self.session.project.nodes.is_empty() {
+            return;
+        }
+        if !state.files.is_empty() {
+            let mut files = state.files.clone();
+            files.sort_by_key(|file| file.path.matches('/').count());
+            self.project_files(files);
+        }
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::CodeEditor>,
+        live: bool,
+        settings: ui::framework::Setting<crate::settings::CodeSettings>,
+        state: ui::framework::Live<crate::resource::CodeEditor>,
+    ) {
+        self.dispatch = Some(dispatcher);
+        self.live_state = Some(state);
+        self.live = live;
+        self.settings = Some(settings);
+    }
+
+    fn project_files(&mut self, files: Vec<crate::doc::CollaborativeFile>) {
         let ordering: Vec<_> = files
             .iter()
             .filter(|file| !file.deleted)
@@ -1317,14 +1376,8 @@ impl CodeApp {
             .collect();
         for file in files {
             if file.deleted {
-                if let Some(node) = self.session.project.remove_collaborative_file(&file.id)
-                    && let Some(tab) = self
-                        .session
-                        .open
-                        .iter()
-                        .position(|buffer| buffer.node == node)
-                {
-                    self.session.close_tab(tab);
+                if let Some(node) = self.session.project.remove_collaborative_file(&file.id) {
+                    self.session.close_file(node);
                 }
                 continue;
             }
@@ -1363,7 +1416,7 @@ impl CodeApp {
     /// prepares a before/after request; this boundary derives the compact
     /// character splice, dispatches the public action, and reconciles the
     /// optimistic paint cache if validation refuses it.
-    fn dispatch_editor_text_edits(&mut self, doc: &mut AutoCommit) {
+    fn dispatch_editor_text_edits(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(edit) = self.editor.take_text_edit() else {
             return;
         };
@@ -1373,104 +1426,50 @@ impl CodeApp {
             return;
         };
         let file_id = self.buffer_key(buffer.node);
-        let name = buffer.name.clone();
-        if let Err(error) = self.dispatch_text_action(doc, file_id, &name, &edit.base, &edit.next) {
+        if let Err(error) = self.dispatch_text_action(doc, file_id, &edit.base, &edit.next) {
             self.editor.reconcile_from_doc(doc);
             self.note(format!("Text edit was refused: {error}"), true);
         }
     }
 
     fn dispatch_text_action(
-        &mut self,
-        doc: &mut AutoCommit,
+        &self,
+        doc: &mut ui::widget::Edits<'_>,
         file_id: String,
-        name: &str,
         base: &str,
         next: &str,
     ) -> Result<(), tilo_actions::ActionError> {
-        let action = actions::text_edit_action(file_id, base, next);
-        let context = actions::history_context(&action, name, &self.project_id);
-        self.actions.try_dispatch_with_context(
-            doc,
-            actions::CODE_EDITOR_ACTION_TYPE,
-            &action,
-            context,
+        self.submit_now(doc, &actions::text_edit_action(file_id, base, next))
+    }
+
+    /// Keep the header naming the shown file, with a marker while it has
+    /// unsaved edits. Idempotent: safe to call more than once a frame.
+    fn refresh_header(&self) {
+        let label = self
+            .session
+            .active_buffer()
+            .map_or_else(String::new, |buffer| {
+                if buffer.dirty {
+                    format!("{} \u{2022}", buffer.name)
+                } else {
+                    buffer.name.clone()
+                }
+            });
+        if *self.header_label.borrow() != label {
+            *self.header_label.borrow_mut() = label;
+        }
+    }
+
+    /// Where the header sits: the band above the editor.
+    fn header_rect(&self) -> Rect {
+        let text = self.header.get_rect();
+        let editor = self.editor.get_rect();
+        Rect::new(
+            self.rect.x0,
+            editor.y0 - f64::from(EDITOR_CHROME_H),
+            editor.x1.max(text.x1),
+            editor.y0,
         )
-    }
-
-    /// Reconcile the shared tab bar's pills against `session.open`, by node
-    /// id: insert what's new, fade out what closed by some path other than
-    /// its own pill (Ctrl+W, the file tree), and keep title + the
-    /// unsaved-changes marker in step. A pill mid close-fade is left alone —
-    /// it reappears once the fade finishes if the buffer is still open (a
-    /// cancelled close). Idempotent: safe to call more than once a frame.
-    fn reconcile_tabs(&mut self) {
-        self.sweep_closing_tabs();
-
-        let live: HashSet<u64> = self.session.open.iter().map(|b| b.node as u64).collect();
-        let stale: Vec<u64> = self
-            .tabs
-            .tabs()
-            .iter()
-            .map(|t| t.id)
-            .filter(|id| !live.contains(id) && !self.tabs.is_closing(*id))
-            .collect();
-        for id in stale {
-            self.tabs.start_closing(id);
-            self.closing_since.entry(id).or_insert_with(Instant::now);
-        }
-
-        for (i, buf) in self.session.open.iter().enumerate() {
-            let id = buf.node as u64;
-            if self.tabs.is_closing(id) || self.tabs.tabs().iter().any(|t| t.id == id) {
-                continue;
-            }
-            let idx = i.min(self.tabs.tabs().len());
-            self.tabs
-                .insert_tab(idx, TabDescriptor::new(id, buf.name.clone()));
-        }
-
-        for buf in &self.session.open {
-            let id = buf.node as u64;
-            self.tabs.set_modified(id, buf.dirty);
-            if let Some(t) = self.tabs.tabs_mut().iter_mut().find(|t| t.id == id)
-                && t.title != buf.name
-            {
-                t.title.clone_from(&buf.name);
-            }
-        }
-
-        if let Some(buf) = self.session.active_buffer() {
-            self.tabs.set_active(buf.node as u64);
-        }
-    }
-
-    /// Tint each pill by its buffer's language, read off the theme in use —
-    /// only `draw` has one, so this runs there rather than from
-    /// `reconcile_tabs`.
-    fn sync_tab_accents(&mut self, theme: &Theme) {
-        for buf in &self.session.open {
-            let id = buf.node as u64;
-            self.tabs.set_accent(id, lang_accent(buf.language, theme));
-        }
-    }
-
-    /// Frees a faded pill's bookkeeping once `CLOSE_FADE_MS` has actually
-    /// elapsed — `TabBar` stops painting it on its own, but only
-    /// `finalize_close` drops the entry and lets `needs_animation_frame` go
-    /// quiet. Mirrors `WindowGroup`'s own sweep of `closing_hosts`.
-    fn sweep_closing_tabs(&mut self) {
-        let window = Duration::from_millis(ui::widget::tabs::CLOSE_FADE_MS as u64);
-        let expired: Vec<u64> = self
-            .closing_since
-            .iter()
-            .filter(|(_, t)| t.elapsed() >= window)
-            .map(|(id, _)| *id)
-            .collect();
-        for id in expired {
-            self.closing_since.remove(&id);
-            self.tabs.finalize_close(id);
-        }
     }
 
     /// Recompute diagnostics over the active buffer and push to the panel +
@@ -1651,130 +1650,17 @@ impl CodeApp {
         scene.pop_layer();
     }
 
-    /// Refresh the command palette's entry set (files + commands).
-    fn refresh_palette_entries(&mut self) {
-        let resources = actions::provide_resources(&self.code_resource_ctx(), &AutoCommit::new());
-        let mut native_rows = tilo_actions::flatten(&resources)
-            .into_iter()
-            .map(|flat| {
-                (
-                    (flat.resource_id.0.clone(), flat.action.id.clone()),
-                    ui::CommandEntry::from_flat_action(&flat),
-                )
-            })
-            .collect::<HashMap<_, _>>();
-        let mut entries: Vec<Entry> = Vec::new();
-        // Files.
-        for (id, node) in &self.session.project.nodes {
-            if let NodeKind::File { .. } = node.kind {
-                let detail = self
-                    .session
-                    .project
-                    .path_of(*id)
-                    .rsplit_once('/')
-                    .map_or("", |x| x.0)
-                    .to_string();
-                if let Some(action) = native_rows
-                    .remove(&(actions::file_resource_id(&node.resource_id), "open".into()))
-                {
-                    entries.push(Entry {
-                        detail,
-                        kind: PaletteKind::File(*id),
-                        action,
-                    });
-                }
-            }
-        }
-        // Commands.
-        for (cmd, _) in Command::all() {
-            if let Some(action) = native_rows.remove(&(
-                actions::project_resource_id(&self.project_id),
-                format!("command-{}", cmd.id()),
-            )) {
-                entries.push(Entry {
-                    detail: String::new(),
-                    kind: PaletteKind::Command(cmd),
-                    action,
-                });
-            }
-        }
-        self.palette.set_entries(entries);
-    }
-
-    /// The presentation context the Ctrl+K resource tree is built from: the
-    /// project name, the UUID the next created file will take, and every
-    /// materialised project file/folder. Everything here mirrors state the app
-    /// already holds; local arena IDs are never exported as identities.
-    pub(crate) fn code_resource_ctx(&self) -> actions::CodeEditorResourceCtx {
-        let open_files = self
-            .session
-            .project
-            .nodes
-            .iter()
-            .filter(|(_, node)| matches!(node.kind, NodeKind::File { .. }))
-            .map(|(id, node)| actions::OpenFileRef {
-                node: *id as u64,
-                id: node.resource_id.clone(),
-                name: node.name.clone(),
-                parent: node.parent.and_then(|parent| {
-                    self.session
-                        .project
-                        .get(parent)
-                        .map(|parent| parent.resource_id.clone())
-                }),
-                path: self.session.project.path_of(*id),
-                order: *id as i64,
-                can_save: self
-                    .session
-                    .buffer_of(*id)
-                    .is_some_and(|buffer| buffer.path.is_some()),
-            })
-            .collect();
-        actions::CodeEditorResourceCtx {
-            project_name: self.session.project.name.clone(),
-            project_id: self.project_id.clone(),
-            next_file_id: self.next_new_file_id.clone(),
-            next_file_name: format!("untitled-{}.txt", self.session.project.nodes.len()),
-            next_folder_id: self.next_new_folder_id.clone(),
-            next_folder_name: format!("untitled-folder-{}", self.session.project.nodes.len()),
-            open_files,
-            folders: self
-                .session
-                .project
-                .nodes
-                .values()
-                .filter(|node| matches!(node.kind, NodeKind::Folder { .. }))
-                .map(|node| actions::FolderRef {
-                    id: node.resource_id.clone(),
-                    name: node.name.clone(),
-                    parent: node.parent.and_then(|parent| {
-                        self.session
-                            .project
-                            .get(parent)
-                            .map(|parent| parent.resource_id.clone())
-                    }),
-                    path: self.session.project.path_of(node.id),
-                    order: node.id as i64,
-                })
-                .collect(),
-            symbols: self.search_symbols.clone(),
-            search_results: self.search_result_refs(),
-        }
-    }
-
-    fn search_file_entries(&self) -> Vec<crate::search_provider::FileEntry> {
-        let open: HashSet<TreeId> = self.session.open.iter().map(|buffer| buffer.node).collect();
+    fn search_file_entries(&self) -> Vec<crate::search_entries::FileEntry> {
         self.session
             .project
             .nodes
             .iter()
             .filter(|(_, item)| matches!(item.kind, NodeKind::File { .. }))
-            .map(|(node, item)| crate::search_provider::FileEntry {
+            .map(|(node, item)| crate::search_entries::FileEntry {
                 node: *node,
                 resource_id: item.resource_id.clone(),
                 name: item.name.clone(),
                 path: self.session.project.path_of(*node),
-                open: open.contains(node),
             })
             .collect()
     }
@@ -1812,7 +1698,7 @@ impl CodeApp {
             .flat_map(|file| {
                 EditorDoc::read_buffer_key(doc, &self.buffer_key(file.node))
                     .map_or_else(Vec::new, |text| {
-                        crate::search_provider::symbols_in(&file.resource_id, &file.path, &text)
+                        crate::search_entries::symbols_in(&file.resource_id, &file.path, &text)
                     })
             })
             .collect();
@@ -1828,9 +1714,10 @@ impl CodeApp {
     /// document or a local project/result generation changed. This is
     /// intentionally separate from `search_providers`: opening the palette,
     /// typing, and unchanged frames do no filesystem, document, or LSP work.
-    fn refresh_search_catalog(&mut self, doc: &mut AutoCommit) {
+    fn refresh_search_entries(&mut self, doc: &AutoCommit) {
         let revision = SearchProjectionRevision {
-            document_heads: doc.get_heads(),
+            document_heads: doc.base_heads(),
+            pending_ops: doc.pending_ops(),
             local_generation: self.search_projection_local_generation,
         };
         // Once the local identity space is exhausted there can be no safe
@@ -1847,25 +1734,8 @@ impl CodeApp {
             return;
         }
         self.refresh_search_symbols(doc);
-        let files = self.search_file_entries();
-        let symbols = self.search_symbols.clone();
         let results = self.search_result_refs();
-        let ids = files
-            .iter()
-            .map(|file| actions::open_file_address(&file.resource_id).resource)
-            .chain(symbols.iter().map(actions::symbol_resource_id))
-            .chain(results.iter().map(actions::result_resource_id))
-            .collect::<HashSet<_>>();
-        for removed in self.search_catalog_ids.difference(&ids) {
-            let _ = self.search_catalog.remove(removed);
-        }
-        crate::search_provider::FileSearchProvider::index_into(
-            &self.search_catalog,
-            files,
-            symbols,
-            results,
-        );
-        self.search_catalog_ids = ids;
+        self.search_entries = crate::search_entries::code_entries(&self.search_symbols, &results);
         self.search_projection_revision = Some(revision);
         #[cfg(test)]
         {
@@ -1874,8 +1744,13 @@ impl CodeApp {
             self.search_refresh_stats.indexed_records = self
                 .search_refresh_stats
                 .indexed_records
-                .saturating_add(self.search_catalog_ids.len());
+                .saturating_add(self.search_entries.len());
         }
+    }
+
+    /// The symbols and project-search results as search entries.
+    pub(crate) fn code_search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.search_entries.clone()
     }
 
     #[cfg(test)]
@@ -1895,13 +1770,33 @@ impl CodeApp {
         self.lsp_failed.clear();
     }
 
-    /// Open a file node into a tab and bind the editor.
+    /// Show the file `node` in this window and bind the editor. A shown file
+    /// with unsaved edits is not dropped: the person decides first, and the
+    /// new file opens once it was saved or discarded.
     fn open_node(&mut self, node: TreeId) {
-        self.session.open_file(node);
+        if let Some(shown) = self.session.active_buffer()
+            && shown.node != node
+            && shown.dirty
+        {
+            self.close_prompt = Some(ClosePrompt {
+                node: shown.node,
+                name: shown.name.clone(),
+                then_open: Some(node),
+            });
+            return;
+        }
+        self.show_node(node);
+    }
+
+    fn show_node(&mut self, node: TreeId) {
+        if !self.session.open_file(node) {
+            return;
+        }
+        self.seed_buffer(node);
         self.invalidate_search_projection();
         explorer::set_current(&mut self.sidebar, Some(node));
         self.bound_node = None; // force re-bind in ensure_buffers
-        self.reconcile_tabs();
+        self.refresh_header();
     }
 
     /// The node of the file in the active tab, if any. Lets a test observe
@@ -1957,7 +1852,6 @@ impl CodeApp {
                 self.session.project.set_folder_expanded(id, open);
                 self.invalidate_search_projection();
                 explorer::refresh(&mut self.sidebar, &self.session.project);
-                self.refresh_palette_entries();
             }
         }
     }
@@ -1976,94 +1870,19 @@ impl CodeApp {
         }
     }
 
-    /// Close the tab at session index `idx` — immediately if it is clean, or
-    /// by raising the unsaved-changes prompt if it has edits (closing would
-    /// silently discard them). The one entry point every close path funnels
-    /// through — a pill's ×, Ctrl+W, the file tree — so they all read the
-    /// same and none skips the prompt.
-    fn request_close_tab(&mut self, idx: usize) {
-        let Some(buf) = self.session.open.get(idx) else {
-            return;
-        };
-        if buf.dirty {
-            self.close_prompt = Some(ClosePrompt {
-                node: buf.node,
-                name: buf.name.clone(),
-            });
-            return;
-        }
-        let node = buf.node;
-        self.close_node_tab(node);
-    }
-
-    /// Close the tab holding `node`, if it is still open — the low-level
-    /// removal used once a close is actually decided: already clean, a
-    /// discarded prompt, or a save that landed. Starts the pill's fade if
-    /// nothing already did — a pill's own × starts it before the app even
-    /// learns of the close; every other path has to ask here.
-    fn close_node_tab(&mut self, node: TreeId) {
-        if let Some(idx) = self.session.open.iter().position(|b| b.node == node) {
-            self.session.close_tab(idx);
+    /// Stop showing `node` once that is decided — already clean, a discarded
+    /// prompt, or a save that landed — and show the file the person asked
+    /// for next, if any.
+    fn close_node(&mut self, node: TreeId, then_open: Option<TreeId>) {
+        if self.session.buffer_of(node).is_some() {
+            self.session.close_file(node);
             self.invalidate_search_projection();
             self.bound_node = None;
-            let id = node as u64;
-            if !self.tabs.is_closing(id) {
-                self.tabs.start_closing(id);
-            }
-            self.closing_since.entry(id).or_insert_with(Instant::now);
-            explorer::set_current(
-                &mut self.sidebar,
-                self.session.active_buffer().map(|b| b.node),
-            );
-            self.reconcile_tabs();
+            explorer::set_current(&mut self.sidebar, None);
+            self.refresh_header();
         }
-    }
-
-    /// Read back everything the shared tab bar did with the pointer this
-    /// frame: which pill is selected (the bar already moved its own
-    /// `active_id` on press — this mirrors it into the session), a
-    /// drag-reorder, a close, and the per-tab search chip — routed to Find,
-    /// this app's equivalent of "search within this tab".
-    fn drain_tab_bar(&mut self, doc: &AutoCommit) {
-        let selected = self.tabs.active_id();
-        if let Some(idx) = self
-            .session
-            .open
-            .iter()
-            .position(|b| b.node as u64 == selected)
-            && self.session.active != Some(idx)
-        {
-            self.session.active = Some(idx);
-            self.bound_node = None;
-            explorer::set_current(
-                &mut self.sidebar,
-                self.session.active_buffer().map(|b| b.node),
-            );
-        }
-
-        if let Some((from, to)) = self.tabs.take_reorder() {
-            self.session.reorder_tab(from, to);
-        }
-
-        if let Some(id) = self.tabs.take_close() {
-            // Always start the sweep, even if this ends up only raising a
-            // prompt: `TabBar::start_closing` has already faded the pill
-            // regardless of what the app decides, so this id must still get
-            // `finalize_close`d once the fade elapses, or a cancelled close
-            // would leave it permanently marked "closing" and never come
-            // back — see `TabBar::is_closing`.
-            self.closing_since.entry(id).or_insert_with(Instant::now);
-            if let Some(idx) = self.session.open.iter().position(|b| b.node as u64 == id) {
-                self.request_close_tab(idx);
-            }
-        }
-
-        if let Some(id) = self.tabs.take_search()
-            && let Some(idx) = self.session.open.iter().position(|b| b.node as u64 == id)
-        {
-            self.session.active = Some(idx);
-            self.bound_node = None;
-            self.open_find(false, doc);
+        if let Some(next) = then_open {
+            self.show_node(next);
         }
     }
 
@@ -2084,7 +1903,7 @@ impl CodeApp {
                     // conflict prompt (now showing) gets answered first.
                     let snapshot = doc.clone();
                     if self.save_buffer(&snapshot, prompt.node, false) {
-                        self.close_node_tab(prompt.node);
+                        self.close_node(prompt.node, prompt.then_open);
                     }
                 } else {
                     // No file yet: the destination has to be chosen first. The
@@ -2094,7 +1913,7 @@ impl CodeApp {
                     self.request_save_as(prompt.node);
                 }
             }
-            CloseChoice::Discard => self.close_node_tab(prompt.node),
+            CloseChoice::Discard => self.close_node(prompt.node, prompt.then_open),
             CloseChoice::Cancel => {}
         }
     }
@@ -2200,35 +2019,23 @@ impl CodeApp {
     /// the action host; the rest are pure presentation.
     ///
     /// [`CodeEditorAction`]: crate::actions::CodeEditorAction
-    fn apply_command(&mut self, cmd: Command, doc: &mut AutoCommit) {
+    fn apply_command(&mut self, cmd: Command, doc: &mut ui::widget::Edits<'_>) {
         match cmd {
             Command::NewFile => {
-                // Create an untitled scratch file in the project root. The name
-                // and tree position are in-memory; the collaborative, replayable
-                // half — materialising the buffer in the shared document — is the
-                // one action Code exports, dispatched here through the host so it
-                // brackets one undo boundary and replays on peers. The Ctrl+K
-                // "New file" spec builds the byte-identical action.
+                // An untitled file at the project root, created through the
+                // project's own action and opened once it is there.
                 let name = format!("untitled-{}.txt", self.session.project.nodes.len());
+                let id = Uuid::new_v4().to_string();
                 let action = actions::create_file_action(
-                    self.next_new_file_id.clone(),
+                    id.clone(),
                     name.clone(),
                     None,
                     i64::MAX / 2,
                     String::new(),
                 );
-                self.actions.dispatch_with_context(
-                    doc,
-                    actions::CODE_EDITOR_ACTION_TYPE,
-                    &action,
-                    actions::history_context(&action, &name, &self.project_id),
-                );
-                self.next_new_file_id = Uuid::new_v4().to_string();
-                self.sync_collaborative_files(doc);
-                if let actions::CodeEditorAction::CreateFile { id, .. } = &action
-                    && let Some(node) = self.session.project.node_for_resource(id)
-                {
-                    self.open_node(node);
+                match self.submit_now(doc, &action) {
+                    Ok(()) => self.pending_open = Some(id),
+                    Err(error) => self.note(format!("Could not create {name}: {error}"), true),
                 }
             }
             Command::OpenFolder => self.request_open_folder(),
@@ -2264,7 +2071,7 @@ impl CodeApp {
                 self.panel_visible = true;
                 self.panel.set_tab(PanelTab::Search);
             }
-            Command::GoToLine => self.palette.open_goto(),
+            Command::GoToLine => Self::ask_for_line(),
             Command::DuplicateLine => self.editor.duplicate_lines(doc, true),
             Command::MoveLineUp => self.editor.move_lines(doc, true),
             Command::MoveLineDown => self.editor.move_lines(doc, false),
@@ -2273,11 +2080,6 @@ impl CodeApp {
             Command::GoToSearch => {
                 self.panel_visible = true;
                 self.panel.set_tab(PanelTab::Search);
-            }
-            Command::CloseTab => {
-                if let Some(i) = self.session.active {
-                    self.request_close_tab(i);
-                }
             }
             Command::ToggleBottomPanel => {
                 if self.panel_visible {
@@ -2319,9 +2121,8 @@ impl CodeApp {
     /// Drain everything the child widgets emitted this frame. `doc` is threaded
     /// through so a chosen palette command that mutates the document (New file)
     /// can dispatch its action.
-    fn drain_child_events(&mut self, doc: &AutoCommit) {
+    fn drain_child_events(&mut self) {
         self.drain_explorer_events();
-        self.drain_tab_bar(doc);
         if let Some(index) = self.panel.take_activated_hit() {
             self.open_search_hit(index);
         }
@@ -2375,7 +2176,7 @@ impl CodeApp {
     }
 
     /// Replace the current match, then step to the next one.
-    fn replace_current(&mut self, doc: &mut AutoCommit) {
+    fn replace_current(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(node) = self.session.active_buffer().map(|b| b.node) else {
             return;
         };
@@ -2387,10 +2188,6 @@ impl CodeApp {
             return;
         };
         let file_id = self.buffer_key(node);
-        let name = self
-            .session
-            .active_buffer()
-            .map_or_else(|| "file".to_string(), |buffer| buffer.name.clone());
         let text = EditorDoc::read_buffer_key(doc, &file_id).unwrap_or_default();
         let Some(at) = flat_index(&text, m.line, m.col) else {
             return;
@@ -2398,7 +2195,7 @@ impl CodeApp {
         let replacement = self.find.replacement().to_string();
         let mut next = text.clone();
         replace_chars(&mut next, at, m.len, &replacement);
-        if let Err(error) = self.dispatch_text_action(doc, file_id, &name, &text, &next) {
+        if let Err(error) = self.dispatch_text_action(doc, file_id, &text, &next) {
             self.editor.reconcile_from_doc(doc);
             self.note(format!("Text edit was refused: {error}"), true);
             return;
@@ -2415,15 +2212,11 @@ impl CodeApp {
     /// Replacements are applied last-to-first so each splice's index is still
     /// valid: replacing forwards would shift every later match by the
     /// difference in length.
-    fn replace_all(&mut self, doc: &mut AutoCommit) {
+    fn replace_all(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(node) = self.session.active_buffer().map(|b| b.node) else {
             return;
         };
         let file_id = self.buffer_key(node);
-        let name = self
-            .session
-            .active_buffer()
-            .map_or_else(|| "file".to_string(), |buffer| buffer.name.clone());
         let text = EditorDoc::read_buffer_key(doc, &file_id).unwrap_or_default();
         let replacement = self.find.replacement().to_string();
         let count = self.find_matches.len();
@@ -2433,7 +2226,7 @@ impl CodeApp {
                 replace_chars(&mut next, at, m.len, &replacement);
             }
         }
-        if let Err(error) = self.dispatch_text_action(doc, file_id, &name, &text, &next) {
+        if let Err(error) = self.dispatch_text_action(doc, file_id, &text, &next) {
             self.editor.reconcile_from_doc(doc);
             self.note(format!("Text edit was refused: {error}"), true);
             return;
@@ -2451,7 +2244,7 @@ impl CodeApp {
     }
 
     /// Apply whatever the find bar asked for this frame.
-    fn drain_find_events(&mut self, doc: &mut AutoCommit) {
+    fn drain_find_events(&mut self, doc: &mut ui::widget::Edits<'_>) {
         for ev in self.find.take_events() {
             match ev {
                 FindEvent::QueryChanged => {
@@ -2635,7 +2428,22 @@ impl CodeApp {
             return;
         }
         match terminal::TerminalWidget::spawn_default() {
-            Ok(w) => {
+            Ok(mut w) => {
+                // The session is the project's terminal child: what it shows
+                // is recorded through the project's own dispatcher.
+                if let Some(dispatch) = &self.dispatch {
+                    w.bind(dispatch.child(
+                        crate::resource::TERMINAL_RESOURCE_ID,
+                        actions::CodeEditorAction::Terminal,
+                    ));
+                }
+                if let Some(session) = self
+                    .live_state
+                    .as_ref()
+                    .and_then(|live| live.with(|state| state.terminal.clone()))
+                {
+                    ui::framework::ResourceSurface::present(&mut w, &std::rc::Rc::new(session));
+                }
                 self.terminal = Some(w);
                 self.panel.set_has_live_terminal(true);
                 self.panel.set_terminal_note(None);
@@ -2645,6 +2453,15 @@ impl CodeApp {
                 self.panel
                     .set_terminal_note(Some(format!("Terminal unavailable: {e}")));
             }
+        }
+    }
+
+    /// Show the embedded terminal's session as the project records it: a
+    /// collaborator's, a past version's, or this one's own before its shell
+    /// draws.
+    pub(crate) fn present_terminal(&mut self, session: Option<&terminal::resource::SessionState>) {
+        if let (Some(terminal), Some(session)) = (self.terminal.as_mut(), session) {
+            ui::framework::ResourceSurface::present(terminal, &std::rc::Rc::new(session.clone()));
         }
     }
 
@@ -2693,13 +2510,21 @@ impl CodeApp {
 
     /// Stage the find bar over the active buffer with a real query, so the shot
     /// shows real match highlighting and a real count.
-    pub fn shots_open_find(&mut self, query: &str, replace: bool, doc: &AutoCommit) {
+    pub(crate) fn shots_open_find(
+        &mut self,
+        query: &str,
+        replace: bool,
+        options: bool,
+        doc: &AutoCommit,
+    ) {
         self.find.open(replace, None);
         self.find.set_query(query);
         if replace {
             self.find.set_replacement("buffer");
         }
-        self.drain_find_events(&mut doc.clone());
+        // This shot stages only a query; authoring requests settle normally.
+        let _ = self.find.take_events();
+        self.find_current = None;
         self.refresh_find(doc);
         // Land on the first match so the current-match fill is visible.
         self.focus_match(if self.find_matches.is_empty() {
@@ -2707,7 +2532,7 @@ impl CodeApp {
         } else {
             Some(0)
         });
-        if std::env::var_os("TILO_SHOTS_FIND_OPTIONS").is_some() {
+        if options {
             self.find.show_options_for_shots();
         }
     }
@@ -2736,10 +2561,15 @@ impl CodeApp {
         }
     }
 
-    /// Stage the go-to-line palette with a query, for a screenshot.
-    pub fn shots_open_goto(&mut self, query: &str) {
-        self.palette.open_goto();
-        self.palette.seed_query(query);
+    /// Ask for a line to go to in the host palette, on the project's
+    /// go-to-line effect.
+    pub(crate) fn ask_for_line() {
+        ui::host_palette::action(tilo_actions::ActionAddress::new(
+            crate::resource::PROJECT_KIND,
+            ui::tilo_resource::Effect::id(&crate::effects::CodeEditorEffect::GoToLine {
+                value: None,
+            }),
+        ));
     }
 
     /// Stage the "save changes before closing?" prompt for the active buffer.
@@ -2748,6 +2578,7 @@ impl CodeApp {
             self.close_prompt = Some(ClosePrompt {
                 node: buf.node,
                 name: buf.name.clone(),
+                then_open: None,
             });
         }
     }
@@ -2769,30 +2600,6 @@ impl CodeApp {
             detail: Some("tilo-shell".to_string()),
             percentage: Some(37),
         };
-    }
-
-    /// Open the first file the tree found, so a shot of a real project shows a
-    /// real buffer instead of the empty state.
-    pub fn shots_open_first_file(&mut self) {
-        let first = self.session.project.visible_rows().into_iter().find(|id| {
-            !self
-                .session
-                .project
-                .get(*id)
-                .is_none_or(super::model::TreeNode::is_folder)
-        });
-        if let Some(id) = first {
-            self.open_node(id);
-        }
-    }
-
-    /// Open a specific file by path, revealing it in the tree first.
-    pub fn shots_open_path(&mut self, path: &std::path::Path) {
-        let path = disk::canonical(path);
-        if let Some(node) = self.session.project.reveal_path(&path) {
-            explorer::refresh(&mut self.sidebar, &self.session.project);
-            self.open_node(node);
-        }
     }
 
     /// Stage a multi-word selection in the editor for the selection screenshot.
@@ -2910,7 +2717,57 @@ impl CodeApp {
         sidebar_node
     }
 
-    /// Lay out the editor column: tab bar, find bar, editor, and (when
+    /// The header above the editor: the shown file's name, clear of the
+    /// overlay hamburger.
+    fn build_header(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let header_text_node = self.header.build_layout(taffy, theme, node_map);
+        self.header_text_node = Some(header_text_node);
+        // The overlay hamburger owns the header's left edge.
+        let inset = if self.sidebar_layout() == SplitLayout::Overlay {
+            HAMBURGER_W as f32
+        } else {
+            0.0
+        } + theme.gap_standard;
+        #[allow(
+            clippy::unwrap_used,
+            reason = "the header wraps one freshly-created child in the same app-owned taffy arena"
+        )]
+        let header_node = taffy
+            .new_with_children(
+                Style {
+                    display: taffy::Display::Flex,
+                    align_items: Some(taffy::AlignItems::Center),
+                    size: Size {
+                        width: Dimension::auto(),
+                        height: Dimension::length(EDITOR_CHROME_H),
+                    },
+                    padding: taffy::Rect {
+                        left: taffy::LengthPercentage::length(inset),
+                        right: taffy::LengthPercentage::length(0.0),
+                        top: taffy::LengthPercentage::length(0.0),
+                        bottom: taffy::LengthPercentage::length(0.0),
+                    },
+                    flex_grow: 1.0,
+                    flex_basis: Dimension::length(0.0),
+                    min_size: Size {
+                        width: Dimension::length(0.0),
+                        height: Dimension::auto(),
+                    },
+                    ..Default::default()
+                },
+                &[header_text_node],
+            )
+            .unwrap();
+        self.header_node = Some(header_node);
+        header_node
+    }
+
+    /// Lay out the editor column: header, find bar, editor, and (when
     /// visible) the bottom panel, stacked into one flex column.
     ///
     /// # Panics
@@ -2924,22 +2781,7 @@ impl CodeApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let tabs_node = self.tabs.build_layout(taffy, theme, node_map);
-        if let Ok(existing) = taffy.style(tabs_node).cloned() {
-            let _ = taffy.set_style(
-                tabs_node,
-                Style {
-                    size: Size {
-                        width: Dimension::auto(),
-                        height: Dimension::length(EDITOR_CHROME_H),
-                    },
-                    flex_grow: 1.0,
-                    flex_basis: Dimension::length(0.0),
-                    ..existing
-                },
-            );
-        }
-        self.tabs_node = Some(tabs_node);
+        let header_node = self.build_header(taffy, theme, node_map);
 
         self.panel_toggle.set_expanded(self.panel_visible);
         let panel_toggle_node = self.panel_toggle.build_layout(taffy, theme, node_map);
@@ -2960,7 +2802,7 @@ impl CodeApp {
                     flex_shrink: 0.0,
                     ..Default::default()
                 },
-                &[tabs_node, panel_toggle_node],
+                &[header_node, panel_toggle_node],
             )
             .unwrap();
         self.editor_header_node = Some(editor_header_node);
@@ -2982,7 +2824,7 @@ impl CodeApp {
         }
         self.editor_node = Some(editor_node);
 
-        // The find bar sits between the tabs and the buffer, so it never covers
+        // The find bar sits between the header and the buffer, so it never covers
         // the code it is searching.
         let find_node = self.find.build_layout(taffy, theme, node_map);
         self.find_node = Some(find_node);
@@ -3023,26 +2865,15 @@ impl CodeApp {
     // ---- handle_event helpers (split out of `Widget::handle_event`, which
     // dispatches to them in the same order they used to run inline) ----
 
-    /// The palette, when open, owns all keyboard input. Otherwise, while the
-    /// unsaved-close prompt is up, cursor motion still needs tracking so its
-    /// button hit-tests have a position to work with. Returns `true` when the
-    /// event was consumed here.
-    fn handle_palette_and_prompt_cursor(
+    /// While the unsaved-close prompt is up, cursor motion still needs
+    /// tracking so its button hit-tests have a position to work with.
+    /// Returns `true` when the event was consumed here.
+    fn track_prompt_cursor(
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
         handled: &mut bool,
     ) -> bool {
-        if self.palette.is_visible()
-            && let WindowEvent::KeyboardInput { .. } = event
-            && self.palette.handle_key(event, modifiers, state)
-        {
-            *handled = true;
-            self.drain_child_events(state);
-            return true;
-        }
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
             if self.close_prompt.is_some() {
@@ -3081,7 +2912,7 @@ impl CodeApp {
     fn handle_conflict_prompt(
         &mut self,
         event: &WindowEvent,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         if let Some(choice) = Self::conflict_key(event) {
@@ -3166,7 +2997,7 @@ impl CodeApp {
         &mut self,
         event: &WindowEvent,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
     ) -> bool {
@@ -3189,13 +3020,11 @@ impl CodeApp {
         let shift = mods.shift_key();
         let alt = mods.alt_key();
         let command = match c.to_lowercase().as_str() {
+            // Quick open and the command list are the host palette: the
+            // project's files are its search entries, its commands its
+            // published effects.
             "p" => {
-                self.refresh_palette_entries();
-                if shift {
-                    self.palette.open_commands();
-                } else {
-                    self.palette.open_files();
-                }
+                ui::host_palette::search("");
                 *handled = true;
                 return true;
             }
@@ -3210,7 +3039,6 @@ impl CodeApp {
             "f" => Some(Command::Find),
             "h" => Some(Command::Replace),
             "g" => Some(Command::GoToLine),
-            "w" => Some(Command::CloseTab),
             _ => None,
         };
         if let Some(command) = command {
@@ -3238,7 +3066,7 @@ impl CodeApp {
         let before = *ctx.handled;
         self.find
             .handle_event(event, &mut ctx.reborrow(ctx.path, n));
-        self.drain_find_events(ctx.state);
+        self.drain_find_events(&mut ctx.state);
         *ctx.handled && !before
     }
 
@@ -3252,7 +3080,7 @@ impl CodeApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         taffy: &TaffyTree<()>,
         handled: &mut bool,
     ) -> bool {
@@ -3269,7 +3097,6 @@ impl CodeApp {
         if !(term_active && self.terminal_focused) {
             return false;
         }
-        let tr = EditorDoc::terminal_root(state);
         if let Some(t) = self.terminal.as_mut() {
             let mut th = false;
             let mut tf = None;
@@ -3278,8 +3105,8 @@ impl CodeApp {
                 &mut ui::widget::EventCtx {
                     scale_factor,
                     modifiers: &modifiers,
-                    state,
-                    path: &tr,
+                    state: state.reborrow(),
+                    path: &automerge::ROOT,
                     handled: &mut th,
                     focus_target: &mut tf,
                     node_id: NodeId::new(0),
@@ -3344,12 +3171,6 @@ impl CodeApp {
             self.panel_toggle
                 .handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
-        if !*ctx.handled
-            && let Some(n) = self.tabs_node
-        {
-            self.tabs
-                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
-        }
         if self.panel_visible
             && let Some(n) = self.panel_node
         {
@@ -3359,7 +3180,7 @@ impl CodeApp {
         if let Some(n) = self.editor_node {
             self.editor
                 .handle_event(event, &mut ctx.reborrow(ctx.path, n));
-            self.dispatch_editor_text_edits(ctx.state);
+            self.dispatch_editor_text_edits(&mut ctx.state);
         }
     }
 }
@@ -3426,12 +3247,7 @@ fn find_char_span(text: &str, needle: &str) -> Option<(usize, usize, usize)> {
 }
 
 impl Widget for CodeApp {
-    ui::provides!(
-        dyn ui::undo::CommittedActions,
-        dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource
-    );
+    ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
         fn rect(rect: Rect) -> [f64; 4] {
@@ -3471,83 +3287,26 @@ impl Widget for CodeApp {
         }))
     }
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::CODE_EDITOR_OPERATION_TYPE]
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "the widget lifecycle deliberately sequences every asynchronous projection in one auditable frame boundary"
     )]
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
-        if let Some((id, argument)) = self.pending_resource_command.take()
-            && let Some(command) = Command::from_id(&id)
-        {
-            if command == Command::GoToLine {
-                if let Some(line) = argument.and_then(|value| value.trim().parse::<usize>().ok()) {
-                    self.go_to_line(line.max(1));
-                }
-            } else {
-                self.apply_command(command, state);
-            }
-        }
-        if let Some((invocation, operation)) = self.pending_resource_file.take() {
-            self.notice = None;
-            let result = match operation {
-                ResourceFileOperation::OpenFile(path) => self.open_disk_file(&path),
-                ResourceFileOperation::OpenFolder(path) => self.open_project_dir(&path),
-                ResourceFileOperation::Save { node, path } => {
-                    if let Some(path) = path {
-                        let name = path.file_name().map_or_else(
-                            || "untitled".to_string(),
-                            |name| name.to_string_lossy().into_owned(),
-                        );
-                        self.session.project.set_file_path(node, &path, &name);
-                        if let Some(buffer) = self.session.buffer_of_mut(node) {
-                            buffer.path = Some(path);
-                            buffer.name = name;
-                            buffer.stamp = None;
-                        }
-                        self.invalidate_search_projection();
-                    }
-                    if self.save_buffer(state, node, true) {
-                        Ok(())
-                    } else {
-                        Err("file could not be saved".into())
-                    }
-                }
-            };
-            self.resource_result = Some(match result {
-                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                },
-                Err(message) => tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "code_editor.io_failed".into(),
-                        message,
-                        details: None,
-                        retryable: false,
-                    },
-                },
-            });
-        }
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document_ref(state, path);
         if !self.seeded {
             self.seed_terminal();
-            self.refresh_palette_entries();
         }
         // A file picker in flight is drained here, once a frame, off a channel
         // the worker thread fills — the UI never waits on D-Bus.
         self.poll_portal(state);
         self.poll_search();
+        self.record_disk_entries();
         self.ensure_buffers(state);
-        self.refresh_search_catalog(state);
+        self.demand_open_buffers(state);
+        self.continue_staging(state);
+        self.refresh_search_entries(state);
         self.editor.sync(state, path);
-        self.dispatch_editor_text_edits(state);
         self.find.sync(state, path);
-        self.drain_find_events(state);
 
         // A jump queued by a search hit or a cross-file definition lands once
         // the target buffer is actually bound.
@@ -3558,14 +3317,10 @@ impl Widget for CodeApp {
             self.pending_jump = None;
         }
 
-        // Pump the embedded terminal: its `sync` drains the PTY reader and
-        // reflects it into the grid (the plain `ui::App` loop never calls
-        // `update`, so pumping happens here — see `TerminalWidget::sync`).
-        if self.terminal.is_some() {
-            let tr = EditorDoc::terminal_root(state);
-            if let Some(t) = self.terminal.as_mut() {
-                t.sync(state, &tr);
-            }
+        // Show the terminal record; update drains its PTY and settlement
+        // records the resulting screen through the terminal's action door.
+        if let Some(t) = self.terminal.as_mut() {
+            t.sync(state, path);
         }
 
         // Language server: start on demand (opt-in), stream edits out as
@@ -3593,9 +3348,45 @@ impl Widget for CodeApp {
 
         self.check_disk_staleness();
         self.refresh_find(state);
-        self.reconcile_tabs();
+        self.refresh_header();
         self.refresh_diagnostics(state);
         self.refresh_status();
+        let chrome = (
+            self.panel_visible,
+            self.panel.active_tab(),
+            self.find.is_visible(),
+        );
+        if chrome != self.laid_out {
+            self.laid_out = chrome;
+            self.structure_dirty = true;
+        }
+    }
+
+    fn settle(&mut self, state: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
+        #[cfg(test)]
+        if let Some(hook) = self.test_hook.take() {
+            hook(self, state);
+        }
+        if let Some(command) = self.pending_command.take() {
+            self.apply_command(command, state);
+        }
+        if let Some((node, target)) = self.pending_save.take() {
+            self.notice = None;
+            let saved = self.save_to(state, node, target);
+            self.finish_file_effect(if saved {
+                Ok(())
+            } else {
+                Err("file could not be saved".into())
+            });
+        }
+        self.dispatch_editor_text_edits(state);
+        self.drain_find_events(state);
+        for child in self.children_mut() {
+            child.settle(&mut state.reborrow(), path);
+        }
+        if let Some(terminal) = self.terminal.as_mut() {
+            terminal.settle(&mut state.reborrow(), path);
+        }
     }
 
     fn build_layout(
@@ -3718,13 +3509,14 @@ impl Widget for CodeApp {
                         col_origin.x + f64::from(header_layout.location.x),
                         col_origin.y + f64::from(header_layout.location.y),
                     );
-                    if let Some(n) = self.tabs_node {
-                        self.tabs.apply_layout(taffy, n, header_origin);
-                        // Reserve the bar's left edge for the overlay hamburger so
-                        // the first tab isn't drawn beneath it.
-                        if self.sidebar_layout() == SplitLayout::Overlay {
-                            self.tabs.inset_left(HAMBURGER_W);
-                        }
+                    if let (Some(n), Some(text)) = (self.header_node, self.header_text_node)
+                        && let Ok(bar) = taffy.layout(n)
+                    {
+                        let bar_origin = Point::new(
+                            header_origin.x + f64::from(bar.location.x),
+                            header_origin.y + f64::from(bar.location.y),
+                        );
+                        self.header.apply_layout(taffy, text, bar_origin);
                     }
                     if let Some(n) = self.panel_toggle_node {
                         self.panel_toggle.apply_layout(taffy, n, header_origin);
@@ -3741,7 +3533,6 @@ impl Widget for CodeApp {
                 }
             }
         }
-        self.palette.set_viewport(self.rect);
     }
 
     fn draw(
@@ -3754,8 +3545,6 @@ impl Widget for CodeApp {
     ) {
         let active = self.active_theme(theme);
         let theme = active.as_ref();
-        // Only `draw` has a `Theme` to read the accent colours off of.
-        self.sync_tab_accents(theme);
 
         // Advance the flap easing (frame-rate independent) before computing
         // geometry, so the slide + scrim fade animate while the host keeps
@@ -3785,7 +3574,7 @@ impl Widget for CodeApp {
                     self.sidebar
                         .draw(scene, transform, text_renderer, theme, presence);
                 }
-                self.tabs
+                self.header
                     .draw(scene, transform, text_renderer, theme, presence);
                 self.panel_toggle
                     .draw(scene, transform, text_renderer, theme, presence);
@@ -3801,7 +3590,7 @@ impl Widget for CodeApp {
             SplitLayout::Overlay => {
                 // Content spans the full width and is drawn first; the sidebar
                 // slides in over it behind a scrim.
-                self.tabs
+                self.header
                     .draw(scene, transform, text_renderer, theme, presence);
                 self.panel_toggle
                     .draw(scene, transform, text_renderer, theme, presence);
@@ -3818,7 +3607,7 @@ impl Widget for CodeApp {
                 if reveal > 0.001 {
                     self.scrim_rect = Rect::new(
                         self.rect.x0,
-                        self.tabs.get_rect().y0,
+                        self.header_rect().y0,
                         self.rect.x1,
                         self.editor.get_rect().y1.max(self.panel_bottom()),
                     );
@@ -3835,7 +3624,7 @@ impl Widget for CodeApp {
                 // The sidebar slides in from the left over the content. Off
                 // fully at reveal 0; flush at reveal 1.
                 let slide = self.flap.slide();
-                let top = self.tabs.get_rect().y0;
+                let top = self.header_rect().y0;
                 let bottom = self.editor.get_rect().y1.max(self.panel_bottom());
                 let x0 = self.rect.x0 - SIDEBAR_WIDTH * (1.0 - slide);
                 let sidebar_rect = Rect::new(x0, top, x0 + SIDEBAR_WIDTH, bottom);
@@ -3863,10 +3652,7 @@ impl Widget for CodeApp {
         // Transient floating status bubble (bottom-right), in place of the old
         // permanent bottom status strip.
         self.draw_status_bubble(scene, transform, text_renderer, theme);
-        // Palette floats on top.
-        self.palette
-            .draw_overlay(scene, transform, text_renderer, theme);
-        // …and a conflict prompt above even that: it is a question that must be
+        // A conflict prompt floats on top: it is a question that must be
         // answered before anything else can be done to the file.
         self.draw_conflict(scene, transform, text_renderer, theme);
         // The unsaved-close prompt sits at the same top layer.
@@ -3887,13 +3673,7 @@ impl Widget for CodeApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if self.handle_palette_and_prompt_cursor(
-            event,
-            ctx.scale_factor,
-            *ctx.modifiers,
-            ctx.state,
-            ctx.handled,
-        ) {
+        if self.track_prompt_cursor(event, ctx.scale_factor, ctx.handled) {
             return;
         }
 
@@ -3901,7 +3681,7 @@ impl Widget for CodeApp {
         // because closing the tab either way changes which of two versions of
         // the file survives.
         if self.close_prompt.is_some() {
-            self.handle_close_prompt(event, ctx.state, ctx.handled);
+            self.handle_close_prompt(event, ctx.state.doc(), ctx.handled);
             return;
         }
 
@@ -3914,7 +3694,7 @@ impl Widget for CodeApp {
         if self.handle_global_shortcuts(
             event,
             *ctx.modifiers,
-            ctx.state,
+            &mut ctx.state,
             ctx.handled,
             ctx.focus_target,
         ) {
@@ -3925,7 +3705,7 @@ impl Widget for CodeApp {
         // is "which of these two versions of your file survives", and letting
         // keystrokes fall through to the buffer underneath it would be wrong.
         if self.conflict.is_some() {
-            self.handle_conflict_prompt(event, ctx.state, ctx.handled);
+            self.handle_conflict_prompt(event, &mut ctx.state, ctx.handled);
             return;
         }
 
@@ -3965,7 +3745,7 @@ impl Widget for CodeApp {
             event,
             ctx.scale_factor,
             *ctx.modifiers,
-            ctx.state,
+            &mut ctx.state,
             ctx.taffy,
             ctx.handled,
         ) {
@@ -3988,8 +3768,8 @@ impl Widget for CodeApp {
         }
 
         // Drain whatever the children produced, then refresh derived views.
-        self.drain_child_events(ctx.state);
-        self.refresh_diagnostics(ctx.state);
+        self.drain_child_events();
+        self.refresh_diagnostics(ctx.state.doc());
         self.refresh_status();
         // Mirror panel tab changes into focus, if the panel switched itself.
         let _ = self.panel.take_tab_changed();
@@ -4012,7 +3792,6 @@ impl Widget for CodeApp {
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
 
-        let tab_count = self.session.open.len();
         let active = self
             .session
             .active_buffer()
@@ -4020,10 +3799,7 @@ impl Widget for CodeApp {
         let mut children = vec![
             AccessNode::new(Role::Heading { level: 1 })
                 .with_name(self.session.project.name.clone()),
-            AccessNode::new(Role::StaticText).with_name(format!(
-                "{active}; {tab_count} open {}",
-                if tab_count == 1 { "file" } else { "files" }
-            )),
+            AccessNode::new(Role::StaticText).with_name(active.to_string()),
         ];
         if let Some(notice) = &self.notice {
             children.push(
@@ -4060,7 +3836,7 @@ impl Widget for CodeApp {
     /// this the whole editor is one opaque rect and `--headless-drive` can only
     /// click at raw coordinates.
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut out: Vec<&dyn Widget> = vec![&self.sidebar, &self.tabs, &self.panel_toggle];
+        let mut out: Vec<&dyn Widget> = vec![&self.sidebar, &self.header, &self.panel_toggle];
         if self.find.is_visible() {
             out.push(&self.find);
         }
@@ -4073,7 +3849,7 @@ impl Widget for CodeApp {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let mut out: Vec<&mut (dyn Widget + '_)> =
-            vec![&mut self.sidebar, &mut self.tabs, &mut self.panel_toggle];
+            vec![&mut self.sidebar, &mut self.header, &mut self.panel_toggle];
         if self.find.is_visible() {
             out.push(&mut self.find);
         }
@@ -4084,70 +3860,20 @@ impl Widget for CodeApp {
         out
     }
 
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if cancellation_requested
-            && self
-                .pending_resource_file
-                .as_ref()
-                .is_some_and(|(id, _)| *id == invocation)
-        {
-            self.pending_resource_file = None;
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("cancelled before file I/O".into()),
-            });
-        }
-        if cancellation_requested && self.resource_invocation == Some(invocation) {
-            self.resource_invocation = None;
-            self.portal = None;
-            self.portal_intent = None;
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("file selection cancelled".into()),
-            });
-        }
-        self.resource_result
-            .as_ref()
-            .is_some_and(|u| u.invocation() == invocation)
-            .then(|| self.resource_result.take())
-            .flatten()
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
+    /// A capture waits while a scenario is still staging, a project search
+    /// is still streaming its hits, or the sidebar is still sliding.
+    fn has_pending_visual_work(&self) -> bool {
+        self.staging.is_some()
+            || self.search_job.is_some()
+            || self.flap.is_animating(self.sidebar_layout())
     }
 
     fn get_rect(&self) -> Rect {
@@ -4156,12 +3882,10 @@ impl Widget for CodeApp {
 
     fn needs_redraw(&self) -> bool {
         self.sidebar.needs_redraw()
-            || self.tabs.needs_redraw()
             || self.panel_toggle.needs_redraw()
             || self.editor.needs_redraw()
             || self.panel.needs_redraw()
             || self.find.needs_redraw()
-            || self.palette.is_visible()
             || self.conflict.is_some()
             || self.close_prompt.is_some()
             || self.flap.is_animating(self.sidebar_layout())
@@ -4169,17 +3893,20 @@ impl Widget for CodeApp {
             || self.terminal_visible()
     }
 
-    /// The explorer eases wheel scrolling and row transitions on its own
-    /// clock; it is the one child whose per-frame update this root runs.
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
-        self.sidebar.update(state, path)
+    /// Advance the explorer and drain the retained terminal before settlement.
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        let mut changed = self.sidebar.update(state, path);
+        if let Some(terminal) = self.terminal.as_mut() {
+            changed |= terminal.update(state, path);
+        }
+        changed
     }
 
     fn needs_animation_frame(&self) -> bool {
         // Keep the event loop pumping frames while the sidebar flap is
         // mid-transition (so the slide + scrim fade play out) OR while a live
-        // terminal is visible — its PTY is drained from `sync`, which the App
-        // only re-runs while an animation frame is requested.
+        // terminal is visible — its PTY is drained during update, which the
+        // App repeats while an animation frame is requested.
         //
         // A running search or an in-flight file picker also needs frames: both
         // deliver over a channel drained in `sync`, so without a frame their
@@ -4202,13 +3929,13 @@ impl Widget for CodeApp {
         // taffy-driven (set from `reveal` in `build_layout`), so the tree must
         // be rebuilt each animating frame to widen/collapse smoothly. Overlay
         // mode computes its geometry in `draw` and needs no rebuild.
-        self.sidebar_layout() == SplitLayout::Docked
-            && self.flap.is_animating(self.sidebar_layout())
+        std::mem::take(&mut self.structure_dirty)
+            || (self.sidebar_layout() == SplitLayout::Docked
+                && self.flap.is_animating(self.sidebar_layout()))
     }
 
     fn mark_drawn(&mut self) {
         self.sidebar.mark_drawn();
-        self.tabs.mark_drawn();
         self.panel_toggle.mark_drawn();
         self.editor.mark_drawn();
         self.panel.mark_drawn();
@@ -4216,250 +3943,17 @@ impl Widget for CodeApp {
     }
 }
 
-impl ui::search::capability::SearchSource for CodeApp {
-    /// Publish canonical file, symbol and live project-result search rows. Each
-    /// row points at an exported resource action, so there is no callback-only
-    /// path with weaker semantics than the palette/agent door.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(
-            crate::search_provider::FileSearchProvider::from_catalog(self.search_catalog.clone()),
-        )]
-    }
-}
-
-impl ui::resources::PublishesResources for CodeApp {
-    /// Publish a bounded contextual project snapshot for the shell's Ctrl+K
-    /// palette. Any omitted file/symbol/result resolves lazily below through
-    /// its canonical address. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-    fn action_directory_resource_page(
-        &self,
-        _doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        let resources = if cursor.is_empty() && max_results > 0 {
-            vec![crate::actions::project_root(&self.code_resource_ctx())]
-        } else {
-            Vec::new()
-        };
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-    /// Resolve a searched file, symbol, or result through the current widget
-    /// state. This is deliberately lazy: a palette row carries only an inert
-    /// canonical address until activation.
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
-    }
-}
-
 impl ui::widget::controls::ActionControls for CodeApp {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.palette.take_control_invocation().or_else(|| {
-            self.children_mut()
-                .into_iter()
-                .find_map(ui::widget::controls::take_control_invocation)
-        })
+        self.children_mut()
+            .into_iter()
+            .find_map(ui::widget::controls::take_control_invocation)
     }
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let mut bindings = self
-            .children()
+        self.children()
             .into_iter()
             .flat_map(ui::widget::controls::control_action_bindings)
-            .collect::<Vec<_>>();
-        if self.palette.is_visible() {
-            bindings.extend(self.palette.control_action_bindings());
-        }
-        bindings
-    }
-}
-
-impl ui::undo::CommittedActions for CodeApp {
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its action, so it records one undo boundary bracketing it (see
-    /// `Self::apply_command`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-}
-
-impl CodeApp {
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if type_id != crate::actions::CODE_EDITOR_OPERATION_TYPE {
-            return Ok(false);
-        }
-        let operation: crate::actions::CodeEditorOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        let expected = crate::actions::operation_kind(&operation)?;
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match code editor operation kind {expected:?}"
-            ));
-        }
-        match (kind, operation) {
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::CodeEditorOperation::Open { file_id },
-            ) => {
-                let node = self
-                    .session
-                    .project
-                    .node_for_resource(&file_id)
-                    .ok_or_else(|| "Code file no longer exists".to_string())?;
-                self.open_node(node);
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::CodeEditorOperation::RevealLocation {
-                    file_id,
-                    path,
-                    line,
-                    col,
-                    show_search,
-                },
-            ) => {
-                let target = file_id
-                    .as_deref()
-                    .and_then(|file| self.session.project.node_for_resource(file))
-                    .or_else(|| {
-                        path.as_deref().and_then(|path| {
-                            self.session.project.reveal_path(std::path::Path::new(path))
-                        })
-                    });
-                let Some(target) = target else {
-                    return Err("Code location no longer exists".to_string());
-                };
-                explorer::refresh(&mut self.sidebar, &self.session.project);
-                self.open_node(target);
-                self.pending_jump = Some((line, col));
-                if show_search {
-                    self.panel_visible = true;
-                    self.panel.set_tab(PanelTab::Search);
-                }
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::CodeEditorOperation::Save { file_id, .. },
-            ) => {
-                let node = self
-                    .session
-                    .project
-                    .node_for_resource(&file_id)
-                    .ok_or_else(|| "Code file no longer exists".to_string())?;
-                if !self.save_buffer(doc, node, false) {
-                    return Err("file could not be saved without user input".to_string());
-                }
-            }
-            (_, crate::actions::CodeEditorOperation::Command { id, argument }) => {
-                self.pending_resource_command = Some((id, argument));
-            }
-            _ => return Err("operation kind does not match Code operation".to_string()),
-        }
-        Ok(true)
-    }
-
-    fn admit_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        use crate::actions::CodeEditorOperation;
-
-        if type_id != crate::actions::CODE_EDITOR_OPERATION_TYPE {
-            return Ok(None);
-        }
-        let operation: crate::actions::CodeEditorOperation =
-            serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let expected = crate::actions::operation_kind(&operation)?;
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match code editor operation kind {expected:?}"
-            ));
-        }
-        if self.resource_invocation.is_some() || self.pending_resource_file.is_some() {
-            return Err("another file operation is already running".into());
-        }
-        let resource = match operation {
-            CodeEditorOperation::OpenFile { path: Some(path) } => {
-                Some(ResourceFileOperation::OpenFile(path.into()))
-            }
-            CodeEditorOperation::OpenFolder { path: Some(path) } => {
-                Some(ResourceFileOperation::OpenFolder(path.into()))
-            }
-            CodeEditorOperation::Save {
-                file_id,
-                path: None,
-            } if self
-                .session
-                .project
-                .node_for_resource(&file_id)
-                .and_then(|node| self.session.buffer_of(node))
-                .and_then(|b| b.path.as_ref())
-                .is_none() =>
-            {
-                let node = self
-                    .session
-                    .project
-                    .node_for_resource(&file_id)
-                    .ok_or_else(|| "Code file no longer exists".to_string())?;
-                self.request_save_as(node);
-                None
-            }
-            CodeEditorOperation::Save { file_id, path } => Some(ResourceFileOperation::Save {
-                node: self
-                    .session
-                    .project
-                    .node_for_resource(&file_id)
-                    .ok_or_else(|| "Code file no longer exists".to_string())?,
-                path: path.map(Into::into),
-            }),
-            CodeEditorOperation::OpenFile { path: None } => {
-                self.request_open_file();
-                None
-            }
-            CodeEditorOperation::OpenFolder { path: None } => {
-                self.request_open_folder();
-                None
-            }
-            other => {
-                return self
-                    .answer_resource_operation(
-                        kind,
-                        type_id,
-                        &serde_json::to_vec(&other).map_err(|e| e.to_string())?,
-                        doc,
-                        path,
-                    )
-                    .map(|handled| handled.then(ui::tilo_actions::ActionOutput::default))
-                    .map(|v| v.map(ui::widget::ResourceOperationStart::Completed));
-            }
-        };
-        self.notice = None;
-        if let Some(resource) = resource {
-            self.pending_resource_file = Some((invocation, resource));
-        } else {
-            self.resource_invocation = Some(invocation);
-        }
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            .collect()
     }
 }
 

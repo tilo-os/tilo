@@ -1,8 +1,8 @@
 //! Every web app over the real session: an agent (iroh, its own certified
-//! device and delegation) opens the app, makes a user-equivalent edit found
-//! without app knowledge, and a browser (HTTPS documents, WebTransport
-//! presence) receives the change authored by the agent, merges it into its
-//! own mount of the app, and sees the agent's cursor on that record.
+//! device and delegation) opens the app, makes an edit through a published
+//! operation found without app knowledge, and a browser (HTTPS documents,
+//! WebTransport presence) receives the change authored by the agent, merges
+//! it into its own replica of the record, and sees the agent on it.
 //! Finally a natural-language task goes through `ModelPlanner`.
 
 #![allow(
@@ -23,6 +23,8 @@
 )]
 
 mod common;
+#[path = "../../../browser/tilo-browser-peer/tests/support/steward.rs"]
+mod steward;
 #[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
 mod support;
 
@@ -39,10 +41,10 @@ use tilo_actions::remote::{
     RemoteActionFrame, RemoteActionMessage, RemoteActionTarget, application_open_target,
 };
 use tilo_agent_participant::{
-    AgentControl, AgentIdentity, AgentParticipant, Control, HostedApp, ModelPlanner,
-    ParticipantConfig, Seed, StepAction, record_provider,
+    AgentControl, AgentIdentity, AgentParticipant, ModelPlanner, ParticipantConfig, Replica, Seed,
+    StepAction, record_provider,
 };
-use tilo_browser_peer::{DocumentRoute, Host, PeerEvent};
+use tilo_browser_peer::{DocumentRoute, Host, PeerEvent, PeerHandle};
 use tilo_relay_protocol::agents::{AgentDelegation, AgentScope, AgentStatus, TaskState};
 use tilo_relay_protocol::live::{LiveFrame, ParticipantKind, PresenceFrame};
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
@@ -60,9 +62,6 @@ impl Driveable for Agent<'_> {
     fn survey(&mut self) -> Vec<ActionDescriptor> {
         self.agent.survey(&self.route)
     }
-    fn controls(&mut self) -> Vec<Control> {
-        self.agent.controls(&self.route)
-    }
     fn body(&mut self) -> String {
         body(self.agent.app(&self.route).unwrap())
     }
@@ -72,9 +71,6 @@ impl Driveable for Agent<'_> {
                 .agent
                 .invoke(&self.route, address, arguments)
                 .map(|_| ()),
-            StepAction::Operate { control, input } => {
-                self.agent.operate(&self.route, control, input)
-            }
             StepAction::Open | StepAction::Continue(_) => Ok(()),
         }
     }
@@ -124,7 +120,7 @@ async fn ask(
     }
 }
 
-fn body(app: &HostedApp) -> String {
+fn body(app: &Replica) -> String {
     app.read(|doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap())
         .unwrap()
 }
@@ -146,7 +142,7 @@ fn page(
         }
         return serde_json::to_string(&automerge::AutoSerde::from(&doc)).unwrap();
     };
-    let app = HostedApp::open(
+    let app = Replica::open(
         catalogue,
         &route.app_id,
         ROOM,
@@ -158,14 +154,25 @@ fn page(
         },
     )
     .unwrap();
-    let text = body(&app);
-    app.close();
-    text
+    body(&app)
+}
+
+/// Open a sealed live frame with `peer`'s channel keys.
+async fn open_live(peer: &PeerHandle, frame: Vec<u8>) -> Option<LiveFrame> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    peer.open_live_then(
+        workspace(),
+        frame,
+        Box::new(move |opened| {
+            let _ = tx.send(opened);
+        }),
+    )
+    .ok()?;
+    LiveFrame::decode(&rx.await.ok()??).ok()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_web_app_over_the_session() {
-    common::isolate_device();
     let (root, _) = UserIdentity::generate("Ada", 1);
     let user = root.verifying_key().to_bytes();
     let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
@@ -177,6 +184,7 @@ async fn every_web_app_over_the_session() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
     let catalogue = catalogue();
 
     // The agent: its own device under the root with no capabilities, and a
@@ -265,7 +273,7 @@ async fn every_web_app_over_the_session() {
 
     let mut received: BTreeMap<DocumentRoute, Vec<Vec<u8>>> = BTreeMap::new();
     let mut table = String::from(
-        "| App | Edit | Via | Browser merged agent's change | Agent cursor (focus, pointer) |\n|---|---|---|---|---|\n",
+        "| App | Edit | Browser merged agent's change | Agent shown on the record |\n|---|---|---|---|\n",
     );
     let mut failures = Vec::new();
     for definition in catalogue.iter() {
@@ -320,9 +328,8 @@ async fn every_web_app_over_the_session() {
             ));
         }
 
-        // The browser sees the agent's cursor on this record: the latest
-        // frame after the first that focuses it (presence repeats every
-        // second, so one keepalive later it carries the final pointer).
+        // The browser sees the agent on this record: the latest frame after
+        // the first that focuses it (presence repeats every second).
         let deadline = Instant::now() + Duration::from_secs(20);
         let mut latest: Option<(Instant, PresenceFrame)> = None;
         let presence: Option<PresenceFrame> = loop {
@@ -351,7 +358,8 @@ async fn every_web_app_over_the_session() {
             };
             if let Ok(Ok(Some(datagram))) =
                 tokio::time::timeout(Duration::from_millis(200), subscribed.recv_datagram()).await
-                && let LiveFrame::Presence(presence) = LiveFrame::decode(&datagram.payload).unwrap()
+                && let Some(LiveFrame::Presence(presence)) =
+                    open_live(&browser, datagram.payload.to_vec()).await
                 && presence
                     .focus
                     .as_ref()
@@ -366,28 +374,22 @@ async fn every_web_app_over_the_session() {
                 let participant = presence.participant.as_ref().unwrap();
                 assert_eq!(participant.kind, ParticipantKind::Agent);
                 assert_eq!(participant.label, "Coverage agent");
-                format!(
-                    "yes, {}",
-                    presence.pointer.map_or_else(
-                        || "no pointer".to_owned(),
-                        |[x, y]| format!("({x:.0}, {y:.0})")
-                    )
-                )
+                "yes".to_owned()
             }
             None => {
                 failures.push(format!(
-                    "{app_id}: the browser never saw the agent's cursor"
+                    "{app_id}: the browser never saw the agent on the record"
                 ));
                 "no".to_owned()
             }
         };
-        let (label, via) = edit.as_ref().map_or_else(
-            || ("— (device-local state)".to_owned(), "—"),
-            |edit| (format!("`{}`", edit.label), edit.path),
+        let label = edit.as_ref().map_or_else(
+            || "— (device-local state)".to_owned(),
+            |edit| format!("`{}`", edit.label),
         );
         let _ = writeln!(
             table,
-            "| {app_id} | {label} | {via} | {} | {cursor} |",
+            "| {app_id} | {label} | {} | {cursor} |",
             if merged { "yes" } else { "no" }
         );
     }
@@ -477,6 +479,7 @@ async fn every_web_app_over_the_session() {
     let mut text = serde_json::Map::new();
     text.insert("text".into(), "Invoked over actionsV1".into());
     let request = InvokeRequest {
+        on_behalf_of: None,
         invocation: InvocationId::new(),
         target: edit.clone(),
         argument: InvokeArgument::Json(text),
@@ -551,6 +554,7 @@ async fn every_web_app_over_the_session() {
         &mut agent,
         agent_key,
         RemoteActionMessage::Invoke(InvokeRequest {
+            on_behalf_of: None,
             argument: InvokeArgument::None,
             ..request
         }),
@@ -573,6 +577,7 @@ async fn every_web_app_over_the_session() {
         &mut agent,
         agent_key,
         RemoteActionMessage::Invoke(InvokeRequest {
+            on_behalf_of: None,
             invocation: InvocationId::new(),
             target: application_open_target(ROOM, "so.tilo.notes"),
             argument: InvokeArgument::None,
@@ -601,6 +606,7 @@ async fn every_web_app_over_the_session() {
         &mut agent,
         agent_key,
         RemoteActionMessage::Invoke(InvokeRequest {
+            on_behalf_of: None,
             invocation: InvocationId::new(),
             target: RemoteActionTarget {
                 provider: "record:so.tilo.notes:nope".into(),
@@ -633,5 +639,17 @@ async fn every_web_app_over_the_session() {
     drop(live);
     agent.close();
     browser.close();
+    let retained = host
+        .relay
+        .room_records()
+        .retained(workspace())
+        .await
+        .unwrap();
+    let (readable, _) = common::retained_documents(
+        retained
+            .into_iter()
+            .map(|retained| (retained.author, retained.body)),
+    );
+    assert_eq!(readable, 0, "nothing reaches the host in the clear");
     host.relay.shutdown().await;
 }

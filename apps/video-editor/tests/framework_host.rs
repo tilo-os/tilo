@@ -52,7 +52,7 @@ fn host_door_edits_publish_resources_and_undo_as_one_action() {
         let last = app.versions().pop().unwrap();
         assert!(
             last.summary()
-                .is_some_and(|summary| summary.contains("Project")),
+                .is_some_and(|summary| summary.contains("Add project marker")),
             "{last:?}"
         );
         assert!(app.undo());
@@ -203,4 +203,46 @@ fn destructive_host_edits_wait_for_one_confirmation() {
         app.harness().key("Delete");
         assert_eq!(app.state().clips.len(), clips);
     }
+}
+
+#[test]
+fn edits_bound_to_the_playhead_reach_the_door() {
+    let mut app = with_sample();
+    let clip = app
+        .state()
+        .clips
+        .iter()
+        .max_by(|a, b| a.duration().total_cmp(&b.duration()))
+        .cloned()
+        .expect("the sample has clips");
+    let at = clip.start + clip.duration() / 2.0;
+    let clips = app.state().clips.len();
+
+    // An agent names the clip and the instant; the editor's view supplies
+    // the rest of the project the cut is made in.
+    app.call(
+        "split-clip",
+        serde_json::json!({ "clip": clip.id.to_string(), "at": at }),
+    )
+    .expect("the split is offered on the project");
+    assert!(app.state().clips.len() > clips, "the clip was cut");
+    assert!(app.undo(), "the cut is one undo step");
+    assert_eq!(app.state().clips.len(), clips);
+
+    // A mark sets the render range and nothing else.
+    let name = app.state().name;
+    app.call("mark-in", serde_json::json!({ "at": at }))
+        .expect("marking is offered on the project");
+    let marked = app.state();
+    assert_eq!(marked.mark_in, Some(at));
+    assert_eq!(marked.name, name);
+
+    // A time the clip does not cover is refused, not applied somewhere else.
+    assert!(
+        app.call(
+            "split-clip",
+            serde_json::json!({ "clip": clip.id.to_string(), "at": clip.end() + 1000.0 }),
+        )
+        .is_err()
+    );
 }

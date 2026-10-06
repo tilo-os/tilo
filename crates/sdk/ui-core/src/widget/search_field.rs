@@ -8,11 +8,12 @@
 //! Built with [`SearchField::opens_palette`], the field becomes a
 //! non-editable affordance that raises the shared command-search shortcut
 //! `CommandPalette` instead: a click
-//! latches a request the host polls with [`SearchField::take_palette_request`]
-//! and opens its own `CommandPalette`. Search UI and ranking thus live in
+//! latches a request the host drains through [`Widget::take_search_request`]
+//! (or directly with [`SearchField::take_palette_request`]) and opens its own
+//! `CommandPalette`. Search UI and ranking thus live in
 //! one shared toolkit widget, not in every app's bespoke search bar.
 
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::collections::HashMap;
 
 use taffy::style_helpers::{length, percent};
@@ -140,17 +141,6 @@ impl SearchField {
         self
     }
 
-    /// Binds the query to a CRDT string path, instead of the default
-    /// local-only buffer.
-    #[must_use]
-    pub fn bound(mut self, path: &str) -> Self {
-        self.input = std::mem::replace(&mut self.input, TextInput::local())
-            .with_plain_chrome()
-            .with_kind(TextInputKind::Search)
-            .with_on_change_path(path);
-        self
-    }
-
     #[must_use]
     pub fn with_icon(mut self, icon: Icon) -> Self {
         self.leading = icon;
@@ -184,6 +174,11 @@ impl SearchField {
         if !self.opens_palette {
             self.input.select_all();
         }
+    }
+
+    /// Whether the query input owns an unfinished composition.
+    pub fn is_composing(&self) -> bool {
+        self.input.is_composing()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -289,11 +284,15 @@ impl Default for SearchField {
 }
 
 impl Widget for SearchField {
-    crate::provides!(dyn crate::undo::UndoPoints);
-
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
         self.input.set_platform_conventions(conventions);
+    }
+
+    /// A launcher pill's activation reaches whichever host mounts the field,
+    /// without the app relaying it.
+    fn take_search_request(&mut self) -> bool {
+        self.take_palette_request()
     }
 
     #[allow(
@@ -532,7 +531,7 @@ impl Widget for SearchField {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, path) = crate::doc::document(state, path);
@@ -540,15 +539,6 @@ impl Widget for SearchField {
             return matches!(action, crate::a11y::Action::Activate) && self.request_palette();
         }
         Widget::perform_action(&mut self.input, action, state, path)
-    }
-}
-
-impl crate::undo::UndoPoints for SearchField {
-    fn needs_commit(&self) -> bool {
-        self.input.needs_commit()
-    }
-    fn on_commit(&mut self) {
-        self.input.on_commit();
     }
 }
 
@@ -676,7 +666,7 @@ immaterial"
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &rootid,
                     handled: &mut handled,
                     focus_target: &mut ft,
@@ -693,7 +683,7 @@ immaterial"
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &rootid,
                     handled: &mut handled,
                     focus_target: &mut ft,
@@ -825,7 +815,7 @@ immaterial"
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &rootid,
                     handled: &mut handled,
                     focus_target: &mut ft,
@@ -842,7 +832,7 @@ immaterial"
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &rootid,
                     handled: &mut handled,
                     focus_target: &mut ft,
@@ -882,7 +872,7 @@ immaterial"
             assert!(Widget::perform_action(
                 &mut sf,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(sf.take_palette_request());

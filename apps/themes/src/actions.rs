@@ -25,18 +25,22 @@
 //! and a payload that names a built-in preset or a missing theme is a **no-op**
 //! rather than an error, so a bad replay can't wedge a peer.
 
-use automerge::{AutoCommit, ROOT};
+use automerge::ROOT;
 use serde::{Deserialize, Serialize};
+use ui::prelude::Effect;
+use ui::tilo_actions;
+use ui::tilo_resource::Resource as _;
 use uuid::Uuid;
 
 use tilo_actions::{
-    Action, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
-    ConfirmationPolicy, DiscoveryScope, Doc, EncodedAction, ExecutionLocus, OperationKind,
-    ParamType, Resource, ResourceProvider, RetryPolicy, RiskLevel,
+    Action, ActionContract, ActionError, ActionParam, ActionSpec, ConfirmationPolicy,
+    DiscoveryScope, Doc, EncodedAction, ExecutionLocus, ParamType, Resource, RetryPolicy,
+    RiskLevel,
 };
 
 use crate::doc;
 use crate::model::{ThemeSpec, TokenId, presets};
+use crate::resource::{Themes, ThemesEffect, ThemesState};
 
 /// Registry `type_id` for every Themes action.
 pub const THEMES_ACTION_TYPE: &str = "themes.action";
@@ -82,6 +86,30 @@ pub enum ThemesAction {
         id: String,
         font: String,
     },
+    SetCustomThemeMotion {
+        id: String,
+        motion_scale: f32,
+    },
+    SetCustomThemeMaterial {
+        id: String,
+        material_scale: f32,
+    },
+    SetCustomThemeIcon {
+        id: String,
+        icon_scale: f32,
+    },
+    SetCustomThemeChrome {
+        id: String,
+        chrome_weight: f32,
+    },
+    SetCustomThemeMotionCharacter {
+        id: String,
+        motion_character: f32,
+    },
+    SetCustomThemeMaterialTint {
+        id: String,
+        material_tint: f32,
+    },
     /// Reset deliberately writes the independent token/shape/font fields, not
     /// a replacement record, so unrelated concurrent edits remain mergeable.
     ResetCustomTheme {
@@ -95,15 +123,49 @@ pub enum ThemesAction {
     },
 }
 
+impl ThemesAction {
+    /// Whether this edit continues `previous` as one gesture: the next value
+    /// of the same slider, colour or name of the same theme.
+    pub fn continues(&self, previous: &Self) -> bool {
+        match (self.continued_field(), previous.continued_field()) {
+            (Some(next), Some(before)) => next == before,
+            _ => false,
+        }
+    }
+
+    /// The theme and field a gesture edits value by value.
+    fn continued_field(&self) -> Option<(&str, &'static str, Option<TokenId>)> {
+        let (id, field, token) = match self {
+            Self::SetCustomThemeName { id, .. } => (id, "name", None),
+            Self::SetCustomThemeToken { id, token, .. } => (id, "token", Some(*token)),
+            Self::SetCustomThemeRadius { id, .. } => (id, "radius", None),
+            Self::SetCustomThemeSpacing { id, .. } => (id, "spacing", None),
+            Self::SetCustomThemeMotion { id, .. } => (id, "motion", None),
+            Self::SetCustomThemeMaterial { id, .. } => (id, "material", None),
+            Self::SetCustomThemeIcon { id, .. } => (id, "icon", None),
+            Self::SetCustomThemeChrome { id, .. } => (id, "chrome", None),
+            Self::SetCustomThemeMotionCharacter { id, .. } => (id, "motion_character", None),
+            Self::SetCustomThemeMaterialTint { id, .. } => (id, "material_tint", None),
+            Self::SetActiveTheme { .. }
+            | Self::CreateCustomTheme { .. }
+            | Self::SetCustomThemeFont { .. }
+            | Self::ResetCustomTheme { .. }
+            | Self::DeleteCustomTheme { .. } => return None,
+        };
+        Some((id.as_str(), field, token))
+    }
+}
+
 impl Action for ThemesAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
             ThemesAction::SetActiveTheme { id } => {
-                // Only name a theme that actually exists in the catalog, so a
-                // stale / malformed id can't point the desktop at nothing.
-                let exists =
+                // A shipped preset is product data and is not copied into the
+                // document. A custom id must already be a catalog record, so a
+                // stale id cannot point the desktop at nothing.
+                let in_catalog =
                     doc::load_catalog(doc, &ROOT).is_some_and(|c| c.iter().any(|s| &s.id == id));
-                if exists {
+                if in_catalog || crate::model::builtin_theme(id).is_some() {
                     doc::put_str(doc, &ROOT, doc::KEY_ACTIVE, id);
                 }
             }
@@ -125,6 +187,29 @@ impl Action for ThemesAction {
             ThemesAction::SetCustomThemeFont { id, font } => {
                 let _ = doc::set_font(doc, &ROOT, id, font);
             }
+            ThemesAction::SetCustomThemeMotion { id, motion_scale } => {
+                let _ = doc::set_scale(doc, &ROOT, id, "motion_scale", *motion_scale);
+            }
+            ThemesAction::SetCustomThemeMaterial { id, material_scale } => {
+                let _ = doc::set_scale(doc, &ROOT, id, "material_scale", *material_scale);
+            }
+            ThemesAction::SetCustomThemeIcon { id, icon_scale } => {
+                let _ = doc::set_scale(doc, &ROOT, id, "icon_scale", *icon_scale);
+            }
+            ThemesAction::SetCustomThemeChrome { id, chrome_weight } => {
+                let _ = doc::set_scale(doc, &ROOT, id, "chrome_weight", *chrome_weight);
+            }
+            ThemesAction::SetCustomThemeMotionCharacter {
+                id,
+                motion_character,
+            } => {
+                let _ = doc::set_scale(doc, &ROOT, id, "motion_character", *motion_character);
+            }
+            ThemesAction::SetCustomThemeMaterialTint { id, material_tint } => {
+                if (0.0..=1.0).contains(material_tint) {
+                    let _ = doc::set_scale(doc, &ROOT, id, "material_tint", *material_tint);
+                }
+            }
             ThemesAction::ResetCustomTheme { id } => {
                 if let Some(current) = doc::load_catalog(doc, &ROOT)
                     .and_then(|c| c.into_iter().find(|s| s.id == *id && !s.builtin))
@@ -145,6 +230,13 @@ impl Action for ThemesAction {
                     let _ = doc::set_radius(doc, &ROOT, id, base.radius_norm);
                     let _ = doc::set_spacing(doc, &ROOT, id, base.spacing_norm);
                     let _ = doc::set_font(doc, &ROOT, id, &base.font);
+                    let _ = doc::set_scale(doc, &ROOT, id, "motion_scale", base.motion_scale);
+                    let _ = doc::set_scale(doc, &ROOT, id, "material_scale", base.material_scale);
+                    let _ = doc::set_scale(doc, &ROOT, id, "icon_scale", base.icon_scale);
+                    let _ = doc::set_scale(doc, &ROOT, id, "chrome_weight", base.chrome_weight);
+                    let _ =
+                        doc::set_scale(doc, &ROOT, id, "motion_character", base.motion_character);
+                    let _ = doc::set_scale(doc, &ROOT, id, "material_tint", base.material_tint);
                 }
             }
             ThemesAction::DeleteCustomTheme { id } => {
@@ -157,11 +249,6 @@ impl Action for ThemesAction {
     fn locus(&self) -> ExecutionLocus {
         ExecutionLocus::ClientLocal
     }
-}
-
-/// Register Themes' action decoder for palette execution + remote replay.
-pub fn register(registry: &mut ActionRegistry) {
-    registry.register::<ThemesAction>(THEMES_ACTION_TYPE);
 }
 
 /// Encode any [`ThemesAction`] into the wire form the palette and the on-screen
@@ -232,6 +319,51 @@ pub fn set_custom_theme_spacing_action(id: impl Into<String>, spacing_norm: f32)
         spacing_norm,
     }
 }
+pub fn set_custom_theme_motion_action(id: impl Into<String>, motion_scale: f32) -> ThemesAction {
+    ThemesAction::SetCustomThemeMotion {
+        id: id.into(),
+        motion_scale,
+    }
+}
+pub fn set_custom_theme_material_action(
+    id: impl Into<String>,
+    material_scale: f32,
+) -> ThemesAction {
+    ThemesAction::SetCustomThemeMaterial {
+        id: id.into(),
+        material_scale,
+    }
+}
+pub fn set_custom_theme_icon_action(id: impl Into<String>, icon_scale: f32) -> ThemesAction {
+    ThemesAction::SetCustomThemeIcon {
+        id: id.into(),
+        icon_scale,
+    }
+}
+pub fn set_custom_theme_chrome_action(id: impl Into<String>, chrome_weight: f32) -> ThemesAction {
+    ThemesAction::SetCustomThemeChrome {
+        id: id.into(),
+        chrome_weight,
+    }
+}
+pub fn set_custom_theme_motion_character_action(
+    id: impl Into<String>,
+    motion_character: f32,
+) -> ThemesAction {
+    ThemesAction::SetCustomThemeMotionCharacter {
+        id: id.into(),
+        motion_character,
+    }
+}
+pub fn set_custom_theme_material_tint_action(
+    id: impl Into<String>,
+    material_tint: f32,
+) -> ThemesAction {
+    ThemesAction::SetCustomThemeMaterialTint {
+        id: id.into(),
+        material_tint,
+    }
+}
 pub fn set_custom_theme_font_action(
     id: impl Into<String>,
     font: impl Into<String>,
@@ -243,109 +375,6 @@ pub fn set_custom_theme_font_action(
 }
 pub fn reset_custom_theme_action(id: impl Into<String>) -> ThemesAction {
     ThemesAction::ResetCustomTheme { id: id.into() }
-}
-
-/// Brokered default creation used by the visible New button. The app mints
-/// the stable id when this operation is invoked, then dispatches the same
-/// `CreateCustomTheme` action as the named palette flow.
-#[allow(
-    clippy::expect_used,
-    clippy::missing_panics_doc,
-    reason = "the unit payload always serializes"
-)]
-pub fn new_default_spec() -> ActionSpec {
-    ActionSpec::operation("new", "New theme", OperationKind::Effect, "themes.new", &())
-        .expect("unit payload serializes")
-        .with_contract(ActionContract {
-            discovery: DiscoveryScope::Launchable,
-            tags: vec!["appearance".into(), "theme".into(), "create".into()],
-            ..ActionContract::default()
-        })
-}
-
-#[allow(
-    clippy::expect_used,
-    clippy::missing_panics_doc,
-    reason = "the static resource has this nullary action"
-)]
-pub fn new_default_binding() -> tilo_actions::ActionBinding<()> {
-    let resource =
-        Resource::new("themes.library", "themes.library", "Themes").with_action(new_default_spec());
-    tilo_actions::ActionBinding::unit_for(&resource, "new")
-        .expect("the static New theme action accepts unit arguments")
-}
-
-/// Local brokered effect for exporting the selected theme. It has no document
-/// payload and never enters collaboration/history.
-#[allow(
-    clippy::expect_used,
-    clippy::missing_panics_doc,
-    reason = "the unit payload always serializes"
-)]
-pub fn export_selected_spec() -> ActionSpec {
-    ActionSpec::operation(
-        "export-selected",
-        "Export selected theme JSON",
-        OperationKind::Effect,
-        "themes.export",
-        &(),
-    )
-    .expect("unit payload serializes")
-    .with_contract(ActionContract {
-        discovery: DiscoveryScope::Launchable,
-        tags: vec!["appearance".into(), "theme".into(), "export".into()],
-        ..ActionContract::default()
-    })
-}
-
-#[allow(
-    clippy::expect_used,
-    clippy::missing_panics_doc,
-    reason = "the static resource has this nullary action"
-)]
-pub fn export_selected_binding() -> tilo_actions::ActionBinding<()> {
-    let resource = Resource::new("themes.library", "themes.library", "Themes")
-        .with_action(export_selected_spec());
-    tilo_actions::ActionBinding::unit_for(&resource, "export-selected")
-        .expect("export-selected is nullary")
-}
-
-/// The selected-theme counterpart of a per-theme Apply operation. The top bar
-/// binds this exact brokered effect while resource children carry stable ids.
-#[allow(
-    clippy::expect_used,
-    clippy::missing_panics_doc,
-    reason = "the unit payload always serializes"
-)]
-pub fn apply_selected_spec() -> ActionSpec {
-    ActionSpec::operation(
-        "apply-selected",
-        "Apply selected theme",
-        OperationKind::Effect,
-        "themes.apply",
-        &(),
-    )
-    .expect("unit payload serializes")
-    .with_contract(ActionContract {
-        discovery: DiscoveryScope::Launchable,
-        retry: RetryPolicy::Idempotent,
-        execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-        result: tilo_actions::ResultSpec::Job,
-        tags: vec!["appearance".into(), "theme".into()],
-        ..ActionContract::default()
-    })
-}
-
-#[allow(
-    clippy::expect_used,
-    clippy::missing_panics_doc,
-    reason = "the static resource has this nullary action"
-)]
-pub fn apply_selected_binding() -> tilo_actions::ActionBinding<()> {
-    let resource = Resource::new("themes.library", "themes.library", "Themes")
-        .with_action(apply_selected_spec());
-    tilo_actions::ActionBinding::unit_for(&resource, "apply-selected")
-        .expect("apply-selected is nullary")
 }
 
 /// Delete a custom theme. A durable tombstone makes delete win over an edit
@@ -425,12 +454,12 @@ pub fn rename_spec(current: &ThemeSpec, name: &str) -> ThemeSpec {
 }
 
 // ===========================================================================
-// Resource tree
+// Resource tree — the library's children, published by
+// [`tilo_resource::publish`] through [`crate::resource::Themes::children`].
 // ===========================================================================
 
-/// Same non-fallible-in-practice contract as [`encode`]: `provide_resources`
-/// returns a plain `Vec<Resource>` (the [`tilo_actions::ResourceProvider`]
-/// trait shape), so there is no `Result` to propagate an encode failure into.
+/// Same non-fallible-in-practice contract as [`encode`]: builders return a
+/// plain [`ActionSpec`], so there is no `Result` to propagate an encode failure.
 #[allow(
     clippy::expect_used,
     reason = "ThemesAction's fields are always JSON-serializable; see encode's doc comment"
@@ -450,210 +479,266 @@ fn theme_contract() -> ActionContract {
     }
 }
 
-/// Build the resource tree Themes currently has open: the theme library (with a
-/// "New theme" action) and each theme in it. Every theme can be applied as the
-/// OS theme or duplicated; custom themes additionally export rename, recolour,
-/// and delete. Every document-mutating operation is exported as the same action
-/// the on-screen affordance dispatches.
-///
-/// # Panics
-///
-/// Panics only if a validated catalog id cannot be JSON-encoded for the
-/// external apply-operation envelope.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one resource tree lists every catalog action beside the theme it acts on"
-)]
-#[allow(
-    clippy::expect_used,
-    reason = "Theme ids admitted by doc::load_catalog are bounded UTF-8 strings and always serialize"
-)]
-pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
-    let catalog = doc::load_catalog(doc, &ROOT).unwrap_or_default();
+/// The binding of one fully specified studio effect, for a button: the same
+/// published effect the palette and agents invoke.
+pub fn effect_binding(effect: &ThemesEffect) -> Option<tilo_actions::ActionBinding<()>> {
+    let spec = ThemesEffect::specs()
+        .into_iter()
+        .find(|spec| spec.id == effect.id())?;
+    let library =
+        Resource::new(Themes::KIND, Themes::KIND, Themes::LABEL).with_action(spec.clone());
+    tilo_actions::ActionBinding::static_json(&library, &spec, effect.arguments()).ok()
+}
 
-    let mut root = Resource::new("themes.library", "themes.library", "Themes")
-        .with_action(new_default_spec())
-        .with_action(export_selected_spec())
-        .with_action(apply_selected_spec());
-
-    // Library-level: create a new theme from the base preset. The uuid is minted
-    // once when the name argument is committed, then baked into the envelope, so
-    // replay stays deterministic.
-    let next_order = max_order(&catalog) + 1;
-    root = root.with_action(
+/// The custom theme `spec`'s controls as actions on its child: each slider's
+/// value and the font.
+fn with_control_actions(mut child: Resource, spec: &ThemeSpec) -> Resource {
+    for control in CONTROLS {
+        let base = spec.clone();
+        child = child.with_action(
+            ActionSpec::typed(
+                control.id,
+                control.label,
+                "0–1",
+                ExecutionLocus::ClientLocal,
+                vec![
+                    ActionParam::required(
+                        "value",
+                        ParamType::Number,
+                        "Position on the control, from 0 to 1",
+                    )
+                    .with_schema(serde_json::json!({ "minimum": 0, "maximum": 1 })),
+                ],
+                move |args| {
+                    let norm = args.number("value").unwrap_or_default().clamp(0.0, 1.0);
+                    #[allow(clippy::cast_possible_truncation, reason = "a 0–1 control position")]
+                    encode(&(control.action)(base.id.clone(), norm as f32))
+                },
+            )
+            .with_contract(theme_contract()),
+        );
+    }
+    let base = spec.clone();
+    child = child.with_action(
         ActionSpec::typed(
-            "new-theme",
-            "New theme",
-            "theme name…",
+            "set-font",
+            "Set font",
+            "font…",
             ExecutionLocus::ClientLocal,
-            vec![ActionParam::required("name", ParamType::Text, "Theme name")],
+            vec![
+                ActionParam::required("font", ParamType::Text, "Interface font")
+                    .with_choices(crate::model::FONTS.iter().copied()),
+            ],
             move |args| {
-                let name = args.text("name").unwrap_or_default();
-                let name = {
-                    let n = name.trim();
-                    if n.is_empty() { "New theme" } else { n }
-                };
-                encode(&upsert_custom_theme_action(&new_theme_spec(
-                    &Uuid::new_v4().to_string(),
-                    name,
-                    next_order,
-                )))
+                encode(&set_custom_theme_font_action(
+                    base.id.clone(),
+                    args.text("font").unwrap_or_default(),
+                ))
             },
         )
         .with_contract(theme_contract()),
     );
-
-    for spec in &catalog {
-        let mut child = Resource::new(
-            format!("themes.theme:{}", spec.id),
-            "themes.theme",
-            spec.name.clone(),
-        );
-
-        // Every theme can become the active OS theme.
-        child = child.with_action(
-            ActionSpec::operation(
-                "apply",
-                "Apply as system theme",
-                OperationKind::Effect,
-                "themes.apply",
-                &spec.id,
-            )
-            .expect("theme id is serializable")
-            .with_contract(ActionContract {
-                discovery: DiscoveryScope::Launchable,
-                retry: RetryPolicy::Idempotent,
-                execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-                result: tilo_actions::ResultSpec::Job,
-                tags: vec!["appearance".into(), "theme".into()],
-                ..ActionContract::default()
-            }),
-        );
-
-        // Agents can export a specific stable id; the visible control uses the
-        // sibling selected-theme operation with the same broker type.
-        child = child.with_action(
-            ActionSpec::operation(
-                "export",
-                "Export theme JSON",
-                OperationKind::Effect,
-                "themes.export",
-                &spec.id,
-            )
-            .expect("theme id is serializable")
-            .with_contract(ActionContract {
-                discovery: DiscoveryScope::Launchable,
-                tags: vec!["appearance".into(), "theme".into(), "export".into()],
-                ..ActionContract::default()
-            }),
-        );
-
-        // Every theme can be duplicated into a new editable copy. The copy's uuid
-        // is minted at authoring time so replay is deterministic.
-        let dup_order = next_order;
-        child = child.with_action(immediate_spec(
-            "duplicate",
-            "Duplicate",
-            &upsert_custom_theme_action(&duplicate_spec(
-                spec,
-                &Uuid::new_v4().to_string(),
-                dup_order,
-            )),
-        ));
-
-        if !spec.builtin {
-            child = child.with_action(
-                immediate_spec(
-                    "reset",
-                    "Reset theme",
-                    &reset_custom_theme_action(spec.id.clone()),
-                )
-                .with_contract(ActionContract {
-                    confirmation: ConfirmationPolicy::Confirm,
-                    ..theme_contract()
-                }),
-            );
-            // Rename — a prompted action carrying the rest of the theme unchanged.
-            let base = spec.clone();
-            child = child.with_action(
-                ActionSpec::typed(
-                    "edit",
-                    "Rename theme",
-                    "theme name…",
-                    ExecutionLocus::ClientLocal,
-                    vec![ActionParam::required("name", ParamType::Text, "Theme name")],
-                    move |args| {
-                        encode(&set_custom_theme_name_action(
-                            base.id.clone(),
-                            args.text("name").unwrap_or_default(),
-                        ))
-                    },
-                )
-                .with_contract(theme_contract()),
-            );
-            // Set the accent colour — a prompted colour edit (the committed form
-            // of a picker drag), taking a hex string.
-            let base = spec.clone();
-            child = child.with_action(
-                ActionSpec::typed(
-                    "set-accent",
-                    "Set accent colour",
-                    "#RRGGBB",
-                    ExecutionLocus::ClientLocal,
-                    vec![
-                        ActionParam::required("colour", ParamType::Text, "Hex RGB colour")
-                            .with_schema(serde_json::json!({ "pattern": "^#[0-9A-Fa-f]{6}$" })),
-                    ],
-                    move |args| {
-                        let hex = args.text("colour").unwrap_or_default();
-                        let rgb = crate::model::parse_hex(hex).unwrap_or(base.accent);
-                        encode(&set_custom_theme_token_action(
-                            base.id.clone(),
-                            TokenId::Accent,
-                            rgb,
-                        ))
-                    },
-                )
-                .with_contract(theme_contract()),
-            );
-            // Delete the custom theme.
-            child = child.with_action(
-                immediate_spec(
-                    "delete",
-                    "Delete theme",
-                    &delete_custom_theme_action(spec.id.clone()),
-                )
-                .with_contract(ActionContract {
-                    risk: RiskLevel::Destructive,
-                    confirmation: ConfirmationPolicy::Confirm,
-                    ..theme_contract()
-                }),
-            );
-        }
-
-        root = root.with_child(child);
-    }
-
-    vec![root]
+    child
 }
 
-impl ResourceProvider for crate::app::ThemesApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(doc)
+/// One of the customizer's sliders: the action it sets on a custom theme
+/// from the slider's 0–1 position.
+pub(crate) struct Control {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub action: fn(String, f32) -> ThemesAction,
+}
+
+/// The customizer's sliders, in the panel's order.
+pub(crate) const CONTROLS: [Control; 8] = [
+    Control {
+        id: "set-radius",
+        label: "Set corner radius",
+        action: |id, norm| set_custom_theme_radius_action(id, norm),
+    },
+    Control {
+        id: "set-spacing",
+        label: "Set interface spacing",
+        action: |id, norm| set_custom_theme_spacing_action(id, norm),
+    },
+    Control {
+        id: "set-motion",
+        label: "Set motion",
+        action: |id, norm| {
+            set_custom_theme_motion_action(id, crate::model::motion_scale_from_norm(norm))
+        },
+    },
+    Control {
+        id: "set-materials",
+        label: "Set materials",
+        action: |id, norm| {
+            set_custom_theme_material_action(id, crate::model::material_scale_from_norm(norm))
+        },
+    },
+    Control {
+        id: "set-icons",
+        label: "Set icons",
+        action: |id, norm| {
+            set_custom_theme_icon_action(id, crate::model::icon_scale_from_norm(norm))
+        },
+    },
+    Control {
+        id: "set-chrome-weight",
+        label: "Set chrome weight",
+        action: |id, norm| {
+            set_custom_theme_chrome_action(id, crate::model::chrome_weight_from_norm(norm))
+        },
+    },
+    Control {
+        id: "set-motion-character",
+        label: "Set motion character",
+        action: |id, norm| {
+            set_custom_theme_motion_character_action(
+                id,
+                crate::model::motion_character_from_norm(norm),
+            )
+        },
+    },
+    Control {
+        id: "set-material-tint",
+        label: "Set material tint",
+        action: |id, norm| {
+            set_custom_theme_material_tint_action(id, crate::model::material_tint_from_norm(norm))
+        },
+    },
+];
+
+/// One child per theme: apply / export it, and edit a custom one.
+pub(crate) fn document_children(state: &ThemesState) -> Vec<Resource> {
+    let next_order = max_order(&state.catalog) + 1;
+    state
+        .catalog
+        .iter()
+        .map(|spec| theme_resource(spec, next_order))
+        .collect()
+}
+
+/// The child of the theme `spec`; a duplicate is created at `next_order`.
+pub(crate) fn theme_resource(spec: &ThemeSpec, next_order: u32) -> Resource {
+    let mut child = Resource::new(
+        format!("themes.theme:{}", spec.id),
+        "themes.theme",
+        spec.name.clone(),
+    );
+    let theme = Some(spec.id.clone());
+    for effect in [
+        ThemesEffect::ApplyTheme {
+            theme: theme.clone(),
+        },
+        ThemesEffect::Export { theme },
+    ] {
+        // The installed app's catalogue offers them while no window is open.
+        let mut bound = effect.bound();
+        bound.contract.discovery = DiscoveryScope::Launchable;
+        child = child.with_action(bound);
     }
+
+    child = child.with_action(immediate_spec(
+        "duplicate",
+        "Duplicate",
+        &upsert_custom_theme_action(&duplicate_spec(
+            spec,
+            &Uuid::new_v4().to_string(),
+            next_order,
+        )),
+    ));
+
+    if !spec.builtin {
+        child = child.with_action(
+            immediate_spec(
+                "reset",
+                "Reset theme",
+                &reset_custom_theme_action(spec.id.clone()),
+            )
+            .with_contract(ActionContract {
+                confirmation: ConfirmationPolicy::Confirm,
+                ..theme_contract()
+            }),
+        );
+        let base = spec.clone();
+        child = child.with_action(
+            ActionSpec::typed(
+                "edit",
+                "Rename theme",
+                "theme name…",
+                ExecutionLocus::ClientLocal,
+                vec![ActionParam::required("name", ParamType::Text, "Theme name")],
+                move |args| {
+                    encode(&set_custom_theme_name_action(
+                        base.id.clone(),
+                        args.text("name").unwrap_or_default(),
+                    ))
+                },
+            )
+            .with_contract(theme_contract()),
+        );
+        let base = spec.clone();
+        child = child.with_action(
+            ActionSpec::typed(
+                "set-accent",
+                "Set accent colour",
+                "#RRGGBB",
+                ExecutionLocus::ClientLocal,
+                vec![
+                    ActionParam::required("colour", ParamType::Text, "Hex RGB colour")
+                        .with_schema(serde_json::json!({ "pattern": "^#[0-9A-Fa-f]{6}$" })),
+                ],
+                move |args| {
+                    let hex = args.text("colour").unwrap_or_default();
+                    let rgb = crate::model::parse_hex(hex).unwrap_or(base.accent);
+                    encode(&set_custom_theme_token_action(
+                        base.id.clone(),
+                        TokenId::Accent,
+                        rgb,
+                    ))
+                },
+            )
+            .with_contract(theme_contract()),
+        );
+        child = with_control_actions(child, spec);
+        child = child.with_action(
+            immediate_spec(
+                "delete",
+                "Delete theme",
+                &delete_custom_theme_action(spec.id.clone()),
+            )
+            .with_contract(ActionContract {
+                risk: RiskLevel::Destructive,
+                confirmation: ConfirmationPolicy::Confirm,
+                ..theme_contract()
+            }),
+        );
+    }
+
+    child
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::ThemesApp;
-    use tilo_actions::LocalTransport;
+    use automerge::AutoCommit;
+    use tilo_actions::ActionRegistry;
+    use tilo_actions::{LocalTransport, OperationKind};
     use ui::testing::action_contract::{find_spec, spec_encoding};
-    use ui::widget::Widget;
+
+    /// The library as [`tilo_resource::publish`] offers it for `doc`.
+    fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
+        let state = Themes::read(doc).unwrap();
+        vec![ui::tilo_resource::publish::<Themes>(
+            Themes::KIND,
+            Themes::LABEL,
+            &state,
+        )]
+    }
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
-        register(&mut r);
+        Themes::register(&mut r);
         r
     }
 
@@ -673,7 +758,7 @@ mod tests {
         seed: seeded_doc(),
         registry: registry(),
         resources: |doc| provide_resources(doc),
-        palette: ["New theme", "Apply as system theme", "Delete theme", "Rename theme"],
+        palette: ["Apply as system theme", "Export theme JSON", "Delete theme", "Rename theme"],
         replay: [
             create_theme => |_| encode(&upsert_custom_theme_action(&new_theme_spec(
                 "11112222-3333-4444-5555-666677778888",
@@ -707,27 +792,16 @@ mod tests {
 
     /// Ctrl+K publishes the themes tree, and every control resource uses the canonical action or broker.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
     fn themes_tree_publishes_canonical_actions_and_brokers() {
         // Case `ctrl_k_publishes_the_themes_tree`.
-        // Ctrl+K on Themes yields the tree: the library with a "New theme" action,
-        // a `themes.theme` child per theme exporting apply + duplicate, and — for a
-        // custom theme — rename, set-accent and delete. Drives the real resource
-        // hook (`Widget::resources`).
+        // Ctrl+K on Themes yields the tree: a `themes.theme` child per theme
+        // exporting apply + duplicate, and — for a custom theme — rename,
+        // set-accent and delete.
         {
-            let mut app = ThemesApp::new_demo();
-            let mut st = ui::State::new();
-            app.sync(&mut st.doc, &st.root);
-
-            let resources = ui::resources::resources(&app, &st.doc);
+            let resources = provide_resources(&seeded_doc());
             assert_eq!(resources.len(), 1, "one library root");
             let lib = &resources[0];
             assert_eq!(lib.kind, "themes.library");
-            let lib_actions: Vec<&str> = lib.actions.iter().map(|a| a.id.as_str()).collect();
-            assert!(lib_actions.contains(&"new-theme"), "{lib_actions:?}");
 
             // A built-in preset exports apply + duplicate but neither delete nor edit.
             let builtin = lib
@@ -736,7 +810,7 @@ mod tests {
                 .find(|r| r.id.as_str() == "themes.theme:tilo-blue")
                 .expect("the tilo-blue preset resource");
             let b_actions: Vec<&str> = builtin.actions.iter().map(|a| a.id.as_str()).collect();
-            assert!(b_actions.contains(&"apply"), "{b_actions:?}");
+            assert!(b_actions.contains(&"apply-theme"), "{b_actions:?}");
             assert!(b_actions.contains(&"duplicate"), "{b_actions:?}");
             assert!(
                 !b_actions.contains(&"delete"),
@@ -754,7 +828,8 @@ mod tests {
                 .find(|r| r.id.as_str() == "themes.theme:sunset")
                 .expect("the sunset custom resource");
             let c_actions: Vec<&str> = custom.actions.iter().map(|a| a.id.as_str()).collect();
-            assert!(c_actions.contains(&"apply"), "{c_actions:?}");
+            assert!(c_actions.contains(&"apply-theme"), "{c_actions:?}");
+            assert!(c_actions.contains(&"export"), "{c_actions:?}");
             assert!(c_actions.contains(&"edit"), "{c_actions:?}");
             assert!(c_actions.contains(&"set-accent"), "{c_actions:?}");
             assert!(c_actions.contains(&"reset"), "{c_actions:?}");
@@ -772,7 +847,7 @@ mod tests {
             let apply = custom
                 .actions
                 .iter()
-                .find(|action| action.id == "apply")
+                .find(|action| action.id == "apply-theme")
                 .expect("apply operation");
             assert_eq!(apply.kind, OperationKind::Effect);
             assert_eq!(apply.contract.discovery, DiscoveryScope::Launchable);
@@ -822,24 +897,6 @@ mod tests {
                 serde_json::from_slice::<ThemesAction>(&encoded.payload).unwrap(),
                 ThemesAction::SetCustomThemeToken { id, token: TokenId::Accent, rgb: [1, 2, 3] } if id == "sunset"
             ));
-            assert!(
-                library
-                    .actions
-                    .iter()
-                    .any(|action| action.id == "new-theme")
-            );
-            assert!(
-                library
-                    .actions
-                    .iter()
-                    .any(|action| action.id == "apply-selected")
-            );
-            assert!(
-                library
-                    .actions
-                    .iter()
-                    .any(|action| action.id == "export-selected")
-            );
         }
     }
 
@@ -904,50 +961,42 @@ mod tests {
             );
         }
 
+        // Case `a_shipped_preset_is_active_without_a_catalog_copy`.
+        {
+            let mut doc = AutoCommit::new();
+            let id = crate::model::default_catalog()[0].id.clone();
+            let action = set_active_theme_action(id.clone());
+            let encoded = encode(&action);
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, &action, encoded, &mut tx).unwrap();
+            assert_eq!(
+                ui::doc::read_str(&doc, &ROOT, doc::KEY_ACTIVE).as_deref(),
+                Some(id.as_str())
+            );
+            let refused = set_active_theme_action("not-a-theme");
+            let encoded = encode(&refused);
+            tilo_actions::dispatch(&mut doc, &refused, encoded, &mut tx).unwrap();
+            assert_eq!(
+                ui::doc::read_str(&doc, &ROOT, doc::KEY_ACTIVE).as_deref(),
+                Some(id.as_str()),
+                "an unknown id must not replace the active theme"
+            );
+        }
+
         // Case `apply_effect_carries_the_stable_theme_id`.
         // Applying is an external store effect; the spec carries the stable theme
         // id to the widget operation handler.
         {
             let resources = provide_resources(&seeded_doc());
-            let (_, apply) = find_spec(&resources, "themes.theme:tilo-blue", "apply");
+            let (_, apply) = find_spec(&resources, "themes.theme:tilo-blue", "apply-theme");
             let from_spec = spec_encoding(apply, None);
-            assert_eq!(from_spec.type_id, "themes.apply");
+            assert_eq!(from_spec.type_id, ThemesEffect::OPERATION);
             assert_eq!(
-                serde_json::from_slice::<String>(&from_spec.payload).unwrap(),
-                "tilo-blue"
+                ThemesEffect::from_payload(&from_spec.payload).unwrap(),
+                ThemesEffect::ApplyTheme {
+                    theme: Some("tilo-blue".into())
+                }
             );
-        }
-
-        // Case `new_theme_action_creates_a_theme`.
-        // Dispatching the "New theme" prompted action creates an editable theme in
-        // the document carrying the committed name.
-        {
-            let mut doc = seeded_doc();
-            let resources = provide_resources(&doc);
-            let spec = resources[0]
-                .actions
-                .iter()
-                .find(|a| a.id == "new-theme")
-                .unwrap();
-            let before = catalog(&doc).len();
-
-            // The prompted build mints a fresh theme id per call, so this drives
-            // the palette's build directly rather than comparing two builds.
-            let tilo_actions::ActionInput::Prompted { build, .. } = &spec.input else {
-                panic!("new-theme is prompted");
-            };
-            let encoded = build("Aurora");
-            let decoded = registry().decode(&encoded).unwrap();
-            let mut tx = LocalTransport::new();
-            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-
-            let cat = catalog(&doc);
-            assert_eq!(cat.len(), before + 1, "the action added a theme");
-            let created = cat
-                .iter()
-                .find(|s| s.name == "Aurora")
-                .expect("named theme exists");
-            assert!(!created.builtin, "the created theme is editable");
         }
     }
 }

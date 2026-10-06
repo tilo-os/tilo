@@ -3,7 +3,8 @@ export interface DesktopRoute { workspace: string; strip: string; group: string;
 export type WorkspaceActivityView = 'catch-up' | 'explore' | 'replay' | 'tasks';
 /** Workspace settings tabs; `permissions` is the one labelled Privacy (every grant in the room). */
 export type WorkspaceSettingsTab = 'general' | 'members' | 'agents' | 'permissions' | 'apps';
-export type WorkspaceActivityState = {workspace: string; view: WorkspaceActivityView; playing: boolean; coverage: 'complete' | 'partial'} | null;
+/** `inSurface`: the runtime draws this view over the desktop itself (the shared history pane), so the page shows none of its own. */
+export type WorkspaceActivityState = {workspace: string; view: WorkspaceActivityView; playing: boolean; coverage: 'complete' | 'partial'; inSurface?: boolean} | null;
 /** Last authoritative close in this generation; reset to null when a pane opens.
  * Only dismissed permits returning focus to an external opener. Optional on older hosts. */
 export type WorkspaceActivityCloseReason = 'dismissed' | 'workspace-changed' | 'resource-opened' | 'access-changed' | 'disposed';
@@ -24,10 +25,12 @@ export interface DesktopNavigationSnapshot {
   active: DesktopRoute | null;
   widthPermille: number | null;
   maximized: boolean;
-  capabilities: {select: boolean; width: boolean; maximize: boolean; strips: boolean; commands?: boolean; close?: boolean; open?: boolean; globalSearch?: boolean; workspaceSelect?: boolean; workspaceHistory?: boolean; workspaceReplay?: boolean};
+  capabilities: {select: boolean; width: boolean; maximize: boolean; strips: boolean; commands?: boolean; close?: boolean; open?: boolean; globalSearch?: boolean; workspaceSelect?: boolean; workspaceHistory?: boolean; workspaceReplay?: boolean; notifications?: boolean};
   desktopPan?: {workspace: string; strip: string; offset: number; viewport: number; content: number; max: number} | null;
   workspaceActivity?: WorkspaceActivityState;
   workspaceActivityCloseReason?: WorkspaceActivityCloseReason | null;
+  /** Banners on screen, notifications kept in the centre, and whether the centre is open; with `capabilities.notifications`. */
+  notifications?: {active: number; retained: number; centerOpen: boolean};
   history?: {target: string} | null;
   /** The workspace settings while they are open over the desktop, and their tab. */
   workspaceSettings?: {workspace: string; tab: WorkspaceSettingsTab} | null;
@@ -38,6 +41,8 @@ export type DesktopNavigationCommand = {generation: string} & (
   {kind: "workspace"; workspace: string} |
   {kind: "workspace-activity"; workspace: string; view: WorkspaceActivityView} |
   {kind: "close-workspace-activity"; workspace: string} |
+  /** Open or close the notification centre over the desktop. */
+  {kind: "notification-center"; open: boolean} |
   /** The active workspace's settings, over the desktop (closing its Activity). */
   {kind: "workspace-settings"; workspace: string; tab: WorkspaceSettingsTab} |
   {kind: "close-workspace-settings"; workspace: string} |

@@ -57,3 +57,14 @@ The aggregate replica status is the content-capacity health check:
 `full_content_replication` is advertised only while every configured workspace
 has a fresh complete status. App, compute, and remote-control services remain
 separate from filesystem replication.
+
+## Three roles
+
+This image is the **relay / home peer** — not the agent door:
+
+1. **Relay / headless store-and-forward** — this daemon (authenticated workspace host).
+2. **Home server / full always-on peer** — this Compose file: host-capable device cert, full file replica, LAN pair from Settings.
+3. **Agent on an existing OS** — MCP client talking to a **local** enrolled `tilo-runtime` beside this relay. See [`../tilo-agent-host/`](../tilo-agent-host/) and [`docs/architecture/agent-host.md`](../../../docs/architecture/agent-host.md).
+
+The agent host recipe keeps MCP on loopback with a token file, shares the enroll-under-user-identity story (separate personal-device key from this home peer), and never copies `user-identity/privkey.bin`.
+

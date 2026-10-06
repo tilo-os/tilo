@@ -5,10 +5,11 @@
 //! being broken, so they run on a worker; the panel opens immediately
 //! with the last known values and updates as readings land.
 //!
-//! Tiered by what's visible: network/device lists only show after a
-//! drill-in, so that scan is dispatched there rather than paid for on
-//! open. A worker owns no `Rc` and sends plain data over a channel,
-//! keeping it safe alongside the shell's single-threaded `RefCell` tree.
+//! Tiered so a slow list never holds up the panel's switches and sliders:
+//! the Wi-Fi and Bluetooth lists are their own tiers, read on open because
+//! the tiles name the connected network and accessory. A worker owns no
+//! `Rc` and sends plain data over a channel, keeping it safe alongside the
+//! shell's single-threaded `RefCell` tree.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -29,6 +30,8 @@ pub struct FastReading {
     /// A successful `BlueZ` state query proves that an adapter exists.
     pub bluetooth_available: bool,
     pub power: Option<qs::PowerProfile>,
+    /// The profiles the daemon advertises, when it answered.
+    pub power_profiles: Option<Vec<qs::PowerProfile>>,
     pub wired: Option<qs::WiredInfo>,
     pub battery: qs::BatteryInfo,
     pub radios: Option<qs::RadioState>,
@@ -82,6 +85,13 @@ pub struct QsRefresh {
     /// Turned off when the host's action dispatcher has been replaced,
     /// so a seeded Wi-Fi list can't get overwritten by a real scan.
     enabled: bool,
+    /// Counts the panel's own writes to the system. A fast reading
+    /// started before the latest write may have sampled the old value;
+    /// landing it would flip the control back, and the next press would
+    /// then repeat the change instead of reversing it.
+    writes: u64,
+    /// The write count each tier's running read started under.
+    started: HashMap<Tier, u64>,
 }
 
 impl Default for QsRefresh {
@@ -108,6 +118,8 @@ impl QsRefresh {
             in_flight: HashSet::new(),
             rerun: HashMap::new(),
             enabled,
+            writes: 0,
+            started: HashMap::new(),
         }
     }
 
@@ -143,6 +155,7 @@ impl QsRefresh {
 
     fn spawn_boxed(&mut self, tier: Tier, work: PendingWork) {
         self.in_flight.insert(tier);
+        self.started.insert(tier, self.writes);
         let tx = self.tx.clone();
         let wake = self.wake.clone();
         // Detached: bounded by `os_actions::DEFAULT_TIMEOUT`, and a
@@ -170,6 +183,10 @@ impl QsRefresh {
                 bluetooth_available: bluetooth.is_some(),
                 bluetooth,
                 power: qs::log_get("get_power_profile", qs::get_power_profile()),
+                power_profiles: qs::log_get(
+                    "available_power_profiles",
+                    qs::available_power_profiles(),
+                ),
                 wired: qs::log_get("get_wired", qs::get_wired()),
                 battery: qs::BatteryInfo::from_system(),
                 radios: qs::log_get("get_radio_state", qs::get_radio_state()),
@@ -177,6 +194,14 @@ impl QsRefresh {
                 vpns: qs::log_get("list_vpn_connections", qs::list_vpn_connections()),
             }))
         });
+    }
+
+    /// Read back after the panel changed something itself. A reading
+    /// already under way is superseded: it is dropped when it lands, and
+    /// this read follows it.
+    pub fn kick_fast_after_write(&mut self) {
+        self.writes = self.writes.wrapping_add(1);
+        self.kick_fast();
     }
 
     pub fn kick_firmware(&mut self) {
@@ -232,16 +257,32 @@ impl QsRefresh {
                 QsReading::WifiJoin(_) => Tier::WifiJoin,
             };
             self.in_flight.remove(&tier);
+            let superseded = tier == Tier::Fast
+                && self
+                    .started
+                    .remove(&tier)
+                    .is_some_and(|started| started != self.writes);
             if let Some(work) = self.rerun.remove(&tier) {
                 self.spawn_boxed(tier, work);
             }
-            out.push(reading);
+            if !superseded {
+                out.push(reading);
+            }
         }
         out
     }
 
     /// Asserts the asynchrony itself without depending on which OS
     /// tools exist.
+    #[cfg(test)]
+    pub(crate) fn kick_fast_after_write_with<F>(&mut self, work: F)
+    where
+        F: FnOnce() -> QsReading + Send + 'static,
+    {
+        self.writes = self.writes.wrapping_add(1);
+        self.spawn(Tier::Fast, work);
+    }
+
     #[cfg(test)]
     pub(crate) fn kick_fast_with<F>(&mut self, work: F)
     where
@@ -390,6 +431,7 @@ mod tests {
             bluetooth: None,
             bluetooth_available: false,
             power: None,
+            power_profiles: None,
             wired: None,
             battery: qs::BatteryInfo::from_root(std::path::Path::new("/nonexistent")),
             radios: None,
@@ -494,6 +536,7 @@ mod tests {
                     bluetooth: None,
                     bluetooth_available: false,
                     power: None,
+                    power_profiles: None,
                     wired: None,
                     battery: qs::BatteryInfo::from_root(std::path::Path::new("/nonexistent")),
                     radios: None,
@@ -545,6 +588,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
     fn refresh_tiers_collapse_in_flight_dispatches_and_track_independently() {
         fn dispatches_while_in_flight_collapse_to_one_latest_rerun() {
             use std::sync::atomic::{AtomicUsize, Ordering};
@@ -623,7 +670,55 @@ mod tests {
             );
         }
 
+        fn a_read_started_before_a_write_never_lands() {
+            let mut r = QsRefresh::new();
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+            // Opening the panel samples Bluetooth as on...
+            r.kick_fast_with(move || {
+                started_tx.send(()).expect("test is waiting for worker");
+                release_rx.recv().expect("test releases the read");
+                QsReading::Fast(Box::new(FastReading {
+                    bluetooth: Some(true),
+                    ..*fast_fields()
+                }))
+            });
+            tilo_test_env::recv("the stale read is under way", &started_rx);
+            // ...while the person turns it off.
+            r.kick_fast_after_write_with(|| {
+                QsReading::Fast(Box::new(FastReading {
+                    bluetooth: Some(false),
+                    ..*fast_fields()
+                }))
+            });
+            release_tx.send(()).expect("release the stale read");
+
+            let deadline = tilo_test_env::hang_deadline();
+            let mut landed = Vec::new();
+            while (landed.is_empty() || r.is_in_flight()) && Instant::now() < deadline {
+                for reading in r.drain() {
+                    if let QsReading::Fast(reading) = reading {
+                        landed.push(reading.bluetooth);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(
+                landed,
+                [Some(false)],
+                "only the read after the write may set the control; the earlier one would flip it back"
+            );
+        }
+
         dispatches_while_in_flight_collapse_to_one_latest_rerun();
         tiers_are_tracked_independently();
+        a_read_started_before_a_write_never_lands();
+    }
+
+    fn fast_fields() -> Box<FastReading> {
+        match empty_fast() {
+            QsReading::Fast(reading) => reading,
+            _ => unreachable!("empty_fast is a fast reading"),
+        }
     }
 }

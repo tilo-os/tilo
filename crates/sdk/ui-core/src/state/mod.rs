@@ -162,6 +162,13 @@ impl DocumentReplica {
     }
 }
 
+/// Optional action-based undo/redo payloads for outside-consequence spans.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CommittedSpanInverse {
+    pub undo_via: Option<tilo_actions::EncodedAction>,
+    pub redo_via: Option<tilo_actions::EncodedAction>,
+}
+
 /// One reversible action on the undo/redo stacks.
 ///
 /// **Collab-safe, change-based undo.** Rather than snapshotting the whole
@@ -179,6 +186,21 @@ pub struct UndoEntry {
     pub author: Option<UserId>,
     /// Runtime instance attribution, independent of authenticated author/CRDT actor.
     pub instance_id: Option<InstanceId>,
+    /// When the forward action's [`tilo_actions::Action::inverse_before`]
+    /// returned a compensating document action (an outbox / del_outbox /
+    /// filesystem queue writer), reverting this entry applies `undo_via`
+    /// through the registry instead of Automerge inverse patches — so the
+    /// compensating queue entry is recorded the same way peers replay it.
+    /// `redo_via` is the forward action, for the opposite stack after undo.
+    /// Both are `None` for pure CRDT actions.
+    pub undo_via: Option<tilo_actions::EncodedAction>,
+    pub redo_via: Option<tilo_actions::EncodedAction>,
+    /// What the step this entry takes back or brings back did, carried
+    /// across undo and redo so history names "Undo Rename" and "Redo Rename"
+    /// after the step itself, never after the undo that last moved it.
+    /// `None` until an undo or redo first moves the entry: the context is
+    /// then read from the step's own change.
+    pub step: Option<tilo_actions::ActionContext>,
 }
 
 /// Per-document undo and redo depth. Entries retain two Automerge head sets
@@ -208,6 +230,78 @@ pub struct UndoLog {
     /// because describing an entry reads `AutoCommit::diff`, and that closes
     /// the open transaction. See [`Self::revision`].
     revision: u64,
+}
+
+/// History line for a compensating action, from its encoded payload. The
+/// variant name is the same label a door commit would derive.
+fn history_message_for_encoded_action(encoded: &tilo_actions::EncodedAction) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(&encoded.payload).ok()?;
+    tilo_actions::ActionContext::for_action(&encoded.type_id, &encoded.type_id, &value)
+        .change_message()
+}
+
+/// Which way an undo-stack entry is moved: what history names its change.
+#[derive(Clone, Copy)]
+enum Direction {
+    Undo,
+    Redo,
+}
+
+/// The context of the step `entry` takes back (undo) or brings back (redo):
+/// carried on the entry once an undo moved it, else read from the step's own
+/// change, which is the side of the bracket the move leaves.
+fn step_context(
+    doc: &mut AutoCommit,
+    entry: &UndoEntry,
+    direction: Direction,
+) -> Option<tilo_actions::ActionContext> {
+    if let Some(step) = &entry.step {
+        return Some(step.clone());
+    }
+    let (step, other) = match direction {
+        Direction::Undo => (&entry.after, &entry.before),
+        Direction::Redo => (&entry.before, &entry.after),
+    };
+    step.iter()
+        .filter(|head| !other.contains(head))
+        .find_map(|head| {
+            doc.get_change_meta_by_hash(head)
+                .and_then(|meta| meta.message.as_deref().map(str::to_owned))
+                .as_deref()
+                .and_then(tilo_actions::ActionContext::from_change_message)
+        })
+        .filter(|context| !context.action_label.is_empty())
+}
+
+/// How history names an undo or redo of `step`: "Undo Rename", by whoever
+/// made the step, for the app and resource it was made in. The undo is the
+/// author's own step, so it stays theirs; without a known step it is the bare
+/// verb.
+fn inverse_message(
+    step: Option<&tilo_actions::ActionContext>,
+    direction: Direction,
+) -> Option<String> {
+    let key = match direction {
+        Direction::Undo => "host-undo",
+        Direction::Redo => "host-redo",
+    };
+    let action_label = match step {
+        Some(step) => {
+            let mut args = fluent::FluentArgs::new();
+            args.set("change", step.action_label.clone());
+            crate::i18n::I18nManager::lookup(&format!("{key}-named"), Some(&args))
+        }
+        None => crate::i18n::I18nManager::lookup_plain(key),
+    };
+    let context = tilo_actions::ActionContext {
+        action_label,
+        app: step.and_then(|step| step.app.clone()),
+        resource: step.and_then(|step| step.resource.clone()),
+        group: step.and_then(|step| step.group.clone()),
+        invoker: step.and_then(|step| step.invoker.clone()),
+        ..tilo_actions::ActionContext::default()
+    };
+    context.change_message()
 }
 
 impl UndoLog {
@@ -488,6 +582,29 @@ impl UndoLog {
         author: Option<UserId>,
         instance_id: Option<InstanceId>,
     ) -> bool {
+        self.record_committed_span_with_inverse(
+            before,
+            after,
+            focused_node_idx,
+            metadata,
+            author,
+            instance_id,
+            CommittedSpanInverse::default(),
+        )
+    }
+
+    /// As [`Self::record_committed_span_owned`], carrying optional
+    /// action-based undo/redo for outside-consequence actions.
+    pub(crate) fn record_committed_span_with_inverse(
+        &mut self,
+        before: Vec<ChangeHash>,
+        after: Vec<ChangeHash>,
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: Option<UserId>,
+        instance_id: Option<InstanceId>,
+        inverse: CommittedSpanInverse,
+    ) -> bool {
         if after == before {
             // Nothing to undo, but the baseline moves up all the same — same
             // reason as the empty-transaction path in `commit_action_authored`.
@@ -506,6 +623,9 @@ impl UndoLog {
                 widget_metadata: metadata,
                 author,
                 instance_id,
+                undo_via: inverse.undo_via,
+                redo_via: inverse.redo_via,
+                step: None,
             },
         );
         if let Some(instance) = instance_id {
@@ -524,15 +644,47 @@ impl UndoLog {
     /// that inverse so the opposite stack can later invert *it* (redo, or
     /// re-undo). Concurrent remote ops merged in since `entry.after` are
     /// untouched — only what the local action itself changed is rewritten.
+    ///
+    /// When `entry.undo_via` is set and `registry` can decode it, that
+    /// document action is applied instead of Automerge inverse patches, so an
+    /// outside consequence (outbox / del_outbox) is recorded through `apply`.
     fn apply_inverse(
         &mut self,
         doc: &mut AutoCommit,
         entry: &UndoEntry,
         message: Option<String>,
+        named: Option<String>,
+        registry: Option<&tilo_actions::ActionRegistry>,
     ) -> (Vec<ChangeHash>, Vec<ChangeHash>) {
         let inverse_before = doc.get_heads();
-        write_revert_patches(doc, &entry.after, &entry.before);
-        let _ = tilo_resource::history::commit_stamped_with_message(doc, message);
+        let via_action = entry
+            .undo_via
+            .as_ref()
+            .zip(registry)
+            .and_then(|(encoded, registry)| registry.decode(encoded).ok());
+        // The compensating action is a document change of its own, named in
+        // history the way the forward action was. A later move of this
+        // record into another room carries that change with the rest of the
+        // graph; a collaborator syncing the record sees the same queue write.
+        let history_message = if let Some(action) = via_action {
+            if action.apply(doc).is_err() {
+                write_revert_patches(doc, &entry.after, &entry.before);
+                message.or(named)
+            } else {
+                message
+                    .or_else(|| {
+                        entry
+                            .undo_via
+                            .as_ref()
+                            .and_then(history_message_for_encoded_action)
+                    })
+                    .or(named)
+            }
+        } else {
+            write_revert_patches(doc, &entry.after, &entry.before);
+            message.or(named)
+        };
+        let _ = tilo_resource::history::commit_stamped_with_message(doc, history_message);
         let inverse_after = doc.get_heads();
         self.last_heads.clone_from(&inverse_after);
         (inverse_before, inverse_after)
@@ -544,8 +696,20 @@ impl UndoLog {
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
+        self.undo_with_registry(doc, current_focused_idx, current_metadata, None)
+    }
+
+    /// [`Self::undo`] with a registry so action-based outside-consequence
+    /// undo can decode `undo_via`.
+    pub fn undo_with_registry(
+        &mut self,
+        doc: &mut AutoCommit,
+        current_focused_idx: Option<usize>,
+        current_metadata: Option<String>,
+        registry: Option<&tilo_actions::ActionRegistry>,
+    ) -> Option<UndoEntry> {
         let index = self.undo_index_for(None)?;
-        self.undo_at(doc, index, current_focused_idx, current_metadata)
+        self.undo_at(doc, index, current_focused_idx, current_metadata, registry)
     }
 
     fn undo_at(
@@ -554,12 +718,17 @@ impl UndoLog {
         index: usize,
         focus: Option<usize>,
         metadata: Option<String>,
+        registry: Option<&tilo_actions::ActionRegistry>,
     ) -> Option<UndoEntry> {
         if !self.can_bump() {
             return None;
         }
         let entry = self.undo_stack.remove(index);
-        let (before, after) = self.apply_inverse(doc, &entry, None);
+        let step = step_context(doc, &entry, Direction::Undo);
+        let named = inverse_message(step.as_ref(), Direction::Undo);
+        let (before, after) = self.apply_inverse(doc, &entry, None, named, registry);
+        // Opposite stack: applying `redo_via` re-does the forward action;
+        // applying `undo_via` again undoes that redo.
         push_history(
             &mut self.redo_stack,
             UndoEntry {
@@ -569,6 +738,9 @@ impl UndoLog {
                 widget_metadata: metadata,
                 author: entry.author.clone(),
                 instance_id: entry.instance_id,
+                undo_via: entry.redo_via.clone(),
+                redo_via: entry.undo_via.clone(),
+                step,
             },
         );
         self.bump();
@@ -600,8 +772,19 @@ impl UndoLog {
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
+        self.undo_for_author_with_registry(doc, author, current_focused_idx, current_metadata, None)
+    }
+
+    pub fn undo_for_author_with_registry(
+        &mut self,
+        doc: &mut AutoCommit,
+        author: &UserId,
+        current_focused_idx: Option<usize>,
+        current_metadata: Option<String>,
+        registry: Option<&tilo_actions::ActionRegistry>,
+    ) -> Option<UndoEntry> {
         let index = self.undo_index_for(Some(author))?;
-        self.undo_at(doc, index, current_focused_idx, current_metadata)
+        self.undo_at(doc, index, current_focused_idx, current_metadata, registry)
     }
 
     pub fn undo_as(
@@ -611,9 +794,26 @@ impl UndoLog {
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
+        self.undo_as_with_registry(doc, author, current_focused_idx, current_metadata, None)
+    }
+
+    pub fn undo_as_with_registry(
+        &mut self,
+        doc: &mut AutoCommit,
+        author: Option<&UserId>,
+        current_focused_idx: Option<usize>,
+        current_metadata: Option<String>,
+        registry: Option<&tilo_actions::ActionRegistry>,
+    ) -> Option<UndoEntry> {
         match author {
-            Some(a) => self.undo_for_author(doc, a, current_focused_idx, current_metadata),
-            None => self.undo(doc, current_focused_idx, current_metadata),
+            Some(a) => self.undo_for_author_with_registry(
+                doc,
+                a,
+                current_focused_idx,
+                current_metadata,
+                registry,
+            ),
+            None => self.undo_with_registry(doc, current_focused_idx, current_metadata, registry),
         }
     }
 
@@ -623,7 +823,7 @@ impl UndoLog {
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
-        self.redo_as(doc, None, current_focused_idx, current_metadata)
+        self.redo_as_with_registry(doc, None, current_focused_idx, current_metadata, None)
     }
 
     pub fn redo_as(
@@ -633,8 +833,19 @@ impl UndoLog {
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
+        self.redo_as_with_registry(doc, author, current_focused_idx, current_metadata, None)
+    }
+
+    pub fn redo_as_with_registry(
+        &mut self,
+        doc: &mut AutoCommit,
+        author: Option<&UserId>,
+        current_focused_idx: Option<usize>,
+        current_metadata: Option<String>,
+        registry: Option<&tilo_actions::ActionRegistry>,
+    ) -> Option<UndoEntry> {
         let index = self.redo_index_for(author)?;
-        self.redo_at(doc, index, current_focused_idx, current_metadata)
+        self.redo_at(doc, index, current_focused_idx, current_metadata, registry)
     }
 
     fn redo_at(
@@ -643,12 +854,15 @@ impl UndoLog {
         index: usize,
         focus: Option<usize>,
         metadata: Option<String>,
+        registry: Option<&tilo_actions::ActionRegistry>,
     ) -> Option<UndoEntry> {
         if !self.can_bump() {
             return None;
         }
         let entry = self.redo_stack.remove(index);
-        let (before, after) = self.apply_inverse(doc, &entry, None);
+        let step = step_context(doc, &entry, Direction::Redo);
+        let named = inverse_message(step.as_ref(), Direction::Redo);
+        let (before, after) = self.apply_inverse(doc, &entry, None, named, registry);
         push_history(
             &mut self.undo_stack,
             UndoEntry {
@@ -658,6 +872,9 @@ impl UndoLog {
                 widget_metadata: metadata,
                 author: entry.author.clone(),
                 instance_id: entry.instance_id,
+                undo_via: entry.redo_via.clone(),
+                redo_via: entry.undo_via.clone(),
+                step,
             },
         );
         self.bump();
@@ -688,8 +905,20 @@ impl UndoLog {
         focus: Option<usize>,
         metadata: Option<String>,
     ) -> Option<UndoEntry> {
+        self.undo_in_with_registry(doc, author, instance, focus, metadata, None)
+    }
+
+    pub fn undo_in_with_registry(
+        &mut self,
+        doc: &mut AutoCommit,
+        author: &UserId,
+        instance: InstanceId,
+        focus: Option<usize>,
+        metadata: Option<String>,
+        registry: Option<&tilo_actions::ActionRegistry>,
+    ) -> Option<UndoEntry> {
         let index = Self::instance_index(&self.undo_stack, author, instance)?;
-        self.undo_at(doc, index, focus, metadata)
+        self.undo_at(doc, index, focus, metadata, registry)
     }
 
     pub fn redo_in(
@@ -700,8 +929,20 @@ impl UndoLog {
         focus: Option<usize>,
         metadata: Option<String>,
     ) -> Option<UndoEntry> {
+        self.redo_in_with_registry(doc, author, instance, focus, metadata, None)
+    }
+
+    pub fn redo_in_with_registry(
+        &mut self,
+        doc: &mut AutoCommit,
+        author: &UserId,
+        instance: InstanceId,
+        focus: Option<usize>,
+        metadata: Option<String>,
+        registry: Option<&tilo_actions::ActionRegistry>,
+    ) -> Option<UndoEntry> {
         let index = Self::instance_index(&self.redo_stack, author, instance)?;
-        self.redo_at(doc, index, focus, metadata)
+        self.redo_at(doc, index, focus, metadata, registry)
     }
 
     /// See [`State::restore_to_heads`].
@@ -793,8 +1034,11 @@ impl UndoLog {
             widget_metadata: metadata.clone(),
             author: author.clone(),
             instance_id,
+            undo_via: None,
+            redo_via: None,
+            step: None,
         };
-        let (inv_before, inv_after) = self.apply_inverse(doc, &entry, message);
+        let (inv_before, inv_after) = self.apply_inverse(doc, &entry, message, None, None);
         if inv_before == inv_after {
             return false;
         }
@@ -807,6 +1051,9 @@ impl UndoLog {
                 widget_metadata: metadata,
                 author,
                 instance_id,
+                undo_via: None,
+                redo_via: None,
+                step: None,
             },
         );
         if let Some(instance) = instance_id {
@@ -1045,12 +1292,36 @@ impl State {
         metadata: Option<String>,
         author: Option<UserId>,
     ) -> bool {
-        self.undo.record_committed_action_authored(
-            &mut self.doc,
+        self.record_committed_action_authored_with_revert(
             before,
             focused_node_idx,
             metadata,
             author,
+            None,
+            None,
+        )
+    }
+
+    /// As [`Self::record_committed_action_authored`], carrying optional
+    /// action-based undo/redo for outside-consequence document actions.
+    pub fn record_committed_action_authored_with_revert(
+        &mut self,
+        before: Vec<ChangeHash>,
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: Option<UserId>,
+        undo_via: Option<tilo_actions::EncodedAction>,
+        redo_via: Option<tilo_actions::EncodedAction>,
+    ) -> bool {
+        let after = self.doc.get_heads();
+        self.undo.record_committed_span_with_inverse(
+            before,
+            after,
+            focused_node_idx,
+            metadata,
+            author,
+            None,
+            CommittedSpanInverse { undo_via, redo_via },
         )
     }
 
@@ -1148,8 +1419,25 @@ impl State {
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
-        self.undo
-            .undo_as(&mut self.doc, author, current_focused_idx, current_metadata)
+        self.undo_as_with_registry(author, current_focused_idx, current_metadata, None)
+    }
+
+    /// [`Self::undo_as`] with a registry so outside-consequence undo can
+    /// apply `undo_via` through [`tilo_actions::Action::apply`].
+    pub fn undo_as_with_registry(
+        &mut self,
+        author: Option<&UserId>,
+        current_focused_idx: Option<usize>,
+        current_metadata: Option<String>,
+        registry: Option<&tilo_actions::ActionRegistry>,
+    ) -> Option<UndoEntry> {
+        self.undo.undo_as_with_registry(
+            &mut self.doc,
+            author,
+            current_focused_idx,
+            current_metadata,
+            registry,
+        )
     }
 
     /// Redo on behalf of `author` — the mirror of [`Self::undo_as`], so a
@@ -1160,8 +1448,24 @@ impl State {
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
-        self.undo
-            .redo_as(&mut self.doc, author, current_focused_idx, current_metadata)
+        self.redo_as_with_registry(author, current_focused_idx, current_metadata, None)
+    }
+
+    /// [`Self::redo_as`] with a registry for action-based redo.
+    pub fn redo_as_with_registry(
+        &mut self,
+        author: Option<&UserId>,
+        current_focused_idx: Option<usize>,
+        current_metadata: Option<String>,
+        registry: Option<&tilo_actions::ActionRegistry>,
+    ) -> Option<UndoEntry> {
+        self.undo.redo_as_with_registry(
+            &mut self.doc,
+            author,
+            current_focused_idx,
+            current_metadata,
+            registry,
+        )
     }
 
     /// Redo the most recently undone action by inverting the inverse change
@@ -1299,9 +1603,8 @@ impl State {
 /// `from_heads` — the paragraph a collaborator typed into after the action
 /// that created it — is left standing, so undo takes back only the action.
 ///
-/// The caller commits. That is deliberate: a `ui` app signals `needs_commit()`
-/// and lets `App::commit_action` do the commit, so a restore performed from
-/// inside a widget lands on the undo stack with the right author and timestamp
+/// The caller commits. That is deliberate: the owner's action records the
+/// restore, so it lands on the undo stack with the right author and timestamp
 /// exactly like any other edit. [`State::restore_to_heads`] is the equivalent
 /// for a host that owns a whole [`State`].
 pub fn write_revert_patches(
@@ -1314,6 +1617,49 @@ pub fn write_revert_patches(
     // A container somebody wrote inside since `from_heads` stays standing.
     let patches = built_on::hold_back_built_on(doc, patches, from_heads);
     write_selected_patches(doc, patches, to_heads, from_heads);
+}
+
+/// [`write_revert_patches`] for only the patches `keep` accepts: a restore
+/// of some items of a past version, or of everything but bookkeeping. The
+/// rest stay in the patch stream unwritten, so the indices of later
+/// sequence patches still line up. Returns how many patches were written.
+pub fn write_revert_patches_where(
+    doc: &mut AutoCommit,
+    from_heads: &[ChangeHash],
+    to_heads: &[ChangeHash],
+    keep: &dyn Fn(&automerge::Patch) -> bool,
+) -> usize {
+    let patches = doc.diff(from_heads, to_heads);
+    let patches: Vec<(automerge::Patch, bool)> =
+        built_on::hold_back_built_on(doc, patches, from_heads)
+            .into_iter()
+            .map(|(patch, write)| {
+                let write = write && keep(&patch) && !already_holds(doc, &patch);
+                (patch, write)
+            })
+            .collect();
+    let written = patches.iter().filter(|(_, write)| *write).count();
+    if written > 0 {
+        write_selected_patches(doc, patches, to_heads, from_heads);
+    }
+    written
+}
+
+/// Whether `doc` already holds the scalar `patch` would put: a diff is of
+/// operations, so a value restored once differs from the version by its
+/// operation while reading the same.
+fn already_holds(doc: &AutoCommit, patch: &automerge::Patch) -> bool {
+    use automerge::ReadDoc as _;
+    let automerge::PatchAction::PutMap { key, value, .. } = &patch.action else {
+        return false;
+    };
+    let automerge::Value::Scalar(wanted) = &value.0 else {
+        return false;
+    };
+    matches!(
+        doc.get(&patch.obj, key.as_str()),
+        Ok(Some((automerge::Value::Scalar(current), _))) if current == *wanted
+    )
 }
 
 /// Write an already-derived patch set forward into `doc`'s open transaction.
@@ -1968,6 +2314,9 @@ mod tests {
                         widget_metadata: None,
                         author: None,
                         instance_id: None,
+                        undo_via: None,
+                        redo_via: None,
+                        step: None,
                     },
                 );
             }

@@ -36,7 +36,7 @@ REQUIRED_MODULES = {'crypt', 'systemd-cryptsetup', 'tpm2-tss', 'plymouth', 'tilo
 OMITTED_MODULES = {'network', 'network-legacy', 'network-manager', 'nfs', 'iscsi',
     'nvmf', 'nbd', 'fcoe', 'fcoe-uefi', 'nbde', 'clevis', 'clevis-pin-null',
     'clevis-pin-sss', 'clevis-pin-tang', 'clevis-pin-tpm2', 'crypt-ssh'}
-BOARD_OMITTED_DRIVERS = {'lenovo-83ed': {'nouveau', 'amdgpu', 'xe'}}
+OMITTED_KERNEL_DRIVERS = {'amdgpu', 'nouveau', 'xe', 'xfs'}
 MODULES = Path('usr/lib/tilo/initramfs-modules.txt')
 OMITTED_DRIVERS = Path('usr/lib/tilo/initramfs-omitted-drivers.txt')
 RUNTIME_FIELDS = ('Cmd', 'Entrypoint', 'Env', 'User', 'WorkingDir', 'StopSignal',
@@ -167,10 +167,11 @@ def mounted(container):
         command(['unmount', container])
 
 
-def omitted_drivers(profile):
-    # Match the production image dracut policy and the initramfs completion
-    # verifier: Ext4/XFS stay on the rootfs for rescue, never in the initramfs.
-    return sorted({'ext4', 'xfs'} | BOARD_OMITTED_DRIVERS.get(profile, set()))
+def omitted_drivers(profile=None):
+    # Match the production image dracut policy (os/scripts/build-initramfs.sh),
+    # one list for every profile: Ext4 is a supported root, XFS remains
+    # rescue-only, and the large-firmware GPU drivers load after switch-root.
+    return sorted(OMITTED_KERNEL_DRIVERS)
 
 
 def create_arguments(image_id, kver, epoch, hooks, profile=None):
@@ -189,6 +190,7 @@ def create_arguments(image_id, kver, epoch, hooks, profile=None):
         '--kver', kver, '--add', ' '.join(sorted(REQUIRED_MODULES)),
         '--omit', ' '.join(sorted(OMITTED_MODULES)),
         '--omit-drivers', ' '.join(omitted_drivers(profile)),
+        '--add-drivers', 'ext4',
         '--compress', 'zstd',
         f'/usr/lib/modules/{kver}/initramfs.img']
 

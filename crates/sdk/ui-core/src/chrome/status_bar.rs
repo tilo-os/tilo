@@ -54,14 +54,17 @@ pub fn draw(
         None,
         &rect,
     );
-    // Bar role (HIG §9.1): one derived top hairline.
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        crate::chrome::chrome_hairline(theme),
-        None,
-        &Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + 1.0),
-    );
+    // Bar role (HIG §9.1): one derived top rule. Weight comes from the theme.
+    let rule = f64::from(theme.tokens.metrics.chrome_rule_px);
+    if rule > 0.0 {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            crate::chrome::chrome_hairline(theme),
+            None,
+            &Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + rule),
+        );
+    }
 
     let size = label_size(theme, tr);
     let ink = colors.text_dim;

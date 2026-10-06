@@ -56,7 +56,7 @@ case ${COSIGN_KEY_REF:-} in
     trap 'rm -f "${AWS_WEB_IDENTITY_TOKEN_FILE:-}"' EXIT HUP INT TERM
     curl --fail --silent --show-error \
       --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-      "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=tilo-release-signing" \
+      "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=${TILO_SIGNING_AUDIENCE:-tilo-release-signing}" \
       | jq -er .value > "$AWS_WEB_IDENTITY_TOKEN_FILE"
     test -s "$AWS_WEB_IDENTITY_TOKEN_FILE" || {
       echo 'Forgejo returned an empty OIDC token' >&2

@@ -595,7 +595,7 @@ fn parse_slide(
             // the text around them.
             Ok(Event::GeneralRef(r)) if in_text => {
                 if let Some(c) = cur.as_mut()
-                    && let Some(ch) = qdoc_codecs::resolve_general_ref(&r)
+                    && let Some(ch) = tilo_doc_codecs::resolve_general_ref(&r)
                 {
                     c.text.push(ch);
                     let (bold, italic) = (c.bold, c.italic);
@@ -744,7 +744,7 @@ fn parse_notes(xml: &str) -> String {
                 }
             }
             Ok(Event::GeneralRef(r)) if in_text => {
-                notes.extend(qdoc_codecs::resolve_general_ref(&r));
+                notes.extend(tilo_doc_codecs::resolve_general_ref(&r));
             }
             Ok(Event::End(e)) => match local(e.name().as_ref()) {
                 b"t" => in_text = false,
@@ -794,7 +794,7 @@ fn first_text(xml: &str, wanted: &[u8]) -> Option<String> {
             }
             (Ok(Event::Text(t)), Some(text)) => text.push_str(&t.xml10_content().ok()?),
             (Ok(Event::GeneralRef(g)), Some(text)) => {
-                text.extend(qdoc_codecs::resolve_general_ref(&g));
+                text.extend(tilo_doc_codecs::resolve_general_ref(&g));
             }
             (Ok(Event::End(_)), Some(_)) => return text,
             (Ok(Event::Eof) | Err(_), _) => return None,
@@ -806,7 +806,7 @@ fn attr(e: &BytesStart<'_>, wanted: &[u8]) -> String {
     e.attributes()
         .flatten()
         .find(|a| local(a.key.as_ref()) == wanted)
-        .and_then(|a| qdoc_codecs::unescape_attr(&a))
+        .and_then(|a| tilo_doc_codecs::unescape_attr(&a))
         .unwrap_or_default()
 }
 fn attr_num(e: &BytesStart<'_>, wanted: &[u8]) -> f64 {

@@ -529,6 +529,15 @@ X-Flatpak=com.spotify.Client
             );
             assert!(!gnome_only.is_visible_in(&["tilo".into()]));
             assert!(gnome_only.is_visible_in(&["GNOME".into()]));
+            assert!(
+                gnome_only.is_visible_in(&crate::scan::current_desktops()),
+                "Tilo offers GNOME-only applications rather than hiding them"
+            );
+            let kde_only = parse_str(
+                "[Desktop Entry]\nType=Application\nName=X\nExec=x\nOnlyShowIn=KDE;\n",
+                "x",
+            );
+            assert!(!kde_only.is_visible_in(&crate::scan::current_desktops()));
 
             let not_tilo = parse_str(
                 "[Desktop Entry]\nType=Application\nName=X\nExec=x\nNotShowIn=tilo;KDE;\n",

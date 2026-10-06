@@ -240,6 +240,19 @@ pub async fn ready(peers: &[&PeerHandle]) {
     .await;
 }
 
+/// Wait until the room's steward admitted `peer` to the note's channel.
+pub async fn admitted(peer: &PeerHandle) {
+    wait_for("the steward to admit the page", || {
+        let ready = peer
+            .status()
+            .channels
+            .lines()
+            .any(|line| line.starts_with("route ") && line.contains(": ready;"));
+        async move { ready.then_some(()) }
+    })
+    .await;
+}
+
 pub fn route() -> DocumentRoute {
     DocumentRoute {
         app_id: "so.tilo.notes".into(),

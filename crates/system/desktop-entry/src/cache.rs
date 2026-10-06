@@ -48,7 +48,7 @@ static REVISION: AtomicU64 = AtomicU64::new(0);
 /// list is a few hundred small structs.
 pub fn cached_scan() -> Scan {
     let dirs = crate::scan::application_dirs();
-    let desktop = vec![crate::scan::CURRENT_DESKTOP.to_string()];
+    let desktop = crate::scan::current_desktops();
     let mut guard = cell()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);

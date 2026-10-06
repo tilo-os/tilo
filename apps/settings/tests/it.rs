@@ -42,17 +42,20 @@ mod category_nav;
 mod category_sidebar;
 #[path = "control_interaction.rs"]
 mod control_interaction;
+#[path = "narrow_navigation.rs"]
+mod narrow_navigation;
 #[path = "no_app_title_header.rs"]
 mod no_app_title_header;
 #[path = "scroll.rs"]
 mod scroll;
 #[path = "search_focus.rs"]
 mod search_focus;
-#[path = "shots_smoke.rs"]
-mod shots_smoke;
 
 #[path = "composition_balance.rs"]
 mod composition_balance;
 
 #[path = "alignment_review.rs"]
 mod alignment_review;
+
+#[path = "published_surface.rs"]
+mod published_surface;

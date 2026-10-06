@@ -6,15 +6,18 @@
 //!
 //! ```text
 //! ush
-//!  ├─ ensure the store and the layer                       (crate::layer)
-//!  ├─ compile the guest's seccomp filter                   (crate::profile)
+//!  ├─ resolve the environment record (the default is made on first use)
+//!  ├─ resolve its images to read-only trees                (crate::images)
+//!  ├─ a network namespace of its own, its DNS stub, its
+//!  │  nftables and pasta, from the NetHost grants          (tilo_egress)
+//!  ├─ compile the guest's seccomp filter                   (crate::seccomp)
 //!  ├─ start the broker on a socket in the session dir      (crate::broker)
-//!  ├─ exec bwrap ─┬─ unshare, mount the overlays, pivot
-//!  │              ├─ install the seccomp filter        ← the boundary
-//!  │              └─ exec tilo-ush guest-init ─┬─ install Landlock
-//!  │                                          └─ exec the shell
+//!  ├─ spawn bwrap ─┬─ (inside the network namespace) unshare, stack, pivot
+//!  │               ├─ install the seccomp filter        ← the boundary
+//!  │               └─ exec tilo-ush guest-init ─┬─ install Landlock
+//!  │                                           └─ exec the shell
 //!  ├─ wait
-//!  └─ undo one-time installs, burn if asked, restart if asked
+//!  └─ restart if asked, from the record as it stands then
 //! ```
 //!
 //! # `serve` — how an app reaches a guest
@@ -23,61 +26,89 @@
 //! syscalls and its sandbox has no path to this binary), so `apps/terminal`
 //! asks for a guest instead of starting one: `tilo-ush serve` listens on a
 //! socket `tilo-launcher` passes every app as a connected descriptor, and one
-//! line of JSON gets back a pty master over `SCM_RIGHTS` — a terminal, never
-//! a namespace, a capability, or a `dsh` session
-//! ([`crate::profile::Profile::reachable_from_app_launch`] gates every request).
+//! line of JSON naming a [`Target`] gets back a pty master over `SCM_RIGHTS` —
+//! a terminal, never a namespace or a capability.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::FromRawFd;
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use tilo_clock::unix_now;
+use tilo_egress::{Egress, EgressOptions, Netns, spawn_egress};
+use tilo_environment::{Environment, HomePolicy, Target, ToolBuilder, is_record_key};
 
 use crate::audit::AuditLog;
-use crate::broker::{Broker, BrokerState};
-use crate::guest::GuestPlan;
-use crate::layer::Layer;
+use crate::broker::{Broker, BrokerState, EnvironmentHandle};
+use crate::guest::{GuestPlan, GuestUser};
+use crate::images::Images;
 use crate::policy::Policy;
-use crate::profile::Profile;
+use crate::records::Records;
 use crate::store::Store;
 
 /// What the user asked for on the command line.
 #[derive(Debug, Clone)]
 pub struct SessionOptions {
-    pub profile: Profile,
-    /// `--ephemeral`: a layer of this session's own, destroyed on the way out.
-    pub ephemeral: bool,
+    /// The environment record to build from; `None` is the default
+    /// environment.
+    pub environment: Option<String>,
     /// `ush -c "…"`. Empty means an interactive shell.
     pub command: Vec<String>,
     pub term: String,
-    /// The host root to shadow. `/` outside tests.
-    pub base: PathBuf,
+    /// The machine's root. `/` outside tests.
+    pub host_root: PathBuf,
     pub verbose: bool,
 }
 
 impl Default for SessionOptions {
     fn default() -> Self {
         Self {
-            profile: Profile::Ush,
-            ephemeral: false,
+            environment: None,
             command: Vec::new(),
             term: std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".into()),
-            base: PathBuf::from("/"),
+            host_root: PathBuf::from("/"),
             verbose: false,
         }
     }
 }
 
-/// Printed under `bwrap`'s own one-line reason, which names a mount option
-/// rather than a cause. Short lines: it lands in a terminal of any width.
+/// Printed beneath the actual setup error, including loader failures.
+/// No mount-specific advice is given for unrelated startup failures.
 const SANDBOX_SETUP_FAILED: &str = "\
 ush: the shell's sandbox could not be set up, so no shell started;
-ush: bwrap's reason is above. An overlay mount refused with \"Invalid
-ush: argument\" usually means /usr is already a stacked overlay (a
-ush: system extension merged over the image): the kernel stacks no
-ush: deeper, and `dmesg` shows \"maximum fs stacking depth exceeded\".";
+ush: the setup error is above.";
+
+/// The first line of every reason a session's sandbox was not built.
+const NOT_STARTED: &str = "ush: the shell's sandbox could not be set up, so no shell started";
+
+/// How this machine wires a guest's egress. The resolvers and `pasta` come
+/// from the machine; three variables exist for the integration tests, which
+/// fake the outside world on loopback:
+///
+/// - `TILO_USH_RESOLVER` — resolvers (`ip:port`, comma-separated) instead of
+///   the machine's `resolv.conf`;
+/// - `TILO_USH_EGRESS_MAP_HOST_LOOPBACK` — an address the guest reaches the
+///   host's loopback at;
+/// - `TILO_USH_EGRESS_REFUSE_NETFILTER=1` — act as if the kernel refused the
+///   packet filter, to prove the session then does not start.
+pub fn egress_options(host_root: &Path) -> EgressOptions {
+    let mut options = EgressOptions::from_host(host_root);
+    if let Some(list) = std::env::var_os("TILO_USH_RESOLVER") {
+        options.upstream = list
+            .to_string_lossy()
+            .split(',')
+            .filter_map(|a| a.trim().parse().ok())
+            .collect();
+    }
+    if let Some(addr) = std::env::var_os("TILO_USH_EGRESS_MAP_HOST_LOOPBACK") {
+        options.map_host_loopback = addr.to_string_lossy().parse().ok();
+    }
+    options.refuse_netfilter =
+        std::env::var_os("TILO_USH_EGRESS_REFUSE_NETFILTER").is_some_and(|v| v == "1");
+    options
+}
 
 /// Where the runtime's own binary is, as the supervisor sees it.
 /// `current_exe` rather than a constant: the guest must run the same build
@@ -94,19 +125,26 @@ pub fn runtime_binary() -> std::io::Result<PathBuf> {
     std::env::current_exe()
 }
 
-/// The shell a guest hosts. The host's `$SHELL` is a hint, not guaranteed to
-/// exist in the guest — a shell that isn't falls back to `/usr/bin/bash`
-/// then `/bin/sh`, so a session never fails to start over a preference.
-pub fn guest_shell(base_visible: &Path) -> PathBuf {
+/// The shell a guest hosts. The host's `$SHELL` is a hint: it is used when
+/// the images have it, else `/usr/bin/bash`, else `/usr/bin/sh`, so a session
+/// never fails to start over a preference.
+pub fn guest_shell(images: &[PathBuf]) -> PathBuf {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(s) = std::env::var_os("SHELL") {
-        candidates.push(PathBuf::from(s));
+        let s = PathBuf::from(s);
+        // `/bin` is a link into `/usr/bin` in the guest; look where it points.
+        let in_usr = s
+            .strip_prefix("/bin")
+            .map_or_else(|_| s.clone(), |rest| Path::new("/usr/bin").join(rest));
+        candidates.push(in_usr);
     }
     candidates.push(PathBuf::from("/usr/bin/bash"));
-    candidates.push(PathBuf::from("/bin/sh"));
+    candidates.push(PathBuf::from("/usr/bin/sh"));
     for c in &candidates {
-        let on_host = base_visible.join(c.strip_prefix("/").unwrap_or(c));
-        if on_host.exists() {
+        let Ok(relative) = c.strip_prefix("/") else {
+            continue;
+        };
+        if images.iter().any(|image| image.join(relative).exists()) {
             return c.clone();
         }
     }
@@ -118,37 +156,114 @@ pub struct Session {
     pub store: Store,
     pub opts: SessionOptions,
     pub session_id: String,
+    pub images: Arc<dyn Images>,
+    pub builder: Arc<dyn ToolBuilder>,
+}
+
+/// An environment resolved for one guest: its record and its image trees.
+#[derive(Debug, Clone)]
+pub struct Resolved {
+    pub key: String,
+    pub environment: Environment,
+    /// `(label, root)`, topmost first: tools newest first, the runtime last.
+    pub images: Vec<(String, PathBuf)>,
 }
 
 impl Session {
-    pub fn new(store: Store, opts: SessionOptions) -> Self {
+    pub fn new(
+        store: Store,
+        opts: SessionOptions,
+        images: Arc<dyn Images>,
+        builder: Arc<dyn ToolBuilder>,
+    ) -> Self {
         Self {
             store,
             opts,
             session_id: uuid::Uuid::new_v4().simple().to_string(),
+            images,
+            builder,
         }
     }
 
-    fn layer(&self) -> Layer {
-        if self.opts.ephemeral {
-            self.store.ephemeral_layer(&self.session_id)
-        } else {
-            self.store.persistent_layer()
-        }
+    fn records(&self) -> Records {
+        Records::at(self.store.records_root())
     }
 
-    fn lower_layers(&self) -> Vec<PathBuf> {
-        if self.opts.ephemeral {
-            let persistent = self.store.persistent_layer();
-            if persistent.exists() {
-                return vec![persistent.path().to_path_buf()];
-            }
+    /// The environment this session names, as the record stands now, with
+    /// every image resolved to its tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the record cannot be resolved (see
+    /// [`Records::resolve`]) or an image is not available.
+    pub fn resolve(&self) -> anyhow::Result<Resolved> {
+        let (key, environment) = self
+            .records()
+            .resolve(self.opts.environment.as_deref(), &*self.images)?;
+        let arch = tilo_environment::host_arch();
+        let runtime = environment
+            .runtime_image(arch)
+            .map_err(anyhow::Error::msg)?;
+        let mut images = Vec::new();
+        let mut environment = environment;
+        let tools = environment.tools.clone();
+        for tool in tools.iter().rev() {
+            let label = format!("tool ({})", tool.packages.join(", "));
+            let id = match self.tool_image(tool, &runtime) {
+                Ok(id) => id,
+                Err(missing) => {
+                    // No usable image for this architecture yet: build it here,
+                    // for the same packages on this node's image of the
+                    // runtime, and record it so the next session is a hit.
+                    eprintln!("ush: {missing}; building it for {arch}…");
+                    let id = self
+                        .builder
+                        .build(&runtime, &tool.packages, &mut std::io::stderr())
+                        .map_err(|e| anyhow::anyhow!("{missing}, and {e}"))?;
+                    environment = self.records().apply(
+                        &key,
+                        Environment::ADD_TOOL.with((
+                            tool.packages.clone(),
+                            arch.to_owned(),
+                            id.to_string(),
+                        )),
+                    )?;
+                    id
+                }
+            };
+            let tree = self.images.tree(&id).map_err(anyhow::Error::msg)?;
+            images.push((format!("{label} {id}"), tree));
         }
-        Vec::new()
+        let tree = self.images.tree(&runtime).map_err(anyhow::Error::msg)?;
+        images.push((
+            format!("runtime {} {runtime}", environment.runtime.release),
+            tree,
+        ));
+        Ok(Resolved {
+            key,
+            environment,
+            images,
+        })
+    }
+
+    /// This node's image of `tool`, checked to be built for `runtime` and
+    /// available here; the reason when there is none to use.
+    fn tool_image(
+        &self,
+        tool: &tilo_environment::ToolRef,
+        runtime: &tilo_environment::PackageId,
+    ) -> Result<tilo_environment::PackageId, String> {
+        let arch = tilo_environment::host_arch();
+        let id = tool
+            .image(arch)?
+            .ok_or_else(|| format!("{} has no image for {arch}", tool.packages.join(", ")))?;
+        self.images.check_tool(&id, runtime)?;
+        self.images.tree(&id)?;
+        Ok(id)
     }
 
     /// Build the plan for this session: everything the guest will be is decided
-    /// here, from the store and the policy — never from anything the guest said.
+    /// here, from the record and the store — never from anything the guest said.
     ///
     /// # Errors
     ///
@@ -156,41 +271,74 @@ impl Session {
     /// (see [`runtime_binary`]).
     pub fn plan(
         &self,
+        resolved: &Resolved,
         broker_socket: PathBuf,
         seccomp_blob: PathBuf,
     ) -> std::io::Result<GuestPlan> {
-        let policy = Policy::load(&self.store.policy_path());
+        let policy = Policy::new(resolved.environment.grants.0.clone());
         let now = Some(unix_now());
-        // Resolved, not as `$HOME` spells it: on an ostree system `/home` is a
-        // symlink to `var/home`, and `bwrap` refuses to mount through a symlink.
-        // `/var/home/you` is real, and the base's link still resolves to it too.
-        let home_mountpoint = xdg_paths::home()
-            .map_or_else(|| PathBuf::from("/root"), |h| h.canonicalize().unwrap_or(h));
-
+        let session_dir = self.store.session_dir(&self.session_id);
+        let guest_home = match resolved.environment.home {
+            HomePolicy::Persistent => self.store.environment_home(&resolved.key),
+            HomePolicy::Ephemeral => session_dir.join("home"),
+        };
+        let images: Vec<PathBuf> = resolved.images.iter().map(|(_, p)| p.clone()).collect();
+        // Resolved, as a grant names its directory: `bwrap` mounts through
+        // the real path, and a grant of the home must still find the store
+        // under it.
+        let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        let runtime_bin = runtime_binary()?;
+        let helper_runtime = crate::helper_runtime::HelperRuntime::resolve(&runtime_bin)?;
         Ok(GuestPlan {
-            profile: self.opts.profile,
-            base: self.opts.base.clone(),
-            upper: self.layer().path().to_path_buf(),
-            lower_layers: self.lower_layers(),
-            workdir_root: self.store.session_dir(&self.session_id),
-            guest_home: self.store.guest_home(),
-            home_mountpoint,
+            shell: guest_shell(&images),
+            images,
+            host_root: self.opts.host_root.clone(),
+            session_dir,
+            var_dir: self.store.environment_var(&resolved.key),
+            guest_home,
+            user: GuestUser::current(),
+            environment: resolved.environment.name.clone(),
+            masked: vec![
+                canonical(self.store.root()),
+                canonical(self.store.records_root()),
+            ],
             trusted_dirs: policy.trusted_dirs(now),
             readable_dirs: policy.readable_dirs(now),
-            runtime_bin: runtime_binary()?,
+            grant_root: self.store.grant_root().map(Path::to_path_buf),
+            runtime_bin,
+            helper_runtime,
+            legacy_commands: crate::legacy_commands(),
             broker_socket,
             seccomp_blob,
             command: self.opts.command.clone(),
-            shell: guest_shell(&self.opts.base),
             term: self.opts.term.clone(),
             env: Vec::new(),
+            resolver: None,
         })
+    }
+
+    /// The guest's network: a namespace of its own and egress for the
+    /// record's `NetHost` grants. Fails closed — a policy that cannot be
+    /// enforced is an error, never an open network.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the namespace or its egress could not be set up.
+    pub fn network(&self, resolved: &Resolved) -> anyhow::Result<(Netns, Egress)> {
+        let netns = Netns::create()
+            .map_err(|e| anyhow::anyhow!("{NOT_STARTED}:\nush: its network namespace: {e}"))?;
+        let policy = Policy::new(resolved.environment.grants.0.clone()).egress(Some(unix_now()));
+        if self.opts.verbose {
+            eprintln!("ush: network: {}", describe_policy(&policy));
+        }
+        let egress = spawn_egress(&netns, policy, &egress_options(&self.opts.host_root))
+            .map_err(|e| anyhow::anyhow!("{NOT_STARTED}:\nush: {e}"))?;
+        Ok((netns, egress))
     }
 
     /// May a restart request rebuild this session, or is it a one-shot? Only an
     /// interactive session restarts: `ush -c "…"` has a command with side
-    /// effects, and rebuilding would re-run it — `pkg burn` asking for a restart
-    /// would burn, rebuild, burn, forever.
+    /// effects, and rebuilding would re-run it.
     pub fn restarts_in_place(&self) -> bool {
         self.opts.command.is_empty()
     }
@@ -211,49 +359,57 @@ impl Session {
                 code = exit;
                 break;
             }
-            // A restart is a new namespace: a new session directory and broker socket.
-            // Reusing the old ids would leave a stale overlay workdir the next mount refuses.
+            // A restart is a new namespace: a new session directory and broker
+            // socket, and the record read again — that is how a tool added or a
+            // directory granted reaches the shell.
             self.session_id = uuid::Uuid::new_v4().simple().to_string();
         }
         Ok(code)
     }
 
     fn run_once(&self) -> anyhow::Result<(i32, bool)> {
-        let layer = self.layer();
-        // Before anything is written: a store on tmpfs mounts every bind and then
-        // dies at the overlay with only `Invalid argument`, far from the cause.
-        crate::layer::upper_filesystem_supported(layer.path())?;
-        layer.create(&self.opts.base)?;
-        seed_guest_home(&self.store.guest_home())?;
-
+        let resolved = self.resolve()?;
         let session_dir = self.store.session_dir(&self.session_id);
         std::fs::create_dir_all(&session_dir)?;
-        let seccomp_blob = crate::profile::write_guest_filter(&session_dir, self.opts.profile)?;
-        let broker_socket = session_dir.join("broker.sock");
+        let outcome = self.run_guest(&resolved, &session_dir);
+        // Holds the generated `/etc`, the broker socket, an ephemeral home.
+        crate::guest::remove_dir_all_forced(&session_dir);
+        outcome
+    }
 
+    fn run_guest(&self, resolved: &Resolved, session_dir: &Path) -> anyhow::Result<(i32, bool)> {
+        // Before anything else: a guest whose network cannot be confined as
+        // its record says does not start.
+        let (netns, egress) = self.network(resolved)?;
+        let egress = Arc::new(egress);
+        let seccomp_blob = crate::seccomp::write_guest_filter(session_dir)?;
+        let broker_socket = session_dir.join("broker.sock");
         let broker = Broker::start(
             broker_socket.clone(),
             BrokerState {
                 session_id: self.session_id.clone(),
-                profile: self.opts.profile,
-                policy_path: self.store.policy_path(),
-                policy: Policy::load(&self.store.policy_path()),
+                environment: EnvironmentHandle {
+                    records: self.records(),
+                    key: resolved.key.clone(),
+                    built_from: resolved.environment.clone(),
+                },
                 audit: AuditLog::at(self.store.audit_dir()),
-                one_time: Vec::new(),
                 restart_requested: false,
-                burn_requested: false,
-                base: self.opts.base.clone(),
-                layer: layer.path().to_path_buf(),
-                layer_kind: layer.kind().as_str().to_string(),
+                host_root: self.opts.host_root.clone(),
+                images: resolved.images.clone(),
+                builder: Arc::clone(&self.builder),
                 landlock: "installed by the guest at startup".into(),
+                egress: Some(Arc::clone(&egress)),
             },
         )?;
 
-        let plan = self.plan(broker_socket, seccomp_blob)?;
+        let mut plan = self.plan(resolved, broker_socket, seccomp_blob)?;
+        plan.resolver = Some(egress.resolv_conf().to_owned());
         plan.prepare()?;
+        seed_guest_home(&plan.guest_home)?;
 
         if self.opts.verbose {
-            let argv = crate::guest::build_argv(&plan, None, None);
+            let argv = crate::guest::build_argv(&plan, None);
             eprintln!(
                 "ush: {}",
                 argv.iter()
@@ -265,14 +421,13 @@ impl Session {
 
         // The guest's first process is this binary again, so it can install Landlock
         // inside the namespace — using the paths the guest itself will use.
-        let mut plan = plan;
         let shell = plan.shell.clone();
         let user_command = std::mem::take(&mut plan.command);
-        let mut command = vec![
-            format!("{}/tilo-ush", crate::GUEST_BIN_DIR),
-            "guest-init".into(),
-            "--".into(),
-        ];
+        let mut command = plan.helper_runtime.as_ref().map_or_else(
+            || vec![format!("{}/tilo-ush", crate::GUEST_BIN_DIR)],
+            crate::helper_runtime::HelperRuntime::entry,
+        );
+        command.extend(["guest-init".into(), "--".into()]);
         if user_command.is_empty() {
             command.push(shell.to_string_lossy().into_owned());
             command.push("-i".into());
@@ -281,68 +436,34 @@ impl Session {
         }
         plan.command = command;
 
-        let mut child = crate::guest::spawn(&plan)?;
+        let mut child = crate::guest::spawn(&plan, Some(&netns))?;
         let status = child.wait()?;
         let code = status.code().unwrap_or(1);
         if code != 0 && !broker.guest_connected() {
             eprintln!("{SANDBOX_SETUP_FAILED}");
         }
-
         let restart = broker.restart_requested();
-        let burn = broker.burn_requested();
-        let one_time = broker.one_time_packages();
         drop(broker);
-
-        // The overlay is unmounted now, so the layer is an ordinary directory
-        // again and both of these are safe.
-        if !one_time.is_empty() && !burn {
-            self.undo_one_time(&one_time);
-        }
-        if burn {
-            layer.burn()?;
-        }
-        crate::guest::remove_dir_all_forced(&session_dir);
-        if self.opts.ephemeral && !restart {
-            layer.burn()?;
-        }
+        // The stub and pasta stop before the namespace's holder goes.
+        drop(egress);
+        drop(netns);
         Ok((code, restart))
-    }
-
-    /// Remove the packages a `--one-time` install put in the layer, by starting
-    /// a throwaway non-interactive guest against the same layer — removing an
-    /// rpm means running rpm, which needs the base to run its scriptlets.
-    fn undo_one_time(&self, packages: &[String]) {
-        let releasever = crate::pkg::releasever();
-        let argv = crate::pkg::remove_argv(packages, &releasever);
-        let mut opts = self.opts.clone();
-        opts.command = argv;
-        opts.ephemeral = false;
-        opts.verbose = false;
-        let cleanup = Session {
-            store: self.store.clone(),
-            opts,
-            session_id: format!("{}-cleanup", self.session_id),
-        };
-        // A failure here leaves the package in the layer (visible in `pkg list`,
-        // removable by hand) — not a reason to fail a session already finished.
-        if let Err(e) = cleanup.run_once() {
-            tracing::warn!(error = %e, "could not undo the session's one-time installs");
-        }
-        let manifest = self
-            .layer()
-            .path()
-            .join(crate::pkg::MANIFEST_PATH.trim_start_matches('/'));
-        let mut m = crate::pkg::Manifest::load(&manifest);
-        for p in packages {
-            m.forget(p);
-        }
-        let _ = m.save(&manifest);
     }
 }
 
-/// Give a fresh guest home the dotfiles that make a shell usable.
-/// Minimal home contents for the guest. The home is write-isolated by default,
-/// so it is not seeded from the user's home directory.
+/// A policy in words, for `-v`.
+fn describe_policy(policy: &tilo_egress::EgressPolicy) -> String {
+    match policy {
+        tilo_egress::EgressPolicy::Any => "unrestricted (a * grant)".into(),
+        tilo_egress::EgressPolicy::Hosts(hosts) if hosts.is_empty() => {
+            "none (no host is granted)".into()
+        }
+        p @ tilo_egress::EgressPolicy::Hosts(_) => format!("only {}", p.describe().join(", ")),
+    }
+}
+
+/// Give a fresh guest home the dotfiles that make a shell usable. Never
+/// seeded from the user's own home: an environment's home is its own.
 #[allow(
     clippy::literal_string_with_formatting_args,
     reason = "the `${VAR}` below is shell syntax in the .bashrc content, not a Rust format placeholder"
@@ -357,7 +478,7 @@ fn seed_guest_home(home: &Path) -> std::io::Result<()> {
         &bashrc,
         "# ush guest shell\n\
          [ -f /etc/bashrc ] && . /etc/bashrc\n\
-         PS1='[\\[\\e[36m\\]${TILO_USH_PROFILE:-ush}\\[\\e[0m\\] \\W]\\$ '\n\
+         PS1='[\\[\\e[36m\\]${TILO_USH_ENVIRONMENT:-ush}\\[\\e[0m\\] \\W]\\$ '\n\
          alias ls='ls --color=auto'\n",
     )
 }
@@ -368,10 +489,10 @@ fn seed_guest_home(home: &Path) -> std::io::Result<()> {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub enum ServeRequest {
-    /// Open a guest and hand back its pty master.
+    /// Open a session on `target` and hand back its pty master.
     OpenSession {
         #[serde(default)]
-        profile: String,
+        target: Target,
         #[serde(default = "default_cols")]
         cols: u16,
         #[serde(default = "default_rows")]
@@ -383,7 +504,75 @@ pub enum ServeRequest {
         /// grants nothing a user typing it at the prompt would not have.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         command: Vec<String>,
+        /// Who asked the app for this session. Agents never reach
+        /// [`Target::Host`].
+        #[serde(default)]
+        requested_by: crate::host::RequestedBy,
+        /// For an environment on a relay: the session to re-attach to (hex),
+        /// as an earlier answer named it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay_session: Option<String>,
     },
+    /// The environments there are, for Terminal's picker and its
+    /// environments panel.
+    ListEnvironments,
+    /// The person's relays an environment can run on.
+    ListRelays,
+    /// The person allowed Terminal's Host target, for `expiry` (the shell's
+    /// permission prompt answers with this). Only a caller outside every app
+    /// sandbox — the shell — may record it.
+    AllowHost { expiry: collab_types::caps::Expiry },
+    /// Make a new environment on the default environment's runtime, with
+    /// nothing added and nothing granted. Answers with every environment.
+    CreateEnvironment { name: String },
+    /// Apply one of the record's actions (`rename`) to an environment.
+    /// Answers with every environment.
+    EnvironmentAction {
+        record: String,
+        action: String,
+        #[serde(default)]
+        args: serde_json::Value,
+    },
+}
+
+/// One environment as an app sees it: what it is called, what it has, and
+/// which directories it was granted.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EnvironmentEntry {
+    pub key: String,
+    pub name: String,
+    /// The packages its tools provide.
+    pub tools: Vec<String>,
+    /// Granted directories, `(path, writable)`.
+    pub grants: Vec<(String, bool)>,
+}
+
+impl EnvironmentEntry {
+    fn of(key: &str, env: &Environment) -> Self {
+        let policy = Policy::new(env.grants.0.clone());
+        let now = Some(unix_now());
+        let writable = policy.trusted_dirs(now);
+        let mut grants: Vec<(String, bool)> = writable
+            .iter()
+            .map(|dir| (dir.display().to_string(), true))
+            .collect();
+        grants.extend(
+            policy
+                .readable_dirs(now)
+                .iter()
+                .map(|dir| (dir.display().to_string(), false)),
+        );
+        Self {
+            key: key.to_owned(),
+            name: env.name.clone(),
+            tools: env
+                .tools
+                .iter()
+                .flat_map(|tool| tool.packages.iter().cloned())
+                .collect(),
+            grants,
+        }
+    }
 }
 
 fn default_cols() -> u16 {
@@ -399,33 +588,70 @@ pub enum ServeResponse {
     /// The pty master follows as an `SCM_RIGHTS` descriptor on this message.
     Session {
         session: String,
-        profile: String,
+        /// The environment record the session was built from.
+        environment: String,
+        /// For an environment on a relay: the session's id there, which
+        /// re-attaches to it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay_session: Option<String>,
     },
     Denied {
         reason: String,
     },
+    /// The device's own shell needs the person's allow first. Everything
+    /// else about the request was acceptable, so asking makes sense.
+    HostNotAllowed {
+        reason: String,
+    },
+    /// The environment cannot be built here: no `env-runtime` image is
+    /// installed to make the default environment from. The connection stays
+    /// open for another request, so the app can offer the device's own shell
+    /// instead.
+    NoRuntime {
+        reason: String,
+    },
+    /// Every environment, by key.
+    Environments {
+        environments: Vec<EnvironmentEntry>,
+    },
+    /// The allow was recorded.
+    Allowed,
+    /// The person's relays.
+    Relays {
+        relays: Vec<crate::relay::RelayPeer>,
+    },
 }
 
-/// Decide one request. Pure, so the gate on `dsh` can be tested without a pty.
+/// Decide one request: the environment record it names (`None` for the
+/// default). Pure, so the gate can be tested without a pty.
 ///
 /// # Errors
 ///
-/// Returns an error if the requested profile is not reachable from an app
-/// launch (currently only `dsh`, the unsandboxed developer profile).
-pub fn decide_serve(req: &ServeRequest) -> Result<Profile, String> {
-    match req {
-        ServeRequest::OpenSession { profile, .. } => {
-            let requested = Profile::parse(profile);
-            if !requested.reachable_from_app_launch() {
-                return Err(format!(
-                    "`{}` is the developer profile and is not a sandbox; it is \
-                     reachable only by running it yourself, never from an app \
-                     launch",
-                    requested.as_str()
-                ));
-            }
-            Ok(requested)
-        }
+/// Returns the reason a target cannot be served: the host target (not served
+/// here), or a record key an app may not use.
+pub fn decide_serve(req: &ServeRequest) -> Result<Option<String>, String> {
+    let ServeRequest::OpenSession { target, .. } = req else {
+        return Err("not a session request".into());
+    };
+    match target {
+        Target::Host => Err(
+            "not available as an environment: the host target (your own login shell) \
+             is decided by the host gate"
+                .into(),
+        ),
+        Target::Environment {
+            location: tilo_environment::Location::Relay { .. },
+            ..
+        } => Err("an environment on a relay is carried there, not built here".into()),
+        Target::Environment { record: None, .. } => Ok(None),
+        Target::Environment {
+            record: Some(record),
+            ..
+        } if is_record_key(record) => Ok(Some(record.clone())),
+        Target::Environment {
+            record: Some(record),
+            ..
+        } => Err(format!("{record:?} does not name an environment record")),
     }
 }
 
@@ -436,7 +662,7 @@ pub fn decide_serve(req: &ServeRequest) -> Result<Profile, String> {
 /// Returns an error if the store cannot be prepared, the socket path's
 /// parent cannot be created, the socket cannot be bound, or its permissions
 /// cannot be set to owner-only.
-pub fn serve(socket: &Path, store: &Store, base: &Path) -> anyhow::Result<()> {
+pub fn serve(socket: &Path, store: &Store, host_root: &Path) -> anyhow::Result<()> {
     store.ensure()?;
     let listener = if let Some(listener) = systemd_listener(socket)? {
         listener
@@ -457,9 +683,9 @@ pub fn serve(socket: &Path, store: &Store, base: &Path) -> anyhow::Result<()> {
     for conn in listener.incoming() {
         let Ok(stream) = conn else { continue };
         let store = store.clone();
-        let base = base.to_path_buf();
+        let host_root = host_root.to_path_buf();
         std::thread::spawn(move || {
-            if let Err(e) = serve_one(&stream, &store, base) {
+            if let Err(e) = serve_one(&stream, &store, &host_root) {
                 tracing::warn!(error = %e, "ush: serve failed");
             }
         });
@@ -517,34 +743,108 @@ fn systemd_listener(expected: &Path) -> anyhow::Result<Option<UnixListener>> {
     Ok(Some(listener))
 }
 
-fn serve_one(stream: &UnixStream, store: &Store, base: PathBuf) -> anyhow::Result<()> {
-    let mut writer = stream.try_clone()?;
-    let mut reader = BufReader::new(stream.try_clone()?);
-    let mut line = String::new();
-    reader.read_line(&mut line)?;
+/// Requests one connection may make. A refused open spends nothing — the
+/// connection is the app's one way to ask — so the app may ask again on it
+/// (the device's own shell after an environment could not be built), but not
+/// without end.
+const MAX_REQUESTS_PER_CONNECTION: usize = 8;
 
-    let req: ServeRequest = match serde_json::from_str(&line) {
+/// Whether a request ended the connection's use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Served {
+    /// Answered for good: a session ran, or the request was not one to retry.
+    Done,
+    /// An open was refused; the app may ask again on this connection.
+    Refused,
+}
+
+fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Result<()> {
+    let mut writer = stream.try_clone()?;
+    let mut raw = stream.try_clone()?;
+    let (caller, carried) = crate::host::read_caller(&mut raw)?;
+    let mut reader = BufReader::new(std::io::Cursor::new(carried).chain(raw));
+    for _ in 0..MAX_REQUESTS_PER_CONNECTION {
+        let mut line = String::new();
+        if reader.read_line(&mut line)? == 0 {
+            return Ok(());
+        }
+        if serve_request(stream, &mut writer, store, host_root, &caller, &line)? == Served::Done {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+fn serve_request(
+    stream: &UnixStream,
+    writer: &mut UnixStream,
+    store: &Store,
+    host_root: &Path,
+    caller: &crate::host::Caller,
+    line: &str,
+) -> anyhow::Result<Served> {
+    let req: ServeRequest = match serde_json::from_str(line) {
         Ok(r) => r,
         Err(e) => {
-            return reply(
-                &mut writer,
+            reply(
+                writer,
                 &ServeResponse::Denied {
                     reason: format!("malformed request: {e}"),
                 },
                 None,
-            );
+            )?;
+            return Ok(Served::Done);
         }
     };
-    let profile = match decide_serve(&req) {
-        Ok(p) => p,
+    match &req {
+        ServeRequest::ListEnvironments
+        | ServeRequest::CreateEnvironment { .. }
+        | ServeRequest::EnvironmentAction { .. } => {
+            let response = match directory(&req, store) {
+                Ok(environments) => ServeResponse::Environments { environments },
+                Err(reason) => ServeResponse::Denied { reason },
+            };
+            reply(writer, &response, None)?;
+            return Ok(Served::Done);
+        }
+        ServeRequest::OpenSession {
+            target: Target::Host,
+            ..
+        } => return serve_host(stream, writer, store, caller, &req),
+        ServeRequest::OpenSession { target, .. } if is_relay(target) => {
+            return serve_relay(stream, writer, store, &req);
+        }
+        ServeRequest::ListRelays => {
+            reply(writer, &list_relays(), None)?;
+            return Ok(Served::Done);
+        }
+        ServeRequest::AllowHost { expiry } => {
+            reply(writer, &allow_host(caller, store, *expiry), None)?;
+            return Ok(Served::Done);
+        }
+        ServeRequest::OpenSession { .. } => {}
+    }
+    let environment = match decide_serve(&req) {
+        Ok(e) => e,
         Err(reason) => {
             AuditLog::at(store.audit_dir()).append(
-                &crate::audit::AuditRecord::new("serve", "ush", "open-session", false)
+                &crate::audit::AuditRecord::new("serve", "-", "open-session", false)
                     .because(&reason),
             );
-            return reply(&mut writer, &ServeResponse::Denied { reason }, None);
+            reply(writer, &ServeResponse::Denied { reason }, None)?;
+            return Ok(Served::Refused);
         }
     };
+    let record = environment
+        .clone()
+        .unwrap_or_else(|| tilo_environment::DEFAULT_RECORD.to_owned());
+
+    // The record must resolve before a terminal is handed out: a guest that
+    // cannot be built would print why on its pty and exit, leaving the app a
+    // dead pane and no chance to offer anything else.
+    if refused_unbuildable(writer, store, environment.as_deref(), &record)? {
+        return Ok(Served::Refused);
+    }
 
     let ServeRequest::OpenSession {
         cols,
@@ -552,40 +852,41 @@ fn serve_one(stream: &UnixStream, store: &Store, base: PathBuf) -> anyhow::Resul
         term,
         command,
         ..
-    } = req;
+    } = req
+    else {
+        return Ok(Served::Done);
+    };
     let (master, slave) = open_pty(cols, rows)?;
 
-    let mut opts = SessionOptions {
-        profile,
-        base,
-        term: term.unwrap_or_else(|| "xterm-256color".into()),
-        ..SessionOptions::default()
-    };
-    opts.command = command;
-
-    let session = Session::new(store.clone(), opts);
-    let id = session.session_id.clone();
+    let id = uuid::Uuid::new_v4().simple().to_string();
     AuditLog::at(store.audit_dir()).append(&crate::audit::AuditRecord::new(
         &id,
-        profile.as_str(),
+        &record,
         "open-session",
         true,
     ));
+    let launch = Launch {
+        store,
+        environment: environment.as_deref(),
+        term: term.as_deref().unwrap_or("xterm-256color"),
+        host_root,
+        command: &command,
+    };
 
     // The guest gets the slave as its stdio; the app gets the master. A *child
     // process*, not a thread: attaching a pty means `dup2` onto fds 0/1/2 and
     // `setsid`, both process-wide — on a thread that would steal the
     // supervisor's own stdio and controlling terminal (and under a test harness, the harness's).
-    let child = spawn_attached(&session, &slave)?;
-    // Matches the timing spawn_attached had when it owned `slave`: the
-    // child already holds its own clones for stdio, so the original can
+    let child = spawn_attached(&launch, &slave)?;
+    // The child already holds its own clones for stdio, so the original can
     // close as soon as the spawn is done.
     drop(slave);
     reply(
-        &mut writer,
+        writer,
         &ServeResponse::Session {
             session: id.clone(),
-            profile: profile.as_str().to_string(),
+            environment: record.clone(),
+            relay_session: None,
         },
         Some(master.as_raw_fd()),
     )?;
@@ -599,8 +900,466 @@ fn serve_one(stream: &UnixStream, store: &Store, base: PathBuf) -> anyhow::Resul
     // When the guest exits first, this worker reaps it at once and closes the
     // connection, which is how Terminal tells a finished session from the
     // hand-off window in which its PTY master also reports `EIO`.
-    let mut child = child;
-    let termination = match wait_for_guest_or_terminal(stream, &child) {
+    let termination = finish_session(stream, child);
+    AuditLog::at(store.audit_dir()).append(
+        &crate::audit::AuditRecord::new(&id, &record, "close-session", true).because(termination),
+    );
+    Ok(Served::Done)
+}
+
+/// Refuse an open whose environment cannot be built, saying why, logging
+/// and auditing it. Returns whether it was refused.
+fn refused_unbuildable(
+    writer: &mut UnixStream,
+    store: &Store,
+    environment: Option<&str>,
+    record: &str,
+) -> anyhow::Result<bool> {
+    let Some((refusal, reason)) =
+        unbuildable(store, environment, &*crate::images::on_this_device())
+    else {
+        return Ok(false);
+    };
+    tracing::warn!(record = %record, %reason, "ush: the environment cannot be built");
+    AuditLog::at(store.audit_dir()).append(
+        &crate::audit::AuditRecord::new("serve", record, "open-session", false).because(&reason),
+    );
+    reply(writer, &refusal, None)?;
+    Ok(true)
+}
+
+/// Why the environment `record` (`None`: the default) cannot be built on
+/// this device: the answer for the app and the reason in words. `None` when
+/// it resolves — the default environment is made here on first use, as the
+/// guest would make it.
+pub fn unbuildable(
+    store: &Store,
+    record: Option<&str>,
+    images: &dyn Images,
+) -> Option<(ServeResponse, String)> {
+    match Records::at(store.records_root()).resolve(record, images) {
+        Ok(_) => None,
+        Err(crate::records::RecordError::NoRuntime(why)) => {
+            let reason = format!("no environment can be built on this device: {why}");
+            Some((
+                ServeResponse::NoRuntime {
+                    reason: reason.clone(),
+                },
+                reason,
+            ))
+        }
+        Err(error) => {
+            let reason = error.to_string();
+            Some((
+                ServeResponse::Denied {
+                    reason: reason.clone(),
+                },
+                reason,
+            ))
+        }
+    }
+}
+
+/// Record the person's allow for Terminal's Host target. Only a caller
+/// outside every app sandbox — the shell, which put the prompt up — may.
+fn allow_host(
+    caller: &crate::host::Caller,
+    store: &Store,
+    expiry: collab_types::caps::Expiry,
+) -> ServeResponse {
+    if *caller != crate::host::Caller::Session {
+        return ServeResponse::Denied {
+            reason: "only the session's own shell records this allow".into(),
+        };
+    }
+    match crate::host::HostPolicy::record_allow(store, crate::host::TERMINAL_APP_ID, expiry) {
+        Ok(()) => ServeResponse::Allowed,
+        Err(e) => ServeResponse::Denied {
+            reason: format!("the allow could not be recorded: {e}"),
+        },
+    }
+}
+
+/// Answer a request about the environments themselves.
+fn directory(req: &ServeRequest, store: &Store) -> Result<Vec<EnvironmentEntry>, String> {
+    let records = Records::at(store.records_root());
+    match req {
+        ServeRequest::CreateEnvironment { name } => {
+            let name = name.trim();
+            if name.is_empty() {
+                return Err("an environment needs a name".into());
+            }
+            // A new environment starts on the default environment's runtime
+            // release, or on the newest one this device holds.
+            let env = if let Ok(Some(default)) = records.load(tilo_environment::DEFAULT_RECORD) {
+                Environment {
+                    name: name.to_owned(),
+                    runtime: default.runtime,
+                    ..Environment::default()
+                }
+            } else {
+                let (release, image) = crate::images::on_this_device().current_runtime()?;
+                Environment::new(name, &release, tilo_environment::host_arch(), &image)
+            };
+            let id: String = uuid::Uuid::new_v4()
+                .simple()
+                .to_string()
+                .chars()
+                .take(12)
+                .collect();
+            let key = format!("env-{id}");
+            records.create(&key, &env).map_err(|e| e.to_string())?;
+        }
+        ServeRequest::EnvironmentAction {
+            record,
+            action,
+            args,
+        } => {
+            let invoke = match action.as_str() {
+                "rename" => Environment::RENAME.with(
+                    args.get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                ),
+                "grant-dir" => Environment::GRANT_DIR.with((
+                    args.get("path")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    args.get("write")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false),
+                )),
+                other => {
+                    return Err(format!(
+                        "`{other}` is not an environment action an app may ask for here"
+                    ));
+                }
+            };
+            records.apply(record, invoke).map_err(|e| e.to_string())?;
+        }
+        ServeRequest::ListEnvironments
+        | ServeRequest::OpenSession { .. }
+        | ServeRequest::ListRelays
+        | ServeRequest::AllowHost { .. } => {}
+    }
+    let mut out = Vec::new();
+    for key in records.keys().map_err(|e| e.to_string())? {
+        if let Ok(Some(env)) = records.load(&key) {
+            out.push(EnvironmentEntry::of(&key, &env));
+        }
+    }
+    Ok(out)
+}
+
+/// Run the device's own login shell on a fresh pty and hand its master to
+/// the app — once [`crate::host::decide_host`] allows `caller` this request.
+fn serve_host(
+    stream: &UnixStream,
+    writer: &mut UnixStream,
+    store: &Store,
+    caller: &crate::host::Caller,
+    req: &ServeRequest,
+) -> anyhow::Result<Served> {
+    let ServeRequest::OpenSession {
+        cols,
+        rows,
+        term,
+        command,
+        requested_by,
+        ..
+    } = req
+    else {
+        return Ok(Served::Done);
+    };
+    let policy = crate::host::HostPolicy::in_force(store);
+    let ownership = crate::host::SessionOwnership::discover();
+    if let Err(denied) =
+        crate::host::decide_host(caller, *requested_by, &ownership, &policy, Some(unix_now()))
+    {
+        let reason = denied.reason();
+        AuditLog::at(store.audit_dir()).append(
+            &crate::audit::AuditRecord::new("serve", "host", "open-session", false)
+                .because(&reason),
+        );
+        let response = if denied == crate::host::HostDenied::NotAllowed {
+            ServeResponse::HostNotAllowed { reason }
+        } else {
+            ServeResponse::Denied { reason }
+        };
+        reply(writer, &response, None)?;
+        return Ok(Served::Refused);
+    }
+    crate::host::HostPolicy::spend_one_time(crate::host::TERMINAL_APP_ID);
+    let term = term.as_deref().unwrap_or("xterm-256color");
+    let (cols, rows) = (*cols, *rows);
+    let Some(account) = crate::host::login_account() else {
+        reply(
+            writer,
+            &ServeResponse::Denied {
+                reason: "this account has no passwd entry to take a login shell from".into(),
+            },
+            None,
+        )?;
+        return Ok(Served::Done);
+    };
+    let (master, slave) = open_pty(cols, rows)?;
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    AuditLog::at(store.audit_dir()).append(&crate::audit::AuditRecord::new(
+        &id,
+        "host",
+        "open-session",
+        true,
+    ));
+    let child = spawn_on_pty(crate::host::host_command(&account, term, command), &slave)?;
+    drop(slave);
+    reply(
+        writer,
+        &ServeResponse::Session {
+            session: id.clone(),
+            environment: "host".into(),
+            relay_session: None,
+        },
+        Some(master.as_raw_fd()),
+    )?;
+    drop(master);
+    let termination = finish_session(stream, child);
+    AuditLog::at(store.audit_dir()).append(
+        &crate::audit::AuditRecord::new(&id, "host", "close-session", true).because(termination),
+    );
+    Ok(Served::Done)
+}
+
+/// Carry the terminal to an environment session on one of the person's
+/// relays: `tilo-relay-environment` runs on the pty handed back, so the app
+/// gets a pty from this broker whatever the target. The answer names the
+/// relay session, which re-attaches to it later.
+fn serve_relay(
+    stream: &UnixStream,
+    writer: &mut UnixStream,
+    store: &Store,
+    req: &ServeRequest,
+) -> anyhow::Result<Served> {
+    let ServeRequest::OpenSession {
+        target:
+            Target::Environment {
+                record,
+                location: tilo_environment::Location::Relay { relay },
+            },
+        cols,
+        rows,
+        term,
+        relay_session,
+        ..
+    } = req
+    else {
+        return Ok(Served::Done);
+    };
+    let denied = |writer: &mut UnixStream, reason: String| {
+        reply(writer, &ServeResponse::Denied { reason }, None)?;
+        Ok(Served::Refused)
+    };
+    let identity = crate::relay::identity_paths();
+    let Some(peer) = crate::relay::relays(&identity)
+        .into_iter()
+        .find(|peer| peer.relay == *relay)
+    else {
+        return denied(writer, format!("{relay} is not one of your relays"));
+    };
+    let key = record
+        .clone()
+        .unwrap_or_else(|| tilo_environment::DEFAULT_RECORD.to_owned());
+    let session = match relay_session {
+        Some(session) if crate::relay::is_session_id(session) => {
+            crate::relay::RelaySession::Attach {
+                session: session.clone(),
+            }
+        }
+        Some(_) => return denied(writer, "not a relay session id".into()),
+        None => {
+            // The relay builds the guest from the record as this device
+            // holds it; the default comes into being on first use, as here.
+            let records = Records::at(store.records_root());
+            if let Err(e) = records.resolve(record.as_deref(), &*crate::images::on_this_device()) {
+                return denied(writer, e.to_string());
+            }
+            crate::relay::RelaySession::Open {
+                record: key.clone(),
+            }
+        }
+    };
+    let Some(binary) = crate::relay::bridge_binary() else {
+        return denied(
+            writer,
+            "tilo-relay-environment is not installed, so no relay session can open".into(),
+        );
+    };
+    let Some(identity_root) = crate::relay::identity_root(&identity) else {
+        return denied(writer, "this device has no identity".into());
+    };
+    let (master, slave) = open_pty(*cols, *rows)?;
+    let launch = RelayLaunch {
+        binary: &binary,
+        peer: &peer,
+        session: &session,
+        records_root: store.records_root(),
+        identity_root: &identity_root,
+        term: term.as_deref().unwrap_or("xterm-256color"),
+    };
+    let (child, status, session_id) = match start_relay_bridge(&launch, &slave)? {
+        Ok(started) => started,
+        Err(reason) => return denied(writer, reason),
+    };
+    drop(slave);
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    AuditLog::at(store.audit_dir()).append(&crate::audit::AuditRecord::new(
+        &id,
+        &key,
+        "open-relay-session",
+        true,
+    ));
+    reply(
+        writer,
+        &ServeResponse::Session {
+            session: id.clone(),
+            environment: key.clone(),
+            relay_session: Some(session_id),
+        },
+        Some(master.as_raw_fd()),
+    )?;
+    drop(master);
+    adopt_relay_tools(status, store.records_root().to_path_buf());
+    let termination = finish_session(stream, child);
+    AuditLog::at(store.audit_dir()).append(
+        &crate::audit::AuditRecord::new(&id, &key, "close-relay-session", true)
+            .because(termination),
+    );
+    Ok(Served::Done)
+}
+
+fn is_relay(target: &Target) -> bool {
+    matches!(
+        target,
+        Target::Environment {
+            location: tilo_environment::Location::Relay { .. },
+            ..
+        }
+    )
+}
+
+/// The relays a new environment can be opened on, as last heard. When an
+/// answer is older than a minute the relays are asked again in the
+/// background; Terminal reads the list again and sees the answers.
+fn list_relays() -> ServeResponse {
+    let identity = crate::relay::identity_paths();
+    let relays = crate::relay::relays(&identity);
+    if crate::relay::needs_asking(&relays, tilo_clock::unix_now_ms()) {
+        crate::relay::ask_relays_again(&identity);
+    }
+    ServeResponse::Relays {
+        relays: relays
+            .into_iter()
+            .filter(|peer| peer.runs_environments)
+            .collect(),
+    }
+}
+
+/// What a relay session's bridge is started with.
+struct RelayLaunch<'a> {
+    binary: &'a Path,
+    peer: &'a crate::relay::RelayPeer,
+    session: &'a crate::relay::RelaySession,
+    records_root: &'a Path,
+    identity_root: &'a Path,
+    term: &'a str,
+}
+
+type StartedBridge = (std::process::Child, crate::relay::StatusReader, String);
+
+/// Start `tilo-relay-environment` on `slave` and wait for it to name the
+/// session; the inner error is why it did not open.
+fn start_relay_bridge(
+    launch: &RelayLaunch<'_>,
+    slave: &std::fs::File,
+) -> std::io::Result<Result<StartedBridge, String>> {
+    let (status_read, status_write) = crate::relay::status_pipe()?;
+    let mut cmd = crate::relay::bridge_command(
+        launch.binary,
+        launch.peer,
+        launch.session,
+        launch.records_root,
+        launch.identity_root,
+        launch.term,
+    );
+    let write_fd = status_write.as_raw_fd();
+    // SAFETY: `pre_exec` runs between fork and exec; it only calls dup2.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(move || crate::relay::install_status_fd(write_fd));
+    }
+    let mut child = spawn_on_pty(cmd, slave)?;
+    drop(status_write);
+    let mut status = crate::relay::StatusReader::new(status_read);
+    match status.next(Some(crate::relay::OPEN_PATIENCE)) {
+        Some(crate::relay::BridgeStatus::Session { session, .. }) => {
+            Ok(Ok((child, status, session)))
+        }
+        other => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let reason = match other {
+                Some(crate::relay::BridgeStatus::Ended {
+                    reason: Some(reason),
+                    ..
+                }) => reason,
+                _ => format!("the session on {} did not open", launch.peer.label),
+            };
+            // The relay had no worker for it: what the picker shows is out
+            // of date, so ask the relays again.
+            if reason.contains("NoWorker") {
+                crate::relay::ask_relays_again(&crate::relay::identity_paths());
+            }
+            Ok(Err(reason))
+        }
+    }
+}
+
+/// Tools the relay builds for a session become the record's, as a `pkg
+/// install` on this device would.
+fn adopt_relay_tools(mut status: crate::relay::StatusReader, records_root: PathBuf) {
+    std::thread::spawn(move || {
+        let records = Records::at(records_root);
+        while let Some(line) = status.next(None) {
+            if let crate::relay::BridgeStatus::ToolBuilt {
+                record,
+                packages,
+                images,
+            } = line
+            {
+                for (arch, image) in images {
+                    let _ = records.apply(
+                        &record,
+                        Environment::ADD_TOOL.with((packages.clone(), arch, image)),
+                    );
+                }
+            }
+        }
+    });
+}
+
+/// Wait for whichever side of a served session ends first and tear the
+/// other down; returns the line the audit log records.
+///
+/// The request connection is the lifetime capability for the session, in
+/// both directions. When Terminal closes (or crashes) its end, this tears
+/// down exactly the child it created: dropping the pty master is not enough
+/// because a PID-namespace init may survive a terminal hangup. When the
+/// child exits first, it is reaped at once and the connection closed, which
+/// is how Terminal tells a finished session from the hand-off window in which
+/// its PTY master also reports `EIO`.
+fn finish_session(stream: &UnixStream, mut child: std::process::Child) -> String {
+    match wait_for_guest_or_terminal(stream, &child) {
         LifetimeEnd::GuestExited => {
             let status = child.wait();
             let _ = stream.shutdown(std::net::Shutdown::Both);
@@ -617,11 +1376,7 @@ fn serve_one(stream: &UnixStream, store: &Store, base: PathBuf) -> anyhow::Resul
             },
             Err(error) => format!("status failed: {error}"),
         },
-    };
-    AuditLog::at(store.audit_dir()).append(
-        &crate::audit::AuditRecord::new(&id, "ush", "close-session", true).because(termination),
-    );
-    Ok(())
+    }
 }
 
 /// Which side ended a hosted session first.
@@ -688,22 +1443,51 @@ fn wait_for_terminal(stream: &UnixStream) -> LifetimeEnd {
     LifetimeEnd::TerminalClosed
 }
 
+/// What a served session runs: `tilo-ush run` on the same store, for one
+/// environment.
+struct Launch<'a> {
+    store: &'a Store,
+    environment: Option<&'a str>,
+    term: &'a str,
+    host_root: &'a Path,
+    command: &'a [String],
+}
+
 /// Start `tilo-ush run` with `slave` as its stdio, in its own session, with the
 /// pty as its controlling terminal.
 fn spawn_attached(
-    session: &Session,
+    launch: &Launch<'_>,
+    slave: &std::fs::File,
+) -> std::io::Result<std::process::Child> {
+    let exe = runtime_binary()?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("run");
+    if let Some(record) = launch.environment {
+        cmd.arg("--environment").arg(record);
+    }
+    cmd.arg("--host-root").arg(launch.host_root);
+    if !launch.command.is_empty() {
+        cmd.arg("--").args(launch.command);
+    }
+    cmd.env(crate::store::STORE_ENV, launch.store.root());
+    cmd.env(crate::store::RECORDS_ENV, launch.store.records_root());
+    if let Some(root) = launch.store.grant_root() {
+        cmd.env(crate::store::GRANT_ROOT_ENV, root);
+    }
+    cmd.env("TERM", launch.term);
+    spawn_on_pty(cmd, slave)
+}
+
+/// Start `cmd` with `slave` as its stdio, in its own session, with the pty as
+/// its controlling terminal.
+fn spawn_on_pty(
+    mut cmd: std::process::Command,
     slave: &std::fs::File,
 ) -> std::io::Result<std::process::Child> {
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
 
-    let exe = runtime_binary()?;
-    let mut cmd = std::process::Command::new(exe);
-    cmd.arg("run");
-    cmd.env(crate::store::STORE_ENV, session.store.root());
-    cmd.env("TERM", &session.opts.term);
-    cmd.env("TILO_USH_BASE", &session.opts.base);
     cmd.stdin(Stdio::from(slave.try_clone()?));
     cmd.stdout(Stdio::from(slave.try_clone()?));
     cmd.stderr(Stdio::from(slave.try_clone()?));
@@ -785,6 +1569,7 @@ pub use runtime_portal::fd_transport::{recv_with_fd, send_with_fd};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_environment::{DEFAULT_RECORD, PackageId};
 
     #[test]
     fn the_session_ends_when_the_guest_or_the_terminal_does() {
@@ -819,158 +1604,421 @@ mod tests {
         }
     }
 
-    use crate::layer::LayerKind;
-
-    /// The gate on the deliberate exception, at the place an app would hit it.
-    #[test]
-    fn serve_refuses_dsh_and_defaults_every_other_profile_to_ush() {
-        let open = |profile: &str| ServeRequest::OpenSession {
-            profile: profile.into(),
+    fn open(target: Target) -> ServeRequest {
+        ServeRequest::OpenSession {
+            target,
             cols: 80,
             rows: 24,
             term: None,
             command: Vec::new(),
-        };
-        let err = decide_serve(&open("dsh")).unwrap_err();
-        assert!(err.contains("not a sandbox"), "{err}");
-        for name in ["ush", "", "nonsense"] {
-            assert_eq!(decide_serve(&open(name)).unwrap(), Profile::Ush, "{name:?}");
+            requested_by: crate::host::RequestedBy::Person,
+            relay_session: None,
         }
     }
 
     #[test]
-    fn a_session_request_may_name_a_program_and_defaults_to_the_shell() {
-        let shell: ServeRequest =
-            serde_json::from_str(r#"{"op":"open-session","profile":"ush"}"#).unwrap();
-        assert!(
-            matches!(shell, ServeRequest::OpenSession { ref command, .. } if command.is_empty())
+    fn serve_builds_environments_and_refuses_the_host_target() {
+        assert_eq!(decide_serve(&open(Target::default_environment())), Ok(None));
+        assert_eq!(
+            decide_serve(&open(Target::Environment {
+                record: Some("work".into()),
+                location: tilo_environment::Location::ThisDevice,
+            })),
+            Ok(Some("work".into()))
         );
+        let err = decide_serve(&open(Target::Host)).unwrap_err();
+        assert!(err.starts_with("not available"), "{err}");
+
+        // The host target says when an agent asked for it; leaving it out is
+        // the person.
+        let host: ServeRequest = serde_json::from_str(
+            r#"{"op":"open-session","target":{"kind":"host"},"requested_by":"agent"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            host,
+            ServeRequest::OpenSession {
+                target: Target::Host,
+                requested_by: crate::host::RequestedBy::Agent,
+                ..
+            }
+        ));
+        assert!(matches!(
+            open(Target::Host),
+            ServeRequest::OpenSession {
+                requested_by: crate::host::RequestedBy::Person,
+                ..
+            }
+        ));
+        let refused: ServeResponse =
+            serde_json::from_str(r#"{"result":"host-not-allowed","reason":"ask"}"#).unwrap();
+        assert_eq!(
+            refused,
+            ServeResponse::HostNotAllowed {
+                reason: "ask".into()
+            }
+        );
+        let err = decide_serve(&open(Target::Environment {
+            record: Some("../../etc".into()),
+            location: tilo_environment::Location::ThisDevice,
+        }))
+        .unwrap_err();
+        assert!(err.contains("does not name"), "{err}");
+    }
+
+    #[test]
+    fn a_session_request_names_its_target_and_may_name_a_program() {
+        let shell: ServeRequest =
+            serde_json::from_str(r#"{"op":"open-session","target":{"kind":"environment"}}"#)
+                .unwrap();
+        assert!(matches!(
+            shell,
+            ServeRequest::OpenSession { ref target, ref command, .. }
+                if *target == Target::default_environment() && command.is_empty()
+        ));
         let program: ServeRequest = serde_json::from_str(
-            r#"{"op":"open-session","profile":"ush","command":["htop","-d","5"]}"#,
+            r#"{"op":"open-session","target":{"kind":"environment","record":"work"},"command":["htop","-d","5"]}"#,
         )
         .unwrap();
         assert!(matches!(
             program,
             ServeRequest::OpenSession { ref command, .. } if command == &["htop", "-d", "5"]
         ));
-        assert_eq!(decide_serve(&program).unwrap(), Profile::Ush);
+        assert_eq!(decide_serve(&program).unwrap(), Some("work".into()));
+    }
+
+    struct FixtureImages(PathBuf);
+    impl Images for FixtureImages {
+        fn tree(&self, id: &PackageId) -> Result<PathBuf, String> {
+            let tree = self.0.join(id.to_hex());
+            tree.is_dir()
+                .then_some(tree)
+                .ok_or_else(|| format!("{id} is not here"))
+        }
+        fn check_tool(&self, tool: &PackageId, _runtime: &PackageId) -> Result<(), String> {
+            if *tool == PackageId::from_bytes([9; 32]) {
+                Err("tool was built for another runtime".into())
+            } else {
+                Ok(())
+            }
+        }
+        fn current_runtime(&self) -> Result<(String, PackageId), String> {
+            Ok(("2026.10".into(), PackageId::from_bytes([1; 32])))
+        }
+    }
+
+    fn session_in(dir: &Path) -> Session {
+        let images = dir.join("images");
+        for byte in [1_u8, 2] {
+            let tree = images.join(PackageId::from_bytes([byte; 32]).to_hex());
+            std::fs::create_dir_all(tree.join("usr/bin")).unwrap();
+            std::fs::create_dir_all(tree.join("etc")).unwrap();
+        }
+        std::fs::write(
+            images
+                .join(PackageId::from_bytes([1; 32]).to_hex())
+                .join("usr/bin/bash"),
+            b"",
+        )
+        .unwrap();
+        let store = Store::at(dir.join("ush"));
+        store.ensure().unwrap();
+        Session::new(
+            store,
+            SessionOptions::default(),
+            Arc::new(FixtureImages(images)),
+            Arc::new(tilo_environment::NoToolBuilder),
+        )
     }
 
     #[test]
-    fn session_options_choose_layers_and_restart_behaviour() {
-        // phase: an_ephemeral_session_stacks_the_persistent_layer_and_a_normal_one_does_not
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let store = Store::at(dir.path().join("ush"));
-            store.ensure().unwrap();
-            // A persistent layer has to exist to be stacked.
-            std::fs::create_dir_all(store.persistent_dir()).unwrap();
-            std::fs::write(store.persistent_dir().join(".ush-layer"), b"persistent\n").unwrap();
+    fn the_environment_directory_lists_creates_and_renames_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("ush"));
+        store.ensure().unwrap();
+        let records = Records::at(store.records_root());
+        let mut default = Environment::new(
+            tilo_environment::DEFAULT_NAME,
+            "2026.10",
+            tilo_environment::host_arch(),
+            &PackageId::from_bytes([1; 32]),
+        );
+        default.tools.clear();
+        records.create(DEFAULT_RECORD, &default).unwrap();
 
-            let normal = Session::new(store.clone(), SessionOptions::default());
-            assert!(normal.lower_layers().is_empty());
-            assert_eq!(normal.layer().kind(), LayerKind::Persistent);
+        let listed = directory(&ServeRequest::ListEnvironments, &store).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].key, DEFAULT_RECORD);
 
-            let ephemeral = Session::new(
-                store.clone(),
-                SessionOptions {
-                    ephemeral: true,
-                    ..SessionOptions::default()
+        let created = directory(
+            &ServeRequest::CreateEnvironment {
+                name: " Writing ".into(),
+            },
+            &store,
+        )
+        .unwrap();
+        let writing = created
+            .iter()
+            .find(|entry| entry.key != DEFAULT_RECORD)
+            .expect("the new environment is listed");
+        assert_eq!(writing.name, "Writing");
+        assert!(writing.tools.is_empty() && writing.grants.is_empty());
+        assert_eq!(
+            records.load(&writing.key).unwrap().unwrap().runtime,
+            default.runtime,
+            "a new environment starts on the default environment's runtime"
+        );
+
+        let renamed = directory(
+            &ServeRequest::EnvironmentAction {
+                record: writing.key.clone(),
+                action: "rename".into(),
+                args: serde_json::json!({"name": "Prose"}),
+            },
+            &store,
+        )
+        .unwrap();
+        assert!(renamed.iter().any(|entry| entry.name == "Prose"));
+
+        let granted_dir = dir.path().join("src");
+        std::fs::create_dir_all(&granted_dir).unwrap();
+        let granted = directory(
+            &ServeRequest::EnvironmentAction {
+                record: writing.key.clone(),
+                action: "grant-dir".into(),
+                args: serde_json::json!({"path": granted_dir.display().to_string(), "write": true}),
+            },
+            &store,
+        )
+        .unwrap();
+        let entry = granted.iter().find(|e| e.key == writing.key).unwrap();
+        assert_eq!(
+            entry.grants,
+            vec![(granted_dir.display().to_string(), true)]
+        );
+        assert!(
+            directory(
+                &ServeRequest::EnvironmentAction {
+                    record: writing.key.clone(),
+                    action: "grant-dir".into(),
+                    args: serde_json::json!({"path": "/usr", "write": true}),
                 },
-            );
-            assert_eq!(
-                ephemeral.lower_layers(),
-                vec![store.persistent_dir()],
-                "an ephemeral session must still see what you installed for good"
-            );
-            assert_eq!(ephemeral.layer().kind(), LayerKind::Ephemeral);
-        }
-        // phase: a_one_shot_command_never_restarts_in_place
-        // `pkg burn` asks for a restart so the guest comes back on a fresh layer;
-        // under `ush -c` that would re-run the command that asked, looping forever.
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let store = Store::at(dir.path().join("ush"));
-
-            let interactive = Session::new(store.clone(), SessionOptions::default());
-            assert!(interactive.restarts_in_place());
-
-            let one_shot = Session::new(
-                store,
-                SessionOptions {
-                    command: vec!["/bin/sh".into(), "-c".into(), "pkg burn".into()],
-                    ..SessionOptions::default()
+                &store,
+            )
+            .is_err(),
+            "the record's own rules still refuse what the guest builds itself"
+        );
+        assert!(
+            directory(
+                &ServeRequest::EnvironmentAction {
+                    record: writing.key.clone(),
+                    action: "set-runtime".into(),
+                    args: serde_json::Value::Null,
                 },
-            );
-            assert!(
-                !one_shot.restarts_in_place(),
-                "restarting a session that was given a command re-runs the command"
-            );
+                &store,
+            )
+            .is_err(),
+            "only the actions an app may ask for here are applied"
+        );
+        assert!(
+            directory(
+                &ServeRequest::CreateEnvironment { name: "  ".into() },
+                &store
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn the_plan_comes_from_the_record_its_images_and_its_grants() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = session_in(dir.path());
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("SHELL", "/bin/bash");
+
+        // First use creates the default environment on the current runtime.
+        let resolved = session.resolve().unwrap();
+        assert_eq!(resolved.key, DEFAULT_RECORD);
+        assert_eq!(resolved.images.len(), 1);
+        assert!(resolved.images[0].0.starts_with("runtime "));
+
+        let records = session.records();
+        let granted = dir.path().join("src");
+        std::fs::create_dir_all(&granted).unwrap();
+        records
+            .apply(
+                DEFAULT_RECORD,
+                Environment::ADD_TOOL.with((
+                    vec!["pandoc".into()],
+                    tilo_environment::host_arch().to_owned(),
+                    PackageId::from_bytes([2; 32]).to_string(),
+                )),
+            )
+            .unwrap();
+        records
+            .apply(
+                DEFAULT_RECORD,
+                Environment::GRANT_DIR.with((granted.display().to_string(), true)),
+            )
+            .unwrap();
+
+        let resolved = session.resolve().unwrap();
+        assert!(
+            resolved.images[0].0.contains("pandoc"),
+            "the tool stacks on top"
+        );
+        assert!(resolved.images[1].0.starts_with("runtime "));
+        let plan = session
+            .plan(
+                &resolved,
+                PathBuf::from("/tmp/b.sock"),
+                PathBuf::from("/tmp/f.bpf"),
+            )
+            .unwrap();
+        assert_eq!(plan.trusted_dirs, vec![granted]);
+        assert!(plan.readable_dirs.is_empty());
+        assert_eq!(
+            plan.guest_home,
+            session.store.environment_home(DEFAULT_RECORD)
+        );
+        assert_eq!(plan.var_dir, session.store.environment_var(DEFAULT_RECORD));
+        assert_eq!(plan.shell, PathBuf::from("/usr/bin/bash"));
+        assert_eq!(plan.environment, tilo_environment::DEFAULT_NAME);
+        assert!(
+            plan.masked
+                .contains(&session.store.root().canonicalize().unwrap())
+        );
+    }
+
+    fn add_tool(session: &Session, package: &str, arch: &str, byte: u8) {
+        session
+            .records()
+            .apply(
+                DEFAULT_RECORD,
+                Environment::ADD_TOOL.with((
+                    vec![package.into()],
+                    arch.into(),
+                    PackageId::from_bytes([byte; 32]).to_string(),
+                )),
+            )
+            .unwrap();
+    }
+
+    struct BuildsTwo;
+    impl ToolBuilder for BuildsTwo {
+        fn build(
+            &self,
+            runtime: &PackageId,
+            _packages: &[String],
+            _progress: &mut dyn Write,
+        ) -> Result<PackageId, tilo_environment::ToolBuildError> {
+            if *runtime == PackageId::from_bytes([1; 32]) {
+                Ok(PackageId::from_bytes([2; 32]))
+            } else {
+                Err(tilo_environment::ToolBuildError::Failed(
+                    "wrong runtime".into(),
+                ))
+            }
         }
     }
 
     #[test]
-    fn the_plan_grants_exactly_what_the_policy_file_names() {
-        // phase: the_plan_takes_its_grants_from_the_policy_file
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let store = Store::at(dir.path().join("ush"));
-            store.ensure().unwrap();
-            let trusted = dir.path().join("src");
-            std::fs::create_dir_all(&trusted).unwrap();
+    fn a_tool_without_an_image_here_is_built_here_and_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = session_in(dir.path());
+        session.builder = Arc::new(BuildsTwo);
+        session.resolve().unwrap();
+        let other = if tilo_environment::host_arch() == "x86_64" {
+            "aarch64"
+        } else {
+            "x86_64"
+        };
+        add_tool(&session, "pandoc", other, 5);
 
-            let mut policy = Policy::default();
-            policy.trust_dir(&trusted).unwrap();
-            policy.save(&store.policy_path()).unwrap();
-
-            let session = Session::new(store, SessionOptions::default());
-            let plan = session
-                .plan(PathBuf::from("/tmp/b.sock"), PathBuf::from("/tmp/f.bpf"))
-                .unwrap();
-            assert_eq!(plan.trusted_dirs, vec![trusted]);
-        }
-        // phase: a_session_with_no_policy_grants_nothing
-        // A guest with an empty policy sees no host directory. The plan is where
-        // that is decided, so it is where it is asserted.
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let store = Store::at(dir.path().join("ush"));
-            store.ensure().unwrap();
-            let session = Session::new(store, SessionOptions::default());
-            let plan = session
-                .plan(PathBuf::from("/tmp/b.sock"), PathBuf::from("/tmp/f.bpf"))
-                .unwrap();
-            assert!(plan.trusted_dirs.is_empty());
-            assert!(plan.readable_dirs.is_empty());
-        }
+        let resolved = session.resolve().unwrap();
+        assert!(
+            resolved.images[0].0.contains("pandoc"),
+            "{:?}",
+            resolved.images
+        );
+        let tool = &resolved.environment.tools[0];
+        assert_eq!(
+            tool.image(tilo_environment::host_arch()).unwrap(),
+            Some(PackageId::from_bytes([2; 32])),
+            "the image built here is recorded next to the other architecture's"
+        );
+        assert_eq!(
+            tool.image(other).unwrap(),
+            Some(PackageId::from_bytes([5; 32]))
+        );
     }
 
     #[test]
-    fn the_guest_home_and_shell_are_prepared_without_the_real_ones() {
-        // phase: the_guest_home_is_seeded_once_and_not_from_the_real_one
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let home = dir.path().join("home");
-            seed_guest_home(&home).unwrap();
-            let rc = home.join(".bashrc");
-            assert!(rc.is_file());
-            std::fs::write(&rc, b"# edited by the user\n").unwrap();
-            seed_guest_home(&home).unwrap();
-            assert_eq!(
-                std::fs::read_to_string(&rc).unwrap(),
-                "# edited by the user\n",
-                "re-seeding must not overwrite what the user put in their guest home"
-            );
-        }
-        // phase: the_guest_shell_falls_back_rather_than_failing_the_session
-        {
-            let dir = tempfile::tempdir().unwrap();
-            std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
-            std::fs::write(dir.path().join("usr/bin/bash"), b"#!elf").unwrap();
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("SHELL", "/usr/bin/definitely-not-here");
-            assert_eq!(guest_shell(dir.path()), PathBuf::from("/usr/bin/bash"));
-        }
+    fn a_tool_that_cannot_be_used_or_built_stops_the_session_with_the_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = session_in(dir.path());
+        session.resolve().unwrap();
+        let arch = tilo_environment::host_arch();
+        add_tool(&session, "gone", arch, 7);
+        let err = session.resolve().unwrap_err().to_string();
+        assert!(
+            err.contains("is not here") && err.contains("not available"),
+            "{err}"
+        );
+
+        session
+            .records()
+            .apply(
+                DEFAULT_RECORD,
+                Environment::REMOVE_TOOL.with(vec!["gone".into()]),
+            )
+            .unwrap();
+        add_tool(&session, "elsewhere", arch, 9);
+        let err = session.resolve().unwrap_err().to_string();
+        assert!(err.contains("another runtime"), "{err}");
+
+        let mut named = session_in(dir.path());
+        named.opts.environment = Some("work".into());
+        let err = named.resolve().unwrap_err().to_string();
+        assert!(err.contains("no environment"), "{err}");
+    }
+
+    #[test]
+    fn a_one_shot_command_never_restarts_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let interactive = session_in(dir.path());
+        assert!(interactive.restarts_in_place());
+        let mut one_shot = session_in(dir.path());
+        one_shot.opts.command = vec!["/bin/sh".into(), "-c".into(), "restart".into()];
+        assert!(!one_shot.restarts_in_place());
+    }
+
+    #[test]
+    fn the_guest_home_is_seeded_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        seed_guest_home(&home).unwrap();
+        let rc = home.join(".bashrc");
+        assert!(rc.is_file());
+        std::fs::write(&rc, b"# edited by the user\n").unwrap();
+        seed_guest_home(&home).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&rc).unwrap(),
+            "# edited by the user\n"
+        );
+    }
+
+    #[test]
+    fn the_guest_shell_falls_back_rather_than_failing_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
+        std::fs::write(dir.path().join("usr/bin/bash"), b"#!elf").unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("SHELL", "/usr/bin/definitely-not-here");
+        assert_eq!(
+            guest_shell(&[dir.path().to_path_buf()]),
+            PathBuf::from("/usr/bin/bash")
+        );
     }
 
     #[test]

@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ACTION_PATH = ".forgejo/actions/install-cosign"
 CONSUMERS = {
     "build-ci-builder.yml": 2,
-    "build-image.yml": 3,
+    "build-image.yml": 2,
     "build-kernel.yml": 3,
     "build-buildroots.yml": 3,
     "build-rpms.yml": 1,

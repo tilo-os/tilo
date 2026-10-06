@@ -1789,7 +1789,7 @@ mod tests {
                 // require or produce a namespace write.
                 let persisted_namespace_before_transaction = initial_namespace.save();
                 let namespace_path = temp.path().join("namespace.bin");
-                atomic_file::write_creating_parent(
+                tilo_files::native::atomic::write_creating_parent(
                     &namespace_path,
                     &persisted_namespace_before_transaction,
                 )
@@ -2300,7 +2300,11 @@ mod tests {
         };
         assert!(initial_namespace.set_content_revision(ino, &current_revision, 2));
         let namespace_path = temp.path().join("namespace.bin");
-        atomic_file::write_creating_parent(&namespace_path, &initial_namespace.save()).unwrap();
+        tilo_files::native::atomic::write_creating_parent(
+            &namespace_path,
+            &initial_namespace.save(),
+        )
+        .unwrap();
         let namespace = Arc::new(Mutex::new(initial_namespace));
         let history_path = temp.path().join("history.json");
         let history = Arc::new(FileHistoryStore::open(&history_path).unwrap());

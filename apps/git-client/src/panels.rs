@@ -7,9 +7,7 @@
 //! git operation against the live backend.
 
 use vello::kurbo::{Point, Rect};
-use vello::peniko::Color;
 
-use ui::ColorCompat;
 use ui::paint::PaintCtx;
 use ui::text_render::{TextStyle, TextWeight};
 use ui::widget::ButtonFace;
@@ -392,7 +390,7 @@ impl PanelsView {
         let tag_pill = draw::PillStyle {
             size: 12.0,
             fg: c.surfaces.base,
-            bg: Color::from_rgba8(a.r(), a.g(), a.b(), 220),
+            bg: ui::paint::with_alpha(a, 220),
             edge: draw::PillEdge::Bare,
         };
         let mut y = body.y0 + 4.0;

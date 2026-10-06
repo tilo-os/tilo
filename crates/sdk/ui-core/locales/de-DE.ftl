@@ -81,6 +81,7 @@ history-mode-unavailable = Verlauf nicht verfügbar
 history-mode-content-unavailable = Früherer Inhalt nicht verfügbar
 history-mode-back-to-activity = Zurück zur Aktivität
 history-mode-back-to-live = Zurück zur aktuellen Version
+history-mode-earlier = Frühere Änderungen anzeigen
 history-mode-before = Vorher
 history-mode-after = Nachher
 history-mode-showing-before = Frühere Version: Vorher
@@ -246,6 +247,33 @@ close-retry = Erneut versuchen
 close-keep-editing = Weiter bearbeiten
 close-broker-disconnected = Die Verbindung zum Speicherdienst wurde getrennt. Das Dokument ist weiterhin geöffnet.
 terminal-find-scrollback = Im Terminalverlauf suchen
+terminal-target-host = Dieses Gerät (ohne Sandbox)
+terminal-target-default = Standardumgebung
+terminal-target-legacy = Legacy-VM
+terminal-target-manage = Umgebungen verwalten…
+terminal-run-on = Ausführen auf:
+terminal-run-on-this-device = Diesem Gerät
+terminal-host-awaiting-allow = Warte darauf, dass du die eigene Shell dieses Geräts erlaubst
+terminal-host-denied = Die eigene Shell dieses Geräts wurde nicht erlaubt
+terminal-no-runtime-status = Hier kann keine Umgebung starten — Eingabetaste öffnet die eigene Shell dieses Geräts
+terminal-no-runtime-title = Die Umgebung dieses Terminals kann auf diesem Gerät nicht starten.
+terminal-no-runtime-host = Drücke die Eingabetaste, um stattdessen die eigene Shell dieses Geräts zu öffnen (ohne Sandbox; Tilo fragt dich vorher),
+terminal-no-runtime-picker = oder wähle oben in diesem Tab im Zielmenü einen anderen Ort.
+terminal-no-runtime-install = Eine Umgebung braucht ein env-runtime-Image: aktualisiere Tilo oder installiere eines aus dem App Store.
+terminal-env-title = Umgebungen
+terminal-env-tools = Werkzeuge
+terminal-env-no-tools = Noch keine Werkzeuge — pkg install in der Umgebung ausführen
+terminal-env-grants = Ordner
+terminal-env-no-grants = Noch keine Ordner freigegeben — „Ordner freigeben…“ verwenden oder perm trust-dir in der Umgebung ausführen
+terminal-env-grant = Ordner freigeben…
+terminal-env-grant-title = Ordner für diese Umgebung wählen
+terminal-env-grant-accept = Freigeben
+terminal-env-read-only = nur lesen
+terminal-env-rename = Umbenennen
+terminal-env-open = Hier öffnen
+terminal-env-create = Erstellen
+terminal-env-name-placeholder = Name einer neuen Umgebung
+terminal-env-unavailable = Umgebungen werden über Tilos Shell-Laufzeit verwaltet, die hier nicht läuft.
 
 notes-image-edit = Bild bearbeiten
 notes-image-done = Fertig
@@ -278,10 +306,11 @@ tree-move-down = Nach unten verschieben
 tree-move-indent = In das Element darüber verschieben
 tree-move-outdent = Aus dem übergeordneten Element verschieben
 
+# The show/hide control inside every password field.
+text-input-show-password = Passwort anzeigen
+text-input-hide-password = Passwort verbergen
+
 # Authentication surfaces share the system theme and catalog.
-greeter-welcome-back = Willkommen zurück bei Tilo
-greeter-sign-in = Zum Fortfahren anmelden
-greeter-passcode-intro = Gib deinen Code ein, um deinen Desktop zu öffnen.
 lock-welcome-back = Willkommen zurück
 
 # Now playing: Quick Settings and the lock screen.
@@ -384,3 +413,22 @@ palette-result-count = { $count ->
 palette-empty = Nichts anzuzeigen
 palette-no-results = Keine Ergebnisse für „{ $query }“
 palette-no-results-hint = Weniger Wörter versuchen oder den Bereich erweitern
+
+# Kalender-Abschnitte in der Arbeitsbereich-Aktivität.
+history-day-today = Heute
+history-day-yesterday = Gestern
+history-day-this-week = Diese Woche
+history-day-earlier = Früher
+
+widget-block-duplicate = Block mit Unterelementen duplizieren
+
+widget-block-duplicate-selection = Ausgewählte oder fokussierte Blöcke duplizieren
+
+widget-block-move-selection-up = Ausgewählte Blöcke nach oben verschieben
+widget-block-move-selection-down = Ausgewählte Blöcke nach unten verschieben
+
+block-editor-replace-placeholder = Ersetzen durch
+block-editor-replace = Ersetzen
+
+block-editor-replace-all = Alle ersetzen
+block-editor-replace-all-help = Alle ersetzen — Umschalt+Enter im Ersetzungsfeld

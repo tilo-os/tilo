@@ -6,7 +6,7 @@
 //! Callers push `MenuItem::action(label, fn)` and optional
 //! `MenuItem::separator()` entries, then call `open_at` on right-click.
 
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::sync::Arc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -40,6 +40,9 @@ pub enum MenuItem {
         destructive: bool,
         /// Disabled rows remain visible and announced but cannot be invoked.
         enabled: bool,
+        /// The keys that do the same, shown at the row's end (`Ctrl+D`),
+        /// so a menu teaches its shortcuts.
+        shortcut: Option<String>,
     },
     Separator,
 }
@@ -69,6 +72,7 @@ impl MenuItem {
             checked: None,
             destructive: false,
             enabled: true,
+            shortcut: None,
         }
     }
 
@@ -85,6 +89,7 @@ impl MenuItem {
             checked: None,
             destructive: false,
             enabled: true,
+            shortcut: None,
         }
     }
 
@@ -103,6 +108,7 @@ impl MenuItem {
             checked: None,
             destructive: true,
             enabled: true,
+            shortcut: None,
         }
     }
 
@@ -119,6 +125,24 @@ impl MenuItem {
             *item_icon = Some(icon);
         }
         self
+    }
+
+    /// The keys that do the same, shown at the row's end.
+    #[must_use]
+    pub fn with_shortcut(mut self, keys: impl Into<String>) -> Self {
+        if let MenuItem::Action { shortcut, .. } = &mut self {
+            let keys: String = keys.into();
+            *shortcut = (!keys.is_empty()).then_some(keys);
+        }
+        self
+    }
+
+    /// The keys shown at the row's end, if any.
+    pub fn shortcut(&self) -> Option<&str> {
+        match self {
+            MenuItem::Action { shortcut, .. } => shortcut.as_deref(),
+            MenuItem::Separator => None,
+        }
     }
 
     /// Set whether this command can currently be invoked.
@@ -147,6 +171,7 @@ impl MenuItem {
             checked: Some(checked),
             destructive: false,
             enabled: true,
+            shortcut: None,
         }
     }
 
@@ -373,7 +398,12 @@ impl ContextMenu {
                 } else {
                     0.0
                 };
-                width = width.max(f64::from(w) + check_width);
+                // A shortcut sits at the row's end, a gap after the label.
+                let keys = item.shortcut().map_or(0.0, |keys| {
+                    let (k, _) = text.measure_style(keys, None, &style);
+                    f64::from(k) + f64::from(theme.tokens.spacing.s6)
+                });
+                width = width.max(f64::from(w) + check_width + keys);
                 height = height.max(f64::from(h));
             }
         }
@@ -828,6 +858,7 @@ impl Widget for ContextMenu {
                     checked,
                     destructive,
                     enabled,
+                    shortcut,
                     ..
                 } => {
                     // The row Enter / a click would activate. Painted the way
@@ -897,10 +928,35 @@ impl Widget for ContextMenu {
                     } else {
                         label_x
                     };
+                    // The shortcut at the row's end, quieter than the label
+                    // unless the row is armed; the label gives way to it.
+                    let mut label_end = self.rect.x1 - label_inset(theme);
+                    if let Some(keys) = shortcut {
+                        let (keys_width, keys_height) =
+                            text_renderer.measure_style(keys, None, &style);
+                        let keys_x = label_end - f64::from(keys_width);
+                        let keys_ink = if armed || !*enabled {
+                            ink
+                        } else {
+                            theme.tokens.colors.text_dim
+                        };
+                        text_renderer.draw_style(
+                            scene,
+                            keys,
+                            keys_ink,
+                            transform.pre_translate(Vec2::new(
+                                keys_x,
+                                y + (row_height - f64::from(keys_height)) / 2.0,
+                            )),
+                            None,
+                            &style,
+                        );
+                        label_end = keys_x - f64::from(theme.tokens.spacing.s4);
+                    }
                     let label = text_renderer.elide_to_width(
                         label,
                         style.size,
-                        (self.rect.x1 - label_x - label_inset(theme)).max(1.0) as f32,
+                        (label_end - label_x).max(1.0) as f32,
                     );
                     let (_, label_height) = text_renderer.measure_style(&label, None, &style);
                     let label_y = y + (row_height - f64::from(label_height)) / 2.0;
@@ -1131,7 +1187,7 @@ impl Widget for ContextMenu {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !self.open || !matches!(action, crate::a11y::Action::Activate) {
@@ -1331,7 +1387,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1505,7 +1561,7 @@ mod tests {
                 &mut menu,
                 "context-menu:item:2",
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(fired.load(Ordering::SeqCst), 100);
@@ -1522,7 +1578,7 @@ mod tests {
                 &mut menu,
                 "context-menu:item:2",
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(fired.load(Ordering::SeqCst), 0);

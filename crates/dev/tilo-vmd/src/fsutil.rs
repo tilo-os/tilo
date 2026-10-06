@@ -11,7 +11,7 @@ use crate::error::DaemonError;
 /// # Errors
 /// I/O failures.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
-    atomic_file::write_creating_parent(path, bytes)
+    tilo_files::native::atomic::write_creating_parent(path, bytes)
         .map_err(DaemonError::io(format!("write {}", path.display())))
 }
 

@@ -23,9 +23,7 @@ fn program(replica: &Replica<Workbench>) -> Program {
         .values()
         .next()
         .unwrap()
-        .program
-        .0
-        .clone()
+        .program()
 }
 
 fn with_draft() -> (Replica<Workbench>, Id) {
@@ -158,4 +156,78 @@ fn inputs_are_declared_once_and_a_saved_shortcut_reopens_as_a_draft() {
     assert_eq!(reopened.len(), 1);
     assert_eq!(reopened[0].shortcut_id, saved.id);
     assert_eq!(reopened[0].shortcut(Vec::new()), saved);
+}
+
+#[test]
+fn concurrent_edits_to_different_parts_of_one_draft_all_survive() {
+    let (mut here, id) = with_draft();
+    for action in ["list", "create"] {
+        here.apply(Workbench::ADD_STEP.with((id.clone(), String::new(), invoke(action))))
+            .unwrap();
+    }
+    here.apply(Workbench::ADD_STEP.with((
+        id.clone(),
+        String::new(),
+        json!({"step": "if", "cond": {"truthy": {"literal": true}}, "then": []}),
+    )))
+    .unwrap();
+    let mut there = here.fork();
+
+    // Here: bind an argument of the first step, add an input and a step
+    // inside the branch.
+    here.apply(Workbench::SET_ARGUMENT.with((
+        id.clone(),
+        "0".into(),
+        "folder".into(),
+        json!({"literal": "inbox"}).to_string(),
+    )))
+    .unwrap();
+    here.apply(Workbench::ADD_INPUT.with((id.clone(), "who".into(), "text".into())))
+        .unwrap();
+    here.apply(Workbench::ADD_STEP.with((id.clone(), "2.then".into(), invoke("archive"))))
+        .unwrap();
+    // There: bind an argument of the second step, move it first, and bind
+    // another argument of the first step.
+    there
+        .apply(Workbench::SET_ARGUMENT.with((
+            id.clone(),
+            "1".into(),
+            "title".into(),
+            json!({"literal": "Weekly"}).to_string(),
+        )))
+        .unwrap();
+    there
+        .apply(Workbench::MOVE_STEP.with((id.clone(), "1".into(), true)))
+        .unwrap();
+    there
+        .apply(Workbench::SET_ARGUMENT.with((
+            id,
+            "1".into(),
+            "limit".into(),
+            json!({"literal": 3}).to_string(),
+        )))
+        .unwrap();
+
+    here.sync_with(&mut there).unwrap();
+    let merged = program(&here);
+    assert_eq!(merged, program(&there), "both replicas converge");
+    let ids: Vec<_> = merged.steps.iter().map(|step| step.id.as_str()).collect();
+    assert_eq!(ids, ["create", "list", "if"], "the move survives");
+    let StepKind::Invoke { args, .. } = &merged.steps[0].kind else {
+        panic!("an action")
+    };
+    assert_eq!(args["title"], Binding::Literal(json!("Weekly")));
+    let StepKind::Invoke { args, .. } = &merged.steps[1].kind else {
+        panic!("an action")
+    };
+    assert_eq!(
+        args.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["folder", "limit"],
+        "two people binding arguments of the same step both keep theirs"
+    );
+    let StepKind::If { then, .. } = &merged.steps[2].kind else {
+        panic!("an if block")
+    };
+    assert_eq!(then[0].id, "archive");
+    assert_eq!(merged.inputs[0].name, "who");
 }

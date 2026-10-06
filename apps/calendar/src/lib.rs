@@ -7,8 +7,7 @@
 //! task using the SDK rich-text editor.
 //!
 //! State lives in the Automerge CRDT (`doc`), interop is via iCalendar
-//! (`ics`), and `app_root()` is the single integration point used by both
-//! the live event loop and the `--shots` offscreen renderer.
+//! (`ics`), and [`CalendarShell`] is the app every host runs.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -41,6 +40,7 @@ mod agenda;
 pub mod app;
 pub mod caldav;
 pub mod date;
+pub mod display;
 pub mod doc;
 mod draw_util;
 mod event_popovers;
@@ -49,13 +49,14 @@ mod input_context;
 mod metrics;
 mod mini_month;
 pub mod model;
-pub mod search_provider;
+mod outbox;
+pub mod resource;
 mod sidebar;
-pub mod store;
 mod timeline_interaction;
 mod timeline_viewport;
 pub mod timezone;
 mod topbar;
+mod tree;
 
 pub use account::{AccountStore, CalDavConfig, CalendarAccount, RemoteCalendar};
 pub use app::CalendarApp;
@@ -63,25 +64,9 @@ pub use model::{
     Attendee, Event, InviteStatus, Model, OccurrenceOverride, Priority, Project, Recurrence, Task,
     View,
 };
+pub use resource::{Calendar, CalendarShell};
 
-use ui::widget::Widget;
-
-/// Build the live app: it loads the user's persisted calendar (empty on a
-/// fresh machine) and any accounts configured in Settings. No sample data.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(CalendarApp::new())
-}
-
-/// The app as every host mounts it: the live root and its actions.
+/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::launch::LaunchSpec::new("so.tilo.calendar", app_root)
-        .component_actions(actions::register)
-        .as_definition("Calendar")
-}
-
-/// Build a fully-populated app for the hermetic `--shots` / test path. This
-/// is the ONLY place sample events, tasks and calendar accounts come from —
-/// the live app never fabricates content.
-pub fn app_root_demo() -> Box<dyn Widget> {
-    Box::new(CalendarApp::new_demo())
+    ui::framework::definition::<CalendarShell>()
 }

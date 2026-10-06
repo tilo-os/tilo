@@ -26,8 +26,8 @@ use sctk::subcompositor::SubcompositorState;
 use crate::platform_impl::wayland::event_loop::sink::EventSink;
 use crate::platform_impl::wayland::output::MonitorHandle;
 use crate::platform_impl::wayland::seat::{
-    PointerConstraintsState, PointerGesturesState, RelativePointerState, TextInputState,
-    WinitPointerData, WinitPointerDataExt, WinitSeatState,
+    PointerConstraintsState, PointerGesturesState, RelativePointerState, TabletState,
+    TextInputState, WinitPointerData, WinitPointerDataExt, WinitSeatState,
 };
 use crate::platform_impl::wayland::types::kwin_blur::KWinBlurManager;
 use crate::platform_impl::wayland::types::wp_fractional_scaling::FractionalScalingManager;
@@ -47,6 +47,8 @@ pub struct WinitState {
 
     /// The compositor state which is used to create new windows and regions.
     pub compositor_state: Arc<CompositorState>,
+
+    pub presentation: Option<Arc<super::types::wp_presentation::PresentationState>>,
 
     /// The state of the subcompositor.
     pub subcompositor_state: Option<Arc<SubcompositorState>>,
@@ -102,6 +104,9 @@ pub struct WinitState {
 
     /// Pointer constraints to handle pointer locking and confining.
     pub pointer_constraints: Option<Arc<PointerConstraintsState>>,
+
+    /// Pen tablets.
+    pub tablet: Option<TabletState>,
 
     /// Viewporter state on the given window.
     pub viewporter_state: Option<ViewporterState>,
@@ -188,6 +193,8 @@ impl WinitState {
         Ok(Self {
             registry_state,
             compositor_state: Arc::new(compositor_state),
+            presentation: super::types::wp_presentation::PresentationState::bind(globals, queue_handle)
+                .ok().map(Arc::new),
             subcompositor_state: subcompositor_state.map(Arc::new),
             output_state,
             seat_state,
@@ -213,6 +220,7 @@ impl WinitState {
             pointer_constraints: PointerConstraintsState::new(globals, queue_handle)
                 .map(Arc::new)
                 .ok(),
+            tablet: TabletState::new(globals, queue_handle).ok(),
             pointer_surfaces: Default::default(),
 
             monitors: Arc::new(Mutex::new(monitors)),

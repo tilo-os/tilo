@@ -24,6 +24,7 @@ api-tester = { path = "../../../apps/api-tester" }
 calculator = { path = "../../../apps/calculator" }
 calendar = { path = "../../../apps/calendar" }
 camera = { path = "../../../apps/camera" }
+canvas = { path = "../../../apps/canvas" }
 chat = { path = "../../../apps/chat", default-features = false, features = [] }
 clocks = { path = "../../../apps/clocks" }
 contacts = { path = "../../../apps/contacts" }
@@ -31,7 +32,6 @@ diffmerge = { path = "../../../apps/diffmerge" }
 ebook = { path = "../../../apps/ebook" }
 feeds = { path = "../../../apps/feeds" }
 hex-editor = { path = "../../../apps/hex-editor" }
-image-editor = { path = "../../../apps/image-editor" }
 maps = { path = "../../../apps/maps" }
 music = { path = "../../../apps/music", default-features = false, features = [] }
 notes = { path = "../../../apps/notes" }

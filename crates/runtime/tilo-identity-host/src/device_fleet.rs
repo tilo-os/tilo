@@ -125,7 +125,7 @@ impl DeviceFleetStore {
             .parent()
             .and_then(std::path::Path::parent)
         {
-            let registry = root.join("home-peers.json");
+            let registry = tilo_relay_protocol::home_peer_registry_path(root);
             if let Ok(metadata) = fs::metadata(&registry)
                 && metadata.len() <= 1024 * 1024
             {
@@ -327,6 +327,100 @@ impl DeviceFleetStore {
         Ok(entry)
     }
 
+    /// The fleet of `identity_id` as a verifier sees it: every certificate
+    /// and revocation it holds, each checked again.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::load`], or when a stored record is not the identity's.
+    pub fn certified_fleet(
+        &self,
+        identity_id: &str,
+        user_public_key: [u8; 32],
+    ) -> io::Result<tilo_user_identity::CertifiedFleet> {
+        let fleet = self.load(identity_id)?;
+        let mut certified = tilo_user_identity::CertifiedFleet::new(user_public_key);
+        for cert in fleet.certificates {
+            if cert.user_public_key == user_public_key {
+                certified
+                    .certify(cert)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            }
+        }
+        for entry in fleet.revocations {
+            if entry.user_public_key == user_public_key {
+                certified
+                    .revoke(entry)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            }
+        }
+        Ok(certified)
+    }
+
+    /// Certify a disk-unlock boot key for an enrolled, unrevoked device of
+    /// `identity_id`: the root signs `cert` in place.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the identity cannot sign, the certificate names
+    /// another root, or the device is not an unrevoked member of the fleet.
+    pub fn certify_boot_key(
+        &self,
+        identity_id: &str,
+        cert: &mut tilo_unlock_protocol::BootKeyCert,
+    ) -> io::Result<()> {
+        let (root, profile) = self.identity(identity_id)?;
+        let fleet = self.load(identity_id)?;
+        if cert.user_public_key != profile.user_public_key
+            || fleet.is_revoked(&cert.device_public_key)
+            || !fleet
+                .certificates
+                .iter()
+                .any(|enrolled| enrolled.device_public_key == cert.device_public_key)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "the device is not an unrevoked member of this identity's fleet",
+            ));
+        }
+        let digest = cert
+            .signing_digest()
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        cert.signature = root
+            .sign(&digest)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        cert.verify()
+            .map_err(|error| io::Error::other(error.to_string()))
+    }
+
+    /// Sign the digest of an owner-only disk-unlock setting (a device's
+    /// auto-approval) with the root of `identity_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the identity cannot sign.
+    pub fn sign_unlock_setting(
+        &self,
+        identity_id: &str,
+        digest: &[u8; 32],
+    ) -> io::Result<[u8; 64]> {
+        let (root, _) = self.identity(identity_id)?;
+        root.sign(digest)
+            .map_err(|error| io::Error::other(error.to_string()))
+    }
+
+    /// The person's secret-sync key, when this device holds the root of
+    /// `identity_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the identity cannot be loaded or holds no root.
+    pub fn secret_sync_key(&self, identity_id: &str) -> io::Result<tilo_seal::SecretKey> {
+        let (root, _) = self.identity(identity_id)?;
+        root.secret_sync_key()
+            .map_err(|error| io::Error::other(error.to_string()))
+    }
+
     fn validate_issuer(
         token: &EnrollmentToken,
         user_key: &[u8; 32],
@@ -424,7 +518,7 @@ impl DeviceFleetStore {
         let path = self.path(&fleet.identity_id);
         let bytes = serde_json::to_vec_pretty(fleet)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        atomic_file::write_creating_parent(&path, &bytes)
+        tilo_files::native::atomic::write_creating_parent(&path, &bytes)
     }
 
     fn lock_fleets(&self) -> io::Result<advisory_lock::FileLock> {

@@ -336,6 +336,29 @@ def complete_plan(request, additions):
             "target_partitions": final}
 
 
+def request_from_allocated_snapshot(snapshot, c_volume, root_gib):
+    """Recover the reviewed request from an exact completed allocation.
+
+    This reconstructs the four-partition pre-shrink map only in memory. The
+    resulting request must reproduce all seven live extents and GPT types
+    through the same derivation and classifier used by `execute`.
+    """
+    rows = normalized(snapshot.get("partitions"))
+    require(len(rows) == 7 and [r["type_guid"] for r in rows] == [
+        stage.ESP_GUID, MSR_GUID, direct.WINDOWS_DATA_GUID,
+        stage.ESP_GUID, stage.LINUX_GUID, stage.TILO_ROOT_GUID, WINRE_GUID,
+    ], "expected the exact Windows plus three Tilo partition layout")
+    require(root_gib in (32, 45), "root size must be 32 or 45 GiB")
+    before = [dict(row) for row in (*rows[:3], rows[6])]
+    before[2]["size_bytes"] += (root_gib + 3) * GIB
+    before[3]["number"] = 4
+    original = {**snapshot, "partitions": before}
+    request = request_from_snapshot(original, c_volume, root_gib)
+    state, additions = classify(request, snapshot)
+    require(state == "complete", "live allocation differs from reconstructed request")
+    return request, complete_plan(request, additions)
+
+
 def prepare(args):
     c = windows_c_and_recovery()
     snapshot = stage.snapshot(c["disk"])
@@ -343,6 +366,20 @@ def prepare(args):
     check_gpt(snapshot)
     stage.atomic_json(args.output, request)
     print(f"read-only allocation request: {args.output}")
+
+
+def recover(args):
+    """Read-only recovery when allocation completed but its request was lost."""
+    require(args.request_output != args.plan_output, "request and plan paths must differ")
+    c = windows_c_and_recovery()
+    snapshot = stage.snapshot(c["disk"])
+    request, plan = request_from_allocated_snapshot(snapshot, c, args.root_gib)
+    check_gpt(snapshot)
+    check_c_state(request, c)
+    check_free_space(request, c, "complete")
+    stage.atomic_json(args.request_output, request)
+    stage.atomic_json(args.plan_output, plan)
+    print(f"read-only recovered allocation: {args.request_output} {args.plan_output}")
 
 
 def inspect(args):
@@ -419,6 +456,11 @@ def main(argv=None):
     prepare_command.add_argument("--root-gib", type=int, choices=(32, 45), required=True)
     prepare_command.add_argument("--output", type=Path, required=True)
     prepare_command.set_defaults(handler=prepare)
+    recover_command = commands.add_parser("recover", help="read-only exact request and plan from completed allocation")
+    recover_command.add_argument("--root-gib", type=int, choices=(32, 45), required=True)
+    recover_command.add_argument("--request-output", type=Path, required=True)
+    recover_command.add_argument("--plan-output", type=Path, required=True)
+    recover_command.set_defaults(handler=recover)
     verify_command = commands.add_parser("verify", help="read-only GPT and partition-state check")
     verify_command.add_argument("--request", type=Path, required=True)
     verify_command.add_argument("--output", type=Path, help="write realized plan only when allocation is complete")

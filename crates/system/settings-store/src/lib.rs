@@ -22,6 +22,16 @@
 //! into different binaries shipping at different times, and a writer that serialised its own
 //! view would silently drop sections it didn't know about.
 //!
+//! # Who holds the truth
+//!
+//! In a session the file is a copy. The shell keeps the person's record and
+//! the device's record ([`SessionSettings`]), reads and writes them through
+//! the installed [`SettingsSource`], and rewrites `settings.json` after every
+//! change for the processes that read it instead. Their section writes keep
+//! working: the session takes them in from the copy. A sandboxed app sees
+//! neither: it asks the shell, which answers with the part of the records
+//! [`app_scope`] gives that app.
+//!
 //! # Reading is always forgiving
 //!
 //! A missing file, unreadable file, malformed JSON, a section of the wrong type, or a value
@@ -45,6 +55,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+pub mod app_scope;
 pub mod continuity;
 pub mod day_schedule;
 pub mod display_identify;
@@ -55,12 +66,17 @@ pub mod keyboard_shortcuts;
 pub mod magnifier;
 pub mod notification_policy;
 pub mod roaming_provenance;
+mod session;
 mod source;
 pub mod system_sounds;
 #[cfg(feature = "watch")]
 pub mod watch;
 
-pub use source::{HostDocument, SettingsSource, install_source, installed_source, merge_section};
+pub use session::{SessionPaths, SessionSettings};
+pub use source::{
+    ChangeSignal, HostDocument, Listener, SettingsSource, install_source, installed_source,
+    merge_section,
+};
 
 /// The file name under the Tilo config root.
 const FILE: &str = "settings.json";
@@ -92,9 +108,17 @@ pub fn config_path(relative: &Path) -> Option<PathBuf> {
     Some(config_root()?.join(relative))
 }
 
-/// The shared settings file: `<config root>/settings.json`.
+/// Env a sandbox sets when the session `settings.json` is bound at a path
+/// other than the remapped `$XDG_CONFIG_HOME`. Empty is ignored.
+pub const SESSION_SETTINGS_ENV: &str = "TILO_SESSION_SETTINGS";
+
+/// The shared settings file: `<config root>/settings.json`, or the session
+/// document named by [`SESSION_SETTINGS_ENV`] when a sandbox remapped XDG.
 pub fn settings_path() -> Option<PathBuf> {
-    config_path(Path::new(FILE))
+    match std::env::var_os(SESSION_SETTINGS_ENV) {
+        Some(path) if !path.is_empty() => Some(PathBuf::from(path)),
+        _ => config_path(Path::new(FILE)),
+    }
 }
 
 /// Read and parse the whole document. Returns an empty object for a missing, unreadable or
@@ -119,13 +143,31 @@ pub enum SettingsStamp {
     Revision(u64),
 }
 
+/// Whether a poller that last observed `cached` must parse the document again.
+///
+/// The first observation (`seen == false`) loads even when both stamps are
+/// `None` (no file yet). Later polls skip the parse while the stamp holds,
+/// so an idle shell does not re-read an unchanged settings document.
+pub fn document_changed(
+    seen: bool,
+    cached: Option<SettingsStamp>,
+    current: Option<SettingsStamp>,
+) -> bool {
+    !seen || cached != current
+}
+
 /// The current [`SettingsStamp`]: the installed source's revision, else the file's
 /// modification time. `None` when there is no readable file.
 pub fn stamp() -> Option<SettingsStamp> {
     if let Some(source) = installed_source() {
         return Some(SettingsStamp::Revision(source.revision()));
     }
-    let modified = std::fs::metadata(settings_path()?).ok()?.modified().ok()?;
+    stamp_at(&settings_path()?)
+}
+
+/// [`stamp`] of the document at `path`, ignoring any installed source.
+pub fn stamp_at(path: &Path) -> Option<SettingsStamp> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
     Some(SettingsStamp::Modified(modified))
 }
 
@@ -239,8 +281,35 @@ pub fn update_section_at(
     name: &str,
     values: Map<String, Value>,
 ) -> std::io::Result<()> {
+    update_document_at(path, |doc| merge_section(doc, name, values))
+}
+
+/// Read the document at `path`, let `change` edit it, and replace it, all
+/// under the file's lock. For a writer that owns several sections at once;
+/// one that writes a section uses [`update_section_at`].
+///
+/// A session keeps its records behind the file and takes in what other
+/// writers change in it ([`SessionSettings`]); the lock keeps each read,
+/// change and replace whole. With no directory yet there is no session copy
+/// to share and nothing to lock.
+///
+/// # Errors
+///
+/// The file cannot be locked, or the document can't be serialised or
+/// written.
+pub fn update_document_at(
+    path: &Path,
+    change: impl FnOnce(&mut Map<String, Value>),
+) -> std::io::Result<()> {
+    let _lock = match path.parent() {
+        Some(dir) if dir.is_dir() => Some(advisory_lock::FileLock::open(
+            &session::lock_path(path),
+            advisory_lock::LockMode::Exclusive,
+        )?),
+        _ => None,
+    };
     let mut doc = load_at(path);
-    merge_section(&mut doc, name, values);
+    change(&mut doc);
     write_atomic(path, &Value::Object(doc))
 }
 
@@ -290,6 +359,19 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TMPDIR_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn an_unchanged_settings_stamp_does_not_parse_again() {
+        let stamp = SettingsStamp::Revision(1);
+        assert!(document_changed(false, None, None));
+        assert!(!document_changed(true, None, None));
+        assert!(!document_changed(true, Some(stamp), Some(stamp)));
+        assert!(document_changed(
+            true,
+            Some(stamp),
+            Some(SettingsStamp::Revision(2))
+        ));
+    }
 
     #[test]
     fn a_hand_started_test_harness_never_writes_the_callers_settings() {
@@ -392,6 +474,19 @@ mod tests {
                     home.as_deref().map(Path::as_os_str),
                 )
             );
+        }
+        // Phase `a_session_settings_env_wins_over_the_remapped_xdg_root`.
+        {
+            let session = tmpdir();
+            let xdg = tmpdir();
+            let session_file = session.join("settings.json");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_CONFIG_HOME", &xdg)
+                .set(SESSION_SETTINGS_ENV, &session_file);
+            assert_eq!(settings_path(), Some(session_file));
+            drop(env);
+            let _ = std::fs::remove_dir_all(&session);
+            let _ = std::fs::remove_dir_all(&xdg);
         }
     }
 
@@ -576,16 +671,16 @@ mod tests {
 #[cfg(all(test, unix))]
 mod parent_durability_tests {
     use super::*;
-    use atomic_file::test_support::{
+    use std::{cell::RefCell, rc::Rc};
+    use tilo_files::native::atomic::test_support::{
         ProvisionCheckpoint, with_provision_failure, with_provision_observer,
     };
-    use atomic_file::{DirectoryState, directory_state};
-    use std::{cell::RefCell, rc::Rc};
+    use tilo_files::native::atomic::{DirectoryState, directory_state};
 
     #[test]
     fn public_update_preserves_file_publication_phase_and_visible_format() {
-        use atomic_file::test_support::{Checkpoint, with_failure};
-        use atomic_file::{PublicationState, publication_state};
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
+        use tilo_files::native::atomic::{PublicationState, publication_state};
         for (point, state, visible) in [
             (
                 Checkpoint::BeforePublish,

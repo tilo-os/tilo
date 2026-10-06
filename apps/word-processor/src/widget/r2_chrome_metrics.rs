@@ -12,6 +12,7 @@
 use super::tests::{mount, mount_themed};
 use super::*;
 use ui::headless::Framed;
+use ui::widget::Edits;
 
 fn overlaps(a: Rect, b: Rect) -> bool {
     let i = a.intersect(b);
@@ -39,10 +40,11 @@ fn panel_and_bar_controls_follow_their_measured_labels() {
     {
         for scale in [1.0_f32, 2.0] {
             let theme = Theme::dark().with_text_scale(scale);
-            let mut state = ui::State::new();
-            let mut wp = WordProcessorWidget::new();
-            wp.sync(&mut state.doc, &state.root);
-            wp.model_mut().insert_str(&mut state.doc, "Panel rows");
+            let mut state = crate::initialized_state();
+            let mut wp = WordProcessorWidget::detached();
+            wp.sync(&state.doc, &state.root);
+            wp.model_mut()
+                .insert_str(&mut Edits::lend(&mut state.doc), "Panel rows");
             wp.set_styles_panel_open(true);
             let mut framed = mount_themed(state, wp, 1400, 900, &theme);
             let (wp, _) = Framed::split(&mut framed);
@@ -137,18 +139,20 @@ fn panel_and_bar_controls_follow_their_measured_labels() {
     {
         for scale in [1.0_f32, 2.0] {
             let theme = Theme::dark().with_text_scale(scale);
-            let mut state = ui::State::new();
-            let mut wp = WordProcessorWidget::new();
-            wp.sync(&mut state.doc, &state.root);
-            wp.model_mut()
-                .insert_str(&mut state.doc, "A report about the report");
+            let mut state = crate::initialized_state();
+            let mut wp = WordProcessorWidget::detached();
+            wp.sync(&state.doc, &state.root);
+            wp.model_mut().insert_str(
+                &mut Edits::lend(&mut state.doc),
+                "A report about the report",
+            );
             wp.stage_find_for_shot(&state.doc, "report");
             let mut framed = mount_themed(state, wp, 1200, 800, &theme);
             let (wp, _) = Framed::split(&mut framed);
             let rects = wp.find.button_rects();
             assert_eq!(rects.len(), 10, "find, 3 toggles, replace, 5 actions");
             let bar_h = wp.find.height();
-            let bar_top = wp.rect.y0 + wp.toolbar_height(wp.rect.width()) + wp.recovery.height();
+            let bar_top = wp.rect.y0 + wp.toolbar_height(wp.rect.width());
             let mut tr = renderer(scale);
             let lh_action = f64::from(tr.measure("Ag", 13.0, None).1);
             assert!(
@@ -221,10 +225,11 @@ fn panel_and_bar_controls_follow_their_measured_labels() {
     {
         for scale in [1.0_f32, 2.0] {
             let theme = Theme::dark().with_text_scale(scale);
-            let mut state = ui::State::new();
-            let mut wp = WordProcessorWidget::new();
-            wp.sync(&mut state.doc, &state.root);
-            wp.model_mut().insert_str(&mut state.doc, "chips");
+            let mut state = crate::initialized_state();
+            let mut wp = WordProcessorWidget::detached();
+            wp.sync(&state.doc, &state.root);
+            wp.model_mut()
+                .insert_str(&mut Edits::lend(&mut state.doc), "chips");
             let mut framed = mount_themed(state, wp, 1000, 700, &theme);
             let (wp, _) = Framed::split(&mut framed);
             let mut tr = renderer(scale);
@@ -283,17 +288,19 @@ fn two_x_chrome_is_reserved_packed_and_never_overlapping() {
             69, 78, 68, 174, 66, 96, 130,
         ];
         let theme = Theme::dark().with_text_scale(2.0);
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
-        wp.sync(&mut state.doc, &state.root);
-        wp.model_mut().insert_str(&mut state.doc, "Picture");
-        wp.model_mut().enter(&mut state.doc);
-        wp.model_mut().insert_image_bytes(&mut state.doc, PNG);
-        wp.sync(&mut state.doc, &state.root);
-        let image = qdoc::model::open(&state.doc, &state.root)
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
+        wp.sync(&state.doc, &state.root);
+        wp.model_mut()
+            .insert_str(&mut Edits::lend(&mut state.doc), "Picture");
+        wp.model_mut().enter(&mut Edits::lend(&mut state.doc));
+        wp.model_mut()
+            .insert_image_bytes(&mut Edits::lend(&mut state.doc), PNG);
+        wp.sync(&state.doc, &state.root);
+        let image = tilo_doc::model::open(&state.doc, &state.root)
             .ok()
             .and_then(|c| {
-                qdoc::model::materialize(&state.doc, &c)
+                tilo_doc::model::materialize(&state.doc, &c)
                     .blocks
                     .into_iter()
                     .find(|b| b.kind == "image")
@@ -410,10 +417,11 @@ fn two_x_chrome_is_reserved_packed_and_never_overlapping() {
     // path (`--shots` geometry), and the page never starts under the toolbar.
     {
         let theme = Theme::dark().with_text_scale(2.0);
-        let mut state = ui::State::new();
-        let mut wp = WordProcessorWidget::new();
-        wp.sync(&mut state.doc, &state.root);
-        wp.model_mut().insert_str(&mut state.doc, "Large text");
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
+        wp.sync(&state.doc, &state.root);
+        wp.model_mut()
+            .insert_str(&mut Edits::lend(&mut state.doc), "Large text");
         wp.set_styles_panel_open(true);
         let mut framed = mount_themed(state, wp, 800, 900, &theme);
         let (wp, _) = Framed::split(&mut framed);
@@ -433,9 +441,9 @@ fn two_x_chrome_is_reserved_packed_and_never_overlapping() {
             "panel ends above the layout bar"
         );
         // And the same document at 1× draws the classic density.
-        let mut wp1 = WordProcessorWidget::new();
-        let mut state1 = ui::State::new();
-        wp1.sync(&mut state1.doc, &state1.root);
+        let mut wp1 = WordProcessorWidget::detached();
+        let state1 = crate::initialized_state();
+        wp1.sync(&state1.doc, &state1.root);
         let mut framed_wp1 = mount(state1, wp1, 800, 900);
         let (wp1, _) = Framed::split(&mut framed_wp1);
         assert!((wp1.toolbar_row_height - TOOLBAR_H).abs() < 0.01);

@@ -51,6 +51,7 @@ fn hello_manifest(payload_root: &Path, services: BTreeMap<String, String>) -> Mi
         version: "0.0.0".to_string(),
         kind: "app".to_string(),
         runtime: None,
+        optional_runtimes: Vec::new(),
         entrypoint: Entrypoint {
             bin: "bin/hello".to_string(),
             r#type: launcher::manifest::EntrypointType::Gui,
@@ -435,6 +436,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
             version: "0.0.0".to_string(),
             kind: "app".to_string(),
             runtime: Some("tilo-runtime/smoke-1.0.0".to_string()),
+            optional_runtimes: Vec::new(),
             entrypoint: Entrypoint {
                 bin: "bin/hello".to_string(),
                 r#type: launcher::manifest::EntrypointType::Gui,
@@ -559,6 +561,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
             version: "0.1.0".to_string(),
             kind: "app".to_string(),
             runtime: Some(format!("tilo-runtime/{version}")),
+            optional_runtimes: Vec::new(),
             entrypoint: Entrypoint {
                 bin: "bin/thin".to_string(),
                 r#type: launcher::manifest::EntrypointType::Cli,
@@ -618,6 +621,62 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
                 && w[1] == "LD_LIBRARY_PATH"
                 && w[2] == format!("{mount}/lib")),
             "LD_LIBRARY_PATH not pointed at the shared-lib dir: {argv:?}"
+        );
+
+        // Phase `an_app_built_for_another_runtime_is_refused_before_bwrap`.
+        // The same app rebuilt against a different libstd: the installed
+        // bundle carries `libstd-abc123.so`, the app needs another hash. The
+        // launch fails with the library named instead of dying in the loader
+        // inside the sandbox with only a stderr line to show for it.
+        let payload = tempfile::tempdir().unwrap();
+        let entry = payload.path().join("bin/thin");
+        std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        std::fs::write(
+            &entry,
+            launcher::loader_preflight::elf_fixture(
+                &["libruntime_dylib.so", "libstd-55999f89fc36b51f.so"],
+                None,
+            ),
+        )
+        .unwrap();
+        let data_home = tempfile::tempdir().unwrap();
+        let opts = RunOptions {
+            no_services: true,
+            landlock_enforce: false,
+            ..isolated_options(data_home.path())
+        };
+        let err = run_with(&m, payload.path(), &opts).unwrap_err();
+        match &err {
+            RunError::RuntimeLibraryMissing {
+                package,
+                runtime,
+                library,
+                searched,
+            } => {
+                assert_eq!(package, "so.tilo.thin");
+                assert_eq!(runtime, &format!("tilo-runtime/{version}"));
+                assert_eq!(library, "libstd-55999f89fc36b51f.so");
+                assert_eq!(searched.first(), Some(&bundle_dir.join("lib")));
+            }
+            other => panic!("expected RuntimeLibraryMissing, got {other:?}"),
+        }
+        let message = err.to_string();
+        for needle in [
+            "built for a different Tilo runtime",
+            "libstd-55999f89fc36b51f.so",
+            "tilo-runtime/thin-smoke-1",
+            "`app update so.tilo.thin`",
+            "`app install so.tilo.thin`",
+            "`app remove so.tilo.thin`",
+        ] {
+            assert!(
+                message.contains(needle),
+                "{needle:?} missing from: {message}"
+            );
+        }
+        assert!(
+            !message.contains('\n'),
+            "one stderr line for the shell: {message}"
         );
     }
     // Phase `configured_runtime_root_wins_over_the_installed_fallback`.
@@ -701,6 +760,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
         let plan = launcher::sandbox::DBusBindPlan {
             host_socket: guard.socket_path().to_path_buf(),
             sandbox_path: launcher::dbus_proxy::sandbox_bus_path(1234),
+            atspi: None,
         };
 
         // The proxy child exists.
@@ -746,6 +806,54 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
         );
         drop(env);
     }
+}
+
+#[test]
+fn optional_runtimes_mount_when_installed_and_trusted() {
+    let mut home = runtime_home();
+    let (installed, identity) = install_signed_bundle(home.data(), "2026.10.0-engine");
+    let _unsigned = install_unsigned_bundle(home.data(), "2026.10.0-unsigned");
+    let mut m = hello_manifest(home.root(), BTreeMap::new());
+    m.optional_runtimes = vec![
+        "tilo-runtime/2026.10.0-engine".to_string(),
+        "tilo-runtime/2026.10.0-missing".to_string(),
+        "tilo-runtime/2026.10.0-unsigned".to_string(),
+    ];
+    let trust_file = home.root().join("trust.txt");
+    std::fs::write(&trust_file, format!("{}\n", identity.public_key_hex())).unwrap();
+    home.env()
+        .set("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trust_file);
+    let opts = RunOptions {
+        no_services: true,
+        landlock_enforce: false,
+        ..Default::default()
+    };
+
+    // Phase `an_installed_trusted_bundle_is_mounted_read_only_before_the_entry`.
+    // Phase `a_missing_or_unsigned_bundle_never_stops_the_launch`.
+    let (argv, mounts) = launcher::run::optional_runtimes_test_helper(&m, &opts).unwrap();
+    assert_eq!(
+        argv,
+        [
+            "--ro-bind".to_string(),
+            installed.display().to_string(),
+            "/run/tilo-runtime/2026.10.0-engine".to_string(),
+            "entry".to_string(),
+        ]
+    );
+    assert_eq!(mounts, ["/run/tilo-runtime/2026.10.0-engine"]);
+
+    // Phase `a_bundle_from_another_publisher_is_not_mounted`.
+    let other = runtime_bundle::Identity::generate();
+    std::fs::write(&trust_file, format!("{}\n", other.public_key_hex())).unwrap();
+    let (argv, mounts) = launcher::run::optional_runtimes_test_helper(&m, &opts).unwrap();
+    assert_eq!(argv, ["entry"]);
+    assert!(mounts.is_empty());
+
+    // Phase `a_version_that_is_not_one_path_component_is_refused`.
+    m.optional_runtimes = vec!["tilo-runtime/../2026.07".to_string()];
+    let (argv, _) = launcher::run::optional_runtimes_test_helper(&m, &opts).unwrap();
+    assert_eq!(argv, ["entry"]);
 }
 
 #[test]

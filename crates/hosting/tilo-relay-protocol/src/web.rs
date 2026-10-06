@@ -12,6 +12,7 @@
 //! | Route | Body | Answer |
 //! |---|---|---|
 //! | `/host` | — | [`HostInfo`] |
+//! | `/node` | — | [`NodeInfo`] |
 //! | `/certify` | `CertificationRequest` | `CertifyReply` |
 //! | `/certify/wait` | request digest `[u8; 32]` | `CertifyReply` (long-poll) |
 //! | `/session` | [`Hello`] | [`SessionChallenge`] |
@@ -20,9 +21,24 @@
 //! | `/events` | [`EventsRequest`] | [`EventsPage`] (long-poll) |
 //! | `/live/grant` | workspace id `u64` | [`LiveGrant`] |
 //! | `/live/grant/agent` | [`AgentLiveGrantRequest`] | [`LiveGrant`] for [`agent_publisher`] |
+//! | `/live/legacy-input` | [`InputRequest`](crate::legacy_window::InputRequest) | `204`, `403` when the member may not drive the window |
 //! | `/live/fallback/{open,send,resume}` | live fallback frames | frame stream |
+//! | `/rooms` | [`RoomsRequest`](crate::rooms::RoomsRequest) | [`RoomsReply`](crate::rooms::RoomsReply) |
+//! | `/join` | [`JoinStep`](crate::rooms::JoinStep) | [`JoinReply`](crate::rooms::JoinReply) |
 //!
-//! Routes after the handshake carry the session token in
+//! A host started without a certificate serves only `/install` until it has
+//! one: the body is the root-signed `DeviceCert` for its device key as JSON
+//! (what a page's root issues) or in its canonical encoding, or
+//! [`InstallCertificates`], with the install token the host was
+//! provisioned with in [`INSTALL_TOKEN_HEADER`]. `200` answers
+//! [`Installed`] as JSON; every other route answers `503` meanwhile. A
+//! `GET` with the token answers [`InstallInfo`]: the host's key and, on a
+//! node, the key of the session beside it, which the root certifies at the
+//! same time as one of the person's devices.
+//!
+//! `/join` is the one route after `/certify` a device calls without a
+//! session: a person a host does not know yet joins through it. Routes after
+//! the handshake carry the session token in
 //! [`SESSION_HEADER`] (lowercase hex). A `401` means the session is gone:
 //! the device runs the handshake again, resubscribes and resends its outbox.
 
@@ -35,6 +51,63 @@ use crate::auth::{Hello, HelloAck, HelloAck2};
 pub const API_PREFIX: &str = "/peer/v1";
 /// Header carrying the session token.
 pub const SESSION_HEADER: &str = "x-tilo-session";
+/// Header carrying the install token of a host awaiting its certificate.
+pub const INSTALL_TOKEN_HEADER: &str = "x-tilo-install-token";
+/// The route that installs a waiting host's certificate.
+pub const INSTALL_ROUTE: &str = "/install";
+
+/// What a waiting host says about itself on `GET /install` (JSON).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstallInfo {
+    /// The host's device key, hex.
+    pub device_public_key: String,
+    /// On a node, the session that runs the person's apps and agents beside
+    /// the host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<NodeSession>,
+}
+
+/// The device key of the session beside a node, vouched for by the node.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeSession {
+    /// The session's device key, hex.
+    pub device_public_key: String,
+    /// The node's device key's Ed25519 signature over
+    /// [`node_session_message`], hex. A page that got the node's key out of
+    /// band certifies the session's key only when this verifies.
+    pub signature: String,
+}
+
+/// What a node signs to vouch for the session beside it.
+#[must_use]
+pub fn node_session_message(node: &[u8; 32], session: &[u8; 32]) -> Vec<u8> {
+    let mut message = b"tilo node session v1\0".to_vec();
+    message.extend_from_slice(node);
+    message.extend_from_slice(session);
+    message
+}
+
+/// `POST /install` with the certificates of a node and of the session
+/// beside it (JSON): each in its canonical encoding, base64, as a page's
+/// `certifyDevice` resolves.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstallCertificates {
+    /// The host's certificate.
+    pub certificate: String,
+    /// The session's certificate, when the host has one beside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_certificate: Option<String>,
+}
+
+/// A waiting host's answer to an accepted `/install` (JSON).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Installed {
+    /// The host's device key, hex.
+    pub device_public_key: String,
+    /// The identity it now serves, hex.
+    pub user_public_key: String,
+}
+
 /// WebTransport path of the live relay.
 pub const LIVE_PATH: &str = "/moq/live";
 /// Longest an `/events` or `/certify/wait` poll is held.
@@ -59,7 +132,9 @@ pub fn envelope_bytes(envelope: &Envelope) -> usize {
         Envelope::SyncResponse { delta_since, .. } => delta_since.len(),
         Envelope::Presence { payload, .. } => payload.len(),
         Envelope::Compacted { statement, .. } => statement.len(),
-        Envelope::Live { frame, .. } | Envelope::RemoteAction { frame, .. } => frame.len(),
+        Envelope::Live { frame, .. }
+        | Envelope::RemoteAction { frame, .. }
+        | Envelope::RecordContent { frame, .. } => frame.len(),
         Envelope::NotAuthorised { reason, .. }
         | Envelope::RemoteActionUndeliverable { reason, .. }
         | Envelope::CommitRefused { reason, .. }
@@ -70,6 +145,17 @@ pub fn envelope_bytes(envelope: &Envelope) -> usize {
             .saturating_add(grant.subscriptions.len())
             .saturating_mul(200)
             .saturating_add(grant.endpoint.len()),
+        Envelope::VoiceCallList { result, .. } => match result {
+            Ok(calls) => calls.iter().fold(0usize, |bytes, call| {
+                bytes.saturating_add(
+                    call.participants
+                        .len()
+                        .saturating_add(1)
+                        .saturating_mul(200),
+                )
+            }),
+            Err(reason) => reason.len(),
+        },
         Envelope::PeerRelayHello { hosted_workspaces } => hosted_workspaces.len().saturating_mul(8),
         Envelope::SyncRequest { have_heads, .. } => have_heads.len().saturating_mul(32),
         _ => 0,
@@ -87,6 +173,14 @@ pub struct HostInfo {
     /// SHA-256 of the TLS certificate (lowercase hex) when it is a
     /// development certificate a browser pins with `serverCertificateHashes`.
     pub certificate_sha256: Option<String>,
+}
+
+/// What a node runs beside its relay, for a member's session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeInfo {
+    /// The device of the session that runs the person's apps (legacy apps
+    /// among them) on the node: the device a page asks to open one.
+    pub session: Option<[u8; 32]>,
 }
 
 /// The host's answer to a session [`Hello`].
@@ -128,9 +222,14 @@ pub const FEATURE_COMPACTION: u64 = 2;
 
 /// The host governs calls in its rooms: it accepts
 /// [`crate::transport::Envelope::VoiceCall`],
-/// [`crate::transport::Envelope::VoiceJoin`] and
-/// [`crate::transport::Envelope::VoiceLeave`] (see [`crate::voice`]).
+/// [`crate::transport::Envelope::VoiceJoin`],
+/// [`crate::transport::Envelope::VoiceLeave`] and
+/// [`crate::transport::Envelope::VoiceCalls`] (see [`crate::voice`]).
 pub const FEATURE_VOICE: u64 = 4;
+
+/// The host governs rooms a page administers and joins over HTTPS
+/// (`/rooms`, `/join`; see [`crate::rooms`]).
+pub const FEATURE_ROOMS: u64 = 8;
 
 /// Encode a `/session/finish` answer: the [`SessionGrant`] followed by the
 /// host's feature bits. A device that predates the features reads the grant

@@ -24,7 +24,7 @@ containerfile="$repo/os/Containerfile"
 # the packaged-app external AT-SPI client and installed-app accessibility gate,
 # the build-only residual OpenSSL ABI package gate (removed after it runs),
 # the xdg-desktop-portal preference that selects the Tilo backend,
-# and the opt-in codec-pack helper overlay (helper, units, keys, polkit rule,
+# and the opt-in extension helper overlay (helper, units, polkit rule,
 # and the NetworkManager dispatcher hook that starts a deferred install).
 # The redundant model-storage oneshot is now absent; systemd provisions the
 # model and gateway directories directly without a helper on socket activation.
@@ -32,8 +32,7 @@ containerfile="$repo/os/Containerfile"
 # into its loader, so the former systemd environment override is absent.
 # Tilo build outputs are installed through os/components.toml, so their rows
 # name the manifest component and build output instead of a builder /out path;
-# every destination is unchanged, and /out/optional/ -> /usr/bin/ is now the
-# explicit optional /usr/bin/browser entry it always carried. The VM console
+# every destination is unchanged. The VM console
 # port udev rule and the generated bash/fish/zsh completions for app and tilo
 # (with their store/system aliases) are deliberate additions, as is the
 # sandboxed PDF engine helper at /usr/libexec/tilo-pdf-helper, and the
@@ -67,13 +66,55 @@ containerfile="$repo/os/Containerfile"
 # cache.
 # tilo-esp-write and its unit, the only writer of the read-only ESP, are
 # deliberate additions.
+# The virtio-only Cage session wrapper is installed as a single executable;
+# physical GPU sessions still use the ordinary greeter command.
+# tilo-hidepid.service is a deliberate removal: a global hidepid /proc hides
+# PID 1 from unprivileged processes and breaks libsystemd unit lookups.
+# user-tmpfiles.d/tilo-fs.conf is a deliberate addition: it creates the
+# filesystem services' roots, which their PrivateIPC sandbox cannot.
+# The user-tmpfiles.d snippets live in /usr/share, the only system path
+# systemd-tmpfiles --user reads.
+# The native runtime host at /usr/bin/tilo-runtime-mcp is a deliberate addition.
+# /usr/bin/bootc from bootc-builder, the base's release patched to find this
+# system's ESP on a disk it shares, and its licence notice are deliberate.
 # Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=e17ce8194539352f9f6fcb1f8ffc7f853ff99b0f46f2bf2be93cde60712ea0b6
+# ARM virtio software rendering adds one reviewed LLVM CPU shim payload.
+# The extension overlay replaces the codec-specific resolver: no repository
+# definitions or upstream keys ship, only the generic helper and its units.
+# The build-only Cisco OpenH264 gate is a deliberate addition (removed after it runs).
+# The extension-manifest public key ships beside the helper.
+# The release gate's greetd session-context check ships beside the other
+# booted-guest checks in /usr/libexec/tilo.
+# The image ships one login session and no peer-sync marker unit.
+# The release gate's input hotplug check and the device admin's action-model
+# check ship beside them.
+# The boot units gate ships with the rollback units whose confirmation it gates.
+# The ush supervisor ships with what it runs: the two relay helpers for
+# Terminal, and the legacy VM service behind app shims. The WPE engine overlay
+# and /usr/bin/browser are deliberate removals: the Browser is a tapp in the
+# app store and its Chromium engine a signed runtime bundle under
+# /usr/lib/tilo-runtime, both already copied.
+# NetworkManager's Wake-on-LAN default ships as a conf.d drop-in.
+# The sibling-unlock client (/usr/bin/tilo-sibling-unlock, through
+# components.toml) and its dracut module ship in the rollback-files overlay
+# beside tilo-rollback, which the initramfs carries the same way.
+# The registry's runtime publisher key (/usr/share/tilo/registry-runtime-
+# publisher.hex), which the launcher trusts for runtimes the Store installs,
+# is a deliberate addition.
+# /usr/bin/terminal, /usr/bin/file-explorer and /usr/bin/settings are
+# deliberate removals: those apps ship only as packages in the app store.
+# The system-interface declaration (/usr/share/tilo/system-interfaces.toml),
+# which says what app builds this OS can run, is a deliberate addition.
+# The ush service unit is installed through its component manifest so normal
+# component updates carry the same owned reexec path as the OS image.
+# The public /usr/bin/ush symlink deliberately exposes the same confined
+# runtime already installed at /usr/libexec/tilo-ush.
+expected_contract=a192031eac51818062fa12249d9f2786af41c7395be29119ad246d7a86d8ddd4
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -104,16 +145,22 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # Recording whether the Windows provider is included adds an ARG and a LABEL.
 # Synced-worktree git defaults add two: the snippet and the /etc/gitconfig
 # that includes it.
-# The opt-in codec-pack overlay adds one COPY of its scratch stage.
+# The opt-in extension overlay adds one COPY of its scratch stage.
 # The echo-cancel PipeWire config adds one COPY; folding the three
 # /usr/lib/systemd/user units into one COPY removes two.
 # A build-only resolver placeholder and a final COPY restore the runtime
 # symlink outside the cleanup RUN, keeping BuildKit's DNS mount out of /run.
 # The fixed-clock build adds an ARG, four COPYs, and an early path assertion.
 # Pinning the unpacked base's directory times to the epoch adds one RUN.
-# Keep the current 150-instruction bound exact and reviewed.
-[ "$instructions" -le 150 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 150)" >&2
+# The single virtio Cage wrapper COPY brings the reviewed rootfs to 151.
+# The ARM virtual graphics CPU shim adds one COPY, bringing this to 152.
+# Redeclaring KERNEL_RPMS_REF before the kernel-swap RUN so Buildah hashes the
+# kernel image identity into that layer's cache key adds one ARG (153).
+# Redeclaring RPMS_REF before the first snapshot install, for the same reason,
+# adds one more (154).
+# NetworkManager's Wake-on-LAN drop-in adds one COPY (155).
+[ "$instructions" -le 155 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 155)" >&2
   exit 1
 }
 
@@ -125,7 +172,7 @@ if containerfile_instructions "$containerfile" |
   exit 1
 fi
 
-for overlay in desktop-binaries remote-capture-files rollback-files recovery-files codec-pack-files; do
+for overlay in desktop-binaries remote-capture-files rollback-files recovery-files extension-files; do
   [ "$(containerfile_copy_contract "$containerfile" rootfs |
        awk -F '\t' -v s="$overlay" '$1==s && $2=="/" && $3=="/"{n++} END{print n+0}')" -eq 1 ] \
     || { echo "$overlay is not applied to rootfs exactly once" >&2; exit 1; }
@@ -152,8 +199,8 @@ for path in \
   os/usr/libexec/tilo-store-volume \
   os/usr/libexec/tilo-verified-boot-install-preflight \
   os/usr/libexec/tilo-security-audit \
-  os/usr/libexec/tilo-codec-pack \
-  os/usr/lib/NetworkManager/dispatcher.d/90-tilo-codec-pack; do
+  os/usr/libexec/tilo-extension \
+  os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension; do
   containerfile_instructions "$containerfile" |
     awk -v path="$path" '
       $1 == "COPY" {

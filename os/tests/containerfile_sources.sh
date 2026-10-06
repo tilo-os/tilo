@@ -38,14 +38,13 @@ staged_at_build_time() {
 # Containerfile:context — the source paths are relative to the build context, which
 # is not the same for all of them.
 for spec in "os/Containerfile:$REPO" \
-            "os/Containerfile.wpe:$REPO" \
             "os/Containerfile.fex-payload:$REPO" \
-            "os/Containerfile.wpe-buildroot:$REPO" \
             "os/Containerfile.kernel-buildroot:$REPO" \
             "os/Containerfile.installer:$REPO/os" \
             "os/Containerfile.test:$REPO/os" \
             "os/Containerfile.host:$REPO" \
-            "os/Containerfile.dev:$REPO"; do
+            "os/Containerfile.dev:$REPO" \
+            "os/Containerfile.dev-installer-base:$REPO"; do
   file="${spec%%:*}"; ctx="${spec#*:}"
   [ -f "$REPO/$file" ] || { bad "$file does not exist"; continue; }
 

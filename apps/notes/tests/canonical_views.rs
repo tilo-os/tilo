@@ -17,9 +17,8 @@ fn owned_views_restore_selection_and_clamp_utf8_offsets() {
     // Catches reopening the default page, or projecting old text over the latest record.
     eprintln!("phase owned_close_restores_each_instances_selected_page_from_latest_record");
     {
-        let f = LegacyFixture::rich();
-        let checkout = imported(&f);
-        let source = f.source_bytes();
+        let f = NotebookFixture::rich();
+        let checkout = notebook(&f);
         let mut a = driver(&f, 11, &checkout);
         let mut b = driver(&f, 12, &checkout);
         invoke(&mut a, 11, actions::page_resource_id(f.child), "open", None);
@@ -80,16 +79,15 @@ fn owned_views_restore_selection_and_clamp_utf8_offsets() {
                 .unwrap()
         );
         assert_eq!(revision(&f, &checkout), revision_before);
-        assert_eq!(source, f.source_bytes());
         close_driver(&mut a);
         close_driver(&mut b);
     }
 
     eprintln!("phase stable_selection_clamps_all_utf8_offsets_and_survives_focus_and_first_layout");
     {
-        use ui::widget::AppWidget;
-        let f = LegacyFixture::rich();
-        let checkout = imported(&f);
+        use ui::application_view::ApplicationViewState;
+        let f = NotebookFixture::rich();
+        let checkout = notebook(&f);
         let mut b = driver(&f, 12, &checkout);
         let block = f
             .records
@@ -178,7 +176,7 @@ fn payload(
     }
 }
 fn saved_view(
-    f: &LegacyFixture,
+    f: &NotebookFixture,
     checkout: &ui::record::RecordCheckout,
     local: ui::application_view::ApplicationLocalView,
 ) -> ui::application_view::SavedInstanceView {
@@ -195,7 +193,7 @@ fn saved_view(
     saved
 }
 fn fingerprint(
-    f: &LegacyFixture,
+    f: &NotebookFixture,
     checkout: &ui::record::RecordCheckout,
 ) -> (Vec<automerge::ChangeHash>, usize, Vec<u8>, u64) {
     let (heads, pending, bytes) = f
@@ -207,7 +205,7 @@ fn fingerprint(
     (heads, pending, bytes, revision(f, checkout))
 }
 fn stamp_current_runs(
-    f: &LegacyFixture,
+    f: &NotebookFixture,
     checkout: &ui::record::RecordCheckout,
     page: notes::PageId,
     index: usize,
@@ -230,15 +228,15 @@ fn stamp_current_runs(
             edit_body(
                 doc,
                 page,
-                qdoc_rich_text::RichTextAction::SetMark {
-                    region: qdoc_rich_text::action::RegionKind::Body,
-                    spans: vec![qdoc_rich_text::action::Span {
+                tilo_document::RichTextAction::SetMark {
+                    region: tilo_document::action::RegionKind::Body,
+                    spans: vec![tilo_document::action::Span {
                         block: snapshots[index].0.clone(),
                         start: 0,
                         end: body.chars().count(),
                     }],
-                    name: qdoc::schema::MARK_AUTHOR.to_owned(),
-                    value: Some(qdoc_rich_text::action::MarkVal::Str(f.author.0.clone())),
+                    name: tilo_doc::schema::MARK_AUTHOR.to_owned(),
+                    value: Some(tilo_document::action::MarkVal::Str(f.author.0.clone())),
                     also_clear: Vec::new(),
                 },
             );
@@ -247,11 +245,11 @@ fn stamp_current_runs(
         .unwrap();
 }
 fn app_from_payload(
-    f: &LegacyFixture,
+    f: &NotebookFixture,
     checkout: &ui::record::RecordCheckout,
     local: &ui::application_view::ApplicationLocalView,
 ) -> notes::NotesApp {
-    use ui::widget::AppWidget;
+    use ui::application_view::ApplicationViewState;
     f.records
         .read(&checkout.id, |doc| {
             let mut app = notes::NotesApp::from_document(doc, &f.author).unwrap();
@@ -313,8 +311,8 @@ fn layout(app: &mut notes::NotesApp, width: f32, height: f32) {
     reason = "one complete owned close/sibling edit/reopen/first edit scenario"
 )]
 fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action() {
-    let f = LegacyFixture::rich();
-    let checkout = imported(&f);
+    let f = NotebookFixture::rich();
+    let checkout = notebook(&f);
     let block = f
         .records
         .read(&checkout.id, |doc| {
@@ -390,19 +388,21 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
             let changes = snapshot.get_changes(&before.0);
             assert_eq!(
                 changes.len(),
-                2,
-                "the owned edit and who wrote it, one undo step"
+                1,
+                "the owned edit records who wrote it in the same change"
             );
-            for change in &changes {
-                let context =
-                    tilo_actions::ActionContext::from_change_message(change.message().unwrap())
-                        .unwrap();
-                assert_eq!(context.action_label, "Edit note");
-                assert_eq!(
-                    context.resource.unwrap().id,
-                    actions::page_resource_id(f.child)
-                );
-            }
+            // History names the note's body and the edits it took.
+            let labels = changes
+                .iter()
+                .map(|change| {
+                    let context =
+                        tilo_actions::ActionContext::from_change_message(change.message().unwrap())
+                            .unwrap();
+                    assert_eq!(context.resource.unwrap().id, actions::page_body_id(f.child));
+                    context.action_label
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(labels, ["Splice text"]);
         })
         .unwrap();
     for _ in 0..3 {
@@ -439,9 +439,9 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
 
 #[test]
 fn independent_scroll_close_before_layout_and_narrow_sidebar_resolve_once() {
-    use ui::widget::AppWidget;
-    let f = LegacyFixture::rich();
-    let checkout = imported(&f);
+    use ui::application_view::ApplicationViewState;
+    let f = NotebookFixture::rich();
+    let checkout = notebook(&f);
     let block = f
         .records
         .read(&checkout.id, |doc| {
@@ -516,9 +516,9 @@ fn independent_scroll_close_before_layout_and_narrow_sidebar_resolve_once() {
 fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
     eprintln!("phase stale_page_block_and_tag_fall_back_and_empty_page_has_no_stable_caret");
     {
-        use ui::widget::AppWidget;
-        let f = LegacyFixture::rich();
-        let checkout = imported(&f);
+        use ui::application_view::ApplicationViewState;
+        let f = NotebookFixture::rich();
+        let checkout = notebook(&f);
         let block = f
             .records
             .read(&checkout.id, |doc| {
@@ -612,8 +612,8 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
     eprintln!("phase strict_payload_errors_retain_setup_owner_and_original_bytes");
     {
         use ui::launch::LaunchError;
-        let f = LegacyFixture::rich();
-        let checkout = imported(&f);
+        let f = NotebookFixture::rich();
+        let checkout = notebook(&f);
         let block = f
             .records
             .read(&checkout.id, |doc| {
@@ -707,9 +707,9 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
     eprintln!("phase block_identity_is_preserved_and_shape_errors_install_nothing");
     {
         use automerge::{ReadDoc, transaction::Transactable};
-        use ui::widget::AppWidget;
-        let f = LegacyFixture::rich();
-        let checkout = imported(&f);
+        use ui::application_view::ApplicationViewState;
+        let f = NotebookFixture::rich();
+        let checkout = notebook(&f);
         let (spelling, page_map) = f
             .records
             .with(&checkout.id, |doc| {

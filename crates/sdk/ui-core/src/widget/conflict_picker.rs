@@ -587,7 +587,7 @@ impl Widget for ConflictPicker {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.glass,
+            theme.material_glass(),
             None,
             &body,
         );
@@ -1057,7 +1057,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -1191,7 +1191,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &Modifiers::default(),
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -1204,7 +1204,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &Modifiers::default(),
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut focus,

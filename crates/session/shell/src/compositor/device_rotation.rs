@@ -47,12 +47,20 @@ pub fn spawn(wake: impl Fn() + Send + 'static) -> Option<Receiver<OutputTransfor
         .spawn(move || {
             let mut control =
                 os_actions::RotationControl::new(rotation_locked(&settings_store::load()));
+            let mut seen = true;
+            let mut cached_stamp = settings_store::stamp();
+            let mut locked = control.locked();
             let mut samples = 0_u32;
             loop {
                 samples = samples.wrapping_add(1);
                 let mut change = None;
                 if samples.checked_rem(LOCK_REFRESH_SAMPLES) == Some(0) {
-                    let locked = rotation_locked(&settings_store::load());
+                    let current = settings_store::stamp();
+                    if settings_store::document_changed(seen, cached_stamp, current) {
+                        locked = rotation_locked(&settings_store::load());
+                        seen = true;
+                        cached_stamp = current;
+                    }
                     if locked != control.locked() {
                         change = control.set_locked(locked);
                     }

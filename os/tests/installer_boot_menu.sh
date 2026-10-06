@@ -112,8 +112,11 @@ fake="$work/efibootmgr"
 cat > "$fake" <<'EOF'
 #!/usr/bin/env bash
 if [ "$#" -eq 0 ]; then
-  printf 'BootCurrent: 0002\nBootNext: %s\nBootOrder: %s\n' \
-    "${TILO_FAKE_BOOT_NEXT:-0003}" "${TILO_FAKE_BOOT_ORDER:-0002,0000,0003}"
+  printf 'BootCurrent: 0002\n'
+  if [ "${TILO_FAKE_BOOT_NEXT:-0003}" != absent ]; then
+    printf 'BootNext: %s\n' "${TILO_FAKE_BOOT_NEXT:-0003}"
+  fi
+  printf 'BootOrder: %s\n' "${TILO_FAKE_BOOT_ORDER:-0002,0000,0003}"
 else
   printf '%s\n' "$*" >> "$TILO_FAKE_EFIBOOT_LOG"
 fi
@@ -165,6 +168,20 @@ if grep -Fxq -- '-o 0002,0000,0003' "$TILO_FAKE_EFIBOOT_LOG" \
   ok "unchanged foreign entries permit exact BootOrder/BootNext restoration and a new Tilo entry"
 else
   bad "firmware state was not faithfully restored"
+fi
+
+# Repeating restoration when no BootNext exists must not call efibootmgr -N:
+# real efibootmgr returns ENOENT for that redundant operation.
+: > "$TILO_FAKE_EFIBOOT_LOG"
+TILO_FAKE_BOOT_NEXT=absent TILO_BOOT_MENU_EFIVARS="$work/efivars" TILO_BOOT_MENU_EFIBOOTMGR="$fake" \
+  "$menu" firmware-snapshot "$work/no-next.state"
+TILO_FAKE_BOOT_NEXT=absent TILO_BOOT_MENU_EFIVARS="$work/efivars" TILO_BOOT_MENU_EFIBOOTMGR="$fake" \
+  "$menu" firmware-restore "$work/no-next.state"
+if grep -Fxq -- '-o 0002,0000,0003' "$TILO_FAKE_EFIBOOT_LOG" \
+   && ! grep -Eq -- '^-N$|^-n ' "$TILO_FAKE_EFIBOOT_LOG"; then
+  ok "already absent BootNext needs no deletion"
+else
+  bad "restoring an absent BootNext attempted an unnecessary write"
 fi
 
 if grep -Fqx "boot_entry=Boot000A-$guid=07000000010000000400570000007fff0400000aff" "$state"; then

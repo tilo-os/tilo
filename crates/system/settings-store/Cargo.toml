@@ -29,7 +29,7 @@ notify = { workspace = true, optional = true }
 watch = ["dep:notify"]
 
 [dev-dependencies]
-tilo-atomic-file = { path = "../atomic-file", features = ["test-support"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 

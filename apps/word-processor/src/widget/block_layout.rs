@@ -1,6 +1,6 @@
 //! Pure block-attribute decoding used by pagination and toolbar state.
 
-use qdoc::snapshot::{AttrVal, BlockView};
+use tilo_doc::snapshot::{AttrVal, BlockView};
 use ui::richtext::{FontFamily, TextAlign};
 
 use crate::num;

@@ -1,0 +1,27 @@
+{
+  "comment": "A root envelope made by root-identity.mjs (fake authenticator, seed 7); never regenerate: it guards that stored envelopes keep opening.",
+  "envelope": {
+    "version": 1,
+    "root_public_key": "f67dd74f51a91f9d3c7645084e12beeca9a23f279e5634dc543abf5d6fb401db",
+    "wraps": [
+      {
+        "kind": "passkey",
+        "credential_id": "BwYFBAMCAQAPDg0MCwoJCA",
+        "rp_id": "tilo.so",
+        "prf_salt": "X9NiN1HSlRBQtZSB7wh6coknmDyPcrhKSuWPaL_eBNQ",
+        "nonce": "3M8BOypx5qx9EuY-",
+        "ciphertext": "LZr1OYsk7J1QDPvq-4Lnc7oAWgxowdu5fS_CC6iL8e3DtF_P4VvyxM3WbWHB47I7ESuh4VPv4SnBNvFZ8UnDjQ"
+      },
+      {
+        "kind": "recovery",
+        "salt": "lpQTU8Nd_Jo2nQ5CBtcsBespwGh2tCJpQoxfgY8pgKY",
+        "nonce": "YDTnHY-bDexyqqsa",
+        "ciphertext": "emUSlmmU0L4HzLiZYfQJWHSkweCel81rjLyCSSfILEOR08j7SNzkcskF9fTLvo-LMVHsbFmgKe6G5tybOt8ECw"
+      }
+    ]
+  },
+  "recoveryKey": "4KG7-00A2-QVMP-F2M4-D6M5-E3KY-7NJR-Q9RM",
+  "credentialId": "BwYFBAMCAQAPDg0MCwoJCA",
+  "prfOutput": "KKO4hVKgmlEvos2w-tcMGQ9fSHaSfbAlR2Wvih0BOKg",
+  "authenticatorSeed": 7
+}

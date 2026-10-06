@@ -167,13 +167,23 @@ pub enum Inbound {
         /// The remote-action frame, as the sender encoded it.
         frame: Vec<u8>,
     },
+    /// A piece of a record's content another device of the workspace
+    /// addressed to this one. The relay stamped the sender from its
+    /// authenticated connection.
+    RecordContent {
+        /// The sending device's public key.
+        from: [u8; 32],
+        /// The piece, as the sender encoded it.
+        frame: Vec<u8>,
+    },
     /// A live-plane frame (presence, previews) another live member of the
     /// workspace published: a native shell, a browser, an agent. The host
-    /// validated it and stamped the sender from its authenticated session.
+    /// checked its sealed form and stamped the sender from its
+    /// authenticated session.
     Live {
         /// The publishing device's public key.
         from: [u8; 32],
-        /// The canonical `tilo_relay_protocol::live::LiveFrame` bytes.
+        /// The canonical `tilo_relay_protocol::live::SealedLiveFrame` bytes.
         frame: Vec<u8>,
     },
     /// The host's reply to the initial subscribe: how many queued
@@ -181,6 +191,30 @@ pub enum Inbound {
     Ready {
         /// Number of store-and-forwarded deltas being flushed.
         pending: u32,
+    },
+    /// The room's governor answered about one of its calls.
+    Voice(VoiceEvent),
+}
+
+/// What the governor of a room says about its calls; see
+/// [`tilo_relay_protocol::voice`].
+#[derive(Debug, Clone)]
+pub enum VoiceEvent {
+    /// The outcome of a call change this device requested.
+    Result {
+        /// The request's id.
+        request: [u8; 16],
+        /// The call as governance now records it, or why it was refused.
+        result: Result<tilo_relay_protocol::voice::CallState, String>,
+    },
+    /// A participation's current grant.
+    Granted(Box<tilo_relay_protocol::voice::VoiceGrant>),
+    /// The device may not be in `call` (any more).
+    Refused {
+        /// The call.
+        call: [u8; 32],
+        /// Why.
+        reason: String,
     },
 }
 
@@ -196,6 +230,9 @@ pub enum CoeditError {
     /// module encodes; surfaced rather than hidden so a future payload
     /// shape that can't serialize fails loudly instead of panicking.
     Encode(postcard::Error),
+    /// A live frame that is not sealed with its record's channel keys is
+    /// never sent.
+    Unsealed,
 }
 
 impl std::fmt::Display for CoeditError {
@@ -203,6 +240,7 @@ impl std::fmt::Display for CoeditError {
         match self {
             CoeditError::Disconnected => f.write_str("relay co-edit session disconnected"),
             CoeditError::Encode(error) => write!(f, "co-edit payload encode failed: {error}"),
+            CoeditError::Unsealed => f.write_str("a live frame is sent only sealed"),
         }
     }
 }

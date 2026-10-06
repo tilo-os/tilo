@@ -68,7 +68,7 @@ pub enum Resp {
     NotFound,
     /// Boxed: a full document snapshot dwarfs every other variant, and this
     /// enum sits inline in [`Result`]s the caller passes around by value.
-    Snapshot(Box<qdoc::DocSnapshot>),
+    Snapshot(Box<tilo_doc::DocSnapshot>),
     Inserted {
         block: String,
     },
@@ -352,7 +352,7 @@ impl Client {
     /// # Errors
     ///
     /// Returns an error if the request can't be sent or the response can't be read.
-    pub async fn snapshot(&mut self, ino: u64) -> std::io::Result<Option<qdoc::DocSnapshot>> {
+    pub async fn snapshot(&mut self, ino: u64) -> std::io::Result<Option<tilo_doc::DocSnapshot>> {
         match self.request(&Req::Snapshot { ino }).await? {
             Resp::Snapshot(s) => Ok(Some(*s)),
             _ => Ok(None),

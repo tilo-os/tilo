@@ -17,8 +17,8 @@ use tilo_clock::try_unix_now_ns;
 use tilo_relay::HomePeerRegistration;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, IdentityPaths, RevocationList, decode_enrollment_token,
-    encode_enrollment_token, mint_enrollment_token, sign_device_cert, verify_device_cert,
-    verify_device_cert_at, verify_enrollment_token, verify_revocation_entry,
+    encode_enrollment_token, mint_enrollment_token, verify_device_cert, verify_device_cert_at,
+    verify_enrollment_token, verify_revocation_entry,
 };
 
 /// Well-known UDP port every nearby-pairing listener binds and every
@@ -91,12 +91,16 @@ enum Command {
         /// Optional world-readable progress file for the first-run UI.
         #[arg(long)]
         status_file: Option<PathBuf>,
+        /// Agent hosts and other headless boxes: pair without a compositor
+        /// first-use requester lease. Desktop first-use must omit this flag.
+        #[arg(long, default_value_t = false)]
+        headless: bool,
         /// PID of the compositor that initiated this first-use operation.
         #[arg(long)]
-        requester_pid: u32,
+        requester_pid: Option<u32>,
         /// `/proc/<pid>/stat` start-time tick, preventing PID-reuse bypass.
         #[arg(long)]
-        requester_start_time: u64,
+        requester_start_time: Option<u64>,
     },
     /// Approve one nearby host token issued by this device.
     Approve {
@@ -128,6 +132,59 @@ enum Command {
         expected_device: Option<String>,
         #[arg(long)]
         expected_service: Option<String>,
+    },
+    #[command(flatten)]
+    OutOfBand(OutOfBand),
+}
+
+/// Certification delivered outside a pairing session.
+#[derive(Subcommand)]
+enum OutOfBand {
+    /// Create this device's key if it has none and print, as one JSON line,
+    /// its public key and the endpoint id of a relay it runs.
+    DeviceKey {
+        #[arg(long, default_value = "/var/lib/tilo")]
+        identity_root: PathBuf,
+    },
+    /// Certify a device's key with a root key kept in a file, for delivery
+    /// out of band. Writes the canonical certificate to OUT.
+    /// Without --root-key the root this device holds signs, as when it
+    /// approves a nearby device: IDENTITY_ROOT/user-identity/privkey.bin, or
+    /// the active identity record in --identity-dir (run as the account that
+    /// owns it, in a session that reaches its secret store).
+    Certify {
+        /// The user root signing key (32 bytes, owner-only).
+        #[arg(long)]
+        root_key: Option<PathBuf>,
+        #[arg(long, default_value = "/var/lib/tilo")]
+        identity_root: PathBuf,
+        /// The person's identity directory: its active record signs when no
+        /// root key file does, and its device fleet lists the new device, so
+        /// Settings shows it and can remove it.
+        #[arg(long)]
+        identity_dir: Option<PathBuf>,
+        /// The device's public key, hex.
+        #[arg(long)]
+        device: String,
+        #[arg(long, default_value = "Tilo device")]
+        label: String,
+        /// own, admit, host, read-all or admin (administer the person's
+        /// other devices over their device-admin route); repeatable.
+        #[arg(long = "capability", value_name = "CAPABILITY")]
+        capabilities: Vec<String>,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Join the identity that certified this device's key without a pairing
+    /// session: install a root-signed certificate delivered out of band.
+    InstallCert {
+        #[arg(long, default_value = "/var/lib/tilo")]
+        identity_root: PathBuf,
+        #[arg(long)]
+        identity_dir: PathBuf,
+        /// The certificate, canonically encoded.
+        #[arg(long)]
+        cert: PathBuf,
     },
 }
 
@@ -308,29 +365,89 @@ fn fleet_revokes_device(
     Ok(revocations.is_revoked(&device))
 }
 
-/// Keep enrollment output owned by the already-validated identity directory
-/// when the polkit broker launches this process as root.
-fn restore_owner_from_directory(
-    path: &std::path::Path,
-    directory: &std::path::Path,
-) -> anyhow::Result<()> {
+/// Give one file or directory this enrollment created the owner and group of
+/// the directory it was created in.
+///
+/// Only a root-run enrollment (a headless host) creates output under another
+/// account than its directory's; desktop first use runs as the session user,
+/// whose output already belongs to them and inherits the device-trust group
+/// from the setgid identity directories. Ownership always comes from the
+/// immediate parent, never from the identity root: the root is `root:root`,
+/// while the directories below it belong to the device-trust group that the
+/// session and relay read the device identity through.
+fn restore_owner_from_parent(path: &std::path::Path) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt as _;
         use std::os::unix::fs::MetadataExt as _;
 
-        let owner = std::fs::metadata(directory)?;
+        // SAFETY: geteuid has no preconditions.
+        if unsafe { libc::geteuid() } != 0 {
+            return Ok(());
+        }
+        let parent = path
+            .parent()
+            .context("enrollment output has no parent directory")?;
+        let owner = std::fs::metadata(parent)?;
+        let current = std::fs::symlink_metadata(path)?;
+        if current.uid() == owner.uid() && current.gid() == owner.gid() {
+            return Ok(());
+        }
         let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
         // SAFETY: `path` is NUL-terminated and originates from a validated
-        // identity/status path. The uid/gid come from its trusted directory.
-        if unsafe { libc::chown(path.as_ptr(), owner.uid(), owner.gid()) } != 0 {
+        // identity/status path. The uid/gid come from its trusted parent.
+        if unsafe { libc::lchown(path.as_ptr(), owner.uid(), owner.gid()) } != 0 {
             return Err(anyhow::Error::from(std::io::Error::last_os_error())
                 .context("restore enrollment output ownership"));
         }
     }
     #[cfg(not(unix))]
-    let _ = (path, directory);
+    let _ = path;
     Ok(())
+}
+
+/// Create `directory` if needed and give it its parent's permission bits
+/// (including set-group-ID), so a directory an enrollment adds to the shared
+/// device-trust layout is reachable the way its parent is, whatever the umask
+/// this ran under. A directory this process neither owns nor could change is
+/// left as it is.
+fn share_directory_like_parent(directory: &std::path::Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(directory)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+        let parent = directory
+            .parent()
+            .context("shared directory has no parent")?;
+        let wanted = std::fs::metadata(parent)?.mode() & 0o7777;
+        let current = std::fs::symlink_metadata(directory)?;
+        if !current.is_dir() {
+            bail!("{} is not a directory", directory.display());
+        }
+        // SAFETY: geteuid has no preconditions.
+        let euid = unsafe { libc::geteuid() };
+        if current.mode() & 0o7777 != wanted && (euid == 0 || euid == current.uid()) {
+            std::fs::set_permissions(directory, std::fs::Permissions::from_mode(wanted))
+                .context("share the enrollment directory like its parent")?;
+        }
+    }
+    Ok(())
+}
+
+/// Whether this process runs as the owner of `directory`.
+fn owns_directory(directory: &std::path::Path) -> anyhow::Result<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        // SAFETY: geteuid has no preconditions.
+        Ok(std::fs::metadata(directory)?.uid() == unsafe { libc::geteuid() })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = directory;
+        Ok(true)
+    }
 }
 
 fn project_personal_device(
@@ -391,7 +508,7 @@ fn commit_personal_device(
             .or_else(|_| std::fs::metadata(identity_dir))
             .map(|metadata| (metadata.uid(), metadata.gid()))?
     };
-    atomic_file::write_creating_parent(&path, fleet)?;
+    tilo_files::native::atomic::write_creating_parent(&path, fleet)?;
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt as _;
@@ -409,7 +526,7 @@ fn bounded_home_peer_registry(
     identity_root: &std::path::Path,
     user: [u8; 32],
 ) -> anyhow::Result<Vec<u8>> {
-    let path = identity_root.join("home-peers.json");
+    let path = tilo_relay::home_peer_registry_path(identity_root);
     match std::fs::read(path) {
         Ok(bytes) if bytes.len() <= 1024 * 1024 => {
             let entries: Vec<HomePeerRegistration> = serde_json::from_slice(&bytes)?;
@@ -623,7 +740,7 @@ fn checked_personal_projection(
             }),
         );
 
-    let peers_path = identity_root.join("home-peers.json");
+    let peers_path = tilo_relay::home_peer_registry_path(identity_root);
     let mut existing: Vec<HomePeerRegistration> =
         read_bounded_json(&peers_path, "existing home-peer registry")?.unwrap_or_default();
     if existing.len() > 128
@@ -671,28 +788,28 @@ fn stage_personal_enrollment(
     let stage_dir = enrollment_stage_dir(identity_root).join(&stage_name);
     std::fs::create_dir_all(&stage_dir)?;
     let cert = tilo_user_identity::canonical::canonical_bytes(&payload.cert)?;
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &staged(&stage_dir, "record.json"),
         &projection.identity,
         0o600,
     )?;
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &staged(&stage_dir, "registry.json"),
         &projection.registry,
         0o600,
     )?;
-    atomic_file::write(&staged(&stage_dir, "fleet.json"), &projection.fleet)?;
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write(&staged(&stage_dir, "fleet.json"), &projection.fleet)?;
+    tilo_files::native::atomic::write_with_mode(
         &staged(&stage_dir, "home-peers.json"),
         &projection.peers,
         0o644,
     )?;
-    atomic_file::write(
+    tilo_files::native::atomic::write(
         &staged(&stage_dir, "user-pubkey.bin"),
         &payload.cert.user_public_key,
     )?;
-    atomic_file::write(&staged(&stage_dir, "per-user-cert.bin"), &cert)?;
-    atomic_file::write(&staged(&stage_dir, "default-cert.bin"), &cert)?;
+    tilo_files::native::atomic::write(&staged(&stage_dir, "per-user-cert.bin"), &cert)?;
+    tilo_files::native::atomic::write(&staged(&stage_dir, "default-cert.bin"), &cert)?;
     let marker = PersonalEnrollmentMarker {
         schema_version: PERSONAL_ENROLLMENT_SCHEMA,
         identity_dir: identity_dir.to_path_buf(),
@@ -704,7 +821,11 @@ fn stage_personal_enrollment(
     };
     let marker_path = personal_marker_path(identity_root, payload.nonce);
     std::fs::create_dir_all(enrollment_commit_dir(identity_root))?;
-    atomic_file::write_with_mode(&marker_path, &serde_json::to_vec_pretty(&marker)?, 0o600)?;
+    tilo_files::native::atomic::write_with_mode(
+        &marker_path,
+        &serde_json::to_vec_pretty(&marker)?,
+        0o600,
+    )?;
     let _ = paths; // binds staging to the active device layout at the call site.
     Ok((marker_path, marker))
 }
@@ -720,7 +841,11 @@ fn authorize_personal_commit(
     validate_requester(requester_lease)?;
     let mut marker = marker.clone();
     marker.commit_ready = true;
-    atomic_file::write_with_mode(marker_path, &serde_json::to_vec_pretty(&marker)?, 0o600)?;
+    tilo_files::native::atomic::write_with_mode(
+        marker_path,
+        &serde_json::to_vec_pretty(&marker)?,
+        0o600,
+    )?;
     Ok(marker)
 }
 
@@ -748,69 +873,92 @@ fn commit_staged_personal_enrollment(
     {
         bail!("staged personal enrollment no longer validates");
     }
-    let owner_dir = if marker.identity_dir.exists() {
-        marker.identity_dir.clone()
-    } else {
-        marker
-            .identity_dir
-            .parent()
-            .context("identity directory has no parent")?
-            .to_path_buf()
-    };
     // The first callback is the requester-liveness gate in production. Keep
     // it before even creating the user identity directory so a compositor
     // that died while approval was in flight causes no publication mutation.
     checkpoint(PersonalCommitCheckpoint::Record)?;
     std::fs::create_dir_all(&marker.identity_dir)?;
+    restore_owner_from_parent(&marker.identity_dir)?;
     let record = identity_record_path(&marker.identity_dir, marker.user_public_key);
     let fleet = fleet_path(&marker.identity_dir, marker.user_public_key);
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &record,
         &std::fs::read(staged(&stage_dir, "record.json"))?,
         0o600,
     )?;
     checkpoint(PersonalCommitCheckpoint::Fleet)?;
-    atomic_file::write_creating_parent(&fleet, &std::fs::read(staged(&stage_dir, "fleet.json"))?)?;
+    tilo_files::native::atomic::write_creating_parent(
+        &fleet,
+        &std::fs::read(staged(&stage_dir, "fleet.json"))?,
+    )?;
     checkpoint(PersonalCommitCheckpoint::HomePeers)?;
-    atomic_file::write_with_mode(
-        &identity_root.join("home-peers.json"),
+    tilo_files::native::atomic::write_creating_parent_with_mode(
+        &tilo_relay::home_peer_registry_path(identity_root),
         &std::fs::read(staged(&stage_dir, "home-peers.json"))?,
         0o644,
     )?;
     checkpoint(PersonalCommitCheckpoint::Registry)?;
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &marker.identity_dir.join("registry.json"),
         &std::fs::read(staged(&stage_dir, "registry.json"))?,
         0o600,
     )?;
+    // The joined identity is the one this device now acts for: select it, or
+    // the next login resolves the absent default and asks to create one. Only
+    // the directory's owner can select (the selector is theirs alone); a
+    // root-run join into someone else's directory leaves it to them.
+    if owns_directory(&marker.identity_dir)? {
+        let record_id = record
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .context("joined identity record has no runtime id")?;
+        runtime_identity::set_active_identity(&marker.identity_dir, record_id)
+            .context("select the joined identity")?;
+    }
     checkpoint(PersonalCommitCheckpoint::UserPublicKey)?;
-    atomic_file::write(&paths.user_pubkey, &marker.user_public_key)?;
+    // The public key and certificates are public, whatever the umask this
+    // commit runs under: the session reads them to verify the device, and
+    // reaches the per-identity ones through a directory shared like its parent.
+    let public = tilo_user_identity::persist::PUBLIC_FILE_MODE;
+    tilo_files::native::atomic::write_with_mode(
+        &paths.user_pubkey,
+        &marker.user_public_key,
+        public,
+    )?;
     checkpoint(PersonalCommitCheckpoint::PerUserCert)?;
-    atomic_file::write_creating_parent(
-        &paths.device_cert_for_user(&marker.user_public_key),
+    let per_user_cert = paths.device_cert_for_user(&marker.user_public_key);
+    share_directory_like_parent(
+        per_user_cert
+            .parent()
+            .context("per-user certificate has no directory")?,
+    )?;
+    tilo_files::native::atomic::write_with_mode(
+        &per_user_cert,
         &std::fs::read(staged(&stage_dir, "per-user-cert.bin"))?,
+        public,
     )?;
     // Publish this last: every projection file has been durably installed.
     checkpoint(PersonalCommitCheckpoint::DefaultCert)?;
-    atomic_file::write(&paths.device_cert, &cert_bytes)?;
-    // A polkit-launched enrollment may have written these as root. Restore
-    // the identity owner's uid/gid before the marker is cleared, so recovery
-    // repeats this step if it is interrupted.
+    tilo_files::native::atomic::write_with_mode(&paths.device_cert, &cert_bytes, public)?;
+    // A root-run (headless) enrollment wrote these as root. Restore each
+    // one's directory owner and group before the marker is cleared, so
+    // recovery repeats this step if it is interrupted. Parents come before
+    // their children.
     for path in [
         marker.identity_dir.join("fleets"),
         record.clone(),
         fleet,
         marker.identity_dir.join("registry.json"),
-    ] {
-        restore_owner_from_directory(&path, &owner_dir)?;
-    }
-    for path in [
-        identity_root.join("home-peers.json"),
+        tilo_relay::home_peer_registry_path(identity_root),
         paths.user_pubkey.clone(),
-        paths.device_cert_for_user(&marker.user_public_key),
+        per_user_cert
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .context("per-user certificate has no directory")?,
+        per_user_cert,
         paths.device_cert.clone(),
     ] {
-        restore_owner_from_directory(&path, identity_root)?;
+        restore_owner_from_parent(&path)?;
     }
     std::fs::remove_file(marker_path)?;
     if let Some(parent) = marker_path.parent()
@@ -855,7 +1003,6 @@ fn recover_personal_enrollments(
     Ok(())
 }
 
-#[cfg(test)]
 fn install_personal_projection(
     identity_root: &std::path::Path,
     identity_dir: &std::path::Path,
@@ -901,7 +1048,7 @@ fn register_home_peer(
     relay_service_node_id: [u8; 32],
     relay_workspace_ids: &[u64],
 ) -> anyhow::Result<()> {
-    let path = identity_root.join("home-peers.json");
+    let path = tilo_relay::home_peer_registry_path(identity_root);
     if !tilo_relay::valid_home_peer_label(&cert.device_label) || relay_workspace_ids.len() > 4096 {
         bail!("home-peer registration exceeds its bounded schema");
     }
@@ -945,12 +1092,17 @@ fn register_home_peer(
         user_public_key: hex::encode(cert.user_public_key),
         device_cert: Some(cert.clone()),
         relay_workspace_ids: relay_workspace_ids.to_vec(),
+        environments: tilo_relay_protocol::RelayEnvironments::default(),
     });
     if registrations.len() > 128 {
         bail!("home-peer registry is full");
     }
     registrations.sort_by(|left, right| left.device_node_id.cmp(&right.device_node_id));
-    atomic_file::write_with_mode(&path, &serde_json::to_vec_pretty(&registrations)?, 0o644)?;
+    tilo_files::native::atomic::write_creating_parent_with_mode(
+        &path,
+        &serde_json::to_vec_pretty(&registrations)?,
+        0o644,
+    )?;
     Ok(())
 }
 
@@ -960,11 +1112,49 @@ fn response_preimage(payload: &ResponsePayload) -> anyhow::Result<Vec<u8>> {
     Ok(preimage)
 }
 
+/// The human root an approval signs with: a seed this device holds, or the
+/// person's single-device identity record.
+trait RootSigner {
+    fn public_key(&self) -> [u8; 32];
+    fn sign_message(&self, message: &[u8]) -> anyhow::Result<[u8; 64]>;
+}
+
+impl RootSigner for ed25519_dalek::SigningKey {
+    fn public_key(&self) -> [u8; 32] {
+        self.verifying_key().to_bytes()
+    }
+
+    fn sign_message(&self, message: &[u8]) -> anyhow::Result<[u8; 64]> {
+        Ok(self.sign(message).to_bytes())
+    }
+}
+
+impl RootSigner for runtime_identity::SigningIdentity {
+    fn public_key(&self) -> [u8; 32] {
+        self.group_public_key()
+    }
+
+    fn sign_message(&self, message: &[u8]) -> anyhow::Result<[u8; 64]> {
+        self.sign(message)
+            .map_err(|error| anyhow::anyhow!("sign with the identity record: {error}"))
+    }
+}
+
+fn sign_root_cert(cert: &mut DeviceCert, root: &(impl RootSigner + ?Sized)) -> anyhow::Result<()> {
+    if cert.user_public_key != root.public_key() {
+        bail!("device certificate names a different identity than the signing root");
+    }
+    let digest = tilo_user_identity::device_cert_signing_digest(cert)?;
+    cert.signature = root.sign_message(&digest)?;
+    verify_device_cert(cert).context("signed device certificate does not verify")?;
+    Ok(())
+}
+
 fn sign_response(
     payload: ResponsePayload,
-    root: &ed25519_dalek::SigningKey,
+    root: &(impl RootSigner + ?Sized),
 ) -> anyhow::Result<Response> {
-    let signature = root.sign(&response_preimage(&payload)?).to_bytes().to_vec();
+    let signature = root.sign_message(&response_preimage(&payload)?)?.to_vec();
     Ok(Response { payload, signature })
 }
 
@@ -1264,7 +1454,7 @@ fn make_finalized(
     response_bytes: &[u8],
     nonce: [u8; 16],
     device_public_key: [u8; 32],
-    root: &ed25519_dalek::SigningKey,
+    root: &(impl RootSigner + ?Sized),
 ) -> anyhow::Result<Vec<u8>> {
     let payload = FinalizedPayload {
         nonce,
@@ -1274,7 +1464,7 @@ fn make_finalized(
     let encoded = postcard::to_stdvec(&payload)?;
     Ok(postcard::to_stdvec(&Finalized {
         payload,
-        signature: root.sign(&encoded).to_bytes().to_vec(),
+        signature: root.sign_message(&encoded)?.to_vec(),
     })?)
 }
 
@@ -1379,13 +1569,16 @@ fn join(
             port: NEARBY_PORT,
         },
     )
+    .map(|_| ())
 }
 
+/// Join with `token_text`; a personal device gets back its joined identity
+/// record.
 #[allow(
     clippy::too_many_lines,
     reason = "one ordered join exchange; each step relies on the token and identity checks before it"
 )]
-fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result<()> {
+fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result<Option<PathBuf>> {
     let JoinOptions {
         identity_root,
         label,
@@ -1471,7 +1664,7 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                         .context("approving device omitted home-peer configuration")?;
                     let _: fs::full_replica::HomePeerSet = toml::from_str(home_peer_toml)
                         .context("approving device returned an invalid home-peer configuration")?;
-                    atomic_file::write(
+                    tilo_files::native::atomic::write(
                         home_peer_output.context("home-peer output is required")?,
                         home_peer_toml.as_bytes(),
                     )?;
@@ -1536,7 +1729,7 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                                         // projection, but still waits for
                                         // Finalized before changing its active
                                         // identity binding.
-                                        atomic_file::write(
+                                        tilo_user_identity::persist::write_public_key(
                                             &paths.user_pubkey,
                                             &response.payload.cert.user_public_key,
                                         )?;
@@ -1548,10 +1741,16 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                                 // fully installed. A crash can therefore only leave a
                                 // retryable partial enrollment, never a bootable one.
                                 if kind == EnrollmentKind::HomePeer {
+                                    let per_user_cert = paths.device_cert_for_user(
+                                        &response.payload.cert.user_public_key,
+                                    );
+                                    share_directory_like_parent(
+                                        per_user_cert
+                                            .parent()
+                                            .context("per-user certificate has no directory")?,
+                                    )?;
                                     tilo_user_identity::persist::write_device_cert(
-                                        &paths.device_cert_for_user(
-                                            &response.payload.cert.user_public_key,
-                                        ),
+                                        &per_user_cert,
                                         &response.payload.cert,
                                     )?;
                                     tilo_user_identity::persist::write_device_cert(
@@ -1559,29 +1758,23 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                                         &response.payload.cert,
                                     )?;
                                 }
-                                for directory in [
-                                    paths.user_pubkey.parent(),
-                                    paths.device_privkey.parent(),
-                                    paths
-                                        .device_cert_for_user(
-                                            &response.payload.cert.user_public_key,
-                                        )
-                                        .parent(),
+                                // The identity directories themselves are
+                                // image layout and keep their owner and group;
+                                // only what this enrollment created below them
+                                // takes its directory's.
+                                let per_user_cert = paths
+                                    .device_cert_for_user(&response.payload.cert.user_public_key);
+                                for output in [
+                                    per_user_cert.parent(),
+                                    Some(per_user_cert.as_path()),
+                                    Some(paths.user_pubkey.as_path()),
+                                    Some(paths.device_privkey.as_path()),
+                                    Some(paths.device_cert.as_path()),
                                 ]
                                 .into_iter()
                                 .flatten()
                                 {
-                                    restore_owner_from_directory(directory, identity_root)?;
-                                }
-                                for output in [
-                                    &paths.user_pubkey,
-                                    &paths.device_privkey,
-                                    &paths.device_cert_for_user(
-                                        &response.payload.cert.user_public_key,
-                                    ),
-                                    &paths.device_cert,
-                                ] {
-                                    restore_owner_from_directory(output, identity_root)?;
+                                    restore_owner_from_parent(output)?;
                                 }
                                 consume_nonce(
                                     identity_root,
@@ -1593,14 +1786,14 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                                         "{}",
                                         serde_json::json!({
                                             "identity": hex::encode(response.payload.cert.user_public_key),
-                                            "record_path": record_path.context("record path is required")?,
+                                            "record_path": record_path.as_ref().context("record path is required")?,
                                             "label": response.payload.cert.device_label,
                                         })
                                     );
                                 } else {
                                     println!("enrolled {}", response.payload.cert.device_label);
                                 }
-                                return Ok(());
+                                return Ok(record_path);
                             }
                         }
                         Ok(_) => {}
@@ -1622,7 +1815,10 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
             Err(error) => return Err(error.into()),
         }
     }
-    bail!("no approving Tilo device answered before the enrollment window closed")
+    Err(
+        WindowClosed("no approving Tilo device answered before the enrollment window closed")
+            .into(),
+    )
 }
 
 #[allow(
@@ -1639,9 +1835,9 @@ fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyh
         port,
         ..
     } = options;
-    if kind == EnrollmentKind::PersonalDevice && requester_lease.is_none() {
-        bail!("personal-device pairing requires a live first-use requester");
-    }
+    // Desktop first-use always supplies a compositor lease. Agent hosts pass
+    // `--headless` so the lease is absent on purpose; validate_requester is a
+    // no-op for None.
     validate_requester(requester_lease)?;
     let paths = IdentityPaths::under(identity_root);
     paths.ensure_directories()?;
@@ -1660,18 +1856,14 @@ fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyh
     })?;
     let code = pairing_code(device.verifying_key().to_bytes(), relay_service_node_id);
     if let Some(path) = status_file {
-        atomic_file::write_with_mode(
+        write_pairing_status(
             path,
-            &serde_json::to_vec(&serde_json::json!({
+            &serde_json::json!({
                 "state": "waiting_for_approval",
                 "verification_code": code,
                 "label": label,
-            }))?,
-            0o644,
+            }),
         )?;
-        if let Some(parent) = path.parent() {
-            restore_owner_from_directory(path, parent)?;
-        }
     }
     println!("Nearby pairing code: {code}");
     let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))?;
@@ -1703,7 +1895,7 @@ fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyh
                     continue;
                 }
                 println!("Nearby Tilo device approved code {code}");
-                join_with_token(
+                let record_path = join_with_token(
                     token_text.trim(),
                     JoinOptions {
                         label: &label,
@@ -1711,17 +1903,17 @@ fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyh
                     },
                 )?;
                 if let Some(path) = status_file {
-                    atomic_file::write_with_mode(
+                    // The first-use UI completes from this record alone; it
+                    // must not depend on reading this process's output.
+                    write_pairing_status(
                         path,
-                        &serde_json::to_vec(&serde_json::json!({
+                        &serde_json::json!({
                             "state": "complete",
                             "verification_code": code,
-                        }))?,
-                        0o644,
+                            "identity": hex::encode(token.user_public_key),
+                            "record_path": record_path,
+                        }),
                     )?;
-                    if let Some(parent) = path.parent() {
-                        restore_owner_from_directory(path, parent)?;
-                    }
                 }
                 return Ok(());
             }
@@ -1733,7 +1925,72 @@ fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyh
             Err(error) => return Err(error.into()),
         }
     }
-    bail!("no trusted Tilo device approved nearby pairing before the window closed")
+    Err(
+        WindowClosed("no trusted Tilo device approved nearby pairing before the window closed")
+            .into(),
+    )
+}
+
+/// Publish first-use pairing progress for the UI that started this process.
+fn write_pairing_status(path: &std::path::Path, status: &serde_json::Value) -> anyhow::Result<()> {
+    tilo_files::native::atomic::write_with_mode(path, &serde_json::to_vec(status)?, 0o644)?;
+    restore_owner_from_parent(path)
+}
+
+/// An enrollment window ended with no device answering.
+#[derive(Debug)]
+struct WindowClosed(&'static str);
+
+impl std::fmt::Display for WindowClosed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for WindowClosed {}
+
+/// What made pairing fail, as the status file names it for the first-use UI:
+/// `permission_denied`, `storage_full`, `read_only`, `unreachable`,
+/// `timed_out`, or `unknown` when the error carries no cause the person can
+/// act on.
+fn pairing_failure_cause(error: &anyhow::Error) -> &'static str {
+    use std::io::ErrorKind;
+
+    if error
+        .chain()
+        .any(<dyn std::error::Error>::is::<WindowClosed>)
+    {
+        return "timed_out";
+    }
+    error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .find_map(|io| match io.kind() {
+            ErrorKind::PermissionDenied => Some("permission_denied"),
+            ErrorKind::StorageFull | ErrorKind::QuotaExceeded => Some("storage_full"),
+            ErrorKind::ReadOnlyFilesystem => Some("read_only"),
+            ErrorKind::NetworkUnreachable
+            | ErrorKind::HostUnreachable
+            | ErrorKind::NetworkDown
+            | ErrorKind::AddrNotAvailable
+            | ErrorKind::ConnectionRefused => Some("unreachable"),
+            ErrorKind::TimedOut => Some("timed_out"),
+            _ => None,
+        })
+        .unwrap_or("unknown")
+}
+
+/// Record why pairing ended without joining, so the first-use UI shows the
+/// reason and offers a retry instead of waiting on a process that is gone.
+fn report_pairing_failure(path: &std::path::Path, error: &anyhow::Error) {
+    let _ = write_pairing_status(
+        path,
+        &serde_json::json!({
+            "state": "failed",
+            "error": format!("{error:#}"),
+            "cause": pairing_failure_cause(error),
+        }),
+    );
 }
 
 /// How one requester-side enrollment runs: where its identity lives, the
@@ -1769,7 +2026,7 @@ struct ApprovalOptions<'a> {
 }
 
 struct ApprovalIdentity {
-    root: ed25519_dalek::SigningKey,
+    root: Box<dyn RootSigner>,
     device: ed25519_dalek::SigningKey,
     user_public_key: [u8; 32],
     relay_workspace_ids: Vec<u64>,
@@ -1814,12 +2071,49 @@ fn expected_pair(options: &ApprovalOptions<'_>) -> anyhow::Result<Option<([u8; 3
     }
 }
 
+/// The person's root: the seed under the identity root when this device holds
+/// one, otherwise the active record in the identity directory, the way
+/// onboarding keeps it. A record signs only while it is single-device.
+fn load_approval_root(
+    identity_root: &std::path::Path,
+    identity_dir: Option<&std::path::Path>,
+) -> anyhow::Result<Box<dyn RootSigner>> {
+    const MISSING_ROOT: &str =
+        "this device does not hold the identity root needed to approve enrollment";
+    let paths = IdentityPaths::under(identity_root);
+    let seed_absent = matches!(
+        std::fs::symlink_metadata(&paths.user_privkey),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    );
+    let Some(identity_dir) = identity_dir.filter(|_| seed_absent) else {
+        let root = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)
+            .context(MISSING_ROOT)?;
+        return Ok(Box::new(root));
+    };
+    let record = runtime_identity::resolve_active_identity(identity_dir).with_context(|| {
+        format!(
+            "{MISSING_ROOT}: {} holds no active identity",
+            identity_dir.display()
+        )
+    })?;
+    let identity = runtime_identity::load_from_path(record.clone()).map_err(|error| {
+        anyhow::anyhow!(
+            "{MISSING_ROOT}: cannot open {}: {error} (run this as the account that owns the \
+             identity, in a session that can reach its secret store)",
+            record.display()
+        )
+    })?;
+    if !identity.is_single_device() {
+        bail!("threshold identity requires the multi-device certificate ceremony");
+    }
+    Ok(Box::new(identity))
+}
+
 fn load_approval_identity(options: &ApprovalOptions<'_>) -> anyhow::Result<ApprovalIdentity> {
     let paths = IdentityPaths::under(options.identity_root);
-    let root = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)
-        .context("this device does not hold the identity root needed to approve enrollment")?;
+    let root = load_approval_root(options.identity_root, options.identity_dir)?;
     let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)?;
-    let user_public_key = root.verifying_key().to_bytes();
+    let user_public_key = root.public_key();
     let issuer_cert = tilo_user_identity::persist::read_device_cert(
         &paths.device_cert_for_user(&user_public_key),
     )
@@ -2019,12 +2313,13 @@ fn approval_projection(
                 .with_context(|| format!("read {}", options.acl.display()))?;
             let capabilities = serde_json::from_str(&capability_json)
                 .context("filesystem capability export is invalid")?;
-            let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
+            let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign_with(
                 ticket.workspace_id(),
                 1,
                 capabilities,
                 false,
-                &identity.root,
+                identity.user_public_key,
+                |payload| identity.root.sign_message(payload),
             )?;
             let mut relay_workspace_ids = identity.relay_workspace_ids.clone();
             relay_workspace_ids.sort_unstable();
@@ -2082,7 +2377,7 @@ fn prepare_approval(
         expires_at_ns: None,
         signature: [0; 64],
     };
-    sign_device_cert(&mut cert, &identity.root)?;
+    sign_root_cert(&mut cert, identity.root.as_ref())?;
     let projection = approval_projection(options, identity, &cert)?;
     let signed = sign_response(
         ResponsePayload {
@@ -2095,7 +2390,7 @@ fn prepare_approval(
             fleet_json: projection.fleet_json,
             home_peers_json: projection.home_peers_json,
         },
-        &identity.root,
+        identity.root.as_ref(),
     )?;
     let encrypted = encrypt_response(
         &signed,
@@ -2182,7 +2477,7 @@ fn commit_approval(
         &prepared.encrypted,
         pending.token.nonce,
         pending.request.device_public_key,
-        &identity.root,
+        identity.root.as_ref(),
     )?;
     for _ in 0..8 {
         socket.send_to(&finalized, pending.sender)?;
@@ -2224,12 +2519,229 @@ fn approve(options: &ApprovalOptions<'_>) -> anyhow::Result<()> {
     commit_approval(&session, options, &identity, &pending, &prepared)
 }
 
+fn device_key(identity_root: &std::path::Path) -> anyhow::Result<()> {
+    let paths = IdentityPaths::under(identity_root);
+    let (device, _) = tilo_user_identity::persist::load_or_create_device_key(&paths)?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "device_public_key": hex::encode(device.verifying_key().to_bytes()),
+            "relay_service_node_id": hex::encode(tilo_relay::daemon::relay_service_node_id(&device)),
+        })
+    );
+    Ok(())
+}
+
+/// The personal projection a certificate alone implies: the public identity
+/// of its root, and a fleet of this device.
+fn out_of_band_payload(
+    cert: DeviceCert,
+    device: &ed25519_dalek::SigningKey,
+) -> anyhow::Result<ResponsePayload> {
+    let user = cert.user_public_key;
+    let fleet = FleetProjection {
+        schema_version: 1,
+        identity_id: hex::encode(user),
+        certificates: vec![cert.clone()],
+        revocations: Vec::new(),
+    };
+    let digest = blake3::hash(&tilo_user_identity::canonical::canonical_bytes(&cert)?);
+    let mut nonce = [0; 16];
+    nonce.copy_from_slice(&digest.as_bytes()[..16]);
+    Ok(ResponsePayload {
+        nonce,
+        recipient_device_public_key: cert.device_public_key,
+        relay_service_node_id: tilo_relay::daemon::relay_service_node_id(device),
+        home_peer_toml: None,
+        public_identity_json: Some(public_identity_record(user, "My Tilo identity")?),
+        fleet_json: Some(serde_json::to_vec_pretty(&fleet)?),
+        home_peers_json: Some(b"[]".to_vec()),
+        cert,
+    })
+}
+
+struct CertifyOptions<'a> {
+    root_key: Option<&'a std::path::Path>,
+    identity_root: &'a std::path::Path,
+    identity_dir: Option<&'a std::path::Path>,
+    device: &'a str,
+    label: &'a str,
+    capabilities: &'a [String],
+    out: &'a std::path::Path,
+}
+
+fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
+    let CertifyOptions {
+        root_key,
+        identity_root,
+        identity_dir,
+        device,
+        label,
+        capabilities,
+        out,
+    } = *options;
+    let root: Box<dyn RootSigner> = match root_key {
+        Some(path) => Box::new(
+            tilo_user_identity::persist::read_owned_signing_key(path)
+                .with_context(|| format!("read {}", path.display()))?,
+        ),
+        None => load_approval_root(identity_root, identity_dir)?,
+    };
+    let device_public_key: [u8; 32] = hex::decode(device.trim())
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .context("--device must be a 32-byte hex public key")?;
+    let mut granted = DeviceCapabilities {
+        can_own_workspaces: false,
+        can_admit_devices: false,
+        can_act_as_host: false,
+        can_read_all_workspaces: false,
+        foreign: false,
+        can_administer_devices: false,
+    };
+    for capability in capabilities {
+        match capability.as_str() {
+            "own" => granted.can_own_workspaces = true,
+            "admit" => granted.can_admit_devices = true,
+            "host" => granted.can_act_as_host = true,
+            "read-all" => granted.can_read_all_workspaces = true,
+            "admin" => granted.can_administer_devices = true,
+            other => {
+                bail!("unknown capability {other}: expected own, admit, host, read-all or admin")
+            }
+        }
+    }
+    let mut cert = DeviceCert {
+        user_public_key: root.public_key(),
+        device_public_key,
+        device_label: label.into(),
+        capabilities: granted,
+        issued_at_ns: now_ns()?,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_root_cert(&mut cert, root.as_ref())?;
+    if let Some(identity_dir) = identity_dir {
+        let fleet = project_personal_device(identity_dir, &cert)?;
+        commit_personal_device(identity_dir, cert.user_public_key, &fleet)?;
+    }
+    tilo_user_identity::persist::write_device_cert(out, &cert)?;
+    Ok(())
+}
+
+fn install_cert(
+    identity_root: &std::path::Path,
+    identity_dir: &std::path::Path,
+    cert_path: &std::path::Path,
+) -> anyhow::Result<()> {
+    let cert = tilo_user_identity::persist::read_device_cert(cert_path)
+        .with_context(|| format!("read {}", cert_path.display()))?;
+    verify_device_cert_at(&cert, now_ns()?).context("the certificate does not verify")?;
+    let paths = IdentityPaths::under(identity_root);
+    let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+        .context("this device has no key; run device-key first")?;
+    if device.verifying_key().to_bytes() != cert.device_public_key {
+        bail!("the certificate names another device");
+    }
+    if let Ok(user) = tilo_user_identity::persist::read_public_key(&paths.user_pubkey)
+        && user != cert.user_public_key
+    {
+        bail!("this device already belongs to another identity");
+    }
+    let record = install_personal_projection(
+        identity_root,
+        identity_dir,
+        &out_of_band_payload(cert, &device)?,
+    )?;
+    println!("installed {}", record.display());
+    Ok(())
+}
+
+fn out_of_band(command: OutOfBand) -> anyhow::Result<()> {
+    match command {
+        OutOfBand::DeviceKey { identity_root } => device_key(&identity_root),
+        OutOfBand::Certify {
+            root_key,
+            identity_root,
+            identity_dir,
+            device,
+            label,
+            capabilities,
+            out,
+        } => certify(&CertifyOptions {
+            root_key: root_key.as_deref(),
+            identity_root: &identity_root,
+            identity_dir: identity_dir.as_deref(),
+            device: &device,
+            label: &label,
+            capabilities: &capabilities,
+            out: &out,
+        }),
+        OutOfBand::InstallCert {
+            identity_root,
+            identity_dir,
+            cert,
+        } => install_cert(&identity_root, &identity_dir, &cert),
+    }
+}
+
 fn main() -> anyhow::Result<std::process::ExitCode> {
     // Automerge isolation workers re-enter this binary; serve them first.
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         return Ok(std::process::ExitCode::from(code));
     }
     run().map(|()| std::process::ExitCode::SUCCESS)
+}
+
+fn personal_device_requester_lease(
+    headless: bool,
+    requester_pid: Option<u32>,
+    requester_start_time: Option<u64>,
+) -> anyhow::Result<Option<tilo_relay::ProcessLease>> {
+    match (headless, requester_pid, requester_start_time) {
+        (true, None, None) => Ok(None),
+        (true, _, _) => {
+            bail!("--headless cannot be combined with --requester-pid or --requester-start-time")
+        }
+        (false, Some(pid), Some(start_time)) => {
+            Ok(Some(tilo_relay::ProcessLease::from_parts(pid, start_time)))
+        }
+        (false, _, _) => bail!(
+            "personal-device pairing requires --requester-pid and --requester-start-time unless --headless"
+        ),
+    }
+}
+
+fn pair_device_cli(
+    identity_root: &std::path::Path,
+    identity_dir: &std::path::Path,
+    label: &str,
+    timeout: u64,
+    status_file: Option<&std::path::Path>,
+    headless: bool,
+    requester_pid: Option<u32>,
+    requester_start_time: Option<u64>,
+) -> anyhow::Result<()> {
+    let result = personal_device_requester_lease(headless, requester_pid, requester_start_time)
+        .and_then(|requester_lease| {
+            pair(
+                JoinOptions {
+                    identity_root,
+                    label,
+                    timeout,
+                    kind: EnrollmentKind::PersonalDevice,
+                    home_peer_output: None,
+                    identity_dir: Some(identity_dir),
+                    requester_lease,
+                    port: NEARBY_PORT,
+                },
+                status_file,
+            )
+        });
+    if let (Err(error), Some(path)) = (&result, status_file) {
+        report_pairing_failure(path, error);
+    }
+    result
 }
 
 fn run() -> anyhow::Result<()> {
@@ -2273,23 +2785,18 @@ fn run() -> anyhow::Result<()> {
             label,
             timeout,
             status_file,
+            headless,
             requester_pid,
             requester_start_time,
-        } => pair(
-            JoinOptions {
-                identity_root: &identity_root,
-                label: &label,
-                timeout,
-                kind: EnrollmentKind::PersonalDevice,
-                home_peer_output: None,
-                identity_dir: Some(&identity_dir),
-                requester_lease: Some(tilo_relay::ProcessLease::from_parts(
-                    requester_pid,
-                    requester_start_time,
-                )),
-                port: NEARBY_PORT,
-            },
+        } => pair_device_cli(
+            &identity_root,
+            &identity_dir,
+            &label,
+            timeout,
             status_file.as_deref(),
+            headless,
+            requester_pid,
+            requester_start_time,
         ),
         Command::Approve {
             identity_root,
@@ -2331,6 +2838,7 @@ fn run() -> anyhow::Result<()> {
             port: NEARBY_PORT,
             ready: None,
         }),
+        Command::OutOfBand(command) => out_of_band(command),
     }
 }
 
@@ -2338,8 +2846,125 @@ fn run() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use tilo_user_identity::{
-        DeviceCapabilities, RevocationEntry, RevocationReason, sign_revocation_entry,
+        DeviceCapabilities, RevocationEntry, RevocationReason, sign_device_cert,
+        sign_revocation_entry,
     };
+
+    /// The root a device holds certifies a developer's machine for
+    /// administration and lists it in the person's fleet, where Settings can
+    /// remove it; an unknown capability names the ones there are.
+    #[test]
+    fn a_held_root_certifies_an_administrator_into_the_fleet() {
+        let identity_root = tempfile::tempdir().unwrap();
+        let identity_dir = tempfile::tempdir().unwrap();
+        let paths = IdentityPaths::under(identity_root.path());
+        paths.ensure_directories().unwrap();
+        let root = ed25519_dalek::SigningKey::from_bytes(&[43; 32]);
+        tilo_user_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
+        let admin = ed25519_dalek::SigningKey::from_bytes(&[44; 32]);
+        let device = hex::encode(admin.verifying_key().to_bytes());
+        let out = identity_dir.path().join("admin.cert");
+        let options = |capabilities| CertifyOptions {
+            root_key: None,
+            identity_root: identity_root.path(),
+            identity_dir: Some(identity_dir.path()),
+            device: &device,
+            label: "workstation (tilo-vm)",
+            capabilities,
+            out: &out,
+        };
+        let shell = ["shell".to_owned()];
+        let unknown = certify(&options(&shell)).unwrap_err();
+        assert!(
+            unknown.to_string().contains("read-all or admin"),
+            "{unknown}"
+        );
+
+        let admin_only = ["admin".to_owned()];
+        certify(&options(&admin_only)).unwrap();
+        let cert = tilo_user_identity::persist::read_device_cert(&out).unwrap();
+        verify_device_cert(&cert).unwrap();
+        assert_eq!(cert.user_public_key, root.verifying_key().to_bytes());
+        assert_eq!(cert.capabilities, DeviceCapabilities::administrator());
+        let fleet: FleetProjection = serde_json::from_slice(
+            &std::fs::read(fleet_path(identity_dir.path(), cert.user_public_key)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(fleet.certificates, vec![cert]);
+    }
+
+    #[test]
+    fn an_out_of_band_certificate_joins_its_identity() {
+        let identity_root = tempfile::tempdir().unwrap();
+        let identity_dir = tempfile::tempdir().unwrap();
+        device_key(identity_root.path()).unwrap();
+        let paths = IdentityPaths::under(identity_root.path());
+        let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey).unwrap();
+        let root = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+        let user = root.verifying_key().to_bytes();
+        let issue = |device_public_key: [u8; 32], root: &ed25519_dalek::SigningKey| {
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key,
+                device_label: "Node".into(),
+                capabilities: DeviceCapabilities::host(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            sign_device_cert(&mut cert, root).unwrap();
+            let path = identity_dir
+                .path()
+                .join(format!("{}.cert", hex::encode(&cert.signature[..8])));
+            tilo_user_identity::persist::write_device_cert(&path, &cert).unwrap();
+            path
+        };
+
+        let other_device = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+        let foreign = issue(other_device.verifying_key().to_bytes(), &root);
+        assert!(install_cert(identity_root.path(), identity_dir.path(), &foreign).is_err());
+        assert!(!paths.device_cert.exists());
+
+        let root_key = identity_dir.path().join("root.key");
+        tilo_user_identity::persist::write_signing_key(&root_key, &root).unwrap();
+        let own = identity_dir.path().join("own.cert");
+        let capabilities = ["own", "host", "read-all"].map(String::from);
+        certify(&CertifyOptions {
+            root_key: Some(&root_key),
+            identity_root: identity_root.path(),
+            identity_dir: None,
+            device: &hex::encode(device.verifying_key().to_bytes()),
+            label: "Node",
+            capabilities: &capabilities,
+            out: &own,
+        })
+        .unwrap();
+        install_cert(identity_root.path(), identity_dir.path(), &own).unwrap();
+        // Delivered again (a restart before the launcher noticed): unchanged.
+        install_cert(identity_root.path(), identity_dir.path(), &own).unwrap();
+        let installed = tilo_user_identity::persist::read_device_cert(&paths.device_cert).unwrap();
+        assert_eq!(installed.user_public_key, user);
+        assert!(
+            installed.capabilities.can_act_as_host && !installed.capabilities.can_admit_devices
+        );
+        assert_eq!(
+            tilo_user_identity::persist::read_public_key(&paths.user_pubkey).unwrap(),
+            user
+        );
+        let record =
+            runtime_identity::load_from_path(identity_record_path(identity_dir.path(), user))
+                .unwrap();
+        assert_eq!(record.group_public_key(), user);
+        assert!(record.sign(b"root-only operation").is_err());
+
+        let stranger = ed25519_dalek::SigningKey::from_bytes(&[43; 32]);
+        let takeover = issue(device.verifying_key().to_bytes(), &stranger);
+        assert!(install_cert(identity_root.path(), identity_dir.path(), &takeover).is_err());
+        assert_eq!(
+            tilo_user_identity::persist::read_public_key(&paths.user_pubkey).unwrap(),
+            user
+        );
+    }
 
     fn personal_payload(
         root: &ed25519_dalek::SigningKey,
@@ -2441,7 +3066,7 @@ mod tests {
             };
             sign_revocation_entry(&mut revocation, &root).unwrap();
             let identity = tempfile::tempdir().unwrap();
-            atomic_file::write_creating_parent(
+            tilo_files::native::atomic::write_creating_parent(
                 &fleet_path(identity.path(), user),
                 &serde_json::to_vec(&FleetProjection {
                     schema_version: 1,
@@ -2652,10 +3277,32 @@ mod tests {
             // explicit retry may complete that exact transaction under its own
             // live lease rather than leaving mixed durable state.
             let retry_lease = tilo_relay::ProcessLease::capture(std::process::id()).unwrap();
-            recover_personal_enrollments(identity_root.path(), identity_dir.path(), &paths, |_| {
-                retry_lease.validate().map_err(Into::into)
-            })
-            .unwrap();
+            // A root-run commit may run under a strict umask (the pairing
+            // helper's, or a script's); the public files stay readable.
+            // SAFETY: umask has no preconditions; this test process is alone.
+            let umask = unsafe { libc::umask(0o077) };
+            let recovered = recover_personal_enrollments(
+                identity_root.path(),
+                identity_dir.path(),
+                &paths,
+                |_| retry_lease.validate().map_err(Into::into),
+            );
+            // SAFETY: as above, restoring the previous mask.
+            unsafe { libc::umask(umask) };
+            recovered.unwrap();
+            for public in [
+                paths.user_pubkey.clone(),
+                paths.device_cert.clone(),
+                paths.device_cert_for_user(&root.verifying_key().to_bytes()),
+            ] {
+                use std::os::unix::fs::PermissionsExt as _;
+                assert_eq!(
+                    std::fs::metadata(&public).unwrap().permissions().mode() & 0o777,
+                    tilo_user_identity::persist::PUBLIC_FILE_MODE,
+                    "{} is not readable to the session",
+                    public.display()
+                );
+            }
             assert_eq!(
                 std::fs::read(&paths.user_pubkey).unwrap(),
                 root.verifying_key().to_bytes()
@@ -2705,12 +3352,18 @@ mod tests {
             let record =
                 install_personal_projection(identity_root.path(), identity_dir.path(), &payload)
                     .unwrap();
+            // The joined identity is what this device acts for from the next
+            // login on, not an absent default that asks to create one.
+            assert_eq!(
+                runtime_identity::resolve_active_identity(identity_dir.path()),
+                Some(record.clone())
+            );
             let loaded = runtime_identity::load_from_path(record).unwrap();
             assert_eq!(loaded.group_public_key(), user);
             assert!(!loaded.is_single_device());
             assert!(loaded.sign(b"root-only operation").is_err());
             assert_eq!(
-                std::fs::read(identity_root.path().join("home-peers.json")).unwrap(),
+                std::fs::read(tilo_relay::home_peer_registry_path(identity_root.path())).unwrap(),
                 b"[]"
             );
             let registry: serde_json::Value = serde_json::from_slice(
@@ -2763,9 +3416,10 @@ mod tests {
                 user_public_key: hex::encode(other_cert.user_public_key),
                 device_cert: Some(other_cert),
                 relay_workspace_ids: vec![7],
+                environments: tilo_relay_protocol::RelayEnvironments::default(),
             };
-            atomic_file::write(
-                &identity_root.path().join("home-peers.json"),
+            tilo_files::native::atomic::write_creating_parent(
+                &tilo_relay::home_peer_registry_path(identity_root.path()),
                 &serde_json::to_vec_pretty(&vec![other.clone()]).unwrap(),
             )
             .unwrap();
@@ -2776,7 +3430,7 @@ mod tests {
             )
             .unwrap();
             let peers: Vec<HomePeerRegistration> = serde_json::from_slice(
-                &std::fs::read(identity_root.path().join("home-peers.json")).unwrap(),
+                &std::fs::read(tilo_relay::home_peer_registry_path(identity_root.path())).unwrap(),
             )
             .unwrap();
             assert_eq!(peers, vec![other]);
@@ -2804,6 +3458,7 @@ mod tests {
                 user_public_key: hex::encode(cert.user_public_key),
                 device_cert: Some(cert),
                 relay_workspace_ids: vec![7],
+                environments: tilo_relay_protocol::RelayEnvironments::default(),
             };
             assert!(valid_home_peer_registration(&registration));
 
@@ -2938,7 +3593,7 @@ mod tests {
             &issuer_cert,
         )
         .unwrap();
-        atomic_file::write_creating_parent(
+        tilo_files::native::atomic::write_creating_parent(
             &fleet_path(approver_identities.path(), root.verifying_key().to_bytes()),
             &serde_json::to_vec_pretty(&FleetProjection {
                 schema_version: 1,
@@ -3044,7 +3699,7 @@ mod tests {
         assert!(verify_device_cert(&cert).is_ok());
         assert!(!enrolled_paths.user_privkey.exists());
         let peers: Vec<HomePeerRegistration> = serde_json::from_slice(
-            &std::fs::read(new_root.path().join("home-peers.json")).unwrap(),
+            &std::fs::read(tilo_relay::home_peer_registry_path(new_root.path())).unwrap(),
         )
         .unwrap();
         assert_eq!(peers.len(), 1);
@@ -3057,6 +3712,56 @@ mod tests {
             identity
                 .sign(b"root/admin signing must stay unavailable")
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn a_failed_first_use_pairing_reports_its_reason_in_the_status_file() {
+        let identity_root = tempfile::tempdir().unwrap();
+        let identity_dir = tempfile::tempdir().unwrap();
+        let status = identity_dir.path().join(".nearby-enrollment-status.json");
+        // A requester that is already gone: the lease check fails before
+        // anything is broadcast, as an expired or foreign compositor would.
+        let error = pair_device_cli(
+            identity_root.path(),
+            identity_dir.path(),
+            "New laptop",
+            1,
+            Some(&status),
+            false,
+            Some(u32::MAX - 1),
+            Some(1),
+        )
+        .unwrap_err();
+        let recorded: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&status).unwrap()).unwrap();
+        assert_eq!(recorded["state"], "failed");
+        assert_eq!(recorded["error"], format!("{error:#}"));
+        assert!(
+            recorded["error"]
+                .as_str()
+                .unwrap()
+                .contains("first-use requester exited"),
+            "the reason reaches the UI: {recorded}"
+        );
+    }
+
+    #[test]
+    fn a_failed_pairing_names_its_cause() {
+        let denied = anyhow::Error::from(std::io::Error::from_raw_os_error(libc::EACCES))
+            .context("publish the enrollment commit");
+        assert_eq!(pairing_failure_cause(&denied), "permission_denied");
+        let full = anyhow::Error::from(std::io::Error::from_raw_os_error(libc::ENOSPC));
+        assert_eq!(pairing_failure_cause(&full), "storage_full");
+        let read_only = anyhow::Error::from(std::io::Error::from_raw_os_error(libc::EROFS));
+        assert_eq!(pairing_failure_cause(&read_only), "read_only");
+        let unreachable = anyhow::Error::from(std::io::Error::from_raw_os_error(libc::ENETUNREACH));
+        assert_eq!(pairing_failure_cause(&unreachable), "unreachable");
+        let closed = anyhow::Error::from(WindowClosed("the window closed"));
+        assert_eq!(pairing_failure_cause(&closed), "timed_out");
+        assert_eq!(
+            pairing_failure_cause(&anyhow::anyhow!("first-use requester exited")),
+            "unknown"
         );
     }
 
@@ -3121,9 +3826,10 @@ mod tests {
             let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
             let cert = payload(&root).cert;
             register_home_peer(dir.path(), &cert, [8; 32], &[2, 9]).unwrap();
-            let json: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(dir.path().join("home-peers.json")).unwrap())
-                    .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(tilo_relay::home_peer_registry_path(dir.path())).unwrap(),
+            )
+            .unwrap();
             assert_eq!(
                 json[0]["device_node_id"],
                 hex::encode(cert.device_public_key)
@@ -3131,7 +3837,7 @@ mod tests {
             assert_eq!(json[0]["relay_service_node_id"], hex::encode([8; 32]));
             assert_eq!(json[0]["relay_workspace_ids"], serde_json::json!([2, 9]));
             assert_eq!(
-                std::fs::metadata(dir.path().join("home-peers.json"))
+                std::fs::metadata(tilo_relay::home_peer_registry_path(dir.path()))
                     .unwrap()
                     .permissions()
                     .mode()
@@ -3142,8 +3848,8 @@ mod tests {
         // Phase `invalid_existing_home_peer_registry_is_never_overwritten`.
         {
             let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("home-peers.json");
-            atomic_file::write(&path, b"not json").unwrap();
+            let path = tilo_relay::home_peer_registry_path(dir.path());
+            tilo_files::native::atomic::write_creating_parent(&path, b"not json").unwrap();
             let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
             assert!(register_home_peer(dir.path(), &payload(&root).cert, [8; 32], &[2]).is_err());
             assert_eq!(std::fs::read(&path).unwrap(), b"not json");

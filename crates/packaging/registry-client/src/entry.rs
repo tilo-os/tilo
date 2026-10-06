@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use anyhow::{Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
 use serde::Deserialize;
+use tilo_app_package::chunks::ObjectDir;
 use tilo_app_package::manifest::Arch;
 use tilo_app_package::{DiscardBlobs, Manifest, PackageId, Verification};
 
@@ -96,14 +97,42 @@ pub struct Checked {
 ///
 /// Why the registry would refuse the package.
 pub fn check_package(tapp_bytes: &[u8], publisher: [u8; 32]) -> Result<Checked> {
+    check_package_with(tapp_bytes, publisher, None)
+}
+
+/// [`check_package`] for a package whose payload blobs the `.tapp` need not
+/// carry: each missing blob is read from `objects` (the directory
+/// `tilo-app-package split` wrote, published beside the thin `.tapp`) and
+/// checked against its hash, so the payload shape and size limits are
+/// checked on what installs will actually materialize.
+///
+/// # Errors
+///
+/// Why the registry would refuse the package, or a blob neither carried nor
+/// in `objects`.
+pub fn check_package_with(
+    tapp_bytes: &[u8],
+    publisher: [u8; 32],
+    objects: Option<&ObjectDir>,
+) -> Result<Checked> {
     let tapp = tilo_app_package::tapp::read(tapp_bytes, &mut DiscardBlobs)
         .map_err(|error| anyhow!("decode .tapp: {error}"))?;
+    let mut lengths = tapp.carried.clone();
     let missing = tapp.missing();
     if !missing.is_empty() {
-        bail!(
-            "publish the full .tapp; {} payload blob(s) are not carried",
-            missing.len()
-        );
+        let Some(objects) = objects else {
+            bail!(
+                "publish the full .tapp, or the thin one with its payload objects; {} payload blob(s) are not carried",
+                missing.len()
+            );
+        };
+        for hash in missing {
+            let len = objects
+                .verified_len(&hash)
+                .map_err(|error| anyhow!("payload object {hash}: {error}"))?
+                .ok_or_else(|| anyhow!("no payload object for blob {hash}"))?;
+            lengths.insert(hash, len);
+        }
     }
     let manifest = &tapp.meta.manifest;
     let payload_paths: Vec<PathBuf> = tapp
@@ -116,9 +145,17 @@ pub fn check_package(tapp_bytes: &[u8], publisher: [u8; 32]) -> Result<Checked> 
     tilo_app_package::validate_manifest_with_payload(manifest, &payload_paths)
         .map_err(|error| anyhow!("manifest/payload validation: {error}"))?;
     tilo_app_package::validate_materialized_payload(manifest, &tapp.meta.collection, |hash| {
-        tapp.carried.get(hash).copied()
+        lengths.get(hash).copied()
     })
     .map_err(|error| anyhow!("{error}"))?;
+    let payload_bytes = lengths
+        .values()
+        .fold(0u64, |sum, len| sum.saturating_add(*len));
+    if let Some(limit) = tilo_app_package::payload_size_limit(manifest)
+        && payload_bytes > limit
+    {
+        bail!("the payload is {payload_bytes} bytes; limit is {limit} bytes");
+    }
     match tilo_app_package::verify(&tapp.meta, &[publisher]) {
         Verification::Trusted { .. } | Verification::AttestedBy { .. } => {}
         Verification::UntrustedPublisher { identity, .. } => bail!(
@@ -145,15 +182,12 @@ pub fn check_package(tapp_bytes: &[u8], publisher: [u8; 32]) -> Result<Checked> 
 /// Build the entry from the package's own manifest: id, name,
 /// category, version come from inside the signed package, so a
 /// registry row cannot describe a package as something it is not.
+/// The entry keeps `previous`'s versions within `retention`.
 ///
 /// # Errors
 ///
 /// When the package fails [`check_package`], does not match `platform` or
 /// `arch`, or conflicts with `previous`.
-#[allow(
-    clippy::too_many_lines,
-    reason = "registry entry assembly must bind package inspection, target selection, metadata, prior-entry continuity, validation, and signing in one auditable sequence"
-)]
 pub fn build_entry(
     tapp_bytes: &[u8],
     url: &str,
@@ -162,15 +196,83 @@ pub fn build_entry(
     arch: Option<&str>,
     previous: Option<&registry_types::RegistryEntry>,
     metadata: Option<&EntryMetadata>,
+    retention: &registry_types::retention::RetentionPolicy,
 ) -> Result<registry_types::RegistryEntry> {
     let checked = check_package(tapp_bytes, signer.verifying_key().to_bytes())?;
+    entry_for_checked(
+        (tapp_bytes, &checked),
+        url,
+        signer,
+        platform,
+        arch,
+        previous,
+        metadata,
+        retention,
+    )
+}
+
+/// A thin `.tapp` and the directory of payload objects hosted beside it.
+#[derive(Clone, Copy)]
+pub struct ThinPackage<'a> {
+    pub tapp: &'a [u8],
+    pub objects: &'a ObjectDir,
+}
+
+/// [`build_entry`] for a thin `.tapp` whose payload objects (the directory
+/// `tilo-app-package split` wrote) are hosted beside it at `url`; the payload
+/// is checked from `package.objects` (see [`check_package_with`]).
+///
+/// # Errors
+///
+/// As [`build_entry`], or a payload blob missing from `objects`.
+pub fn build_entry_with_objects(
+    package: ThinPackage<'_>,
+    url: &str,
+    signer: &SigningKey,
+    platform: Platform,
+    arch: Option<&str>,
+    previous: Option<&registry_types::RegistryEntry>,
+    metadata: Option<&EntryMetadata>,
+    retention: &registry_types::retention::RetentionPolicy,
+) -> Result<registry_types::RegistryEntry> {
+    let checked = check_package_with(
+        package.tapp,
+        signer.verifying_key().to_bytes(),
+        Some(package.objects),
+    )?;
+    entry_for_checked(
+        (package.tapp, &checked),
+        url,
+        signer,
+        platform,
+        arch,
+        previous,
+        metadata,
+        retention,
+    )
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "registry entry assembly must bind package inspection, target selection, metadata, prior-entry continuity, validation, and signing in one auditable sequence"
+)]
+fn entry_for_checked(
+    (tapp_bytes, checked): (&[u8], &Checked),
+    url: &str,
+    signer: &SigningKey,
+    platform: Platform,
+    arch: Option<&str>,
+    previous: Option<&registry_types::RegistryEntry>,
+    metadata: Option<&EntryMetadata>,
+    retention: &registry_types::retention::RetentionPolicy,
+) -> Result<registry_types::RegistryEntry> {
     let binding = match platform {
-        Platform::TiloOs => native_binding(tapp_bytes, &checked, arch)?,
+        Platform::TiloOs => native_binding(tapp_bytes, checked, arch)?,
         Platform::Web
         | Platform::Linux
         | Platform::Windows
         | Platform::Macos
-        | Platform::Android => signed_target_binding(tapp_bytes, &checked, platform, arch)?,
+        | Platform::Android => signed_target_binding(tapp_bytes, checked, platform, arch)?,
     };
     let package = &checked.manifest.package;
     let now = std::env::var("SOURCE_DATE_EPOCH")
@@ -226,6 +328,8 @@ pub fn build_entry(
         versions.push(version);
     }
     versions.sort_by(compare_registry_versions);
+    let mut versions = retention.retain(&versions);
+    keep_newest_versions(&mut versions);
     let display_name = package.name.clone().unwrap_or_else(|| package.id.clone());
     let mut entry = registry_types::RegistryEntry {
         package_id: package.id.clone(),
@@ -328,7 +432,12 @@ fn native_binding(
             platform: registry_types::TILO_OS_PLATFORM.into(),
             architecture: arch_wire(arch).into(),
             isa: level.wire_label().to_string(),
-            runtime: checked.manifest.package.runtime.clone(),
+            runtime: checked
+                .manifest
+                .package
+                .native_runtime_binding()
+                .map(str::to_string),
+            interfaces: checked.manifest.required_interface_wire(),
         },
     })
 }
@@ -365,6 +474,7 @@ fn signed_target_binding(
         architecture: target.architecture.clone(),
         isa: target.isa.clone(),
         runtime: Some(target.runtime.clone()),
+        interfaces: Vec::new(),
     };
     if target.platform != platform.wire() {
         bail!(
@@ -415,6 +525,44 @@ fn candidate_is_older_than_published(
     })
 }
 
+/// Bound `versions` (sorted newest first) to the registry's limit by dropping
+/// the oldest superseded ones. The newest version of every target stays, so
+/// no target loses its current release.
+fn keep_newest_versions(versions: &mut Vec<registry_types::RegistryVersion>) {
+    let excess = versions
+        .len()
+        .saturating_sub(registry_types::entry::MAX_ENTRY_VERSIONS);
+    if excess == 0 {
+        return;
+    }
+    let mut dropped = 0;
+    for index in (0..versions.len()).rev() {
+        if dropped == excess {
+            break;
+        }
+        let Some(candidate) = versions.get(index) else {
+            continue;
+        };
+        let superseded = versions
+            .get(..index)
+            .unwrap_or_default()
+            .iter()
+            .any(|newer| same_target(newer, candidate));
+        if superseded {
+            versions.remove(index);
+            dropped = dropped.saturating_add(1);
+        }
+    }
+}
+
+fn same_target(
+    left: &registry_types::RegistryVersion,
+    right: &registry_types::RegistryVersion,
+) -> bool {
+    left.target.platform == right.target.platform
+        && left.target.architecture == right.target.architecture
+}
+
 fn compare_registry_versions(
     left: &registry_types::RegistryVersion,
     right: &registry_types::RegistryVersion,
@@ -426,6 +574,7 @@ fn compare_registry_versions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use registry_types::retention::RetentionPolicy;
 
     fn version(value: &str) -> registry_types::RegistryVersion {
         registry_types::RegistryVersion {
@@ -440,6 +589,7 @@ mod tests {
                 architecture: "x86_64".into(),
                 isa: "x86_64-v3".into(),
                 runtime: None,
+                interfaces: Vec::new(),
             },
         }
     }
@@ -557,6 +707,7 @@ module = "{module}"
             Some("aarch64"),
             None,
             None,
+            &RetentionPolicy::default(),
         )
         .unwrap();
         let [version] = entry.versions.as_slice() else {
@@ -569,6 +720,7 @@ module = "{module}"
                 architecture: "aarch64".into(),
                 isa: "aarch64".into(),
                 runtime: Some("tilo-runtime/2026.07".into()),
+                interfaces: Vec::new(),
             }
         );
         assert!(registry_types::verify_entry_signature(&entry));
@@ -580,7 +732,17 @@ module = "{module}"
             Platform::Macos,
         ] {
             assert!(
-                build_entry(&bytes, url, &signer, platform, None, None, None).is_err(),
+                build_entry(
+                    &bytes,
+                    url,
+                    &signer,
+                    platform,
+                    None,
+                    None,
+                    None,
+                    &RetentionPolicy::default()
+                )
+                .is_err(),
                 "an android tapp must not bind as {}",
                 platform.wire()
             );
@@ -593,9 +755,31 @@ module = "{module}"
                 Platform::Android,
                 Some("x86_64"),
                 None,
-                None
+                None,
+                &RetentionPolicy::default(),
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn versions_beyond_the_limit_drop_the_oldest_superseded_ones() {
+        let limit = registry_types::entry::MAX_ENTRY_VERSIONS;
+        let mut arm = version("1.0.0");
+        arm.target.architecture = "aarch64".into();
+        let mut versions: Vec<_> = (1..=limit)
+            .map(|n| version(&format!("1.0.{n}")))
+            .chain(std::iter::once(arm))
+            .collect();
+        versions.sort_by(compare_registry_versions);
+        keep_newest_versions(&mut versions);
+        assert_eq!(versions.len(), limit);
+        // The x86_64 release 1.0.1 left; aarch64's only release stayed.
+        assert!(versions.iter().all(|v| v.version != "1.0.1"));
+        assert!(versions.iter().any(|v| v.target.architecture == "aarch64"));
+        assert_eq!(
+            versions.first().map(|v| v.version.as_str()),
+            Some(&*format!("1.0.{limit}"))
         );
     }
 }

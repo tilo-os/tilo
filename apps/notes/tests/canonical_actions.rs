@@ -13,8 +13,8 @@ fn duplicate_subtree_round_trips_rich_content_and_refuses_stale_or_reused_ids() 
     // reused identifiers and nondeterministic replay.
     eprintln!("phase duplicate_subtree_roundtrips_and_preserves_rich_native_content");
     {
-        let f = LegacyFixture::rich();
-        let checkout = imported(&f);
+        let f = NotebookFixture::rich();
+        let checkout = notebook(&f);
         let doc = f.records.read(&checkout.id, Clone::clone).unwrap();
         let action = actions::duplicate_subtree_action(&doc, f.root).unwrap();
         let encoded = actions::encode(&action);
@@ -54,8 +54,15 @@ fn duplicate_subtree_round_trips_rich_content_and_refuses_stale_or_reused_ids() 
         let projected = notes::notebook::project(&a, None).unwrap();
         assert_eq!(projected.pages().len(), 5);
         assert_eq!(projected.get(copied_root).unwrap().title, "Projects copy");
-        assert_eq!(projected.get(copied_root).unwrap().order, 1);
-        assert_eq!(projected.get(f.empty).unwrap().order, 2);
+        assert_eq!(
+            projected
+                .children_of(None)
+                .iter()
+                .map(|p| p.id)
+                .collect::<Vec<_>>(),
+            vec![f.root, copied_root, f.empty],
+            "the copy lands right after its source"
+        );
         assert_eq!(
             projected.get(copied_child).unwrap().parent,
             Some(copied_root)
@@ -86,8 +93,8 @@ fn duplicate_subtree_round_trips_rich_content_and_refuses_stale_or_reused_ids() 
     // Reject a mapping captured before a new source block/descendant appears.
     eprintln!("phase duplicate_subtree_stale_mapping_is_refused_without_partial_writes");
     {
-        let f = LegacyFixture::rich();
-        let checkout = imported(&f);
+        let f = NotebookFixture::rich();
+        let checkout = notebook(&f);
         let mut doc = f.records.read(&checkout.id, Clone::clone).unwrap();
         let action = actions::duplicate_subtree_action(&doc, f.root).unwrap();
         NotesDoc::upsert_page_meta(
@@ -96,7 +103,7 @@ fn duplicate_subtree_round_trips_rich_content_and_refuses_stale_or_reused_ids() 
                 id: uuid::Uuid::from_u128(0x1004),
                 title: "new child".into(),
                 parent: Some(f.root),
-                order: 1,
+                order: "b".into(),
             },
         );
         doc.commit();
@@ -107,8 +114,8 @@ fn duplicate_subtree_round_trips_rich_content_and_refuses_stale_or_reused_ids() 
 
     eprintln!("phase duplicate_subtree_reused_destination_ids_are_refused_before_writes");
     {
-        let f = LegacyFixture::rich();
-        let checkout = imported(&f);
+        let f = NotebookFixture::rich();
+        let checkout = notebook(&f);
         let doc = f.records.read(&checkout.id, Clone::clone).unwrap();
         for field in ["page", "existing", "nil", "missing-page"] {
             let NotesAction::DuplicateSubtree { source, mut pages } =
@@ -183,7 +190,7 @@ fn assert_remapped_blocks(
 fn bound_edits_are_one_owned_history_entry_each() {
     eprintln!("phase bound_first_typing_split_and_block_move_keep_schema_and_one_history_entry");
     {
-        let f = LegacyFixture::rich();
+        let f = NotebookFixture::rich();
         let component = component(&f, 11, ui::application::LaunchTarget::New);
         let checkout = component.record().clone();
         let mut driver =
@@ -284,8 +291,8 @@ fn bound_edits_are_one_owned_history_entry_each() {
 
     eprintln!("phase bound_tree_reorder_is_one_logical_history_entry");
     {
-        let f = LegacyFixture::rich();
-        let checkout = imported(&f);
+        let f = NotebookFixture::rich();
+        let checkout = notebook(&f);
         let mut driver = driver(&f, 11, &checkout);
         let rect = page_rect(&driver, f.empty);
         driver.click_at(rect.center().x, rect.center().y);
@@ -297,8 +304,11 @@ fn bound_edits_are_one_owned_history_entry_each() {
         f.records
             .read(&checkout.id, |doc| {
                 let workspace = notes::notebook::project(doc, None).unwrap();
-                assert_eq!(workspace.get(f.empty).unwrap().order, 0);
-                assert_eq!(workspace.get(f.root).unwrap().order, 1);
+                let roots = workspace.children_of(None);
+                assert_eq!(
+                    roots.iter().map(|p| p.id).collect::<Vec<_>>(),
+                    vec![f.empty, f.root]
+                );
             })
             .unwrap();
         close_driver(&mut driver);
@@ -306,7 +316,7 @@ fn bound_edits_are_one_owned_history_entry_each() {
 
     eprintln!("phase bound_rich_split_preserves_both_halves_in_one_history_entry");
     {
-        let f = LegacyFixture::rich();
+        let f = NotebookFixture::rich();
         let component = component(&f, 11, ui::application::LaunchTarget::New);
         let checkout = component.record().clone();
         let mut a =
@@ -407,9 +417,8 @@ fn bound_edits_are_one_owned_history_entry_each() {
     eprintln!("phase bound_pointer_reparent_duplicate_and_checklist_are_owned_actions");
     {
         use winit::event::{ElementState, MouseButton};
-        let f = LegacyFixture::rich();
-        let checkout = imported(&f);
-        let source = f.source_bytes();
+        let f = NotebookFixture::rich();
+        let checkout = notebook(&f);
         let mut a = driver(&f, 11, &checkout);
         let from = page_rect(&a, f.empty).center();
         let to = page_rect(&a, f.root).center();
@@ -423,7 +432,14 @@ fn bound_edits_are_one_owned_history_entry_each() {
             .read(&checkout.id, |doc| {
                 let workspace = notes::notebook::project(doc, None).unwrap();
                 assert_eq!(workspace.get(f.empty).unwrap().parent, Some(f.root));
-                assert_eq!(workspace.get(f.empty).unwrap().order, 1);
+                assert_eq!(
+                    workspace
+                        .children_of(Some(f.root))
+                        .iter()
+                        .map(|p| p.id)
+                        .collect::<Vec<_>>(),
+                    vec![f.child, f.empty]
+                );
             })
             .unwrap();
         context_menu_select(&mut a, f.root, "Duplicate");
@@ -438,7 +454,7 @@ fn bound_edits_are_one_owned_history_entry_each() {
                     .iter()
                     .find(|p| p.title == "Projects copy")
                     .unwrap();
-                assert_eq!(copy.order, 1);
+                assert_eq!(workspace.children_of(None)[1].id, copy.id);
                 assert_eq!(workspace.children_of(Some(copy.id)).len(), 2);
                 copy.id
             })
@@ -492,14 +508,13 @@ fn bound_edits_are_one_owned_history_entry_each() {
                 notes::notebook::validate(doc).unwrap();
             })
             .unwrap();
-        assert_eq!(source, f.source_bytes());
         close_driver(&mut a);
     }
 
     eprintln!("phase tree_update_is_atomic_exact_and_replayable_without_touching_rich_content");
     {
-        let f = LegacyFixture::rich();
-        let checkout = imported(&f);
+        let f = NotebookFixture::rich();
+        let checkout = notebook(&f);
         let doc = f.records.read(&checkout.id, Clone::clone).unwrap();
         let mut workspace = notes::notebook::project(&doc, None).unwrap();
         let mut before = workspace
@@ -573,7 +588,7 @@ fn bound_edits_are_one_owned_history_entry_each() {
                 }
                 "nil" => result[0].id = uuid::Uuid::nil().to_string(),
                 "bad-parent" => result[0].parent = "malformed".into(),
-                "order" => result[0].order = 99,
+                "order" => result[0].order = "Z".into(),
                 _ => unreachable!(),
             }
             let untouched = (candidate.base_heads(), candidate.pending_ops());
@@ -600,9 +615,8 @@ fn bound_edits_are_one_owned_history_entry_each() {
 fn bound_undo_is_per_instance_and_retypes_once() {
     eprintln!("phase bound_same_author_interleaving_undo_redo_is_per_instance");
     {
-        let f = LegacyFixture::rich();
-        let checkout = imported(&f);
-        let source = f.source_bytes();
+        let f = NotebookFixture::rich();
+        let checkout = notebook(&f);
         let mut a = driver(&f, 11, &checkout);
         let mut b = driver(&f, 12, &checkout);
         let original = f
@@ -692,14 +706,13 @@ fn bound_undo_is_per_instance_and_retypes_once() {
                 );
             })
             .unwrap();
-        assert_eq!(source, f.source_bytes());
         close_driver(&mut a);
         close_driver(&mut b);
     }
 
     eprintln!("phase bound_first_type_undo_to_empty_retypes_once");
     {
-        let f = LegacyFixture::rich();
+        let f = NotebookFixture::rich();
         let component = component(&f, 11, ui::application::LaunchTarget::New);
         let checkout = component.record().clone();
         let mut a =
@@ -737,7 +750,7 @@ fn bound_undo_is_per_instance_and_retypes_once() {
 
     eprintln!("phase bound_peer_undo_to_empty_retypes_once");
     {
-        let f = LegacyFixture::rich();
+        let f = NotebookFixture::rich();
         let component = component(&f, 11, ui::application::LaunchTarget::New);
         let checkout = component.record().clone();
         let mut a =
@@ -771,8 +784,8 @@ fn bound_undo_is_per_instance_and_retypes_once() {
 
     eprintln!("phase first_undo_after_import_preserves_every_imported_value_and_receipt");
     {
-        let f = LegacyFixture::rich();
-        let checkout = imported(&f);
+        let f = NotebookFixture::rich();
+        let checkout = notebook(&f);
         let before = f
             .records
             .read(&checkout.id, |doc| {
@@ -807,8 +820,8 @@ fn bound_undo_is_per_instance_and_retypes_once() {
 fn registry_authority_and_stale_page_views_keep_other_instances_live() {
     eprintln!("phase app_and_driver_use_real_notes_registry_and_revoked_authority_refuses");
     {
-        let f = LegacyFixture::rich();
-        let checkout = imported(&f);
+        let f = NotebookFixture::rich();
+        let checkout = notebook(&f);
         let mut app =
             ui::App::from_component(component(&f, 11, existing(&checkout)), runner_inputs())
                 .unwrap();
@@ -900,8 +913,8 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
 
     eprintln!("phase bound_views_stale_page_refusal_and_close_reopen_keep_other_instance_live");
     {
-        let f = LegacyFixture::rich();
-        let checkout = imported(&f);
+        let f = NotebookFixture::rich();
+        let checkout = notebook(&f);
         let mut a = driver(&f, 11, &checkout);
         let mut b = driver(&f, 12, &checkout);
         let before = f
@@ -1005,8 +1018,8 @@ fn prepend(doc: &mut automerge::AutoCommit, page: notes::PageId, text: &str) {
     NotesDoc::edit_page_body(
         doc,
         page,
-        &qdoc_rich_text::RichTextAction::SpliceText {
-            region: qdoc_rich_text::action::RegionKind::Body,
+        &tilo_document::RichTextAction::SpliceText {
+            region: tilo_document::action::RegionKind::Body,
             block,
             at: 0,
             del: 0,
@@ -1023,8 +1036,8 @@ fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
         "phase mounting_same_author_peer_preserves_pending_typing_owner_and_stale_callback_refuses"
     );
     {
-        let f = LegacyFixture::rich();
-        let checkout = imported(&f);
+        let f = NotebookFixture::rich();
+        let checkout = notebook(&f);
         let mut a = BoundNotes::new(component(&f, 11, existing(&checkout)));
         let original = f
             .records
@@ -1111,7 +1124,7 @@ fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
 
     eprintln!("phase bound_rejected_editor_delta_after_last_page_delete_shows_empty_cta");
     {
-        let f = LegacyFixture::rich();
+        let f = NotebookFixture::rich();
         let component = component(&f, 12, ui::application::LaunchTarget::New);
         let checkout = component.record().clone();
         let mut b =
@@ -1282,7 +1295,7 @@ fn has_selected_node(node: &ui::headless::InspectionNode) -> bool {
 }
 
 fn assert_empty_retypes_once(
-    f: &LegacyFixture,
+    f: &NotebookFixture,
     checkout: &ui::record::RecordCheckout,
     page: notes::PageId,
     driver: &mut ui::headless::Driver,
@@ -1337,8 +1350,8 @@ fn assert_empty_retypes_once(
 
 #[test]
 fn bound_open_tag_uses_current_membership_without_prior_sync() {
-    let f = LegacyFixture::rich();
-    let checkout = imported(&f);
+    let f = NotebookFixture::rich();
+    let checkout = notebook(&f);
     let mut a = driver(&f, 11, &checkout);
     let mut b = driver(&f, 12, &checkout);
     invoke(&mut a, 11, actions::page_resource_id(f.child), "open", None);
@@ -1401,7 +1414,7 @@ fn bound_open_tag_uses_current_membership_without_prior_sync() {
 }
 
 fn assert_open_tag_view(
-    f: &LegacyFixture,
+    f: &NotebookFixture,
     checkout: &ui::record::RecordCheckout,
     a: &mut ui::headless::Driver,
     tag: uuid::Uuid,

@@ -27,11 +27,28 @@ pub use transport::{
     TransportError, TransportStatus,
 };
 
+/// How an app's error begins when it could not join its collaboration route
+/// and stopped. The shell recognises it in a failed launch's output to say
+/// why the app did not open.
+pub const ROUTE_JOIN_FAILED: &str = "joining collaboration route failed";
+
+/// Whether this host supports the local session runtime transport.
+/// This describes transport availability, not an inherited capability or permission.
+#[cfg(feature = "local-daemons")]
+pub const SESSION_RUNTIME_SUPPORTED: bool = runtime_portal::local_socket::SUPPORTED;
+/// No local session runtime transport was included in this host.
+#[cfg(not(feature = "local-daemons"))]
+pub const SESSION_RUNTIME_SUPPORTED: bool = false;
+
 #[cfg(feature = "broker-transport")]
 mod broker;
+pub mod channel_live_activity;
+#[cfg(feature = "broker-transport")]
+mod channel_settings;
 pub mod handoff;
 mod history;
 pub mod participants;
+pub mod record_content;
 #[cfg(feature = "broker-transport")]
 mod route_keys;
 #[cfg(feature = "broker-transport")]
@@ -207,6 +224,18 @@ pub enum CollabRequest {
     /// Ask the broker to select one existing holder of this exact route as a
     /// snapshot responder. Safe to retry while no holder is available.
     RequestDocumentSnapshot,
+    /// Content this route's record references, which the app stored: the
+    /// host keeps it where the record's readers are served from.
+    OfferContent {
+        hash: String,
+        bytes: Vec<u8>,
+    },
+    /// Content this route's record references and the app lacks. Answered,
+    /// from this device or the route's other devices, with
+    /// [`CollabEvent::RecordContent`].
+    WantContent {
+        hash: String,
+    },
     /// Outbound presence update — pointer moved, caret changed, selection
     /// shifted, or arrived/left a keyed object. Fanned out to every
     /// connected peer as `CollabEvent::RemotePresenceUpdate`.
@@ -365,6 +394,14 @@ pub enum CollabRequest {
         /// Optional portable blob identity staged read-only by the session
         /// before it launches the target application.
         content_hash: Option<String>,
+    },
+    /// A Store launch, with a dedicated reply vocabulary so a widget's
+    /// correlation id cannot complete an unrelated SDK action invocation.
+    LaunchInstalledApplication {
+        request_id: u64,
+        app_id: String,
+        package_root: Option<String>,
+        on_behalf_of: Option<tilo_actions::InvocationId>,
     },
     /// Lifecycle record for a broker-minted task lease. Only an admitted
     /// agent connection can make this request; the broker checks the lease.
@@ -732,6 +769,10 @@ pub enum CollabEvent {
         request_id: u64,
         result: Result<(u64, tilo_actions::InvocationUpdate), String>,
     },
+    InstalledApplicationLaunchResult {
+        request_id: u64,
+        result: Result<(u64, tilo_actions::InvocationUpdate), String>,
+    },
     /// A run addressed to this admitted agent. The envelope is broker-minted
     /// and contains a lease, not a caller-selected authority token.
     TaskRun(runtime_collab::TaskRunEnvelope),
@@ -765,6 +806,14 @@ pub enum CollabEvent {
     NativeMediaCommandResult {
         request_id: u64,
         result: Result<runtime_collab::native_media::Snapshot, String>,
+    },
+    /// Content the record on `route` references arrived: an answer to
+    /// [`CollabRequest::WantContent`], or content another app on the record
+    /// offered. The bytes are verified against `hash` before use.
+    RecordContent {
+        route: RouteSpec,
+        hash: String,
+        bytes: Vec<u8>,
     },
     RealtimeCommandResult {
         request_id: u64,

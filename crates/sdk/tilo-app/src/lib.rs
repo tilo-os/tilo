@@ -26,6 +26,13 @@
 
 pub use ui_core::*;
 
+/// The host's raw operation protocol stays the toolkit's: this empty module
+/// takes the place of `ui_core::host_operation` in the glob above, so an app
+/// cannot name the protocol through the facade. Tests deliver operations with
+/// [`framework::HostDelivery`]; the framework reaches `ui_core` directly.
+#[doc(hidden)]
+pub mod host_operation {}
+
 pub mod framework;
 mod runner;
 
@@ -138,21 +145,25 @@ pub mod prelude {
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::framework::testing::{HeadlessApp, TestApp};
     pub use crate::framework::{
-        ActionControl, Actions, Dispatcher, Each, Live, ResourceApp, ResourceSelection,
-        ResourceSurface, SurfaceCx, ViewCx,
+        ActionControl, Actions, Command, Dispatcher, Each, EditsText, EffectCx, EffectStatus,
+        Effected, Fixture, Jobs, LaunchInput, Live, LiveRow, PersonRecord, ResourceApp,
+        ResourceSelection, ResourceSurface, RunMode, SeedCx, Setting, SurfaceCx, TextControl,
+        ViewCx,
     };
     pub use tilo_resource::{
-        self, ActionCx, Atom, Collection, Delta, Demand, Id, Invoke, Json, Model, Refusal, Replica,
-        Resource, resource,
+        self, ActionCx, ActionDecl, Atom, Collection, Delta, Demand, Effect, Id, Invoke, Json,
+        Model, PermissionRequirement, PlainText, Refusal, Replica, Resource, TextEdit, resource,
     };
 
     pub use ui_core::application::{
-        AppComponent, ApplicationCatalog, ApplicationDefinition, ComponentRunnerInputs,
-        HostContext, HostContextInputs, LaunchTarget, PreparedComponentInputs, RestoreInput,
+        ANY_MEDIA_TYPE, AppComponent, ApplicationCatalog, ApplicationDefinition,
+        ComponentBehaviour, ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget,
+        OpenFile, PlaybackHandoff, PreparedComponentInputs, RestoreInput,
     };
     pub use ui_core::application_view::{InstanceViewStore, SavedInstanceView};
     pub use ui_core::launch::ComponentHostPreparer;
     pub use ui_core::record::{RecordCheckout, RecordId, RecordKind, RecordSaveStatus};
+    pub use ui_core::storage::{Scope, SettingsSchema};
     pub use ui_core::taffy::{NodeId, TaffyTree};
     pub use ui_core::tilo_actions;
     pub use ui_core::tilo_actions::{ActionError, ActionRegistry, ExecutionLocus};
@@ -172,9 +183,8 @@ pub mod prelude {
         Collaborative, Column, CompleteContentProvider, Container, Continuable, ControlBindingKind,
         ControlBindingMetadata, Dropdown, Element, EmptyState, EventCtx, FloatingSurfaceProvider,
         FullscreenProvider, ModelView, NarrowScreen, NativeViewLifecycle, NumberInput, QrWidget,
-        ResourceOperationStart, Row, Scrollable, SearchField, SearchResultsView, Slider, Spacer,
-        Spinner, Stack, Text, TextInput, Toggle, TreeNode, TreeView, Widget, labeled_check,
-        labeled_field,
+        Row, Scrollable, SearchField, SearchResultsView, Slider, Spacer, Spinner, Stack, Text,
+        TextInput, Toggle, TreeNode, TreeView, Widget, labeled_check, labeled_field,
     };
     pub use ui_core::winit::event::WindowEvent;
     pub use ui_core::{
@@ -237,60 +247,5 @@ mod tests {
         assert_eq!(widget.get_rect(), custom.inner.get_rect());
         std::hint::black_box(SearchRegistry::new());
         std::hint::black_box(ActionForm::new("note", "Note", "save", "Save"));
-    }
-
-    fn adapted_root() -> Box<dyn Widget> {
-        Box::new(Text::new("adapted root"))
-    }
-
-    /// A hand-built launch spec mounts in a component host, once per app id.
-    #[test]
-    fn launch_spec_mounts_as_a_component() {
-        use crate::launch::LaunchSpec;
-        let definition = LaunchSpec::new("test.adapted", adapted_root).as_definition("Adapted");
-        let again = LaunchSpec::new("test.adapted", adapted_root).as_definition("Other");
-        assert!(std::ptr::eq(definition, again));
-        assert_eq!(definition.title, "Adapted");
-        assert_eq!(definition.record_kind.as_str(), "test.adapted.app");
-
-        let profile = tempfile::tempdir().unwrap();
-        let permissions = std::rc::Rc::new(std::cell::RefCell::new(
-            crate::permissions::PermissionContext::from_capabilities(
-                crate::permissions::Actor::person(Some(crate::permissions::Role::Owner), "author"),
-                vec![],
-            ),
-        ));
-        let mut host = crate::application::ApplicationHost::new(
-            profile.path().join("state"),
-            "device".into(),
-            "workspace",
-            crate::permissions::UserId("author".into()),
-            permissions,
-            tilo_actions::ActionContext::default(),
-        )
-        .unwrap();
-        let checkout = RecordCheckout::new(
-            RecordId::derived("default", &RecordId::for_tab(0)),
-            definition.record_kind.clone(),
-        );
-        let prepared = host
-            .prepare_default(
-                definition,
-                1,
-                checkout,
-                None,
-                ComponentRunnerInputs::from_native_process(),
-            )
-            .unwrap();
-        let component = definition
-            .instantiate(prepared.context, prepared.target, prepared.restore)
-            .unwrap();
-        let mut harness = crate::headless::FrameHarness::from_component(
-            component,
-            (320, 200),
-            prepared.runner_inputs,
-        )
-        .unwrap();
-        harness.poll_frame().unwrap();
     }
 }

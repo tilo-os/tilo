@@ -146,6 +146,8 @@ pub enum PackError {
     ThresholdInternal(String),
     #[error("payload path {0:?} is not valid UTF-8 — Tilo packages require UTF-8 path names")]
     NonUtf8Path(PathBuf),
+    #[error("payload path {0:?} is reserved for a file the packer writes")]
+    ReservedPath(String),
 }
 
 /// A signed package built from a payload directory: its metadata, plus
@@ -156,6 +158,8 @@ pub enum PackError {
 pub struct Packed {
     pub meta: PackageMeta,
     files: BTreeMap<BlobHash, PathBuf>,
+    /// Payload files the packer generated rather than found on disk.
+    inline: BTreeMap<BlobHash, Vec<u8>>,
 }
 
 impl Packed {
@@ -163,7 +167,9 @@ impl Packed {
         self.meta.id
     }
 
-    /// Payload files in `(hash, path)` order, one per distinct blob.
+    /// Payload files in `(hash, path)` order, one per distinct blob found
+    /// on disk. Files the packer generated (an image's
+    /// [`crate::image::TREE_FILE`]) are read through [`BlobSource`].
     pub fn files(&self) -> impl Iterator<Item = (&BlobHash, &Path)> {
         self.files.iter().map(|(hash, path)| (hash, path.as_path()))
     }
@@ -171,6 +177,12 @@ impl Packed {
 
 impl BlobSource for Packed {
     fn open_blob(&self, hash: &BlobHash) -> std::io::Result<Option<OpenBlob<'_>>> {
+        if let Some(bytes) = self.inline.get(hash) {
+            return Ok(Some(OpenBlob {
+                len: bytes.len() as u64,
+                reader: Box::new(bytes.as_slice()),
+            }));
+        }
         let Some(path) = self.files.get(hash) else {
             return Ok(None);
         };
@@ -187,12 +199,15 @@ struct Walked {
     collection: Collection,
     /// The source path of each distinct blob.
     files: BTreeMap<BlobHash, PathBuf>,
+    /// Generated files, by hash.
+    inline: BTreeMap<BlobHash, Vec<u8>>,
     /// Every payload path, for payload-aware manifest validation.
     paths: Vec<PathBuf>,
 }
 
-/// Walk `payload_dir` and hash every regular file.
-fn walk_payload(payload_dir: &Path) -> Result<Walked, PackError> {
+/// Walk `payload_dir` and hash every regular file, then add the generated
+/// `extra` files, which must not collide with a walked path.
+fn walk_payload(payload_dir: &Path, extra: Vec<(String, Vec<u8>)>) -> Result<Walked, PackError> {
     let mut entries = Vec::new();
     let mut files = BTreeMap::new();
     let mut paths = Vec::new();
@@ -221,9 +236,20 @@ fn walk_payload(payload_dir: &Path) -> Result<Walked, PackError> {
         entries.push((rel_str, hash));
         paths.push(rel);
     }
+    let mut inline = BTreeMap::new();
+    for (rel, bytes) in extra {
+        if entries.iter().any(|(walked, _)| *walked == rel) {
+            return Err(PackError::ReservedPath(rel));
+        }
+        let hash = BlobHash::of(&bytes);
+        paths.push(PathBuf::from(&rel));
+        entries.push((rel, hash));
+        inline.insert(hash, bytes);
+    }
     Ok(Walked {
         collection: Collection::from_entries(entries),
         files,
+        inline,
         paths,
     })
 }
@@ -236,6 +262,7 @@ struct Prepared {
     manifest_bytes: Vec<u8>,
     collection_bytes: Vec<u8>,
     files: BTreeMap<BlobHash, PathBuf>,
+    inline: BTreeMap<BlobHash, Vec<u8>>,
 }
 
 impl Prepared {
@@ -248,6 +275,7 @@ impl Prepared {
         Ok(Packed {
             meta,
             files: self.files,
+            inline: self.inline,
         })
     }
 }
@@ -256,6 +284,7 @@ fn prepare(
     payload_dir: &Path,
     manifest: &Manifest,
     publisher_identity: [u8; 32],
+    extra: Vec<(String, Vec<u8>)>,
 ) -> Result<Prepared, PackError> {
     let declared = manifest
         .publisher
@@ -264,7 +293,7 @@ fn prepare(
     if declared != publisher_identity {
         return Err(PackError::IdentityMismatch);
     }
-    let walked = walk_payload(payload_dir)?;
+    let walked = walk_payload(payload_dir, extra)?;
     validate_manifest_with_payload(manifest, &walked.paths)?;
     let collection_bytes = walked.collection.encode();
     let mut to_sign_manifest = manifest.clone();
@@ -283,6 +312,7 @@ fn prepare(
         manifest_bytes,
         collection_bytes,
         files: walked.files,
+        inline: walked.inline,
     })
 }
 
@@ -308,9 +338,62 @@ pub fn pack(
     manifest: &Manifest,
     identity: &SigningIdentity,
 ) -> Result<Packed, PackError> {
-    let prepared = prepare(payload_dir, manifest, identity.public_key_bytes())?;
+    pack_with_files(payload_dir, manifest, identity, Vec::new())
+}
+
+/// [`pack`], with `extra` generated files added to the payload beside the
+/// walked ones.
+pub(crate) fn pack_with_files(
+    payload_dir: &Path,
+    manifest: &Manifest,
+    identity: &SigningIdentity,
+    extra: Vec<(String, Vec<u8>)>,
+) -> Result<Packed, PackError> {
+    let prepared = prepare(payload_dir, manifest, identity.public_key_bytes(), extra)?;
     let signature = identity.sign_signed_root(&prepared.root)?;
     prepared.finish(signature)
+}
+
+/// [`pack_with_files`] for `publisher`, whose key is not here: the root
+/// carries the placeholder signature it is signed with
+/// ([`sign_placeholder_root`] attaches the real one).
+pub(crate) fn pack_with_files_for(
+    payload_dir: &Path,
+    manifest: &Manifest,
+    publisher: [u8; 32],
+    extra: Vec<(String, Vec<u8>)>,
+) -> Result<Packed, PackError> {
+    prepare(payload_dir, manifest, publisher, extra)?.finish([0u8; 64])
+}
+
+/// Sign a package packed for `identity` by someone without its key
+/// ([`crate::image::seal_image_for`]): the root's placeholder signature is
+/// replaced by `identity`'s, which changes the package id.
+///
+/// # Errors
+///
+/// Returns [`PackError::IdentityMismatch`] when the package names another
+/// publisher, or what signing and reassembling the package return.
+pub fn sign_placeholder_root(
+    meta: &PackageMeta,
+    identity: &SigningIdentity,
+) -> Result<PackageMeta, PackError> {
+    if meta.root.publisher_identity != identity.public_key_bytes() {
+        return Err(PackError::IdentityMismatch);
+    }
+    let placeholder = SignedRoot {
+        signature: Some([0u8; 64]),
+        ..meta.root.clone()
+    };
+    let signature = identity.sign_signed_root(&placeholder)?;
+    Ok(PackageMeta::from_root(
+        SignedRoot {
+            signature: Some(signature),
+            ..placeholder
+        },
+        meta.manifest_bytes.clone(),
+        meta.collection_bytes.clone(),
+    )?)
 }
 
 /// Pack with a pre-computed aggregated threshold signature — used by
@@ -329,5 +412,5 @@ pub fn pack_with_signature(
     publisher_identity: [u8; 32],
     signature: [u8; 64],
 ) -> Result<Packed, PackError> {
-    prepare(payload_dir, manifest, publisher_identity)?.finish(signature)
+    prepare(payload_dir, manifest, publisher_identity, Vec::new())?.finish(signature)
 }

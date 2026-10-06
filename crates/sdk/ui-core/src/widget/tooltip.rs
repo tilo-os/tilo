@@ -56,6 +56,48 @@ pub fn chip_size(label: &str, text_renderer: &mut TextRenderer, text_size: f32) 
     (w, h)
 }
 
+/// Which side of its control a tooltip prefers. A control in a row has
+/// its neighbours beside it, so its chip goes below; one in a vertical
+/// rail has them above and below, so its chip goes beside it, where it
+/// hides none of them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TooltipSide {
+    #[default]
+    Below,
+    /// After the control in the reading direction, before it when that
+    /// would spill past the window's edge.
+    Beside,
+}
+
+/// [`chip_rect`] on the preferred `side` of the anchor.
+pub fn chip_rect_on(side: TooltipSide, anchor: Rect, size: (f64, f64), viewport: Rect) -> Rect {
+    match side {
+        TooltipSide::Below => chip_rect(anchor, size, viewport),
+        TooltipSide::Beside => chip_rect_beside(anchor, size, viewport),
+    }
+}
+
+/// Centred on the anchor vertically, just after it; flipped before it
+/// when that would spill past the right edge, clamped when neither fits.
+fn chip_rect_beside(anchor: Rect, size: (f64, f64), viewport: Rect) -> Rect {
+    let (w, h) = size;
+    let min_y = viewport.y0 + CHIP_MARGIN;
+    let max_y = (viewport.y1 - CHIP_MARGIN - h).max(min_y);
+    let y0 = (anchor.center().y - h / 2.0).clamp(min_y, max_y);
+    let after = anchor.x1 + CHIP_GAP;
+    let x0 = if after + w <= viewport.x1 - CHIP_MARGIN {
+        after
+    } else {
+        let before = anchor.x0 - CHIP_GAP - w;
+        if before >= viewport.x0 + CHIP_MARGIN {
+            before
+        } else {
+            (viewport.x1 - CHIP_MARGIN - w).max(viewport.x0 + CHIP_MARGIN)
+        }
+    };
+    Rect::new(x0, y0, x0 + w, y0 + h)
+}
+
 /// Preferred placement is centred just below the anchor; flips above if
 /// that would spill past the bottom edge, and clamps to the bottom edge if
 /// neither side has room. Clamped horizontally too, so a control at the
@@ -145,9 +187,30 @@ pub fn draw_hover_tooltip(
     label: &str,
     viewport: Rect,
 ) {
+    draw_hover_tooltip_on(
+        scene,
+        transform,
+        text_renderer,
+        theme,
+        (anchor, TooltipSide::Below),
+        label,
+        viewport,
+    );
+}
+
+/// [`draw_hover_tooltip`] on the side of its anchor the control prefers.
+pub fn draw_hover_tooltip_on(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    anchor: (Rect, TooltipSide),
+    label: &str,
+    viewport: Rect,
+) {
     let text_size = theme.tokens.typography.scale.sm;
     let size = chip_size(label, text_renderer, text_size);
-    let rect = chip_rect(anchor, size, viewport);
+    let rect = chip_rect_on(anchor.1, anchor.0, size, viewport);
     draw_chip(scene, transform, text_renderer, theme, rect, label);
 }
 
@@ -477,6 +540,22 @@ impl TooltipHost {
         }
     }
 
+    /// What the region under a shown tooltip says now: a new label for the
+    /// same region replaces the shown one without restarting the dwell; the
+    /// region gone or moved hides it.
+    pub fn refresh(&mut self, target: Option<(Rect, String)>) {
+        let Some(current) = &mut self.target else {
+            return;
+        };
+        match target {
+            Some((anchor, label)) if anchor == current.anchor => current.label = label,
+            _ => {
+                self.target = None;
+                self.visible = false;
+            }
+        }
+    }
+
     /// Returns whether anything was showing/pending, so the caller can
     /// request a redraw to clear the chip.
     pub fn dismiss(&mut self) -> bool {
@@ -514,6 +593,18 @@ mod host_tests {
 
     fn tip(label: &str) -> (Rect, String) {
         (Rect::new(0.0, 0.0, 40.0, 40.0), label.to_string())
+    }
+
+    #[test]
+    fn a_shown_tooltip_reads_its_region_again() {
+        let mut host = TooltipHost::new().with_dwell(Duration::ZERO);
+        let now = crate::time::now();
+        host.on_pointer(Some(tip("Hide layer")), now);
+        host.tick(now);
+        host.refresh(Some(tip("Show layer")));
+        assert_eq!(host.visible().map(|(label, _)| label), Some("Show layer"));
+        host.refresh(None);
+        assert!(host.visible().is_none(), "the region is gone");
     }
 
     #[test]
@@ -596,6 +687,31 @@ mod host_tests {
     }
 
     #[test]
+    fn a_rail_chip_sits_beside_its_tool_and_covers_no_neighbour() {
+        let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let size = (120.0, 24.0);
+        // Three tools stacked in a rail at the left edge.
+        let tool = Rect::new(8.0, 100.0, 48.0, 140.0);
+        let next = Rect::new(8.0, 144.0, 48.0, 184.0);
+        let r = chip_rect_on(TooltipSide::Beside, tool, size, vp);
+        assert!(r.x0 >= tool.x1, "after the tool: {r:?}");
+        assert!(r.intersect(next).area() <= 0.0, "covers the next tool");
+        assert!(
+            (r.center().y - tool.center().y).abs() < 0.01,
+            "level with it"
+        );
+        // A rail at the right edge puts it before the tool instead.
+        let right = Rect::new(752.0, 100.0, 792.0, 140.0);
+        let r = chip_rect_on(TooltipSide::Beside, right, size, vp);
+        assert!(r.x1 <= right.x0, "before the tool: {r:?}");
+        // Below stays the default placement.
+        assert_eq!(
+            chip_rect_on(TooltipSide::Below, tool, size, vp),
+            chip_rect(tool, size, vp)
+        );
+    }
+
+    #[test]
     fn chip_rect_flips_above_and_clamps_horizontally() {
         // A 800x600 viewport with a chip anchored near the bottom-right.
         let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
@@ -658,7 +774,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,

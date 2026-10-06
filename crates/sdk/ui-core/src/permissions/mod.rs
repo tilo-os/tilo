@@ -321,6 +321,69 @@ impl PermissionContext {
             denied => Some(denied),
         }
     }
+
+    /// May the actor perform `action`, published by the app `app_id`? The
+    /// verb is the one the action declares it needs; a grant on the app, or
+    /// on this one action of it, allows it.
+    pub fn permits_action(&self, app_id: &str, action: &tilo_actions::ActionSpec) -> bool {
+        let verb = match action.contract.permission {
+            tilo_actions::PermissionRequirement::None => return true,
+            tilo_actions::PermissionRequirement::Read => Verb::Read,
+            tilo_actions::PermissionRequirement::Comment => Verb::Comment,
+            tilo_actions::PermissionRequirement::Write => Verb::Write,
+            tilo_actions::PermissionRequirement::Invite => Verb::Invite,
+            tilo_actions::PermissionRequirement::Admin => Verb::Admin,
+        };
+        self.check(&PermissionScope::action(app_id, action.id.clone(), verb))
+    }
+
+    /// May the actor perform this one invocation of `action`, published by
+    /// the app `app_id`: what its arguments ask
+    /// ([`ActionSpec::permission_for_json`](tilo_actions::ActionSpec::permission_for_json))
+    /// rather than the least the action ever needs — a generic edit that
+    /// replies needs commenting, one that deletes writing. `typed` are the
+    /// JSON arguments, else `argument` the palette's text.
+    pub fn permits_invocation(
+        &self,
+        app_id: &str,
+        action: &tilo_actions::ActionSpec,
+        typed: Option<&serde_json::Map<String, serde_json::Value>>,
+        argument: Option<&str>,
+    ) -> bool {
+        let requirement = match typed {
+            Some(arguments) => action.permission_for_json(arguments),
+            None => action.permission_for_argument(argument),
+        };
+        let verb = match requirement {
+            tilo_actions::PermissionRequirement::None => return true,
+            tilo_actions::PermissionRequirement::Read => Verb::Read,
+            tilo_actions::PermissionRequirement::Comment => Verb::Comment,
+            tilo_actions::PermissionRequirement::Write => Verb::Write,
+            tilo_actions::PermissionRequirement::Invite => Verb::Invite,
+            tilo_actions::PermissionRequirement::Admin => Verb::Admin,
+        };
+        self.check(&PermissionScope::action(app_id, action.id.clone(), verb))
+    }
+
+    /// `resource`, published by the app `app_id`, as the actor may reach
+    /// it: the actions it may perform, and the nested resources that keep
+    /// any. Denied is absent, never merely marked, so nothing downstream can
+    /// decide to perform what it may not. `None` when nothing is left.
+    pub fn permitted_resource(
+        &self,
+        app_id: &str,
+        mut resource: tilo_actions::Resource,
+    ) -> Option<tilo_actions::Resource> {
+        resource
+            .actions
+            .retain(|action| self.permits_action(app_id, action));
+        resource.children = resource
+            .children
+            .into_iter()
+            .filter_map(|child| self.permitted_resource(app_id, child))
+            .collect();
+        (!resource.actions.is_empty() || !resource.children.is_empty()).then_some(resource)
+    }
 }
 
 /// A participant's permissions as they stand *now*, following every change the

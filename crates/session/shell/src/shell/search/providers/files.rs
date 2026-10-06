@@ -22,6 +22,7 @@ use std::time::{Duration, SystemTime};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
+use crate::shell::search::action_api::ActionError;
 use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
@@ -161,9 +162,53 @@ pub struct FilesProvider {
     watch: OnceLock<RecommendedWatcher>,
 }
 
+/// Home the files search walks.
+///
+/// A scratch or headless session points the XDG dirs at its profile and used
+/// to leave `$HOME` as the login home, so the walker indexed the operator's
+/// real files. When `XDG_CONFIG_HOME` is set and does not live under `$HOME`,
+/// walk the profile's `home` (or the profile root if that directory does not
+/// exist). A control-socket or identity-root process that still has the login
+/// layout, and is not a Tilo desktop, gets a directory under the session cache
+/// instead. A desktop session (`XDG_SESSION_DESKTOP=tilo`, including a dev VM
+/// slot driven through `TILO_TEST_CONTROL`) indexes `$HOME`: that is where
+/// `~/Documents` is written.
+fn indexable_home() -> PathBuf {
+    let home = xdg_paths::home().unwrap_or_else(|| PathBuf::from("/tmp"));
+    if let Some(config) = xdg_paths::config_dir()
+        && !config.starts_with(&home)
+    {
+        let profile = config.parent().unwrap_or(config.as_path());
+        let profile_home = profile.join("home");
+        return if profile_home.is_dir() {
+            profile_home
+        } else {
+            profile.to_path_buf()
+        };
+    }
+    if !is_tilo_desktop_session()
+        && (std::env::var_os("TILO_TEST_CONTROL").is_some()
+            || std::env::var_os("TILO_IDENTITY_ROOT").is_some())
+    {
+        let scratch = xdg_paths::cache_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("tilo-headless-home");
+        let _ = std::fs::create_dir_all(&scratch);
+        return scratch;
+    }
+    home
+}
+
+/// Greetd's `tilo-session` and a dev VM slot both export this. The slot also
+/// sets `TILO_TEST_CONTROL` so a harness can drive it; that socket must not
+/// send file search to a scratch directory.
+fn is_tilo_desktop_session() -> bool {
+    std::env::var_os("XDG_SESSION_DESKTOP").as_deref() == Some(std::ffi::OsStr::new("tilo"))
+}
+
 impl FilesProvider {
     pub fn new() -> Self {
-        Self::with_home(xdg_paths::home().unwrap_or_else(|| PathBuf::from("/tmp")))
+        Self::with_home(indexable_home())
     }
 
     fn with_home(home: PathBuf) -> Self {
@@ -427,6 +472,50 @@ impl SearchProvider for FilesProvider {
         // Files isn't a tab-owning provider yet; the file explorer app owns tabs.
         false
     }
+
+    /// A file's address is its absolute path, so any file or folder under
+    /// the indexed home opens by its path — whether or not a search found it
+    /// first, and whether or not the background walk has reached it yet.
+    fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
+        let entry = self.entry_for_address(id)?;
+        let kind = if entry.is_dir {
+            ResourceKind::Folder
+        } else {
+            ResourceKind::File
+        };
+        ctx.wanted
+            .contains(&kind)
+            .then(|| make_result(&entry, MAX_SCORE, None))
+    }
+}
+
+impl FilesProvider {
+    /// The entry an absolute path names, if it exists under the indexed home
+    /// and is not one of the trees the walk deliberately skips. The path must
+    /// already be canonical: an address with `..` or a symlink that leaves
+    /// the home is not a file this provider offers.
+    fn entry_for_address(&self, id: &str) -> Option<NameEntry> {
+        let path = Path::new(id);
+        if !path.is_absolute() {
+            return None;
+        }
+        let canonical = std::fs::canonicalize(path).ok()?;
+        let home = std::fs::canonicalize(&self.home).ok()?;
+        if canonical.as_path() != path
+            || !canonical.starts_with(&home)
+            || should_skip(&canonical, &home)
+        {
+            return None;
+        }
+        let metadata = std::fs::metadata(&canonical).ok()?;
+        let display = display_path(&home, &canonical);
+        Some(NameEntry {
+            facts: NameFacts::new(&display, metadata.modified().ok()),
+            display,
+            is_dir: metadata.is_dir(),
+            path: canonical,
+        })
+    }
 }
 
 fn make_result(entry: &NameEntry, score: i32, subtitle: Option<String>) -> SearchResult {
@@ -437,16 +526,14 @@ fn make_result(entry: &NameEntry, score: i32, subtitle: Option<String>) -> Searc
     };
     let path = entry.path.clone();
     let is_dir = entry.is_dir;
-    SearchResult::nullary(
+    SearchResult::view_with_output(
         kind,
         "files",
         entry.path.display().to_string(),
         file_title(&entry.path),
         subtitle.or_else(|| Some(entry.display.clone())),
         score,
-        move |_doc, _root, chrome: &Chrome| {
-            open_search_hit(&path, is_dir, chrome);
-        },
+        move |chrome: &Chrome| open_search_hit(&path, is_dir, chrome),
     )
 }
 
@@ -735,26 +822,42 @@ fn path_depth(display_lower: &str) -> usize {
 /// Open a palette hit via [`crate::shell::doc_open`] when an installed app
 /// claims the type; unclaimed types and directories fall back to
 /// `xdg-open`, and a claimed type with no editor is reported, not silent.
-fn open_search_hit(path: &Path, is_dir: bool, chrome: &Chrome) {
+///
+/// A failure is both shown to the person and returned, so an action caller
+/// that cannot see the notification is told the file did not open; success
+/// answers what opened it.
+fn open_search_hit(
+    path: &Path,
+    is_dir: bool,
+    chrome: &Chrome,
+) -> Result<serde_json::Value, ActionError> {
     use crate::shell::doc_open::{self, DocumentTarget};
+    let handed_off =
+        || serde_json::json!({ "opened": "handed-off", "path": path, "with": "xdg-open" });
     if is_dir {
         spawn_open(path, is_dir);
-        return;
+        return Ok(handed_off());
     }
     match doc_open::resolve(path) {
         DocumentTarget::App { .. } | DocumentTarget::HostApp { .. } => {
-            if let Err(e) = doc_open::open_in_workspace(path, chrome) {
-                notify_open_failure(path, &e.user_message(), chrome);
-            }
+            doc_open::open_in_workspace(path, chrome)
+                .map(|opened| opened.to_value(path))
+                .map_err(|e| {
+                    let message = e.user_message();
+                    notify_open_failure(path, &message, chrome);
+                    ActionError::Refused(message)
+                })
         }
         DocumentTarget::NoAppForDocument { ext } => {
-            notify_open_failure(
-                path,
-                &crate::shell::i18n::t_args("search-files-no-app", &[("ext", ext.as_str().into())]),
-                chrome,
-            );
+            let message =
+                crate::shell::i18n::t_args("search-files-no-app", &[("ext", ext.as_str().into())]);
+            notify_open_failure(path, &message, chrome);
+            Err(ActionError::Refused(message))
         }
-        DocumentTarget::Unclaimed | DocumentTarget::Directory => spawn_open(path, is_dir),
+        DocumentTarget::Unclaimed | DocumentTarget::Directory => {
+            spawn_open(path, is_dir);
+            Ok(handed_off())
+        }
     }
 }
 
@@ -1503,6 +1606,139 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
+    fn scratch_xdg_tree_indexes_the_profile_home_not_the_login_home() {
+        let login = tempfile::tempdir().expect("login home");
+        let profile = tempfile::tempdir().expect("scratch profile");
+        let profile_home = profile.path().join("home");
+        std::fs::create_dir_all(&profile_home).expect("profile home");
+        std::fs::write(login.path().join("secret.md"), b"operator").unwrap();
+        std::fs::write(profile_home.join("note.md"), b"scratch").unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", login.path())
+            .set("XDG_CONFIG_HOME", profile.path().join("config"))
+            .set("XDG_CACHE_HOME", profile.path().join("cache"));
+        env.remove("TILO_TEST_CONTROL");
+        env.remove("TILO_IDENTITY_ROOT");
+        assert_eq!(
+            indexable_home(),
+            profile_home,
+            "a scratch XDG tree must not walk the login home"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_normal_xdg_tree_under_home_indexes_home() {
+        let home = tempfile::tempdir().expect("home");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", home.path())
+            .set("XDG_CONFIG_HOME", home.path().join(".config"));
+        env.remove("TILO_TEST_CONTROL");
+        env.remove("TILO_IDENTITY_ROOT");
+        assert_eq!(indexable_home(), home.path());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_control_socket_session_with_the_login_layout_gets_a_scratch_home() {
+        let login = tempfile::tempdir().expect("login home");
+        let cache = tempfile::tempdir().expect("cache");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", login.path())
+            .set("XDG_CONFIG_HOME", login.path().join(".config"))
+            .set("XDG_CACHE_HOME", cache.path())
+            .set("TILO_TEST_CONTROL", "/tmp/tilo-test-control.sock");
+        env.remove("TILO_IDENTITY_ROOT");
+        let got = indexable_home();
+        assert_eq!(got, cache.path().join("tilo-headless-home"));
+        assert!(
+            !got.starts_with(login.path()),
+            "the control-socket session must not walk the login home"
+        );
+    }
+
+    /// The dev VM session is a real desktop (`XDG_SESSION_DESKTOP=tilo`) that
+    /// also sets `TILO_TEST_CONTROL` so the harness can drive it. The slot
+    /// user writes `~/Documents`; search has to query that home.
+    #[test]
+    #[serial_test::serial]
+    fn a_driven_desktop_session_finds_a_file_just_written_in_documents() {
+        let home = tempfile::tempdir().expect("session home");
+        let cache = tempfile::tempdir().expect("cache");
+        let documents = home.path().join("Documents");
+        std::fs::create_dir_all(&documents).expect("Documents");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", home.path())
+            .set("XDG_CONFIG_HOME", home.path().join(".config"))
+            .set("XDG_CACHE_HOME", cache.path())
+            .set("XDG_SESSION_DESKTOP", "tilo")
+            .set("TILO_TEST_CONTROL", "/run/tilo-vm/slot/control.sock");
+        env.remove("TILO_IDENTITY_ROOT");
+        assert_eq!(
+            indexable_home(),
+            home.path(),
+            "a driven desktop session must search $HOME, not the headless cache"
+        );
+
+        let provider = FilesProvider::new();
+        let chrome = empty_chrome();
+        let state = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let hits = |needle: &str| {
+            provider.query(ctx_for(
+                needle,
+                &[ResourceKind::File, ResourceKind::Folder],
+                &state,
+                &doc,
+            ))
+        };
+        // The first palette query arms the walk and the Documents watch.
+        drop(hits(" "));
+        tilo_test_env::wait_until("the name walk to publish", || {
+            provider
+                .published()
+                .is_some_and(|index| index.generation > 0)
+        });
+
+        let needle = "accneedleff3e9f";
+        let dest = documents.join(format!("{needle}.txt"));
+        let tmp = documents.join(format!("{needle}.txt.acc-tmp"));
+        std::fs::write(&tmp, b"acceptance search probe\n").expect("probe temp");
+        std::fs::rename(&tmp, &dest).expect("probe rename");
+
+        tilo_test_env::wait_until("the Documents probe to be searchable", || {
+            hits(needle)
+                .iter()
+                .any(|row| action_text_contains(row, needle))
+        });
+        let hit = hits(needle)
+            .into_iter()
+            .find(|row| action_text_contains(row, needle))
+            .expect("probe");
+        assert!(
+            Path::new(&hit.id).starts_with(home.path()),
+            "search indexed {} instead of the session home {}",
+            hit.id,
+            home.path().display()
+        );
+        assert!(
+            !Path::new(&hit.id).starts_with(cache.path()),
+            "search indexed the headless cache {} for a desktop session",
+            hit.id
+        );
+    }
+
+    fn action_text_contains(row: &SearchResult, needle: &str) -> bool {
+        row.title.contains(needle)
+            || row.id.contains(needle)
+            || row
+                .subtitle
+                .as_deref()
+                .is_some_and(|text| text.contains(needle))
+    }
+
+    #[test]
     fn constructing_files_provider_starts_no_ambient_file_search() {
         let guard = crate::shell::test_support::DenyAmbientStarts::new();
         let provider = FilesProvider::new();
@@ -1738,5 +1974,59 @@ mod tests {
                 huge.rsplit('/').next().unwrap().len()
             );
         }
+    }
+
+    /// A file opens by its path on the first request: no search, no walk.
+    /// Only canonical paths under the indexed home, outside hidden and
+    /// skipped trees, are addresses.
+    #[test]
+    fn a_file_opens_by_its_path_without_any_search_first() {
+        let home = tempfile::tempdir().expect("home");
+        let home_path = std::fs::canonicalize(home.path()).expect("canonical home");
+        std::fs::create_dir_all(home_path.join("Documents")).expect("documents");
+        std::fs::create_dir_all(home_path.join(".secrets")).expect("hidden");
+        let report = home_path.join("Documents/report.md");
+        std::fs::write(&report, "# report").expect("report");
+        std::fs::write(home_path.join(".secrets/key"), "k").expect("hidden file");
+        let outside = tempfile::tempdir().expect("outside");
+        let stray = std::fs::canonicalize(outside.path())
+            .expect("outside")
+            .join("stray.md");
+        std::fs::write(&stray, "x").expect("stray");
+
+        let provider = FilesProvider::with_home(home_path.clone());
+        let chrome = empty_chrome();
+        let state = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let wanted = [ResourceKind::File, ResourceKind::Folder];
+        let resolve = |id: &str| provider.resolve(id, ctx_for("", &wanted, &state, &doc));
+
+        let row = resolve(&report.display().to_string()).expect("the file resolves");
+        assert_eq!(row.title, "report.md");
+        assert_eq!(row.kind, ResourceKind::File);
+        let folder =
+            resolve(&home_path.join("Documents").display().to_string()).expect("a folder resolves");
+        assert_eq!(folder.kind, ResourceKind::Folder);
+        for refused in [
+            stray.display().to_string(),
+            home_path.join(".secrets/key").display().to_string(),
+            home_path
+                .join("Documents/../Documents/report.md")
+                .display()
+                .to_string(),
+            home_path.join("Documents/missing.md").display().to_string(),
+            "Documents/report.md".to_string(),
+        ] {
+            assert!(resolve(&refused).is_none(), "{refused} is not an address");
+        }
+        assert!(
+            provider
+                .resolve(
+                    &report.display().to_string(),
+                    ctx_for("", &[ResourceKind::Folder], &state, &doc)
+                )
+                .is_none(),
+            "a file is not offered where only folders are wanted"
+        );
     }
 }

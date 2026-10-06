@@ -158,6 +158,15 @@ const DISPLAYS_KEYWORDS: &[&str] = &[
     "external",
 ];
 const MOUSE_KEYBOARD_KEYWORDS: &[&str] = &[
+    "keyboard",
+    "keyboard layout",
+    "input source",
+    "input method",
+    "language",
+    "qwerty",
+    "qwertz",
+    "azerty",
+    "dvorak",
     "pointer",
     "trackpad",
     "touchpad",
@@ -560,6 +569,14 @@ impl Category {
     }
 
     /// Stable identifier suffix used to compose `test_id`s and CRDT keys.
+    /// The category whose [`Self::slug`] is `slug`.
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|category| category.slug() == slug)
+    }
+
     pub fn slug(self) -> &'static str {
         match self {
             Category::Network => "network",
@@ -653,6 +670,24 @@ mod tests {
                 "night light → Displays",
             ),
             (Category::Network, "vpn", true, "vpn → Network"),
+            (
+                Category::MouseKeyboard,
+                "keyboard layout",
+                true,
+                "keyboard layout → Mouse & Keyboard",
+            ),
+            (
+                Category::MouseKeyboard,
+                "qwertz",
+                true,
+                "qwertz → Mouse & Keyboard",
+            ),
+            (
+                Category::MouseKeyboard,
+                "language",
+                true,
+                "language → Mouse & Keyboard",
+            ),
             (Category::Power, "battery", true, "battery → Power"),
             (
                 Category::Appearance,

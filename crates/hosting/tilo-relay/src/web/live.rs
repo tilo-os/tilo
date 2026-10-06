@@ -6,19 +6,21 @@
 //! Permission is observed once per [`OBSERVATION`] for every grant together
 //! (PR 541's batched observation): the session is still open, the device is
 //! not revoked, and it is still admitted to the workspace. The relay reads
-//! that snapshot on every per-session recheck, so a revoked or removed
-//! device loses its live session within one observation plus the relay's
-//! recheck interval, and no recheck ever waits on the workspace locks.
+//! each grant's observed permission on every per-session recheck, so a revoked
+//! or removed device loses its live session within one observation plus the
+//! relay's recheck interval, and no recheck ever waits on the workspace locks.
 //!
-//! Frames are validated with the host's canonical codec
-//! ([`tilo_relay_protocol::live::LiveFrame`]).
+//! Frames are checked with the host's canonical codec for sealed live frames
+//! ([`tilo_relay_protocol::live::SealedLiveFrame`]): only their clear kind,
+//! sequence and record are read, never their content.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tilo_moq::live::{Admission, AuthorizationStatus, LiveAuthority, LiveSession};
-use tilo_relay_protocol::live::LiveFrame;
+use tilo_relay_protocol::live::{LiveKind, SealedLiveFrame};
 use tilo_relay_protocol::web::{LiveGrant, agent_publisher, live_room};
 
 use crate::web::sessions::Sessions;
@@ -36,19 +38,18 @@ struct Grant {
     room: String,
     publisher: String,
     expires: Instant,
+    permitted: AtomicBool,
 }
 
 /// Grants and their observed permission.
 pub(crate) struct LiveGrants {
     grants: Mutex<HashMap<[u8; 32], Arc<Grant>>>,
-    permitted: RwLock<HashMap<[u8; 32], bool>>,
 }
 
 impl LiveGrants {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             grants: Mutex::default(),
-            permitted: RwLock::default(),
         })
     }
 
@@ -83,6 +84,7 @@ impl LiveGrants {
             expires: Instant::now()
                 .checked_add(GRANT_TTL)
                 .unwrap_or_else(Instant::now),
+            permitted: AtomicBool::new(true),
         });
         {
             let mut grants = self
@@ -95,10 +97,6 @@ impl LiveGrants {
             }
             grants.insert(grant_token, grant.clone());
         }
-        self.permitted
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(grant_token, true);
         Some(LiveGrant {
             token: grant_token.to_vec(),
             room: grant.room.clone(),
@@ -133,31 +131,28 @@ impl LiveGrants {
 
     /// Observe every grant once.
     pub(crate) async fn observe(&self, sessions: &Sessions) {
-        let grants: Vec<([u8; 32], Arc<Grant>)> = self
+        let grants: Vec<Arc<Grant>> = self
             .grants
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .map(|(token, grant)| (*token, grant.clone()))
+            .values()
+            .cloned()
             .collect();
         let open: HashMap<[u8; 32], [u8; 32]> = sessions
             .open_devices()
             .into_iter()
             .map(|(token, peer)| (token, peer.user_public_key))
             .collect();
-        let mut next = HashMap::with_capacity(grants.len());
-        for (token, grant) in grants {
+        for grant in grants {
             let permitted = grant.expires > Instant::now()
                 && match open.get(&grant.session) {
                     Some(user) => admitted(sessions, grant.device, *user, grant.workspace_id).await,
                     None => false,
                 };
-            next.insert(token, permitted);
+            // Update only grants this observation checked. A grant issued
+            // while admission awaits a workspace lock keeps its own decision.
+            grant.permitted.store(permitted, Ordering::Release);
         }
-        *self
-            .permitted
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = next;
     }
 }
 
@@ -167,7 +162,7 @@ impl LiveGrants {
     clippy::significant_drop_tightening,
     reason = "the guard only lives for the lookup; the value kept is a clone"
 )]
-async fn admitted(
+pub(crate) async fn admitted(
     sessions: &Sessions,
     device: [u8; 32],
     user: [u8; 32],
@@ -193,9 +188,7 @@ async fn admitted(
 }
 
 struct Admitted {
-    token: [u8; 32],
     grant: Arc<Grant>,
-    grants: Arc<LiveGrants>,
 }
 
 impl LiveSession for Admitted {
@@ -212,14 +205,7 @@ impl LiveSession for Admitted {
         true
     }
     fn status(&self) -> AuthorizationStatus {
-        let permitted = self
-            .grants
-            .permitted
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&self.token)
-            .copied()
-            .unwrap_or(false);
+        let permitted = self.grant.permitted.load(Ordering::Acquire);
         if permitted && self.grant.expires > Instant::now() {
             AuthorizationStatus::Current
         } else {
@@ -242,11 +228,7 @@ impl LiveAuthority for Authority {
             .get(&token)
             .cloned()
             .ok_or(Admission::Denied)?;
-        let session = Admitted {
-            token,
-            grant,
-            grants: self.0.clone(),
-        };
+        let session = Admitted { grant };
         match session.status() {
             AuthorizationStatus::Current => Ok(Arc::new(session)),
             _ => Err(Admission::Denied),
@@ -254,16 +236,97 @@ impl LiveAuthority for Authority {
     }
 
     fn presence_seq(&self, frame: &[u8]) -> Option<u64> {
-        match LiveFrame::decode(frame) {
-            Ok(LiveFrame::Presence(presence)) => Some(presence.seq),
+        match SealedLiveFrame::decode(frame) {
+            Ok(sealed) if sealed.kind == LiveKind::Presence => Some(sealed.seq),
             _ => None,
         }
     }
 
     fn ops_valid(&self, record: &str, frame: &[u8]) -> bool {
         matches!(
-            LiveFrame::decode(frame),
-            Ok(LiveFrame::Ops(ops)) if hex::encode(ops.record().digest()) == record
+            SealedLiveFrame::decode(frame),
+            Ok(sealed) if sealed.kind == LiveKind::Ops && hex::encode(sealed.record) == record
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tilo_relay_protocol::live::{LiveFrame, LiveRecord, OpsFrame, PresenceFrame};
+
+    use super::*;
+
+    #[test]
+    fn expired_live_grants_are_denied_before_the_next_observation() {
+        let grants = LiveGrants::new();
+        let grant = Arc::new(Grant {
+            session: [1; 32],
+            device: [2; 32],
+            workspace_id: 3,
+            room: live_room(3),
+            publisher: hex::encode([2; 32]),
+            expires: Instant::now(),
+            permitted: AtomicBool::new(true),
+        });
+        grants.grants.lock().unwrap().insert([4; 32], grant.clone());
+        let held = Admitted { grant };
+        assert!(matches!(held.status(), AuthorizationStatus::Denied));
+        assert!(matches!(
+            Authority(grants).try_admit(&[4; 32]),
+            Err(Admission::Denied)
+        ));
+    }
+
+    fn record() -> LiveRecord {
+        LiveRecord {
+            app: "so.tilo.notes".into(),
+            record: "r1".into(),
+        }
+    }
+
+    fn sealed(kind: LiveKind, seq: u64) -> Vec<u8> {
+        SealedLiveFrame {
+            kind,
+            seq,
+            record: record().digest(),
+            channel: [7; 16],
+            epoch: 1,
+            payload: vec![0x5a; 40],
+        }
+        .encode()
+        .unwrap()
+    }
+
+    #[test]
+    fn the_browser_live_plane_reads_only_the_clear_tags_of_sealed_frames() {
+        let authority = Authority(LiveGrants::new());
+        let track = hex::encode(record().digest());
+
+        assert_eq!(
+            authority.presence_seq(&sealed(LiveKind::Presence, 4)),
+            Some(4)
+        );
+        assert_eq!(authority.presence_seq(&sealed(LiveKind::Ops, 4)), None);
+        assert!(authority.ops_valid(&track, &sealed(LiveKind::Ops, 2)));
+        assert!(!authority.ops_valid(&hex::encode([1; 32]), &sealed(LiveKind::Ops, 2)));
+        assert!(!authority.ops_valid(&track, &sealed(LiveKind::Presence, 2)));
+
+        // The same frames in the clear are refused.
+        let presence = LiveFrame::Presence(PresenceFrame {
+            seq: 4,
+            sent_at_ms: 1,
+            focus: Some(record()),
+            pointer: Some([1.0, 2.0]),
+            selection: None,
+            drag: None,
+            participant: None,
+        })
+        .encode()
+        .unwrap();
+        let end = LiveFrame::Ops(OpsFrame::End { record: record() })
+            .encode()
+            .unwrap();
+        assert_eq!(authority.presence_seq(&presence), None);
+        assert!(!authority.ops_valid(&track, &end));
     }
 }

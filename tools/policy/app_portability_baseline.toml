@@ -30,12 +30,13 @@ D2 = 7
 D1 = 1
 D2 = 5
 
+[apps.canvas]
+D1 = 1
+D2 = 2
+
 [apps.chat]
 D1 = 1
 D2 = 8
-
-[apps.clocks]
-D2 = 1
 
 [apps.code-editor]
 D1 = 1
@@ -46,10 +47,10 @@ D2 = 3
 
 [apps.containers]
 D1 = 2
-D2 = 4
+D2 = 3
 
 [apps.db-client]
-D2 = 2
+D2 = 1
 
 [apps.diffmerge]
 D2 = 2
@@ -66,8 +67,8 @@ D2 = 7
 D2 = 2
 
 [apps.file-explorer]
-D1 = 3
-D2 = 12
+D1 = 2
+D2 = 11
 R1 = 1
 R3 = 3
 
@@ -79,15 +80,9 @@ D2 = 3
 D1 = 1
 D2 = 3
 
-[apps.hex-editor]
-D2 = 1
-
-[apps.image-editor]
-D2 = 2
-
 [apps.imager]
-D1 = 7
-D2 = 10
+D1 = 6
+D2 = 9
 R1 = 305
 R2 = 207
 R3 = 55
@@ -106,14 +101,14 @@ D2 = 2
 
 [apps.monitor]
 D1 = 2
-D2 = 2
+D2 = 1
 
 [apps.music]
 D2 = 3
 
 [apps.notes]
-D1 = 3
-D2 = 9
+D1 = 1
+D2 = 6
 
 [apps.osk]
 D1 = 3
@@ -134,21 +129,21 @@ D2 = 8
 
 [apps.print-centre]
 D1 = 1
-D2 = 6
+D2 = 5
 
 [apps.publisher]
 D2 = 2
 
 [apps.remote]
-D1 = 2
-D2 = 6
+D1 = 1
+D2 = 5
 
 [apps.settings]
 D1 = 4
 D2 = 19
 
 [apps.sheets]
-D2 = 4
+D2 = 3
 
 [apps.shortcuts]
 D2 = 2
@@ -161,34 +156,31 @@ D2 = 8
 D2 = 2
 
 [apps.store]
-D1 = 2
-D2 = 8
+D1 = 1
+D2 = 7
 
 [apps.terminal]
 D1 = 5
 D2 = 5
-R1 = 53
-R2 = 58
+R1 = 50
+R2 = 56
 R3 = 3
 
-[apps.themes]
-D2 = 2
-
 [apps.totp]
-D2 = 3
+D2 = 2
 
 [apps.tube]
-D1 = 2
-D2 = 4
+D1 = 1
+D2 = 3
 
 [apps.typst-editor]
-D2 = 2
+D2 = 1
 
 [apps.video-editor]
 D2 = 3
 
 [apps.video-player]
-D2 = 3
+D2 = 1
 
 [apps.vpn]
 D1 = 1
@@ -202,8 +194,14 @@ D1 = 2
 D2 = 4
 
 [apps.word-processor]
-D1 = 2
-D2 = 11
+D1 = 1
+D2 = 10
+
+[sdk.settings-store]
+W3 = 11
+
+[sdk.tilo-app]
+R1 = 25
 
 [sdk.tilo-app-state]
 R1 = 9
@@ -211,18 +209,12 @@ W1 = 1
 W2 = 3
 W3 = 7
 
-[sdk.settings-store]
-W3 = 11
-
-[sdk.tilo-app]
-R1 = 24
-
 [sdk.tilo-host]
 R1 = 18
 W3 = 11
 
 [sdk.tilo-ui]
-R1 = 321
-W1 = 21
+R1 = 296
+W1 = 18
 W2 = 2
-W3 = 80
+W3 = 77

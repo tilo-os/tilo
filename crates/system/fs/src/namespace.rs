@@ -2486,7 +2486,7 @@ impl Namespace {
         self.set_field(&id, "codec", codec);
         let node = self.node(&id)?;
         let root = self.doc.put_object(&node, "doc", ObjType::Map).ok()?;
-        qdoc::model::init(&mut self.doc, &root);
+        tilo_doc::model::init(&mut self.doc, &root);
         let ino = self.ino_for_id(&id);
         self.index_insert_node(&id);
         Some(ino)
@@ -2509,17 +2509,17 @@ impl Namespace {
     pub fn export_document(
         &self,
         ino: u64,
-        registry: &qdoc_codecs::Registry,
+        registry: &tilo_doc_codecs::Registry,
         content: &dyn tilo_content::ContentSource,
     ) -> Option<Vec<u8>> {
         let id = self.ino_to_id.get(&ino)?.clone();
         let codec = read_str(&self.doc, &self.node(&id)?, "codec")?;
         let provider = registry.provider_for_ext(&codec)?;
         let root = self.document_root(&id)?;
-        let containers = qdoc::model::open(&self.doc, &root).ok()?;
+        let containers = tilo_doc::model::open(&self.doc, &root).ok()?;
         provider
             .export(
-                qdoc::DocRef {
+                tilo_doc::DocRef {
                     doc: &self.doc,
                     c: &containers,
                 },
@@ -2534,7 +2534,7 @@ impl Namespace {
     pub fn import_document(
         &mut self,
         ino: u64,
-        registry: &qdoc_codecs::Registry,
+        registry: &tilo_doc_codecs::Registry,
         bytes: &[u8],
         mtime: u64,
         content: &tilo_content::ContentStore,
@@ -2552,7 +2552,7 @@ impl Namespace {
             return false;
         };
         // Parse into a throwaway document first — a malformed input must never destroy existing content.
-        let mut probe = qdoc::Document::new();
+        let mut probe = tilo_doc::Document::new();
         let mut inputs = tilo_content::ContentInputs::new();
         if provider
             .import(bytes, &mut probe.as_mut(), &mut inputs)
@@ -2568,13 +2568,13 @@ impl Namespace {
         let Ok(root) = self.doc.put_object(&node, "doc", ObjType::Map) else {
             return false;
         };
-        qdoc::model::init(&mut self.doc, &root);
-        let Ok(containers) = qdoc::model::open(&self.doc, &root) else {
+        tilo_doc::model::init(&mut self.doc, &root);
+        let Ok(containers) = tilo_doc::model::open(&self.doc, &root) else {
             return false;
         };
-        let mut ids = qdoc::model::seeded_id_gen(&self.doc, &containers);
+        let mut ids = tilo_doc::model::seeded_id_gen(&self.doc, &containers);
         {
-            let mut dmut = qdoc::DocMut {
+            let mut dmut = tilo_doc::DocMut {
                 doc: &mut self.doc,
                 c: &containers,
                 ids: &mut ids,
@@ -2605,12 +2605,16 @@ impl Namespace {
 
     // Fine-grained document edits: the path that merges semantically.
 
-    fn with_doc_mut<R>(&mut self, ino: u64, f: impl FnOnce(&mut qdoc::DocMut) -> R) -> Option<R> {
+    fn with_doc_mut<R>(
+        &mut self,
+        ino: u64,
+        f: impl FnOnce(&mut tilo_doc::DocMut) -> R,
+    ) -> Option<R> {
         let id = self.ino_to_id.get(&ino)?.clone();
         let root = self.document_root(&id)?;
-        let containers = qdoc::model::open(&self.doc, &root).ok()?;
-        let mut ids = qdoc::model::seeded_id_gen(&self.doc, &containers);
-        let mut dmut = qdoc::DocMut {
+        let containers = tilo_doc::model::open(&self.doc, &root).ok()?;
+        let mut ids = tilo_doc::model::seeded_id_gen(&self.doc, &containers);
+        let mut dmut = tilo_doc::DocMut {
             doc: &mut self.doc,
             c: &containers,
             ids: &mut ids,
@@ -2646,8 +2650,8 @@ impl Namespace {
         let Some(root) = self.document_root(id) else {
             return Vec::new();
         };
-        match qdoc::model::open(&self.doc, &root) {
-            Ok(c) => qdoc::model::blocks_in_order(&self.doc, &c),
+        match tilo_doc::model::open(&self.doc, &root) {
+            Ok(c) => tilo_doc::model::blocks_in_order(&self.doc, &c),
             Err(_) => Vec::new(),
         }
     }
@@ -2655,8 +2659,8 @@ impl Namespace {
     pub fn document_block_text(&self, ino: u64, block_id: &str) -> Option<String> {
         let id = self.ino_to_id.get(&ino)?;
         let root = self.document_root(id)?;
-        let containers = qdoc::model::open(&self.doc, &root).ok()?;
-        qdoc::model::block_text(&self.doc, &containers, block_id)
+        let containers = tilo_doc::model::open(&self.doc, &root).ok()?;
+        tilo_doc::model::block_text(&self.doc, &containers, block_id)
     }
 
     pub fn document_remove_block(&mut self, ino: u64, block_id: &str) -> bool {
@@ -2664,12 +2668,12 @@ impl Namespace {
             .is_some()
     }
 
-    pub fn document_snapshot(&self, ino: u64) -> Option<qdoc::DocSnapshot> {
+    pub fn document_snapshot(&self, ino: u64) -> Option<tilo_doc::DocSnapshot> {
         let id = self.ino_to_id.get(&ino)?;
         let root = self.document_root(id)?;
-        let containers = qdoc::model::open(&self.doc, &root).ok()?;
+        let containers = tilo_doc::model::open(&self.doc, &root).ok()?;
         Some(
-            qdoc::DocRef {
+            tilo_doc::DocRef {
                 doc: &self.doc,
                 c: &containers,
             }
@@ -4089,7 +4093,7 @@ mod tests {
     fn documents_import_export_and_merge_semantically() {
         // Phase `document_import_export_roundtrips`.
         {
-            let reg = qdoc_codecs::builtin_registry();
+            let reg = tilo_doc_codecs::builtin_registry();
             let mut ns = Namespace::new("a").unwrap();
             let ino = ns.create_document(ROOT_INO, "note.md", "md", 1).unwrap();
             assert_eq!(ns.document_codec(ino).as_deref(), Some("md"));
@@ -4107,7 +4111,7 @@ mod tests {
         }
         // Phase `failed_import_preserves_existing_document`.
         {
-            let reg = qdoc_codecs::builtin_registry();
+            let reg = tilo_doc_codecs::builtin_registry();
             let mut ns = Namespace::new("a").unwrap();
             let ino = ns.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
             assert!(ns.import_document(

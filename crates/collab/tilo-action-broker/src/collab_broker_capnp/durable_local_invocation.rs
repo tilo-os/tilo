@@ -20,6 +20,10 @@ pub(super) struct LocalCaller {
     time: crate::peer_actions::PolicyTime,
 }
 impl LocalCaller {
+    /// The room it acts in and who the host admitted on it.
+    pub(super) fn admitted_in(&self) -> (String, AdmittedJoinIdentity) {
+        (self.route.cluster_id.clone(), self.admitted.clone())
+    }
     fn capture(channel: &CapnpChannelHandle) -> Result<Self, String> {
         let time = channel
             .state
@@ -139,7 +143,11 @@ impl<'a> DurableContext<'a> {
     }
     pub(super) fn origin(self) -> InvocationCaller {
         match self {
-            Self::Peer(c, _) => InvocationCaller::Certified(Box::new(c.clone())),
+            Self::Peer(c, _) => InvocationCaller::Certified {
+                caller: Box::new(c.clone()),
+                // This path has only the original signed device restriction.
+                foreign_restriction: false,
+            },
             Self::Local { caller, .. } => caller.origin(),
         }
     }
@@ -610,6 +618,8 @@ pub(super) fn invoke(
                 request.binding.peer_id,
                 offered,
                 InvocationInputs {
+                    caller: None,
+                    execution: None,
                     argument: request.argument.as_deref(),
                     actor: &actor,
                     confirmation_token: token.as_deref(),

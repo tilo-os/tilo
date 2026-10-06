@@ -15,6 +15,7 @@ fn blocked_quick_settings_read_does_not_turn_waiting_into_animation() {
                 bluetooth: None,
                 bluetooth_available: false,
                 power: None,
+                power_profiles: None,
                 wired: None,
                 battery: crate::shell::quick_settings::actions::BatteryInfo::from_root(
                     std::path::Path::new("/nonexistent"),
@@ -50,6 +51,7 @@ fn a_reading_with_no_audio_device_leaves_no_volume_slider() {
                 bluetooth: None,
                 bluetooth_available: false,
                 power: None,
+                power_profiles: None,
                 wired: None,
                 battery: crate::shell::quick_settings::actions::BatteryInfo::from_root(
                     std::path::Path::new("/nonexistent"),

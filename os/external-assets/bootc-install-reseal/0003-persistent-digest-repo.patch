@@ -1,0 +1,25 @@
+diff --git a/crates/lib/src/bootc_composefs/digest.rs b/crates/lib/src/bootc_composefs/digest.rs
+--- a/crates/lib/src/bootc_composefs/digest.rs
++++ b/crates/lib/src/bootc_composefs/digest.rs
+@@ -26,11 +26,16 @@
+ #[fn_error_context::context("Creating new temp composefs repo")]
+ pub(crate) fn new_temp_composefs_repo() -> Result<(TempDir, Arc<ComposefsRepository>)> {
+     let td_guard = tempfile::tempdir_in("/var/tmp")?;
+-    let td_path = td_guard.path();
+-    let td_dir = Dir::open_ambient_dir(td_path, cap_std::ambient_authority())?;
+-
+-    td_dir.create_dir("repo")?;
+-    let repo_dir = td_dir.open_dir("repo")?;
++    // BOOTC_COMPOSEFS_DIGEST_REPO: keep the repository there between runs, so
++    // layers it already holds are not fetched and unpacked again.
++    let repo_dir = if let Some(path) = std::env::var_os("BOOTC_COMPOSEFS_DIGEST_REPO") {
++        std::fs::create_dir_all(&path).context("Creating persistent cfs repo")?;
++        Dir::open_ambient_dir(&path, cap_std::ambient_authority())?
++    } else {
++        let td_dir = Dir::open_ambient_dir(td_guard.path(), cap_std::ambient_authority())?;
++        td_dir.create_dir("repo")?;
++        td_dir.open_dir("repo")?
++    };
+     // We don't need to hard require verity on the *host* system, we're just computing a checksum here
+     let config = RepositoryConfig::new(Algorithm::SHA512).set_insecure();
+     let (repo, _created) =

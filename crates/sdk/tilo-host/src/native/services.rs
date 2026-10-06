@@ -125,6 +125,7 @@ pub fn process_environment() -> crate::host::HostEnvironment {
             user_home: path("TILO_USER_HOME"),
             home: path("HOME"),
             config_home: path("XDG_CONFIG_HOME"),
+            pipeline_seed: path("TILO_PIPELINE_SEED_DIR"),
         },
         accessibility: crate::host::AccessibilityInputs {
             screen_reader: flag(&["TILO_A11Y_SCREEN_READER", "TILO_SCREEN_READER"]),
@@ -161,6 +162,8 @@ pub fn process_environment() -> crate::host::HostEnvironment {
         },
         dev_session: path("TILO_DEV_SESSION"),
         ui_graph_dir: path("TILO_UI_GRAPH_DIR"),
+        // `settings_store::SESSION_SETTINGS_ENV`. Empty is unset.
+        session_settings: path("TILO_SESSION_SETTINGS"),
     }
 }
 

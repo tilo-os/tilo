@@ -16,7 +16,7 @@
 #                          removed when the compositor exits.
 #
 # Behaviour:
-#   - Runs against a scratch profile: the four XDG homes, the device
+#   - Runs against a scratch profile: HOME, the four XDG homes, the device
 #     identity root (TILO_IDENTITY_ROOT) and the filesystem daemon's
 #     handoff directories all point inside it, so the compositor never
 #     reads or writes your real identity, settings or workspaces, nor
@@ -73,8 +73,13 @@ case "$REAL_CONFIG/" in
         exit 1
         ;;
 esac
-mkdir -p -m 700 -- "$PROFILE"/{config,data,state,cache,identity,system/run,system/fs-cache,system/peer-cache}
+mkdir -p -m 700 -- "$PROFILE"/{config,data,state,cache,home,identity,system/run,system/fs-cache,system/peer-cache}
 chmod 700 -- "$PROFILE"
+REAL_HOME="$(realpath -m -- "$HOME")"
+if [ "$(realpath -m -- "$PROFILE/home")" = "$REAL_HOME" ]; then
+    echo "FAIL: profile $PROFILE/home is your real HOME ($REAL_HOME)" >&2
+    exit 1
+fi
 echo "PROFILE $PROFILE" >&2
 
 if [ -S "$SOCKET" ]; then
@@ -109,6 +114,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 TILO_TEST_CONTROL="$SOCKET" \
+    HOME="$PROFILE/home" \
     XDG_CONFIG_HOME="$PROFILE/config" \
     XDG_DATA_HOME="$PROFILE/data" \
     XDG_STATE_HOME="$PROFILE/state" \

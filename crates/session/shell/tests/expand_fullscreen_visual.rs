@@ -56,7 +56,13 @@ impl Driver {
     }
     fn send(&mut self, fb: &mut FrameBuilder, ev: &WindowEvent) {
         let mods = Modifiers::default();
-        fb.dispatch_event(ev, &mods, &mut self.doc, &ROOT, &mut self.focus);
+        fb.dispatch_event(
+            ev,
+            &mods,
+            &mut ui::widget::Edits::lend(&mut self.doc),
+            &ROOT,
+            &mut self.focus,
+        );
     }
     fn cursor(&mut self, fb: &mut FrameBuilder, p: Point) {
         self.send(
@@ -119,6 +125,17 @@ fn render_expand_to_fullscreen() {
         g.tab_rects().first().copied().expect("one pill").center()
     };
     d.cursor(&mut fb, pill_center);
+    fb.relayout();
+    // The reveal first waits out a pointer-intent dwell.
+    let mut intended = false;
+    if let Some(row) = fb.host_mut().group_row_mut_for_tests(strip_id) {
+        for g in &mut row.groups {
+            intended |= g
+                .bar_mut_for_tests()
+                .hold_hover_intent_at(std::time::Duration::from_secs(1));
+        }
+    }
+    assert!(intended, "hovering the pill armed no intent dwell");
     fb.relayout();
     // The chip cluster slides out on wall time, and the rects stay `Rect::ZERO`
     // until that curve has run, so hold it past the end and lay out again.

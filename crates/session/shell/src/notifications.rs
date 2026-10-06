@@ -313,6 +313,8 @@ pub struct NotificationBridge {
     /// A restart-scoped namespace. Stale routes can never address a new
     /// notification daemon process, even if its D-Bus ids are reused.
     continuity_epoch: [u8; 16],
+    /// Parked by the D-Bus signal emitter until a close or action is queued.
+    signal_wake: crate::idle_wake::IdleWake,
 }
 
 impl Default for NotificationBridge {
@@ -328,6 +330,7 @@ impl NotificationBridge {
             inner: Arc::new(Mutex::new(BridgeInner::default())),
             next_id: Arc::new(AtomicU32::new(1)),
             continuity_epoch,
+            signal_wake: crate::idle_wake::IdleWake::default(),
         }
     }
 
@@ -395,6 +398,7 @@ impl NotificationBridge {
         if let Ok(mut g) = self.inner.lock() {
             g.closed_events.push((id, reason));
             retire_continuity_route(&mut g, id);
+            self.signal_wake.poke();
         }
     }
 
@@ -406,6 +410,7 @@ impl NotificationBridge {
             for tap in &g.action_taps {
                 tap(id, &action_key);
             }
+            self.signal_wake.poke();
         }
     }
 
@@ -545,6 +550,7 @@ impl NotificationBridge {
         inner.closed_events.push((dbus_id, CloseReason::Dismissed));
         push_bounded(&mut inner.continuity.local_closes, dbus_id);
         retire_continuity_route(&mut inner, dbus_id);
+        self.signal_wake.poke();
         true
     }
 
@@ -1509,13 +1515,17 @@ pub fn spawn_signal_emitter(
                 return;
             }
         };
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(120));
         loop {
-            interval.tick().await;
-            for (id, reason) in bridge.drain_closed_events() {
+            let closed = bridge.drain_closed_events();
+            let actions = bridge.drain_action_events();
+            if closed.is_empty() && actions.is_empty() {
+                bridge.signal_wake.wait().await;
+                continue;
+            }
+            for (id, reason) in closed {
                 let _ = NotificationService::notification_closed(&ctxt, id, reason.code()).await;
             }
-            for (id, key) in bridge.drain_action_events() {
+            for (id, key) in actions {
                 let _ = NotificationService::action_invoked(&ctxt, id, key).await;
             }
         }

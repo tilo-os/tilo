@@ -706,6 +706,7 @@ impl FrameHarness {
             FilterAction::AllKinds => overlay.wanted.clear(),
             FilterAction::ToggleKind(kind) => toggle_kind(&mut overlay.wanted, kind),
             FilterAction::Scope(scope) => overlay.scope = scope,
+            FilterAction::More => overlay.filters.more_open = !overlay.filters.more_open,
         }
         self.refresh_system_search();
     }
@@ -814,7 +815,7 @@ impl FrameHarness {
             &mut crate::widget::EventCtx {
                 scale_factor: self.input_scale,
                 modifiers: &self.modifiers,
-                state: &mut self.state.doc,
+                state: crate::widget::Edits::lend(&mut self.state.doc),
                 path: &self.state.root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -948,7 +949,7 @@ impl FrameHarness {
             overlay.palette.perform_semantic_action(
                 target,
                 action,
-                &mut self.state.doc,
+                &mut crate::widget::Edits::lend(&mut self.state.doc),
                 &self.state.root,
             )
         })

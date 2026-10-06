@@ -146,6 +146,26 @@ impl SearchProvider for RecordsProvider {
         }
     }
 
+    /// A record's address is its id: it resolves from the retained record
+    /// list directly, with no search beforehand.
+    fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
+        if !ctx.wanted.contains(&ResourceKind::Record) {
+            return None;
+        }
+        let wanted = ui::record::RecordId::parse(id)?;
+        let (here, rooms) = {
+            let tree = ctx.chrome.tree();
+            (
+                tree.desktop.active_workspace().map(|w| w.room),
+                room_names(&tree),
+            )
+        };
+        let records = self.index.borrow().known();
+        let record = records.iter().find(|record| record.id == wanted)?;
+        let subtitle = provenance(record, here, &rooms);
+        Some(self.row(record, record.title(), subtitle, MAX_SCORE))
+    }
+
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         // Legacy direct callers get one retained, bounded page too. They no
         // longer accidentally turn an integration test or an old surface into
@@ -250,19 +270,11 @@ impl SearchProvider for RecordsProvider {
             }
             used = used.saturating_add(bytes);
             shown = shown.saturating_add(1);
-            let index = Rc::clone(&self.index);
-            let id = record.id.clone();
-            let kind = record.kind.clone();
-            results.push(SearchResult::nullary(
-                ResourceKind::Record,
-                "records",
-                record.id.as_str().to_string(),
+            results.push(self.row(
+                record,
                 title,
-                Some(subtitle),
+                subtitle,
                 crate::shell::search::provider_score(hit.rank.unwrap_or(0)),
-                move |_doc, _root, chrome: &Chrome| {
-                    bring_into_this_room(&index, &id, &kind, chrome);
-                },
             ));
         }
         let exhausted = !found.more && shown == found.hits.len();
@@ -281,6 +293,29 @@ impl SearchProvider for RecordsProvider {
     }
 }
 
+impl RecordsProvider {
+    fn row(
+        &self,
+        record: &KnownRecord,
+        title: String,
+        subtitle: String,
+        score: i32,
+    ) -> SearchResult {
+        let index = Rc::clone(&self.index);
+        let id = record.id.clone();
+        let kind = record.kind.clone();
+        SearchResult::view_with_output(
+            ResourceKind::Record,
+            "records",
+            record.id.as_str().to_string(),
+            title,
+            Some(subtitle),
+            score,
+            move |chrome: &Chrome| bring_into_this_room(&index, &id, &kind, chrome),
+        )
+    }
+}
+
 /// Enter on a record row. Two effects, in this order: the reference is
 /// recorded first (it's what "bring it here" *means*, whether or not
 /// there's anything to open), so a launch that fails still leaves the
@@ -290,7 +325,8 @@ fn bring_into_this_room(
     id: &ui::record::RecordId,
     kind: &ui::record::RecordKind,
     chrome: &Chrome,
-) {
+) -> Result<serde_json::Value, crate::shell::search::action_api::ActionError> {
+    use crate::shell::search::action_api::ActionError;
     let here = {
         let chrome_state = chrome.borrow();
         let tree = chrome_state.tree();
@@ -303,25 +339,20 @@ fn bring_into_this_room(
     // A path-identified record is also opened; anything else is brought
     // here and waits for its app.
     let Some(path) = id.file_path() else {
-        return;
+        return Ok(serde_json::json!({ "brought": id.as_str() }));
     };
     if !path.exists() {
-        crate::shell::doc_open::report_open_failure(
-            chrome,
-            &path,
-            &t("search-record-file-missing"),
-            Some("Records"),
-        );
-        return;
+        let message = t("search-record-file-missing");
+        crate::shell::doc_open::report_open_failure(chrome, &path, &message, Some("Records"));
+        return Err(ActionError::Refused(message));
     }
-    if let Err(e) = crate::shell::doc_open::open_in_workspace(&path, chrome) {
-        crate::shell::doc_open::report_open_failure(
-            chrome,
-            &path,
-            &e.user_message(),
-            Some("Records"),
-        );
-    }
+    crate::shell::doc_open::open_in_workspace(&path, chrome)
+        .map(|opened| opened.to_value(&path))
+        .map_err(|e| {
+            let message = e.user_message();
+            crate::shell::doc_open::report_open_failure(chrome, &path, &message, Some("Records"));
+            ActionError::Refused(message)
+        })
 }
 
 /// Room uuid → the name the user gave that workspace.
@@ -697,7 +728,7 @@ mod tests {
             let row = out.first().expect("the record is findable");
             let mut doc = automerge::AutoCommit::new();
             (row.on_open)(
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &chrome,
                 &crate::shell::search::action_api::ActionArgs::none(),
@@ -737,7 +768,7 @@ mod tests {
             let out = query(&provider, "book", &chrome);
             let mut doc = automerge::AutoCommit::new();
             (out[0].on_open)(
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &ROOT,
                 &chrome,
                 &crate::shell::search::action_api::ActionArgs::none(),

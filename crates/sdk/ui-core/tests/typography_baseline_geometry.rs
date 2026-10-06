@@ -17,9 +17,6 @@ fn png_dimensions(bytes: &[u8]) -> (u32, u32) {
 }
 
 #[test]
-#[ignore = "the baselines predate the card's current row spacing (824 vs 1073 px at 1x); \
-            a fresh llvmpipe render breaks Bengali conjuncts, so they cannot be regenerated \
-            until that rendering regression is fixed"]
 fn every_case_lays_out_at_its_baseline_size() {
     tilo_ui::i18n::I18nManager::init("en-US");
     let mismatches: Vec<String> = CASES

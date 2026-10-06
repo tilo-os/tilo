@@ -158,15 +158,28 @@ pub(crate) fn refresh_bound_controls(
     })
 }
 
+/// A component's control intent, with the effect invocation it continues
+/// when the component's effect handler or completion queued it.
+pub(crate) type PendingComponentControl = (
+    BoundActionTarget,
+    tilo_actions::ControlInvocation,
+    Option<tilo_actions::InvocationId>,
+);
+
 pub(crate) struct DrainedControlInvocations {
-    pub(crate) pending: Vec<(BoundActionTarget, tilo_actions::ControlInvocation)>,
+    pub(crate) pending: Vec<PendingComponentControl>,
     pub(crate) error: Option<BoundDispatchError>,
 }
 
 pub(crate) fn drain_control_invocations(root: &mut dyn Widget) -> DrainedControlInvocations {
     let batch = capture_control_invocations(root);
     DrainedControlInvocations {
-        pending: batch.controls,
+        pending: batch
+            .controls
+            .into_iter()
+            .zip(batch.continuing)
+            .map(|((target, intent), on_behalf_of)| (target, intent, on_behalf_of))
+            .collect(),
         error: batch.failures.into_iter().next(),
     }
 }
@@ -175,6 +188,8 @@ pub(crate) fn drain_control_invocations(root: &mut dyn Widget) -> DrainedControl
 pub(crate) struct BoundControlBatch {
     pub(crate) visited: Vec<CallbackBinding>,
     pub(crate) controls: Vec<(BoundActionTarget, tilo_actions::ControlInvocation)>,
+    /// For each of `controls`, in order, the effect invocation it continues.
+    pub(crate) continuing: Vec<Option<tilo_actions::InvocationId>>,
     pub(crate) failures: Vec<BoundDispatchError>,
 }
 
@@ -235,6 +250,7 @@ pub(crate) fn snapshot_control_queues(root: &dyn Widget) -> ControlQueueSnapshot
 
 fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch {
     let mut invocations = Vec::new();
+    let mut continuing = Vec::new();
     let mut visited = Vec::new();
     let mut visit = |binding: &CallbackBinding,
                      widget: &mut dyn crate::widget::AppWidget,
@@ -249,6 +265,7 @@ fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch
             .drain(..)
             .collect::<Vec<_>>();
         for intent in queued {
+            continuing.push(None);
             invocations.push((
                 BoundActionTarget {
                     binding: binding.clone(),
@@ -260,7 +277,10 @@ fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch
                 intent,
             ));
         }
-        while let Some(intent) = crate::widget::controls::take_control_invocation(widget) {
+        while let Some((intent, on_behalf_of)) =
+            crate::widget::controls::take_attributed_control_invocation(widget)
+        {
+            continuing.push(on_behalf_of);
             invocations.push((
                 BoundActionTarget {
                     binding: binding.clone(),
@@ -284,6 +304,7 @@ fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch
     BoundControlBatch {
         visited,
         controls: invocations,
+        continuing,
         failures: failure.into_iter().collect(),
     }
 }
@@ -364,6 +385,9 @@ impl Default for BoundPublication {
     }
 }
 impl BoundPublication {
+    pub(crate) fn clear(&self) {
+        self.owners.borrow_mut().clear();
+    }
     pub(crate) fn alias(
         &self,
         binding: &CallbackBinding,
@@ -473,17 +497,27 @@ pub(crate) fn validate_bound_resources(
     binding: &CallbackBinding,
     resources: &[tilo_actions::Resource],
 ) -> Result<bool, BoundDispatchError> {
+    Ok(bound_contract_violations(root, binding, resources)?.is_some_and(|found| found.is_empty()))
+}
+
+/// Every contract violation of one component's surface, checked against the
+/// component's own registry and operation handlers. `None` when the binding
+/// names no mounted component.
+pub(crate) fn bound_contract_violations(
+    root: &mut dyn Widget,
+    binding: &CallbackBinding,
+    resources: &[tilo_actions::Resource],
+) -> Result<Option<Vec<tilo_actions::ContractViolation>>, BoundDispatchError> {
     let _entry = binding.enter()?;
-    let mut valid = false;
+    let mut violations = None;
     let mut visit = |_: &CallbackBinding,
                      widget: &mut dyn crate::widget::AppWidget,
                      registry: &tilo_actions::ActionRegistry| {
-        valid = tilo_actions::validate_surface(
+        violations = Some(tilo_actions::validate_surface(
             resources,
             registry,
             &widget.resource_operation_handlers(),
-        )
-        .is_empty();
+        ));
         None
     };
     root.visit_components(&mut ComponentRequest {
@@ -491,7 +525,7 @@ pub(crate) fn validate_bound_resources(
         found: false,
         visit: &mut visit,
     })?;
-    Ok(valid)
+    Ok(violations)
 }
 
 /// Collect each retained component once even when an ordinary container does
@@ -648,7 +682,12 @@ pub(crate) fn activate_bound_search(
             current
                 .with_document(doc, |doc, path| {
                     current.finish_action_boundary(doc)?;
-                    crate::search::capability::activate_search_result(widget, id, doc, path);
+                    crate::search::capability::activate_search_result(
+                        widget,
+                        id,
+                        &mut crate::widget::Edits::lend(doc),
+                        path,
+                    );
                     current.drain_owned_tree(widget, doc)?;
                     current.finish_action_boundary(doc)
                 })
@@ -926,9 +965,33 @@ pub(crate) fn permits_local_action(
     app_id: &str,
     action: &tilo_actions::ActionSpec,
 ) -> bool {
+    permits_local_invocation(permissions, app_id, action, action.contract.permission)
+}
+
+/// [`permits_local_action`] for one invocation: what its arguments ask.
+pub(crate) fn permits_local_value(
+    permissions: &PermissionContext,
+    app_id: &str,
+    action: &tilo_actions::ActionSpec,
+    typed: Option<&serde_json::Map<String, serde_json::Value>>,
+    argument: Option<&str>,
+) -> bool {
+    let requirement = match typed {
+        Some(arguments) => action.permission_for_json(arguments),
+        None => action.permission_for_argument(argument),
+    };
+    permits_local_invocation(permissions, app_id, action, requirement)
+}
+
+fn permits_local_invocation(
+    permissions: &PermissionContext,
+    app_id: &str,
+    action: &tilo_actions::ActionSpec,
+    requirement: tilo_actions::PermissionRequirement,
+) -> bool {
     use crate::permissions::Verb;
     use tilo_actions::PermissionRequirement as Requirement;
-    let verb = match action.contract.permission {
+    let verb = match requirement {
         Requirement::None => return true,
         Requirement::Read => Verb::Read,
         Requirement::Comment => Verb::Comment,
@@ -939,6 +1002,46 @@ pub(crate) fn permits_local_action(
     permissions.check(&crate::permissions::PermissionScope::action(
         app_id, &action.id, verb,
     ))
+}
+
+/// May the component's participant take this one invocation of `action`:
+/// what its arguments ask, under the same app scope the published tree is
+/// filtered by.
+fn permits_invocation(
+    binding: &CallbackBinding,
+    action: &tilo_actions::ActionSpec,
+    typed: Option<&serde_json::Map<String, serde_json::Value>>,
+    argument: Option<&str>,
+) -> bool {
+    use crate::permissions::Verb;
+    use tilo_actions::PermissionRequirement as Requirement;
+    let requirement = match typed {
+        Some(arguments) => action.permission_for_json(arguments),
+        None => action.permission_for_argument(argument),
+    };
+    let verb = match requirement {
+        Requirement::None => return true,
+        Requirement::Read => Verb::Read,
+        Requirement::Comment => Verb::Comment,
+        Requirement::Write => Verb::Write,
+        Requirement::Invite => Verb::Invite,
+        Requirement::Admin => Verb::Admin,
+    };
+    binding
+        .permissions
+        .borrow()
+        .check(&crate::permissions::PermissionScope::app(
+            &binding.app_id,
+            verb,
+        ))
+}
+
+/// The refusal of an invocation the participant may not take.
+pub(crate) fn denied(action: &tilo_actions::ActionSpec) -> tilo_actions::DoorError {
+    tilo_actions::DoorError::Unavailable {
+        code: "permission_denied".into(),
+        reason: format!("you may not {} here", action.label.to_lowercase()),
+    }
 }
 
 pub(crate) fn filter_resource(
@@ -1598,6 +1701,7 @@ fn execute_document(
     context: tilo_actions::ActionContext,
 ) -> Result<tilo_actions::Dispatched, tilo_actions::DoorError> {
     let before = typed_action_before(doc);
+    let step = action.change_kind().is_step() && context.change.is_step();
     // An agent principal names one writer; a person may write from several
     // devices at once.
     let writer = if crate::history_source::authors::agent_principal_name(actor).is_some() {
@@ -1630,7 +1734,7 @@ fn execute_document(
         };
     if let Some(before) = before {
         let after = doc.get_heads();
-        report_typed_action(doc, before, after);
+        report_typed_action(doc, before, after, step);
     }
     Ok(dispatched)
 }
@@ -1671,6 +1775,18 @@ pub(crate) fn execute_resource_operation(
         ambient,
         scope,
     } = operation;
+    if spec
+        .contract
+        .tags
+        .iter()
+        .any(|tag| tag == tilo_actions::LOCAL_DEVICE_ONLY)
+        && actor != local_author
+    {
+        return Err(tilo_actions::DoorError::Unavailable {
+            code: "local_device_only".into(),
+            reason: "This action uses private files on the host participant's device".into(),
+        });
+    }
     if spec.kind == tilo_actions::OperationKind::View
         && !crate::invocation_scope::view_operation_permitted(actor, local_author, &spec.contract)
     {
@@ -1679,14 +1795,15 @@ pub(crate) fn execute_resource_operation(
     let started = if spec.kind == tilo_actions::OperationKind::Document {
         let action = registry
             .decode(&encoded)
-            .map_err(|_| tilo_actions::DoorError::UnregisteredType(encoded.type_id.clone()))?;
+            .map_err(tilo_actions::DoorError::decoding)?;
         if spec.deferred_invocation_type().is_some() && action.locus() != spec.locus {
             return Err(tilo_actions::DoorError::Failed(
                 "Deferred action locus differs from its declaration".into(),
             ));
         }
+        // Named after the edit it carries, when the spec carries several.
         let mut context = tilo_actions::ActionContext::for_resource(
-            &spec.label,
+            spec.history_label(&encoded),
             resource.id.as_str(),
             &resource.kind,
             &resource.label,
@@ -1694,6 +1811,15 @@ pub(crate) fn execute_resource_operation(
         if let Some(ambient) = ambient {
             context = context.enriched_by(ambient);
         }
+        // The admitted caller is who the action is by, local or delivered:
+        // pinned with it, so its `apply` reads the same author everywhere.
+        if context.invoker.is_none() && !actor.is_empty() {
+            context = context.with_invoker(tilo_actions::ActionInvoker::actor(actor));
+        }
+        let context = context.with_args_from_payload(&encoded.payload);
+        // Before apply, so a delete can still read the row it removes. Undo
+        // of this span applies the compensating action instead of patches.
+        note_compensating_action(doc, action.inverse_encoded(doc), encoded.clone());
         let applied = match execute_document(
             doc,
             action.as_ref(),
@@ -1767,7 +1893,7 @@ pub(crate) fn execute_resource_operation(
             ),
         };
         widget
-            .start_operation(&op, doc, path)
+            .start_operation(&op, &mut crate::widget::Edits::lend(doc), path)
             .map_err(tilo_actions::DoorError::Failed)?
             .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?
     };
@@ -1875,6 +2001,18 @@ pub(crate) fn invoke_resource_action(
                     if let Some(scope) = scope {
                         scope.check_dispatch_spec(spec)?;
                     }
+                    // The tree offers an action under the least it needs;
+                    // this invocation needs what its value asks.
+                    if !permits_invocation(binding, spec, arguments.as_ref(), argument) {
+                        return Err(denied(spec).into());
+                    }
+                    crate::invocation_scope::check_continuation(
+                        spec,
+                        match arguments.as_ref() {
+                            Some(arguments) => spec.permission_for_json(arguments),
+                            None => spec.permission_for_argument(argument),
+                        },
+                    )?;
                     // A refused private View must not invoke a Deferred encoder.
                     // The execution guard below remains an independent boundary.
                     if spec.kind == tilo_actions::OperationKind::View
@@ -1888,6 +2026,9 @@ pub(crate) fn invoke_resource_action(
                             code: "private_view".into(),
                             reason: "A collaborator cannot move this participant's private focus or viewport; use Follow or Reveal explicitly".into(),
                         }.into());
+                    }
+                    if let Some(scope) = scope {
+                        scope.capture_locus_basis(target, invocation, actor, doc);
                     }
                     let encoded = encode_resource_action(
                         &resources,
@@ -2165,6 +2306,8 @@ struct ActiveMutation {
     /// A foreign segment is compared against this boundary after delivery.
     /// Same-owner continuation does not close or refresh the open transaction.
     before: Option<Vec<ChangeHash>>,
+    /// Settlement names its owner without closing a draft until an action writes.
+    deferred: bool,
 }
 struct ActionFrame {
     history: crate::state::UndoLog,
@@ -2185,6 +2328,10 @@ struct OperationSpan {
     cursor: Option<Vec<ChangeHash>>,
     effect: bool,
     violation: bool,
+    /// Compensating document action captured before `apply`, for undo.
+    undo_via: Option<tilo_actions::EncodedAction>,
+    /// The forward action, so redo runs through `apply` as well.
+    redo_via: Option<tilo_actions::EncodedAction>,
 }
 
 fn operation_frame(doc: &AutoCommit) -> Option<FrameHandle> {
@@ -2201,6 +2348,30 @@ fn operation_frame(doc: &AutoCommit) -> Option<FrameHandle> {
         if operation.binding.closing.get()
             || !operation.binding.lifetime.is_active()
             || operation.binding.registry_owner.upgrade().is_none()
+        {
+            return None;
+        }
+        Some(handle.clone())
+    })
+}
+
+/// The frame of `doc` while a callback of a bound component mutates it (a
+/// sync, an event) or one of its operations runs.
+fn mutation_frame(doc: &AutoCommit) -> Option<FrameHandle> {
+    if let Some(handle) = operation_frame(doc) {
+        return Some(handle);
+    }
+    ACTIVE.with_borrow(|active| {
+        let (_, _, witness, handle) = active.as_ref()?;
+        if !std::ptr::eq(*witness, doc) {
+            return None;
+        }
+        let handle = handle.as_ref()?;
+        let owned = handle.borrow();
+        let binding = &owned.as_ref()?.mutation.as_ref()?.binding;
+        if binding.closing.get()
+            || !binding.lifetime.is_active()
+            || binding.registry_owner.upgrade().is_none()
         {
             return None;
         }
@@ -2262,12 +2433,43 @@ pub(crate) fn authorize_current_resource_action(
     }
 }
 
+/// Stash the compensating action on the open span. `report_typed_action`
+/// records it with the undo entry. No span (a standalone widget) leaves the
+/// `ActionHost` path to record its own pair.
+fn note_compensating_action(
+    doc: &AutoCommit,
+    undo_via: Option<tilo_actions::EncodedAction>,
+    redo_via: tilo_actions::EncodedAction,
+) {
+    if undo_via.is_none() {
+        return;
+    }
+    let Some(handle) = operation_frame(doc) else {
+        return;
+    };
+    let mut owned = handle.borrow_mut();
+    let Some(frame) = owned.as_mut() else {
+        return;
+    };
+    let Some(operation) = frame.operations.last_mut() else {
+        return;
+    };
+    if operation.undo_via.is_none() {
+        operation.undo_via = undo_via;
+        operation.redo_via = Some(redo_via);
+    }
+}
+
 /// Narrow shared producer hook. Called only when a typed action is about to
 /// execute; returning None preserves the legacy `ActionHost` path unchanged.
 pub(crate) fn typed_action_before(doc: &mut AutoCommit) -> Option<Vec<ChangeHash>> {
-    let handle = operation_frame(doc)?;
+    let handle = mutation_frame(doc)?;
     let mut owned = handle.borrow_mut();
     let frame = owned.as_mut()?;
+    if let Some(active) = frame.mutation.as_ref().filter(|active| active.deferred) {
+        let binding = active.binding.clone();
+        frame.activate(&binding, doc);
+    }
     let before = frame.commit_physical(doc);
     for operation in &mut frame.operations {
         if operation.cursor.is_none() {
@@ -2279,21 +2481,34 @@ pub(crate) fn typed_action_before(doc: &mut AutoCommit) -> Option<Vec<ChangeHash
 
 /// A successful executor reports owned exact heads, never a borrowed root or
 /// registry. No-op and failed/submitted-without-change dispatches add nothing.
+///
+/// `step` is whether the change is an undo step of its author's
+/// ([`tilo_actions::ChangeKind::is_step`]). One that is not (fetched rows, a
+/// process's output) closes the step open before it and is left out of every
+/// step, so no undo takes it back with someone's edit.
 pub(crate) fn report_typed_action(
     doc: &mut AutoCommit,
     before: Vec<ChangeHash>,
     after: Vec<ChangeHash>,
+    step: bool,
 ) {
     if before == after {
         return;
     }
-    let Some(handle) = operation_frame(doc) else {
+    // Content from outside applied while a callback mutates the document (a
+    // surface recording a process's output as it syncs) stays out of the
+    // callback's step as it stays out of an operation's.
+    let Some(handle) = mutation_frame(doc) else {
         return;
     };
     let mut owned = handle.borrow_mut();
     let Some(frame) = owned.as_mut() else {
         return;
     };
+    if !step {
+        frame.pass_over(before, after, doc);
+        return;
+    }
     let Some(operation) = frame.operations.last() else {
         return;
     };
@@ -2313,12 +2528,19 @@ pub(crate) fn report_typed_action(
                 .is_some_and(|cursor| cursor != &before);
         operation.cursor = Some(after.clone());
     }
-    frame.history.record_committed_span_in(
+    let (undo_via, redo_via) = frame
+        .operations
+        .last_mut()
+        .map(|operation| (operation.undo_via.take(), operation.redo_via.take()))
+        .unwrap_or((None, None));
+    frame.history.record_committed_span_with_inverse(
         before,
         after.clone(),
         None,
-        binding.author.clone(),
-        binding.instance_id,
+        None,
+        Some(binding.author.clone()),
+        Some(binding.instance_id),
+        crate::state::CommittedSpanInverse { undo_via, redo_via },
     );
     frame.reset_operation_baseline(&binding, after);
     frame.state.generation = frame
@@ -2361,6 +2583,8 @@ impl<'a> BoundOperation<'a> {
                 cursor,
                 effect,
                 violation: false,
+                undo_via: None,
+                redo_via: None,
             });
             depth
         };
@@ -2448,6 +2672,37 @@ impl PendingRecordAction {
 }
 
 impl ActionFrame {
+    /// Leave the change from `before` to `after` out of every undo step: the
+    /// step open before it is finished at `before`, and the next one starts
+    /// at `after`.
+    fn pass_over(&mut self, before: Vec<ChangeHash>, after: Vec<ChangeHash>, doc: &mut AutoCommit) {
+        let boundary = self
+            .operations
+            .iter()
+            .find_map(|scope| scope.cursor.as_ref())
+            .cloned()
+            .unwrap_or_else(|| before.clone());
+        self.finish_pending_at(boundary, doc);
+        for operation in &mut self.operations {
+            operation.violation |= operation.effect
+                && operation
+                    .cursor
+                    .as_ref()
+                    .is_some_and(|cursor| cursor != &before);
+            operation.cursor = Some(after.clone());
+        }
+        let binding = self
+            .operations
+            .last()
+            .map(|operation| operation.binding.clone())
+            .or_else(|| self.mutation.as_ref().map(|active| active.binding.clone()));
+        match binding {
+            Some(binding) => self.reset_operation_baseline(&binding, after),
+            None => self.state.pending = None,
+        }
+        self.state.generation = self.state.generation.and_then(|value| value.checked_add(1));
+    }
+
     fn reset_operation_baseline(&mut self, binding: &CallbackBinding, after: Vec<ChangeHash>) {
         self.state.pending = Some(PendingRecordAction::new(binding, after.clone()));
         if let Some(active) = self.mutation.as_mut() {
@@ -2617,13 +2872,34 @@ impl ActionFrame {
             self.mutation = Some(ActiveMutation {
                 binding: binding.clone(),
                 before: None,
+                deferred: false,
             });
             return;
         }
         self.mutation = Some(ActiveMutation {
             binding: binding.clone(),
             before,
+            deferred: false,
         });
+    }
+}
+
+struct SettlementReturn<'a> {
+    document: &'a mut AutoCommit,
+    frame: FrameHandle,
+    previous: Option<ActiveMutation>,
+}
+impl Drop for SettlementReturn<'_> {
+    fn drop(&mut self) {
+        if let Some(frame) = self.frame.borrow_mut().as_mut() {
+            frame.settle_segment(self.document);
+            match self.previous.take() {
+                Some(previous) if !previous.deferred => {
+                    frame.activate(&previous.binding, self.document);
+                }
+                previous => frame.mutation = previous,
+            }
+        }
     }
 }
 
@@ -2724,6 +3000,7 @@ impl CallbackBinding {
     /// Whether `route` is the broker route this binding names.
     pub(crate) fn matches_route(&self, route: &crate::collaboration::RouteSpec) -> bool {
         self.broker_route().as_ref() == Some(route)
+            || self.admission_route().as_ref() == Some(route)
     }
     pub(crate) fn drain_owned_tree(
         &self,
@@ -2773,13 +3050,10 @@ impl CallbackBinding {
         widget: &mut dyn Widget,
         doc: &mut AutoCommit,
     ) -> Result<bool, BoundDispatchError> {
-        let bracket = crate::undo::take_committed_action(widget);
-        let commit = crate::undo::needs_commit(widget);
-        if bracket.is_none() && !commit {
+        let Some(before) = crate::undo::take_committed_action(widget) else {
             return Ok(false);
-        }
+        };
         let keep_open = crate::undo::keeps_undo_step_open(widget);
-        let context = crate::undo::take_commit_context(widget);
         let metadata = crate::undo::get_state(widget);
         let handle = ACTIVE
             .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
@@ -2790,8 +3064,6 @@ impl CallbackBinding {
                 .as_mut()
                 .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
             if !frame.operations.is_empty() {
-                drop(owned);
-                crate::undo::on_commit(widget);
                 return Ok(true);
             }
             frame.settle_segment(doc);
@@ -2803,30 +3075,23 @@ impl CallbackBinding {
             {
                 // A foreign no-op notification is not mutation evidence. Its
                 // acknowledgement must not consume the pending owner's burst
-                // or replace the saved metadata/context.
-                drop(owned);
-                crate::undo::on_commit(widget);
+                // or replace the saved metadata.
                 return Ok(true);
             }
-            if let Some(before) = bracket {
-                // A nested action can already have consumed a bracket still
-                // reported by an ancestor ActionHost. Only advance the pending
-                // boundary; never move it backwards across a recorded action.
-                frame.commit_physical(doc);
-                let advances = frame.state.pending.as_ref().is_none_or(|pending| {
-                    before == pending.before
-                        || doc.get_changes(&before).len() < doc.get_changes(&pending.before).len()
-                });
-                if advances {
-                    frame.finish_pending_at(before.clone(), doc);
-                    frame.state.pending = Some(PendingRecordAction::new(self, before));
-                }
+            // A nested action can already have consumed a bracket still
+            // reported by an ancestor ActionHost. Only advance the pending
+            // boundary; never move it backwards across a recorded action.
+            frame.commit_physical(doc);
+            let advances = frame.state.pending.as_ref().is_none_or(|pending| {
+                before == pending.before
+                    || doc.get_changes(&before).len() < doc.get_changes(&pending.before).len()
+            });
+            if advances {
+                frame.finish_pending_at(before.clone(), doc);
+                frame.state.pending = Some(PendingRecordAction::new(self, before));
             }
             if let Some(pending) = frame.state.pending.as_mut() {
                 pending.metadata = metadata;
-                if let Some(context) = context {
-                    pending.context = context.enriched_by(&self.operation_context);
-                }
             }
         }
         // A step the widget keeps open closes at its next boundary, or
@@ -2834,8 +3099,6 @@ impl CallbackBinding {
         if !keep_open {
             self.finish_action_boundary(doc)?;
         }
-        // Arbitrary widget delivery happens after releasing the frame borrow.
-        crate::undo::on_commit(widget);
         Ok(true)
     }
 
@@ -2851,6 +3114,15 @@ impl CallbackBinding {
         outer: &mut AutoCommit,
         request: crate::undo::UndoRequest,
     ) -> Result<Option<crate::state::UndoEntry>, BoundDispatchError> {
+        self.history_request_with_registry(outer, request, None)
+    }
+
+    pub(crate) fn history_request_with_registry(
+        &self,
+        outer: &mut AutoCommit,
+        request: crate::undo::UndoRequest,
+        registry: Option<&tilo_actions::ActionRegistry>,
+    ) -> Result<Option<crate::state::UndoEntry>, BoundDispatchError> {
         self.with_document(outer, |doc, _| {
             self.finish_action_boundary(doc)?;
             let handle = ACTIVE
@@ -2861,16 +3133,22 @@ impl CallbackBinding {
                 .as_mut()
                 .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
             let entry = match request {
-                crate::undo::UndoRequest::Undo => {
-                    frame
-                        .history
-                        .undo_in(doc, &self.author, self.instance_id, None, None)
-                }
-                crate::undo::UndoRequest::Redo => {
-                    frame
-                        .history
-                        .redo_in(doc, &self.author, self.instance_id, None, None)
-                }
+                crate::undo::UndoRequest::Undo => frame.history.undo_in_with_registry(
+                    doc,
+                    &self.author,
+                    self.instance_id,
+                    None,
+                    None,
+                    registry,
+                ),
+                crate::undo::UndoRequest::Redo => frame.history.redo_in_with_registry(
+                    doc,
+                    &self.author,
+                    self.instance_id,
+                    None,
+                    None,
+                    registry,
+                ),
             };
             frame.state.pending = Some(PendingRecordAction::new(self, doc.get_heads()));
             Ok(entry)
@@ -2935,6 +3213,42 @@ impl CallbackBinding {
         callback: impl FnOnce(&mut AutoCommit, &ObjId) -> R,
     ) -> Result<R, BoundDispatchError> {
         self.with_record_frame(outer, true, callback)
+    }
+    /// Lend typed edits without opening a mutation merely because a frame polls.
+    /// The executor activates this owner when a typed action actually writes.
+    pub(crate) fn with_settlement<R>(
+        &self,
+        outer: &mut AutoCommit,
+        callback: impl FnOnce(&mut AutoCommit, &ObjId) -> R,
+    ) -> Result<R, BoundDispatchError> {
+        self.with_record_frame(outer, false, |document, root| {
+            let handle = ACTIVE
+                .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
+                .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+            let previous = {
+                let mut owned = handle.borrow_mut();
+                let frame = owned
+                    .as_mut()
+                    .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+                // An exclusive loan still advances admission bookkeeping;
+                // only its document transaction waits for an actual action.
+                frame.state.generation = frame
+                    .state
+                    .generation
+                    .and_then(|value| value.checked_add(1));
+                frame.mutation.replace(ActiveMutation {
+                    binding: self.clone(),
+                    before: None,
+                    deferred: true,
+                })
+            };
+            let restore = SettlementReturn {
+                document,
+                frame: handle,
+                previous,
+            };
+            Ok(callback(restore.document, root))
+        })?
     }
     /// Restore only through the already owned record frame. Unlike ordinary
     /// mutation entry this never activates or flushes an unfinished action.
@@ -3659,19 +3973,34 @@ pub(crate) unsafe fn invoke_bound_semantic_node<R>(
             let before = (doc.base_heads(), doc.pending_ops());
             let widget = unsafe { &mut *pointer };
             let result = callback(widget, doc, &ROOT);
-            let _ = crate::undo::take_committed_action(widget);
-            let changed = (doc.base_heads(), doc.pending_ops()) != before
-                && history.commit_action_authored_with_message(
+            let frontier_changed = (doc.base_heads(), doc.pending_ops()) != before;
+            // Typed actions close their transaction at dispatch. Forwarding
+            // controls can leave the bracket on a descendant, so retain the
+            // admitted owner's frontier as a fallback for committed edits.
+            let committed = crate::undo::take_committed_action(widget)
+                .or_else(|| (doc.pending_ops() == 0).then_some(before.0));
+            let changed = if !frontier_changed {
+                false
+            } else if let Some(committed) = committed {
+                history.record_committed_action_authored(
+                    doc,
+                    committed,
+                    None,
+                    crate::undo::get_state(widget),
+                    Some(author.clone()),
+                )
+            } else {
+                history.commit_action_authored_with_message(
                     doc,
                     None,
                     crate::undo::get_state(widget),
                     Some(author.clone()),
                     context.change_message(),
-                );
+                )
+            };
             if changed {
                 state.generation = Some(next);
                 state.statuses.clear();
-                crate::undo::on_commit(widget);
             }
             Ok((result, changed))
         })
@@ -3779,7 +4108,7 @@ pub(crate) unsafe fn drain_legacy_node_action(
     let Some(owner) = &admitted.legacy else {
         return Ok(false);
     };
-    let app = authorize_legacy_owner(owner, authority, author)?;
+    authorize_legacy_owner(owner, authority, author)?;
     let (store, checkout) = owner.store_checkout();
     let pointer = admitted.pointer;
     let changed = store
@@ -3792,53 +4121,25 @@ pub(crate) unsafe fn drain_legacy_node_action(
                 .and_then(|generation| generation.checked_add(1))
                 .ok_or("document generation exhausted")?;
             let widget = unsafe { &mut *pointer };
-            let bracket = crate::undo::take_committed_action(widget);
-            let requested = crate::undo::needs_commit(widget);
-            if bracket.is_none() && !requested {
+            let Some(before) = crate::undo::take_committed_action(widget) else {
                 return Ok(false);
-            }
+            };
             // A successful pure resource action may have already recorded the
             // frontier while an older no-op notification remains on the widget.
             // Retire that notification without duplicating or rebasing history.
-            if bracket.is_some() && doc.pending_ops() == 0 && history.matches_recorded_frontier(doc)
-            {
-                if requested {
-                    crate::undo::on_commit(widget);
-                }
+            if doc.pending_ops() == 0 && history.matches_recorded_frontier(doc) {
                 return Ok(false);
             }
-            let changed = if let Some(before) = bracket {
-                history.record_committed_action_authored(
-                    doc,
-                    before,
-                    None,
-                    crate::undo::get_state(widget),
-                    Some(author.clone()),
-                )
-            } else {
-                let context = crate::undo::take_commit_context(widget).unwrap_or_else(|| {
-                    tilo_actions::ActionContext::for_resource(
-                        "Edit",
-                        checkout.id.as_str(),
-                        "document",
-                        "Document",
-                    )
-                    .with_app(&app, &app)
-                });
-                history.commit_action_authored_with_message(
-                    doc,
-                    None,
-                    crate::undo::get_state(widget),
-                    Some(author.clone()),
-                    context.change_message(),
-                )
-            };
+            let changed = history.record_committed_action_authored(
+                doc,
+                before,
+                None,
+                crate::undo::get_state(widget),
+                Some(author.clone()),
+            );
             if changed {
                 state.generation = Some(next);
                 state.statuses.clear();
-            }
-            if requested {
-                crate::undo::on_commit(widget);
             }
             Ok(changed)
         })

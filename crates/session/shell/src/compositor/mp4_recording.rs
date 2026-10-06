@@ -401,6 +401,12 @@ mod tests {
         )
     }
 
+    fn write(recording: &mut Mp4Recording, units: Vec<media::EncodedUnit>) {
+        for unit in units {
+            recording.write_access_unit(&unit.data).unwrap();
+        }
+    }
+
     fn frame(n: u8) -> Vec<u8> {
         let mut rgba = vec![0u8; 64 * 48 * 4];
         for pixel in rgba.chunks_exact_mut(4) {
@@ -421,10 +427,9 @@ mod tests {
             let mut recording =
                 Mp4Recording::new(path.clone(), StreamCodec::Vp9, 64, 48, 30, Vec::new());
             for n in 0..5u8 {
-                recording
-                    .write_access_unit(&encoder.encode(&frame(n)).unwrap())
-                    .unwrap();
+                write(&mut recording, encoder.encode(&frame(n)).unwrap());
             }
+            write(&mut recording, encoder.finish().unwrap());
             recording.finish().unwrap();
 
             let bytes = std::fs::read(&path).unwrap();
@@ -440,20 +445,19 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("recent.mp4");
             let mut encoder = VideoEncoder::new(StreamCodec::Vp9, 64, 48, 30).unwrap();
-            let units: Vec<Vec<u8>> = (0..6u8)
-                .map(|n| {
-                    if n == 3 {
-                        encoder.force_keyframe();
-                    }
-                    encoder.encode(&frame(n)).unwrap()
-                })
-                .collect();
+            let mut units = Vec::new();
+            for n in 0..6u8 {
+                if n == 3 {
+                    encoder.force_keyframe();
+                }
+                units.extend(encoder.encode(&frame(n)).unwrap());
+            }
+            units.extend(encoder.finish().unwrap());
+            assert_eq!(units.len(), 6, "one unit per frame");
             let mut recording =
                 Mp4Recording::new(path.clone(), StreamCodec::Vp9, 64, 48, 30, Vec::new());
             // Join mid-stream: the two delta frames before the keyframe are skipped.
-            for unit in &units[1..] {
-                recording.write_access_unit(unit).unwrap();
-            }
+            write(&mut recording, units.split_off(1));
             recording.finish().unwrap();
             let (_, frames, _, _) = inspect(&path);
             assert_eq!(frames, 3);
@@ -476,9 +480,7 @@ mod tests {
                 vec!["Desktop sound".into(), "Microphone".into()],
             );
             for n in 0..5u8 {
-                recording
-                    .write_access_unit(&encoder.encode(&frame(n)).unwrap())
-                    .unwrap();
+                write(&mut recording, encoder.encode(&frame(n)).unwrap());
                 // 1/30 second of 48 kHz stereo S16LE.
                 recording
                     .write_pcm_audio(0, &vec![0x11; 1_600 * 4])
@@ -487,6 +489,7 @@ mod tests {
                     .write_pcm_audio(1, &vec![0x22; 1_600 * 4])
                     .unwrap();
             }
+            write(&mut recording, encoder.finish().unwrap());
             recording.finish().unwrap();
             let (_, frames, _, audio) = inspect(&path);
             assert_eq!(frames, 5);

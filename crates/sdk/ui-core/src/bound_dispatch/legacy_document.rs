@@ -442,7 +442,7 @@ impl ResourceRequest<'_> {
                         &encoded.payload,
                     ),
                 };
-                tile.start_operation(&op, outer, &ROOT)
+                tile.start_operation(&op, &mut crate::widget::Edits::lend(outer), &ROOT)
                     .map_err(DoorError::Failed)
                     .and_then(|value| {
                         value.ok_or_else(|| {
@@ -757,7 +757,6 @@ fn execute_owned(
                 }
                 if state.pending.is_some()
                     || doc.pending_ops() != 0
-                    || crate::undo::needs_commit(root)
                     || !history.matches_recorded_frontier(doc)
                 {
                     return Err(refused(
@@ -824,7 +823,7 @@ fn execute_owned(
                 let action = services
                     .registry
                     .decode(&encoded)
-                    .map_err(|_| DoorError::UnregisteredType(encoded.type_id.clone()))?;
+                    .map_err(DoorError::decoding)?;
                 if action.locus() != tilo_actions::ExecutionLocus::ClientLocal {
                     return Err(refused(
                         "legacy_document_route_unsupported",
@@ -832,7 +831,7 @@ fn execute_owned(
                     ));
                 }
                 let mut context = tilo_actions::ActionContext::for_resource(
-                    &spec.label,
+                    spec.history_label(&encoded),
                     resource.id.as_str(),
                     &resource.kind,
                     &resource.label,
@@ -841,6 +840,7 @@ fn execute_owned(
                 if let Some(ambient) = input.ambient {
                     context = context.enriched_by(ambient);
                 }
+                let context = context.with_args_from_payload(&encoded.payload);
                 let dispatched = execute_document(
                     doc,
                     action.as_ref(),

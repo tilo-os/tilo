@@ -16,14 +16,16 @@ SPEC.loader.exec_module(gate)
 
 
 class DriverArtifactTests(unittest.TestCase):
-    def test_real_archive_rejects_omitted_drivers_but_keeps_btrfs(self):
+    def test_real_archive_rejects_xfs_but_keeps_supported_roots(self):
         import tempfile
         from test_initramfs_trust import cpio, KEY, verifier
         with tempfile.TemporaryDirectory() as directory:
             image = Path(directory) / 'initramfs'
             image.write_bytes(cpio([(verifier.KEY, KEY), ('usr/lib/modules/test/kernel/fs/btrfs/btrfs.ko.zst', b'fixture')]))
-            self.assertEqual(gate.verify_artifact(image, KEY)['omitted_kernel_drivers_verified'], ['ext4', 'xfs'])
-            for driver in ('ext4', 'xfs'):
+            self.assertEqual(gate.verify_artifact(image, KEY)['omitted_kernel_drivers_verified'], ['xfs'])
+            image.write_bytes(cpio([(verifier.KEY, KEY), ('usr/lib/modules/test/kernel/fs/ext4/ext4.ko.zst', b'fixture')]))
+            self.assertEqual(gate.verify_artifact(image, KEY)['omitted_kernel_drivers_verified'], ['xfs'])
+            for driver in ('xfs',):
                 for suffix in ('', '.xz', '.gz', '.zst'):
                     image.write_bytes(cpio([(verifier.KEY, KEY), (f'usr/lib/modules/test/kernel/fs/{driver}/{driver}.ko{suffix}', b'fixture')]))
                     with self.subTest(driver=driver, suffix=suffix), self.assertRaisesRegex(ValueError, 'filesystem driver'):

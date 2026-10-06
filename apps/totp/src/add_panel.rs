@@ -1539,7 +1539,7 @@ impl AddAccountPanel {
             rect.center().y + tile_side / 2.0,
         );
         let tile_bg = if on_primary {
-            Color::WHITE.with_alpha_factor(0.18)
+            on_accent.ink.with_alpha_factor(0.18)
         } else {
             theme.accent_primary.with_alpha_factor(0.14)
         };
@@ -1957,12 +1957,6 @@ impl AddAccountPanel {
         }
     }
 
-    /// Test hook: run the exact production save path (validate → emit event).
-    #[cfg(test)]
-    pub(crate) fn save_for_test(&mut self) {
-        self.try_save();
-    }
-
     /// Test hook: current (issuer, label, secret) field values.
     #[cfg(test)]
     pub(crate) fn field_snapshot(&self) -> (String, String, String) {
@@ -2014,7 +2008,10 @@ fn draw_card_chevron(
     chev.line_to((cx + 4.0, cy));
     chev.line_to((cx - 4.0, cy + 6.0));
     let chev_color = if on_primary {
-        Color::WHITE.with_alpha_factor(0.8)
+        theme
+            .tokens
+            .colors
+            .on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST)
     } else {
         theme.tokens.colors.text_dim
     };
@@ -2070,7 +2067,7 @@ fn field_ctx<'b>(ctx: &'b mut EventCtx<'_>, focus: &'b mut Option<NodeId>) -> Ev
     EventCtx {
         scale_factor: ctx.scale_factor,
         modifiers: ctx.modifiers,
-        state: &mut *ctx.state,
+        state: ctx.state.reborrow(),
         path: ctx.path,
         handled: &mut *ctx.handled,
         focus_target: focus,
@@ -2410,7 +2407,7 @@ mod tests {
             &mut EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut None,

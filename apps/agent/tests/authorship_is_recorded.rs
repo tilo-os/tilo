@@ -22,19 +22,34 @@
 )]
 
 use automerge::AutoCommit;
+use tilo_agent::surface::WORD_PROCESSOR;
 use word_processor::actions::{RegionKind, RichTextAction};
+use word_processor::framework::Document;
 
 const AGENT: &str = "Claude";
 const PERSON: &str = "quinten";
+
+/// The invitation the agent joined with: write on the word processor.
+fn invited() -> ui::permissions::PermissionContext {
+    use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
+    PermissionContext::from_capabilities(
+        Actor::agent(AGENT),
+        vec![CapOverride::grant(
+            Subject::agent(AGENT),
+            Scope::App(WORD_PROCESSOR.app_id().to_owned()),
+            Verb::Write,
+        )],
+    )
+}
 
 /// A page with one paragraph somebody typed, and the id of that paragraph.
 fn a_page_somebody_wrote() -> (Vec<u8>, String) {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from(PERSON.as_bytes()));
-    let c = qdoc::model::init(&mut doc, &automerge::ROOT);
-    let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
+    let c = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+    let mut ids = tilo_doc::model::seeded_id_gen(&doc, &c);
     let block = {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &c,
             ids: &mut ids,
@@ -50,9 +65,9 @@ fn a_page_somebody_wrote() -> (Vec<u8>, String) {
 /// Every author run the document records for `block`, oldest position first.
 fn runs_on(bytes: &[u8], block: &str) -> Vec<(usize, usize, String)> {
     let doc = AutoCommit::load(bytes).expect("reload the document");
-    let c = qdoc::model::open(&doc, &automerge::ROOT).expect("open the schema");
-    let marks = qdoc::model::marks(&doc, &c, block);
-    qdoc::author_runs(&marks)
+    let c = tilo_doc::model::open(&doc, &automerge::ROOT).expect("open the schema");
+    let marks = tilo_doc::model::marks(&doc, &c, block);
+    tilo_doc::author_runs(&marks)
 }
 
 /// Each case seeds its own fresh page, so no edit leaks between them.
@@ -66,20 +81,21 @@ fn the_agents_own_words_and_only_those_carry_its_name_in_the_document() {
     {
         let (bytes, block) = a_page_somebody_wrote();
         let mut editor =
-            tilo_agent::apply::Editor::from_snapshot(&bytes, AGENT).expect("seed the replica");
+            tilo_agent::apply::Editor::from_snapshot(&WORD_PROCESSOR, &bytes, AGENT, invited())
+                .expect("seed the replica");
 
         let note = " The bullet says 18:00.";
         editor
-            .apply(&RichTextAction::SpliceText {
+            .apply::<Document>(&[RichTextAction::SpliceText {
                 region: RegionKind::Body,
                 block: block.clone(),
                 at: "Doors at seven.".chars().count(),
                 del: 0,
                 ins: note.to_string(),
-            })
+            }])
             .expect("the agent's edit applies");
 
-        let saved = editor.doc.save();
+        let saved = editor.full();
         let runs = runs_on(&saved, &block);
 
         assert_eq!(
@@ -104,8 +120,8 @@ fn the_agents_own_words_and_only_those_carry_its_name_in_the_document() {
         // that only ever sees the saved bytes reads the same answer.
         let text = {
             let doc = AutoCommit::load(&saved).expect("reload");
-            let c = qdoc::model::open(&doc, &automerge::ROOT).expect("open");
-            qdoc::model::block_text(&doc, &c, &block).unwrap_or_default()
+            let c = tilo_doc::model::open(&doc, &automerge::ROOT).expect("open");
+            tilo_doc::model::block_text(&doc, &c, &block).unwrap_or_default()
         };
         let authored: String = text.chars().skip(*start).take(end - start).collect();
         assert_eq!(
@@ -118,18 +134,19 @@ fn the_agents_own_words_and_only_those_carry_its_name_in_the_document() {
     {
         let (bytes, block) = a_page_somebody_wrote();
         let mut editor =
-            tilo_agent::apply::Editor::from_snapshot(&bytes, AGENT).expect("seed the replica");
+            tilo_agent::apply::Editor::from_snapshot(&WORD_PROCESSOR, &bytes, AGENT, invited())
+                .expect("seed the replica");
         editor
-            .apply(&RichTextAction::SpliceText {
+            .apply::<Document>(&[RichTextAction::SpliceText {
                 region: RegionKind::Body,
                 block: block.clone(),
                 at: "Doors at seven.".chars().count(),
                 del: 0,
                 ins: " The bullet says 18:00.".to_string(),
-            })
+            }])
             .expect("the agent's edit applies");
 
-        let runs = runs_on(&editor.doc.save(), &block);
+        let runs = runs_on(&editor.full(), &block);
         let typed = 0.."Doors at seven.".chars().count();
         for (start, end, author) in &runs {
             assert!(
@@ -151,20 +168,21 @@ fn the_agents_own_words_and_only_those_carry_its_name_in_the_document() {
         );
 
         let mut editor =
-            tilo_agent::apply::Editor::from_snapshot(&bytes, AGENT).expect("seed the replica");
+            tilo_agent::apply::Editor::from_snapshot(&WORD_PROCESSOR, &bytes, AGENT, invited())
+                .expect("seed the replica");
         // An edit that removes text authors nothing.
         editor
-            .apply(&RichTextAction::SpliceText {
+            .apply::<Document>(&[RichTextAction::SpliceText {
                 region: RegionKind::Body,
                 block: block.clone(),
                 at: 0,
                 del: 6,
                 ins: String::new(),
-            })
+            }])
             .expect("the agent's deletion applies");
 
         assert!(
-            runs_on(&editor.doc.save(), &block).is_empty(),
+            runs_on(&editor.full(), &block).is_empty(),
             "deleting somebody else's words authors none of the rest"
         );
     }

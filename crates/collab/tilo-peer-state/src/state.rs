@@ -30,7 +30,8 @@ use backend::{LegacyNative, PeerCore, PeerDocument};
 mod local_admission;
 mod local_outbox;
 mod owner_membership;
-pub use local_outbox::LocalRecoveryReservation;
+mod workspace_tasks;
+pub use local_outbox::{LocalRecoveryReservation, Reseal};
 mod media_governance;
 mod native_publication;
 pub use native_publication::NativePublicationCut;
@@ -1322,6 +1323,24 @@ impl StatePeer {
                 record: record.into(),
             })
             .map(|entry| entry.doc.base_heads())
+    }
+
+    /// Heads of a plaintext, causally complete document. Missing, encrypted,
+    /// and incomplete routes return `None` so a caller falls through to a
+    /// restoring read and keeps that refusal.
+    pub fn plaintext_complete_heads(
+        &self,
+        app: &str,
+        record: &str,
+    ) -> Option<Vec<automerge::ChangeHash>> {
+        let entry = self.core.documents.get(&Route {
+            app: app.into(),
+            record: record.into(),
+        })?;
+        if entry.encryption_required || !ReadDoc::get_missing_deps(&entry.doc, &[]).is_empty() {
+            return None;
+        }
+        Some(entry.doc.base_heads())
     }
     pub fn document(&self, app: &str, record: &str) -> Option<Vec<u8>> {
         self.core
@@ -2987,19 +3006,10 @@ impl StatePeer {
         let Some(room) = self.core.room_doc.as_deref() else {
             return Ok(None);
         };
-        let receipts = crate::durability::entries(room)?;
-        let Some(receipt) = receipts.get(&crate::coverage::route_key(app, record)) else {
+        let Some(receipt) = self.durable_receipt(app, record)? else {
             return Ok(None);
         };
         let coverage = &receipt.coverage;
-        if coverage.room != self.core.room
-            || coverage.app != app
-            || coverage.record != record
-            || coverage.author != self.core.authority.device_public_key
-            || self.core.revocations.is_revoked(&coverage.author)
-        {
-            return Err("durable receipt authority/route mismatch".into());
-        }
         let Some(document) = self.core.documents.get(&Route {
             app: app.into(),
             record: record.into(),
@@ -3027,7 +3037,32 @@ impl StatePeer {
         {
             return Ok(None);
         }
-        Ok(Some((receipt.clone(), accepted)))
+        Ok(Some((receipt, accepted)))
+    }
+    /// The pinned governor's durable receipt for a route, as governance holds it.
+    fn durable_receipt(
+        &self,
+        app: &str,
+        record: &str,
+    ) -> Result<Option<crate::durability::DurableReceipt>, String> {
+        let Some(room) = self.core.room_doc.as_deref() else {
+            return Ok(None);
+        };
+        let Some(receipt) =
+            crate::durability::entries(room)?.remove(&crate::coverage::route_key(app, record))
+        else {
+            return Ok(None);
+        };
+        let coverage = &receipt.coverage;
+        if coverage.room != self.core.room
+            || coverage.app != app
+            || coverage.record != record
+            || coverage.author != self.core.authority.device_public_key
+            || self.core.revocations.is_revoked(&coverage.author)
+        {
+            return Err("durable receipt authority/route mismatch".into());
+        }
+        Ok(Some(receipt))
     }
     /// Validate the receipt and current-head coverage against one decoded checkpoint.
     /// All authority, route, payload and watermark checks remain fresh per query.

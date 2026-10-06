@@ -399,7 +399,7 @@ impl NamedShareOutbox {
         {
             std::fs::create_dir_all(parent)?;
         }
-        atomic_file::write_with_mode(&self.path, &bytes, 0o600)?;
+        tilo_files::native::atomic::write_with_mode(&self.path, &bytes, 0o600)?;
         Ok(())
     }
 }
@@ -807,7 +807,7 @@ impl NamedShareInbox {
         {
             std::fs::create_dir_all(parent)?;
         }
-        atomic_file::write_with_mode(&self.path, &bytes, 0o600)?;
+        tilo_files::native::atomic::write_with_mode(&self.path, &bytes, 0o600)?;
         Ok(())
     }
 }

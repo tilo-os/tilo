@@ -1,11 +1,10 @@
 //! Contacts — a CRDT-native address book for Tilo, built on the `ui`
 //! toolkit.
 //!
-//! `app_root()` is the single integration point used by both the live
-//! event loop and the `--shots` offscreen renderer. Everything else —
-//! data model, vCard interop, the Automerge document layer, and the
-//! master/detail widget — lives in the modules below so each layer is
-//! testable in isolation.
+//! The app is [`ContactsShell`], a framework app over the [`Contacts`]
+//! resource: every host mounts it through [`definition`]. The data model,
+//! vCard interop, the Automerge document layer and the master/detail widget
+//! live in the modules below so each layer is testable in isolation.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -38,28 +37,14 @@ pub mod doc;
 mod export_dialog;
 pub mod model;
 mod priority_contacts;
+pub mod resource;
 pub mod responsive;
-pub mod search_provider;
 pub mod vcard;
 
 pub use app::ContactsApp;
+pub use resource::{Contacts, ContactsShell};
 
-use ui::widget::Widget;
-
-/// Build and return the app's root widget tree.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(ContactsApp::new())
-}
-
-/// The app as every host mounts it: the live root and its actions.
+/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::launch::LaunchSpec::new("so.tilo.contacts", app_root)
-        .history(&framework_history::HISTORY)
-        .component_actions(actions::register)
-        .as_definition("Contacts")
+    ui::framework::definition::<ContactsShell>()
 }
-
-#[cfg(test)]
-mod framework_history_tests;
-
-pub mod framework_history;

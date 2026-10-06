@@ -7,15 +7,40 @@ Start with `tilo-vm doctor`: it checks each prerequisite and prints the fix.
 | It says | Meaning | Next |
 |---|---|---|
 | shut off | the hypervisor reports the VM is not running | `tilo-vm vm start <name>` |
+| suspended | the hypervisor reports the VM is asleep | `tilo-vm vm wake <name>` |
+| asleep or gone | a device answers neither at its address nor as `<hostname>.local`, for a minute | `tilo-vm vm wake <name>`, or wake it at the machine (`tilo-vm guide devices`) |
+| not on this network, and over the peer network it did not answer | a device with a recorded route is off this network and does not answer through a relay either | wake it at the machine; `tilo-vm guide devices` ("Beyond the LAN") |
+| not on this network, and over the peer network it refused this machine | the device does not admit this machine: not enrolled, another identity, or removed by the owner | `tilo-vm vm enrol-admin --via <device>` |
 | running, but SSH does not answer | still booting, or stuck | `tilo-vm vm serial <name>`, `tilo-vm vm shot <name>`, `tilo-vm doctor`; last resort `tilo-vm vm reset` |
 | SSH answers but refuses the root key | the key was never installed | the printed install command (`tilo-vm guide platforms`) |
 | reachable over SSH, but no tilo-vmd | not a Tilo dev image | see "No tilo-vmd" below |
 | its tilo-vmd speaks protocol N, this tilo-vm speaks M | an incompatible daemon | see "Protocol mismatch" below |
 
-With `--json` the report carries `vm.state` (`ready`, `off`, `no-ssh`,
-`key-refused`, `no-daemon`, `incompatible`) and, when it is not ready, the
+With `--json` the report carries `vm.state` (`ready`, `off`, `asleep`, `no-ssh`,
+`key-refused`, `peer-refused`, `no-daemon`, `incompatible`) and, when it is not ready, the
 same top-level `error`, `hint` and `see` as any failed command; the exit
 status is then non-zero.
+
+**It went to sleep mid-command.** tilo-vmd holds every machine it serves
+awake until 30 minutes after the last request (`tilo-vm-awake.service`, a
+logind `sleep` lock), so idle-suspend does not cut a deploy off. A job that
+runs longer without tilo-vm requests needs `tilo-vm vm awake <name> --for 2h`
+first. `vm status` shows until when it is held; a lease it should hold but
+does not names the cause (`journalctl -u tilo-vm-awake` on the machine).
+Closing a laptop's lid still suspends it. A libvirt VM's firmware may boot
+it afresh rather than resume it after `vm wake`; slots come back as after
+any boot.
+
+**`No route to host` or a timeout on a device.** tilo-vm retries for a
+minute and looks the device up by name; when it says `asleep or gone`,
+`tilo-vm guide devices` ("Asleep, awake, and on another address") has the
+next steps.
+
+**`reached over the peer network` and a command that needs SSH fails.**
+Beyond the LAN only tilo-vmd's requests travel (`tilo-vm guide devices`,
+"Beyond the LAN"); `slot exec`, builds on the device and `vm ssh` wait until
+it is on this network. `tilo-device-admin is not installed`: build it beside
+tilo-vm (`cargo build --release -p tilo-device-admin`).
 
 **The VM refuses its root SSH key.** SSH answers but says `Permission
 denied (publickey)`. On UTM, Hyper-V and qemu the key is installed once

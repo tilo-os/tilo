@@ -172,12 +172,12 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
 
     eprintln!("phase slash_conversion_preserves_native_marks_text_identity_undo_and_reopen");
     {
-        let f = LegacyFixture::rich();
+        let f = NotebookFixture::rich();
         f.write_page(
             f.child,
             "- Parent\n\n  **Böld** and *italic* with [site](https://example.com)\n".as_bytes(),
         );
-        let checkout = imported(&f);
+        let checkout = notebook(&f);
         let (id, original_marks) = f
             .records
             .read(&checkout.id, |doc| {
@@ -239,12 +239,12 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
     eprintln!("phase typed_block_prefixes_preserve_existing_formatted_contents");
     {
         for (prefix, expected_kind) in [("## ", "heading2"), ("> ", "quote"), ("- ", "bullet:0")] {
-            let f = LegacyFixture::rich();
+            let f = NotebookFixture::rich();
             f.write_page(
                 f.child,
                 "**Böld** and *italic* with [site](https://example.com)\n".as_bytes(),
             );
-            let checkout = imported(&f);
+            let checkout = notebook(&f);
             let (id, marks) = f
                 .records
                 .read(&checkout.id, |doc| {
@@ -300,18 +300,24 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
         use notes::metadata::NoteDates;
         notes::metadata::register_messages();
         assert_eq!(NoteDates::default().labels().len(), 1);
+        // Midday UTC, so the date is 14 November in every zone the host
+        // may run in; labels are in the local time zone.
         let edited_only = NoteDates {
             created: None,
-            edited: Some(1_700_003_600),
+            edited: Some(1_699_966_800),
         };
         assert_eq!(edited_only.labels().len(), 1);
         assert!(edited_only.labels()[0].contains("2023"));
         let both = NoteDates {
-            created: Some(1_700_000_000),
+            created: Some(1_699_963_200),
             edited: edited_only.edited,
         };
         assert_eq!(both.labels().len(), 2);
-        assert!(both.labels().iter().all(|label| label.contains("UTC")));
+        assert!(
+            both.labels()
+                .iter()
+                .all(|label| label.contains("Nov 2023, "))
+        );
         assert!(
             both.display_labels(true)
                 .iter()

@@ -83,6 +83,30 @@ impl Opened {
     pub fn launched(&self) -> bool {
         matches!(self, Opened::Launched { .. } | Opened::HostLaunched { .. })
     }
+
+    /// The typed result an open action answers with: what happened and
+    /// which application holds the document now. `tab` is the focused tab
+    /// when the document was already open.
+    pub fn to_value(&self, path: &Path) -> serde_json::Value {
+        match self {
+            Opened::Launched { app } => serde_json::json!({
+                "opened": "launched",
+                "path": path,
+                "app": app.package_id,
+            }),
+            Opened::Focused { app, tab } => serde_json::json!({
+                "opened": "focused",
+                "path": path,
+                "app": app.package_id,
+                "tab": tab,
+            }),
+            Opened::HostLaunched { app } => serde_json::json!({
+                "opened": "host-launched",
+                "path": path,
+                "app": app.desktop_id,
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,7 +173,9 @@ pub fn resolve_for(
         return DocumentTarget::Directory;
     }
     let ext = extension_of(path);
-    let editable_document = ext.as_deref().is_some_and(qdoc_codecs::is_supported_ext);
+    let editable_document = ext
+        .as_deref()
+        .is_some_and(tilo_doc_codecs::is_supported_ext);
     let mime = mime_guess::from_path(path).first_raw();
     let by_mime = mime
         .and_then(|mime| desktop_policy::ResourceKind::mime(mime).ok())
@@ -354,13 +380,17 @@ fn open_package(
     // soon as the launch thread starts.
     note_opening(&record, path, &app.package_id);
 
-    let launched = {
+    // Authorship is part of opening: the capability file is published from
+    // the workspace this launch sees, and a workspace with no author grant
+    // starts the editor as a viewer.
+    let workspace = {
         let st = chrome.borrow();
-        let tree = st.tree();
-        tree.desktop
-            .active_workspace()
-            .map(|ws| launcher::launch_document_in_workspace(&app.package_id, ws, Some(path)))
+        let mut tree = st.tree_mut();
+        tree.workspace_after_opening_app(&app.package_id)
     };
+    let launched = workspace.map(|workspace| {
+        launcher::launch_document_in_workspace(&app.package_id, &workspace, Some(path))
+    });
     match launched {
         Some(Ok(app)) => Ok(Opened::Launched { app }),
         // Otherwise the stale note would make the next attempt believe
@@ -982,6 +1012,21 @@ mod tests {
         );
     }
 
+    /// Keep the machine's own desktop entries and `mimeapps.list` defaults
+    /// out: a host with an office suite installed would otherwise answer for
+    /// `.docx`, and a video player for `.mkv`.
+    fn without_host_apps(dir: &Path, env: &mut tilo_test_env::ScopedEnv) {
+        let data = dir.join("host-data");
+        let config = dir.join("host-config");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&config).unwrap();
+        env.set("XDG_DATA_HOME", &data)
+            .set("XDG_DATA_DIRS", &data)
+            .set("XDG_CONFIG_HOME", &config)
+            .set("XDG_CONFIG_DIRS", &config);
+        crate::shell::host_apps::invalidate_cache();
+    }
+
     fn reset_session_state() {
         launcher::invalidate_app_cache();
         launcher::clear_pending_placements();
@@ -1241,6 +1286,7 @@ mod tests {
             install(tmp.path(), "so.tilo.calculator", "Calculator", &[]);
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_APPS_DATA_DIR", tmp.path());
+            without_host_apps(tmp.path(), &mut env);
             launcher::invalidate_app_cache();
 
             assert_eq!(
@@ -1267,6 +1313,7 @@ mod tests {
             install(tmp.path(), "so.tilo.calculator", "Calculator", &[]);
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_APPS_DATA_DIR", tmp.path());
+            without_host_apps(tmp.path(), &mut env);
             launcher::invalidate_app_cache();
 
             let log = install_recording_launcher(tmp.path(), &mut env);
@@ -1590,6 +1637,42 @@ mod tests {
         explicit_drop_placement_survives_launch_until_toplevel_adoption();
     }
 
+    /// Files as the shell mounts it on a session without startup inputs of
+    /// its own (a Linux session): its own component, starting at `files`,
+    /// opening documents through the shell's opener.
+    fn mounted_files(
+        profile: &std::path::Path,
+        files: &std::path::Path,
+    ) -> ui::headless::FrameHarness {
+        let mut apps =
+            crate::shell::in_process::InProcessApps::at(&profile.join("profile"), "fixture-person")
+                .unwrap();
+        let startup = file_explorer::StartupInputs {
+            initial_dir: files.to_path_buf(),
+            workspace_roots: Vec::new(),
+            record_roots: Vec::new(),
+            remote_accounts: Vec::new(),
+            trusted_humans: file_explorer::identity_directory::TrustedHumanDirectory::default(),
+        };
+        let component = apps
+            .mount(
+                file_explorer::definition(),
+                "6a3f0c2e-0f1b-4c5d-9e8f-123456789abc",
+                9,
+                ui::record::RecordId::room_default(),
+                |context| context.lend(startup),
+            )
+            .unwrap();
+        let mut harness = ui::headless::FrameHarness::from_component(
+            component,
+            (1000, 700),
+            ui::application::ComponentRunnerInputs::from_native_process(),
+        )
+        .unwrap();
+        harness.relayout();
+        harness
+    }
+
     #[test]
     #[serial_test::serial(process_env)]
     #[allow(
@@ -1617,16 +1700,9 @@ mod tests {
             let chrome = chrome_with_workspace();
             crate::shell::install_document_opener(&chrome);
 
-            let mut explorer = file_explorer::FileExplorerWidget::with_startup_inputs(
-                file_explorer::StartupInputs {
-                    initial_dir: files.clone(),
-                    workspace_roots: Vec::new(),
-                    record_roots: Vec::new(),
-                    remote_accounts: Vec::new(),
-                    trusted_humans:
-                        file_explorer::identity_directory::TrustedHumanDirectory::default(),
-                },
-            );
+            let mut harness = mounted_files(tmp.path(), &files);
+            let explorer =
+                file_explorer::mounted_files_in(&mut harness).expect("the mounted Files");
             explorer.navigate(files);
             let idx = explorer
                 .displayed_entries()
@@ -1686,16 +1762,9 @@ mod tests {
             let chrome = chrome_with_workspace();
             crate::shell::install_document_opener(&chrome);
 
-            let mut explorer = file_explorer::FileExplorerWidget::with_startup_inputs(
-                file_explorer::StartupInputs {
-                    initial_dir: files.clone(),
-                    workspace_roots: Vec::new(),
-                    record_roots: Vec::new(),
-                    remote_accounts: Vec::new(),
-                    trusted_humans:
-                        file_explorer::identity_directory::TrustedHumanDirectory::default(),
-                },
-            );
+            let mut harness = mounted_files(tmp.path(), &files);
+            let explorer =
+                file_explorer::mounted_files_in(&mut harness).expect("the mounted Files");
             explorer.navigate(files);
             let idx = explorer
                 .displayed_entries()

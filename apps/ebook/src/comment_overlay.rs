@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use ui::ColorCompat;
 
 use tilo_rich_text::RichTextView;
+use ui::framework::Dispatcher;
 use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 
@@ -20,6 +21,7 @@ use crate::input_controls::{InputEventCtx, NoteEditor};
 use crate::model::{AnnoKind, Annotation, HiColor};
 use crate::paint;
 use crate::reader_theme::ReaderPalette;
+use crate::resource::Ebook;
 
 const TOP_BAR: f64 = 54.0;
 
@@ -145,7 +147,7 @@ impl CommentOverlay {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) -> bool {
         let Some(editor) = self.editor.as_mut() else {
@@ -261,8 +263,8 @@ impl CommentOverlay {
 
     /// Write comment `id` in the SDK editor; it shows the comment on the
     /// next sync.
-    pub(crate) fn begin_editing(&mut self, id: Uuid) {
-        self.editor = Some(NoteEditor::new(id, 13.0, "Write a comment…"));
+    pub(crate) fn begin_editing(&mut self, id: Uuid, library: &Dispatcher<Ebook>) {
+        self.editor = Some(NoteEditor::new(id, 13.0, "Write a comment…", library));
     }
 
     pub(crate) fn finish_editing(&mut self) {
@@ -274,22 +276,10 @@ impl CommentOverlay {
     }
 
     /// Bring the comment being written up to date with the document.
-    pub(crate) fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    pub(crate) fn sync(&mut self, state: &AutoCommit, root: &ObjId) {
         if let Some(editor) = self.editor.as_mut() {
             editor.sync(state, root);
         }
-    }
-
-    /// The undo boundary the comment's last edit opened, for the host.
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.editor.as_mut().and_then(NoteEditor::take_committed)
-    }
-
-    /// Whether a typed word keeps its undo step open.
-    pub(crate) fn keeps_step_open(&self) -> bool {
-        self.editor
-            .as_ref()
-            .is_some_and(NoteEditor::keeps_step_open)
     }
 
     /// Route native editing events to the comment being written. Returns
@@ -768,9 +758,10 @@ mod tests {
             let id = comment.id;
             crate::doc::BooksDoc::upsert_annotation(&mut doc, &comment);
             doc.commit();
+            let library = crate::resource::library_dispatcher_for_test();
             let mut overlay = CommentOverlay::default();
-            overlay.begin_editing(id);
-            overlay.sync(&mut doc, &automerge::ROOT);
+            overlay.begin_editing(id, &library);
+            overlay.sync(&doc, &automerge::ROOT);
             let taffy = TaffyTree::new();
             let modifiers = Modifiers::default();
             let press = |overlay: &mut CommentOverlay, doc: &mut AutoCommit, key: WindowEvent| {
@@ -779,7 +770,7 @@ mod tests {
                     event: &key,
                     scale_factor: 1.0,
                     modifiers,
-                    state: doc,
+                    state: ui::widget::Edits::lend(doc),
                     root: &automerge::ROOT,
                     node_id: NodeId::new(0),
                     taffy: &taffy,

@@ -59,8 +59,8 @@ fn round_to_u32_px(v: f64) -> u32 {
 }
 
 /// Backends may render the exact physical request or quantize it through an
-/// integer logical viewport. Allow rounding in either direction (WPE rounds
-/// logical dimensions to nearest; CEF rounds outward). Integer device scales
+/// integer logical viewport. Allow rounding in either direction (an engine may
+/// round logical dimensions to nearest; CEF rounds outward). Integer device scales
 /// need at most scale - 1 pixels; fractional scales can add a final pixel when
 /// converting the logical viewport back to an integer physical buffer.
 fn frame_quantization_slack(scale_factor: f32) -> u32 {
@@ -93,6 +93,8 @@ pub struct WebView {
     cached_image: Option<PenikoImage>,
     cached_trace_id: Option<u64>,
     cached_key: (usize, u32, u32),
+    /// Draws the engine's display list when it has one (the paint stream).
+    page: crate::webview::paint::PageRenderer,
     test_id: String,
     accessible_name: String,
 }
@@ -111,8 +113,45 @@ impl WebView {
             cached_image: None,
             cached_trace_id: None,
             cached_key: (0, 0, 0),
+            page: crate::webview::paint::PageRenderer::new(),
             test_id: "webview".to_string(),
             accessible_name: "Web content".to_string(),
+        }
+    }
+
+    /// While the session shares this window's page with someone watching,
+    /// hand it the page as a paint stream — the view on screen is the page
+    /// the window shows. Payloads the app → shell channel cannot carry are
+    /// dropped; a dropped whole frame is asked for again.
+    fn share_page(&self) {
+        use crate::webview::paint;
+        if !paint::share_watched() {
+            return;
+        }
+        let keyframe = paint::take_share_keyframe();
+        let page = [
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.width(),
+            self.rect.height(),
+        ];
+        for payload in self.engine.take_paint_stream(keyframe) {
+            let whole = matches!(
+                payload,
+                crate::webview::paint::stream::wire::Payload::Key(_)
+            );
+            match payload.encode() {
+                Ok(bytes) if bytes.len() <= paint::MAX_SHARE_PAYLOAD => {
+                    paint::queue_share(paint::SharedFrame {
+                        payload: bytes,
+                        page,
+                        scale: f64::from(self.scale_factor),
+                    });
+                }
+                _ => {
+                    tracing::debug!(whole, "paint payload too large to share; skipped");
+                }
+            }
         }
     }
 
@@ -311,7 +350,7 @@ impl Widget for WebView {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        _text_renderer: &mut TextRenderer,
+        text_renderer: &mut TextRenderer,
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
@@ -335,6 +374,24 @@ impl Widget for WebView {
             None,
             &self.rect,
         );
+
+        self.engine.presented();
+        self.share_page();
+        // A display list replaces pixels: draw it like any other widget
+        // content, in this toolkit's own text and Vello.
+        if let Some(page) = self.engine.paint_frame() {
+            let engine = Arc::clone(&self.engine);
+            let blobs = move |hash: &[u8; 32]| engine.paint_blob(hash);
+            let mut canvas = crate::webview::paint::PageCanvas {
+                scene,
+                transform: transform * Affine::translate((self.rect.x0, self.rect.y0)),
+                text: text_renderer,
+                blobs: &blobs,
+            };
+            self.page.draw(&mut canvas, &page);
+            crate::webview::profile::record_draw(self.rect.width(), self.rect.height(), None);
+            return;
+        }
 
         let latest = {
             let slot = self.engine.frames();
@@ -410,6 +467,19 @@ impl Widget for WebView {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        // Someone is using the page: it is on screen, whether or not a frame
+        // has been drawn since it came back.
+        if matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::KeyboardInput { .. }
+                | WindowEvent::Focused(true)
+                | WindowEvent::Occluded(false)
+        ) {
+            self.engine.presented();
+        }
         if (f64::from(self.scale_factor) - ctx.scale_factor).abs() > f64::EPSILON {
             self.scale_factor = to_f32(ctx.scale_factor);
             // Force a resize eagerly, to keep engine DPI in step without a re-layout.
@@ -556,12 +626,7 @@ impl Widget for WebView {
     /// Two-finger swipe / edge-pull → browser-style history navigation.
     /// Overriding this here makes every embedder of `WebView`
     /// swipe-navigable, not just the browser app.
-    fn on_nav_gesture(
-        &mut self,
-        dir: NavDirection,
-        _state: &mut AppModel,
-        _path: &ModelPath,
-    ) -> bool {
+    fn on_nav_gesture(&mut self, dir: NavDirection, _state: &AppModel, _path: &ModelPath) -> bool {
         self.engine.send(match dir {
             NavDirection::Back => WebViewCommand::GoBack,
             NavDirection::Forward => WebViewCommand::GoForward,
@@ -680,7 +745,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut state,
+                state: crate::widget::Edits::lend(&mut state),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -1005,8 +1070,9 @@ mod tests {
 
         // Case `quantized_engine_frames_draw_on_either_side_of_requested_size`.
         {
-            // CEF rounds outward twice; WPE rounds the logical size to nearest.
-            // At 3x WPE's 802x451 request becomes 267x150 logical / 801x450 physical.
+            // CEF rounds outward twice; an engine rounding the logical size to
+            // nearest turns an 802x451 request at 3x into 267x150 logical /
+            // 801x450 physical.
             for (requested, painted, scale) in [
                 ((802, 451), (804, 452), 1.75),
                 ((802, 451), (801, 450), 3.0),
@@ -1309,13 +1375,33 @@ mod tests {
             use crate::gesture::NavDirection;
             let engine = TestEngine::new();
             let mut w = WebView::new(engine.clone());
-            let mut state = AutoCommit::new();
+            let state = AutoCommit::new();
             let root = automerge::ROOT;
-            assert!(w.on_nav_gesture(NavDirection::Back, &mut state, &root));
-            assert!(w.on_nav_gesture(NavDirection::Forward, &mut state, &root));
+            assert!(w.on_nav_gesture(NavDirection::Back, &state, &root));
+            assert!(w.on_nav_gesture(NavDirection::Forward, &state, &root));
             let cmds = engine.commands();
             assert!(cmds.contains(&WebViewCommand::GoBack));
             assert!(cmds.contains(&WebViewCommand::GoForward));
         }
+    }
+}
+
+/// A web view is a window of its own where a page is all there is to show:
+/// a browser tab a host streams to this desktop. It keeps no record here.
+impl crate::widget::AppWidget for WebView {
+    fn uses_host_record(&self) -> bool {
+        false
+    }
+    fn app_kind(&self) -> crate::widget::AppKind {
+        crate::widget::AppKind::Browser
+    }
+    fn app_title(&self) -> &str {
+        &self.accessible_name
+    }
+    fn app_icon(&self) -> crate::widget::IconDescriptor {
+        crate::widget::IconDescriptor::Glyph("W")
+    }
+    fn permission_hint(&self) -> Option<crate::widget::AppKind> {
+        Some(crate::widget::AppKind::Browser)
     }
 }

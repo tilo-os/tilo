@@ -7,6 +7,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -20,6 +21,120 @@ UPDATE = "code.tilo.so/tilo/tilo:lenovo-83ed-" + SOURCE
 
 
 class OfflineTargetTests(unittest.TestCase):
+    def test_direct_import_preserves_digest_and_uses_immutable_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, metadata, _, _ = self.fixture(directory)
+            receipt = Path(directory) / 'receipt.json'
+            receipt.write_text(json.dumps(metadata))
+            image_id = 'sha256:' + 'e' * 64
+            calls = []
+            def command(*argv, **kwargs):
+                calls.append(argv)
+                if argv[0] == 'skopeo':
+                    self.assertEqual(argv[1:4], ('--insecure-policy', 'copy', '--preserve-digests'))
+                    view = Path(argv[4].removeprefix('oci:').removesuffix(':target'))
+                    self.assertTrue((view / 'blobs').is_symlink())
+                    self.assertEqual(len(json.loads((view / 'index.json').read_text())['manifests']), 1)
+                    self.assertEqual(argv[5], 'containers-storage:localhost/tilo-offline-target:'
+                                     + metadata['target_digest'][7:])
+                    return ''
+                if '{{.Id}}' in argv:
+                    return image_id
+                if '{{.Digest}}' in argv:
+                    self.assertEqual(argv[-1], image_id)
+                    return metadata['target_digest']
+                self.assertEqual(argv[0:2], ('podman', 'run'))
+                self.assertIn(image_id, argv)
+                self.assertIn('--network=none', argv)
+                return ''
+            with patch.object(target, 'RECEIPT', receipt), patch.object(target, 'run', command):
+                self.assertEqual(target.import_image(root), image_id)
+            self.assertFalse(any('load' in argv for argv in calls))
+            with patch.object(target, 'RECEIPT', receipt), patch.object(target, 'run',
+                    side_effect=['', image_id, 'sha256:' + 'f' * 64]):
+                with self.assertRaisesRegex(ValueError, 'manifest differs'):
+                    target.import_image(root)
+
+    def test_development_import_validates_boot_layout_without_changing_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, metadata, _, _ = self.fixture(directory)
+            metadata['schema'] = 'tilo.installer-dev-target.v1'
+            receipt = Path(directory) / 'receipt.json'
+            receipt.write_text(json.dumps(metadata))
+            mounted = Path(directory) / 'mounted'
+            mounted.mkdir()
+            image_id = 'sha256:' + 'e' * 64
+            calls = []
+            def command(*argv, **kwargs):
+                calls.append(argv)
+                if '{{.Id}}' in argv:
+                    return image_id
+                if '{{.Digest}}' in argv:
+                    return metadata['target_digest']
+                if argv[:3] == ('podman', 'image', 'mount'):
+                    return str(mounted)
+                return ''
+            with patch.object(target, 'RECEIPT', receipt), \
+                    patch.object(target, 'read_target', return_value=(metadata, root / 'oci')), \
+                    patch.object(target, 'run', side_effect=command):
+                self.assertEqual(target.import_image(root), image_id)
+            self.assertIn(('python3', '/usr/libexec/tilo-installer-dev-target-uki.py',
+                           'validate-image', '--image-root', str(mounted)), calls)
+            self.assertIn(('podman', 'image', 'unmount', image_id), calls)
+            self.assertFalse(any('commit' in argv or 'build' in argv or 'push' in argv for argv in calls))
+
+    def test_command_failure_retains_exit_status_without_arguments(self):
+        for code in (-9, 125):
+            with self.subTest(returncode=code), patch.object(
+                    target.subprocess, 'run', return_value=SimpleNamespace(
+                        returncode=code, stdout='', stderr='')):
+                with self.assertRaisesRegex(ValueError, f'exit {code}') as error:
+                    target.run('podman', 'load', 'private-argument')
+                self.assertIn('no diagnostic stderr', str(error.exception))
+                self.assertNotIn('private-argument', str(error.exception))
+
+    def test_development_transport_requires_the_vm_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, metadata, _, _ = self.fixture(directory)
+            blobs = root / "oci/blobs/sha256"
+            def blob(data):
+                raw = json.dumps(data, separators=(",", ":")).encode()
+                digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+                (blobs / digest[7:]).write_bytes(raw)
+                return {"digest": digest, "size": len(raw)}
+            config = blob({"architecture": "arm64", "os": "linux", "config": {"Labels": {
+                "sh.tilo.image.flavour": "dev", "org.opencontainers.image.revision": SOURCE,
+            }}})
+            layer = blob({"fixture": "payload"})
+            manifest = blob({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                             "config": config, "layers": [layer]})
+            for path in blobs.iterdir():
+                if path.name not in {item["digest"][7:] for item in (config, layer, manifest)}:
+                    path.unlink()
+            manifest["mediaType"] = "application/vnd.oci.image.manifest.v1+json"
+            manifest["annotations"] = {"org.opencontainers.image.ref.name": "target"}
+            (root / "oci/index.json").write_text(json.dumps({"schemaVersion": 2, "manifests": [manifest]}))
+            metadata.update(schema="tilo.installer-dev-target.v1", target_digest=manifest["digest"],
+                            target_ref="registry.tilo.so/tilo/tilo-vm@" + manifest["digest"],
+                            update_origin="registry.tilo.so/tilo/tilo-vm:fixture-lenovo-83ed-ci",
+                            source_revision=SOURCE, ci_run_id="75356")
+            (root / "target.json").write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(ValueError, "development VM installer"):
+                target.read_target(root)
+            marker = Path(directory) / "vm-marker"
+            marker.write_text("VM-only")
+            flavour = Path(directory) / "flavour"
+            flavour.write_text("dev\n")
+            with patch.object(target, "DEV_VM_MARKER", marker), patch.object(target, "DEV_FLAVOUR", flavour), \
+                    patch.object(target, "VM_PROOF_PORT", Path("/dev/null")), \
+                    patch.object(target, "run", return_value="") as command:
+                selected, _ = target.read_target(root)
+                self.assertEqual(selected, metadata)
+                command.assert_called_once_with("systemd-detect-virt", "--vm", "--quiet")
+                flavour.write_text("production\n")
+                with self.assertRaisesRegex(ValueError, "development VM installer"):
+                    target.read_target(root)
+
     def fixture(self, directory):
         root = Path(directory) / "target-oci"
         layout = root / "oci"

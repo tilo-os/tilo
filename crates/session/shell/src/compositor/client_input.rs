@@ -101,8 +101,8 @@ pub struct ClientInput {
     /// retained chrome. Prevents cleanup from touching an ordinary tab drag.
     content_drop_hover_active: bool,
     /// Click/touch focus changes awaiting durable session-state persistence.
-    /// Persistence fsyncs both the replacement file and its directory, so it
-    /// must run after latency-sensitive Wayland input has been queued/flushed.
+    /// Saving copies the whole workspace tree, so it runs after
+    /// latency-sensitive Wayland input has been queued/flushed.
     focus_persistence_pending: bool,
     /// Whether the latest direct-touch down was delivered to a client over
     /// `wl_touch`. That client owns the whole tap, so the compositor must not
@@ -284,6 +284,21 @@ impl ClientInput {
 
 // Pure helpers — no seat, no widgets. Unit-testable in isolation.
 
+fn monotonic_time_ns() -> Option<u128> {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: the out pointer refers to a live timespec for the entire call.
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut now) } != 0 {
+        return None;
+    }
+    u128::try_from(now.tv_sec)
+        .ok()?
+        .checked_mul(1_000_000_000)?
+        .checked_add(u128::try_from(now.tv_nsec).ok()?)
+}
+
 /// Mint a fresh input serial. Wayland clients ignore events whose serial goes backwards, so every delivered event gets its own.
 fn mint_serial(state: &mut State) -> Serial {
     state.serial_counter = state.serial_counter.wrapping_add(1);
@@ -291,6 +306,9 @@ fn mint_serial(state: &mut State) -> Serial {
 }
 
 fn record_activation_serial(state: &mut State, serial: Serial, surface_id: u64) {
+    state
+        .clients_given_input
+        .insert(crate::compositor::state::client_index_of(surface_id));
     let now = Instant::now();
     state
         .activation_serials
@@ -306,6 +324,16 @@ fn record_activation_serial(state: &mut State, serial: Serial, surface_id: u64) 
     {
         let _ = state.activation_serials.pop_front();
     }
+}
+
+/// The xdg `app_id` a toplevel declared, for naming it in latency records.
+fn toplevel_app_id(surface: &WlSurface) -> Option<String> {
+    smithay::wayland::compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+            .and_then(|data| data.lock().ok()?.app_id.clone())
+    })
 }
 
 /// Milliseconds since compositor start — the timestamp base every input event on this seat shares.
@@ -395,6 +423,10 @@ impl State {
             // Retire their held keys while the old client still owns focus,
             // before Smithay sends the next client its focus-enter key array.
             self.release_remote_keys_for_surface(previous);
+            let root = crate::compositor::foreign::store().sheet_root(previous);
+            if root != previous {
+                self.release_remote_keys_for_surface(root);
+            }
         }
         let target = match surface_id {
             Some(id) => self.client_input.surfaces.get(&id).map(|s| (id, s.clone())),
@@ -434,6 +466,16 @@ impl State {
         } else {
             KeyState::Released
         };
+        let observed_surface = keyboard
+            .current_focus()
+            .as_ref()
+            .map(super::state::surface_id);
+        let delivery_time_ns = (forward
+            && has_focus
+            && pressed
+            && std::env::var_os("TILO_PROFILE_PRESENTATION").is_some())
+        .then(monotonic_time_ns)
+        .flatten();
         let intercepted: Option<()> = keyboard.input(
             self,
             keycode.saturating_add(8).into(),
@@ -450,7 +492,35 @@ impl State {
         );
         let delivered = forward && has_focus && intercepted.is_none();
         if delivered && let Some(surface_id) = self.client_input.keyboard_focus {
+            if let Some((delivery_time_ns, observed_surface)) =
+                delivery_time_ns.zip(observed_surface)
+            {
+                eprintln!(
+                    "tilo-physical-delivery {}",
+                    serde_json::json!({
+                        "wayland_serial": u32::from(serial),
+                        "surface_id": observed_surface,
+                        "clock_id": libc::CLOCK_MONOTONIC,
+                        "delivery_time_ns": delivery_time_ns,
+                        "input_time_ns": self.physical_key_input_time_ns.filter(|origin| u128::from(*origin) <= delivery_time_ns),
+                    })
+                );
+            }
             record_activation_serial(self, serial, surface_id);
+            if pressed {
+                let app = self
+                    .client_input
+                    .surfaces
+                    .get(&surface_id)
+                    .and_then(toplevel_app_id)
+                    .unwrap_or_default();
+                crate::compositor::key_latency::tracker().key_delivered(
+                    surface_id,
+                    &app,
+                    keycode,
+                    Instant::now(),
+                );
+            }
         }
         delivered
     }
@@ -546,7 +616,17 @@ impl State {
     }
 
     /// Forward a scroll event to the surface the pointer is focused on.
-    pub fn forward_client_pointer_axis(&mut self, delta: MouseScrollDelta) -> bool {
+    ///
+    /// `wl_pointer.axis_stop` ends a finger scroll on that axis, so it goes
+    /// out once, when the fingers lift (`phase` ended). Sent with every
+    /// event for the axis that did not move, it told toolkits each wheel
+    /// notch was the end of a gesture: winit reported it as an ended
+    /// scroll, which a scroll view takes for a fling release and ignores.
+    pub fn forward_client_pointer_axis(
+        &mut self,
+        delta: MouseScrollDelta,
+        phase: winit::event::TouchPhase,
+    ) -> bool {
         if self.client_input.pointer_focus.is_none() {
             return false;
         }
@@ -573,11 +653,13 @@ impl State {
                 frame = frame.v120(Axis::Vertical, v120);
             }
         }
-        if h == 0.0 {
-            frame = frame.stop(Axis::Horizontal);
-        }
-        if v == 0.0 {
-            frame = frame.stop(Axis::Vertical);
+        if v120.is_none()
+            && matches!(
+                phase,
+                winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled
+            )
+        {
+            frame = frame.stop(Axis::Horizontal).stop(Axis::Vertical);
         }
         pointer.axis(self, frame);
         pointer.frame(self);
@@ -674,10 +756,11 @@ impl State {
         self.client_input.touch_down_reached_client = false;
     }
 
-    /// Whether a confirmed tap may be emulated as a pointer click. A tap whose
-    /// touch sequence already reached a client is that client's alone.
-    pub fn touch_tap_needs_pointer_click(&self) -> bool {
-        !self.client_input.touch_down_reached_client
+    /// Whether the latest touch-down reached a client that takes touch over
+    /// `wl_touch`. Such a contact is that client's alone; any other is turned
+    /// into pointer input (see [`crate::compositor::touch_pointer`]).
+    pub fn touch_down_reached_client(&self) -> bool {
+        self.client_input.touch_down_reached_client
     }
 
     /// Forward one touch point to the focused client over `wl_touch`.
@@ -696,8 +779,25 @@ impl State {
                     .cloned()
                     .map(|s| (s, SmithayPoint::from(origin)))
             });
+        if matches!(touch, BackendTouchEvent::Down { .. })
+            && let Some((id, _)) = target
+        {
+            self.clients_given_input
+                .insert(crate::compositor::state::client_index_of(id));
+        }
         if matches!(touch, BackendTouchEvent::Down { .. }) {
-            self.client_input.touch_down_reached_client = handle.is_some() && focus.is_some();
+            // A client that never asked for a `wl_touch` would receive
+            // nothing; it gets the contact as pointer input instead.
+            self.client_input.touch_down_reached_client = handle.is_some()
+                && focus.as_ref().is_some_and(|(surface, _)| {
+                    surface.client().is_some_and(|client| {
+                        client
+                            .get_data::<crate::compositor::state::ClientState>()
+                            .is_some_and(|data| {
+                                data.touch_bound.load(std::sync::atomic::Ordering::Acquire)
+                            })
+                    })
+                });
         }
         let Some(handle) = handle else {
             return;
@@ -945,9 +1045,13 @@ pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
                 .is_some_and(|(fullscreen_id, _)| fullscreen_id == *id)
         }),
     );
+    // A window the person focused while showing it on another device of
+    // theirs types there until they use this device again.
     let candidate = state
         .focused_output_presentation_surface()
+        .or_else(|| state.headless_keyboard_focus())
         .or(overlay_focus)
+        .or_else(|| state.personal_keyboard_focus())
         .or_else(|| {
             let chrome = fb.chrome();
             let tree = chrome.tree();
@@ -1023,10 +1127,11 @@ pub fn consume_keyboard_while_captured(state: &mut State, event: &WindowEvent) {
     let _ = state.deliver_client_key(code, pressed, true);
 }
 
-/// Decide what the pointer shows this tick: the focused client's request
-/// while the pointer is over its surface, otherwise the cursor the chrome
-/// under the pointer names (the default arrow when it names none). The lock
-/// screen is not chrome and never shows a client's cursor.
+/// Decide what the pointer shows this tick: nothing while touch is the input
+/// in use (a finger needs no cursor, and touch never moves it), the focused
+/// client's request while the pointer is over its surface, otherwise the
+/// cursor the chrome under the pointer names (the default arrow when it names
+/// none). The lock screen is not chrome and never shows a client's cursor.
 ///
 /// Records the result on the frame builder, where captures and the state
 /// dump read it, and returns it only when it changed so the caller hands it
@@ -1035,9 +1140,12 @@ pub fn sync_pointer_image(
     state: &State,
     fb: &mut FrameBuilder,
     session_locked: bool,
+    touch_in_use: bool,
 ) -> Option<crate::compositor::cursor::PointerImage> {
     use crate::compositor::cursor::{CursorShape, PointerImage};
-    let image = if session_locked {
+    let image = if touch_in_use {
+        PointerImage::Hidden
+    } else if session_locked {
         PointerImage::default()
     } else if state.client_input.pointer_focus().is_some() {
         state.client_cursor.image()
@@ -1059,24 +1167,94 @@ pub fn sync_pointer_image(
 /// `zwp_tablet_tool_v2`; for anything else — other apps, shell chrome, the
 /// lock screen — the pen stands in for the pointer, and the returned events
 /// go through the ordinary pointer path.
+///
+/// Over a tablet-aware client the pen still is the pointer as far as the
+/// desktop goes: the cursor follows it, touching down focuses and raises the
+/// window as a click does (and closes a popup it lands outside of), and a
+/// stroke stays with the window it started in until the tip lifts, as a held
+/// button keeps the pointer with its client.
 pub fn route_tablet_event(
     state: &mut State,
-    fb: &FrameBuilder,
+    fb: &mut FrameBuilder,
     input: &crate::compositor::backend::TabletInput,
     session_locked: bool,
 ) -> Vec<crate::compositor::backend::BackendEvent> {
-    let target = (!session_locked && !chrome_captures_input(fb))
+    use crate::compositor::backend::TabletPhase;
+    let usable = !session_locked && !chrome_captures_input(fb);
+    let under = usable
         .then(|| surface_at(state, fb, input.position))
-        .flatten()
-        .filter(|(surface_id, _)| state.surface_takes_tablet_input(*surface_id));
-    state.forward_tablet(input, target);
+        .flatten();
+    let target = match state.tablet_clients.stroke.filter(|_| usable) {
+        Some((held, origin)) => Some(match under {
+            Some((surface_id, now)) if surface_id == held => (held, now),
+            _ => (held, origin),
+        }),
+        None => under.filter(|(surface_id, _)| state.surface_takes_tablet_input(*surface_id)),
+    };
+    let mut input = std::borrow::Cow::Borrowed(input);
+    if target.is_some() && input.phase != TabletPhase::ProximityOut {
+        state.client_input.cursor = Some(input.position);
+        fb.host_mut()
+            .note_pointer(vello::kurbo::Point::new(input.position.0, input.position.1));
+        if input.phase == TabletPhase::TipDown && state.tablet_clients.stroke.is_none() {
+            let hit = current_pointer_target(state, fb, false);
+            if state.dismiss_popup_grab_outside(hit.map(|hit| hit.surface_id)) {
+                // Like a click outside a popup, the touch only closes it.
+                input.to_mut().phase = TabletPhase::Motion;
+            } else {
+                state.tablet_clients.stroke = target;
+                if let Some(hit) = hit {
+                    focus_pressed(state, fb, hit);
+                }
+            }
+        }
+    }
+    state.forward_tablet(&input, target);
+    if !usable || matches!(input.phase, TabletPhase::TipUp | TabletPhase::ProximityOut) {
+        state.tablet_clients.stroke = None;
+    }
     if target.is_some() {
         return Vec::new();
     }
-    crate::compositor::tablet::tablet_pointer_events(input)
+    crate::compositor::tablet::tablet_pointer_events(&input)
         .into_iter()
         .map(crate::compositor::backend::BackendEvent::Input)
         .collect()
+}
+
+/// Click-to-focus: raise the pressed window group so the keyboard follows
+/// the pointer, or the pen, into the client.
+fn focus_pressed(state: &mut State, fb: &mut FrameBuilder, h: TileHit) {
+    if state.is_output_presentation_surface(h.surface_id) {
+        // Audience focus is explicit and never mutates the
+        // presenter's workspace selection.
+        state.focus_output_presentation_surface(h.surface_id);
+        sync_keyboard_focus(state, fb);
+    } else {
+        state.clear_output_presentation_focus();
+    }
+    let overlay_focus = state.is_floating_toplevel(h.surface_id)
+        || state.is_transient_surface(h.surface_id)
+        || fb
+            .fullscreen_surface_rect()
+            .is_some_and(|(surface_id, _)| surface_id == h.surface_id);
+    if overlay_focus && state.osk_surface != Some(h.surface_id) {
+        state.set_client_keyboard_focus(Some(h.surface_id));
+    }
+    // Tapping the keyboard must keep the editable field's
+    // keyboard focus. Pointer focus moves to the OSK, but
+    // raising/focusing it would deactivate the very
+    // text-input session the tap is meant to feed.
+    if !state.is_output_presentation_surface(h.surface_id)
+        && state.osk_surface != Some(h.surface_id)
+        && !state.is_floating_toplevel(h.surface_id)
+        && !state.is_transient_surface(h.surface_id)
+    {
+        if raise_group(fb, h.strip, h.group) {
+            state.client_input.focus_persistence_pending = true;
+        }
+        sync_keyboard_focus(state, fb);
+    }
 }
 
 /// Route one tablet pad event. Pads follow keyboard focus: a focused client
@@ -1159,11 +1337,19 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
                 .filter(|(surface_id, _)| state.client_input.surfaces.contains_key(surface_id)),
         );
         tiles.extend(state.output_presentation_remote_tiles());
+        let offscreen = state.offscreen_stream_tiles(&tiles);
+        tiles.extend(offscreen);
         tiles
     };
     let view = crate::network::input_firewall::ShellView::new(
         tiles,
-        state.client_input.keyboard_focus(),
+        // Viewers address the streamed tile; Wayland enters its modal
+        // sheet. Compare against the tile's root while delivering to the
+        // real focused child, so Save dialogs keep the same guarded door.
+        state
+            .client_input
+            .keyboard_focus()
+            .map(|surface| crate::compositor::foreign::store().sheet_root(surface)),
         chrome_captures_input(fb),
         fb.host().palette_visible(),
     )
@@ -1217,6 +1403,24 @@ pub fn route_input(
         state
             .remote_input_firewall
             .note_local_input(std::time::Instant::now());
+        if matches!(event, WindowEvent::KeyboardInput { .. }) {
+            state.end_remote_typing();
+        }
+        state.release_personal_keyboard_focus();
+        // Another device of the person last placed this seat's pointer, on a
+        // window it shows. The host's cursor never left its spot, so the
+        // pointer goes back to what is under it before this input lands.
+        if state.take_personal_pointer_hold()
+            && !matches!(event, WindowEvent::CursorMoved { .. })
+            && let Some((x, y)) = state.client_input.pointer_position()
+        {
+            let _ = route_cursor_moved(
+                state,
+                fb,
+                chrome_captures_input(fb),
+                winit::dpi::PhysicalPosition::new(x, y),
+            );
+        }
     }
     match event {
         WindowEvent::CursorMoved { position, .. } => {
@@ -1235,7 +1439,9 @@ pub fn route_input(
             button,
             ..
         } => route_mouse_input(state, fb, chrome_captures_input(fb), *element, *button),
-        WindowEvent::MouseWheel { delta, .. } => route_mouse_wheel(state, fb, *delta, *modifiers),
+        WindowEvent::MouseWheel { delta, phase, .. } => {
+            route_mouse_wheel(state, fb, *delta, *phase, *modifiers)
+        }
         WindowEvent::KeyboardInput { .. } => {
             route_keyboard_input(state, fb, chrome_captures_input(fb), event, *modifiers)
         }
@@ -1345,38 +1551,8 @@ fn route_mouse_input(
                     None => PointerOwner::Chrome,
                 });
             }
-            // Click-to-focus: raise the clicked window group so the keyboard follows the pointer into the client.
             if let Some(h) = hit {
-                if state.is_output_presentation_surface(h.surface_id) {
-                    // Audience focus is explicit and never mutates the
-                    // presenter's workspace selection.
-                    state.focus_output_presentation_surface(h.surface_id);
-                    sync_keyboard_focus(state, fb);
-                } else {
-                    state.clear_output_presentation_focus();
-                }
-                let overlay_focus = state.is_floating_toplevel(h.surface_id)
-                    || state.is_transient_surface(h.surface_id)
-                    || fb
-                        .fullscreen_surface_rect()
-                        .is_some_and(|(surface_id, _)| surface_id == h.surface_id);
-                if overlay_focus && state.osk_surface != Some(h.surface_id) {
-                    state.set_client_keyboard_focus(Some(h.surface_id));
-                }
-                // Tapping the keyboard must keep the editable field's
-                // keyboard focus. Pointer focus moves to the OSK, but
-                // raising/focusing it would deactivate the very
-                // text-input session the tap is meant to feed.
-                if !state.is_output_presentation_surface(h.surface_id)
-                    && state.osk_surface != Some(h.surface_id)
-                    && !state.is_floating_toplevel(h.surface_id)
-                    && !state.is_transient_surface(h.surface_id)
-                {
-                    if raise_group(fb, h.strip, h.group) {
-                        state.client_input.focus_persistence_pending = true;
-                    }
-                    sync_keyboard_focus(state, fb);
-                }
+                focus_pressed(state, fb, h);
             }
         }
         state.client_input.buttons_down = state.client_input.buttons_down.saturating_add(1);
@@ -1452,6 +1628,7 @@ fn route_mouse_wheel(
     state: &mut State,
     fb: &mut FrameBuilder,
     delta: MouseScrollDelta,
+    phase: winit::event::TouchPhase,
     modifiers: Modifiers,
 ) -> bool {
     let mods = modifiers.state();
@@ -1488,7 +1665,7 @@ fn route_mouse_wheel(
         return true;
     }
     if state.client_input.pointer_focus.is_some() {
-        state.forward_client_pointer_axis(delta)
+        state.forward_client_pointer_axis(delta, phase)
     } else {
         false
     }
@@ -2036,7 +2213,7 @@ mod tests {
                     insert_foreign_group(&mut tree, 710_002, Some("org.example.second"))
                         .expect("second foreign group");
                 tree.desktop.set_active_group(strip_id, first_group);
-                tree.flush_to_disk();
+                tree.queue_save();
                 drop(tree);
                 (strip_id, first_group, second_group)
             };
@@ -2051,7 +2228,7 @@ mod tests {
             );
 
             // The native loop performs this only after `display.flush_clients()`.
-            fb.chrome().tree().flush_to_disk();
+            fb.chrome().tree().queue_save();
 
             let restarted = persist::load_tree_from(&state_path).expect("reload focused layout");
             assert_eq!(

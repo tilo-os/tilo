@@ -1345,7 +1345,7 @@ async fn checked_restore_scope_codecs_transport_and_parent_bounds_fail_closed() 
                     "test.bin",
                 )
                 .unwrap();
-            let mut document = qdoc::Document::new();
+            let mut document = tilo_doc::Document::new();
             let bytes = document.save();
             fixture.fs.commit_content(fixture.ino, &bytes).unwrap();
             let review = fixture.fs.checked_history_review(fixture.ino).unwrap();

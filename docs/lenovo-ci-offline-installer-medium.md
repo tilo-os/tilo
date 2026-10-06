@@ -9,11 +9,17 @@ Dispatch `release-imager.yml` on `main` to build both proof media in one CI run:
 
 ```text
 installer_only=true
+installer_rootfs=ext4
 generic_target=true
 lenovo_target_image=code.tilo.so/tilo/tilo@sha256:<CI ARM64 child digest>
 published_os_image=registry.tilo.so/tilo/tilo@sha256:<signed generic multiarch index>
 published_os_source_revision=<full 40-character source commit SHA shared by both images>
 ```
+
+`installer_rootfs=ext4` selects a full-size Ext4 live medium for WHPX. Use it
+only with a signed OS image whose initramfs includes the Ext4 driver; the
+workflow defaults to Btrfs when the input is omitted. The signed target image
+and its digest are unchanged by this live-medium choice.
 
 The generic medium gives a full VM install and first-boot proof through the
 same offline backend. The workflow resolves the index's unique ARM64

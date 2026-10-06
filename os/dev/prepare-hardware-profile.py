@@ -23,6 +23,22 @@ FIRMWARE_PATH = Path("usr/lib/firmware")
 PROFILE_PATH = Path("usr/lib/tilo/hardware-profile.json")
 PARSER_PATH = Path("usr/lib/tilo/hardware_profile.py")
 DRACUT_PATH = Path("etc/dracut.conf.d/41-tilo-hardware.conf")
+# Sorts after the image's own kargs.d drop-ins, so a board console named here
+# is the last console= and becomes /dev/console.
+KARGS_PATH = Path("usr/lib/bootc/kargs.d/10-hardware-profile.toml")
+# Broadcom's sample station address. Vendor NVRAM files (the Orange Pi's
+# AP6256 among them) ship it, and brcmfmac programs whatever the NVRAM names,
+# so every board would share one MAC. The pinned bytes are checked as
+# published; only the installed copy drops this line, and the radio keeps the
+# address it was given.
+SAMPLE_BROADCOM_MAC = b"macaddr=00:90:4c:c5:12:38"
+
+
+def installed_firmware(destination: str, payload: bytes) -> bytes:
+    if not destination.endswith(".txt"):
+        return payload
+    lines = payload.splitlines(keepends=True)
+    return b"".join(line for line in lines if line.rstrip(b"\r\n") != SAMPLE_BROADCOM_MAC)
 
 
 def checked_path(root: Path, relative: Path, *, required: bool) -> Path:
@@ -145,7 +161,7 @@ def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir:
         payload = checked_path(firmware_dir, Path(name), required=True).read_bytes()
         if not payload or hashlib.sha256(payload).hexdigest() != digest:
             raise ValueError(f"firmware does not match its pinned SHA-256: {name}")
-        outputs[FIRMWARE_PATH / destination] = payload
+        outputs[FIRMWARE_PATH / destination] = installed_firmware(destination, payload)
 
     document = {
         "schema_version": 1,
@@ -179,6 +195,12 @@ def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir:
     if modular_boot:
         dracut_lines.append(f'add_drivers+=" {" ".join(modular_boot)} "')
     outputs[DRACUT_PATH] = ("\n".join(dracut_lines) + "\n").encode("utf-8")
+    # bootc container ukify (os/dev/uki.sh) seals kargs.d into the UKI command
+    # line, so the board's arguments are measured with the rest of the image's.
+    kernel_args = definition.get("kernel_args", [])
+    if kernel_args:
+        outputs[KARGS_PATH] = ("# Kernel arguments of the hardware profile.\nkargs = "
+                               + json.dumps(kernel_args) + "\n").encode("utf-8")
     # Check every destination before creating directories or installing bytes.
     # This includes existing output files, including dangling symlinks.
     destinations = {

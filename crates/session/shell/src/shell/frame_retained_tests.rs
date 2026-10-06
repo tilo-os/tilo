@@ -75,7 +75,11 @@ fn assert_xrgb_pixels_eq(actual: &[u8], expected: &[u8], label: &str) {
     );
 }
 
-fn settled_builder() -> PopulatedShellFixture {
+/// A settled fixture, and the guard pinning the bar's clock while it lives: two paints
+/// compared pixel for pixel must not straddle a minute.
+fn settled_builder() -> (PopulatedShellFixture, tilo_test_env::ScopedEnv) {
+    let mut clock = tilo_test_env::ScopedEnv::new();
+    clock.set("TILO_CLOCK", "09:41");
     // The test needs state transitions, not a time-dependent animation sample. The explicit
     // fixture receives reduced motion before its initial layout; benchmark inputs stay normal.
     let mut frame = PopulatedShellFixture::new(
@@ -83,12 +87,32 @@ fn settled_builder() -> PopulatedShellFixture {
         Theme::dark().with_reduce_motion(true),
     );
     frame.relayout();
+    let _ = frame.paint();
+    frame.relayout();
+    // Pin Notes' real status presentation with the pointer. Reduced motion
+    // does not extend its transient lifetime, so renderer speed must not
+    // remove this unrelated app layer during the retained QS comparison.
+    let mut document = automerge::AutoCommit::new();
+    let mut focus = None;
+    let _ = frame.dispatch_event(
+        &winit::event::WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(
+                f64::from(NATIVE_WIDTH) - 50.0,
+                f64::from(NATIVE_HEIGHT) - 50.0,
+            ),
+        },
+        &winit::event::Modifiers::default(),
+        &mut ui::widget::Edits::lend(&mut document),
+        &automerge::ROOT,
+        &mut focus,
+    );
     let warm = frame.paint();
     assert!(
         !warm.encoding().is_empty(),
         "the desktop warm paint must record source commands"
     );
-    frame
+    (frame, clock)
 }
 
 fn assert_legacy_and_segmented_match(
@@ -189,7 +213,7 @@ fn paint_retained_and_compare(
 
 #[test]
 fn native_4k_legacy_and_segmented_shell_frames_match_through_quick_settings_cycle() {
-    let mut frame = settled_builder();
+    let (mut frame, _clock) = settled_builder();
 
     assert!(!frame.chrome().overlays.quick_settings);
     let initial_pixels = legacy_and_segmented_pixels(&mut frame, "initial desktop", false);
@@ -207,9 +231,29 @@ fn native_4k_legacy_and_segmented_shell_frames_match_through_quick_settings_cycl
     assert_legacy_and_segmented_match(&mut frame, "Quick Settings close", false);
 }
 
+fn sparse_refusal_details(previous: Option<&ProducedSections>, frame: &FrameBuilder) -> String {
+    let current = frame.last_produced_sections.as_ref();
+    match (previous, current) {
+        (Some(old), Some(new)) => format!(
+            "filters={}/{} backdrop_same={} workspace_same={} above_same={} topbar_bounds={:?}/{:?} quick_settings_bounds={:?}/{:?}",
+            old.global_filter,
+            new.global_filter,
+            old.backdrop.encoding_eq(&new.backdrop),
+            old.workspace.encoding_eq(&new.workspace),
+            old.above_quick_settings
+                .encoding_eq(&new.above_quick_settings),
+            old.topbar_bounds,
+            new.topbar_bounds,
+            old.quick_settings_bounds,
+            new.quick_settings_bounds,
+        ),
+        _ => "missing source sections".into(),
+    }
+}
+
 #[test]
 fn native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dense() {
-    let mut frame = settled_builder();
+    let (mut frame, _clock) = settled_builder();
     frame.theme.tokens.elevation.e4.blur = 120.0;
     frame.theme.tokens.elevation.e4.offset_y = 40.0;
 
@@ -218,6 +262,7 @@ fn native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dens
     assert_legacy_and_segmented_match(&mut frame, "large-shadow desktop", false);
 
     let closed = frame.paint_with_damage();
+    let closed_sections = frame.last_produced_sections.clone();
     let mut retained = bridge();
     let mut dense_oracle = bridge();
     let mut seed_pixels = vec![0; xrgb_pitch() * NATIVE_HEIGHT as usize];
@@ -240,10 +285,12 @@ fn native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dens
     frame.with_chrome(|chrome| chrome.overlays.quick_settings = true);
     frame.host.set_quick_settings_capture_openness(1_000);
     let open = frame.paint_with_damage();
-    let open_damage = open
-        .damage_regions
-        .as_deref()
-        .expect("settled Quick Settings opening should be sparse-eligible");
+    let open_damage = open.damage_regions.as_deref().unwrap_or_else(|| {
+        panic!(
+            "settled Quick Settings opening should be sparse-eligible: {}",
+            sparse_refusal_details(closed_sections.as_ref(), &frame)
+        )
+    });
     let quick_settings_bounds = frame
         .last_produced_sections
         .as_ref()
@@ -300,7 +347,7 @@ fn native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dens
 
 #[test]
 fn workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels() {
-    let mut frame = settled_builder();
+    let (mut frame, _clock) = settled_builder();
     let baseline = frame.paint_with_damage();
     assert!(!baseline.scene.encoding().is_empty());
     assert!(
@@ -351,11 +398,39 @@ fn workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels() {
     assert_legacy_and_segmented_match(&mut frame, "workspace root rebuild", false);
 }
 
+#[test]
+fn workspace_root_rebuild_encodes_the_new_scene_before_the_clip_run() {
+    let mut frame = PopulatedShellFixture::new((NATIVE_WIDTH, NATIVE_HEIGHT), Theme::dark());
+    frame.relayout();
+    let warm = frame.paint_with_damage();
+    assert!(
+        !warm.scene.encoding().is_empty(),
+        "the desktop before the switch records source commands"
+    );
+    frame.with_chrome(|chrome| {
+        chrome.add_workspace("clip after rebuild");
+    });
+    let mut document = AutoCommit::new();
+    let document_root = automerge::ROOT;
+    frame.pump_apps(&mut document, &document_root);
+    frame.relayout();
+    let rebuilt = frame.paint_with_damage();
+    assert!(
+        !rebuilt.scene.encoding().is_empty(),
+        "the rebuilt workspace root has to reach the screen before the clip run"
+    );
+    let following = frame.paint_with_damage();
+    assert!(
+        following.scene.encoding().is_empty() && following.workspace_hold,
+        "the rest of the switch stays on the content clip"
+    );
+}
+
 fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
     assert_eq!(fixture.viewport(), (3840.0, 2160.0));
     assert_eq!(
         fixture.host().fixture_provider_ids(),
-        vec!["actions", "notes", "editor", "records"]
+        vec!["actions", "records"]
     );
 
     let chrome = fixture.chrome();
@@ -434,10 +509,20 @@ fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
 }
 
 fn assert_owned_files_fixture(fixture: &PopulatedShellFixture) {
-    let mut fixture_children = std::fs::read_dir(fixture.parent.path())
+    let entries = std::fs::read_dir(fixture.parent.path())
         .expect("fixture parent remains owned")
         .collect::<Result<Vec<_>, _>>()
         .expect("fixture child entries");
+    // Beside the Files folder, the profile the fixture's apps keep their
+    // records in.
+    let (profiles, mut fixture_children): (Vec<_>, Vec<_>) =
+        entries.into_iter().partition(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("tilo-shell-fixture-apps-")
+        });
+    assert_eq!(profiles.len(), 1, "one owned apps profile");
     assert_eq!(fixture_children.len(), 1, "one owned Files fixture child");
     let child = fixture_children
         .pop()
@@ -587,5 +672,80 @@ fn previous_sections(
         quick_settings_bounds: Some(Rect::new(10.0, 20.0, 100.0, 120.0)),
         global_filter,
         revision: 1,
+    }
+}
+
+/// The demo window, holding the demo's apps plus Editor, with
+/// `active` shown, repeated `windows` times along the strip.
+fn demo_windows(active: &str, windows: usize) -> crate::shell::state::WorkspaceTree {
+    use crate::shell::state::{AppKind, TileContent};
+    let mut tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
+    if let Some(strip) = tree
+        .desktop
+        .active_workspace_mut()
+        .and_then(|workspace| workspace.strips.first_mut())
+        && let Some(mut group) = strip.window_groups.first().cloned()
+    {
+        if let Some(mut tab) = group.tabs.first().cloned() {
+            tab.id = crate::shell::state::next_id();
+            tab.title = "Editor".into();
+            tab.tile = TileContent::AppPlaceholder {
+                kind: AppKind::Other("Editor".into()),
+                label: "Editor".into(),
+            };
+            group.tabs.push(tab);
+        }
+        strip.window_groups.clear();
+        for _ in 0..windows {
+            let mut copy = group.clone();
+            copy.id = crate::shell::state::next_id();
+            for tab in &mut copy.tabs {
+                tab.id = crate::shell::state::next_id();
+            }
+            copy.active_tab = copy
+                .tabs
+                .iter()
+                .find(|tab| tab.title == active)
+                .map_or(0, |tab| tab.id);
+            strip.window_groups.push(copy);
+        }
+    }
+    tree.seed_doc_from_cache();
+    tree
+}
+
+#[test]
+fn a_settled_desktop_does_not_rebuild_its_layout_whichever_tab_is_shown() {
+    // Each app shown in turn, with the others as tabs behind it: a tab that is
+    // never built (Files behind Notes, say) must not rebuild the desktop's
+    // layout tree on every frame, nor may the app that is shown.
+    for active in ["Notes", "Files", "Terminal", "Document", "Editor"] {
+        let mut frame = PopulatedShellFixture::with_tree(
+            (1280, 720),
+            Theme::dark().with_reduce_motion(true),
+            demo_windows(active, 3),
+        );
+        let mut doc = automerge::AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut iterate = |frame: &mut PopulatedShellFixture| {
+            frame.pump_apps(&mut doc, &root);
+            frame.relayout();
+            let _ = frame.paint_with_damage();
+        };
+        for _ in 0..8 {
+            iterate(&mut frame);
+        }
+        for step in 0..4 {
+            frame
+                .host_mut()
+                .set_strip_scroll_for_test(f64::from(step) * 40.0);
+            frame.pump_apps(&mut doc, &root);
+            assert!(
+                !ui::widget::Widget::take_structure_dirty(frame.host_mut()),
+                "{active} shown, frame {step}: the settled desktop asked for a new layout tree"
+            );
+            frame.relayout();
+            let _ = frame.paint_with_damage();
+        }
     }
 }

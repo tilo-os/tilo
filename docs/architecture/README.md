@@ -11,39 +11,168 @@ CRDT state the system owns.
 
 **Applications own neither their pixels nor their persistent storage.**
 
-An app exports **resources** — a video, an ebook, a note, a file. Resources nest: an ebook
-contains annotations and bookmarks. For each it exports **actions**: CRUD on an
-annotation, turn-page on a book, seek on a video. Files are resources on their own; where
-the format-aware filesystem already understands a type, the app does not handle it.
+There is one resource / action / view model for every app. An app is a `ResourceApp`
+(`crates/sdk/tilo-app`): its state is a `tilo_resource::Resource`, its mutations are that
+resource's `Action` applied through the framework dispatcher, and its pixels are a view
+(`ViewCx` / `ResourceSurface`) that only reads resource state and submits actions. There
+is no second path — no hand-built `tilo_actions::Resource` tree for the same state, no
+private `AutoCommit` the widget mutates, no app-local action vocabulary that is not
+`Resource::Action`.
 
-A resource separately exports **views**: editor, reader, map, grid, calendar, timeline.
-A view has its own stable identity and human label, and names the actions that open or
-mount it. This is an explicit catalogue rather than a convention around an action called
-`open`: ordinary presentation actions such as toggling a sidebar never become composable
-views by accident. The same resource can therefore appear in several honest forms without
-being copied into several app-owned documents.
+### Three layers
+
+- **`tilo-resource`** — a `Resource` type: `read` state, one replayable `Action` type,
+  optional named `declarations()`, nested `children()`, optional named `views()`.
+  `publish()` is the only bridge from a resource type to the `tilo_actions::Resource` tree
+  the palette, agents, scripts and the shell door see.
+- **`tilo-actions`** — the protocol. `OperationKind::Document` replays into the CRDT.
+  `Effect` and `View` do not. The door refuses non-Document operations ("must be handled
+  by the owning application").
+- **`tilo-app`** — `ResourceApp` + `ViewCx`. Sync (Automerge, history, per-author undo,
+  collaboration) is on for every `ResourceApp`; an app does not implement its own sync
+  loop.
+
+### Nested resources
+
+A resource can contain another resource. A rich-text body inside Notes, Chat or Mail, a
+draft's SQL in a database client, a report's note: each is a child resource, not a
+hand-rolled map that calls document mutations directly and not a text field splicing the
+document. The child is a resource type of its own (`RichText`, `PlainText`) stored at a
+place in the parent's document; the parent has one action that carries a child action and
+names where it applies (`EditBody { page, edit }`).
+
+`children()` publishes the child with `publish_child`, so it has its own actions, typed
+edits and views, each building the parent's action. Views and surfaces edit it through a
+child dispatcher (`cx.child::<RichText>(id, wrap)`) that does the same wrapping. So the child
+is addressed, permissioned, undone a word at a time and named in history like a root
+resource, while what syncs and replays is the parent's action. Text controls bind through
+the dispatcher (`RichTextField`, `TextControl` over a `TextInput` or `CodeEditor`): every
+keystroke is a splice action, never a direct document write.
+
+### Three action surfaces (kept separate)
+
+1. The `Action` enum is the replay format (`RichTextAction::SpliceText` stays an enum
+   variant, not a `#[action]` method).
+2. `declarations()` is the small named catalogue a person or agent invokes (set mark, set
+   style, insert block, new event). Do not declare every positional variant.
+3. `apply` / `group` stay the programmatic path for keystrokes and for grouping edits.
+
+`Effect` is only for work with no document delta: starting a sync job, showing a week,
+revealing a caret, opening a system file picker. Open/save of a file that lives in the
+shared filesystem is a document action on that file resource, not an effect. `View` stays
+local presentation (which week, where the caret is).
+
+An app's effects are a typed vocabulary (`#[derive(Effect)]` on an enum) answered by the
+view or surface that holds the state they need (`ViewCx::effects`,
+`ResourceSurface::effect`). The framework publishes them on the resource with their live
+availability, and routes every caller to the handler as a typed value. Long work is a job
+(`EffectCx::thread` / `spawn` / `reply`) with progress and cancellation; it completes on the
+UI thread and changes the document only through the resource's actions.
+
+### Sync and undo of outside consequences
+
+Collaborators sync the document actions (the CRDT). An external system (CalDAV, the shared
+filesystem) is a **projection** drained by an `Effect` that reads queues the document
+actions wrote. Peers replay those actions and converge; the Effect on each machine drains
+the queue — it is not itself the history, and Effects are not undoable (they have no
+heads). The framework runs the drain (`ViewCx::drain`): in the live app after every
+change, on every participant's device, never in History; the drain acknowledges each
+entry with an action.
+
+If an action's `apply` records an outside consequence in the document (outbox,
+`del_outbox`, a filesystem op queue), undo of that action is the **inverse document
+action run through `apply`**, so the compensating queue entry is recorded the same way.
+Inverse Automerge patches remain correct for pure CRDT actions with no outside
+consequence (a text splice). A shared file write and a calendar create are document
+actions, so they are undoable — including the compensating remote queue entry.
+
+### Who did it, and what is an undo step
+
+Every action knows its author: the participant that invoked it, pinned with the action
+like its time, so every replica's `apply` reads the same one (`ActionCx::author`). A
+view knows its reader (`ViewCx::me`). Resource state is the same for everyone; "your
+message" is a view comparing the recorded author with `me`, never a reader baked into
+the state or an author carried in the payload.
+
+A record's genesis (`Resource::initialize`) is the same change on every device, so two
+people creating the same record before they sync converge on one. What a new record
+starts with that depends on who creates it or where — the creator as owner, an import
+of settings that already exist — is the app's seed: actions applied once after the
+genesis, by the creator, and nobody's undo step.
+
+An action declares what it is to the people sharing the document (`change_kind`):
+content, housekeeping about it (a read marker), or content from outside (fetched rows,
+a process's output). All three sync and stay in history; only content is an undo step.
+Edits that continue one another (`Resource::coalesces`: a word typed, a slider dragged)
+are one step until the gesture ends.
+
+### Settings, files and secrets
+
+What follows a person or a device but is not shared with a room is not the
+document. A preference is a typed `Settings<T>` whose type declares its scope:
+`Personal` roams across the person's own devices, `DeviceLocal` never leaves
+this one, `Shared` reads a per-user section every app follows (locale,
+spelling). Views and surfaces get settings, the app's files and its secrets
+from their context; a secret of one document item is keyed by the item's id,
+so the document names it and the secret stays on the device. See
+`storage.md` §13.6.
+### One published tree
+
+The palette, agents and scripts see one tree per resource, built by `publish`. Edits bound
+to where a person is (the selection, the caret, the playhead, the folder shown) are typed
+builders of the resource's `Action` published on it, from the surface or view that knows
+where they are. Live external entities a view shows — processes, devices, containers,
+journal entries, fetched catalogue rows, running jobs — are rows merged by id into the
+resource's children; they carry only `Effect` and `View` operations, because they are not
+document state. A resource or surface too large to publish whole publishes a bounded page
+and resolves the rest by id. A content widget's own publication can add live entities
+beside the resource, never a `Document` operation: the framework drops it.
+
+### Views
+
+A resource can name more than one view (editor, reader) with a stable id. That catalogue
+is not an action called `open`. Ordinary presentation toggles never become composable
+views by accident.
 
 UI is a suggestion for presenting resources and actions, not the interface itself. An app
 can open a resource it never defined and it opens in the right application: URLs or
 intents for everything, above and below file granularity.
 
+Opening something is a record and actions, not a second launcher. A launch that names a
+path, a URL or a handed file asks the `ResourceApp` which record that is (the file's own
+record, one derived from it) and which of its resource's actions the launch takes there;
+those go through the dispatcher like any control. `definition()` of every app is the
+framework's, so the browser desktop and agent hosts mount the same app the native
+launcher runs.
+
 Displaying a resource is not destructive. Taking an action needs a permission, confirmed
 by the user by default.
 
-Code: `crates/collab/actions` — `resource.rs`, `action.rs`, `registry.rs`, `executor.rs`.
-Apps register; `shell` serves the result into search, the palette and the control socket.
+A view is built for a live window, a past version (History builds the same view again for
+every version it previews) or a screenshot. Only a live view starts work that reaches
+outside the process — a mail engine, a socket, a journal reader, a hardware probe. A
+screenshot scenario is the same view, never a second widget tree: what the resource does
+not hold is the scenario's fixture (typed stand-ins for live sources, files, blobs, other
+people's versions and presence), prepared before the view is built; the resource is staged
+with its actions; view state is staged by the views and surfaces that own it; and the
+capture waits until they report nothing left to draw.
+
+Code: `crates/sdk/tilo-resource` (`Resource`, `publish`), `crates/collab/actions`
+(protocol), `crates/sdk/tilo-app` (`ResourceApp`, `ViewCx`). Apps register; `shell` serves
+the published tree into search, the palette and the control socket.
 
 ## What follows
 
 - **Accessibility and automation are the same door.** Screen readers, scripts and agents
   browse resources and invoke actions; none see or click. A capability reachable only
   through a click handler does not exist for them.
-- **Search is a system service.** Apps register a search provider and a renderer per
-  resource type, so a hit opens the app at that position. See `search.md`.
+- **Search is a system service.** An app's resource and its surfaces publish search
+  entries, each invoking the action that opens the app at that position. See
+  `search.md`.
 - **Undo, history, device sync and theming are system services.** One implementation, not
-  forty. Undo works from the document's Automerge history: each action records the heads
-  before and after it and who made it, and undo writes the inverse as a new change, so one
-  person's undo reverts their own action and keeps everyone else's concurrent edits.
+  forty. Per-author undo reverts through the inverse document action when the action
+  recorded an outside consequence, otherwise through Automerge inverse patches, so one
+  person's undo keeps everyone else's concurrent edits.
 - **Collaboration reduces to transport.** See `collaboration.md` and `rooms.md`.
 - **Anything reusable belongs in `ui`.** Tabs, presence, text handling. The toolkit sets
   presentation defaults and the user overrides them; the app does not.
@@ -70,10 +199,12 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 | `rooms.md` | workspaces, hosts, membership |
 | `storage.md` | unified storage, sync, records, history and caching (design for review) |
 | `security.md` | sandbox, permissions, capability grants |
+| `theming.md` | the theme token contract, validation, layers and precedence, app boundaries |
 | `hosts.md` | host interfaces: time, background work, platform services, storage, transport, actions, desktop model |
 | `network.md` | `tilo-net`: HTTP, WebSocket, WebTransport, sockets, status, and the fetch-proxy contract |
 | `search.md` | providers and per-resource-type rendering |
 | `agents.md` | agent identity, access, tasks, providers, local models and MCP |
+| `agent-host.md` | agent MCP beside a local enrolled relay on a foreign Linux host (no desktop/OS) |
 | `../system-extensions-and-local-models.md` | optional runtime/driver packs and one-click local inference |
 | `distribution.md` | how software, settings and content reach a machine |
 | `language-checking.md` | spelling, grammar, text actions |

@@ -11,6 +11,7 @@ extents. The guest proof is produced by a separate VM install procedure.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import ctypes
 import hashlib
 import importlib.util
@@ -50,7 +51,26 @@ def require(ok, message):
 
 
 def plan_rows(plan):
-    return direct.normalized(plan["preserve_partitions"] + plan["target_partitions"])
+    preserved = direct.normalized(plan["preserve_partitions"])
+    targets = direct.normalized(plan["target_partitions"])
+    target_slots = {row["number"] for row in targets}
+    preserved_slots = {row["number"] for row in preserved}
+    require(len(target_slots) == len(targets) and len(preserved_slots) == len(preserved),
+            "reviewed partition groups have duplicate slots")
+    used = target_slots | preserved_slots
+    for row in preserved:
+        if row["number"] not in target_slots:
+            continue
+        # Windows numbers partitions by physical order, whereas this synthetic
+        # GPT retains the old WinRE slot from before the Windows shrink. Keep
+        # reviewed Tilo slots and change only WinRE's source GPT entry number.
+        require(row["type_guid"] == "de94bba4-06d1-4d40-a16a-bfd50179d6ac",
+                "only preserved WinRE may collide with reviewed target slots")
+        available = [slot for slot in range(1, GPT_ENTRIES + 1) if slot not in used]
+        require(available, "source GPT has no unused WinRE slot")
+        row["number"] = available[0]
+        used.add(row["number"])
+    return direct.normalized(preserved + targets)
 
 
 def gpt_header(current, backup, table_lba, sectors, disk_guid, table_crc):
@@ -294,6 +314,76 @@ def finalize_source(args):
     print(f"VM source final GPT identities match Windows plan: {raw}")
 
 
+@contextmanager
+def exclusive_source(path):
+    """Windows sharing rules refuse any open QEMU or other file handle."""
+    require(platform.system() == 'Windows', 'reusing an allocated source requires native Windows')
+    import msvcrt
+    create = ctypes.windll.kernel32.CreateFileW
+    create.argtypes = (ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+                       ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p)
+    create.restype = ctypes.c_void_p
+    handle = create(str(path), 0xC0000000, 0, None, 3, 0x80, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise OSError('VM source cannot be locked exclusively; stop its VM before resetting')
+    try:
+        fd = msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_BINARY)
+    except Exception:
+        ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(handle))
+        raise
+    with os.fdopen(fd, 'r+b', buffering=0) as stream:
+        yield stream
+
+
+def reset_template(args):
+    """Reuse an owned VM disk's allocation; invalidate its old Tilo headers and GPT."""
+    plan = direct.load_plan(args.plan)
+    manifest = direct.load_json(args.manifest)
+    require(args.confirm_source_disk_guid == manifest.get('source_disk_guid'),
+            'reset confirmation differs from the owned VM disk GUID')
+    require(args.source_raw.is_file() and not args.source_raw.is_symlink()
+            and args.source_raw.stat().st_size == plan['windows_disk']['size_bytes'],
+            'reset target must be the regular VM raw file matching the reviewed plan')
+    preserved = direct.normalized(manifest.get('preserved_partitions'))
+    wanted = direct.normalized(plan['preserve_partitions'])
+    require({row['partuuid']: {k: v for k, v in row.items() if k != 'number'} for row in preserved}
+            == {row['partuuid']: {k: v for k, v in row.items() if k != 'number'} for row in wanted},
+            'reset manifest differs from the reviewed preserved Windows identities')
+    require(manifest.get('target_partitions') == [
+        {k: row[k] for k in ('offset_bytes', 'role', 'size_bytes', 'type_guid')}
+        for row in plan['target_partitions']], 'reset target geometry differs from the reviewed plan')
+    # Verify before acquiring an exclusive writable handle. A second check on
+    # that handle binds the exact GPT that is about to be changed.
+    verify_template(args)
+    with exclusive_source(args.source_raw) as stream:
+        disk_guid, current = direct.read_gpt(stream, args.source_raw.stat().st_size)
+        require(disk_guid == manifest['source_disk_guid'], 'source GUID changed before reset')
+        require(all(row in current for row in preserved), 'preserved GPT changed before reset')
+        final = [row for row in current if row not in preserved]
+        require(not final or sorted(
+            (row['offset_bytes'], row['size_bytes'], row['type_guid']) for row in final)
+            == sorted((row['offset_bytes'], row['size_bytes'], row['type_guid'])
+                      for row in plan['target_partitions']),
+            'installed GPT geometry changed before reset')
+        require([preserved_sample(stream, row) for row in preserved] == manifest['preserved_samples'],
+                'preserved source content changed before reset')
+        # The guided installer correctly refuses stale filesystem signatures.
+        # Invalidate only the reviewed disposable Tilo extents' edges; retain
+        # the bulk allocation and never touch synthetic Windows content.
+        for row in plan['target_partitions']:
+            length = min(1024 * 1024, row['size_bytes'] // 2)
+            for offset in (row['offset_bytes'], row['offset_bytes'] + row['size_bytes'] - length):
+                stream.seek(offset)
+                stream.write(bytes(length))
+                stream.seek(offset)
+                require(stream.read(length) == bytes(length), 'Tilo header reset readback differs')
+        write_template(stream, plan, rows=preserved, disk_guid=uuid.UUID(disk_guid))
+        _, after = direct.read_gpt(stream, args.source_raw.stat().st_size)
+        require(direct.same_gpt_content(after, preserved), 'reset GPT readback differs')
+    verify_template(args)
+    print('Owned VM source reset; Tilo headers invalidated, allocation reused, old proof obsolete')
+
+
 def verified_ci_image(image, key, children, kind, command_json=None, key_arg=None):
     return provenance.verify_ci_image(image, key, children, kind, command_json, key_arg)
 
@@ -306,20 +396,26 @@ def make_receipt(args):
     require(raw.is_file() and not raw.is_symlink()
             and raw.stat().st_size == plan["windows_disk"]["size_bytes"],
             "VM-installed source raw size differs from reviewed disk")
-    index_digest, child_digest, children, kind = provenance.signed_ci_child(
-        args.ci_image, args.ci_index_manifest, args.ci_child_manifest)
-    ci_provenance = verified_ci_image(args.ci_image, args.verify_key, children, kind,
-                                      getattr(args, "cosign_command_json", None),
-                                      getattr(args, "cosign_key_arg", None))
-    checked = provenance.checked_guest_proof(
-        args.vm_proof_checked, child_digest, args.ci_image, ci_provenance)
-    if kind == "lenovo-83ed":
-        require(checked["schema"] == provenance.PROOF_SCHEMA_V2,
-                "Lenovo physical source requires backend-derived signed target proof v2")
-        dual_gate = provenance.dual_ci_medium_gate(
-            args, checked, child_digest, ci_provenance["source_revision"])
+    if getattr(args, "development", False):
+        ci_provenance, checked, dual_gate = direct.development.verify(args)
+        index_digest = child_digest = args.ci_image.split("@", 1)[1]
     else:
-        dual_gate = {}
+        require(args.verify_key is not None and args.ci_index_manifest is not None,
+                "signed source receipt requires CI verification key and index manifest")
+        index_digest, child_digest, children, kind = provenance.signed_ci_child(
+            args.ci_image, args.ci_index_manifest, args.ci_child_manifest)
+        ci_provenance = verified_ci_image(args.ci_image, args.verify_key, children, kind,
+                                          getattr(args, "cosign_command_json", None),
+                                          getattr(args, "cosign_key_arg", None))
+        checked = provenance.checked_guest_proof(
+            args.vm_proof_checked, child_digest, args.ci_image, ci_provenance)
+        if kind == "lenovo-83ed":
+            require(checked["schema"] == provenance.PROOF_SCHEMA_V2,
+                    "Lenovo physical source requires backend-derived signed target proof v2")
+            dual_gate = provenance.dual_ci_medium_gate(
+                args, checked, child_digest, ci_provenance["source_revision"])
+        else:
+            dual_gate = {}
     with raw.open("rb", buffering=0) as stream:
         disk_guid, actual = direct.read_gpt(stream, raw.stat().st_size)
         require(direct.same_gpt_content(actual, rows),
@@ -352,7 +448,8 @@ def make_receipt(args):
                "installed_uki_sha256": uki_hash}
     receipt.update(dual_gate)
     direct.stage.atomic_json(args.output, receipt)
-    print(f"VM source readback and CI signature receipt: {args.output}")
+    authority = "live development CI" if getattr(args, "development", False) else "CI signature"
+    print(f"VM source readback and {authority} receipt: {args.output}")
 
 
 def main(argv=None):
@@ -366,6 +463,13 @@ def main(argv=None):
     verify.add_argument("--manifest", type=Path, required=True)
     verify.add_argument("--source-raw", type=Path, required=True)
     verify.set_defaults(handler=verify_template)
+    reset = commands.add_parser('reset-template',
+        help='discard an owned VM install and reuse its existing allocated blocks; never a physical drive')
+    reset.add_argument('--plan', type=Path, required=True)
+    reset.add_argument('--manifest', type=Path, required=True)
+    reset.add_argument('--source-raw', type=Path, required=True)
+    reset.add_argument('--confirm-source-disk-guid', required=True)
+    reset.set_defaults(handler=reset_template)
     finalize = commands.add_parser("finalize", help="bind VM-installed GPT identities to Windows' reviewed final entries")
     finalize.add_argument("--plan", type=Path, required=True)
     finalize.add_argument("--source-raw", type=Path, required=True)
@@ -374,12 +478,13 @@ def main(argv=None):
     receipt.add_argument("--plan", type=Path, required=True)
     receipt.add_argument("--source-raw", type=Path, required=True)
     receipt.add_argument("--ci-image", required=True)
-    receipt.add_argument("--verify-key", type=Path, required=True)
+    receipt.add_argument("--verify-key", type=Path)
     receipt.add_argument("--cosign-command-json", type=Path)
     receipt.add_argument("--cosign-key-arg")
-    receipt.add_argument("--ci-index-manifest", type=Path, required=True)
+    receipt.add_argument("--ci-index-manifest", type=Path)
     receipt.add_argument("--ci-child-manifest", type=Path, required=True)
     receipt.add_argument("--vm-proof-checked", type=Path, required=True)
+    direct.development.add_arguments(receipt)
     for name in ("generic-ci-image", "generic-index-manifest",
                  "generic-child-manifest", "generic-vm-proof-checked",
                  "generic-medium-identity", "generic-ci-guest-proof",

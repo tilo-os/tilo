@@ -5,7 +5,7 @@
 //! focus treatment, and accessibility semantics.
 
 use std::collections::HashMap;
-use ui::widget::{AppModel, ModelPath};
+use ui::widget::ModelPath;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -153,7 +153,7 @@ impl Widget for Switch {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if matches!(
@@ -225,14 +225,18 @@ impl Widget for Switch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::{self, SettingFlag};
+    use crate::action;
+    use crate::actions::TubeEffect;
     use automerge::AutoCommit;
 
     fn switch() -> Switch {
         Switch::new(
             false,
             &action::new_bus(),
-            Action::ToggleSetting(SettingFlag::Autoplay),
+            Action::Effect(TubeEffect::SetPreference {
+                preference: "autoplay".into(),
+                enabled: true,
+            }),
         )
         .id("switch_autoplay")
         .accessible_name("Autoplay")
@@ -256,18 +260,27 @@ mod tests {
         // Case `accessibility_activation_uses_tube_action_bus`.
         {
             let bus = action::new_bus();
-            let mut switch =
-                Switch::new(true, &bus, Action::ToggleSetting(SettingFlag::ShowComments));
+            let mut switch = Switch::new(
+                true,
+                &bus,
+                Action::Effect(TubeEffect::SetPreference {
+                    preference: "comments".into(),
+                    enabled: false,
+                }),
+            );
             let mut state = AutoCommit::new();
 
             assert!(switch.perform_action(
                 &ui::a11y::Action::ToggleCheck,
-                &mut state,
+                &mut ui::widget::Edits::lend(&mut state),
                 &automerge::ROOT,
             ));
             assert_eq!(
                 action::drain(&bus),
-                vec![Action::ToggleSetting(SettingFlag::ShowComments)]
+                vec![Action::Effect(TubeEffect::SetPreference {
+                    preference: "comments".into(),
+                    enabled: false,
+                })]
             );
         }
         // Case `pointer_hit_testing_stays_inside_switch_rect`.

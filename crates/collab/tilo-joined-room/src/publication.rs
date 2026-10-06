@@ -3,7 +3,7 @@ use crate::{NativeCommittedView, NativeWorkspaceOwner, RoomId, enrollment, recor
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, time::SystemTime};
-use tilo_peer_state::{NeighbourMsg, StatePeer};
+use tilo_peer_state::{NeighbourMsg, Reseal, StatePeer};
 use tilo_peer_state::{
     owner_commit::{CommitBinding, CommitOperation, OwnerCommitRequest},
     transport::Retention,
@@ -692,5 +692,66 @@ impl NativeWorkspaceOwner {
             allowed(view, now)?;
             Ok(())
         })
+    }
+    /// Renew this device's sealed writes that expired in custody before the
+    /// governor retired them, through `reseal`, the channels' key holder
+    /// (see [`StatePeer::renew_local_sealed`]). Each renewal replaces its
+    /// original in one durable commit and moves behind every other entry,
+    /// so an author's writes still send in sequence order. A write `reseal`
+    /// refuses stays exactly as it was.
+    ///
+    /// # Errors
+    /// `key` is not the enrolled device, it may no longer write, the room is
+    /// fenced or the renewals cannot be committed.
+    pub fn renew_outgoing(
+        &self,
+        room: RoomId,
+        key: &SigningKey,
+        reseal: &mut Reseal<'_>,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        let _turn = self.0.mutation.lock();
+        let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
+        if key.verifying_key().to_bytes() != candidate.device().device_public_key {
+            return Err("native outgoing signer differs from selected device".into());
+        }
+        candidate
+            .peer
+            .permissions(candidate.device().device_public_key, now)?;
+        let mut renewed = false;
+        for entry in state(&candidate)?.entries.clone() {
+            let original: NeighbourMsg =
+                postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
+            let renewal = match candidate
+                .peer
+                .renew_local_sealed(&original, reseal, key, now)
+            {
+                Ok(Some(renewal)) => renewal,
+                Ok(None) => continue,
+                Err(error) => {
+                    tracing::debug!(%error, "sealed write stays unrenewed in custody");
+                    continue;
+                }
+            };
+            candidate
+                .record
+                .publication
+                .as_mut()
+                .ok_or("publication absent")?
+                .entries
+                .retain(|kept| kept.id != entry.id);
+            append(&mut candidate, encode(&renewal, MAX_BYTES)?, false)?;
+            renewed = true;
+        }
+        if !renewed {
+            return Ok(());
+        }
+        reservation::refresh(&mut candidate)?;
+        candidate.record.peer = candidate.peer.durable()?;
+        candidate.record.generation = candidate
+            .generation()
+            .checked_add(1)
+            .ok_or("native owner generation exhausted")?;
+        self.publish_room(room, candidate, None)
     }
 }

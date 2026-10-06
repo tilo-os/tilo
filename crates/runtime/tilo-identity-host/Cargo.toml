@@ -19,7 +19,7 @@ throwaway-test-identity = []
 
 [dependencies]
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
-tilo-atomic-file = { path = "../../system/atomic-file", features = ["json"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["json"] }
 collab-types = { path = "../../collab/collab-types" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 getrandom.workspace = true
@@ -35,6 +35,9 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-desktop-model = { path = "../../session/desktop-model" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+# The fleet certifies disk-unlock boot keys and holds the secret-sync custody.
+tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
+tilo-seal = { path = "../../system/tilo-seal" }
 tracing.workspace = true
 # The identity record encoder shared with the interactive identity ceremony.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }

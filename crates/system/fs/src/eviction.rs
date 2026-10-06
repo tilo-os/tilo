@@ -921,7 +921,7 @@ impl EvictionQueue {
             requests: self.requests.values().cloned().collect(),
         };
         let bytes = serde_json::to_vec_pretty(&document)?;
-        atomic_file::write_creating_parent(&self.path, &bytes)?;
+        tilo_files::native::atomic::write_creating_parent(&self.path, &bytes)?;
         Ok(())
     }
 }

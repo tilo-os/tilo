@@ -78,6 +78,7 @@ pub mod op;
 pub mod ownership_transfer;
 pub mod peer;
 pub mod permission_profile;
+pub mod person_room;
 pub mod recipient_control;
 pub mod redaction;
 pub mod role;
@@ -148,7 +149,8 @@ pub use op::{
     ContentRetention, DocumentMutation, DocumentMutationEncodeError, DocumentMutationError,
     EncryptionMetadata, EncryptionScheme, MAX_DOCUMENT_MUTATION_BYTES, RoutedDocumentPayload,
     SignedOp, WholeDocumentPayload, document_artifact_id, document_attestation_id,
-    document_channel_id, validate_document_payload_route, validate_whole_document_payload_route,
+    document_channel_id, live_artifact_id, validate_document_payload_route,
+    validate_whole_document_payload_route,
 };
 pub use ownership_transfer::{
     OWNERSHIP_TRANSFER_VERSION, OwnershipTransferAcceptanceV1, OwnershipTransferAuditV1,
@@ -156,6 +158,7 @@ pub use ownership_transfer::{
 };
 pub use peer::{PeerPresence, PeerPresencePayload};
 pub use permission_profile::{PermissionProfile, PermissionProfileError, PermissionProfileRule};
+pub use person_room::{is_person_room, person_room, person_room_of};
 pub use recipient_control::{
     MAX_RECIPIENT_CONTROL_CONNECTIONS, MAX_RECIPIENT_CONTROL_FRAME_BYTES,
     MAX_RECIPIENT_CONTROL_REQUESTS_PER_CONNECTION, MAX_RECIPIENT_MOUNT_PATH_BYTES,

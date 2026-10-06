@@ -277,14 +277,14 @@ class CheckAggregateTests(unittest.TestCase):
                     self.assertIn("needs: [builder, select]", job)
                     self.assertIn(
                         f"fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.{matrix} ||", job)
-                    self.assertIn('{"include":[{"runner":"runner","check_runner":"runner"}]}', job)
+                    self.assertIn('{"include":[{"runner":"runner"}]}', job)
             check = section(self.workflow, "check", 2)
             condition = ("needs.select.outputs.rust_required == 'true' && "
                          "needs.select.outputs.check_required == 'true'")
             self.assertIn(f"if: {condition}\n", check)
             self.assertIn("needs: [builder, select]", check)
             self.assertIn(f"fromJSON({condition} && needs.select.outputs.check_matrix ||", check)
-            self.assertIn('{"include":[{"runner":"runner","check_runner":"runner"}]}', check)
+            self.assertIn('{"include":[{"runner":"runner"}]}', check)
             clippy = section(self.workflow, "clippy", 2)
             self.assertIn("cargo check --locked -p tilo-ui --no-default-features --lib", clippy)
             self.assertIn("cargo check --locked -p tilo-ui --no-default-features --lib", check)

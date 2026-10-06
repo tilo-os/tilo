@@ -311,6 +311,24 @@ impl ChannelEncryption {
         }
     }
 
+    /// Observe a current key without opening a channel, requesting access or
+    /// changing a removed member's rejoin state.
+    fn existing_keys(&self, room: RoomId, channel: ChannelId) -> Option<ChannelContentKeys> {
+        if self.directory.governs(room) {
+            return self
+                .stewards
+                .get(&channel)
+                .filter(|entry| entry.room == room)
+                .and_then(|entry| entry.steward.content_keys().ok());
+        }
+        self.members
+            .get(&channel)
+            .filter(|entry| {
+                entry.room == room && matches!(entry.member.access(), Access::Ready { .. })
+            })
+            .and_then(|entry| entry.member.content_keys())
+    }
+
     /// Run the governance protocol once: apply what arrived, reconcile
     /// stewarded groups with the access policy, and (re)deliver what is
     /// due. `wall` is the Unix time the policy is evaluated at.
@@ -690,6 +708,36 @@ impl ChannelKeyAccess {
             })
     }
 
+    /// Seal an ephemeral frame only with a key this device already holds for
+    /// this exact room and channel. Observation never requests channel access,
+    /// creates a group or rejoins a removed member. The caller must already
+    /// have validated the publisher's current room admission and record route.
+    ///
+    /// # Errors
+    ///
+    /// Refuses missing, waiting or removed channels, a mismatched room, an
+    /// unavailable service, or a sealing failure.
+    pub fn seal_existing_live(
+        &self,
+        room: RoomId,
+        channel: ChannelId,
+        artifact: ArtifactId,
+        plaintext: &[u8],
+    ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
+        let service = self
+            .inner
+            .lock()
+            .map_err(|_| "channel service unavailable")?;
+        let keys = service
+            .existing_keys(room, channel)
+            .ok_or("no current key for the admitted record")?;
+        let sealed = keys
+            .seal_content(artifact, ContentRetention::Delta, plaintext)
+            .map_err(|error| error.to_string());
+        drop(service);
+        sealed
+    }
+
     /// Open `envelope`, a new sealed write to one of `room`'s channels, for
     /// the durable owner that holds the channel's keys. Only under the
     /// channel's current epoch, and only while this device reads the
@@ -758,11 +806,52 @@ impl ChannelKeyAccess {
         Ok((keys, metadata, ciphertext))
     }
 
+    /// The payload a renewal of `envelope`, a sealed write of this device
+    /// to one of `room`'s channels, carries under a fresh timestamp and
+    /// sequence: the identical ciphertext while its epoch is the channel's
+    /// current one, else its content re-sealed under the current epoch. The
+    /// plaintext never leaves this call.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the write is not sealed with a content key,
+    /// this device holds no current key for its channel, or the payload
+    /// does not open.
+    pub fn renew_sealed(
+        &self,
+        room: RoomId,
+        envelope: &SignedOp,
+    ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
+        let metadata = envelope.encryption.ok_or("the write is not sealed")?;
+        let retention = metadata
+            .retention()
+            .ok_or("the write is not sealed with a content key")?;
+        let (ChannelAccess::Ready(keys), _) = self.access(room, metadata.channel) else {
+            return Err("this device holds no key for the write's channel".into());
+        };
+        let plaintext = keys
+            .open_content(envelope.artifact, &metadata, &envelope.payload)
+            .map_err(|error| error.to_string())?;
+        if metadata.epoch == keys.epoch() {
+            return Ok((metadata, envelope.payload.clone()));
+        }
+        keys.seal_content(envelope.artifact, retention, &plaintext)
+            .map_err(|error| error.to_string())
+    }
+
     /// See [`ChannelEncryption::pump`].
     pub fn pump(&self, transport: &dyn GovernanceTransport) {
         if let Ok(mut service) = self.inner.lock() {
             service.pump(transport, Instant::now(), tilo_clock::unix_now());
         }
+    }
+
+    /// Whether a timer still has to pump governance. An idle device with no
+    /// channel parks the drainer until the next inbound frame.
+    pub fn has_live_channels(&self) -> bool {
+        self.inner
+            .lock()
+            .is_ok_and(|service| !service.stewards.is_empty() || !service.members.is_empty())
     }
 
     /// See [`ChannelEncryption::generation`].
@@ -844,7 +933,7 @@ fn save_requests(
     requests: &BTreeMap<Ed25519PublicKey, MlsAccessRequestV1>,
 ) -> std::io::Result<()> {
     let bytes = postcard::to_allocvec(requests).map_err(std::io::Error::other)?;
-    atomic_file::write_private(path, &bytes)
+    tilo_files::native::atomic::write_private(path, &bytes)
 }
 
 /// Channel ids of the `*.{extension}` files in `dir`.
@@ -1049,6 +1138,105 @@ mod tests {
             .lock()
             .unwrap()
             .document_encryption_allowed(channel, None)
+    }
+
+    #[test]
+    fn observing_live_keys_never_opens_a_channel_or_rejoins_after_removal() {
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let channel = ChannelId::new();
+        let policy = Policy::default();
+        policy.allowed.lock().unwrap().insert(public(2));
+        let (owner_dir, member_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut owner = device(&room, room_id, 0, (1, 1), &policy, owner_dir.path());
+        let mut member = device(&room, room_id, 1, (2, 1), &policy, member_dir.path());
+        for service in [&owner.service, &member.service] {
+            let generation = service.generation();
+            assert!(service.existing_keys(room_id, channel).is_none());
+            assert!(service.stewards.is_empty());
+            assert!(service.members.is_empty());
+            assert_eq!(service.generation(), generation);
+        }
+
+        // Only this explicit fixture admission creates or requests keys.
+        let mut now = Instant::now();
+        owner.service.access(room_id, channel, now);
+        member.service.access(room_id, channel, now);
+        run(&mut [&mut owner, &mut member], &mut now, 5);
+        assert!(member.service.existing_keys(room_id, channel).is_some());
+        assert!(
+            member
+                .service
+                .existing_keys(RoomId::new(), channel)
+                .is_none()
+        );
+        assert!(
+            owner
+                .service
+                .existing_keys(RoomId::new(), channel)
+                .is_none()
+        );
+
+        policy.allowed.lock().unwrap().clear();
+        run(&mut [&mut owner, &mut member], &mut now, 3);
+        let generation = member.service.generation();
+        let rejoin = member.service.members.get(&channel).unwrap().rejoin;
+        assert!(!rejoin);
+        assert!(member.service.existing_keys(room_id, channel).is_none());
+        assert_eq!(member.service.generation(), generation);
+        assert!(!member.service.members.get(&channel).unwrap().rejoin);
+        let access = ChannelKeyAccess::new(member.service);
+        assert!(
+            access
+                .seal_existing_live(room_id, channel, ArtifactId::new(), b"semantic event")
+                .is_err()
+        );
+        assert!(
+            !access
+                .inner
+                .lock()
+                .unwrap()
+                .members
+                .get(&channel)
+                .unwrap()
+                .rejoin
+        );
+    }
+
+    #[test]
+    fn live_sealing_requires_an_existing_key_for_the_exact_room() {
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let channel = ChannelId::new();
+        let dir = tempfile::tempdir().unwrap();
+        let owner = device(&room, room_id, 0, (1, 1), &Policy::default(), dir.path());
+        let access = ChannelKeyAccess::new(owner.service);
+        let artifact = ArtifactId::new();
+        assert!(
+            access
+                .seal_existing_live(room_id, channel, artifact, b"event")
+                .is_err()
+        );
+        assert!(access.inner.lock().unwrap().stewards.is_empty());
+        let (ChannelAccess::Ready(keys), _) = access.access(room_id, channel) else {
+            panic!("explicit fixture admission must provide keys");
+        };
+        let generation = access.generation();
+        let (metadata, sealed) = access
+            .seal_existing_live(room_id, channel, artifact, b"event")
+            .unwrap();
+        assert_eq!(
+            keys.open_current_content(artifact, &metadata, &sealed)
+                .unwrap()
+                .as_slice(),
+            b"event"
+        );
+        assert_eq!(access.generation(), generation);
+        assert!(
+            access
+                .seal_existing_live(RoomId::new(), channel, artifact, b"event")
+                .is_err()
+        );
     }
 
     #[test]
@@ -1353,6 +1541,107 @@ mod tests {
         assert_eq!(
             keys.open_history_write(room_id, &compaction).unwrap(),
             b"merged record"
+        );
+    }
+
+    fn sealed_write(artifact: collab_types::ArtifactId, keys: &ChannelContentKeys) -> SignedOp {
+        let (metadata, payload) = keys
+            .seal_content(artifact, collab_types::ContentRetention::Delta, b"the edit")
+            .unwrap();
+        SignedOp::new_unsigned_with_encryption(
+            payload,
+            artifact,
+            public(10),
+            collab_types::document_attestation_id("test.app", "room", ""),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::now(),
+            1,
+            metadata,
+        )
+    }
+
+    #[test]
+    fn a_renewal_keeps_a_current_ciphertext_and_reseals_one_from_before_a_rotation() {
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let channel = ChannelId::new();
+        let artifact = collab_types::ArtifactId::new();
+        let policy = Policy::default();
+        let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut now = Instant::now();
+        let mut owner = device(&room, room_id, 0, (10, 10), &policy, owner_dir.path());
+        let mut laptop = device(&room, room_id, 1, (11, 10), &policy, laptop_dir.path());
+        let ChannelAccess::Ready(before) = owner.service.access(room_id, channel, now) else {
+            panic!("the steward holds the channel's keys");
+        };
+        let stale = sealed_write(artifact, &before);
+        policy.allowed.lock().unwrap().insert(public(11));
+        laptop.service.access(room_id, channel, now);
+        run(&mut [&mut owner, &mut laptop], &mut now, 5);
+        let access = ChannelKeyAccess::new(owner.service);
+        let (ChannelAccess::Ready(current), _) = access.access(room_id, channel) else {
+            panic!("the steward holds the channel's keys");
+        };
+        assert!(
+            current.epoch() > before.epoch(),
+            "adding a member rotated the epoch"
+        );
+
+        let fresh = sealed_write(artifact, &current);
+        assert_eq!(
+            access.renew_sealed(room_id, &fresh).unwrap(),
+            (fresh.encryption.unwrap(), fresh.payload.clone()),
+            "a current-epoch write renews with its identical ciphertext"
+        );
+
+        let (metadata, payload) = access.renew_sealed(room_id, &stale).unwrap();
+        assert_eq!(metadata.epoch, current.epoch());
+        assert_eq!(
+            current
+                .open_current_content(artifact, &metadata, &payload)
+                .unwrap()
+                .as_slice(),
+            b"the edit",
+            "the re-sealed content opens as a current write"
+        );
+        assert!(
+            current
+                .open_current_content(artifact, &stale.encryption.unwrap(), &stale.payload)
+                .is_err(),
+            "the stale ciphertext itself would be refused as a new write"
+        );
+
+        let mut tampered = stale;
+        tampered.payload[0] ^= 1;
+        assert!(access.renew_sealed(room_id, &tampered).is_err());
+        let mut plaintext = fresh;
+        plaintext.encryption = None;
+        assert!(access.renew_sealed(room_id, &plaintext).is_err());
+    }
+
+    #[test]
+    fn a_device_without_ready_access_renews_nothing() {
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let channel = ChannelId::new();
+        let artifact = collab_types::ArtifactId::new();
+        let policy = Policy::default();
+        let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let now = Instant::now();
+        let mut owner = device(&room, room_id, 0, (12, 12), &policy, owner_dir.path());
+        let laptop = device(&room, room_id, 1, (13, 12), &policy, laptop_dir.path());
+        let ChannelAccess::Ready(keys) = owner.service.access(room_id, channel, now) else {
+            panic!("the steward holds the channel's keys");
+        };
+        let write = sealed_write(artifact, &keys);
+        let waiting = ChannelKeyAccess::new(laptop.service);
+        assert!(matches!(
+            waiting.access(room_id, channel).0,
+            ChannelAccess::Waiting
+        ));
+        assert!(
+            waiting.renew_sealed(room_id, &write).is_err(),
+            "a device still waiting for access renews nothing"
         );
     }
 }

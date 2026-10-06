@@ -69,6 +69,8 @@ pub enum PowerCommand {
 struct BridgeInner {
     signals: Vec<PowerSignal>,
     commands: Vec<PowerCommand>,
+    /// power-profiles-daemon's active profile as the service last read it.
+    active_profile: Option<String>,
 }
 
 /// The shared power mailbox. Clone to hand a handle to each side.
@@ -100,6 +102,22 @@ impl PowerBridge {
     /// Drain every pending signal (called once per compositor frame).
     pub fn drain_signals(&self) -> Vec<PowerSignal> {
         std::mem::take(&mut self.lock().signals)
+    }
+
+    /// Record power-profiles-daemon's active profile, read over D-Bus by the
+    /// service, so the compositor resolves the profile's idle-suspend timeout
+    /// on a settings reload without asking the daemon from its frame thread.
+    pub fn note_active_profile(&self, profile: &str) {
+        let mut inner = self.lock();
+        if inner.active_profile.as_deref() != Some(profile) {
+            inner.active_profile = Some(profile.to_owned());
+        }
+    }
+
+    /// The active power profile the service last observed; `None` before it
+    /// has read one or where power-profiles-daemon is absent.
+    pub fn active_profile(&self) -> Option<String> {
+        self.lock().active_profile.clone()
     }
 
     // ---- compositor → service ---------------------------------------
@@ -172,6 +190,16 @@ mod tests {
             a.request_suspend();
             // Command pushed on `a` is visible to `b`.
             assert_eq!(b.drain_commands(), vec![PowerCommand::Suspend]);
+        }
+        // Phase `the_active_profile_the_service_read_is_shared`.
+        {
+            let service = PowerBridge::new();
+            let compositor = service.clone();
+            assert_eq!(compositor.active_profile(), None);
+            service.note_active_profile("power-saver");
+            assert_eq!(compositor.active_profile().as_deref(), Some("power-saver"));
+            service.note_active_profile("performance");
+            assert_eq!(compositor.active_profile().as_deref(), Some("performance"));
         }
         // Phase `policy_updates_cross_the_bridge_without_stringly_state`.
         {

@@ -35,9 +35,6 @@ test-support = ["ui-core/test-support"]
 # choose each target's file choosers and notifications, and the native runner
 # turns the XDG portals on for Linux itself.
 webview-adblock = ["tilo-runner-native?/webview-adblock"]
-webview-wpe = ["tilo-runner-native?/webview-wpe"]
-# A web view; the SDK picks the engine (WPE WebKit on Linux).
-webview = ["webview-wpe"]
 dmabuf-import = ["tilo-runner-native?/dmabuf-import"]
 gpu-video = ["tilo-runner-native?/gpu-video"]
 mpris = ["tilo-runner-native?/mpris"]
@@ -63,15 +60,22 @@ tilo-search = { version = "0.1.0", path = "../search" }
 tilo-automerge.workspace = true
 # Files for apps: the portable replacement for `std::fs`, re-exported as `ui::files`.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+# The history verbs' typed payload.
+serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
+# The content store a host lends the app (`ViewCx::content`), in every build;
+# the native build below adds its directory store for `render`.
+tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
 
 [[test]]
 name = "it"
 path = "tests/it.rs"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+# `render` stores the picture it answers with.
+tilo-content = { version = "0.1.0", path = "../../system/content" }
 tilo-runner-native = { version = "0.1.0", path = "../runner-native", default-features = false, optional = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]

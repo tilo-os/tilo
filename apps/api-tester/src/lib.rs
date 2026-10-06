@@ -5,11 +5,9 @@
 //! and a pretty/raw/preview body with syntax-highlighted, collapsible JSON.
 //! Saved requests live in collections; `{{variable}}` placeholders resolve
 //! against the active environment. Collections, environments, the active
-//! request, and history are CRDT-backed, so a workspace can be edited
-//! collaboratively.
-//!
-//! `app_root()` is the single integration point used by both the live
-//! event loop and the `--shots` offscreen renderer.
+//! request, and history are the [`ApiTester`] resource, so a workspace can be
+//! edited collaboratively; credentials stay on the device. [`ApiTesterShell`]
+//! runs it.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -35,8 +33,6 @@
     )
 )]
 
-use ui::widget::Widget;
-
 pub mod actions;
 mod app;
 mod doc;
@@ -44,25 +40,15 @@ mod http;
 mod model;
 mod navrow;
 mod palette;
+pub mod resource;
 mod responsive;
-mod search_provider;
 mod seed;
 mod vars;
 
 pub use app::ApiTesterApp;
+pub use resource::{ApiTester, ApiTesterShell};
 
-/// Build and return the app's root widget tree.
-pub fn app_root_demo() -> Box<dyn Widget> {
-    Box::new(ApiTesterApp::new_demo())
-}
-
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(ApiTesterApp::new())
-}
-
-/// The app as every host mounts it: the live root and its actions.
+/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::launch::LaunchSpec::new("so.tilo.api-tester", app_root)
-        .component_actions(actions::register)
-        .as_definition("API Tester")
+    ui::framework::definition::<ApiTesterShell>()
 }

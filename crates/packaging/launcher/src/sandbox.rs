@@ -19,6 +19,12 @@ pub fn runtime_mount_for(version: &str) -> PathBuf {
     PathBuf::from("/run/tilo-runtime").join(version)
 }
 
+/// The `LD_LIBRARY_PATH` of a sandbox running on the runtime bundle mounted
+/// for `version`: the bundle's `lib/` directory.
+pub fn runtime_library_path(version: &str) -> PathBuf {
+    runtime_mount_for(version).join("lib")
+}
+
 /// Canonical absolute ELF interpreter paths re-exposed from the runtime
 /// bundle. Ordinary shared libraries are found through the bundle's
 /// `LD_LIBRARY_PATH`; rebinding them here can target host symlinks (for
@@ -42,6 +48,17 @@ pub const CANONICAL_LOADER_PATHS: &[&str] = &[
 pub struct DBusBindPlan {
     pub host_socket: PathBuf,
     /// In-sandbox path, read via `DBUS_SESSION_BUS_ADDRESS=unix:path=<sandbox_path>`.
+    pub sandbox_path: PathBuf,
+    /// The filtered AT-SPI bus proxy, for a graphical app whose session runs
+    /// an accessibility bus.
+    pub atspi: Option<AtspiBindPlan>,
+}
+
+/// Where the filtered AT-SPI proxy listens, and where the app finds it
+/// (`AT_SPI_BUS_ADDRESS=unix:path=<sandbox_path>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AtspiBindPlan {
+    pub host_socket: PathBuf,
     pub sandbox_path: PathBuf,
 }
 
@@ -177,6 +194,15 @@ pub fn push_clean_environment(argv: &mut Vec<String>) {
         argv.push(value.to_string_lossy().into_owned());
     }
     push_accessibility_environment(argv);
+    // A boolean content-free presentation observer, not an input injector or
+    // output path. Keep arbitrary profiling/scenario environment stripped.
+    if std::env::var("TILO_PROFILE_PRESENTATION").is_ok_and(|value| value == "1") {
+        argv.extend([
+            "--setenv".into(),
+            "TILO_PROFILE_PRESENTATION".into(),
+            "1".into(),
+        ]);
+    }
 }
 
 /// Env var publishing the compositor's privileged Wayland socket.
@@ -261,6 +287,36 @@ pub fn push_gpu_selection(
         argv.push("--setenv".to_string());
         argv.push(key.to_string());
         argv.push(value);
+    }
+    // Read-only: the session writes the seed, apps only start from it, so
+    // no app can plant pipelines another app will run.
+    if let Some(seed) = &selection.pipeline_seed {
+        push_bind(
+            argv,
+            "--ro-bind-try",
+            seed,
+            Path::new(crate::gpu::SANDBOX_PIPELINE_SEED_DIR),
+        );
+        argv.push("--setenv".to_string());
+        argv.push(crate::gpu::PIPELINE_SEED_ENV.to_string());
+        argv.push(crate::gpu::SANDBOX_PIPELINE_SEED_DIR.to_string());
+    }
+}
+
+/// The Landlock rules that make [`push_gpu_selection`]'s binds usable: the
+/// selection is only real if Landlock agrees. Loader manifests and the
+/// pipeline seed need read; the render node needs read+write (it is opened
+/// `O_RDWR`), and read-only looks like no GPU present.
+pub fn push_gpu_landlock_rules(argv: &mut Vec<String>, selection: &crate::gpu::GpuSelection) {
+    for file in selection.manifest_files() {
+        argv.push("--ro".to_string());
+        argv.push(file.display().to_string());
+    }
+    argv.push("--rw".to_string());
+    argv.push(selection.node.display().to_string());
+    if selection.pipeline_seed.is_some() {
+        argv.push("--ro".to_string());
+        argv.push(crate::gpu::SANDBOX_PIPELINE_SEED_DIR.to_string());
     }
 }
 
@@ -447,6 +503,15 @@ fn push_app_metadata(argv: &mut Vec<String>, manifest: &MinimalManifest, payload
     }
 }
 
+/// Mount a further runtime bundle read-only at its runtime mount. Unlike the
+/// app's own runtime it changes no loader path: the app finds what it needs
+/// inside by path. Returns the mount.
+pub fn push_optional_runtime(argv: &mut Vec<String>, root: &Path, version: &str) -> PathBuf {
+    let mount = runtime_mount_for(version);
+    push_bind(argv, "--ro-bind", root, &mount);
+    mount
+}
+
 fn push_runtime_bundle(argv: &mut Vec<String>, runtime: Option<(&Path, &str)>) {
     let Some((runtime_root, runtime_version)) = runtime else {
         return;
@@ -456,7 +521,7 @@ fn push_runtime_bundle(argv: &mut Vec<String>, runtime: Option<(&Path, &str)>) {
     argv.extend([
         "--setenv".to_string(),
         "LD_LIBRARY_PATH".to_string(),
-        runtime_mount.join("lib").display().to_string(),
+        runtime_library_path(runtime_version).display().to_string(),
     ]);
     for canonical in CANONICAL_LOADER_PATHS {
         let in_bundle = runtime_root
@@ -567,6 +632,18 @@ pub fn build_bwrap_argv_for_entry(
         argv.push("--setenv".to_string());
         argv.push("DBUS_SESSION_BUS_ADDRESS".to_string());
         argv.push(format!("unix:path={}", bind.sandbox_path.display()));
+        // Accessibility: the filtered AT-SPI proxy, never the raw bus.
+        if let Some(atspi) = &bind.atspi {
+            push_bind(
+                &mut argv,
+                "--ro-bind",
+                &atspi.host_socket,
+                &atspi.sandbox_path,
+            );
+            argv.push("--setenv".to_string());
+            argv.push("AT_SPI_BUS_ADDRESS".to_string());
+            argv.push(format!("unix:path={}", atspi.sandbox_path.display()));
+        }
     }
 
     // Participation: tell the app which shape it is in. Information, not
@@ -872,6 +949,7 @@ mod tests {
             version: "0.1.0".to_string(),
             kind: crate::manifest::KIND_APP.to_string(),
             runtime: None,
+            optional_runtimes: Vec::new(),
             entrypoint: Entrypoint {
                 bin: "bin/notes".to_string(),
                 r#type: crate::manifest::EntrypointType::Gui,
@@ -1270,6 +1348,44 @@ mod tests {
     }
 
     #[test]
+    fn normal_sandbox_forwards_only_the_exact_presentation_observer_boolean() {
+        for value in ["1", "0", "true", "1\n", "/private/log", ""] {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_PROFILE_PRESENTATION", value)
+                .set("TILO_NATIVE_SCENARIO", "/private/input.json")
+                .set("TILO_NATIVE_INPUT_GATE", "private-approval")
+                .set("TILO_PROFILE_OUT", "/private/log")
+                .set("VELLO_GPU_DISPATCH_TIMESTAMPS", "1");
+            let argv = build_bwrap_argv(
+                &mk_manifest("off"),
+                Path::new("/host/pkg"),
+                None,
+                &[],
+                None,
+                None,
+                &CapabilityPlan::empty(),
+            );
+            assert!(argv.iter().any(|arg| arg == "--clearenv"));
+            assert_eq!(
+                setenv_value(&argv, "TILO_PROFILE_PRESENTATION"),
+                (value == "1").then_some("1")
+            );
+            for key in [
+                "TILO_NATIVE_SCENARIO",
+                "TILO_NATIVE_INPUT_GATE",
+                "TILO_PROFILE_OUT",
+                "VELLO_GPU_DISPATCH_TIMESTAMPS",
+            ] {
+                assert_eq!(
+                    setenv_value(&argv, key),
+                    None,
+                    "must not inject input or paths"
+                );
+            }
+        }
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -1440,6 +1556,40 @@ mod tests {
     }
 
     #[test]
+    fn a_graphical_app_finds_the_filtered_atspi_bus() {
+        let m = mk_manifest("off");
+        let plan = DBusBindPlan {
+            host_socket: PathBuf::from("/run/user/1234/tilo/dbus-proxy/9999.sock"),
+            sandbox_path: PathBuf::from("/run/user/1234/bus"),
+            atspi: Some(AtspiBindPlan {
+                host_socket: PathBuf::from("/run/user/1234/tilo/dbus-proxy/9999-atspi.sock"),
+                sandbox_path: PathBuf::from("/run/user/1234/at-spi/bus"),
+            }),
+        };
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            Some(&plan),
+            None,
+            &CapabilityPlan::empty(),
+        );
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--ro-bind"
+                && w[1] == "/run/user/1234/tilo/dbus-proxy/9999-atspi.sock"
+                && w[2] == "/run/user/1234/at-spi/bus"),
+            "AT-SPI proxy ro-bind missing from argv: {argv:?}"
+        );
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--setenv"
+                && w[1] == "AT_SPI_BUS_ADDRESS"
+                && w[2] == "unix:path=/run/user/1234/at-spi/bus"),
+            "AT_SPI_BUS_ADDRESS missing from argv: {argv:?}"
+        );
+    }
+
+    #[test]
     fn session_bus_reaches_the_sandbox_only_through_a_proxy_plan() {
         // Phase `parse_unix_path_bus_address_extracts_path`.
         {
@@ -1468,6 +1618,7 @@ mod tests {
             let plan = DBusBindPlan {
                 host_socket: PathBuf::from("/run/user/1234/tilo/dbus-proxy/9999.sock"),
                 sandbox_path: PathBuf::from("/run/user/1234/bus"),
+                atspi: None,
             };
             let argv = build_bwrap_argv(
                 &m,
@@ -1492,6 +1643,10 @@ mod tests {
                     && w[1] == "DBUS_SESSION_BUS_ADDRESS"
                     && w[2] == "unix:path=/run/user/1234/bus"),
                 "dbus setenv missing from argv: {argv:?}"
+            );
+            assert!(
+                !argv.iter().any(|a| a == "AT_SPI_BUS_ADDRESS"),
+                "no accessibility bus without its proxy: {argv:?}"
             );
         }
         // Phase `argv_does_not_bind_dbus_without_plan`.
@@ -1698,6 +1853,39 @@ mod tests {
     }
 
     #[test]
+    fn the_session_pipeline_seed_is_bound_read_only() {
+        let sel = crate::gpu::GpuSelection {
+            node: PathBuf::from("/dev/dri/renderD128"),
+            driver: Some("msm_dpu".to_string()),
+            egl_vendor_json: None,
+            vulkan_icd_json: None,
+            vulkan_device: None,
+            pipeline_seed: Some(PathBuf::from("/run/user/1000/tilo/pipeline-seed")),
+            notes: Vec::new(),
+        };
+        let mut argv = Vec::new();
+        push_gpu_selection(&mut argv, &sel, true);
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--ro-bind-try"
+                && w[1] == "/run/user/1000/tilo/pipeline-seed"
+                && w[2] == crate::gpu::SANDBOX_PIPELINE_SEED_DIR),
+            "{argv:?}"
+        );
+        assert!(
+            !argv
+                .windows(2)
+                .any(|w| w[0].starts_with("--bind") && w[1] == "/run/user/1000/tilo/pipeline-seed"),
+            "an app must never be able to write the seed: {argv:?}"
+        );
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--setenv"
+                && w[1] == crate::gpu::PIPELINE_SEED_ENV
+                && w[2] == crate::gpu::SANDBOX_PIPELINE_SEED_DIR),
+            "{argv:?}"
+        );
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -1715,6 +1903,8 @@ mod tests {
                 vulkan_icd_json: Some(PathBuf::from(
                     "/usr/share/vulkan/icd.d/radeon_icd.x86_64.json",
                 )),
+                vulkan_device: None,
+                pipeline_seed: None,
                 notes: Vec::new(),
             };
             let mut argv = Vec::new();
@@ -1778,6 +1968,8 @@ mod tests {
                 driver: Some("amdgpu".to_string()),
                 egl_vendor_json: Some(PathBuf::from("/usr/share/glvnd/egl_vendor.d/50_mesa.json")),
                 vulkan_icd_json: None,
+                vulkan_device: None,
+                pipeline_seed: None,
                 notes: Vec::new(),
             };
             let mut argv = Vec::new();

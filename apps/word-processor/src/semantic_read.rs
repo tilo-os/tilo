@@ -3,8 +3,8 @@ pub mod action;
 pub mod changes;
 pub mod markdown;
 use automerge::AutoCommit;
-use qdoc::semantic_read::{Basis, Limits, ReadError, TextPosition};
 use serde::{Deserialize, Serialize};
+use tilo_doc::semantic_read::{Basis, Limits, ReadError, TextPosition};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Cursor {
@@ -25,7 +25,7 @@ pub struct Segment {
     pub shape: Shape,
     /// The inline marks over `text`, in its characters; Markdown renders them.
     #[serde(skip)]
-    pub marks: Vec<qdoc::document::MarkSpan>,
+    pub marks: Vec<tilo_doc::document::MarkSpan>,
 }
 /// Where a block sits in the document's structure: a heading's or list
 /// item's level, a list's numbering, a cell's table, row and column.
@@ -46,20 +46,20 @@ pub struct Shape {
 }
 impl Shape {
     /// The shape `attrs`, a materialized block's attributes, give it.
-    pub fn of_attrs(attrs: &std::collections::BTreeMap<String, qdoc::AttrVal>) -> Self {
+    pub fn of_attrs(attrs: &std::collections::BTreeMap<String, tilo_doc::AttrVal>) -> Self {
         let int = |key: &str| match attrs.get(key) {
-            Some(qdoc::AttrVal::Int(value)) => Some(*value),
+            Some(tilo_doc::AttrVal::Int(value)) => Some(*value),
             _ => None,
         };
         Self {
             level: int("level"),
             ordered: match attrs.get("ordered") {
-                Some(qdoc::AttrVal::Bool(flag)) => Some(*flag),
+                Some(tilo_doc::AttrVal::Bool(flag)) => Some(*flag),
                 _ => None,
             },
             nesting: int("nesting"),
             table: match attrs.get("table") {
-                Some(qdoc::AttrVal::Str(table)) => Some(table.clone()),
+                Some(tilo_doc::AttrVal::Str(table)) => Some(table.clone()),
                 _ => None,
             },
             row: int("row"),
@@ -118,11 +118,11 @@ pub(crate) fn read_error(error: &ReadError) -> ui::semantic_document_read::Seman
     }
 }
 use automerge::{ObjId, ObjType, ROOT};
-use qdoc::semantic_read::{
+use std::{cmp::Ordering, ops::ControlFlow};
+use tilo_doc::semantic_read::{
     json_len,
     source::{self, Source},
 };
-use std::{cmp::Ordering, ops::ControlFlow};
 struct Candidate {
     id: String,
     order: Vec<u8>,
@@ -146,7 +146,7 @@ pub fn read_text(
     read_text_at(doc, owner_heads, &ROOT, cursor, limits)
 }
 /// One order scan retains only the next requested number of blocks plus one lookahead.
-/// Invalid order rows are skipped exactly as `qdoc::model::blocks_in_order` does; valid oversized
+/// Invalid order rows are skipped exactly as `tilo_doc::model::blocks_in_order` does; valid oversized
 /// metadata or exhausted scan work refuses the page rather than silently dropping content.
 ///
 /// # Errors
@@ -190,12 +190,12 @@ fn read_source(
         json_len(cursor, 1024).map_err(|_| ReadError::InvalidCursor)?;
     }
     let blocks = source
-        .object(root, qdoc::schema::KEY_BLOCKS, ObjType::Map)?
+        .object(root, tilo_doc::schema::KEY_BLOCKS, ObjType::Map)?
         .ok_or(ReadError::Malformed)?;
     for key in [
-        qdoc::schema::KEY_STYLES,
-        qdoc::schema::KEY_PRESERVED,
-        qdoc::schema::KEY_META,
+        tilo_doc::schema::KEY_STYLES,
+        tilo_doc::schema::KEY_PRESERVED,
+        tilo_doc::schema::KEY_META,
     ] {
         source
             .object(root, key, ObjType::Map)?
@@ -208,7 +208,7 @@ fn read_source(
         let Some(block) = value.object(ObjType::Map) else {
             return Ok(ControlFlow::Continue(()));
         };
-        source.bytes(&block, qdoc::schema::BLOCK_ORDER, |order| {
+        source.bytes(&block, tilo_doc::schema::BLOCK_ORDER, |order| {
             if order.len() > 256 || key.len() > 256 {
                 return Err(ReadError::Limit);
             }
@@ -258,12 +258,15 @@ fn read_source(
             .filter(|c| c.block == candidate.id && !c.finished)
             .map(|c| c.position)
             .unwrap_or_default();
-        let text_object =
-            source.object(&candidate.object, qdoc::schema::BLOCK_TEXT, ObjType::Text)?;
+        let text_object = source.object(
+            &candidate.object,
+            tilo_doc::schema::BLOCK_TEXT,
+            ObjType::Text,
+        )?;
         let previous = page.next.take();
         page.segments.push(Segment {
             block: candidate.id.clone(),
-            kind: source.string(&candidate.object, qdoc::schema::BLOCK_KIND, 64)?,
+            kind: source.string(&candidate.object, tilo_doc::schema::BLOCK_KIND, 64)?,
             text: String::new(),
             complete: false,
             shape: shape(source, &candidate.object)?,

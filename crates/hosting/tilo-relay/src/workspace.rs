@@ -229,6 +229,14 @@ impl LiveBudget {
 /// The first bytes of every Automerge chunk (document, change or bundle).
 const AUTOMERGE_MAGIC: [u8; 4] = [0x85, 0x6f, 0x4a, 0x83];
 
+/// Whether `bytes` can be an Automerge chunk. Automerge logs every chunk it
+/// cannot parse before returning the error, and the deltas a relay routes
+/// are mostly co-edit wrappers and sealed channel payloads, which never start
+/// with its magic: only bytes that do are worth handing to its parser.
+pub(crate) fn is_automerge_chunk(bytes: &[u8]) -> bool {
+    bytes.starts_with(&AUTOMERGE_MAGIC)
+}
+
 impl WorkspaceRuntime {
     /// Build a runtime for a bound workspace. Loads the snapshot
     /// from disk if pinned + present.
@@ -783,10 +791,7 @@ impl WorkspaceRuntime {
     ///   doc + snapshot untouched;
     /// - a delta that adds nothing new writes no snapshot.
     fn materialize(&mut self, delta_bytes: &[u8]) -> bool {
-        // Automerge logs every chunk it cannot parse at error level before
-        // returning the error, and co-edit wrappers never start with its
-        // magic.
-        if !delta_bytes.starts_with(&AUTOMERGE_MAGIC) {
+        if !is_automerge_chunk(delta_bytes) {
             return false;
         }
         let Some(current) = self.doc.as_ref() else {
@@ -917,6 +922,21 @@ impl WorkspaceRuntime {
         let _ = sub.disconnect.try_send(());
         self.subscribers.remove(target);
         false
+    }
+
+    /// Deliver a directed live envelope to the subscriber `target` only, or
+    /// drop it when that subscriber's queue is full: like presence, a busy
+    /// reader loses the envelope, never its connection.
+    pub fn route_lossy(&self, target: &[u8; 32], envelope: Envelope) -> bool {
+        self.subscribers
+            .get(target)
+            .is_some_and(|sub| sub.tx.try_send(envelope).is_ok())
+    }
+
+    /// The outbound queue of the live subscriber `target`, for a caller
+    /// that waits for room in it rather than dropping what does not fit.
+    pub fn subscriber_queue(&self, target: &[u8; 32]) -> Option<mpsc::Sender<Envelope>> {
+        self.subscribers.get(target).map(|sub| sub.tx.clone())
     }
 }
 

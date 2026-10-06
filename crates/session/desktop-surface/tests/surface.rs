@@ -28,6 +28,11 @@ impl TileSource for Notices {
     }
 
     fn launch(&mut self, _: &Workspace, id: u64, app: &str) -> Option<Tab> {
+        if app.starts_with(NODE_APP) {
+            // Opened on the node; its window arrives from there.
+            NODE_LAUNCHES.with(|launches| launches.borrow_mut().push(app.into()));
+            return None;
+        }
         let title = app.strip_prefix("so.tilo.")?.to_owned();
         Some(Tab {
             id,
@@ -50,15 +55,32 @@ impl TileSource for Notices {
                 description: None,
                 unavailable: None,
             })
-            .chain([tilo_desktop_search::providers::AppEntry {
-                id: "so.tilo.imager".into(),
-                title: "Imager".into(),
-                category: Some("System".into()),
-                description: None,
-                unavailable: Some("Linux and macOS only".into()),
-            }])
+            .chain([
+                tilo_desktop_search::providers::AppEntry {
+                    id: "so.tilo.imager".into(),
+                    title: "Imager".into(),
+                    category: Some("System".into()),
+                    description: None,
+                    unavailable: Some("Linux and macOS only".into()),
+                },
+                tilo_desktop_search::providers::AppEntry {
+                    id: format!("{NODE_APP}app.so.tilo.terminal"),
+                    title: "Terminal".into(),
+                    category: Some("System".into()),
+                    description: Some("Runs on the node".into()),
+                    unavailable: None,
+                },
+            ])
             .collect()
     }
+}
+
+/// Launch prefix of an app a node runs for this desktop.
+const NODE_APP: &str = "node:";
+
+thread_local! {
+    /// The node apps this thread's desktops were asked to open.
+    static NODE_LAUNCHES: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 fn tab(minter: &mut IdMinter, title: &str) -> Tab {
@@ -367,8 +389,8 @@ fn a_replaced_tree_builds_tabs_that_were_still_deferred() {
     let (mut surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::clone(&built))));
     assert_eq!(built.get(), 1);
     handle.replace_tree(handle.read(Clone::clone));
-    let mut state = ui::automerge::AutoCommit::new();
-    ui::widget::Widget::update(&mut surface, &mut state, &ui::automerge::ROOT);
+    let state = ui::automerge::AutoCommit::new();
+    ui::widget::Widget::update(&mut surface, &state, &ui::automerge::ROOT);
     assert_eq!(
         built.get(),
         2,
@@ -1274,6 +1296,49 @@ fn search_lists_an_app_this_desktop_cannot_run_with_why_and_opens_nothing() {
         labels(&handle.snapshot("g", vec![])),
         before,
         "nothing opened"
+    );
+}
+
+#[test]
+fn search_opens_an_app_the_node_runs_for_this_desktop() {
+    use ui::a11y::Action;
+    let (mut driver, handle, _) = mount();
+    handle.toggle_search();
+    driver.relayout();
+    driver
+        .perform_semantic_named(
+            "command_palette_input",
+            Some("command-palette:query"),
+            &Action::SetValue("terminal".into()),
+        )
+        .unwrap();
+    driver.relayout();
+    let palette = find(&driver.inspection().root, "CommandPalette")
+        .unwrap()
+        .semantics
+        .clone()
+        .unwrap();
+    let first = palette.children[1]
+        .children
+        .first()
+        .expect("the node's app is listed");
+    assert_eq!(first.name.as_deref(), Some("Open Terminal"), "it opens");
+    assert!(
+        !format!("{first:?}").contains(" only"),
+        "the row offers it: {first:?}"
+    );
+    driver
+        .perform_semantic_named(
+            "command_palette_input",
+            first.action_target.as_deref(),
+            &Action::Activate,
+        )
+        .unwrap();
+    driver.relayout();
+    assert_eq!(
+        NODE_LAUNCHES.with(|launches| launches.borrow().clone()),
+        vec![format!("{NODE_APP}app.so.tilo.terminal")],
+        "the desktop asked the node to open it"
     );
 }
 

@@ -42,7 +42,9 @@
 //! forwards `Envelope::Delta` bytes verbatim, exactly as it does for
 //! any workspace-directory delta.
 
-pub use tilo_relay_client::coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound};
+pub use tilo_relay_client::coedit::{
+    AttributedPresence, CoeditError, CoeditPayload, Inbound, VoiceEvent,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use tilo_relay_client::coedit::{RetentionKind, retention_metadata};
 
@@ -118,13 +120,18 @@ impl RelayCoeditSession {
             .map_err(|_| CoeditError::Disconnected)
     }
 
-    /// Publish one canonical live frame to the workspace's live members.
-    /// Lossy: nothing is queued or retained.
+    /// Publish one sealed live frame
+    /// ([`SealedLiveFrame`](crate::live::SealedLiveFrame)) to the
+    /// workspace's live members. Lossy: nothing is queued or retained.
     ///
     /// # Errors
     ///
-    /// Returns [`CoeditError::Disconnected`] if the connection is gone.
+    /// Returns [`CoeditError::Unsealed`] for anything but a canonical sealed
+    /// frame, and [`CoeditError::Disconnected`] if the connection is gone.
     pub fn publish_live(&self, frame: Vec<u8>) -> Result<(), CoeditError> {
+        if crate::live::SealedLiveFrame::decode(&frame).is_err() {
+            return Err(CoeditError::Unsealed);
+        }
         self.client
             .send(Envelope::Live {
                 workspace_id: self.workspace_id,
@@ -335,6 +342,24 @@ impl RelayCoeditSession {
             .map_err(|_| CoeditError::Disconnected)
     }
 
+    /// Send a piece of a record's content to one device of this workspace
+    /// through the host, which hands it to that device's live connection
+    /// only and drops it when it cannot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoeditError::Disconnected`] if the connection is gone.
+    pub fn publish_record_content(&self, to: [u8; 32], frame: Vec<u8>) -> Result<(), CoeditError> {
+        self.client
+            .send(Envelope::RecordContent {
+                workspace_id: self.workspace_id,
+                to_device_public_key: to,
+                from_device_public_key: [0; 32],
+                frame,
+            })
+            .map_err(|_| CoeditError::Disconnected)
+    }
+
     /// Send a remote-action frame to one device of this workspace through
     /// the host. The host routes it to that device's live connection only;
     /// it is never stored or fanned out.
@@ -352,6 +377,62 @@ impl RelayCoeditSession {
                 from_device_public_key: self.author,
                 from_user_public_key: [0; 32],
                 frame,
+            })
+            .map_err(|_| CoeditError::Disconnected)
+    }
+
+    /// Ask the room's governor to change its calls; the answer arrives as
+    /// [`VoiceEvent::Result`] carrying `request`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoeditError::Disconnected`] if the connection is gone.
+    pub fn voice_call(
+        &self,
+        request: [u8; 16],
+        operation: tilo_relay_protocol::voice::CallOperation,
+    ) -> Result<(), CoeditError> {
+        self.client
+            .send(Envelope::VoiceCall {
+                workspace_id: self.workspace_id,
+                request,
+                operation,
+            })
+            .map_err(|_| CoeditError::Disconnected)
+    }
+
+    /// Join `call`, or with `participation` repeat that join as its
+    /// heartbeat; answered with [`VoiceEvent::Granted`] or
+    /// [`VoiceEvent::Refused`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoeditError::Disconnected`] if the connection is gone.
+    pub fn voice_join(
+        &self,
+        call: [u8; 32],
+        participation: Option<[u8; 32]>,
+    ) -> Result<(), CoeditError> {
+        self.client
+            .send(Envelope::VoiceJoin {
+                workspace_id: self.workspace_id,
+                call,
+                participation,
+            })
+            .map_err(|_| CoeditError::Disconnected)
+    }
+
+    /// End `participation` in `call`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoeditError::Disconnected`] if the connection is gone.
+    pub fn voice_leave(&self, call: [u8; 32], participation: [u8; 32]) -> Result<(), CoeditError> {
+        self.client
+            .send(Envelope::VoiceLeave {
+                workspace_id: self.workspace_id,
+                call,
+                participation,
             })
             .map_err(|_| CoeditError::Disconnected)
     }
@@ -410,37 +491,68 @@ impl RelayCoeditSession {
                         });
                     }
                 }
-                Envelope::RemoteAction {
-                    workspace_id,
-                    from_device_public_key,
-                    frame,
-                    ..
-                } if workspace_id == self.workspace_id => {
-                    return Some(Inbound::RemoteAction {
-                        from: from_device_public_key,
-                        frame,
-                    });
-                }
-                Envelope::Live {
-                    workspace_id,
-                    from_device_public_key,
-                    frame,
-                } if workspace_id == self.workspace_id => {
-                    return Some(Inbound::Live {
-                        from: from_device_public_key,
-                        frame,
-                    });
+                envelope @ (Envelope::RemoteAction { .. }
+                | Envelope::RecordContent { .. }
+                | Envelope::Live { .. }) => {
+                    if let Some(inbound) = self.device_frame(envelope) {
+                        return Some(inbound);
+                    }
                 }
                 Envelope::Ready { pending_deltas, .. } => {
                     return Some(Inbound::Ready {
                         pending: pending_deltas,
                     });
                 }
+                Envelope::VoiceCallResult {
+                    workspace_id,
+                    request,
+                    result,
+                } if workspace_id == self.workspace_id => {
+                    return Some(Inbound::Voice(VoiceEvent::Result { request, result }));
+                }
+                Envelope::VoiceGranted {
+                    workspace_id,
+                    grant,
+                } if workspace_id == self.workspace_id => {
+                    return Some(Inbound::Voice(VoiceEvent::Granted(grant)));
+                }
+                Envelope::VoiceRefused {
+                    workspace_id,
+                    call,
+                    reason,
+                } if workspace_id == self.workspace_id => {
+                    return Some(Inbound::Voice(VoiceEvent::Refused { call, reason }));
+                }
                 Envelope::NotAuthorised { .. } => return None,
                 // Keep-alives and federation chatter carry no co-edit
                 // payload — keep waiting.
                 _ => {}
             }
+        }
+    }
+
+    /// A frame another device of this workspace sent this one, with the
+    /// sender the host stamped; `None` for another workspace's.
+    fn device_frame(&self, envelope: Envelope) -> Option<Inbound> {
+        match envelope {
+            Envelope::RemoteAction {
+                workspace_id,
+                from_device_public_key: from,
+                frame,
+                ..
+            } if workspace_id == self.workspace_id => Some(Inbound::RemoteAction { from, frame }),
+            Envelope::RecordContent {
+                workspace_id,
+                from_device_public_key: from,
+                frame,
+                ..
+            } if workspace_id == self.workspace_id => Some(Inbound::RecordContent { from, frame }),
+            Envelope::Live {
+                workspace_id,
+                from_device_public_key: from,
+                frame,
+            } if workspace_id == self.workspace_id => Some(Inbound::Live { from, frame }),
+            _ => None,
         }
     }
 

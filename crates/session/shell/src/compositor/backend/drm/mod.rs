@@ -12,6 +12,7 @@
 
 pub mod access_keys;
 pub mod devices;
+mod direct_retry;
 pub mod gestures;
 pub mod hotplug;
 pub mod input_config;
@@ -193,6 +194,72 @@ const PHASE_WINDOW_INTERVAL: Duration = Duration::from_secs(2);
 /// A page-flip event should arrive within one refresh interval. Give even a
 /// 24 Hz panel several intervals, while still failing boundedly if KMS wedges.
 const DIRECT_RETIREMENT_TIMEOUT: Duration = Duration::from_millis(250);
+/// The GPU budget for one direct frame. Missing it hands the output to the
+/// readback presenter until the retry the failure earns.
+const DIRECT_FRAME_DEADLINE: Duration = Duration::from_secs(1);
+
+/// Hand an output back to the readback presenter after direct scanout
+/// failed in `stage`, until the back-off the failure earns has passed.
+///
+/// The readback presenter copies every frame through the CPU, so this is a
+/// degradation the session log states at error level, every time.
+fn demote_direct(entry: &mut ScanoutEntry, hdr: bool, stage: &str, reason: &str) {
+    if entry.direct_targets.is_some() {
+        // KMS may still scan out a target: the dumb front takes the CRTC
+        // back before the targets are released.
+        entry.scanout.restore_legacy_front();
+        entry.direct_targets = None;
+    }
+    let degradation = if hdr {
+        &mut entry.hdr_direct_degradation
+    } else {
+        &mut entry.direct_degradation
+    };
+    let detail = format!("{stage}: {reason}");
+    let retry_in = degradation.record_failure(detail.clone(), Instant::now());
+    let failures = degradation.failures();
+    tracing::error!(
+        output = entry.id.0,
+        hdr,
+        stage,
+        %reason,
+        failures,
+        retry_in_ms = retry_in.as_millis(),
+        "DRM direct scanout failed; presenting by readback until the retry"
+    );
+    eprintln!(
+        "direct_scanout_status=degraded direct_scanout_reason={detail:?} output={} hdr={hdr} failures={failures} retry_in_ms={} DRM direct scanout degraded to readback",
+        entry.id.0,
+        retry_in.as_millis(),
+    );
+}
+
+/// Direct-scanout failures since the outputs last ran direct stably.
+fn direct_failures(scanouts: &[ScanoutEntry]) -> u32 {
+    scanouts
+        .iter()
+        .map(|entry| {
+            entry
+                .direct_degradation
+                .failures()
+                .max(entry.hdr_direct_degradation.failures())
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// Why an output is not on direct scanout, if one is not.
+fn direct_reason(scanouts: &[ScanoutEntry]) -> &str {
+    scanouts
+        .iter()
+        .find_map(|entry| {
+            entry
+                .direct_ineligible
+                .or_else(|| entry.direct_degradation.reason())
+                .or_else(|| entry.hdr_direct_degradation.reason())
+        })
+        .unwrap_or("not-initialized")
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(
@@ -208,22 +275,6 @@ struct DirectEligibility<'a> {
     renderer_pci: &'a str,
     renderer_drm_matches: bool,
     drm_bus_id: Option<&'a str>,
-}
-
-/// Sparse Vello damage describes the delta from `previous_revision`, but a
-/// direct-scanout swapchain owns multiple independent destination images. A
-/// partial copy is valid only when the selected image contains that exact
-/// predecessor; otherwise both rendering and the destination copy must cross
-/// a dense boundary.
-fn damage_for_direct_target(
-    target_revision: Option<u64>,
-    mut damage: SceneDamage<'_>,
-) -> SceneDamage<'_> {
-    if target_revision != damage.previous_revision {
-        damage.previous_revision = None;
-        damage.regions = None;
-    }
-    damage
 }
 
 fn direct_scanout_rejection(input: DirectEligibility<'_>) -> Option<&'static str> {
@@ -263,6 +314,12 @@ struct PhaseWindow {
     gpu_readback_map_us: u128,
     settle_us: u128,
     cpu_swizzle_us: u128,
+    /// Render-thread time from a direct frame's start to its completed GPU
+    /// work, summed and at most, over the window's direct frames.
+    direct_us: u128,
+    max_direct_us: u128,
+    /// Direct frames the renderer repaired sparsely rather than in full.
+    direct_sparse_frames: u64,
     readback_bytes: u64,
     output_bytes: u64,
     /// Wall time around the complete renderer bridge call. This remains
@@ -294,6 +351,9 @@ impl Default for PhaseWindow {
             output_bytes: 0,
             bridge_us: 0,
             scanout_us: 0,
+            direct_us: 0,
+            max_direct_us: 0,
+            direct_sparse_frames: 0,
             unprofiled_frames: 0,
         }
     }
@@ -345,9 +405,14 @@ impl PhaseWindow {
         }
     }
 
-    fn record_direct_submit(&mut self) {
+    fn record_direct_submit(&mut self, render_us: u128, sparse: bool) {
         self.frames = self.frames.saturating_add(1);
         self.direct_frames = self.direct_frames.saturating_add(1);
+        self.direct_us = self.direct_us.saturating_add(render_us);
+        self.max_direct_us = self.max_direct_us.max(render_us);
+        if sparse {
+            self.direct_sparse_frames = self.direct_sparse_frames.saturating_add(1);
+        }
     }
 
     fn record_direct_drop(&mut self) {
@@ -456,12 +521,16 @@ mod phase_window_tests {
         // Phase `phase_window_records_direct_submission_drop_and_flip_completion`.
         {
             let mut window = PhaseWindow::default();
-            window.record_direct_submit();
+            window.record_direct_submit(7_000, false);
+            window.record_direct_submit(3_000, true);
             window.record_direct_drop();
             window.record_flip_completions(2);
 
-            assert_eq!(window.frames, 1);
-            assert_eq!(window.direct_frames, 1);
+            assert_eq!(window.frames, 2);
+            assert_eq!(window.direct_frames, 2);
+            assert_eq!(window.direct_us, 10_000);
+            assert_eq!(window.max_direct_us, 7_000);
+            assert_eq!(window.direct_sparse_frames, 1);
             assert_eq!(window.direct_dropped, 1);
             assert_eq!(window.flip_completions, 2);
             assert_eq!(window.readback_bytes, 0);
@@ -630,53 +699,21 @@ mod direct_eligibility_tests {
     }
 }
 
-#[cfg(test)]
-mod direct_damage_history_tests {
-    use super::*;
-
-    const REGION: [vello::FineDamageRect; 1] = [vello::FineDamageRect {
-        x: 1,
-        y: 2,
-        width: 2,
-        height: 2,
-    }];
-
-    fn sparse(previous_revision: Option<u64>) -> SceneDamage<'static> {
-        SceneDamage {
-            revision: 9,
-            previous_revision,
-            regions: Some(&REGION),
-        }
+fn physical_flip_proof(
+    retirement: scanout::DirectRetirement,
+    events: &[smithay::reexports::drm::control::PageFlipEvent],
+    crtc: smithay::reexports::drm::control::crtc::Handle,
+    eligible_clock: bool,
+) -> Option<crate::shell::present::PhysicalPresentation> {
+    if retirement != scanout::DirectRetirement::Complete || !eligible_clock {
+        return None;
     }
-
-    #[test]
-    fn direct_damage_history_keeps_sparse_damage_only_when_it_matches() {
-        // Phase `matching_scanout_history_preserves_sparse_damage`.
-        {
-            let damage = damage_for_direct_target(Some(8), sparse(Some(8)));
-            assert_eq!(damage.previous_revision, Some(8));
-            assert_eq!(damage.regions, Some(REGION.as_slice()));
-        }
-        // Phase `stale_or_missing_scanout_history_forces_a_dense_boundary`.
-        for target_revision in [None, Some(7), Some(9)] {
-            let damage = damage_for_direct_target(target_revision, sparse(Some(8)));
-            assert_eq!(damage.previous_revision, None);
-            assert_eq!(damage.regions, None);
-        }
-        // Phase `an_already_dense_frame_remains_dense`.
-        {
-            let damage = damage_for_direct_target(
-                Some(8),
-                SceneDamage {
-                    revision: 9,
-                    previous_revision: None,
-                    regions: None,
-                },
-            );
-            assert_eq!(damage.previous_revision, None);
-            assert_eq!(damage.regions, None);
-        }
-    }
+    let event = events.iter().find(|event| event.crtc == crtc)?;
+    Some(crate::shell::present::PhysicalPresentation {
+        timestamp: event.duration,
+        sequence: u64::from(event.frame),
+        refresh: None,
+    })
 }
 
 impl DrmPresenter {
@@ -700,22 +737,33 @@ impl DrmPresenter {
                 scene,
                 damage: None,
                 hdr_layers: &[],
+                overview: None,
+                workspace_id: None,
+                workspace_hold: false,
+                workspace_clip: None,
             },
             Some(&mut self.phase_window),
             &mut self.direct_bypass_reported,
         );
         if sample.direct_queued {
-            self.retire_direct_flip();
+            let _ = self.retire_direct_flip();
         }
         self.emit_phase_profile(sample);
         report_signal_status(&mut self.scanouts, self.signal_reports.as_ref());
     }
 
-    fn render_frame(&mut self, frame: &FramePaint) {
+    fn render_frame(
+        &mut self,
+        frame: &FramePaint,
+    ) -> Option<crate::shell::present::PhysicalPresentation> {
         self.drain_commands();
         if self.blanked || self.paused {
-            return;
+            return None;
         }
+        let before = self
+            .scanouts
+            .first()
+            .map(|entry| entry.scanout.flip_submission());
         let sample = paint_scanouts(
             &mut self.scanouts,
             &self.outputs,
@@ -729,50 +777,99 @@ impl DrmPresenter {
                     regions: frame.damage_regions.as_deref(),
                 }),
                 hdr_layers: &frame.hdr_layers,
+                overview: frame.overview_patch.as_ref(),
+                workspace_id: frame.workspace_id,
+                workspace_hold: frame.workspace_hold,
+                workspace_clip: frame.workspace_clip,
             },
             Some(&mut self.phase_window),
             &mut self.direct_bypass_reported,
         );
-        if sample.direct_queued {
-            self.retire_direct_flip();
-        }
+        let physical = if sample.direct_queued {
+            self.retire_direct_flip()
+        } else if self.scanouts.len() == 1
+            && self
+                .scanouts
+                .first()
+                .map(|entry| entry.scanout.flip_submission())
+                != before
+        {
+            self.retire_physical_flip(0)
+        } else {
+            None
+        };
         self.emit_phase_profile(sample);
         report_signal_status(&mut self.scanouts, self.signal_reports.as_ref());
+        physical
     }
 
     /// Tighten `Presenter::present_frame`'s completion boundary to the KMS
     /// page-flip event for direct scanout. `PresentPipe` only frees producer
     /// capacity after this method returns, so no second frame is rendered
     /// while both double-buffered targets remain owned by KMS.
-    fn retire_direct_flip(&mut self) {
-        let Some(index) = self
+    fn retire_direct_flip(&mut self) -> Option<crate::shell::present::PhysicalPresentation> {
+        let index = self
             .scanouts
             .iter()
-            .position(|entry| entry.direct_targets.is_some())
-        else {
-            return;
-        };
-        let Some(entry) = self.scanouts.get_mut(index) else {
-            return;
-        };
+            .position(|entry| entry.direct_targets.is_some())?;
+        self.retire_physical_flip(index)
+    }
+
+    fn retire_physical_flip(
+        &mut self,
+        index: usize,
+    ) -> Option<crate::shell::present::PhysicalPresentation> {
+        let single_output = self.scanouts.len() == 1;
+        let entry = self.scanouts.get_mut(index)?;
         let (retirement, completions) = entry
             .scanout
             .wait_flip_completions(DIRECT_RETIREMENT_TIMEOUT);
+        if retirement != scanout::DirectRetirement::Complete {
+            entry.scanout.invalidate_physical_feedback();
+        }
         self.phase_window.record_flip_completions(completions.len());
-        for crtc in completions {
+        let proof = physical_flip_proof(
+            retirement,
+            &completions,
+            entry.scanout.crtc(),
+            single_output && entry.scanout.can_prove_physical_flip(),
+        )
+        .map(|mut proof| {
+            proof.refresh = if entry.scanout.adaptive_sync_active() {
+                None
+            } else {
+                self.outputs
+                    .first()
+                    .and_then(|output| output.refresh_mhz)
+                    .and_then(|rate| 1_000_000_000_000_u64.checked_div(u64::from(rate)))
+                    .map(Duration::from_nanos)
+            };
+            proof
+        });
+        for event in completions {
+            let crtc = event.crtc;
             if let Some(targets) = entry.direct_targets.as_mut() {
                 entry.scanout.mark_direct_flip_complete(targets, crtc);
+            } else {
+                entry.scanout.mark_flip_complete(crtc);
             }
         }
-        if retirement == scanout::DirectRetirement::TimedOut {
-            tracing::error!(
-                timeout_ms = DIRECT_RETIREMENT_TIMEOUT.as_millis(),
-                "DRM direct page flip did not retire; disabling direct scanout"
+        if retirement == scanout::DirectRetirement::TimedOut && entry.direct_targets.is_some() {
+            let hdr = entry
+                .direct_targets
+                .as_ref()
+                .is_some_and(|targets| targets.format().is_hdr());
+            demote_direct(
+                entry,
+                hdr,
+                "retire",
+                &format!(
+                    "page flip did not retire within {} ms",
+                    DIRECT_RETIREMENT_TIMEOUT.as_millis()
+                ),
             );
-            entry.scanout.restore_legacy_front();
-            entry.direct_targets = None;
-            entry.direct_unavailable = Some("page-flip retirement timed out".to_owned());
         }
+        proof
     }
 
     fn emit_phase_profile(&mut self, sample: PaintScanoutSample) {
@@ -801,6 +898,8 @@ impl DrmPresenter {
                  unprofiled_frames={} window_us={} avg_submit_us={} \
                  avg_gpu_readback_map_us={} avg_settle_us={} avg_cpu_swizzle_us={} \
                  readback_bytes={} output_bytes={} bridge_us={} scanout_us={} \
+                 avg_direct_us={} max_direct_us={} direct_sparse_frames={} \
+                 direct_failures={} \
                  direct_scanout_status={} direct_scanout_reason={:?} \
                  DRM render phase summary",
                 summary.frames,
@@ -829,6 +928,13 @@ impl DrmPresenter {
                 summary.output_bytes,
                 summary.bridge_us,
                 summary.scanout_us,
+                self.phase_window
+                    .direct_us
+                    .checked_div(u128::from(summary.direct_frames))
+                    .unwrap_or(0),
+                self.phase_window.max_direct_us,
+                self.phase_window.direct_sparse_frames,
+                direct_failures(&self.scanouts),
                 if self
                     .scanouts
                     .iter()
@@ -838,10 +944,7 @@ impl DrmPresenter {
                 } else {
                     "unavailable"
                 },
-                self.scanouts
-                    .iter()
-                    .find_map(|entry| entry.direct_unavailable.as_deref())
-                    .unwrap_or("not-initialized"),
+                direct_reason(&self.scanouts),
             );
             self.phase_window.reset(now);
         }
@@ -971,6 +1074,11 @@ fn apply_scanout_command(
                 entry.scanout.set_cursor_size(size);
             }
         }
+        ScanoutCommand::SetCursorScale { output, scale } => {
+            for entry in scanouts.iter_mut().filter(|entry| entry.id == output) {
+                entry.scanout.set_cursor_scale(scale);
+            }
+        }
         ScanoutCommand::SetPointerImage(image) => {
             for entry in scanouts.iter_mut() {
                 entry.scanout.set_pointer_image(image.clone());
@@ -1008,6 +1116,236 @@ struct ScanoutFrame<'a> {
     scene: &'a Scene,
     damage: Option<SceneDamage<'a>>,
     hdr_layers: &'a [HdrLayer],
+    overview: Option<&'a crate::shell::overlay_host::OverviewFastPatch>,
+    workspace_id: Option<u64>,
+    workspace_hold: bool,
+    workspace_clip: Option<vello::FineDamageRect>,
+}
+
+/// An unchanged frame, or an overview fade that carries its own panel patch,
+/// must not read the combined framebuffer back from the GPU.
+pub(crate) fn skips_full_framebuffer_readback(unchanged: bool, overview: bool) -> bool {
+    unchanged || overview
+}
+
+/// One head of a multi-output present.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PresentedHead {
+    /// A real connector page-flips. A virtual head publishes a clip.
+    pub pageflip: bool,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The clip a virtual head publishes from an already-encoded frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PublishedClip {
+    pub head: usize,
+    pub scene_x: u32,
+    pub scene_y: u32,
+    pub local_x: u16,
+    pub local_y: u16,
+    pub width: u16,
+    pub height: u16,
+}
+
+/// Bytes copied onto scanouts for these clips.
+pub(crate) fn encoded_clip_bytes(clips: &[PublishedClip]) -> u64 {
+    clips.iter().fold(0_u64, |bytes, clip| {
+        bytes.saturating_add(
+            u64::from(clip.width)
+                .saturating_mul(u64::from(clip.height))
+                .saturating_mul(4),
+        )
+    })
+}
+
+/// Clips a two-head virtual present publishes.
+///
+/// `None` keeps the combined readback, which is what a real connector
+/// page-flips. An empty `clips` list still publishes only the first head:
+/// the other scanout's buffer is already showing its encoded frame.
+pub(crate) fn virtual_encoded_clips(
+    heads: &[PresentedHead],
+    clips: &[vello::FineDamageRect],
+) -> Option<Vec<PublishedClip>> {
+    if heads.len() < 2 || heads.iter().any(|head| head.pageflip) {
+        return None;
+    }
+    let boxes: Vec<(i32, i32, u32, u32)> = heads
+        .iter()
+        .map(|head| (head.x, head.y, head.width, head.height))
+        .collect();
+    let mut regions = Vec::new();
+    if clips.is_empty() {
+        let head = heads.first()?;
+        regions.push(vello::FineDamageRect {
+            x: u32::try_from(head.x.max(0)).ok()?,
+            y: u32::try_from(head.y.max(0)).ok()?,
+            width: head.width,
+            height: head.height,
+        });
+    } else {
+        regions.extend_from_slice(clips);
+    }
+    let mut published = Vec::with_capacity(regions.len());
+    for clip in regions {
+        let clip = if close_frame_spares_other_scanouts(clip, &boxes) {
+            clip
+        } else {
+            clip_to_primary_scanout(clip, &boxes)?
+        };
+        if !close_frame_spares_other_scanouts(clip, &boxes) {
+            return None;
+        }
+        let head = boxes.iter().position(|&(x, y, width, height)| {
+            output_local_clip(x, y, (width, height), clip).is_some()
+        })?;
+        let (x, y, width, height) = boxes.get(head).copied()?;
+        let (local_x, local_y, local_w, local_h) = output_local_clip(x, y, (width, height), clip)?;
+        let scene_x = u32::try_from(i64::from(x).saturating_add(i64::from(local_x))).ok()?;
+        let scene_y = u32::try_from(i64::from(y).saturating_add(i64::from(local_y))).ok()?;
+        published.push(PublishedClip {
+            head,
+            scene_x,
+            scene_y,
+            local_x,
+            local_y,
+            width: local_w,
+            height: local_h,
+        });
+    }
+    (!published.is_empty()).then_some(published)
+}
+
+/// Swizzle one already-encoded clip into an XRGB scanout. Pixels outside
+/// the clip stay as they are, so the other output is not part of the copy.
+pub(crate) fn write_encoded_clip_xrgb(
+    source: SubrectSource<'_>,
+    clip: (u16, u16, u16, u16),
+    dst: &mut [u8],
+    pitch: usize,
+) {
+    let (clip_x, clip_y, clip_w, clip_h) = clip;
+    let clip_x = usize::from(clip_x);
+    let clip_y = usize::from(clip_y);
+    let clip_w = usize::from(clip_w);
+    let clip_h = usize::from(clip_h);
+    if pitch == 0 {
+        return;
+    }
+    for row in 0..clip_h {
+        let dest_y = clip_y.saturating_add(row);
+        let src_y = source.src_y.saturating_add(dest_y);
+        if src_y >= source.src_h {
+            break;
+        }
+        let Some(row_off) = dest_y.checked_mul(pitch) else {
+            break;
+        };
+        for col in 0..clip_w {
+            let dest_x = clip_x.saturating_add(col);
+            let src_x = source.src_x.saturating_add(dest_x);
+            if src_x >= source.src_w {
+                continue;
+            }
+            let Some(src_off) = src_y
+                .checked_mul(source.src_w)
+                .and_then(|offset| offset.checked_add(src_x))
+                .and_then(|offset| offset.checked_mul(4))
+            else {
+                continue;
+            };
+            let Some(src_pix) = source.src_rgba.get(src_off..src_off.saturating_add(4)) else {
+                continue;
+            };
+            let Some(dest_off) = row_off.checked_add(dest_x.saturating_mul(4)) else {
+                continue;
+            };
+            let Some(dest_pix) = dst.get_mut(dest_off..dest_off.saturating_add(4)) else {
+                continue;
+            };
+            if let ([dest_b, dest_g, dest_r, dest_x], [src_r, src_g, src_b, _]) =
+                (dest_pix, src_pix)
+            {
+                *dest_b = *src_b;
+                *dest_g = *src_g;
+                *dest_r = *src_r;
+                *dest_x = 0xFF;
+            }
+        }
+    }
+}
+
+/// How a workspace-switch frame reaches the scanouts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WorkspaceUpload {
+    /// GPU-render the combined scene and flush both outputs.
+    Render,
+    /// Put a workspace this bridge already rendered back on the scanouts.
+    Replay,
+    /// The held return: adopt the snapshot and upload only the workspace clip.
+    Clip,
+    /// Intermediate frame of the switch: leave both scanouts alone.
+    Skip,
+}
+
+/// The frame run after a workspace switch. Every held sample, including the
+/// first visit, stays on one display's clip. A settled return may still
+/// replay. Later samples of either direction skip the upload.
+pub(crate) fn workspace_frame_upload(
+    changed: bool,
+    has_snapshot: bool,
+    hold: bool,
+) -> WorkspaceUpload {
+    if hold && changed {
+        WorkspaceUpload::Clip
+    } else if hold {
+        WorkspaceUpload::Skip
+    } else if changed && has_snapshot {
+        WorkspaceUpload::Replay
+    } else {
+        WorkspaceUpload::Render
+    }
+}
+
+/// The close may upload the one display it is painting. A clip that also
+/// meets another scanout is the two-output flush this frame run must not do.
+pub(crate) fn close_frame_spares_other_scanouts(
+    clip: vello::FineDamageRect,
+    outputs: &[(i32, i32, u32, u32)],
+) -> bool {
+    if clip.width == 0 || clip.height == 0 {
+        return false;
+    }
+    let covered = outputs
+        .iter()
+        .filter(|&&(x, y, width, height)| output_local_clip(x, y, (width, height), clip).is_some())
+        .count();
+    covered == 1
+}
+
+/// Construct the vello bridge on the calling thread if there is none. Returns whether one exists.
+fn ensure_bridge(paint: &mut Option<paint::VelloDrmBridge>, target_size: (u32, u32)) -> bool {
+    if paint.is_some() {
+        return true;
+    }
+    match paint::VelloDrmBridge::new(target_size.0, target_size.1) {
+        Ok(mut bridge) => {
+            // Four `Instant` samples per completed frame buy the minimum useful physical
+            // performance record. Verbose per-frame output remains opt-in in DrmPresenter;
+            // ordinary sessions emit only one aggregate every two seconds.
+            bridge.set_phase_timing_enabled(true);
+            *paint = Some(bridge);
+            true
+        }
+        Err(e) => {
+            tracing::error!("DRM backend: VelloDrmBridge::new: {e}");
+            false
+        }
+    }
 }
 
 /// Render the frame's scene into `scanouts`, sized to the combined geometry of
@@ -1032,6 +1370,7 @@ fn paint_scanouts(
         scene,
         damage,
         hdr_layers,
+        ..
     } = frame;
     if scanouts.iter().all(|entry| entry.powered_off) {
         return PaintScanoutSample::default();
@@ -1052,20 +1391,8 @@ fn paint_scanouts(
         }
         *paint = None;
     }
-    if paint.is_none() {
-        match paint::VelloDrmBridge::new(target_size.0, target_size.1) {
-            Ok(mut bridge) => {
-                // Four `Instant` samples per completed frame buy the minimum useful physical
-                // performance record. Verbose per-frame output remains opt-in in DrmPresenter;
-                // ordinary sessions emit only one aggregate every two seconds.
-                bridge.set_phase_timing_enabled(true);
-                *paint = Some(bridge);
-            }
-            Err(e) => {
-                tracing::error!("DRM backend: VelloDrmBridge::new: {e}");
-                return PaintScanoutSample::default();
-            }
-        }
+    if !ensure_bridge(paint, target_size) {
+        return PaintScanoutSample::default();
     }
     let mut bridge_resized = false;
     {
@@ -1161,7 +1488,7 @@ fn paint_scanouts(
                 },
             );
             if let Some(reason) = direct_scanout_rejection(eligibility) {
-                if entry.direct_unavailable.is_none() {
+                if entry.direct_ineligible != Some(reason) {
                     // Keep this line machine-parseable and durable.  The
                     // session flight recorder may start receiving output a
                     // moment after the render thread, so repeat the stable
@@ -1174,9 +1501,18 @@ fn paint_scanouts(
                         eligibility.hardware_cursor,
                         eligibility.event_pageflips,
                     );
-                    entry.direct_unavailable = Some(reason.to_owned());
+                    entry.direct_ineligible = Some(reason);
+                }
+                if entry.direct_targets.is_some() {
+                    // The output changed shape under live targets: the dumb
+                    // front takes the CRTC back before they are released.
+                    entry.scanout.restore_legacy_front();
+                    entry.direct_targets = None;
                 }
             } else {
+                // Eligibility is a fact about the output's current shape, so
+                // a cursor plane or a single output regained re-enables it.
+                entry.direct_ineligible = None;
                 // HDR renders into 10-bit (or half-float) targets; targets in
                 // the other format go first, CRTC back on the dumb front.
                 let want_hdr = entry.hdr_wanted();
@@ -1188,16 +1524,17 @@ fn paint_scanouts(
                     entry.scanout.restore_legacy_front();
                     entry.direct_targets = None;
                 }
-                let direct_blocked = if want_hdr {
-                    entry.hdr_direct_unavailable.is_some()
+                let degradation = if want_hdr {
+                    &entry.hdr_direct_degradation
                 } else {
-                    entry.direct_unavailable.is_some()
+                    &entry.direct_degradation
                 };
-                if entry.direct_targets.is_none() && !direct_blocked {
+                if entry.direct_targets.is_none() && !degradation.blocked(Instant::now()) {
+                    let earlier_failures = degradation.failures();
                     match create_direct_targets(&entry.scanout, bridge, want_hdr) {
                         Ok(targets) => {
                             eprintln!(
-                                "direct_scanout_status=enabled format={:?} renderer_pci={} renderer_drm={renderer_drm:?} renderer_drm_matches={} drm_bus_id={:?} DRM direct scanout enabled",
+                                "direct_scanout_status=enabled format={:?} renderer_pci={} renderer_drm={renderer_drm:?} renderer_drm_matches={} drm_bus_id={:?} earlier_failures={earlier_failures} DRM direct scanout enabled",
                                 targets.format(),
                                 adapter.pci_bus_id,
                                 eligibility.renderer_drm_matches,
@@ -1208,18 +1545,17 @@ fn paint_scanouts(
                                 renderer_drm = %renderer_drm,
                                 renderer_drm_matches = eligibility.renderer_drm_matches,
                                 drm_bus_id = drm_bus_id.as_deref().unwrap_or("unavailable"),
+                                earlier_failures,
                                 "DRM direct scanout enabled"
                             );
+                            if want_hdr {
+                                entry.hdr_direct_degradation.record_enabled(Instant::now());
+                            } else {
+                                entry.direct_degradation.record_enabled(Instant::now());
+                            }
                             entry.direct_targets = Some(targets);
                         }
-                        Err(error) if want_hdr => {
-                            tracing::warn!(%error, "DRM HDR direct scanout unavailable; using the readback path");
-                            entry.hdr_direct_unavailable = Some(error);
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "DRM direct scanout unavailable; retaining readback fallback");
-                            entry.direct_unavailable = Some(error);
-                        }
+                        Err(error) => demote_direct(entry, want_hdr, "create targets", &error),
                     }
                 }
                 if let Some(targets) = entry.direct_targets.as_mut() {
@@ -1234,17 +1570,19 @@ fn paint_scanouts(
                     }
                     if let Some((index, target)) = targets.render_slot() {
                         let revision = damage.map_or(1, |damage| damage.revision.max(1));
-                        let direct_damage = damage_for_direct_target(
-                            targets.previous_revision_for(index),
-                            damage.unwrap_or(SceneDamage {
-                                revision,
-                                previous_revision: None,
-                                regions: None,
-                            }),
-                        );
-                        let deadline = Instant::now()
-                            .checked_add(Duration::from_secs(1))
-                            .unwrap_or_else(Instant::now);
+                        // The renderer's own retained target holds the
+                        // previous revision whichever slot comes up, and the
+                        // slot receives a whole copy of it: scene damage
+                        // stays sparse across the swapchain.
+                        let direct_damage = damage.unwrap_or(SceneDamage {
+                            revision,
+                            previous_revision: None,
+                            regions: None,
+                        });
+                        let render_started = Instant::now();
+                        let deadline = render_started
+                            .checked_add(DIRECT_FRAME_DEADLINE)
+                            .unwrap_or(render_started);
                         let sdr_white = entry.scanout.hdr_request().map_or(
                             crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
                             |request| request.sdr_white_nits,
@@ -1258,32 +1596,38 @@ fn paint_scanouts(
                             hdr_layers,
                         ) {
                             Ok(stats) => {
-                                targets.mark_rendered(index, revision);
+                                let render_us = render_started.elapsed().as_micros();
                                 match entry.scanout.submit_direct_target(targets, index) {
-                                    scanout::DirectSubmit::Queued => {
+                                    submitted @ (scanout::DirectSubmit::Queued
+                                    | scanout::DirectSubmit::Presented) => {
                                         if let Some(window) = phase_window.as_deref_mut() {
-                                            window.record_direct_submit();
+                                            window.record_direct_submit(
+                                                render_us,
+                                                stats.sparse_attempts > 0
+                                                    && stats.full_attempts == 0,
+                                            );
                                         }
+                                        let degradation = if want_hdr {
+                                            &mut entry.hdr_direct_degradation
+                                        } else {
+                                            &mut entry.direct_degradation
+                                        };
+                                        degradation.record_presented(Instant::now());
                                         tracing::trace!(
                                             revision = stats.revision,
                                             render_attempts = stats.render_attempts,
-                                            framebuffer_copy_bytes = stats.framebuffer_copy_bytes,
-                                            framebuffer_staging_bytes =
-                                                stats.framebuffer_staging_bytes,
+                                            render_us,
                                             "DRM direct frame submitted"
                                         );
-                                        return PaintScanoutSample {
-                                            direct_queued: true,
-                                            ..PaintScanoutSample::default()
-                                        };
-                                    }
-                                    scanout::DirectSubmit::Presented => {
                                         // The first HDR frame went up by modeset:
                                         // no flip event to wait for.
-                                        if let Some(window) = phase_window.as_deref_mut() {
-                                            window.record_direct_submit();
-                                        }
-                                        return PaintScanoutSample::default();
+                                        return PaintScanoutSample {
+                                            direct_queued: matches!(
+                                                submitted,
+                                                scanout::DirectSubmit::Queued
+                                            ),
+                                            ..PaintScanoutSample::default()
+                                        };
                                     }
                                     scanout::DirectSubmit::Busy => {
                                         if let Some(window) = phase_window.as_deref_mut() {
@@ -1292,14 +1636,7 @@ fn paint_scanouts(
                                         return PaintScanoutSample::default();
                                     }
                                     scanout::DirectSubmit::Failed(error) => {
-                                        tracing::warn!(%error, "DRM direct submit failed; disabling direct targets");
-                                        entry.scanout.restore_legacy_front();
-                                        entry.direct_targets = None;
-                                        if want_hdr {
-                                            entry.hdr_direct_unavailable = Some(error);
-                                        } else {
-                                            entry.direct_unavailable = Some(error);
-                                        }
+                                        demote_direct(entry, want_hdr, "submit", &error);
                                     }
                                     scanout::DirectSubmit::HdrFailed(reason, detail) => {
                                         // The CRTC is still (or again) on the
@@ -1310,14 +1647,7 @@ fn paint_scanouts(
                                 }
                             }
                             Err(error) => {
-                                tracing::warn!(%error, "DRM direct frame failed; disabling direct targets");
-                                entry.scanout.restore_legacy_front();
-                                entry.direct_targets = None;
-                                if want_hdr {
-                                    entry.hdr_direct_unavailable = Some(error.to_string());
-                                } else {
-                                    entry.direct_unavailable = Some(error.to_string());
-                                }
+                                demote_direct(entry, want_hdr, "render", &error.to_string());
                             }
                         }
                     } else {
@@ -1465,11 +1795,189 @@ fn render_combined_readback(
     frame: ScanoutFrame<'_>,
 ) -> PaintScanoutSample {
     let ScanoutFrame {
-        scene, hdr_layers, ..
+        scene,
+        damage,
+        hdr_layers,
+        overview,
+        workspace_id,
+        workspace_hold,
+        workspace_clip,
     } = frame;
+    let unchanged = damage.is_some_and(|damage| {
+        damage
+            .regions
+            .is_some_and(<[vello::FineDamageRect]>::is_empty)
+    });
+    if hdr_layers.is_empty()
+        && let Some(patch) = overview
+        && let Some(sample) = present_overview_patch(scanouts, outputs, paint, pointer, patch)
+    {
+        return sample;
+    }
+    if overview.is_none()
+        && hdr_layers.is_empty()
+        && let Some(handled) = present_workspace_hold(
+            scanouts,
+            outputs,
+            paint,
+            pointer,
+            &WorkspacePresent {
+                id: workspace_id,
+                hold: workspace_hold,
+                clip: workspace_clip,
+            },
+        )
+    {
+        return handled;
+    }
+    if overview.is_none()
+        && skips_full_framebuffer_readback(unchanged, false)
+        && paint
+            .as_ref()
+            .is_some_and(paint::VelloDrmBridge::has_complete_readback)
+    {
+        // The pixels already on the scanout are the scene. Remember which
+        // workspace that image is, so the close can replay it instead of
+        // reading both outputs back.
+        if let Some(id) = workspace_id
+            && let Some(bridge) = paint.as_mut()
+        {
+            bridge.note_shown_workspace(id);
+        }
+        return PaintScanoutSample::default();
+    }
+    if hdr_layers.is_empty()
+        && let Some(sample) = publish_already_encoded_clips(
+            scanouts,
+            outputs,
+            paint,
+            &EncodedClipPresent {
+                scene,
+                regions: damage.and_then(|damage| damage.regions).unwrap_or(&[]),
+                pointer,
+                workspace_id,
+            },
+        )
+    {
+        return sample;
+    }
     let Some(bridge) = paint.as_mut() else {
         return PaintScanoutSample::default();
     };
+    upload_combined_scene(
+        scanouts,
+        outputs,
+        bridge,
+        pointer,
+        &CombinedUpload {
+            scene,
+            hdr_layers,
+            workspace_id,
+            note_workspace: overview.is_none(),
+        },
+    )
+}
+
+struct EncodedClipPresent<'a> {
+    scene: &'a Scene,
+    regions: &'a [vello::FineDamageRect],
+    pointer: (f64, f64),
+    workspace_id: Option<u64>,
+}
+
+fn presented_heads(scanouts: &[ScanoutEntry], outputs: &[Output]) -> Vec<PresentedHead> {
+    scanouts
+        .iter()
+        .filter(|entry| !entry.powered_off)
+        .map(|entry| {
+            let size = outputs
+                .iter()
+                .find(|output| output.id == entry.id)
+                .map_or_else(|| entry.scanout.size(), |output| output.size);
+            PresentedHead {
+                pageflip: entry.scanout.event_pageflips_available(),
+                x: entry.position.0,
+                y: entry.position.1,
+                width: size.0,
+                height: size.1,
+            }
+        })
+        .collect()
+}
+
+/// Publish clips from the desktop image this bridge already encoded.
+///
+/// A missing image, or a clip the GPU cannot refresh, falls through to the
+/// combined readback. That path is also how a real connector page-flips.
+fn publish_already_encoded_clips(
+    scanouts: &mut [ScanoutEntry],
+    outputs: &[Output],
+    paint: &mut Option<paint::VelloDrmBridge>,
+    present: &EncodedClipPresent<'_>,
+) -> Option<PaintScanoutSample> {
+    let published = virtual_encoded_clips(&presented_heads(scanouts, outputs), present.regions)?;
+    tracing::trace!(
+        bytes = encoded_clip_bytes(&published),
+        heads = published.len(),
+        "virtual present publishes the encoded clip"
+    );
+    let bridge = paint.as_mut()?;
+    if !bridge.has_complete_readback() {
+        return None;
+    }
+    for clip in &published {
+        let rect = vello::FineDamageRect {
+            x: clip.scene_x,
+            y: clip.scene_y,
+            width: u32::from(clip.width),
+            height: u32::from(clip.height),
+        };
+        if bridge.refresh_encoded_clip(present.scene, rect).is_err() {
+            return None;
+        }
+    }
+    let started = Instant::now();
+    {
+        let rgba = bridge.encoded_rgba()?;
+        for clip in &published {
+            let rect = vello::FineDamageRect {
+                x: clip.scene_x,
+                y: clip.scene_y,
+                width: u32::from(clip.width),
+                height: u32::from(clip.height),
+            };
+            present_composed_readback(scanouts, outputs, present.pointer, rgba, Some(rect));
+        }
+    }
+    if let Some(id) = present.workspace_id {
+        bridge.note_shown_workspace(id);
+    }
+    Some(PaintScanoutSample {
+        legacy_attempted: true,
+        scanout_us: started.elapsed().as_micros(),
+        ..PaintScanoutSample::default()
+    })
+}
+
+struct CombinedUpload<'a> {
+    scene: &'a Scene,
+    hdr_layers: &'a [HdrLayer],
+    workspace_id: Option<u64>,
+    note_workspace: bool,
+}
+
+/// Paint the combined scene and copy it onto every powered scanout.
+fn upload_combined_scene(
+    scanouts: &mut [ScanoutEntry],
+    outputs: &[Output],
+    bridge: &mut paint::VelloDrmBridge,
+    pointer: (f64, f64),
+    upload: &CombinedUpload<'_>,
+) -> PaintScanoutSample {
+    let scene = upload.scene;
+    let hdr_layers = upload.hdr_layers;
+    let workspace_id = upload.workspace_id;
+    let note_workspace = upload.note_workspace;
     let bridge_started = Instant::now();
     let composite = !hdr_layers.is_empty()
         && scanouts
@@ -1507,8 +2015,11 @@ fn render_combined_readback(
         scene_width: cw,
         layers: hdr_layers,
     });
-    for e in scanouts.iter_mut().filter(|entry| !entry.powered_off) {
-        paint_one_scanout(e, outputs, rgba, (cw, ch), pointer, hdr);
+    for entry in scanouts.iter_mut().filter(|entry| !entry.powered_off) {
+        paint_one_scanout(entry, outputs, rgba, (cw, ch), pointer, hdr, None);
+    }
+    if note_workspace && let Some(id) = workspace_id {
+        bridge.note_shown_workspace(id);
     }
     PaintScanoutSample {
         legacy_attempted: true,
@@ -1516,6 +2027,196 @@ fn render_combined_readback(
         scanout_us: scanout_started.elapsed().as_micros(),
         ..PaintScanoutSample::default()
     }
+}
+
+struct WorkspacePresent {
+    id: Option<u64>,
+    hold: bool,
+    clip: Option<vello::FineDamageRect>,
+}
+
+fn present_workspace_hold(
+    scanouts: &mut [ScanoutEntry],
+    outputs: &[Output],
+    paint: &mut Option<paint::VelloDrmBridge>,
+    pointer: (f64, f64),
+    workspace: &WorkspacePresent,
+) -> Option<PaintScanoutSample> {
+    let bridge = paint.as_mut()?;
+    let changed = workspace
+        .id
+        .is_some_and(|id| bridge.shown_workspace() != Some(id));
+    let has_snapshot = workspace
+        .id
+        .is_some_and(|id| bridge.has_workspace_snapshot(id));
+    match workspace_frame_upload(changed, has_snapshot, workspace.hold) {
+        WorkspaceUpload::Skip => Some(PaintScanoutSample::default()),
+        WorkspaceUpload::Clip => Some(present_workspace_clip(
+            scanouts, outputs, bridge, pointer, workspace,
+        )),
+        WorkspaceUpload::Replay => {
+            let id = workspace.id?;
+            let bytes = bridge.replay_workspace(id)?;
+            let clip = virtual_encoded_clips(&presented_heads(scanouts, outputs), &[])
+                .and_then(|clips| clips.first().copied())
+                .map(|clip| vello::FineDamageRect {
+                    x: clip.scene_x,
+                    y: clip.scene_y,
+                    width: u32::from(clip.width),
+                    height: u32::from(clip.height),
+                });
+            Some(present_composed_readback(
+                scanouts, outputs, pointer, &bytes, clip,
+            ))
+        }
+        WorkspaceUpload::Render => {
+            if changed {
+                bridge.retain_shown_workspace();
+            }
+            None
+        }
+    }
+}
+
+/// Adopt the workspace the close is returning to and upload only the clip.
+/// A clip that also meets another scanout is cut back to the first display.
+/// Leaving it whole, or skipping the upload, made a later frame flush both.
+fn present_workspace_clip(
+    scanouts: &mut [ScanoutEntry],
+    outputs: &[Output],
+    bridge: &mut paint::VelloDrmBridge,
+    pointer: (f64, f64),
+    workspace: &WorkspacePresent,
+) -> PaintScanoutSample {
+    let Some(id) = workspace.id else {
+        return PaintScanoutSample::default();
+    };
+    let boxes = scanout_boxes(scanouts, outputs);
+    let Some(clip) = workspace
+        .clip
+        .and_then(|clip| clip_to_primary_scanout(clip, &boxes))
+    else {
+        return PaintScanoutSample::default();
+    };
+    if !close_frame_spares_other_scanouts(clip, &boxes) {
+        return PaintScanoutSample::default();
+    }
+    let Some(bytes) = bridge.replay_workspace(id) else {
+        return PaintScanoutSample::default();
+    };
+    present_composed_readback(scanouts, outputs, pointer, &bytes, Some(clip))
+}
+
+/// Composite the overview fade onto the desktop already in memory.
+///
+/// `None` means there is no bridge to composite with. A missing desktop
+/// image skips the frame: seeding a combined readback here is the stall
+/// that finishes the fade before a single present.
+fn present_overview_patch(
+    scanouts: &mut [ScanoutEntry],
+    outputs: &[Output],
+    paint: &mut Option<paint::VelloDrmBridge>,
+    pointer: (f64, f64),
+    patch: &crate::shell::overlay_host::OverviewFastPatch,
+) -> Option<PaintScanoutSample> {
+    let bridge = paint.as_mut()?;
+    match bridge.composite_overview_frame(patch) {
+        Ok(composed) => Some(present_composed_readback(
+            scanouts,
+            outputs,
+            pointer,
+            &composed,
+            Some(patch.panel),
+        )),
+        Err(_) => Some(PaintScanoutSample::default()),
+    }
+}
+
+/// The part of `clip` that lies on the first scanout, in scene pixels.
+/// A close whose clip was the combined desktop uploads that display only.
+pub(crate) fn clip_to_primary_scanout(
+    clip: vello::FineDamageRect,
+    outputs: &[(i32, i32, u32, u32)],
+) -> Option<vello::FineDamageRect> {
+    let &(x, y, width, height) = outputs.first()?;
+    let (local_x, local_y, local_w, local_h) = output_local_clip(x, y, (width, height), clip)?;
+    let scene_x = i64::from(x).saturating_add(i64::from(local_x));
+    let scene_y = i64::from(y).saturating_add(i64::from(local_y));
+    if scene_x < 0 || scene_y < 0 {
+        return None;
+    }
+    Some(vello::FineDamageRect {
+        x: u32::try_from(scene_x).ok()?,
+        y: u32::try_from(scene_y).ok()?,
+        width: u32::from(local_w),
+        height: u32::from(local_h),
+    })
+}
+
+fn scanout_boxes(scanouts: &[ScanoutEntry], outputs: &[Output]) -> Vec<(i32, i32, u32, u32)> {
+    scanouts
+        .iter()
+        .filter(|entry| !entry.powered_off)
+        .map(|entry| {
+            let size = outputs
+                .iter()
+                .find(|output| output.id == entry.id)
+                .map_or_else(|| entry.scanout.size(), |output| output.size);
+            (entry.position.0, entry.position.1, size.0, size.1)
+        })
+        .collect()
+}
+
+fn present_composed_readback(
+    scanouts: &mut [ScanoutEntry],
+    outputs: &[Output],
+    pointer: (f64, f64),
+    rgba: &[u8],
+    damage: Option<vello::FineDamageRect>,
+) -> PaintScanoutSample {
+    let scanout_started = Instant::now();
+    let target_size = combined_geometry(outputs);
+    let (cw, ch) = (
+        usize::try_from(target_size.0).unwrap_or(0),
+        usize::try_from(target_size.1).unwrap_or(0),
+    );
+    for entry in scanouts.iter_mut().filter(|entry| !entry.powered_off) {
+        paint_one_scanout(entry, outputs, rgba, (cw, ch), pointer, None, damage);
+    }
+    PaintScanoutSample {
+        legacy_attempted: true,
+        scanout_us: scanout_started.elapsed().as_micros(),
+        ..PaintScanoutSample::default()
+    }
+}
+
+fn output_local_clip(
+    origin_x: i32,
+    origin_y: i32,
+    size: (u32, u32),
+    damage: vello::FineDamageRect,
+) -> Option<(u16, u16, u16, u16)> {
+    let x0 = i64::from(damage.x);
+    let y0 = i64::from(damage.y);
+    let x1 = x0.saturating_add(i64::from(damage.width));
+    let y1 = y0.saturating_add(i64::from(damage.height));
+    let left = i64::from(origin_x);
+    let top = i64::from(origin_y);
+    let right = left.saturating_add(i64::from(size.0));
+    let bottom = top.saturating_add(i64::from(size.1));
+    let ix0 = x0.max(left);
+    let iy0 = y0.max(top);
+    let ix1 = x1.min(right);
+    let iy1 = y1.min(bottom);
+    if ix1 <= ix0 || iy1 <= iy0 {
+        return None;
+    }
+    Some((
+        u16::try_from(ix0.saturating_sub(left)).ok()?,
+        u16::try_from(iy0.saturating_sub(top)).ok()?,
+        u16::try_from(ix1.saturating_sub(ix0)).ok()?,
+        u16::try_from(iy1.saturating_sub(iy0)).ok()?,
+    ))
 }
 
 /// Drain one page-flip event stream per KMS device and route each completion
@@ -1579,6 +2280,45 @@ fn page_flip_completion_recipients<T: Copy + Eq>(
         .collect()
 }
 
+/// Software-cursor position on this output, in physical pixels.
+fn output_local_cursor(
+    origin: (i32, i32),
+    logical_size: (u32, u32),
+    pointer: (f64, f64),
+    transform: settings_store::hardware::OutputTransform,
+) -> Option<(f64, f64)> {
+    let (px, py) = origin;
+    let width_i32 = i32::try_from(logical_size.0).unwrap_or(i32::MAX);
+    let height_i32 = i32::try_from(logical_size.1).unwrap_or(i32::MAX);
+    let right = px.saturating_add(width_i32);
+    let bottom = py.saturating_add(height_i32);
+    if pointer.0 < f64::from(px)
+        || pointer.0 >= f64::from(right)
+        || pointer.1 < f64::from(py)
+        || pointer.1 >= f64::from(bottom)
+    {
+        return None;
+    }
+    // Sub-pixel pointer position intentionally truncates to a pixel
+    // coordinate; bounded to on-screen extents, well within `i32`.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "sub-pixel pointer position intentionally truncates to a pixel coordinate; bounded to on-screen extents"
+    )]
+    let (local_x, local_y) = (
+        (pointer.0 - f64::from(px)) as i32,
+        (pointer.1 - f64::from(py)) as i32,
+    );
+    let (x, y) = scanout::logical_to_physical_point(
+        local_x,
+        local_y,
+        logical_size.0,
+        logical_size.1,
+        transform,
+    );
+    Some((f64::from(x), f64::from(y)))
+}
+
 /// Body of [`paint_scanouts`]'s per-scanout multi-output loop, split out to
 /// keep that function short. Computes the software-cursor position and the
 /// (possibly colour-transformed) sub-rect for `e`, then presents it —
@@ -1592,6 +2332,7 @@ fn paint_one_scanout(
     (cw, ch): (usize, usize),
     pointer: (f64, f64),
     hdr_layers: Option<CpuComposite<'_>>,
+    damage: Option<vello::FineDamageRect>,
 ) {
     let (px, py) = e.position;
     let (physical_w, physical_h) = e.scanout.size();
@@ -1599,44 +2340,7 @@ fn paint_one_scanout(
         .iter()
         .find(|output| output.id == e.id)
         .map_or((physical_w, physical_h), |output| output.size);
-    // Widths/heights come from the connector's mode; clamp rather than
-    // wrap on the (unreachable in practice) case of a driver-reported
-    // extent past `i32::MAX`.
-    let width_i32 = i32::try_from(logical_size.0).unwrap_or(i32::MAX);
-    let height_i32 = i32::try_from(logical_size.1).unwrap_or(i32::MAX);
-    let right = px.saturating_add(width_i32);
-    let bottom = py.saturating_add(height_i32);
-    // Software-cursor fallback only: draw the cursor (output-local
-    // coords) on the output it's over. The hardware cursor plane, when
-    // active, ignores this and is driven from the input path via
-    // `CursorPlanes`.
-    let local_cursor = if pointer.0 >= f64::from(px)
-        && pointer.0 < f64::from(right)
-        && pointer.1 >= f64::from(py)
-        && pointer.1 < f64::from(bottom)
-    {
-        // Sub-pixel pointer position intentionally truncates to a pixel
-        // coordinate (a hardware cursor plane snaps to a whole pixel
-        // anyway); bounded to on-screen extents, well within `i32`.
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "sub-pixel pointer position intentionally truncates to a pixel coordinate; bounded to on-screen extents"
-        )]
-        let (local_x, local_y) = (
-            (pointer.0 - f64::from(px)) as i32,
-            (pointer.1 - f64::from(py)) as i32,
-        );
-        let (x, y) = scanout::logical_to_physical_point(
-            local_x,
-            local_y,
-            logical_size.0,
-            logical_size.1,
-            e.transform,
-        );
-        Some((f64::from(x), f64::from(y)))
-    } else {
-        None
-    };
+    let local_cursor = output_local_cursor((px, py), logical_size, pointer, e.transform);
     let sx = usize::try_from(px.max(0)).unwrap_or(0);
     let sy = usize::try_from(py.max(0)).unwrap_or(0);
     let hdr = e.scanout.format().is_hdr();
@@ -1681,8 +2385,25 @@ fn paint_one_scanout(
     // starts at the output, the combined frame at the scene's origin.
     let scene_origin = if copied { (sx, sy) } else { (0, 0) };
     let composite = hdr_layers.map(|layers| (layers, scene_origin));
-    e.scanout
-        .present_no_drain(local_cursor, |dst, pitch| match &encoder {
+    let local = damage.map(|rect| output_local_clip(px, py, logical_size, rect));
+    let pageflip = e.scanout.event_pageflips_available();
+    if matches!(local, Some(None)) && !pageflip {
+        return;
+    }
+    let clip = local.flatten();
+    e.scanout.set_damage_rect(clip);
+    let clip_write = clip.filter(|_| {
+        !pageflip
+            && encoder.is_none()
+            && transform == settings_store::hardware::OutputTransform::Normal
+            && composite.is_none()
+    });
+    e.scanout.present_no_drain(local_cursor, |dst, pitch| {
+        if let Some(clip) = clip_write {
+            write_encoded_clip_xrgb(subrect, clip, dst, pitch);
+            return;
+        }
+        match &encoder {
             Some(encoder) => encode_subrect_rgba_to_xbgr2101010_transformed(
                 subrect,
                 dst,
@@ -1700,7 +2421,8 @@ fn paint_one_scanout(
                 transform,
                 composite,
             ),
-        });
+        }
+    });
 }
 
 impl Presenter for DrmPresenter {
@@ -1708,8 +2430,28 @@ impl Presenter for DrmPresenter {
         self.render(scene);
     }
 
+    /// Mesa's CPU Vulkan driver compiles each pipeline on its first dispatch, seconds of work
+    /// the bridge's warm-up pays up front. Starting it here overlaps the compositor's startup.
+    fn prepare(&mut self) {
+        if self.scanouts.iter().all(|entry| entry.powered_off) {
+            return;
+        }
+        let target_size = combined_geometry(&self.outputs);
+        if target_size.0 != 0 && target_size.1 != 0 {
+            ensure_bridge(&mut self.paint, target_size);
+        }
+    }
+
     fn present_frame(&mut self, frame: &FramePaint, _output: OutputId) {
-        self.render_frame(frame);
+        let _ = self.render_frame(frame);
+    }
+
+    fn present_frame_observed(
+        &mut self,
+        frame: &FramePaint,
+        _output: OutputId,
+    ) -> Option<crate::shell::present::PhysicalPresentation> {
+        self.render_frame(frame)
     }
 
     fn set_dpms(&mut self, on: bool) {
@@ -1773,6 +2515,10 @@ impl Backend for DrmBackend {
                 scene,
                 damage: None,
                 hdr_layers: &[],
+                overview: None,
+                workspace_id: None,
+                workspace_hold: false,
+                workspace_clip: None,
             },
             None,
             &mut self.direct_bypass_reported,
@@ -1798,6 +2544,10 @@ impl Backend for DrmBackend {
                     regions: frame.damage_regions.as_deref(),
                 }),
                 hdr_layers: &frame.hdr_layers,
+                overview: frame.overview_patch.as_ref(),
+                workspace_id: frame.workspace_id,
+                workspace_hold: frame.workspace_hold,
+                workspace_clip: frame.workspace_clip,
             },
             None,
             &mut self.direct_bypass_reported,
@@ -1959,6 +2709,173 @@ impl Backend for DrmBackend {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_overview_patch_or_unchanged_frame_skips_the_full_readback() {
+        assert!(super::skips_full_framebuffer_readback(true, false));
+        assert!(super::skips_full_framebuffer_readback(false, true));
+        assert!(!super::skips_full_framebuffer_readback(false, false));
+    }
+
+    #[test]
+    fn two_head_virtual_present_publishes_the_encoded_clip_not_both_outputs() {
+        let heads = [
+            super::PresentedHead {
+                pageflip: false,
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+            super::PresentedHead {
+                pageflip: false,
+                x: 1920,
+                y: 0,
+                width: 1280,
+                height: 800,
+            },
+        ];
+        let clip = vello::FineDamageRect {
+            x: 80,
+            y: 40,
+            width: 300,
+            height: 48,
+        };
+        let published = super::virtual_encoded_clips(&heads, &[clip])
+            .expect("a virtual pair publishes the encoded clip");
+        assert_eq!(published.len(), 1, "the other scanout is not copied");
+        assert_eq!(published[0].head, 0);
+        let bytes = super::encoded_clip_bytes(&published);
+        assert_eq!(bytes, 300 * 48 * 4);
+        let both_outputs = (1920 * 1080 + 1280 * 800) * 4;
+        assert!(
+            bytes < both_outputs,
+            "the clip publish is not a combined framebuffer copy"
+        );
+        let primary = super::virtual_encoded_clips(&heads, &[])
+            .expect("without a smaller clip the first head is the publish");
+        assert_eq!(primary.len(), 1, "the second scanout is not copied");
+        assert_eq!(primary[0].head, 0);
+        assert_eq!(super::encoded_clip_bytes(&primary), 1920 * 1080 * 4);
+        assert!(
+            super::virtual_encoded_clips(
+                &[
+                    super::PresentedHead {
+                        pageflip: true,
+                        ..heads[0]
+                    },
+                    heads[1],
+                ],
+                &[clip],
+            )
+            .is_none(),
+            "a real connector stays on the combined present and page-flips"
+        );
+    }
+
+    #[test]
+    fn encoded_clip_write_leaves_the_other_output_untouched() {
+        let width = 8_usize;
+        let height = 4_usize;
+        let mut rgba = vec![0_u8; width.saturating_mul(height).saturating_mul(4)];
+        let source_at = 1_usize
+            .saturating_mul(width)
+            .saturating_add(1)
+            .saturating_mul(4);
+        rgba[source_at] = 255;
+        let mut destination = vec![7_u8; rgba.len()];
+        super::write_encoded_clip_xrgb(
+            super::SubrectSource {
+                src_rgba: &rgba,
+                src_w: width,
+                src_h: height,
+                src_x: 0,
+                src_y: 0,
+            },
+            (1, 1, 1, 1),
+            &mut destination,
+            width.saturating_mul(4),
+        );
+        let written = &destination[source_at..source_at.saturating_add(4)];
+        assert_eq!(written, &[0, 0, 255, 255]);
+        let clip_pixel = width.saturating_add(1);
+        assert!(
+            destination
+                .chunks_exact(4)
+                .enumerate()
+                .all(|(pixel, bytes)| {
+                    pixel == clip_pixel || bytes.iter().all(|byte| *byte == 7)
+                }),
+            "pixels outside the clip, including the other output, stay put"
+        );
+    }
+
+    #[test]
+    fn workspace_switch_replays_the_way_back_and_holds_both_directions() {
+        use super::WorkspaceUpload::{Clip, Render, Replay, Skip};
+        // A held switch stays on one display's clip, including the first
+        // visit. Rendering here is the combined two-output readback.
+        assert_eq!(super::workspace_frame_upload(true, false, true), Clip);
+        assert_eq!(super::workspace_frame_upload(false, false, true), Skip);
+        // The held return stays on the clip. A settled return may still replay.
+        assert_eq!(super::workspace_frame_upload(true, true, true), Clip);
+        assert_eq!(super::workspace_frame_upload(false, true, true), Skip);
+        assert_eq!(super::workspace_frame_upload(true, true, false), Replay);
+        // A settled desktop still renders when its pixels actually change.
+        assert_eq!(super::workspace_frame_upload(false, true, false), Render);
+    }
+
+    #[test]
+    fn workspace_switch_close_clip_does_not_cover_the_other_scanout() {
+        let clip = vello::FineDamageRect {
+            x: 313,
+            y: 0,
+            width: 1607,
+            height: 1080,
+        };
+        let outputs = [(0, 0, 1920, 1080), (1920, 0, 1280, 800)];
+        assert!(
+            super::close_frame_spares_other_scanouts(clip, &outputs),
+            "the content column meets the first display only"
+        );
+        let both = vello::FineDamageRect {
+            x: 0,
+            y: 0,
+            width: 3200,
+            height: 1080,
+        };
+        assert!(
+            !super::close_frame_spares_other_scanouts(both, &outputs),
+            "a combined clip is the two-output flush"
+        );
+        assert!(
+            super::output_local_clip(1920, 0, (1280, 800), clip).is_none(),
+            "the second scanout is outside the close clip"
+        );
+    }
+
+    #[test]
+    fn a_combined_close_clip_uploads_only_the_first_display() {
+        let both = vello::FineDamageRect {
+            x: 0,
+            y: 0,
+            width: 3200,
+            height: 1080,
+        };
+        let outputs = [(0, 0, 1920, 1080), (1920, 0, 1280, 800)];
+        let clip = super::clip_to_primary_scanout(both, &outputs)
+            .expect("the close still has the first display");
+        assert_eq!(clip.x, 0);
+        assert_eq!(clip.width, 1920);
+        assert!(
+            super::close_frame_spares_other_scanouts(clip, &outputs),
+            "cutting the clip back to the first display leaves the other scanout alone"
+        );
+        assert!(
+            super::output_local_clip(1920, 0, (1280, 800), clip).is_none(),
+            "the second scanout is outside the cut clip"
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -2168,5 +3085,39 @@ mod tests {
                 "a live wgpu bridge must never cross the thread boundary"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod presentation_proof_tests {
+    use super::*;
+    #[test]
+    fn physical_flip_proof_preserves_the_kernel_fields_and_rejects_uncertain_completion() {
+        let own: smithay::reexports::drm::control::crtc::Handle = std::num::NonZeroU32::new(11)
+            .expect("nonzero fixture CRTC")
+            .into();
+        let sibling: smithay::reexports::drm::control::crtc::Handle = std::num::NonZeroU32::new(12)
+            .expect("nonzero fixture CRTC")
+            .into();
+        let event = smithay::reexports::drm::control::PageFlipEvent {
+            crtc: own,
+            frame: 76543,
+            duration: Duration::new(1_234_567, 987_654_000),
+        };
+        let events = [event];
+        let proof =
+            physical_flip_proof(scanout::DirectRetirement::Complete, &events, own, true).unwrap();
+        assert_eq!(proof.timestamp, events[0].duration);
+        assert_eq!(proof.sequence, u64::from(events[0].frame));
+        assert!(
+            physical_flip_proof(scanout::DirectRetirement::TimedOut, &events, own, true).is_none()
+        );
+        assert!(
+            physical_flip_proof(scanout::DirectRetirement::Complete, &events, own, false).is_none()
+        );
+        assert!(
+            physical_flip_proof(scanout::DirectRetirement::Complete, &events, sibling, true)
+                .is_none()
+        );
     }
 }

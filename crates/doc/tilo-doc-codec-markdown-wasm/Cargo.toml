@@ -1,0 +1,26 @@
+[workspace]
+# Standalone — not a member of the Tilo workspace because this crate must be
+# compiled for `wasm32-unknown-unknown`, not the host target. The exclusion in
+# ../Cargo.toml prevents the workspace from picking it up; this empty
+# [workspace] table keeps Cargo from walking *up* to find one.
+
+[package]
+name = "tilo-doc-codec-markdown-wasm"
+version = "0.1.0"
+edition = "2024"
+description = "Format-provider build of qdoc's Markdown codec, for the Tilo format-router."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Import/export delegates to `tilo_doc_codecs::MarkdownCodec`; the resulting document is
+# serialized with Automerge, whose actor ids need host entropy.
+tilo-doc = { path = "../tilo-doc" }
+tilo-doc-codecs = { path = "../tilo-doc-codecs", default-features = false, features = ["markdown"] }
+tilo-content = { path = "../../system/content", default-features = false }
+format-provider-abi = { path = "../format-provider-abi", features = ["entropy"] }
+
+[profile.release]
+lto = true
+codegen-units = 1

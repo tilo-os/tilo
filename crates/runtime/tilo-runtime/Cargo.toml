@@ -23,7 +23,7 @@ path = "src/bin/tilo-runtime.rs"
 tilo-xdg-paths = { path = "../../system/xdg-paths" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
-tilo-atomic-file = { path = "../../system/atomic-file" }
+tilo-files = { path = "../../platform/tilo-files" }
 automerge.workspace = true
 base64.workspace = true
 # Seals and opens the channel state this device keeps for its encrypted routes.
@@ -48,6 +48,8 @@ libc.workspace = true
 package-store = { path = "../../packaging/package-store" }
 postcard = { workspace = true, features = ["alloc"] }
 rand_core.workspace = true
+# Existing certified Join encoder; no new wire schema or credential.
+runtime-collab = { path = "../runtime-collab", default-features = false }
 runtime-fs = { path = "../runtime-fs" }
 runtime-identity = { path = "../runtime-identity" }
 serde.workspace = true

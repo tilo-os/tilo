@@ -27,6 +27,8 @@
 //! padding at layout time but not these composition gaps, which is a known
 //! limit of theme-less composition (recorded for the toolkit's layout unit).
 
+use std::cell::Cell;
+
 use ui::icons::Icon;
 use ui::tokens::{Spacing, SpacingStep};
 pub use ui::widget::BadgeTone as StatusTone;
@@ -113,20 +115,14 @@ fn stack(items: Vec<El>, gap: f32) -> Column {
 /// A category is a real page, not merely the selected row in a navigation
 /// list. Keeping its identity in plain type (rather than another raised card)
 /// establishes where the person is while avoiding the old card-within-page
-/// treatment. The small "Settings" eyebrow also makes the shared shell's
-/// arrow unambiguous on a narrow content screen: it returns to the Settings
-/// list, not to a previous app/window.
+/// treatment. The window already says it is Settings, so the heading carries
+/// no eyebrow label repeating it.
 pub fn page_heading(title: &str, subtitle: &str) -> El {
     Box::new(
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(spacing().s1)
-            .push(Box::new(
-                Text::new(&crate::i18n::t("settings-page-eyebrow"))
-                    .with_scaled_size(12.0)
-                    .dimmed(),
-            ))
             .push(Box::new(Text::new(title).with_scaled_size(24.0)))
             .push(Box::new(
                 Text::new(subtitle).with_scaled_size(13.0).dimmed(),
@@ -200,11 +196,70 @@ pub fn caption(text: &str) -> El {
     Box::new(Text::new(text).with_scaled_size(12.0).dimmed())
 }
 
+/// A reading the pane could not make, said as a failure. `message` is the
+/// whole sentence ("Can't read network status: …"); it replaces the value
+/// the pane would otherwise show, so a failed read never looks like a state
+/// of the device ("Not connected", "Off", an empty list). Screen readers
+/// announce it when it appears.
+pub fn error_caption(message: &str) -> El {
+    Box::new(
+        Text::new(message)
+            .with_scaled_size(12.0)
+            .with_weight(ui::text_render::TextWeight::Semibold)
+            .with_live(ui::a11y::Politeness::Polite),
+    )
+}
+
+/// A label whose value could not be read: the label keeps its place in the
+/// card and the failure stands where the value would be.
+pub fn error_row(label: &str, message: &str) -> El {
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(spacing().s1)
+            .push(setting_row(
+                label,
+                Box::new(
+                    Text::new(&crate::i18n::t("settings-read-error"))
+                        .with_size(13.0)
+                        .with_weight(ui::text_render::TextWeight::Semibold),
+                ),
+            ))
+            .push(error_caption(message)),
+    )
+}
+
 /// Default width (logical px) a compact right-aligned control (dropdown,
 /// segmented picker) is pinned to, so a short-option control reads as a
 /// trailing chooser rather than a full-width form field. Wide enough for the
 /// longest option label the settings dropdowns offer.
 pub const COMPACT_CONTROL_W: f32 = 220.0;
+
+thread_local! {
+    static COMPOSE_TEXT_GROWTH: Cell<f32> = const { Cell::new(1.0) };
+}
+
+/// Record the live theme's [`ui::Theme::text_growth`] before a pane
+/// composes. Compact choosers are authored at 1×; large type has to grow
+/// that pin or option labels clip inside a 220 px box.
+pub fn set_compose_text_growth(growth: f32) {
+    let growth = if growth.is_finite() {
+        growth.clamp(1.0, 4.0)
+    } else {
+        1.0
+    };
+    COMPOSE_TEXT_GROWTH.set(growth);
+}
+
+fn compose_text_growth() -> f32 {
+    COMPOSE_TEXT_GROWTH.get()
+}
+
+/// [`COMPACT_CONTROL_W`] grown for the current compose-time text scale.
+pub fn compact_chooser_width() -> f32 {
+    COMPACT_CONTROL_W * compose_text_growth()
+}
 
 /// Pin a trailing control to a fixed width so it aligns to the row's right
 /// edge instead of stretching across the whole card. `ui`'s `Dropdown` fills
@@ -212,7 +267,7 @@ pub const COMPACT_CONTROL_W: f32 = 220.0;
 /// chooser the same compact, right-aligned footprint — the GNOME/Adwaita
 /// look — rather than a form field that spans the card.
 pub fn compact_control(control: El) -> El {
-    compact_control_w(COMPACT_CONTROL_W, control)
+    compact_control_w(compact_chooser_width(), control)
 }
 
 /// [`compact_control`] with an explicit width, for controls that need more
@@ -283,7 +338,7 @@ pub fn choice_rows_stack_below() -> f32 {
     /// stays inline, while the smaller phone card stacks.
     const CHOICE_LABEL_RESERVE: f32 = 100.0;
     let sp = spacing();
-    COMPACT_CONTROL_W + sp.s3 + CHOICE_LABEL_RESERVE + 2.0 * sp.s3
+    compact_chooser_width() + sp.s3 + CHOICE_LABEL_RESERVE + 2.0 * sp.s3
 }
 
 /// A small rounded status chip (e.g. "Connected", "Paired", "Offline").
@@ -334,4 +389,22 @@ pub fn hero(icon: Icon, title: &str, subtitle: &str) -> El {
 /// Horizontal spacing inside a control row.
 pub fn hgap(px: f32) -> El {
     Box::new(Container::new().with_no_padding().with_size(px, 1.0))
+}
+
+/// Every name and value a screen reader would announce in `widget`'s tree,
+/// in tree order: what a pane says, for tests to read back.
+#[cfg(test)]
+pub fn announced_text(widget: &dyn Widget) -> Vec<String> {
+    fn walk(widget: &dyn Widget, out: &mut Vec<String>) {
+        if let Some(node) = widget.accessibility() {
+            out.extend(node.name);
+            out.extend(node.value);
+        }
+        for child in widget.children() {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(widget, &mut out);
+    out
 }

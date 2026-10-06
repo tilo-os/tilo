@@ -4,10 +4,11 @@
 //! snapshot (containers / images / distroboxes mirrored from rootless
 //! podman) and renders the whole surface — a left navigation rail, a master
 //! list with inline lifecycle actions, a tabbed detail view, a create-
-//! container form, and confirm/create modals. Navigation and selection state
-//! live in the shared CRDT document (see [`crate::doc`]) so undo/redo and
-//! live collaboration work without extra plumbing; the engine projection is
-//! transient host data and stays in memory.
+//! container form, and confirm/create modals. The new-container draft is the
+//! resource's document (see [`crate::doc`]), edited a splice at a time
+//! through the framework's dispatcher; where the user is (section, selection,
+//! detail tab) is this window's own, and the engine projection is transient
+//! host data that stays in memory.
 //!
 //! The widget hit-tests in `handle_event` against rectangles it recorded
 //! during `draw`, which keeps the dense, data-driven layout (variable row
@@ -20,18 +21,18 @@ use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use std::cell::Cell;
-#[cfg(test)]
-use std::cell::RefCell;
 use std::rc::Rc;
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Politeness, Role};
 use ui::control_custody::RawControlSlot;
+use ui::framework::{Dispatcher, LiveRow, TextControl};
+use ui::tilo_resource::Effect as _;
+
+use crate::resource::ContainersEffect;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_actions::{
-    ActionAddress, ActionSpec, ControlInvocation, OperationKind, PermissionRequirement, Resource,
-    RetryPolicy, flatten,
-};
+use ui::tilo_actions::{ActionAddress, ActionSpec, ControlInvocation, flatten};
+use ui::tilo_resource::TextEdit;
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
@@ -39,17 +40,18 @@ use ui::widget::{
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::Key;
 
 use taffy::prelude::*;
 
 use crate::combobox::ComboState;
-use crate::doc::{CreateField, DetailTab, Section, ViewDoc};
+use crate::doc::{CreateDoc, CreateDraft, CreateField};
 use crate::draw;
-use crate::model::{Container, Engine};
+use crate::model::{Container, DetailTab, Engine, Section};
 use crate::podman::{self, Action, ImageAction, StreamMsg};
+use crate::resource::Containers;
 
 const RAIL_WIDTH: f64 = 200.0;
 /// Width of the rail when collapsed — a thin strip that still shows the
@@ -65,24 +67,6 @@ pub(crate) const DETAIL_WIDTH: f64 = 420.0;
 const COMPACT_VIEWPORT_WIDTH: f64 = 600.0;
 const LARGE_TEXT_BASE_SIZE: f32 = 20.0;
 const TOAST_MS: u128 = 4000;
-
-#[derive(Clone)]
-struct ContinuationRuntimeIdentity {
-    runtime_epoch: u64,
-    target_epoch: u64,
-    target_id: String,
-}
-
-#[cfg(test)]
-fn next_continuation_epoch() -> Option<u64> {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    NEXT.fetch_update(
-        std::sync::atomic::Ordering::Relaxed,
-        std::sync::atomic::Ordering::Relaxed,
-        |value| value.checked_add(1),
-    )
-    .ok()
-}
 
 /// A clickable region recorded during draw and resolved in `handle_event`.
 #[derive(Clone)]
@@ -286,38 +270,6 @@ pub struct ControlledCreateRequest {
     events: Sender<Bg>,
 }
 
-/// The armed retention fixture: the app, its runtime request and result
-/// channels, the retention observer, the restart-arm flag, and the runtime
-/// replacement request channel and trigger.
-#[cfg(test)]
-pub type ArmedRetentionRoot = (
-    ContainersApp,
-    Receiver<ControlledRuntimeRequest>,
-    Sender<Result<(), String>>,
-    Rc<RefCell<Option<HistoryRetentionSnapshot>>>,
-    Rc<Cell<bool>>,
-    Receiver<ControlledRuntimeRequest>,
-    Rc<Cell<bool>>,
-);
-
-#[cfg(test)]
-#[derive(Clone, Debug, PartialEq)]
-pub struct HistoryRetentionSnapshot {
-    pub input_instances: [usize; CreateField::COUNT],
-    pub input_values: [String; CreateField::COUNT],
-    pub input_cursors: [usize; CreateField::COUNT],
-    pub input_selections: [Option<(usize, usize)>; CreateField::COUNT],
-    pub input_scroll: [(f64, f64); CreateField::COUNT],
-    pub list_scroll: f64,
-    pub detail_scroll: f64,
-    pub combo_open: bool,
-    pub engine_connection: String,
-    pub engine_counts: (usize, usize, usize, usize),
-    pub last_refresh: Instant,
-    pub pending_control: Option<(String, String)>,
-    pub background_channels: (bool, bool),
-}
-
 #[cfg(test)]
 impl ControlledCreateRequest {
     /// Deliver the existing post-run refresh event. The current create worker
@@ -336,7 +288,7 @@ impl ControlledCreateRequest {
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent, orthogonal flag (live engine vs. \
-              sample data, one-shot demo seeding, and separate open/dirty \
+              sample data, a past version, and separate open/dirty \
               states for unrelated overlays); they aren't a state machine, \
               and grouping them would mean churning every field access across \
               this widget and panels.rs for no behavioural gain"
@@ -346,7 +298,6 @@ pub struct ContainersApp {
     pub(crate) engine: Engine,
     /// Retained, revision-gated search projection. Queries page this index
     /// instead of rescanning the engine snapshot on every keystroke.
-    search_index: crate::search_provider::ContainerSearchIndex,
     rect: Rect,
     /// Mouse position in logical coords (for hover + hit-testing).
     pub(crate) cursor: Point,
@@ -369,8 +320,11 @@ pub struct ContainersApp {
     pub(crate) create_open: bool,
     /// Which create field has keyboard focus.
     pub(crate) create_focus: CreateField,
-    /// Shared CRDT-bound editors for the six dynamic create-form fields.
-    pub(crate) create_inputs: [TextInput; CreateField::COUNT],
+    /// The six create-form fields, each showing its draft text and turning
+    /// every edit into a splice of it.
+    pub(crate) create_inputs: [TextControl<TextInput>; CreateField::COUNT],
+    /// The draft as last presented.
+    draft: CreateDraft,
     /// State of the typeable image combobox inside the create modal.
     pub(crate) combo: ComboState,
     /// Live pull progress overlay, if a pull is running.
@@ -385,17 +339,9 @@ pub struct ContainersApp {
     pub(crate) palette: CommandPalette,
     /// Whether the app-scoped palette overlay is currently open.
     pub(crate) palette_open: bool,
-    /// Selection requested through the resource/action door. Applied during
-    /// `sync`, where the framework deliberately provides mutable document
-    /// access for collaborative view state.
-    pending_resource_selection: Option<String>,
-    /// Navigation requested by a canonical resource View operation. Applied
-    /// on sync so it enters the same collaborative document path as clicks.
-    pending_resource_section: Option<Section>,
-    pending_resource_tab: Option<DetailTab>,
     /// In-app lifecycle controls emit the same inert resource intent as Ctrl+K
     /// and agents. The host re-resolves authority, records the Effect, then
-    /// calls `Widget::start_operation`.
+    /// hands it to the surface's effect handler.
     pub(crate) pending_control_invocation: RawControlSlot,
     /// Collapsible sidebar reveal kernel (the shared `ui` flap animation).
     pub(crate) sidebar_flap: FlapState,
@@ -410,29 +356,14 @@ pub struct ContainersApp {
     controlled_runtime: Option<Sender<ControlledRuntimeRequest>>,
     #[cfg(test)]
     controlled_immediate_results: Option<Receiver<Result<(), String>>>,
-    continuation_runtime_identity: Option<ContinuationRuntimeIdentity>,
-    #[cfg(test)]
-    history_retention_observer: Option<Rc<RefCell<Option<HistoryRetentionSnapshot>>>>,
-    #[cfg(test)]
-    history_arm_restart: Option<Rc<Cell<bool>>>,
-    #[cfg(test)]
-    history_runtime_replacement: Option<(
-        Rc<Cell<bool>>,
-        Sender<ControlledRuntimeRequest>,
-        ContinuationRuntimeIdentity,
-    )>,
     last_refresh: Instant,
     pub(crate) live: bool,
-    /// In offline/demo mode, seed an initial selection on the first sync so a
-    /// fresh document renders a populated detail view (notably for `--shots`).
-    seed_demo: bool,
-    seeded: bool,
     /// Whether a structural change happened this frame (forces relayout).
     pub(crate) structure_dirty: bool,
-    /// Cached snapshot of the CRDT-backed view state. Refreshed in `sync`
-    /// and at the tail of every `handle_event`; `draw` reads it because the
-    /// draw pass has no document access.
-    view: ViewState,
+    /// Where the user is: the section, the selected container, its tab.
+    pub(crate) view: ViewState,
+    /// Showing a past version in History: nothing here is live.
+    past: bool,
     /// Layout mode used by the last drawn frame. Event routing deliberately
     /// follows this instead of guessing from width alone, because 200% text
     /// also switches the surface to a single detail pane.
@@ -443,6 +374,14 @@ pub struct ContainersApp {
     /// Keyboard focus for the immediate-mode root; its focused synthetic
     /// create field becomes the exported accessibility active descendant.
     has_focus: bool,
+    /// Where edits of the draft go, once the framework attached the surface.
+    dispatcher: Option<Dispatcher<Containers>>,
+}
+
+impl Default for ContainersApp {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Input dependencies are independent of whether the runtime is live.
@@ -460,7 +399,7 @@ impl InputFactories {
         }
     }
 
-    #[doc(hidden)]
+    #[cfg(test)]
     fn controlled() -> Self {
         Self {
             text: || {
@@ -474,56 +413,31 @@ impl InputFactories {
 }
 
 impl ContainersApp {
-    /// Construct the manager. `live` enables the background podman poller and
-    /// real lifecycle actions; `false` (used by `--shots`) renders the
-    /// bundled sample snapshot deterministically with no process spawning.
-    pub fn new(live: bool) -> Self {
-        let engine = if live {
-            podman::probe().engine
-        } else {
-            crate::model::sample_engine()
-        };
-        let (bg_tx, bg_rx) = if live {
-            let (tx, rx) = std::sync::mpsc::channel();
-            (Some(tx), Some(rx))
-        } else {
-            (None, None)
-        };
-        Self::with_engine(
-            engine,
-            live,
-            !live,
-            bg_tx,
-            bg_rx,
-            InputFactories::production(),
-        )
+    /// The manager with no engine yet: the framework's
+    /// [`attach`](ui::framework::ResourceSurface::attach) connects it to
+    /// podman in a live window, shows a capture's engine, or leaves it empty
+    /// for a past version.
+    pub fn new() -> Self {
+        Self::with_engine(Engine::default(), InputFactories::production())
     }
 
-    fn with_engine(
-        engine: Engine,
-        live: bool,
-        seed_demo: bool,
-        bg_tx: Option<Sender<Bg>>,
-        bg_rx: Option<Receiver<Bg>>,
-        inputs: InputFactories,
-    ) -> Self {
-        let search_index = crate::search_provider::ContainerSearchIndex::new(&engine);
-        let create_inputs = std::array::from_fn(|index| {
-            let field = CreateField::ALL
-                .get(index)
-                .copied()
-                .unwrap_or(CreateField::Name);
-            let mut input = (inputs.text)()
+    /// The manager over the bundled sample engine, offline: lifecycle
+    /// controls change the sample instead of reaching podman.
+    pub fn sample() -> Self {
+        Self::with_engine(crate::model::sample_engine(), InputFactories::production())
+    }
+
+    fn with_engine(engine: Engine, inputs: InputFactories) -> Self {
+        let create_inputs = CreateField::ALL.map(|field| {
+            let input = (inputs.text)()
                 .with_id(&format!("container_create_{}", field.key()))
                 .with_placeholder(field.placeholder())
                 .with_font_size(13.0)
                 .with_plain_chrome();
-            input.set_direct_crdt_writes(false);
-            input
+            TextControl::view_only(input, move |doc| CreateDoc::field_obj(doc, field))
         });
         Self {
             engine,
-            search_index,
             rect: Rect::ZERO,
             cursor: Point::ZERO,
             hits: Vec::new(),
@@ -536,6 +450,7 @@ impl ContainersApp {
             create_open: false,
             create_focus: CreateField::Name,
             create_inputs,
+            draft: CreateDraft::default(),
             combo: ComboState::default(),
             pull: None,
             search_field: (inputs.search)()
@@ -543,215 +458,219 @@ impl ContainersApp {
                 .with_placeholder(crate::panels::LAUNCHER_PLACEHOLDER),
             palette: CommandPalette::commands(),
             palette_open: false,
-            pending_resource_selection: None,
-            pending_resource_section: None,
-            pending_resource_tab: None,
             pending_control_invocation: RawControlSlot::replace_one(),
             sidebar_flap: FlapState::open_when_docked(),
             sidebar_tick: None,
             toast: None,
-            bg_rx,
-            bg_tx,
+            bg_rx: None,
+            bg_tx: None,
             #[cfg(test)]
             controlled_runtime: None,
             #[cfg(test)]
             controlled_immediate_results: None,
-            continuation_runtime_identity: None,
-            #[cfg(test)]
-            history_retention_observer: None,
-            #[cfg(test)]
-            history_arm_restart: None,
-            #[cfg(test)]
-            history_runtime_replacement: None,
             last_refresh: ui::time::now(),
-            live,
-            seed_demo,
-            seeded: false,
+            live: false,
             structure_dirty: false,
             view: ViewState::default(),
+            past: false,
             compact_layout_active: false,
             motion_reduced: false,
             has_focus: false,
+            dispatcher: None,
         }
     }
 
-    #[doc(hidden)]
-    pub fn history_test_root() -> Self {
-        Self::with_engine(
-            Engine::default(),
-            false,
-            false,
-            None,
-            None,
-            InputFactories::controlled(),
-        )
+    /// Talk to rootless podman: probe it now, then keep the snapshot fresh
+    /// in the background and run lifecycle actions against it.
+    pub(crate) fn connect(&mut self) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.bg_tx = Some(tx);
+        self.bg_rx = Some(rx);
+        self.live = true;
+        self.show_engine(podman::probe().engine);
     }
 
-    #[cfg(test)]
-    pub fn history_test_open_create_root() -> Self {
-        let mut app = Self::history_test_root();
-        app.create_open = true;
-        app.create_focus = CreateField::Image;
-        app.list_scroll = 41.0;
-        app.detail_scroll = 17.0;
-        app
+    /// Show `engine` in place of the current snapshot.
+    pub(crate) fn show_engine(&mut self, engine: Engine) {
+        self.engine = engine;
+        self.structure_dirty = true;
     }
 
-    #[cfg(test)]
-    pub fn history_test_palette_root() -> Self {
-        let mut app = Self::history_test_root();
-        app.open_container_palette();
-        app
-    }
-
-    #[cfg(test)]
-    pub fn history_test_prompt_root() -> Self {
-        let mut app = Self::history_test_root();
-        app.seed_shot("prompt");
-        app
-    }
-
-    #[cfg(test)]
-    pub fn history_test_confirm_root() -> Self {
-        let mut app = Self::history_test_root();
-        app.seed_shot("confirm");
-        app
-    }
-
-    #[cfg(test)]
-    pub fn history_test_pull_root() -> Self {
-        let mut app = Self::history_test_root();
-        app.pull = Some(PullProgress {
-            reference: "quay.io/example/pending:1".into(),
-            lines: vec!["Copying blob 1/2".into()],
-            done: false,
-            failed: None,
-        });
-        app
-    }
-
-    #[cfg(test)]
-    pub fn history_test_runtime_root() -> (
-        Self,
-        Receiver<ControlledRuntimeRequest>,
-        Sender<Result<(), String>>,
-    ) {
-        let engine = Engine {
-            live: true,
-            connection: "controlled Podman".into(),
+    /// Show a past version: its draft, and no engine, which is this device's
+    /// live state and has no history.
+    pub(crate) fn show_past(&mut self) {
+        self.past = true;
+        self.show_engine(Engine {
+            connection: "Containers, images, volumes and distroboxes are this device's \
+                         live state and are not part of History"
+                .into(),
+            live: false,
             ..Engine::default()
-        };
-        let (bg_tx, bg_rx) = std::sync::mpsc::channel();
-        let (requests_tx, requests_rx) = std::sync::mpsc::channel();
-        let (results_tx, results_rx) = std::sync::mpsc::channel();
-        let mut app = Self::with_engine(
-            engine,
-            true,
-            false,
-            Some(bg_tx),
-            Some(bg_rx),
-            InputFactories::controlled(),
-        );
-        app.controlled_runtime = Some(requests_tx);
-        app.controlled_immediate_results = Some(results_rx);
-        app.continuation_runtime_identity = next_continuation_epoch()
-            .zip(next_continuation_epoch())
-            .map(
-                |(runtime_epoch, target_epoch)| ContinuationRuntimeIdentity {
-                    runtime_epoch,
-                    target_epoch,
-                    target_id: "armed-container".into(),
-                },
-            );
-        (app, requests_rx, results_tx)
+        });
     }
 
-    #[cfg(test)]
-    pub fn history_test_producer_order_root() -> Self {
-        let (mut app, _requests, _results) = Self::history_test_runtime_root();
-        app.engine = Self::history_test_runtime_engine("controlled Podman", true);
-        app.search_index.sync(&app.engine);
-        app.open_container_palette();
-        let mut doc = AutoCommit::new();
-        app.palette.activate_selected(&mut doc, &automerge::ROOT);
-        app.apply_action(Action::Restart, "armed-container");
-        app
+    /// Edit the draft through `dispatcher` from now on.
+    pub(crate) fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Containers>) {
+        for (field, input) in CreateField::ALL.into_iter().zip(&mut self.create_inputs) {
+            input.attach(crate::resource::create_field_dispatcher(&dispatcher, field));
+        }
+        self.dispatcher = Some(dispatcher);
     }
 
-    #[cfg(test)]
-    pub fn history_test_retention_root() -> (
-        Self,
-        Receiver<ControlledRuntimeRequest>,
-        Rc<RefCell<Option<HistoryRetentionSnapshot>>>,
+    /// The draft as the document holds it now. A past version with a draft
+    /// shows the form, which is all it holds.
+    pub(crate) fn present_draft(&mut self, draft: &CreateDraft) {
+        draft.clone_into(&mut self.draft);
+        if self.past {
+            self.create_open = !draft.is_empty();
+        }
+    }
+
+    /// Show `section`, with nothing selected in it.
+    pub(crate) fn show_section(&mut self, section: Section) {
+        self.view.section = section;
+        self.view.selected = None;
+        self.list_scroll = 0.0;
+        self.structure_dirty = true;
+    }
+
+    /// Select the container `id` (`None` clears the selection).
+    pub(crate) fn select_container(&mut self, id: Option<String>) {
+        if id.is_some() {
+            self.view.section = Section::Containers;
+        }
+        self.view.selected = id;
+        self.detail_scroll = 0.0;
+        self.structure_dirty = true;
+    }
+
+    /// Show the selected container's `tab`.
+    pub(crate) fn show_tab(&mut self, tab: DetailTab) {
+        self.view.tab = tab;
+        self.detail_scroll = 0.0;
+        self.structure_dirty = true;
+    }
+
+    /// Open the create-container form on its image field.
+    pub(crate) fn open_create(&mut self) {
+        self.create_open = true;
+        self.focus_create_field(CreateField::Image);
+    }
+
+    /// Replace the text of `field` in the draft, as one edit.
+    pub(crate) fn set_create_field(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        field: CreateField,
+        text: &str,
     ) {
-        let (mut app, requests, _results) = Self::history_test_runtime_root();
-        app.list_scroll = 41.0;
-        app.detail_scroll = 17.0;
-        app.combo.open = true;
-        let observer = Rc::new(RefCell::new(None));
-        app.history_retention_observer = Some(observer.clone());
-        (app, requests, observer)
+        let Some(dispatcher) = &self.dispatcher else {
+            return;
+        };
+        let edits = crate::resource::create_field_dispatcher(dispatcher, field);
+        if let Err(error) = edits.apply_now(
+            doc,
+            &TextEdit::ReplaceText {
+                text: text.to_owned(),
+            },
+        ) {
+            self.show_toast(format!("The draft was not changed: {error}"), true);
+        }
+        self.refresh_view(doc);
     }
 
-    #[cfg(test)]
-    pub fn history_test_armed_retention_root() -> ArmedRetentionRoot {
-        let (mut app, requests, results) = Self::history_test_runtime_root();
-        app.list_scroll = 41.0;
-        app.detail_scroll = 17.0;
-        app.combo.open = true;
+    /// Empty the draft, once a container was created from it.
+    fn clear_create(&self, doc: &mut ui::widget::Edits<'_>) {
+        if let Some(dispatcher) = &self.dispatcher {
+            let _ = dispatcher.apply_now(doc, &crate::resource::ContainersAction::ClearCreate);
+        }
+    }
 
-        app.engine = Self::history_test_runtime_engine("controlled Podman", false);
-        app.search_index.sync(&app.engine);
-        app.spawn_refresh();
-        app.start_pull("quay.io/example/armed:1");
-
-        let mut create_doc = AutoCommit::new();
-        ViewDoc::set_create_field(&mut create_doc, CreateField::Name, "armed-name");
-        ViewDoc::set_create_field(
-            &mut create_doc,
-            CreateField::Image,
-            "quay.io/example/create:1",
-        );
-        ViewDoc::set_create_field(&mut create_doc, CreateField::Ports, "8081:81");
-        app.submit_create(&mut create_doc);
-
-        let mut selection_doc = AutoCommit::new();
-        ViewDoc::set_selected(&mut selection_doc, Some("armed-container"));
-        app.hydrate_selection(&selection_doc);
-        app.engine = Self::history_test_runtime_engine("controlled Podman", true);
-        app.search_index.sync(&app.engine);
-        let observer = Rc::new(RefCell::new(None));
-        app.history_retention_observer = Some(observer.clone());
-        let arm = Rc::new(Cell::new(false));
-        app.history_arm_restart = Some(arm.clone());
-        let (replacement_tx, replacement_rx) = std::sync::mpsc::channel();
-        let replace = Rc::new(Cell::new(false));
-        if let Some((runtime_epoch, target_epoch)) =
-            next_continuation_epoch().zip(next_continuation_epoch())
-        {
-            app.history_runtime_replacement = Some((
-                replace.clone(),
-                replacement_tx,
-                ContinuationRuntimeIdentity {
-                    runtime_epoch,
-                    target_epoch,
-                    target_id: "armed-container".into(),
-                },
+    /// The live rows of the engine, a bounded page of them, and an
+    /// in-flight pull.
+    pub(crate) fn engine_rows(&self) -> Vec<LiveRow> {
+        let live = self.engine.live;
+        let mut rows: Vec<LiveRow> = self
+            .engine
+            .containers
+            .iter()
+            .map(|container| container_row(container, live))
+            .chain(
+                self.engine
+                    .images
+                    .iter()
+                    .map(|image| image_row(image, live)),
+            )
+            .chain(
+                self.engine
+                    .volumes
+                    .iter()
+                    .map(|volume| volume_row(volume, live)),
+            )
+            .chain(
+                self.engine
+                    .distroboxes
+                    .iter()
+                    .map(|distrobox| distrobox_row(distrobox, live)),
+            )
+            .take(RESOURCE_SNAPSHOT_LIMIT)
+            .collect();
+        if let Some(pull) = &self.pull {
+            rows.push(LiveRow::new(
+                "containers.pull-job",
+                "containers.job",
+                format!("Pulling {}", pull.reference),
             ));
         }
-        (
-            app,
-            requests,
-            results,
-            observer,
-            arm,
-            replacement_rx,
-            replace,
-        )
+        rows
     }
 
+    /// The live row `id`, wherever it is in the engine.
+    pub(crate) fn engine_row(&self, id: &str) -> Option<LiveRow> {
+        let live = self.engine.live;
+        if let Some(container_id) = id
+            .strip_prefix("container:")
+            .and_then(|rest| rest.strip_suffix(":logs"))
+        {
+            return self.engine.find(container_id).map(logs_row);
+        }
+        if let Some(container_id) = id.strip_prefix("container:") {
+            return self
+                .engine
+                .find(container_id)
+                .map(|container| container_row(container, live));
+        }
+        if let Some(reference) = id.strip_prefix("image:") {
+            return self
+                .engine
+                .images
+                .iter()
+                .find(|item| item.reference() == reference)
+                .map(|item| image_row(item, live));
+        }
+        if let Some(name) = id.strip_prefix("volume:") {
+            return self
+                .engine
+                .volumes
+                .iter()
+                .find(|item| item.name == name)
+                .map(|item| volume_row(item, live));
+        }
+        if let Some(name) = id.strip_prefix("distrobox:") {
+            return self
+                .engine
+                .distroboxes
+                .iter()
+                .find(|item| item.name == name)
+                .map(|item| distrobox_row(item, live));
+        }
+        None
+    }
+
+    /// A live engine with one running container, its detail fetched when
+    /// `hydrated`.
     #[cfg(test)]
-    pub fn history_test_runtime_engine(connection: &str, hydrated: bool) -> Engine {
+    pub(crate) fn controlled_engine(connection: &str, hydrated: bool) -> Engine {
         Engine {
             live: true,
             connection: connection.into(),
@@ -782,50 +701,28 @@ impl ContainersApp {
         }
     }
 
+    /// A manager whose podman calls are requests a test answers.
     #[cfg(test)]
-    fn publish_history_retention(&self) {
-        let Some(observer) = &self.history_retention_observer else {
-            return;
+    pub(crate) fn controlled_runtime_root() -> (
+        Self,
+        Receiver<ControlledRuntimeRequest>,
+        Sender<Result<(), String>>,
+    ) {
+        let engine = Engine {
+            live: true,
+            connection: "controlled Podman".into(),
+            ..Engine::default()
         };
-        let input_instances =
-            CreateField::ALL.map(|field| std::ptr::from_ref(self.create_input(field)).addr());
-        let input_values = CreateField::ALL.map(|field| self.create_input(field).value().into());
-        let input_cursors = CreateField::ALL.map(|field| self.create_input(field).cursor_pos());
-        let input_selections =
-            CreateField::ALL.map(|field| self.create_input(field).selection_range_public());
-        let input_scroll = CreateField::ALL.map(|field| {
-            let input = self.create_input(field);
-            (input.scroll_x(), input.scroll_y())
-        });
-        let pending_control = self
-            .pending_control_invocation
-            .controlled_pending_for_test()
-            .map(|invocation| {
-                (
-                    invocation.address.resource.clone(),
-                    invocation.address.action,
-                )
-            });
-        observer.replace(Some(HistoryRetentionSnapshot {
-            input_instances,
-            input_values,
-            input_cursors,
-            input_selections,
-            input_scroll,
-            list_scroll: self.list_scroll,
-            detail_scroll: self.detail_scroll,
-            combo_open: self.combo.open,
-            engine_connection: self.engine.connection.clone(),
-            engine_counts: (
-                self.engine.containers.len(),
-                self.engine.images.len(),
-                self.engine.volumes.len(),
-                self.engine.distroboxes.len(),
-            ),
-            last_refresh: self.last_refresh,
-            pending_control,
-            background_channels: (self.bg_tx.is_some(), self.bg_rx.is_some()),
-        }));
+        let (bg_tx, bg_rx) = std::sync::mpsc::channel();
+        let (requests_tx, requests_rx) = std::sync::mpsc::channel();
+        let (results_tx, results_rx) = std::sync::mpsc::channel();
+        let mut app = Self::with_engine(engine, InputFactories::controlled());
+        app.live = true;
+        app.bg_tx = Some(bg_tx);
+        app.bg_rx = Some(bg_rx);
+        app.controlled_runtime = Some(requests_tx);
+        app.controlled_immediate_results = Some(results_rx);
+        (app, requests_rx, results_tx)
     }
 
     pub(crate) fn show_toast(&mut self, message: impl Into<String>, error: bool) {
@@ -887,7 +784,7 @@ impl ContainersApp {
 
     /// Drain any background snapshot, preserving per-container detail
     /// (logs/env/mounts) for the selected container that `ps` doesn't carry.
-    fn drain_bg(&mut self, doc: &AutoCommit) {
+    fn drain_bg(&mut self) {
         let Some(rx) = &self.bg_rx else { return };
         let mut latest = None;
         let mut pull_msgs = Vec::new();
@@ -903,7 +800,7 @@ impl ContainersApp {
         if let Some(mut fresh) = latest {
             // Carry over the selected container's hydrated detail so the
             // detail tabs don't flicker empty between probes.
-            if let Some(sel) = ViewDoc::selected(doc)
+            if let Some(sel) = self.view.selected.clone()
                 && let Some(old) = self.engine.find(&sel).cloned()
                 && let Some(newc) = fresh.containers.iter_mut().find(|c| c.id == sel)
             {
@@ -918,13 +815,12 @@ impl ContainersApp {
                 }
             }
             self.engine = fresh;
-            self.search_index.sync(&self.engine);
         }
     }
 
     /// Hydrate the selected container's detail (logs + inspect) on demand.
-    fn hydrate_selection(&mut self, doc: &AutoCommit) {
-        let Some(sel) = ViewDoc::selected(doc) else {
+    fn hydrate_selection(&mut self) {
+        let Some(sel) = self.view.selected.clone() else {
             return;
         };
         let needs = self
@@ -947,7 +843,6 @@ impl ContainersApp {
             if !logs.is_empty() {
                 c.logs = logs;
             }
-            self.search_index.sync(&self.engine);
         }
     }
 
@@ -1008,7 +903,6 @@ impl ContainersApp {
                 }
             }
         }
-        self.search_index.sync(&self.engine);
         self.structure_dirty = true;
     }
 
@@ -1103,7 +997,6 @@ impl ContainersApp {
             self.show_toast(format!("Remove {reference} requested"), false);
         } else if !self.live {
             self.engine.images.retain(|i| i.reference() != reference);
-            self.search_index.sync(&self.engine);
             self.show_toast(format!("Removed {reference}"), false);
             self.structure_dirty = true;
         } else {
@@ -1177,7 +1070,6 @@ impl ContainersApp {
                 in_use_by: 0,
             });
             self.engine.volumes.sort_by(|a, b| a.name.cmp(&b.name));
-            self.search_index.sync(&self.engine);
             self.show_toast(format!("Created volume {name}"), false);
             self.structure_dirty = true;
         }
@@ -1193,7 +1085,6 @@ impl ContainersApp {
             self.show_toast(format!("Remove volume {name} requested"), false);
         } else if !self.live {
             self.engine.volumes.retain(|v| v.name != name);
-            self.search_index.sync(&self.engine);
             self.show_toast(format!("Removed volume {name}"), false);
             self.structure_dirty = true;
         } else {
@@ -1218,18 +1109,18 @@ impl ContainersApp {
         }
     }
 
-    pub(crate) fn submit_create(&mut self, doc: &mut AutoCommit) {
-        let args = ViewDoc::create_run_args(doc);
-        let Some(args) = args else {
+    pub(crate) fn submit_create(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        let draft = CreateDoc::read(doc);
+        let Some(args) = draft.run_args() else {
             self.show_toast("Image is required to create a container", true);
             return;
         };
-        let name = ViewDoc::create_field(doc, CreateField::Image);
+        let name = draft.get(CreateField::Image).to_owned();
         if self.live {
             // Run `podman run` off the UI thread; report the result back via a
             // toast streamed through the bg channel, then re-probe.
             self.show_toast(format!("Creating container from {name}…"), false);
-            ViewDoc::clear_create(doc);
+            self.clear_create(doc);
             self.create_open = false;
             self.combo.close();
             if let Some(tx) = self.bg_tx.clone() {
@@ -1253,20 +1144,15 @@ impl ContainersApp {
             }
         } else {
             self.show_toast(format!("podman {}", args.join(" ")), false);
-            ViewDoc::clear_create(doc);
+            self.clear_create(doc);
             self.create_open = false;
             self.combo.close();
         }
     }
 
-    /// Filtered containers for the current search query, sorted running-first.
-    pub(crate) fn visible_containers(&self, query: &str) -> Vec<&Container> {
-        let mut v: Vec<&Container> = self
-            .engine
-            .containers
-            .iter()
-            .filter(|c| c.matches(query))
-            .collect();
+    /// The containers in list order: running first, then by name.
+    pub(crate) fn visible_containers(&self) -> Vec<&Container> {
+        let mut v: Vec<&Container> = self.engine.containers.iter().collect();
         v.sort_by(|a, b| {
             b.status
                 .is_running()
@@ -1283,10 +1169,14 @@ impl ContainersApp {
     /// selects that container — the same "find and jump to" the old inline
     /// search bar did, but through the shared search surface.
     pub(crate) fn open_container_palette(&mut self) {
-        let resources = ui::resources::resources(self, &AutoCommit::new());
+        let resources: Vec<_> = self
+            .engine_rows()
+            .into_iter()
+            .map(LiveRow::into_resource)
+            .collect();
         let entries: Vec<CommandEntry> = flatten(&resources)
             .into_iter()
-            .filter(|action| action.action.id == "select")
+            .filter(|action| action.action.id == "select-container")
             .map(|action| CommandEntry::from_flat_action(&action))
             .collect();
         self.palette.set_entries(entries);
@@ -1296,26 +1186,23 @@ impl ContainersApp {
     }
 
     #[cfg(test)]
-    pub(crate) fn dispatch_palette_invocation_for_test(&mut self, doc: &mut AutoCommit) {
+    pub(crate) fn dispatch_palette_invocation_for_test(&mut self, doc: &AutoCommit) {
         let intent = ui::widget::controls::take_control_invocation(self)
             .expect("palette emitted a resource action");
-        let resources = ui::resources::resources(self, doc);
+        let resources: Vec<_> = self
+            .engine_rows()
+            .into_iter()
+            .map(LiveRow::into_resource)
+            .collect();
         let spec = ui::tilo_actions::door::resolve(&resources, &intent.address)
             .expect("palette address resolves");
-        let kind = spec.kind;
         let encoded = spec
             .build_json(&intent.arguments)
             .expect("valid palette arguments");
-        assert!(
-            self.answer_resource_operation(
-                kind,
-                &encoded.type_id,
-                &encoded.payload,
-                doc,
-                &automerge::ROOT,
-            )
-            .expect("resource operation")
-        );
+        let effect =
+            <ContainersEffect as ui::tilo_resource::Effect>::from_payload(&encoded.payload)
+                .expect("a containers effect");
+        self.perform_effect(effect).expect("the effect is done");
         self.sync(doc, &automerge::ROOT);
     }
 
@@ -1328,7 +1215,7 @@ impl ContainersApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         path: &ObjId,
         focus_target: &mut Option<NodeId>,
     ) {
@@ -1344,7 +1231,7 @@ impl ContainersApp {
             &mut ui::widget::EventCtx {
                 scale_factor,
                 modifiers: &modifiers,
-                state: doc,
+                state: doc.reborrow(),
                 path,
                 handled: &mut ignored,
                 focus_target,
@@ -1470,7 +1357,7 @@ impl ContainersApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         if enter_pressed(event) {
@@ -1509,7 +1396,7 @@ impl ContainersApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         if enter_pressed(event) {
@@ -1541,13 +1428,13 @@ impl ContainersApp {
     }
 
     /// Apply the pending destructive confirm against the real engine/document.
-    fn apply_confirm(&mut self, doc: &mut AutoCommit) {
+    fn apply_confirm(&mut self, doc: &AutoCommit) {
         if let Some(confirm) = self.confirm.take() {
             match confirm.target {
                 ConfirmTarget::Container { id, action } => {
                     self.apply_action(action, &id);
-                    if ViewDoc::selected(doc).as_deref() == Some(id.as_str()) {
-                        ViewDoc::set_selected(doc, None);
+                    if self.view.selected.as_deref() == Some(id.as_str()) {
+                        self.select_container(None);
                     }
                 }
                 ConfirmTarget::Image { reference } => self.remove_image(&reference),
@@ -1558,39 +1445,8 @@ impl ContainersApp {
         self.refresh_view(doc);
     }
 
-    /// Seed a modal for a deterministic `--shots` frame (no event loop). The
-    /// draw pass builds + lays out the shared dialog from this metadata.
-    pub fn seed_shot(&mut self, scenario: &str) {
-        match scenario {
-            "confirm" => {
-                let (name, id) = self.engine.containers.first().map_or_else(
-                    || ("web".to_string(), "web".to_string()),
-                    |c| (c.name.clone(), c.id.clone()),
-                );
-                self.confirm = Some(Confirm {
-                    name,
-                    verb: "Remove container".into(),
-                    target: ConfirmTarget::Container {
-                        id,
-                        action: Action::Remove,
-                    },
-                });
-            }
-            "prompt" => {
-                self.prompt = Some(Prompt {
-                    kind: PromptKind::NewVolume,
-                    title: "New volume".into(),
-                    placeholder: "my-volume".into(),
-                    value: "backups".into(),
-                    context: String::new(),
-                });
-            }
-            _ => {}
-        }
-    }
-
     /// Read the prompt's typed value out of the embedded field and commit it.
-    fn submit_prompt(&mut self, doc: &mut AutoCommit) {
+    fn submit_prompt(&mut self, doc: &AutoCommit) {
         let value = self
             .prompt_dialog
             .as_ref()
@@ -1856,403 +1712,170 @@ impl ContainersApp {
 /// materialises an omitted stable identity only when a result is activated.
 const RESOURCE_SNAPSHOT_LIMIT: usize = 200;
 
-fn container_resource(
-    container: &crate::model::Container,
-    engine_live: bool,
-    continuation: Option<&ContinuationRuntimeIdentity>,
-) -> Resource {
-    let mut resource = Resource::new(
+/// `effect`, as a row offers it: an engine effect only while the engine
+/// answers.
+fn offered(effect: &ContainersEffect, engine_live: bool, offline: &str) -> ActionSpec {
+    let spec = effect.bound();
+    if engine_live || effect.engine_operation().is_none() {
+        spec
+    } else {
+        spec.unavailable("engine_offline", offline)
+    }
+}
+
+const ENGINE_OFFLINE: &str = "Container engine actions are unavailable in demo mode";
+
+fn container_row(container: &crate::model::Container, engine_live: bool) -> LiveRow {
+    let id = || container.id.clone();
+    let mut row = LiveRow::new(
         format!("container:{}", container.id),
         "containers.container",
         container.name.clone(),
-    );
-    let selection = vec!["select".to_string(), container.id.clone()];
-    if let Ok(spec) = ActionSpec::operation(
-        "select",
-        format!("Open {}", container.name),
-        OperationKind::View,
-        "containers.container",
-        &selection,
-    ) {
-        resource.actions.push(spec);
-    }
-    let verbs: &[(&str, &str)] = match container.status {
-        crate::model::ContainerStatus::Running | crate::model::ContainerStatus::Restarting => &[
-            ("stop", "Stop"),
-            ("restart", "Restart"),
-            ("pause", "Pause"),
-            ("shell", "Open shell"),
+    )
+    .operation({
+        let mut open = ContainersEffect::SelectContainer { id: Some(id()) }.bound();
+        open.label = format!("Open {}", container.name);
+        open
+    });
+    let effects = match container.status {
+        crate::model::ContainerStatus::Running | crate::model::ContainerStatus::Restarting => vec![
+            ContainersEffect::Stop { container: id() },
+            ContainersEffect::Restart { container: id() },
+            ContainersEffect::Pause { container: id() },
+            ContainersEffect::Shell { container: id() },
         ],
-        crate::model::ContainerStatus::Paused => &[
-            ("unpause", "Resume"),
-            ("stop", "Stop"),
-            ("remove", "Remove"),
-            ("shell", "Open shell"),
+        crate::model::ContainerStatus::Paused => vec![
+            ContainersEffect::Unpause { container: id() },
+            ContainersEffect::Stop { container: id() },
+            ContainersEffect::RemoveContainer { container: id() },
+            ContainersEffect::Shell { container: id() },
         ],
-        _ => &[("start", "Start"), ("remove", "Remove")],
+        _ => vec![
+            ContainersEffect::Start { container: id() },
+            ContainersEffect::RemoveContainer { container: id() },
+        ],
     };
-    for (verb, label) in verbs {
-        let payload = vec![(*verb).to_string(), container.id.clone()];
-        if let Ok(spec) = ActionSpec::operation(
-            *verb,
-            *label,
-            OperationKind::Effect,
-            "containers.container",
-            &payload,
-        ) {
-            let mut spec = spec.requiring(PermissionRequirement::Admin).privileged();
-            if *verb == "restart"
-                && let Some(identity) = continuation
-                && identity.target_id == container.id
-            {
-                spec = with_restart_continuation(spec, identity.clone());
-            }
-            if *verb == "remove" {
-                spec = spec.destructive();
-            } else if *verb != "restart" && *verb != "shell" {
-                spec = spec.retry_policy(RetryPolicy::Idempotent);
-            }
-            if !engine_live {
-                spec = spec.unavailable(
-                    "engine_offline",
-                    "Container engine actions are unavailable in demo mode",
-                );
-            }
-            resource.actions.push(spec);
-        }
+    for effect in &effects {
+        row = row.operation(offered(effect, engine_live, ENGINE_OFFLINE));
     }
-    let mut logs = Resource::new(
+    row.row(logs_row(container))
+}
+
+fn logs_row(container: &crate::model::Container) -> LiveRow {
+    LiveRow::new(
         format!("container:{}:logs", container.id),
         "containers.logs",
         format!("{} logs", container.name),
-    );
-    if let Ok(spec) = ActionSpec::operation(
-        "open",
-        "Open logs",
-        OperationKind::View,
-        "containers.logs",
-        &["logs", container.id.as_str()],
-    ) {
-        logs.actions.push(spec);
-    }
-    resource.children.push(logs);
-    resource
-}
-
-/// Declare the controlled-runtime continuation identity of a `restart` spec.
-fn with_restart_continuation(
-    spec: ActionSpec,
-    identity: ContinuationRuntimeIdentity,
-) -> ActionSpec {
-    spec.with_continuation_identity(move |query| {
-        let target = ui::tilo_actions::ContinuationKey::new(
-            "containers.controlled.target",
-            [
-                identity.runtime_epoch.to_be_bytes().to_vec(),
-                identity.target_epoch.to_be_bytes().to_vec(),
-                identity.target_id.as_bytes().to_vec(),
-            ],
-        );
-        let handler = ui::tilo_actions::ContinuationKey::new(
-            "containers.controlled.handler",
-            [b"restart-v1".to_vec()],
-        );
-        Some(match query {
-            ui::tilo_actions::ContinuationQuery::Exact(_) => {
-                ui::tilo_actions::ContinuationEvidence::Exact { target, handler }
-            }
-            ui::tilo_actions::ContinuationQuery::Draft => {
-                ui::tilo_actions::ContinuationEvidence::Draft {
-                    resolution_domain: target,
-                    handler,
-                }
-            }
-        })
+    )
+    .effect(&ContainersEffect::OpenLogs {
+        container: container.id.clone(),
     })
 }
 
-fn image_resource(image: &crate::model::Image, engine_live: bool) -> Resource {
+fn image_row(image: &crate::model::Image, engine_live: bool) -> LiveRow {
     let reference = image.reference();
-    let mut resource = Resource::new(
+    LiveRow::new(
         format!("image:{reference}"),
         "containers.image",
         reference.clone(),
-    );
-    if let Ok(spec) = ActionSpec::operation(
-        "open",
-        "Show image",
-        OperationKind::View,
-        "containers.image",
-        &["open", reference.as_str()],
-    ) {
-        resource.actions.push(spec);
-    }
-    if let Ok(spec) = ActionSpec::operation(
-        "remove",
-        "Remove image",
-        OperationKind::Effect,
-        "containers.image",
-        &["remove", reference.as_str()],
-    ) {
-        let mut spec = spec
-            .requiring(PermissionRequirement::Admin)
-            .privileged()
-            .destructive();
-        if !engine_live {
-            spec = spec.unavailable(
-                "engine_offline",
-                "Container engine actions are unavailable in demo mode",
-            );
-        }
-        resource.actions.push(spec);
-    }
-    resource
+    )
+    .effect(&ContainersEffect::ShowImage {
+        image: reference.clone(),
+    })
+    .operation(offered(
+        &ContainersEffect::RemoveImage { image: reference },
+        engine_live,
+        ENGINE_OFFLINE,
+    ))
 }
 
-fn volume_resource(volume: &crate::model::Volume, engine_live: bool) -> Resource {
-    let mut resource = Resource::new(
+fn volume_row(volume: &crate::model::Volume, engine_live: bool) -> LiveRow {
+    LiveRow::new(
         format!("volume:{}", volume.name),
         "containers.volume",
         volume.name.clone(),
-    );
-    if let Ok(spec) = ActionSpec::operation(
-        "open",
-        "Show volume",
-        OperationKind::View,
-        "containers.volume",
-        &["open", volume.name.as_str()],
-    ) {
-        resource.actions.push(spec);
-    }
-    if let Ok(spec) = ActionSpec::operation(
-        "remove",
-        "Remove volume",
-        OperationKind::Effect,
-        "containers.volume",
-        &["remove", volume.name.as_str()],
-    ) {
-        let mut spec = spec
-            .requiring(PermissionRequirement::Admin)
-            .privileged()
-            .destructive();
-        if !engine_live {
-            spec = spec.unavailable(
-                "engine_offline",
-                "Container engine actions are unavailable in demo mode",
-            );
-        }
-        resource.actions.push(spec);
-    }
-    resource
+    )
+    .effect(&ContainersEffect::ShowVolume {
+        volume: volume.name.clone(),
+    })
+    .operation(offered(
+        &ContainersEffect::RemoveVolume {
+            volume: volume.name.clone(),
+        },
+        engine_live,
+        ENGINE_OFFLINE,
+    ))
 }
 
-fn distrobox_resource(distrobox: &crate::model::DistroBox, engine_live: bool) -> Resource {
-    let mut resource = Resource::new(
+fn distrobox_row(distrobox: &crate::model::DistroBox, engine_live: bool) -> LiveRow {
+    LiveRow::new(
         format!("distrobox:{}", distrobox.name),
         "containers.distrobox",
         distrobox.name.clone(),
-    );
-    if let Ok(spec) = ActionSpec::operation(
-        "open",
-        "Show distrobox",
-        OperationKind::View,
-        "containers.distrobox",
-        &["open", distrobox.name.as_str()],
-    ) {
-        resource.actions.push(spec);
-    }
-    if let Ok(spec) = ActionSpec::operation(
-        "enter",
-        "Enter distrobox",
-        OperationKind::Effect,
-        "containers.distrobox",
-        &["enter", distrobox.name.as_str()],
-    ) {
-        let mut spec = spec.requiring(PermissionRequirement::Admin).privileged();
-        if !engine_live {
-            spec = spec.unavailable(
-                "engine_offline",
-                "Distrobox actions are unavailable in demo mode",
-            );
-        }
-        resource.actions.push(spec);
-    }
-    resource
+    )
+    .effect(&ContainersEffect::ShowDistrobox {
+        distrobox: distrobox.name.clone(),
+    })
+    .operation(offered(
+        &ContainersEffect::EnterDistrobox {
+            distrobox: distrobox.name.clone(),
+        },
+        engine_live,
+        "Distrobox actions are unavailable in demo mode",
+    ))
 }
 
 impl ContainersApp {
-    fn answer_resource_operation(
+    /// Ask the engine to `verb` the `kind` of thing named `target`.
+    pub(crate) fn run_engine_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let Some(verb) = args.first().map(String::as_str) else {
-            return Err("missing operation".into());
-        };
-        let target = args.get(1).map(String::as_str).unwrap_or_default();
-        if kind == OperationKind::View && type_id == "containers.engine" && verb == "create" {
-            self.create_open = true;
-            self.focus_create_field(CreateField::Image);
-            return Ok(true);
-        }
-        if kind == OperationKind::View && type_id == "containers.container" && verb == "select" {
-            self.pending_resource_selection = Some(target.to_string());
-            return Ok(true);
-        }
-        if kind == OperationKind::View && type_id == "containers.logs" && verb == "logs" {
-            self.pending_resource_selection = Some(target.to_string());
-            self.pending_resource_section = Some(Section::Containers);
-            self.pending_resource_tab = Some(DetailTab::Logs);
-            return Ok(true);
-        }
-        if kind == OperationKind::View && verb == "open" {
-            self.pending_resource_section = Some(match type_id {
-                "containers.image" => Section::Images,
-                "containers.volume" => Section::Volumes,
-                "containers.distrobox" => Section::Distrobox,
-                _ => return Ok(false),
-            });
-            return Ok(true);
-        }
-        if kind != OperationKind::Effect {
-            return Ok(false);
-        }
+        kind: &str,
+        verb: &str,
+        target: &str,
+    ) -> Result<(), String> {
         if !self.engine.live {
             return Err("container engine actions are unavailable while Podman is offline".into());
         }
         #[cfg(test)]
         if let Some(result) = self.controlled_immediate(
-            format!("{type_id}.{verb}"),
+            format!("{kind}.{verb}"),
             target.to_string(),
-            args.clone(),
+            vec![verb.to_string(), target.to_string()],
         ) {
             result?;
             self.spawn_refresh();
             self.show_toast(format!("{verb} accepted for {target}"), false);
-            return Ok(true);
+            return Ok(());
         }
-        match type_id {
-            "containers.container" => match verb {
-                "start" => {
-                    podman::run_action(Action::Start, target)?;
-                }
-                "stop" => {
-                    podman::run_action(Action::Stop, target)?;
-                }
-                "restart" => {
-                    podman::run_action(Action::Restart, target)?;
-                }
-                "pause" => {
-                    podman::run_action(Action::Pause, target)?;
-                }
-                "unpause" => {
-                    podman::run_action(Action::Unpause, target)?;
-                }
-                "remove" => {
-                    podman::run_action(Action::Remove, target)?;
-                }
-                "shell" => {
-                    crate::terminal::spawn_exec_attach(target, "/bin/sh")
-                        .map_err(|e| e.to_string())?;
-                }
-                _ => return Ok(false),
-            },
-            "containers.image" if verb == "remove" => {
-                podman::remove_image(target, true)?;
+        match (kind, verb) {
+            ("containers.container", "start") => podman::run_action(Action::Start, target)?,
+            ("containers.container", "stop") => podman::run_action(Action::Stop, target)?,
+            ("containers.container", "restart") => podman::run_action(Action::Restart, target)?,
+            ("containers.container", "pause") => podman::run_action(Action::Pause, target)?,
+            ("containers.container", "unpause") => podman::run_action(Action::Unpause, target)?,
+            ("containers.container", "remove") => podman::run_action(Action::Remove, target)?,
+            ("containers.container", "shell") => {
+                crate::terminal::open(crate::terminal::exec_attach_intent(target))?;
             }
-            "containers.volume" if verb == "remove" => {
-                podman::remove_volume(target, false)?;
+            ("containers.image", "remove") => podman::remove_image(target, true)?,
+            ("containers.volume", "remove") => podman::remove_volume(target, false)?,
+            ("containers.distrobox", "enter") => {
+                crate::terminal::open(crate::terminal::distrobox_enter_intent(target))?;
             }
-            "containers.distrobox" if verb == "enter" => {
-                crate::terminal::spawn_distrobox_enter(target).map_err(|e| e.to_string())?;
-            }
-            _ => return Ok(false),
+            _ => return Err(format!("`{verb}` is not a container engine operation")),
         }
         self.spawn_refresh();
         self.show_toast(format!("{verb} accepted for {target}"), false);
-        Ok(true)
+        Ok(())
     }
 }
 
 impl Widget for ContainersApp {
-    ui::provides!(
-        dyn ui::history_mode::capability::DocumentHistory,
-        dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource
-    );
+    ui::provides!(dyn ui::widget::controls::ActionControls);
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[
-            "containers.engine",
-            "containers.container",
-            "containers.logs",
-            "containers.image",
-            "containers.volume",
-            "containers.distrobox",
-        ]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
-        let (doc, _) = ui::doc::document(doc, path);
-        #[cfg(test)]
-        if self
-            .history_runtime_replacement
-            .as_ref()
-            .is_some_and(|(replace, _, _)| replace.replace(false))
-            && let Some((_, runtime, identity)) = self.history_runtime_replacement.take()
-        {
-            self.controlled_runtime = Some(runtime);
-            self.continuation_runtime_identity = Some(identity);
-        }
-        #[cfg(test)]
-        if self
-            .history_arm_restart
-            .as_ref()
-            .is_some_and(|arm| arm.replace(false))
-        {
-            self.apply_action(Action::Restart, "armed-container");
-        }
-        if let Some(target) = self.pending_resource_selection.take() {
-            ViewDoc::set_selected(doc, Some(&target));
-        }
-        if let Some(section) = self.pending_resource_section.take() {
-            ViewDoc::set_section(doc, section);
-        }
-        if let Some(tab) = self.pending_resource_tab.take() {
-            ViewDoc::set_tab(doc, tab);
-        }
-        self.drain_bg(doc);
-        // Seed a representative selection on the very first sync of a demo /
-        // shots session so the detail view is populated out of the box.
-        if self.seed_demo && !self.seeded {
-            self.seed_demo_scene(doc);
-        }
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
+        let (doc, _) = ui::doc::document_ref(doc, path);
+        self.drain_bg();
         // Periodically re-probe the engine for fresh stats / state. Controlled
         // fixtures own that cadence through the request channel; a wall-clock
         // tick would race their emptiness asserts under a slow runner.
@@ -2268,10 +1891,8 @@ impl Widget for ContainersApp {
         } {
             self.spawn_refresh();
         }
-        self.hydrate_selection(doc);
+        self.hydrate_selection();
         self.refresh_view(doc);
-        #[cfg(test)]
-        self.publish_history_retention();
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -2381,9 +2002,9 @@ impl Widget for ContainersApp {
         let content = Rect::new(rail.x1, r.y0, r.x1, r.y1);
         match view.section {
             Section::Containers => self.draw_containers(scene, tr, theme, content, &view),
-            Section::Images => self.draw_images(scene, tr, theme, content, &view),
-            Section::Volumes => self.draw_volumes(scene, tr, theme, content, &view),
-            Section::Distrobox => self.draw_distrobox(scene, tr, theme, content, &view),
+            Section::Images => self.draw_images(scene, tr, theme, content),
+            Section::Volumes => self.draw_volumes(scene, tr, theme, content),
+            Section::Distrobox => self.draw_distrobox(scene, tr, theme, content),
         }
 
         // --- Overlays ---
@@ -2434,7 +2055,7 @@ impl Widget for ContainersApp {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                Color::from_rgba8(0, 0, 0, 128),
+                ui::paint::with_alpha(c.surfaces.scrim, 128),
                 None,
                 &r,
             );
@@ -2472,7 +2093,7 @@ impl Widget for ContainersApp {
                 }
             }
             *ctx.handled = true;
-            self.refresh_view(ctx.state);
+            self.refresh_view(&ctx.state);
             return;
         }
 
@@ -2487,7 +2108,7 @@ impl Widget for ContainersApp {
         {
             self.open_container_palette();
             *ctx.handled = true;
-            self.refresh_view(ctx.state);
+            self.refresh_view(&ctx.state);
             return;
         }
 
@@ -2499,10 +2120,10 @@ impl Widget for ContainersApp {
                 event,
                 ctx.scale_factor,
                 *ctx.modifiers,
-                ctx.state,
+                &mut ctx.state,
                 ctx.handled,
             );
-            self.refresh_view(ctx.state);
+            self.refresh_view(&ctx.state);
             return;
         }
         if self.prompt.is_some() {
@@ -2510,10 +2131,10 @@ impl Widget for ContainersApp {
                 event,
                 ctx.scale_factor,
                 *ctx.modifiers,
-                ctx.state,
+                &mut ctx.state,
                 ctx.handled,
             );
-            self.refresh_view(ctx.state);
+            self.refresh_view(&ctx.state);
             return;
         }
 
@@ -2528,7 +2149,7 @@ impl Widget for ContainersApp {
                             event,
                             ctx.scale_factor,
                             *ctx.modifiers,
-                            ctx.state,
+                            &mut ctx.state,
                             ctx.path,
                             ctx.focus_target,
                         );
@@ -2539,7 +2160,7 @@ impl Widget for ContainersApp {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.focus_target,
                 );
@@ -2558,7 +2179,7 @@ impl Widget for ContainersApp {
                     && self.view.section == Section::Containers
                     && self.view.selected.is_some();
                 if compact_detail
-                    || self.cursor.x > self.rect.x0 + RAIL_WIDTH + self.list_area_width(ctx.state)
+                    || self.cursor.x > self.rect.x0 + RAIL_WIDTH + self.list_area_width(&ctx.state)
                 {
                     self.detail_scroll = (self.detail_scroll - dy).max(0.0);
                 } else {
@@ -2577,7 +2198,7 @@ impl Widget for ContainersApp {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.focus_target,
                 );
@@ -2585,14 +2206,14 @@ impl Widget for ContainersApp {
                     self.open_container_palette();
                     *ctx.handled = true;
                 } else {
-                    self.on_click(ctx.state, ctx.handled);
+                    self.on_click(&mut ctx.state, ctx.handled);
                     if self.create_open {
                         self.route_create_input(
                             self.create_focus,
                             event,
                             ctx.scale_factor,
                             *ctx.modifiers,
-                            ctx.state,
+                            &mut ctx.state,
                             ctx.path,
                             ctx.focus_target,
                         );
@@ -2612,18 +2233,17 @@ impl Widget for ContainersApp {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.focus_target,
                 );
-                self.after_create_input(field);
                 *ctx.handled = true;
             }
             _ => {}
         }
         // Refresh the cached view state after any mutation so the next draw
         // reflects it (draw has no doc access).
-        self.refresh_view(ctx.state);
+        self.refresh_view(&ctx.state);
     }
 
     fn name(&self) -> &'static str {
@@ -2798,11 +2418,15 @@ impl Widget for ContainersApp {
         )
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one semantic target table for every painted a11y control"
+    )]
     fn perform_semantic_action(
         &mut self,
         target: &str,
         action: &AccessibilityAction,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, _) = ui::doc::document(state, path);
@@ -2876,7 +2500,7 @@ impl Widget for ContainersApp {
                     return true;
                 }
                 AccessibilityAction::SetValue(value) => {
-                    ViewDoc::set_create_field(state, field, value);
+                    self.set_create_field(state, field, value);
                     self.focus_create_field(field);
                     self.refresh_view(state);
                     return true;
@@ -2934,125 +2558,6 @@ impl Widget for ContainersApp {
 
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
-    }
-}
-
-impl ui::search::capability::SearchSource for ContainersApp {
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_index.provider())]
-    }
-}
-
-impl ui::resources::PublishesResources for ContainersApp {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut root = Resource::new("containers", "containers.engine", "Containers");
-        if let Ok(spec) = ActionSpec::operation(
-            "create",
-            "Create container",
-            OperationKind::View,
-            "containers.engine",
-            &["create"],
-        ) {
-            let spec = if self.engine.live {
-                spec
-            } else {
-                spec.unavailable(
-                    "engine_offline",
-                    "Creating containers requires a connected Podman engine",
-                )
-            };
-            root.actions.push(spec);
-        }
-        for container in &self.engine.containers {
-            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
-                break;
-            }
-            root.children.push(container_resource(
-                container,
-                self.engine.live,
-                self.continuation_runtime_identity.as_ref(),
-            ));
-        }
-        for image in &self.engine.images {
-            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
-                break;
-            }
-            root.children.push(image_resource(image, self.engine.live));
-        }
-        for volume in &self.engine.volumes {
-            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
-                break;
-            }
-            root.children
-                .push(volume_resource(volume, self.engine.live));
-        }
-        for distrobox in &self.engine.distroboxes {
-            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
-                break;
-            }
-            root.children
-                .push(distrobox_resource(distrobox, self.engine.live));
-        }
-        vec![root]
-    }
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
-        if let Some(container_id) = id
-            .strip_prefix("container:")
-            .and_then(|rest| rest.strip_suffix(":logs"))
-        {
-            let container = self
-                .engine
-                .containers
-                .iter()
-                .find(|item| item.id == container_id)?;
-            return container_resource(
-                container,
-                self.engine.live,
-                self.continuation_runtime_identity.as_ref(),
-            )
-            .children
-            .into_iter()
-            .find(|child| child.id.0 == id);
-        }
-        if let Some(container_id) = id.strip_prefix("container:") {
-            return self
-                .engine
-                .containers
-                .iter()
-                .find(|item| item.id == container_id)
-                .map(|item| {
-                    container_resource(
-                        item,
-                        self.engine.live,
-                        self.continuation_runtime_identity.as_ref(),
-                    )
-                });
-        }
-        if let Some(reference) = id.strip_prefix("image:") {
-            return self
-                .engine
-                .images
-                .iter()
-                .find(|item| item.reference() == reference)
-                .map(|item| image_resource(item, self.engine.live));
-        }
-        if let Some(name) = id.strip_prefix("volume:") {
-            return self
-                .engine
-                .volumes
-                .iter()
-                .find(|item| item.name == name)
-                .map(|item| volume_resource(item, self.engine.live));
-        }
-        if let Some(name) = id.strip_prefix("distrobox:") {
-            return self
-                .engine
-                .distroboxes
-                .iter()
-                .find(|item| item.name == name)
-                .map(|item| distrobox_resource(item, self.engine.live));
-        }
-        None
     }
 }
 
@@ -3146,18 +2651,11 @@ impl ui::widget::controls::ActionControls for ContainersApp {
     }
 }
 
-impl ui::history_mode::capability::DocumentHistory for ContainersApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
-}
-
 // =====================================================================
-// Cached view state
+// Where the user is
 //
-// `draw` has no access to the CRDT document, so the app keeps a small
-// snapshot of the doc-backed view state refreshed at the tail of every
-// `handle_event` and in `sync`.
+// The section, the selected container and its detail tab are this window's
+// own: never in the document, never shared, never undone.
 // =====================================================================
 
 #[derive(Clone)]
@@ -3165,7 +2663,6 @@ pub(crate) struct ViewState {
     pub section: Section,
     pub selected: Option<String>,
     pub tab: DetailTab,
-    pub search: String,
 }
 
 impl Default for ViewState {
@@ -3174,7 +2671,6 @@ impl Default for ViewState {
             section: Section::Containers,
             selected: None,
             tab: DetailTab::Logs,
-            search: String::new(),
         }
     }
 }
@@ -3202,71 +2698,63 @@ fn pull_progress_node(pull: &PullProgress) -> AccessNode {
 }
 
 impl ContainersApp {
-    /// Seeds a representative demo scene on the first sync of a demo or
-    /// screenshot session so the detail view is populated out of the box.
-    fn seed_demo_scene(&mut self, doc: &mut AutoCommit) {
-        self.seeded = true;
-        // An optional env hook selects a demo scene for screenshots
-        // (`containers` / `images` / `volumes` / `distrobox` / `stats` /
-        // `inspect` / `create` / `combo` / `pull` / `collapsed`).
-        let scene = std::env::var("TILO_CONTAINERS_DEMO").unwrap_or_default();
-        match scene.as_str() {
-            "images" => ViewDoc::set_section(doc, Section::Images),
-            "volumes" => ViewDoc::set_section(doc, Section::Volumes),
-            "distrobox" => ViewDoc::set_section(doc, Section::Distrobox),
+    /// Stage a screenshot scenario (`None` for a plain `--shots`): the
+    /// section, selection and tab it shows, and the overlay it has open. The
+    /// engine and the draft are the scenario's already.
+    pub fn stage_scene(&mut self, scenario: Option<&str>) {
+        let scene = scenario.unwrap_or_default();
+        match scene {
+            "images" | "pull" => self.show_section(Section::Images),
+            "volumes" => self.show_section(Section::Volumes),
+            "distrobox" => self.show_section(Section::Distrobox),
             "create" | "combo" => {
-                self.create_open = true;
-                self.create_focus = CreateField::Image;
-                ViewDoc::set_create_field(doc, CreateField::Name, "web-frontend");
-                ViewDoc::set_create_field(doc, CreateField::Image, "nginx");
-                ViewDoc::set_create_field(doc, CreateField::Ports, "8080:80, 8443:443");
-                ViewDoc::set_create_field(doc, CreateField::Env, "TZ=UTC");
-                ViewDoc::set_create_field(doc, CreateField::Volumes, "site:/usr/share/nginx/html");
-                if scene == "combo" {
-                    // Open the image suggestion dropdown for the shot.
-                    self.combo.open = true;
-                }
-            }
-            "pull" => {
-                ViewDoc::set_section(doc, Section::Images);
-                self.pull = Some(PullProgress {
-                    reference: "docker.io/library/alpine:3.20".into(),
-                    lines: vec![
-                        "Trying to pull docker.io/library/alpine:3.20...".into(),
-                        "Getting image source signatures".into(),
-                        "Copying blob sha256:9fa9226be034 [===========>     ] 2.1MiB / 3.4MiB"
-                            .into(),
-                        "Copying config sha256:1a2b3c4d5e6f done".into(),
-                    ],
-                    done: false,
-                    failed: None,
-                });
+                self.open_create();
+                // The image suggestion dropdown, open over the form.
+                self.combo.open = scene == "combo";
             }
             "collapsed" => self.sidebar_flap.snap(false),
-            // Capture the honest "no engine" zero-state (what the live app
-            // shows when rootless podman is not reachable).
-            "empty" => {
-                self.engine = Engine {
-                    connection: "No container engine — is podman installed?".into(),
-                    live: false,
-                    ..Engine::default()
-                };
-                self.search_index.sync(&self.engine);
-            }
-            // Open the shared Ctrl+K palette (seeded with the sample
-            // containers) so `--shots` can capture the search surface.
+            // The shared Ctrl+K palette, seeded with the sample containers.
             "palette" => self.open_container_palette(),
+            "confirm" => {
+                let (name, id) = self.engine.containers.first().map_or_else(
+                    || ("web".to_string(), "web".to_string()),
+                    |c| (c.name.clone(), c.id.clone()),
+                );
+                self.confirm = Some(Confirm {
+                    name,
+                    verb: "Remove container".into(),
+                    target: ConfirmTarget::Container {
+                        id,
+                        action: Action::Remove,
+                    },
+                });
+            }
+            "prompt" => {
+                self.prompt = Some(Prompt {
+                    kind: PromptKind::NewVolume,
+                    title: "New volume".into(),
+                    placeholder: "my-volume".into(),
+                    value: "backups".into(),
+                    context: String::new(),
+                });
+            }
             _ => {}
         }
-        let tab = match scene.as_str() {
-            "stats" => DetailTab::Stats,
-            "inspect" => DetailTab::Inspect,
-            "terminal" => DetailTab::Terminal,
-            _ => DetailTab::Logs,
-        };
-        let list_scene = matches!(scene.as_str(), "images" | "volumes" | "distrobox" | "pull");
+        if scene == "pull" {
+            self.pull = Some(PullProgress {
+                reference: "docker.io/library/alpine:3.20".into(),
+                lines: vec![
+                    "Trying to pull docker.io/library/alpine:3.20...".into(),
+                    "Getting image source signatures".into(),
+                    "Copying blob sha256:9fa9226be034 [===========>     ] 2.1MiB / 3.4MiB".into(),
+                    "Copying config sha256:1a2b3c4d5e6f done".into(),
+                ],
+                done: false,
+                failed: None,
+            });
+        }
+        let list_scene = matches!(scene, "images" | "volumes" | "distrobox" | "pull");
         if !list_scene
-            && ViewDoc::selected(doc).is_none()
             && let Some(first) = self
                 .engine
                 .containers
@@ -3274,8 +2762,14 @@ impl ContainersApp {
                 .find(|c| c.status.is_running())
                 .or_else(|| self.engine.containers.first())
         {
-            ViewDoc::set_selected(doc, Some(&first.id));
-            ViewDoc::set_tab(doc, tab);
+            let id = first.id.clone();
+            self.select_container(Some(id));
+            self.show_tab(match scene {
+                "stats" => DetailTab::Stats,
+                "inspect" => DetailTab::Inspect,
+                "terminal" => DetailTab::Terminal,
+                _ => DetailTab::Logs,
+            });
         }
     }
 
@@ -3287,6 +2781,7 @@ impl ContainersApp {
         self.create_inputs
             .get_mut(field.index())
             .expect("every CreateField has one shared input")
+            .control_mut()
     }
 
     #[allow(
@@ -3297,6 +2792,7 @@ impl ContainersApp {
         self.create_inputs
             .get(field.index())
             .expect("every CreateField has one shared input")
+            .control()
     }
 
     pub(crate) fn focus_create_field(&mut self, field: CreateField) {
@@ -3313,13 +2809,20 @@ impl ContainersApp {
         }
     }
 
+    /// Hand `event` to the field's control, which submits what it typed
+    /// as a splice of the draft. Typing in the image field opens its
+    /// suggestions.
+    #[allow(
+        clippy::expect_used,
+        reason = "CreateField::COUNT and CreateField::ALL define the fixed six-slot form together"
+    )]
     pub(crate) fn route_create_input(
         &mut self,
         field: CreateField,
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         path: &ObjId,
         focus_target: &mut Option<NodeId>,
     ) {
@@ -3330,12 +2833,14 @@ impl ContainersApp {
         };
         let mut ignored = false;
         Widget::handle_event(
-            self.create_input_mut(field),
+            self.create_inputs
+                .get_mut(field.index())
+                .expect("every CreateField has one shared input"),
             event,
             &mut ui::widget::EventCtx {
                 scale_factor,
                 modifiers: &modifiers,
-                state: doc,
+                state: doc.reborrow(),
                 path,
                 handled: &mut ignored,
                 focus_target,
@@ -3343,59 +2848,23 @@ impl ContainersApp {
                 taffy: &taffy,
             },
         );
-        let after = self.create_input(field).value().to_string();
-        if before != after {
-            ViewDoc::set_create_field(doc, field, &after);
-            self.sync_create_input(field, doc, path);
-        }
-    }
-
-    pub(crate) fn after_create_input(&mut self, field: CreateField) {
-        if self.create_input_mut(field).take_dirty().is_some() && field == CreateField::Image {
+        if field == CreateField::Image && self.create_input(field).value() != before {
             self.combo.open = true;
             self.combo.highlight = 0;
         }
     }
 
-    fn sync_create_input(&mut self, field: CreateField, doc: &mut AutoCommit, root: &ObjId) {
-        match ViewDoc::stored_create_field(doc, field) {
-            crate::doc::StoredCreateField::Text { value, object } => {
-                let input = self.create_input_mut(field);
-                if input.bound_obj() != Some(&object) {
-                    input.bind_text(object);
-                }
-                Widget::sync(input, doc, root);
-                debug_assert_eq!(input.value(), value);
-            }
-            crate::doc::StoredCreateField::Absent
-            | crate::doc::StoredCreateField::WrongType
-            | crate::doc::StoredCreateField::Conflict => {
-                let input = self.create_input_mut(field);
-                input.clear_text_binding();
-                input.set_text("");
-            }
-        }
-    }
-
-    fn sync_create_inputs(&mut self, doc: &mut AutoCommit, root: &ObjId) {
-        for field in CreateField::ALL {
-            self.sync_create_input(field, doc, root);
+    /// Show the draft's texts in the form's fields, and focus the form's
+    /// field while it is open.
+    pub(crate) fn refresh_view(&mut self, doc: &AutoCommit) {
+        for input in &mut self.create_inputs {
+            input.pull(doc);
         }
         if self.create_open {
             self.focus_create_field(self.create_focus);
         } else {
             self.blur_create_fields();
         }
-    }
-
-    pub(crate) fn refresh_view(&mut self, doc: &mut AutoCommit) {
-        self.sync_create_inputs(doc, &automerge::ROOT);
-        self.view = ViewState {
-            section: ViewDoc::section(doc),
-            selected: ViewDoc::selected(doc),
-            tab: ViewDoc::tab(doc),
-            search: ViewDoc::search(doc),
-        };
     }
 
     /// Width of the list panel (full content width when no detail is open,
@@ -3504,6 +2973,21 @@ impl ContainersApp {
         self.combo.highlight = 0;
     }
 
+    /// The section shown.
+    pub fn section(&self) -> Section {
+        self.view.section
+    }
+
+    /// The selected container's id.
+    pub fn selected(&self) -> Option<&str> {
+        self.view.selected.as_deref()
+    }
+
+    /// The selected container's detail tab.
+    pub fn tab(&self) -> DetailTab {
+        self.view.tab
+    }
+
     /// Whether the create modal is open.
     pub fn is_create_open(&self) -> bool {
         self.create_open
@@ -3530,7 +3014,6 @@ impl ContainersApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::ReadDoc;
     use winit::event::KeyEvent;
     use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
 
@@ -3555,24 +3038,6 @@ mod tests {
         let mut t = TaffyTree::<()>::new();
         let n = t.new_leaf(Style::default()).unwrap();
         (t, n)
-    }
-
-    fn inert_root_for_history_red() -> ContainersApp {
-        ContainersApp::history_test_root()
-    }
-
-    #[test]
-    fn baseline_fresh_sync_must_not_author_create_draft() {
-        let mut app = inert_root_for_history_red();
-        let mut doc = AutoCommit::new();
-        let heads = doc.get_heads();
-        Widget::sync(&mut app, &mut doc, &automerge::ROOT);
-        assert_eq!(
-            doc.get_heads(),
-            heads,
-            "ordinary sync authored the document"
-        );
-        assert!(doc.get(&automerge::ROOT, "view").unwrap().is_none());
     }
 
     /// The compact breakpoint preserves tablet and desktop while protecting large text, and compact selection is a full-page drill-in.
@@ -3602,7 +3067,7 @@ mod tests {
 
         // --- phase: compact_selection_is_a_full_page_drill_in ---
         {
-            let mut app = ContainersApp::new(false);
+            let mut app = ContainersApp::sample();
             app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
             app.view.selected = app
                 .engine
@@ -3632,7 +3097,7 @@ mod tests {
     fn palette_and_dialogs_drive_container_operations() {
         // --- phase: open_palette_seeds_one_row_per_container ---
         {
-            let mut app = ContainersApp::new(false);
+            let mut app = ContainersApp::sample();
             assert!(!app.palette_open);
             let count = app.engine.containers.len();
             assert!(count > 0, "sample engine has containers to search");
@@ -3658,7 +3123,7 @@ mod tests {
 
         // --- phase: enter_on_a_palette_row_selects_that_container ---
         {
-            let mut app = ContainersApp::new(false);
+            let mut app = ContainersApp::sample();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
 
@@ -3673,7 +3138,7 @@ mod tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut doc,
+                    state: ui::widget::Edits::lend(&mut doc),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -3681,11 +3146,11 @@ mod tests {
                     taffy: &taffy,
                 },
             );
-            app.dispatch_palette_invocation_for_test(&mut doc);
+            app.dispatch_palette_invocation_for_test(&doc);
 
             assert!(!app.palette_open, "Enter closes the palette");
             assert_eq!(
-                ViewDoc::selected(&doc).as_deref(),
+                app.view.selected.as_deref(),
                 Some(expected.as_str()),
                 "activating a palette row selects that container"
             );
@@ -3693,7 +3158,7 @@ mod tests {
 
         // --- phase: confirm_dialog_primary_removes_image_and_escape_cancels ---
         {
-            let mut app = ContainersApp::new(false);
+            let mut app = ContainersApp::sample();
             app.rect = Rect::new(0.0, 0.0, 900.0, 700.0);
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
@@ -3725,7 +3190,7 @@ mod tests {
                 "the image was removed on confirm"
             );
 
-            let mut b = ContainersApp::new(false);
+            let mut b = ContainersApp::sample();
             b.rect = Rect::new(0.0, 0.0, 900.0, 700.0);
             let refb = b.engine.images[0].reference();
             let beforeb = b.engine.images.len();
@@ -3746,7 +3211,7 @@ mod tests {
 
         // --- phase: prompt_dialog_creates_volume_from_typed_field ---
         {
-            let mut app = ContainersApp::new(false);
+            let mut app = ContainersApp::sample();
             app.rect = Rect::new(0.0, 0.0, 900.0, 700.0);
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
@@ -3822,7 +3287,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: doc,
+                state: ui::widget::Edits::lend(doc),
                 path: root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -3837,7 +3302,7 @@ mod tests {
     fn lifecycle_effects_and_resources_are_exported_and_bounded() {
         // --- phase: lifecycle_control_emits_the_exported_effect_instead_of_running_podman_inline ---
         {
-            let mut app = ContainersApp::new(false);
+            let mut app = ContainersApp::sample();
             app.engine.live = true;
             let id = app.engine.containers[0].id.clone();
             app.apply_action(Action::Stop, &id);
@@ -3857,7 +3322,7 @@ mod tests {
 
         // --- phase: resource_snapshot_is_bounded_and_omitted_identity_resolves_lazily ---
         {
-            let mut app = ContainersApp::new(false);
+            let mut app = ContainersApp::sample();
             let template = app.engine.containers[0].clone();
             app.engine.containers.clear();
             for index in 0..(RESOURCE_SNAPSHOT_LIMIT + 17) {
@@ -3866,40 +3331,38 @@ mod tests {
                 container.name = format!("Container {index:03}");
                 app.engine.containers.push(container);
             }
-            app.search_index.sync(&app.engine);
 
-            let doc = AutoCommit::new();
-            let root = ui::resources::resources(&app, &doc).remove(0);
-            assert_eq!(root.children.len(), RESOURCE_SNAPSHOT_LIMIT);
+            let rows = app.engine_rows();
+            assert_eq!(rows.len(), RESOURCE_SNAPSHOT_LIMIT);
             let omitted = format!("container:durable-{:03}", RESOURCE_SNAPSHOT_LIMIT + 16);
-            assert!(
-                root.children
-                    .iter()
-                    .all(|resource| resource.id.0 != omitted)
-            );
+            assert!(rows.iter().all(|row| row.id() != omitted));
             assert_eq!(
-                ui::resources::resource(&app, &doc, &omitted).map(|resource| resource.id.0),
+                app.engine_row(&omitted).map(|row| row.id().to_owned()),
                 Some(omitted.clone())
             );
 
             app.engine
                 .containers
                 .retain(|container| format!("container:{}", container.id) != omitted);
-            app.search_index.sync(&app.engine);
             assert!(
-                ui::resources::resource(&app, &doc, &omitted).is_none(),
+                app.engine_row(&omitted).is_none(),
                 "a stale palette address cannot recreate removed authority"
             );
             assert!(
-                ui::search::SearchProvider::search(&app.search_index.provider(), &omitted,)
-                    .is_empty()
+                crate::search::engine_entries(&app.engine)
+                    .iter()
+                    .all(|entry| entry
+                        .action
+                        .as_ref()
+                        .is_none_or(|action| action.resource != omitted)),
+                "a removed container is no longer a search hit"
             );
         }
     }
 
     #[test]
-    fn history_controlled_pull_retains_channel_and_settles_once() {
-        let (mut app, requests, _results) = ContainersApp::history_test_runtime_root();
+    fn controlled_pull_retains_channel_and_settles_once() {
+        let (mut app, requests, _results) = ContainersApp::controlled_runtime_root();
         app.start_pull(" quay.io/example/image:1 ");
         let ControlledRuntimeRequest::Pull(request) = requests.recv().unwrap() else {
             panic!("expected one controlled pull request");
@@ -3916,8 +3379,7 @@ mod tests {
 
         request.line("Copying blob 1/1").unwrap();
         request.done().unwrap();
-        let doc = AutoCommit::new();
-        app.drain_bg(&doc);
+        app.drain_bg();
         let pull = app.pull.as_ref().expect("retained pull overlay");
         assert_eq!(
             pull.lines.last().map(String::as_str),
@@ -3930,7 +3392,7 @@ mod tests {
             ControlledRuntimeRequest::Refresh(_)
         ));
         let terminal = app.toast.as_ref().map(|toast| toast.born);
-        app.drain_bg(&doc);
+        app.drain_bg();
         assert_eq!(app.toast.as_ref().map(|toast| toast.born), terminal);
         assert!(
             requests.try_recv().is_err(),
@@ -3940,12 +3402,12 @@ mod tests {
 
     #[test]
     fn controlled_runtime_owns_refresh_cadence() {
-        let (mut app, requests, _results) = ContainersApp::history_test_runtime_root();
+        let (mut app, requests, _results) = ContainersApp::controlled_runtime_root();
         app.last_refresh = Instant::now()
             .checked_sub(crate::podman::REFRESH_INTERVAL + std::time::Duration::from_millis(1))
             .expect("refresh interval fits below Instant::now");
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
+        let doc = AutoCommit::new();
+        app.sync(&doc, &automerge::ROOT);
         assert!(
             requests.try_recv().is_err(),
             "controlled fixtures own refresh; wall-clock must not enqueue Refresh"
@@ -3953,15 +3415,25 @@ mod tests {
     }
 
     #[test]
-    fn history_controlled_create_keeps_copied_args_and_drains_one_snapshot() {
-        let (mut app, requests, _results) = ContainersApp::history_test_runtime_root();
+    fn controlled_create_runs_the_draft_and_drains_one_snapshot() {
+        let (mut app, requests, _results) = ContainersApp::controlled_runtime_root();
         let mut doc = AutoCommit::new();
-        ViewDoc::set_create_field(&mut doc, CreateField::Name, "web");
-        ViewDoc::set_create_field(&mut doc, CreateField::Image, "nginx:1");
-        ViewDoc::set_create_field(&mut doc, CreateField::Ports, "8080:80");
-        let historical = doc.get_heads()[0];
+        for (field, text) in [
+            (CreateField::Name, "web"),
+            (CreateField::Image, "nginx:1"),
+            (CreateField::Ports, "8080:80"),
+        ] {
+            ui::tilo_actions::Action::apply(
+                &crate::resource::ContainersAction::EditCreate {
+                    field,
+                    edit: TextEdit::ReplaceText { text: text.into() },
+                },
+                &mut doc,
+            )
+            .unwrap();
+        }
         app.create_open = true;
-        app.submit_create(&mut doc);
+        app.submit_create(&mut ui::widget::Edits::lend(&mut doc));
         let ControlledRuntimeRequest::Create(request) = requests.recv().unwrap() else {
             panic!("expected one controlled create request");
         };
@@ -3970,25 +3442,6 @@ mod tests {
             vec!["run", "-d", "--name", "web", "-p", "8080:80", "nginx:1"]
         );
         assert!(!app.create_open);
-        assert_eq!(
-            ViewDoc::stored_create_field(&doc, CreateField::Image),
-            crate::doc::StoredCreateField::Absent
-        );
-
-        let current = doc.get_heads();
-        let restore = ui::history_mode::restore::prepare_content_restore(
-            &doc,
-            &crate::framework_history::SCHEMA,
-            &current,
-            &[historical],
-        )
-        .unwrap();
-        ui::history_mode::restore::apply_prepared_content_restore(&mut doc, &restore).unwrap();
-        assert_eq!(ViewDoc::create_field(&doc, CreateField::Image), "nginx:1");
-        assert_eq!(
-            request.arguments.last().map(String::as_str),
-            Some("nginx:1")
-        );
 
         let refreshed = Engine {
             live: true,
@@ -3996,9 +3449,9 @@ mod tests {
             ..Engine::default()
         };
         request.post_run_snapshot(refreshed).unwrap();
-        app.drain_bg(&doc);
+        app.drain_bg();
         assert_eq!(app.engine.connection, "controlled post-run snapshot");
-        app.drain_bg(&doc);
+        app.drain_bg();
         assert!(
             requests.try_recv().is_err(),
             "create was dispatched only once"
@@ -4006,8 +3459,8 @@ mod tests {
     }
 
     #[test]
-    fn history_controlled_immediate_edges_capture_exact_requests() {
-        let (mut app, requests, results) = ContainersApp::history_test_runtime_root();
+    fn controlled_immediate_edges_capture_exact_requests() {
+        let (mut app, requests, results) = ContainersApp::controlled_runtime_root();
 
         results.send(Ok(())).unwrap();
         app.tag_image("quay.io/example/source:1", " registry.local/copy:2 ");
@@ -4053,12 +3506,12 @@ mod tests {
     }
 
     #[test]
-    fn history_pending_control_intent_keeps_exact_target_until_host_take() {
-        let (mut app, requests, _results) = ContainersApp::history_test_runtime_root();
+    fn pending_control_intent_keeps_exact_target_until_host_take() {
+        let (mut app, requests, _results) = ContainersApp::controlled_runtime_root();
         app.apply_action(Action::Restart, "retained-target");
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-        app.sync(&mut doc, &automerge::ROOT);
+        let doc = AutoCommit::new();
+        app.sync(&doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         let intent =
             ui::widget::controls::take_control_invocation(&mut app).expect("retained intent");
         assert_eq!(intent.address.resource, "container:retained-target");
@@ -4066,35 +3519,5 @@ mod tests {
         assert!(intent.arguments.is_empty());
         assert!(ui::widget::controls::take_control_invocation(&mut app).is_none());
         assert!(requests.try_recv().is_err());
-    }
-
-    #[test]
-    fn restored_binding_never_edits_stale_text_object() {
-        let mut app = ContainersApp::history_test_root();
-        let mut doc = AutoCommit::new();
-        ViewDoc::set_create_field(&mut doc, CreateField::Image, "old");
-        app.create_open = true;
-        app.focus_create_field(CreateField::Image);
-        app.refresh_view(&mut doc);
-        let stale = ViewDoc::create_field_obj(&doc, CreateField::Image).unwrap();
-        let instance = std::ptr::from_ref(app.create_input(CreateField::Image));
-
-        ViewDoc::clear_create(&mut doc);
-        ViewDoc::set_create_field(&mut doc, CreateField::Image, "new");
-        let current = ViewDoc::create_field_obj(&doc, CreateField::Image).unwrap();
-        assert_ne!(stale, current);
-        app.refresh_view(&mut doc);
-        assert_eq!(
-            std::ptr::from_ref(app.create_input(CreateField::Image)),
-            instance
-        );
-        assert!(Widget::is_focused(app.create_input(CreateField::Image)));
-        assert_eq!(app.create_input(CreateField::Image).value(), "new");
-
-        app.create_input_mut(CreateField::Image).set_cursor_pos(3);
-        dispatch(&mut app, &mut doc, &automerge::ROOT, &char_press("!"));
-        assert_eq!(doc.text(&stale).unwrap(), "old");
-        assert_eq!(doc.text(&current).unwrap(), "new!");
-        assert_eq!(ViewDoc::create_field(&doc, CreateField::Image), "new!");
     }
 }

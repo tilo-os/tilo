@@ -176,7 +176,6 @@ crates = [
     "settings-store",
     # Absorbed into platform crates; their shims count down.
     "tilo-xdg-paths",
-    "tilo-atomic-file",
     "private-fs",
     "tilo-advisory-lock",
     "bounded-command",
@@ -209,7 +208,6 @@ features = [
     "portal",
     "mpris",
     "notifications",
-    "webview-wpe",
     "dmabuf-import",
     "gpu-video",
     "presentation-feedback",
@@ -217,7 +215,6 @@ features = [
 
 # The semantic feature to enable instead, where one exists.
 [rules.F1.replacements]
-webview-wpe = "webview"
 mpris = "media-session"
 
 [rules.W1]

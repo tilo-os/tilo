@@ -15,8 +15,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use ui::floating_surface::{
-    FLOATING_SURFACE_PROTOCOL_VERSION, FLOATING_SURFACE_SERVICE, FloatingSurfaceClientMessage,
-    FloatingSurfaceHostMessage,
+    FLOATING_SURFACE_SERVICE, FloatingSurfaceClientMessage, FloatingSurfaceHostMessage,
 };
 
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
@@ -123,6 +122,10 @@ impl FloatingSurfaceService {
         self.events.try_iter().collect()
     }
 
+    pub fn reply_writer(&self, connection: u64) -> Option<mpsc::Sender<Vec<u8>>> {
+        self.writers.lock().ok()?.get(&connection).cloned()
+    }
+
     pub fn send(&self, connection: u64, message: &FloatingSurfaceHostMessage) {
         let Ok(mut frame) = serde_json::to_vec(message) else {
             return;
@@ -211,7 +214,7 @@ fn serve_connection(
     let Ok(handshake) = serde_json::from_slice::<LauncherHandshake>(&handshake_frame) else {
         return;
     };
-    if handshake.protocol != FLOATING_SURFACE_PROTOCOL_VERSION
+    if handshake.protocol != launcher::services::SHELL_UI_LAUNCH_PROTOCOL
         || handshake.app_id.trim().is_empty()
         || handshake.app_id.len() > 255
     {
@@ -300,7 +303,108 @@ fn read_frame(reader: &mut BufReader<UnixStream>) -> std::io::Result<Option<Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+    use std::os::fd::BorrowedFd;
     use std::time::Instant;
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn launcher_authentication_accepts_current_floating_payload() {
+        let runtime = tempfile::tempdir().expect("temporary runtime");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
+        let service = FloatingSurfaceService::start().expect("start service");
+        let declared = BTreeMap::from([(
+            launcher::services::SHELL_UI_SERVICE.to_owned(),
+            "required@1".to_owned(),
+        )]);
+        let resolved = launcher::services::resolve_service_binds(&declared, false)
+            .expect("resolve the real launch descriptor");
+        launcher::services::authenticate_shell_ui_bind(&resolved, "so.tilo.chat")
+            .expect("write the production launcher handshake");
+        assert!(matches!(
+            service.events.recv_timeout(Duration::from_secs(2)),
+            Ok(FloatingServiceEvent::Connected { app_id, .. }) if app_id == "so.tilo.chat"
+        ));
+        // SAFETY: resolved owns this host descriptor until its explicit drop
+        // below. The temporary borrow only clones it into a separately owned
+        // child descriptor; it never closes or outlives the original.
+        let borrowed = unsafe { BorrowedFd::borrow_raw(resolved[0].host_fd()) };
+        let mut child = UnixStream::from(borrowed.try_clone_to_owned().expect("child descriptor"));
+        let request = ui::floating_surface::FloatingSurfaceProtocolRequest {
+            version: ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION,
+            id: "conversation".into(),
+            title: "Agent conversation".into(),
+            role: ui::floating_surface::FloatingSurfaceProtocolRole::LiveActivity,
+            source: ui::floating_surface::FloatingSurfaceProtocolSource::AppElement {
+                app_id: "so.tilo.chat".into(),
+                element_id: "conversation".into(),
+                region: [0.0, 0.0, 560.0, 560.0],
+            },
+            preferred_size: [560.0, 560.0],
+            aspect_ratio: None,
+            initial_rect: None,
+            presentation_rect: None,
+        };
+        let message = FloatingSurfaceClientMessage::Present { request };
+        let mut frame = serde_json::to_vec(&message).expect("serialize current lifecycle");
+        frame.push(b'\n');
+        child.write_all(&frame).expect("send current lifecycle");
+        match service.events.recv_timeout(Duration::from_secs(2)) {
+            Ok(FloatingServiceEvent::Message {
+                app_id,
+                message: received,
+                ..
+            }) => {
+                assert_eq!(app_id, "so.tilo.chat");
+                assert_eq!(received, message);
+            }
+            other => panic!("authenticated lifecycle was not delivered: {other:?}"),
+        }
+        drop(child);
+        drop(resolved);
+        assert!(matches!(
+            service.events.recv_timeout(Duration::from_secs(2)),
+            Ok(FloatingServiceEvent::Disconnected { app_id, .. }) if app_id == "so.tilo.chat"
+        ));
+    }
+
+    #[test]
+    fn launch_authentication_refuses_payload_version_and_invalid_identity() {
+        for (protocol, app_id) in [
+            (
+                ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION,
+                "so.tilo.chat".to_owned(),
+            ),
+            (0, "so.tilo.chat".to_owned()),
+            (launcher::services::SHELL_UI_LAUNCH_PROTOCOL, " ".to_owned()),
+            (
+                launcher::services::SHELL_UI_LAUNCH_PROTOCOL,
+                "x".repeat(256),
+            ),
+        ] {
+            let (mut client, server) = UnixStream::pair().expect("connected socket pair");
+            let (tx, rx) = mpsc::channel();
+            let writers = Arc::new(Mutex::new(HashMap::new()));
+            let observed = Arc::clone(&writers);
+            let worker = std::thread::spawn(move || serve_connection(1, server, tx, writers));
+            let mut frame =
+                serde_json::to_vec(&serde_json::json!({"protocol": protocol, "app_id": app_id}))
+                    .expect("serialize invalid handshake");
+            frame.push(b'\n');
+            client.write_all(&frame).expect("write invalid handshake");
+            drop(client);
+            worker.join().expect("service worker exits");
+            assert!(
+                rx.try_recv().is_err(),
+                "refused launch emitted an authenticated event"
+            );
+            assert!(
+                observed.lock().expect("writers").is_empty(),
+                "refused launch retained a writer"
+            );
+        }
+    }
 
     #[test]
     #[serial_test::serial(process_env)]

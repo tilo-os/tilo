@@ -130,7 +130,7 @@ pub fn write_atomically(path: &Path, bytes: &[u8], mtime_ms: u64) -> io::Result<
         let _ = fs::remove_file(&staging);
     }
     let stamp = written?;
-    atomic_file::sync_directory(parent)?;
+    tilo_files::native::atomic::sync_directory(parent)?;
     Ok(stamp)
 }
 

@@ -1,8 +1,8 @@
 //! `runtime-dylib` — the Tilo runtime SDK and UI toolkit, packaged as a
 //! single shared object (`libruntime_dylib.so`).
 //!
-//! This crate carries **no logic of its own** — it re-exports the three
-//! surfaces a Tilo app links against ([`runtime`], [`cli`], [`ui`]) so that
+//! This crate carries **no logic of its own** — it re-exports the SDK
+//! surfaces a Tilo app links against ([`runtime`], [`cli`], [`ui`], [`tilo_app`]) so that
 //! building it as a `dylib` pulls their whole transitive graph (portal /
 //! collab / fs / identity, and for `ui` the wgpu + vello + cosmic-text +
 //! automerge + taffy + fluent + winit stack) into one shared library.
@@ -42,7 +42,6 @@ pub use agent_provider_config;
 pub use app_cli;
 pub use app_host;
 pub use async_imap;
-pub use atomic_file;
 pub use chrono_tz;
 pub use cli;
 pub use collab_types;
@@ -65,13 +64,17 @@ pub use rustypipe;
 pub use settings_store;
 pub use thumbnail;
 pub use tilo_actions;
+pub use tilo_app;
 pub use tilo_bluez;
 pub use tilo_callstream;
+pub use tilo_files;
 pub use tilo_model_gateway;
 pub use tilo_oauth;
 pub use tilo_pdf;
 pub use tilo_relay_protocol;
+pub use tilo_subject;
 pub use tilo_user_identity;
+pub use tilo_wet_media;
 pub use tiny_skia;
 pub use typst;
 pub use typst_assets;

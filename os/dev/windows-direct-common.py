@@ -75,7 +75,7 @@ def disk_matches(plan, current):
             and current.get("is_offline") is False and current.get("is_read_only") is False)
 
 
-def windows_install_gate():
+def windows_install_gate(*, require_no_pagefile=True):
     state = ps_json(r'''$ErrorActionPreference='Stop'
 $b=Get-BitLockerVolume -MountPoint C: -ErrorAction Stop
 $pagefiles=@(Get-CimInstance Win32_PageFileUsage -ErrorAction Stop | Where-Object {$_.Name -like 'C:*'})
@@ -83,7 +83,7 @@ $pagefiles=@(Get-CimInstance Win32_PageFileUsage -ErrorAction Stop | Where-Objec
     if (state.get("volume_status") != 1 or state.get("protection_status") != 0
             or state.get("encryption_percentage") != 100 or state.get("lock_status") != 0):
         raise ValueError("BitLocker must remain fully encrypted, unlocked, and explicitly suspended")
-    if state.get("system_pagefile_count") != 0:
+    if require_no_pagefile and state.get("system_pagefile_count") != 0:
         raise ValueError("the C: pagefile is still active; reboot after disabling it before shrinking")
     return state
 

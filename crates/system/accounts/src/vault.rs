@@ -243,7 +243,7 @@ impl SecretVault {
         );
         let blob = seal(&key, &plaintext)
             .ok_or_else(|| "credential vault encryption failed".to_string())?;
-        atomic_file::write(&self.dir.join("vault.enc"), &blob)
+        tilo_files::native::atomic::write(&self.dir.join("vault.enc"), &blob)
             .map_err(|error| format!("could not write credential vault: {error}"))
     }
 }

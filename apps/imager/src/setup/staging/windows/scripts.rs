@@ -47,13 +47,27 @@ pub fn ps_guid(text: &str) -> Option<String> {
 /// and the Shell BitLocker property. Output: one compressed JSON object that
 /// [`super::storage::parse_snapshot`] decodes.
 pub fn snapshot(drive: DriveLetter) -> String {
+    snapshot_program(drive, true)
+}
+
+/// Disk identity and geometry only: firmware handoffs do not resize NTFS.
+pub fn geometry_snapshot(drive: DriveLetter) -> String {
+    snapshot_program(drive, false)
+}
+
+fn snapshot_program(drive: DriveLetter, shrink_limits: bool) -> String {
     let letter = drive.letter();
+    let limits = if shrink_limits {
+        "try { $s = $p | Get-PartitionSupportedSize; $min = [uint64]$s.SizeMin; $max = [uint64]$s.SizeMax } catch { }"
+    } else {
+        ""
+    };
     format!(
         r"{PRELUDE}$p = Get-Partition -DriveLetter {letter}
 $d = Get-Disk -Number $p.DiskNumber
 $min = $null
 $max = $null
-try {{ $s = $p | Get-PartitionSupportedSize; $min = [uint64]$s.SizeMin; $max = [uint64]$s.SizeMax }} catch {{ }}
+{limits}
 $bl = $null
 try {{ $bl = (New-Object -ComObject Shell.Application).NameSpace('{letter}:\').Self.ExtendedProperty('System.Volume.BitLockerProtection') }} catch {{ }}
 $parts = @(Get-Partition -DiskNumber $d.Number | ForEach-Object {{

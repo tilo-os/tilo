@@ -65,10 +65,6 @@ a11y-text-color-default = Default text color
 a11y-highlight = Highlight #{ $hex }
 a11y-highlight-clear = Clear highlight
 
-## Crash-recovery banner
-recovery-banner = Recovered unsaved changes from a previous session.
-recovery-restore = Restore
-recovery-discard = Discard
 
 ## Status bar
 status-count = { $words } { $words ->
@@ -204,12 +200,6 @@ toast-saved = Document saved
 toast-save-failed = Could not save the document
 toast-open-failed = Could not open the document. Your current document is unchanged.
 toast-view-only = This document is open to view only.
-unsaved-title = Save changes?
-unsaved-body = Save this document before replacing it.
-unsaved-save = Save
-unsaved-discard = Discard changes
-unsaved-cancel = Cancel
-unsaved-close = Close
 toast-file-dialog-failed = Could not open the file chooser
 
 ## Outline / navigation pane
@@ -240,7 +230,6 @@ page-indicator = Page { $n }
 canvas-image-missing = image
 canvas-embedded-content = ⟦ embedded content ⟧
 canvas-empty-placeholder = Start writing…
-toolbar-history = History
 toolbar-more = More ▾
 toolbar-text-color = Text color…
 toolbar-highlight = Highlight…
@@ -260,11 +249,6 @@ color-cyan = cyan
 color-pink = pink
 color-orange = orange
 a11y-more-tools = More formatting and document tools
-a11y-version-history = Version history
 panel-close = Close
 
 # A selected file differs from the current admitted workspace document.
-file-choice-title = Choose the document to open
-file-choice-body = This file differs from the workspace document. Keep the workspace version, or import the selected file into its history.
-file-choice-keep = Keep workspace version
-file-choice-use = Use selected file

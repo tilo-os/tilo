@@ -5,7 +5,6 @@
 //! person already here. The passphrase stays host-local; the collaborative
 //! profile only records the network name, device label, and whether to enroll.
 
-use automerge::AutoCommit;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -20,9 +19,11 @@ use ui::theme::Theme;
 use ui::tokens::Metrics;
 use ui::widget::{TextInput, Toggle, ToggleFace, Widget};
 
-use crate::actions::{IMAGER_ACTION_TYPE, ImagerAction};
+use crate::actions::ImagerAction;
 use crate::model::InstallProfile;
+use crate::resource::Imager;
 use crate::rhythm::{GROUP, LABEL, RELATED, SECTION, SIBLING};
+use ui::framework::Dispatcher;
 
 const FIELD_H: f64 = Metrics::BASE.bar_height as f64;
 const TOGGLE_H: f64 = Metrics::BASE.bar_control_height as f64;
@@ -217,13 +218,16 @@ impl WriteSetupPanel {
         }
     }
 
-    fn dispatch(doc: &mut AutoCommit, host: &mut ui::ActionHost, action: &ImagerAction) {
-        host.dispatch_with_context(
-            doc,
-            IMAGER_ACTION_TYPE,
-            action,
-            tilo_actions::ActionContext::for_action("so.tilo.imager", "Imager", action),
-        );
+    /// Apply `action` now, inside the event that made it, so the field's
+    /// next keystroke continues the same undo step.
+    fn dispatch(
+        doc: &mut ui::widget::Edits<'_>,
+        edits: Option<&Dispatcher<Imager>>,
+        action: &ImagerAction,
+    ) {
+        if let Some(edits) = edits {
+            let _ = edits.apply_now(doc, action);
+        }
     }
 
     fn blur(&mut self) {
@@ -401,11 +405,11 @@ impl WriteSetupPanel {
     }
 
     /// Route a winit event. `top` must match the draw/extent origin.
-    pub fn handle_event(
+    pub(crate) fn handle_event(
         &mut self,
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
-        host: &mut ui::ActionHost,
+        edits: Option<&Dispatcher<Imager>>,
         profile: &InstallProfile,
         content: Rect,
         top: f64,
@@ -441,11 +445,11 @@ impl WriteSetupPanel {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => self.handle_click(event, ctx, host, profile, &g),
+            } => self.handle_click(event, ctx, edits, profile, &g),
             WindowEvent::KeyboardInput { event: key_ev, .. }
                 if key_ev.state == ElementState::Pressed =>
             {
-                self.handle_key(event, ctx, key_ev, host, profile, &g)
+                self.handle_key(event, ctx, key_ev, edits, profile, &g)
             }
             _ => SetupResponse::default(),
         }
@@ -455,7 +459,7 @@ impl WriteSetupPanel {
         &mut self,
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
-        host: &mut ui::ActionHost,
+        edits: Option<&Dispatcher<Imager>>,
         profile: &InstallProfile,
         g: &SetupGeom,
     ) -> SetupResponse {
@@ -464,8 +468,8 @@ impl WriteSetupPanel {
             self.blur();
             self.focused = Some(SetupField::Enroll);
             Self::dispatch(
-                ctx.state,
-                host,
+                &mut ctx.state,
+                edits,
                 &ImagerAction::SetEnrollLocalIdentity {
                     on: !profile.enroll_local_identity,
                 },
@@ -497,7 +501,7 @@ impl WriteSetupPanel {
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
         key_ev: &winit::event::KeyEvent,
-        host: &mut ui::ActionHost,
+        edits: Option<&Dispatcher<Imager>>,
         profile: &InstallProfile,
         g: &SetupGeom,
     ) -> SetupResponse {
@@ -510,8 +514,8 @@ impl WriteSetupPanel {
                 Key::Named(NamedKey::Enter | NamedKey::Space)
             ) {
                 Self::dispatch(
-                    ctx.state,
-                    host,
+                    &mut ctx.state,
+                    edits,
                     &ImagerAction::SetEnrollLocalIdentity {
                         on: !profile.enroll_local_identity,
                     },
@@ -564,7 +568,7 @@ impl WriteSetupPanel {
             };
         }
         if let Some(action) = Self::field_action(field, value) {
-            Self::dispatch(ctx.state, host, &action);
+            Self::dispatch(&mut ctx.state, edits, &action);
         }
         SetupResponse {
             handled: true,

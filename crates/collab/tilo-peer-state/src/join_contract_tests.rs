@@ -1,8 +1,9 @@
 use crate::join::{
-    InviteGrant, JoinChallenge, MemberRole, MembershipChallenge,
+    InviteGrant, Inviter, JoinChallenge, MemberRole, MembershipChallenge,
     TRANSPORT_IROH_OWNER_ENDPOINT_ADDR_V1, decode_and_verify_invitation,
-    decode_and_verify_invitation_text, encode_invitation_text, issue_invitation, sign_join_proof,
-    sign_membership_proof, sign_transport_hint, verify_join_proof, verify_membership_proof,
+    decode_and_verify_invitation_text, encode_invitation_text, issue_invitation,
+    issue_invitation_from, sign_join_proof, sign_membership_proof, sign_transport_hint,
+    verify_join_proof, verify_membership_proof,
 };
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
@@ -125,4 +126,58 @@ fn durable_membership_proof_is_independent_of_the_original_invitation_lifetime()
     let mut wrong = challenge;
     wrong.nonce[0] ^= 1;
     assert!(verify_membership_proof(&proof, &wrong, &guest, &RevocationList::new(), 3).is_err());
+}
+
+#[test]
+fn an_invitation_names_its_inviter_under_the_issuer_signature() {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let device = SigningKey::from_bytes(&[2; 32]);
+    let authority = certificate(&root, &device, "Node", 1);
+    let grant = InviteGrant {
+        workspace_id: 42,
+        room: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(),
+        authority: authority.clone(),
+        issuer: authority,
+        delegation: None,
+        role: MemberRole::Editor,
+        nonce: [5; 16],
+        recipient_user_public_key: None,
+        invitee_name: None,
+        expires_at_ns: 10_000,
+        transport: Vec::new(),
+    };
+    let inviter = Inviter {
+        user_public_key: root.verifying_key().to_bytes(),
+        name: "Ada Lovelace".into(),
+    };
+    let signed = issue_invitation_from(grant.clone(), inviter.clone(), &device).unwrap();
+    let verified = decode_and_verify_invitation(&signed, None, &RevocationList::new(), 2).unwrap();
+    assert_eq!(verified.grant(), &grant);
+    assert_eq!(verified.inviter(), Some(&inviter));
+
+    let plain = issue_invitation(grant.clone(), &device).unwrap();
+    let verified = decode_and_verify_invitation(&plain, None, &RevocationList::new(), 2).unwrap();
+    assert_eq!(
+        verified.inviter(),
+        None,
+        "an invitation without one still reads"
+    );
+
+    // The name is covered by the signature.
+    let mut forged = signed;
+    let at = forged.windows(3).position(|bytes| bytes == b"Ada").unwrap();
+    forged.get_mut(at..at + 3).unwrap().copy_from_slice(b"Eve");
+    assert!(
+        decode_and_verify_invitation(&forged, None, &RevocationList::new(), 2)
+            .unwrap_err()
+            .contains("signature")
+    );
+
+    for name in ["", " Ada", &"x".repeat(81)] {
+        let inviter = Inviter {
+            user_public_key: [0; 32],
+            name: name.into(),
+        };
+        assert!(issue_invitation_from(grant.clone(), inviter, &device).is_err());
+    }
 }

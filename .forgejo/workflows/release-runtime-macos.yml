@@ -28,6 +28,8 @@ concurrency:
 
 jobs:
   app:
+    # Disabled: no runner serves the imager-macos-* labels yet.
+    if: false
     timeout-minutes: 150
     runs-on: imager-macos-aarch64
     # Forgejo injects the OIDC request variables only with this native key.
@@ -104,7 +106,7 @@ jobs:
       - name: Mount the DMG and start its bundled runtime
         run: dist/macos/verify-app.sh target/dist-macos/tilo-macos-universal.dmg
       # Forgejo does not implement the Artifact API v2 used by v4.
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: tilo-macos-universal
           path: |
@@ -114,7 +116,7 @@ jobs:
             target/dist-macos/tilo-macos-universal.zip.sha256
             target/dist-macos/tilo.rb
           if-no-files-found: error
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: env.TILO_RUNTIME_UPDATE_KEY_FILE != ''
         with:
           name: tilo-macos-update-feed

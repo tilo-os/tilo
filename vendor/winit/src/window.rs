@@ -639,6 +639,29 @@ impl Window {
         self.window.maybe_queue_on_main(|w| w.pre_present_notify());
     }
 
+    /// Tell the windowing system a frame of this window is being drawn, before
+    /// it is presented. For a window drawn and presented off the event-loop
+    /// thread: the windowing system learns a frame is on its way while that
+    /// thread already reads further events. Unlike
+    /// [`Window::pre_present_notify`] it does not hold back the next
+    /// [`WindowEvent::RedrawRequested`].
+    ///
+    /// ## Platform-specific
+    ///
+    /// - **Wayland:** asks for the frame's `wl_surface.frame` callback now rather than with
+    ///   the commit.
+    /// - **Android / iOS / X11 / Web / Windows / macOS / Orbital:** Unsupported.
+    ///
+    /// [`WindowEvent::RedrawRequested`]: crate::event::WindowEvent::RedrawRequested
+    #[inline]
+    pub fn announce_frame(&self) {
+        #[cfg(wayland_platform)]
+        #[allow(irrefutable_let_patterns)]
+        if let platform_impl::Window::Wayland(window) = &self.window {
+            window.announce_frame();
+        }
+    }
+
     /// Reset the dead key state of the keyboard.
     ///
     /// This is useful when a dead key is bound to trigger an action. Then

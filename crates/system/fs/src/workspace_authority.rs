@@ -143,7 +143,10 @@ fn persist_content_peer(cache_dir: &Path, peer: PersistedContentPeer) -> anyhow:
         }
         peers.push(peer);
     }
-    atomic_file::write(&content_peers_path(cache_dir), &serde_json::to_vec(&peers)?)?;
+    tilo_files::native::atomic::write(
+        &content_peers_path(cache_dir),
+        &serde_json::to_vec(&peers)?,
+    )?;
     Ok(())
 }
 
@@ -163,7 +166,10 @@ fn remove_persisted_content_peers(
         }
         !matches
     });
-    atomic_file::write(&content_peers_path(cache_dir), &serde_json::to_vec(&peers)?)?;
+    tilo_files::native::atomic::write(
+        &content_peers_path(cache_dir),
+        &serde_json::to_vec(&peers)?,
+    )?;
     Ok(removed)
 }
 
@@ -214,15 +220,42 @@ impl WorkspaceAuthorityEnvelope {
         tombstoned: bool,
         governor: &ed25519_dalek::SigningKey,
     ) -> anyhow::Result<Self> {
+        Self::sign_with(
+            workspace,
+            revision,
+            capabilities,
+            tombstoned,
+            governor.verifying_key().to_bytes(),
+            |payload| Ok(governor.sign(payload).to_bytes()),
+        )
+    }
+
+    /// [`Self::sign`] for a governor whose key this process cannot hold, such
+    /// as a person's identity record: `sign` receives the exact payload and
+    /// returns the governor's Ed25519 signature over it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the payload cannot be encoded, `sign` fails, or
+    /// its signature does not verify against `governor`.
+    pub fn sign_with(
+        workspace: uuid::Uuid,
+        revision: u64,
+        capabilities: Vec<CapOverride>,
+        tombstoned: bool,
+        governor: [u8; 32],
+        sign: impl FnOnce(&[u8]) -> anyhow::Result<[u8; 64]>,
+    ) -> anyhow::Result<Self> {
         let mut envelope = Self {
             workspace,
             revision,
             capabilities,
             tombstoned,
-            governor: governor.verifying_key().to_bytes(),
+            governor,
             signature: [0; 64],
         };
-        envelope.signature = governor.sign(&envelope.payload()?).to_bytes();
+        envelope.signature = sign(&envelope.payload()?)?;
+        envelope.verify(workspace, governor)?;
         Ok(envelope)
     }
 
@@ -361,7 +394,7 @@ impl WorkspaceAuthority {
             }
         }
         let bytes = postcard::to_allocvec(&next)?;
-        atomic_file::write(&self.path, &bytes)?;
+        tilo_files::native::atomic::write(&self.path, &bytes)?;
         self.handle
             .replace(project(self.subject, &self.principals, Some(&next)));
         *current = Some(next);

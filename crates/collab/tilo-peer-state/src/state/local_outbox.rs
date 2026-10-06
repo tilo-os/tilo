@@ -6,6 +6,11 @@ use super::{
     SignedOp, SigningKey, StatePeer, SystemTime, Transactable, err, peer_handle, room,
 };
 
+/// A channel key holder's renewal of a sealed write: the encryption and
+/// payload a renewal carries under the channel's current epoch, or a refusal.
+pub type Reseal<'a> =
+    dyn FnMut(&SignedOp) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> + 'a;
+
 const MAX_PUBLICATIONS: usize = 64;
 const MAX_PUBLICATION_BYTES: usize = 4 * 1024 * 1024;
 
@@ -13,8 +18,9 @@ struct LocalDocument {
     admission: DocumentAdmission,
     route: Route,
     /// `None` for a sealed write: this replica holds only its ciphertext, so
-    /// it has no history to check or renew, and is retired by the
-    /// governor's signed sequence watermark alone.
+    /// it has no history to check or project, only the channel's key holder
+    /// can renew it, and it is retired by the governor's signed sequence
+    /// watermark alone.
     mutation: Option<DocumentMutation>,
 }
 
@@ -119,23 +125,28 @@ impl StatePeer {
         selected: [u8; 32],
     ) -> Result<bool, String> {
         let local = self.retained_document(message, selected)?;
+        let covered = |receipt: &crate::durability::DurableReceipt| {
+            receipt
+                .coverage
+                .watermarks
+                .get(&hex::encode(selected))
+                .copied()
+                .unwrap_or(0)
+                >= local.admission.sequence()
+        };
+        // A sealed record has no cleartext checkpoint to compare here.
+        if local.mutation.is_none() {
+            return Ok(self
+                .durable_receipt(&local.route.app, &local.route.record)?
+                .is_some_and(|receipt| covered(&receipt)));
+        }
         let Some((receipt, accepted)) =
             self.durable_receipt_checkpoint(&local.route.app, &local.route.record)?
         else {
             return Ok(false);
         };
-        if receipt
-            .coverage
-            .watermarks
-            .get(&hex::encode(selected))
-            .copied()
-            .unwrap_or(0)
-            < local.admission.sequence()
-        {
+        if !covered(&receipt) {
             return Ok(false);
-        }
-        if local.mutation.is_none() {
-            return Ok(true);
         }
         let history = self.publication_history(&local)?;
         Ok(history
@@ -333,8 +344,9 @@ impl StatePeer {
         let mut retained = outbox.to_vec();
         for original in outbox {
             let local = candidate.retained_document(original, selected)?;
-            // Only a key holder could renew a sealed write; it stays in
-            // custody until the governor's watermark covers it.
+            // A sealed write is renewed only through its key holder, by
+            // `renew_local_sealed`; it stays in custody until the governor's
+            // watermark covers it.
             if local.mutation.is_none()
                 || candidate.retained_local_document_retired(original, selected)?
             {
@@ -375,6 +387,81 @@ impl StatePeer {
         }
         *self = candidate;
         Ok(retained)
+    }
+
+    /// Renew `original`, a sealed write of the selected device still in
+    /// custody, once it expired before the governor's watermark retired it.
+    /// `reseal` is the channel's key holder: it returns the payload to carry
+    /// under the channel's current epoch, or refuses. The renewal keeps the
+    /// original's artifact, attestation and class, is signed at `now` under
+    /// the author's next sequence, and is admitted as a new local sealed
+    /// write. `None` when `original` is not due; on an error nothing changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `original` is not authentic retained custody, the
+    /// device may no longer write, `reseal` refuses, or the renewal is not
+    /// admitted.
+    pub fn renew_local_sealed(
+        &mut self,
+        original: &NeighbourMsg,
+        reseal: &mut Reseal<'_>,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<Option<NeighbourMsg>, String> {
+        let selected = key.verifying_key().to_bytes();
+        let local = self.retained_document(original, selected)?;
+        if local.mutation.is_some()
+            || crate::outbox::fresh(original, now)
+            || self.retained_local_document_retired(original, selected)?
+        {
+            return Ok(None);
+        }
+        self.permissions(selected, now)?;
+        let NeighbourMsg::AppDocument { envelope, .. } = original else {
+            return Err("retained local publication requires AppDocument".into());
+        };
+        let (encryption, payload) = reseal(envelope)?;
+        if Some(encryption.channel) != envelope.encryption.map(|sealed| sealed.channel) {
+            return Err("a renewal must stay on its write's channel".into());
+        }
+        let seq = self
+            .core
+            .documents
+            .get(&local.route)
+            .and_then(|document| document.channel.last_seq_per_author.get(&envelope.author))
+            .copied()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or("sequence exhausted")?;
+        let mut renewal = SignedOp::new_unsigned_with_encryption(
+            payload,
+            envelope.artifact,
+            envelope.author,
+            envelope.attestation_id,
+            envelope.op_class,
+            now,
+            seq,
+            encryption,
+        );
+        collab_types::sign_op(&mut renewal, key).map_err(err)?;
+        let mut candidate = self.clone();
+        candidate.admit_new_local_document(
+            &local.route.app,
+            &local.route.record,
+            renewal.clone(),
+            now,
+        )?;
+        let message = NeighbourMsg::AppDocument {
+            peer: peer_handle(&selected),
+            app_id: local.route.app,
+            cluster_id: candidate.core.room.clone(),
+            record_id: local.route.record,
+            envelope: Box::new(renewal),
+        };
+        candidate.retained_document(&message, selected)?;
+        *self = candidate;
+        Ok(Some(message))
     }
 
     fn validate_retained_history(&self, history: &StatePeer) -> Result<(), String> {
@@ -573,6 +660,8 @@ fn publication_size(messages: &[NeighbourMsg]) -> Result<usize, String> {
     Ok(total)
 }
 
+#[cfg(test)]
+mod sealed_renewal_tests;
 #[cfg(test)]
 mod tests;
 

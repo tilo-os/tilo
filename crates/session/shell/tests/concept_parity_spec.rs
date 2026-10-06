@@ -348,7 +348,7 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
     {
         let tree = WorkspaceTree::bootstrap_demo();
 
-        let (mut host_a, chrome_a) = build_tilo_overlay_host_with_chrome(&tree);
+        let (mut host_a, chrome_a) = build_settled_workspace_settings_host(&tree);
         {
             let mut st = chrome_a.borrow_mut();
             st.overlays.ws_settings = true;
@@ -360,7 +360,7 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
 
         // Post-migration, Members must ignore `editing_workspace_name` entirely,
         // so this render's fill count must match `fills_a` exactly.
-        let (mut host_b, chrome_b) = build_tilo_overlay_host_with_chrome(&tree);
+        let (mut host_b, chrome_b) = build_settled_workspace_settings_host(&tree);
         {
             let mut st = chrome_b.borrow_mut();
             st.overlays.ws_settings = true;
@@ -389,7 +389,7 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
     {
         let tree = WorkspaceTree::bootstrap_demo();
 
-        let (mut host_a, chrome_a) = build_tilo_overlay_host_with_chrome(&tree);
+        let (mut host_a, chrome_a) = build_settled_workspace_settings_host(&tree);
         {
             let mut st = chrome_a.borrow_mut();
             st.overlays.ws_settings = true;
@@ -401,7 +401,7 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
 
         // A leaking General body would re-emit the Name-input rect fill, the
         // editing-mode caret fill, and a thicker stroke.
-        let (mut host_b, chrome_b) = build_tilo_overlay_host_with_chrome(&tree);
+        let (mut host_b, chrome_b) = build_settled_workspace_settings_host(&tree);
         {
             let mut st = chrome_b.borrow_mut();
             st.overlays.ws_settings = true;
@@ -426,11 +426,47 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
     }
 }
 
+#[test]
+fn workspace_settings_invariance_fixture_keeps_its_scene_across_row_transitions() {
+    let mut clock = tilo_test_env::ScopedEnv::new();
+    clock.set("TILO_CLOCK", "09:41");
+    let tree = WorkspaceTree::bootstrap_demo();
+    let (mut host, chrome) = build_settled_workspace_settings_host(&tree);
+    {
+        let mut state = chrome.borrow_mut();
+        state.overlays.ws_settings = true;
+        state.ws_settings_tab = WsTab::Members;
+    }
+    let first = collect_solid_colors(&render_host_to_scene(&mut host));
+    std::thread::sleep(ui::time::Duration::from_millis(2300));
+    let later = collect_solid_colors(&render_host_to_scene(&mut host));
+    assert_eq!(
+        first, later,
+        "the same settled pane must keep its full scene"
+    );
+}
+
+/// Apply real reduced-motion preferences to the embedded apps as well as the
+/// shell. A theme alone is insufficient: `EmbeddedApp` preserves its own a11y
+/// preferences, so Notes' page-tree row transitions could change unrelated fills
+/// between the two pane renders. Warm through the ordinary production draw.
+fn build_settled_workspace_settings_host(
+    tree: &WorkspaceTree,
+) -> (shell::shell::overlay_host::ShellOverlayHost, Chrome) {
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(tree);
+    host.set_motion_reduced(true);
+    let _ = render_host_to_scene(&mut host);
+    (host, chrome)
+}
+
 /// Layout + draw an already-configured `ShellOverlayHost`, sharing plumbing
 /// with `render_with_ws_settings_tab`.
 #[must_use]
-fn render_host_to_scene<W: Widget + ?Sized>(host: &mut W) -> Scene {
-    let theme = Theme::dark();
+fn render_host_to_scene(host: &mut shell::shell::overlay_host::ShellOverlayHost) -> Scene {
+    // Compare pane content, not the wall-clock sample of its entrance.
+    // The real reduced-motion path opens the same production lens at its
+    // settled geometry before either name-buffer invariant is measured.
+    let theme = Theme::dark().with_reduce_motion(true);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let child = host.build_layout(&mut taffy, &theme, &mut node_map);
@@ -1258,7 +1294,7 @@ fn maximized_chrome_hides_when_cursor_below_y_80() {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::default(),
-            state: &mut doc,
+            state: ui::widget::Edits::lend(&mut doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -1960,7 +1996,7 @@ mod overview_add_workspace {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut doc,
+                    state: ui::widget::Edits::lend(&mut doc),
                     path: &doc_root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -1977,7 +2013,7 @@ mod overview_add_workspace {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut doc,
+                    state: ui::widget::Edits::lend(&mut doc),
                     path: &doc_root,
                     handled: &mut handled,
                     focus_target: &mut focus,

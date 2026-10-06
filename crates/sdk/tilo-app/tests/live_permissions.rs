@@ -6,12 +6,15 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use tilo_app::framework::{Participant, resource_kind};
+use tilo_app::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
 use tilo_app::prelude::*;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Memo {
     pub title: String,
     pub lines: Collection<String>,
+    pub remarks: Collection<String>,
 }
 
 #[resource(kind = "test.memo", label = "Memo")]
@@ -27,12 +30,19 @@ impl Memo {
     pub fn add_line(&mut self, cx: &mut ActionCx, line: String) {
         self.lines.push(cx.id(), line);
     }
+
+    /// Remark on the memo: someone who may only comment may.
+    #[action(permission = "comment")]
+    pub fn remark(&mut self, cx: &mut ActionCx, remark: String) {
+        self.remarks.push(cx.id(), remark);
+    }
 }
 
 type Changes = Rc<RefCell<Vec<bool>>>;
 
 thread_local! {
     static PROBE_CHANGES: RefCell<Option<Changes>> = const { RefCell::new(None) };
+    static PROBE_DISPATCHER: RefCell<Option<Dispatcher<Memo>>> = const { RefCell::new(None) };
 }
 
 struct MemoApp;
@@ -72,9 +82,11 @@ impl Widget for AccessProbe {
         &mut self,
         taffy: &mut TaffyTree<()>,
         _: &Theme,
-        _: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        taffy.new_leaf(tilo_app::taffy::Style::default()).unwrap()
+        let node = taffy.new_leaf(tilo_app::taffy::Style::default()).unwrap();
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
     }
 
     fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, origin: Point) {
@@ -88,6 +100,10 @@ impl Widget for AccessProbe {
         "AccessProbe"
     }
 
+    fn test_id(&self) -> Option<&str> {
+        Some("access-probe")
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -96,8 +112,9 @@ impl Widget for AccessProbe {
 impl ResourceSurface<Memo> for AccessProbe {
     fn present(&mut self, _: &Rc<Memo>) {}
 
-    fn attach(&mut self, _: SurfaceCx<Memo>) {
+    fn attach(&mut self, cx: SurfaceCx<Memo>) {
         PROBE_CHANGES.with(|probe| *probe.borrow_mut() = Some(self.changes.clone()));
+        PROBE_DISPATCHER.with(|probe| *probe.borrow_mut() = Some(cx.dispatcher()));
     }
 
     fn read_only_changed(&mut self, read_only: bool) {
@@ -109,6 +126,12 @@ impl ResourceSurface<Memo> for AccessProbe {
 fn a_role_change_takes_effect_while_the_app_runs() {
     let mut app = TestApp::<MemoApp>::new().unwrap();
     let changes = PROBE_CHANGES.with(|probe| probe.borrow().clone()).unwrap();
+    assert!(
+        app.harness()
+            .semantic_owner_instance("access-probe")
+            .is_some(),
+        "a surface is addressed by name like any widget"
+    );
     app.invoke(Memo::ADD_LINE.with("milk".into())).unwrap();
     assert!(app.harness().inspection_json().unwrap().contains("Editing"));
 
@@ -136,4 +159,83 @@ fn a_role_change_takes_effect_while_the_app_runs() {
     app.harness().type_text("Groceries");
     assert_eq!(app.state().title, "Groceries");
     assert_eq!(app.state().lines.len(), 2);
+}
+
+#[test]
+fn a_commenter_may_take_the_actions_that_need_only_commenting() {
+    let mut app = TestApp::<MemoApp>::new().unwrap();
+    let dispatcher = PROBE_DISPATCHER
+        .with(|probe| probe.borrow().clone())
+        .unwrap();
+    app.set_role(tilo_app::Role::Commenter);
+    assert!(dispatcher.read_only(), "a commenter may not write");
+
+    app.invoke(Memo::REMARK.with("looks good".into()))
+        .expect("a commenter remarks through the door");
+    assert!(
+        app.invoke(Memo::ADD_LINE.with("sneaky".into())).is_err(),
+        "but adds no line"
+    );
+    assert_eq!(app.state().remarks.len(), 1);
+    assert!(app.state().lines.is_empty());
+
+    // A surface asks the dispatcher what this participant may apply, and an
+    // immediate edit follows the action's own level.
+    let remark = Memo::REMARK.with("typed".into()).build(0).unwrap();
+    let line = Memo::ADD_LINE.with("typed".into()).build(0).unwrap();
+    assert!(dispatcher.may_apply(&remark));
+    assert!(!dispatcher.may_apply(&line));
+    assert!(dispatcher.may(PermissionRequirement::Comment));
+    assert!(!dispatcher.may(PermissionRequirement::Write));
+
+    // A viewer may do neither.
+    app.set_role(tilo_app::Role::Viewer);
+    assert!(app.invoke(Memo::REMARK.with("no".into())).is_err());
+    assert!(!dispatcher.may_apply(&remark));
+}
+
+#[test]
+fn a_commenters_typed_edit_needs_what_its_value_needs() {
+    // Through the window's door: the generic `apply` is offered to a
+    // commenter, and admits the values that need only commenting.
+    let mut app = TestApp::<MemoApp>::new().unwrap();
+    app.set_role(tilo_app::Role::Commenter);
+    let remark = Memo::REMARK.with("typed remark".into()).build(0).unwrap();
+    let line = Memo::ADD_LINE.with("typed line".into()).build(0).unwrap();
+    app.invoke(Invoke::apply(&remark).unwrap())
+        .expect("a commenter's typed remark is admitted");
+    assert!(
+        app.invoke(Invoke::apply(&line).unwrap()).is_err(),
+        "a commenter's typed line is refused"
+    );
+    let group = Invoke::<Memo>::group([
+        Invoke::apply(&remark).unwrap(),
+        Invoke::apply(&line).unwrap(),
+    ]);
+    assert!(
+        app.invoke(group).is_err(),
+        "a group needs what its most demanding member needs"
+    );
+    assert_eq!(app.state().remarks.len(), 1);
+    assert!(app.state().lines.is_empty());
+
+    // Through a participant without a window, by the same rule.
+    let snapshot = app.read_document(|doc| doc.clone().save());
+    let commenting = PermissionContext::from_capabilities(
+        Actor::agent("scribe"),
+        vec![CapOverride::grant(
+            Subject::agent("scribe"),
+            Scope::App(MemoApp::ID.to_owned()),
+            Verb::Comment,
+        )],
+    );
+    let mut participant =
+        Participant::from_snapshot(resource_kind::<MemoApp>(), &snapshot, "scribe", commenting)
+            .unwrap();
+    participant
+        .apply_typed::<Memo>(&remark)
+        .expect("the participant remarks");
+    assert!(participant.apply_typed::<Memo>(&line).is_err());
+    assert_eq!(participant.state::<Memo>().unwrap().remarks.len(), 2);
+    assert!(participant.state::<Memo>().unwrap().lines.is_empty());
 }

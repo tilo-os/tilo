@@ -9,8 +9,8 @@
 //!
 //! The browser spawns the agent through the host's remote actions; the agent
 //! opens the browser's record and edits it through the app's own action;
-//! the browser receives the durable change in host order and sees the
-//! agent's cursor; the agent sees the browser's cursor; pause, resume and
+//! the browser receives the durable change in host order and sees the agent
+//! on the record; the agent sees the browser's cursor; pause, resume and
 //! stop hold, release and end the agent.
 
 #![allow(
@@ -30,6 +30,8 @@
               driven on the test's own thread (the agent's apps are not Send)"
 )]
 
+#[path = "../../../browser/tilo-browser-peer/tests/support/steward.rs"]
+mod steward;
 #[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
 mod support;
 
@@ -48,7 +50,7 @@ use tilo_actions::remote::{
     RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_agent_participant::{
-    AgentIdentity, AgentParticipant, AgentSupervisor, DirectPlanner, HostedApp, ParticipantConfig,
+    AgentIdentity, AgentParticipant, AgentSupervisor, DirectPlanner, ParticipantConfig, Replica,
     Seed, SupervisorHost,
 };
 use tilo_browser_peer::{DocumentRoute, Host, LiveState, PeerEvent, PeerHandle, certify};
@@ -175,6 +177,7 @@ async fn call(
 ) -> InvocationReceipt {
     let invocation = InvocationId::new();
     let frame = RemoteActionFrame::new(RemoteActionMessage::Invoke(InvokeRequest {
+        on_behalf_of: None,
         invocation,
         target: RemoteActionTarget {
             provider: AGENTS_PROVIDER.into(),
@@ -244,7 +247,7 @@ async fn receive_until(
     agent: &mut AgentParticipant,
     events: &tilo_browser_peer::PeerEvents,
     route: &DocumentRoute,
-    page: &mut HostedApp,
+    page: &mut Replica,
     author: [u8; 32],
     text: &str,
 ) {
@@ -252,11 +255,12 @@ async fn receive_until(
     while !body(page).contains(text) {
         assert!(
             Instant::now() < deadline,
-            "the browser's record never carried {text:?}: {}\nagent tasks: {:?}\nagent records: {:?}\nagent's copy: {:?}",
+            "the browser's record never carried {text:?}: {}\nagent tasks: {:?}\nagent records: {:?}\nagent's copy: {:?}\nagent channels: {}",
             body(page),
             agent.control().info().tasks,
             agent.known_records(),
             agent.app(route).map(body),
+            agent.peer().status().channels,
         );
         agent.pump();
         for event in events.drain() {
@@ -271,14 +275,41 @@ async fn receive_until(
     }
 }
 
-fn body(app: &HostedApp) -> String {
+fn body(app: &Replica) -> String {
     app.read(|doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap())
         .unwrap()
 }
 
+/// Open a sealed live frame with `peer`'s channel keys.
+async fn open_live(peer: &PeerHandle, frame: Vec<u8>) -> Option<LiveFrame> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    peer.open_live_then(
+        workspace(),
+        frame,
+        Box::new(move |opened| {
+            let _ = tx.send(opened);
+        }),
+    )
+    .ok()?;
+    LiveFrame::decode(&rx.await.ok()??).ok()
+}
+
+/// Seal a clear live frame with `peer`'s channel keys for wire publish.
+async fn seal_live(peer: &PeerHandle, frame: Vec<u8>) -> Vec<u8> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    peer.seal_live_then(
+        workspace(),
+        frame,
+        Box::new(move |sealed| {
+            let _ = tx.send(sealed);
+        }),
+    )
+    .unwrap();
+    rx.await.unwrap().expect("the page holds the record's keys")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
-    common::isolate_device();
     let (root, _) = UserIdentity::generate("Ada", 1);
     let user = root.verifying_key().to_bytes();
     let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
@@ -301,6 +332,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     );
     let host = start_host(&root, &host_device, state.path(), &supervisor).await;
     let host_cert: DeviceCert = host_device.cert.clone();
+    let _steward = steward::Steward::start(&host.relay, &root).await;
 
     // 1. The agent's identity: its own key, certified under the root by the
     // laptop (consent), and a root-signed delegation the host registers.
@@ -359,7 +391,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     browser.join(workspace()).unwrap();
     ready(&[&browser]).await;
     let catalogue = catalogue();
-    let mut page = HostedApp::open(&catalogue, SCRATCHPAD, ROOM, "ada", false, Seed::New).unwrap();
+    let mut page = Replica::open(&catalogue, SCRATCHPAD, ROOM, "ada", false, Seed::New).unwrap();
     let route = DocumentRoute {
         app_id: SCRATCHPAD.into(),
         cluster_id: ROOM.into(),
@@ -431,8 +463,8 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let carried = AgentDelegation::decode(&hex::decode(&info.delegation).unwrap()).unwrap();
     assert_eq!(carried.verify(&user, tilo_clock::unix_now_ns()), Ok(()));
 
-    // 5. The browser's live session over WebTransport sees the agent's
-    // cursor: presence of kind agent, focused on the record.
+    // 5. The browser's live session over WebTransport sees the agent:
+    // presence of kind agent, focused on the record.
     let (grant_tx, grant_rx) = tokio::sync::oneshot::channel();
     browser
         .live_grant_then(
@@ -461,7 +493,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let presence = loop {
         assert!(
             Instant::now() < deadline,
-            "the agent's cursor never reached the browser"
+            "the agent's presence never reached the browser"
         );
         agent.pump();
         let Some(subscribed) = track.as_mut() else {
@@ -481,7 +513,10 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         if let Ok(Ok(Some(datagram))) =
             tokio::time::timeout(Duration::from_millis(200), subscribed.recv_datagram()).await
         {
-            match LiveFrame::decode(&datagram.payload).unwrap() {
+            let Some(frame) = open_live(&browser, datagram.payload.to_vec()).await else {
+                continue;
+            };
+            match frame {
                 LiveFrame::Presence(presence) => break presence,
                 LiveFrame::Ops(_) => {}
             }
@@ -521,7 +556,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
                 });
             })
             .unwrap();
-        live.publish_presence(&frame);
+        live.publish_presence(&seal_live(&browser, frame).await);
         agent.pump();
         if let Some(member) = agent
             .remote_members()
@@ -645,9 +680,23 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         "a stopped agent takes no task: {refused:?}"
     );
 
+    // Every edit the host carried, the page's and the agent's, is sealed.
+    let retained = host
+        .relay
+        .room_records()
+        .retained(workspace())
+        .await
+        .unwrap();
+    let (readable, sealed) = common::retained_documents(
+        retained
+            .into_iter()
+            .map(|retained| (retained.author, retained.body)),
+    );
+    assert_eq!(readable, 0, "nothing reaches the host in the clear");
+    assert!(sealed > 0);
+
     drop(live);
     agent.close();
-    page.close();
     browser.close();
     host.relay.shutdown().await;
 }

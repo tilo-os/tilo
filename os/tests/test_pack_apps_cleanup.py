@@ -30,7 +30,8 @@ esac
                            'REPO': str(root), 'STORE': str(store), 'REQUIRE_MIN': '0',
                            'BUNDLE_BIN': str(bundle), 'PKG_BIN': '/bin/true',
                            'INSTALL_BIN': '/bin/true', 'SHIM_BIN': '/missing',
-                           'FAIL_PUBKEY': '1' if fail else '0'}
+                           'FAIL_PUBKEY': '1' if fail else '0',
+                           'RUNTIME_ID': 'tilo-runtime/2026.07+native.' + '0' * 32}
             if image:
                 environment.update(TILO_IMAGE_BUILD='1', SOURCE_DATE_EPOCH='1790502039')
             if supplied:

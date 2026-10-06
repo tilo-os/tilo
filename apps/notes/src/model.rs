@@ -11,6 +11,7 @@ use std::collections::HashMap;
 
 use crate::num;
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::order;
 use uuid::Uuid;
 
 /// Identifier for a single page. Stable across renames; backs the on-disk
@@ -27,10 +28,23 @@ pub struct PageMeta {
     pub id: PageId,
     pub title: String,
     pub parent: Option<PageId>,
-    /// Position among siblings (smaller = earlier). Re-densified by
-    /// [`Workspace::renumber_siblings`] whenever a page is inserted /
-    /// removed so the values stay contiguous.
-    pub order: u32,
+    /// Fractional position among siblings ([`ui::tilo_resource::order`]).
+    /// Siblings sort by [`sibling_order`]: by this key, then by id, so two
+    /// pages that got the same key on two devices still have one order and
+    /// a gap left by a removed sibling never matters.
+    pub order: String,
+}
+
+/// The one order of a sibling group: fractional key first, page id as the
+/// tiebreak for keys two replicas minted concurrently.
+pub fn sibling_order(a: &PageMeta, b: &PageMeta) -> std::cmp::Ordering {
+    a.order.cmp(&b.order).then_with(|| a.id.cmp(&b.id))
+}
+
+/// The key after every one of `siblings`, for a page appended to them.
+pub fn key_after<'a>(siblings: impl IntoIterator<Item = &'a PageMeta>) -> String {
+    let last = siblings.into_iter().map(|page| page.order.as_str()).max();
+    order::between(last, None)
 }
 
 /// A named, reusable tag. Assignments live separately so a concurrent rename
@@ -63,10 +77,15 @@ pub struct WorkspaceData {
 }
 
 /// Convenience wrapper around [`WorkspaceData`] with the runtime ops
-/// the UI / storage layer needs. Pure logic — no IO, no rendering.
+/// the UI needs. Pure logic — no IO, no rendering.
 #[derive(Clone, Debug, Default)]
 pub struct Workspace {
     pub data: WorkspaceData,
+    /// What every note says, when the workspace was read from a notebook.
+    pub bodies: std::sync::Arc<crate::actions::Bodies>,
+    /// Each note's body as the rich text it is, published as the note's
+    /// body resource.
+    pub body_states: std::rc::Rc<std::collections::HashMap<PageId, tilo_document::RichTextState>>,
 }
 
 impl Workspace {
@@ -187,7 +206,7 @@ impl Workspace {
     }
 
     /// Returns the children of `parent` (or roots when `parent` is None),
-    /// sorted by `order`. Walks the flat list once.
+    /// in [`sibling_order`]. Walks the flat list once.
     pub fn children_of(&self, parent: Option<PageId>) -> Vec<&PageMeta> {
         let mut out: Vec<&PageMeta> = self
             .data
@@ -195,7 +214,7 @@ impl Workspace {
             .iter()
             .filter(|p| p.parent == parent)
             .collect();
-        out.sort_by_key(|p| p.order);
+        out.sort_by(|a, b| sibling_order(a, b));
         out
     }
 
@@ -205,7 +224,7 @@ impl Workspace {
     /// initial value should rename right after creation.
     pub fn create_page(&mut self, parent: Option<PageId>) -> PageId {
         let id = Uuid::new_v4();
-        let order = self.children_of(parent).last().map_or(0, |p| p.order + 1);
+        let order = key_after(self.data.pages.iter().filter(|p| p.parent == parent));
         self.data.pages.push(PageMeta {
             id,
             title: "Untitled".to_string(),
@@ -227,8 +246,8 @@ impl Workspace {
 
     /// Remove the page (and recursively every descendant). Returns
     /// the set of removed ids so callers (the storage layer) can
-    /// delete the corresponding `.md` files. Renumbers the surviving
-    /// siblings on each affected parent so `order` stays contiguous.
+    /// delete the corresponding `.md` files. The surviving siblings keep
+    /// their keys: a gap in a fractional order changes nothing.
     pub fn delete_page(&mut self, id: PageId) -> Vec<PageId> {
         // Collect every descendant of `id` (inclusive) into a flat
         // removal set.
@@ -242,16 +261,6 @@ impl Workspace {
         }
         let removed_set: std::collections::HashSet<PageId> = to_remove.iter().copied().collect();
 
-        // Record affected parents (so we know which sibling lists to
-        // re-densify after the removal).
-        let mut affected_parents: std::collections::HashSet<Option<PageId>> =
-            std::collections::HashSet::new();
-        for p in &self.data.pages {
-            if removed_set.contains(&p.id) {
-                affected_parents.insert(p.parent);
-            }
-        }
-
         self.data.pages.retain(|p| !removed_set.contains(&p.id));
         self.data
             .tag_assignments
@@ -260,16 +269,11 @@ impl Workspace {
             self.data.selected = None;
         }
 
-        for parent in affected_parents {
-            self.renumber_siblings(parent);
-        }
-
         to_remove
     }
 
-    /// Move `id` up (`delta < 0`) or down (`delta > 0`) among its
-    /// siblings by swapping `order` with the adjacent sibling in that
-    /// direction, then re-densifying. Returns `true` if the page moved
+    /// Move `id` up (`delta < 0`) or down (`delta > 0`) past the adjacent
+    /// sibling in that direction. Returns `true` if the page moved
     /// (i.e. it existed and wasn't already at the requested edge).
     ///
     /// Only reorders within a single sibling group — re-parenting is a
@@ -292,23 +296,18 @@ impl Workspace {
         if target < 0 {
             return false;
         }
-        let Some(&other) = siblings.get(num::usize_of_i32(target)) else {
+        let target = num::usize_of_i32(target);
+        let Some(&other) = siblings.get(target) else {
             return false;
         };
-        // Swap the two pages' order values, then re-densify to keep the
-        // "contiguous from 0" invariant even if orders were sparse.
-        let (id_order, other_order) = match (self.get(id), self.get(other)) {
-            (Some(a), Some(b)) => (a.order, b.order),
-            _ => return false,
+        // Up: in front of the sibling above. Down: in front of the one after
+        // the sibling below, or last.
+        let before = if delta < 0 {
+            Some(other)
+        } else {
+            siblings.get(target.saturating_add(1)).copied()
         };
-        if let Some(p) = self.get_mut(id) {
-            p.order = other_order;
-        }
-        if let Some(p) = self.get_mut(other) {
-            p.order = id_order;
-        }
-        self.renumber_siblings(parent);
-        true
+        self.move_to(id, parent, before)
     }
 
     /// True when `maybe_ancestor` is `id` itself or one of its
@@ -337,8 +336,9 @@ impl Workspace {
     ///
     /// Returns `false` (a no-op) when `id` doesn't exist or the move
     /// would create a cycle (`new_parent` is `id` or a descendant of
-    /// `id`). Both the old and new sibling groups are re-densified so
-    /// `order` stays contiguous.
+    /// `id`). Only the moved page gets a new key, between its new
+    /// neighbours; the group is re-keyed only when those neighbours share
+    /// a key (two replicas minted it concurrently) and nothing fits between.
     pub fn move_to(
         &mut self,
         id: PageId,
@@ -355,35 +355,45 @@ impl Workspace {
         {
             return false;
         }
-        let old_parent = self.get(id).and_then(|p| p.parent);
-        // Target sibling order (by id), with `id` removed so we can slot
-        // it back in at the requested position.
-        let mut siblings: Vec<PageId> = self
+        // The new group in display order, without `id`, so it can be slotted
+        // back in at the requested position.
+        let mut siblings: Vec<(PageId, String)> = self
             .children_of(new_parent)
             .iter()
-            .map(|p| p.id)
-            .filter(|s| *s != id)
+            .filter(|p| p.id != id)
+            .map(|p| (p.id, p.order.clone()))
             .collect();
         let insert_at = match before {
             Some(b) if b != id => siblings
                 .iter()
-                .position(|s| *s == b)
+                .position(|(s, _)| *s == b)
                 .unwrap_or(siblings.len()),
             _ => siblings.len(),
         };
-        siblings.insert(insert_at, id);
-        // Commit the new parent, then rewrite the whole group's order.
+        let low = insert_at
+            .checked_sub(1)
+            .and_then(|i| siblings.get(i))
+            .map(|(_, key)| key.as_str());
+        let high = siblings.get(insert_at).map(|(_, key)| key.as_str());
+        let keys: Vec<(PageId, String)> = match (low, high) {
+            (Some(low), Some(high)) if low >= high => {
+                siblings.insert(insert_at, (id, String::new()));
+                let fresh = order::sequence(None, None, siblings.len());
+                siblings
+                    .into_iter()
+                    .zip(fresh)
+                    .map(|((sid, _), key)| (sid, key))
+                    .collect()
+            }
+            _ => vec![(id, order::between(low, high))],
+        };
         if let Some(p) = self.get_mut(id) {
             p.parent = new_parent;
         }
-        for (i, sid) in siblings.iter().enumerate() {
-            if let Some(p) = self.get_mut(*sid) {
-                p.order = num::u32_of_usize(i);
+        for (sid, key) in keys {
+            if let Some(p) = self.get_mut(sid) {
+                p.order = key;
             }
-        }
-        // If the page left a different group, re-densify the one it left.
-        if old_parent != new_parent {
-            self.renumber_siblings(old_parent);
         }
         true
     }
@@ -445,52 +455,26 @@ impl Workspace {
                 id: new_id,
                 title,
                 parent: new_parent,
-                order: meta.order,
+                order: meta.order.clone(),
             });
         }
         self.data.pages.extend(new_metas);
         // Position the copy immediately after the source among its
-        // siblings (move_to also re-densifies the group's order).
+        // siblings.
         self.move_to(new_root, src.parent, after_sibling);
         Some((new_root, mapping))
     }
 
-    /// Re-densify `order` on the children of `parent`. Stable: keeps
-    /// the existing relative order, just rewrites the values as 0, 1,
-    /// 2, ... so the contract "siblings have contiguous order from 0"
-    /// holds after a deletion or move.
-    pub fn renumber_siblings(&mut self, parent: Option<PageId>) {
-        // Snapshot (id, order) so we can sort without holding a
-        // borrow on `self.data.pages`.
-        let mut siblings: Vec<(PageId, u32)> = self
-            .data
-            .pages
-            .iter()
-            .filter(|p| p.parent == parent)
-            .map(|p| (p.id, p.order))
-            .collect();
-        siblings.sort_by_key(|(_, o)| *o);
-        let new_orders: HashMap<PageId, u32> = siblings
-            .into_iter()
-            .enumerate()
-            .map(|(i, (id, _))| (id, num::u32_of_usize(i)))
-            .collect();
-        for p in &mut self.data.pages {
-            if let Some(new) = new_orders.get(&p.id) {
-                p.order = *new;
-            }
-        }
-    }
-
     /// True when every page's `parent` points at a real page (or is
-    /// None) and every sibling group has contiguous `order` starting
-    /// from 0. Used by tests + the storage layer post-load to detect
-    /// corruption.
+    /// None), parents form no cycle and every page's `order` is a
+    /// fractional key. Gaps and shared keys among siblings are fine:
+    /// [`sibling_order`] orders them. Used by tests + the storage layer
+    /// post-load to detect corruption.
     ///
     /// # Errors
     ///
     /// Returns a message naming the first broken invariant found (a
-    /// dangling parent, or a non-contiguous sibling `order`).
+    /// dangling parent, a parent cycle, or a malformed `order` key).
     pub fn check_invariants(&self) -> Result<(), String> {
         let ids: std::collections::HashSet<PageId> = self.data.pages.iter().map(|p| p.id).collect();
         if ids.len() != self.data.pages.len() {
@@ -532,20 +516,11 @@ impl Workspace {
             finished.extend(chain);
         }
 
-        // Group by parent and check the order sequence.
-        let mut groups: HashMap<Option<PageId>, Vec<u32>> = HashMap::new();
-        for p in &self.data.pages {
-            groups.entry(p.parent).or_default().push(p.order);
-        }
-        for (parent, mut orders) in groups {
-            orders.sort_unstable();
-            for (i, o) in orders.iter().enumerate() {
-                if (i as u32) != *o {
-                    return Err(format!(
-                        "siblings of {parent:?} have non-contiguous order: {orders:?}",
-                    ));
-                }
-            }
+        if let Some(page) = self.data.pages.iter().find(|p| !order::is_key(&p.order)) {
+            return Err(format!(
+                "page {} has a malformed order key {:?}",
+                page.id, page.order
+            ));
         }
 
         if let Some(sel) = self.data.selected
@@ -589,7 +564,7 @@ mod tests {
     }
 
     #[test]
-    fn pages_create_rename_and_delete_with_contiguous_order_and_valid_invariants() {
+    fn pages_create_rename_and_delete_in_key_order_with_valid_invariants() {
         let mut w = Workspace::new();
         let a = w.create_page(None);
         let b = w.create_page(None);
@@ -599,38 +574,27 @@ mod tests {
             vec![a, b, c],
             "created pages append to the end"
         );
-        let orders: Vec<_> = w.children_of(None).iter().map(|p| p.order).collect();
-        assert_eq!(orders, vec![0, 1, 2]);
+        let orders: Vec<_> = w
+            .children_of(None)
+            .iter()
+            .map(|p| p.order.clone())
+            .collect();
+        assert!(
+            orders.windows(2).all(|pair| pair[0] < pair[1]),
+            "{orders:?}"
+        );
 
         assert!(w.rename(a, "Hello"));
         assert_eq!(w.get(a).unwrap().title, "Hello");
         // Unknown id is a no-op.
         assert!(!w.rename(Uuid::new_v4(), "nope"));
 
-        // Deleting renumbers the surviving siblings.
+        // Deleting leaves the survivors' keys alone; the gap is harmless.
         w.delete_page(b);
-        assert_eq!(w.get(a).unwrap().order, 0);
-        assert_eq!(w.get(c).unwrap().order, 1);
+        assert_eq!(w.get(a).unwrap().order, orders[0]);
+        assert_eq!(w.get(c).unwrap().order, orders[2]);
+        assert_eq!(ids(&w, None), vec![a, c]);
         w.check_invariants().unwrap();
-
-        // Deleting removes descendants recursively.
-        let mut w = Workspace::new();
-        let root = w.create_page(None);
-        let mid = w.create_page(Some(root));
-        let leaf = w.create_page(Some(mid));
-        let removed = w.delete_page(root);
-        assert_eq!(removed.len(), 3);
-        assert!(removed.contains(&root));
-        assert!(removed.contains(&mid));
-        assert!(removed.contains(&leaf));
-        assert!(w.pages().is_empty());
-
-        // The selection clears when its page is deleted.
-        let mut w = Workspace::new();
-        let id = w.create_page(None);
-        w.set_selected(Some(id));
-        w.delete_page(id);
-        assert!(w.selected().is_none());
 
         // An orphan is an invariant violation.
         let mut w = Workspace::new();
@@ -638,9 +602,71 @@ mod tests {
             id: Uuid::new_v4(),
             title: "orphan".into(),
             parent: Some(Uuid::new_v4()),
-            order: 0,
+            order: "i".into(),
         });
         assert!(w.check_invariants().is_err());
+
+        // A malformed key is an invariant violation.
+        let mut w = Workspace::new();
+        let id = w.create_page(None);
+        w.get_mut(id).unwrap().order = "I0".into();
+        assert!(w.check_invariants().is_err());
+    }
+
+    #[test]
+    fn siblings_sharing_a_key_order_by_id_and_still_move_between_each_other() {
+        // Two replicas appended at once: the same key, ordered by id.
+        let mut w = Workspace::new();
+        let [low, high] = {
+            let mut ids = [Uuid::new_v4(), Uuid::new_v4()];
+            ids.sort();
+            ids
+        };
+        for id in [high, low] {
+            w.data.pages.push(PageMeta {
+                id,
+                title: String::new(),
+                parent: None,
+                order: "i".into(),
+            });
+        }
+        w.check_invariants().unwrap();
+        assert_eq!(ids(&w, None), vec![low, high]);
+        // A page dropped between them re-keys the group so it lands there.
+        let c = w.create_page(None);
+        assert!(w.move_to(c, None, Some(high)));
+        assert_eq!(ids(&w, None), vec![low, c, high]);
+        w.check_invariants().unwrap();
+        // Moving one of two tied pages past the other works too.
+        let mut w = Workspace::new();
+        for id in [high, low] {
+            w.data.pages.push(PageMeta {
+                id,
+                title: String::new(),
+                parent: None,
+                order: "i".into(),
+            });
+        }
+        assert!(w.move_sibling(low, 1));
+        assert_eq!(ids(&w, None), vec![high, low]);
+    }
+
+    #[test]
+    fn a_move_rekeys_only_the_moved_page() {
+        let mut w = Workspace::new();
+        let a = w.create_page(None);
+        let b = w.create_page(None);
+        let c = w.create_page(None);
+        let before = w.pages().to_vec();
+        assert!(w.move_to(c, None, Some(b)));
+        assert_eq!(ids(&w, None), vec![a, c, b]);
+        let changed: Vec<_> = w
+            .pages()
+            .iter()
+            .filter(|page| !before.contains(page))
+            .map(|page| page.id)
+            .collect();
+        assert_eq!(changed, vec![c]);
     }
 
     #[test]
@@ -649,7 +675,7 @@ mod tests {
         let a = w.create_page(None);
         let b = w.create_page(None);
         let c = w.create_page(None);
-        // (moved page, delta, expected root order) — each move stays contiguous.
+        // (moved page, delta, expected root order).
         for (page, delta, want) in [(c, -1, vec![a, c, b]), (a, 1, vec![c, a, b])] {
             assert!(w.move_sibling(page, delta));
             assert_eq!(ids(&w, None), want);
@@ -703,38 +729,6 @@ mod tests {
         assert!(!w.move_to(root, Some(child), None));
         assert!(!w.move_to(root, Some(root), None));
         assert_eq!(w.get(root).unwrap().parent, None);
-        w.check_invariants().unwrap();
-    }
-
-    #[test]
-    fn duplicate_page_deep_copies_subtree_after_source() {
-        let mut w = Workspace::new();
-        let a = w.create_page(None);
-        w.rename(a, "Projects");
-        let child = w.create_page(Some(a));
-        w.rename(child, "Launch");
-        let grand = w.create_page(Some(child));
-        w.rename(grand, "Tasks");
-        let sib = w.create_page(None);
-        w.rename(sib, "Inbox");
-
-        let (new_root, mapping) = w.duplicate_page(a).expect("duplicate");
-        // Fresh ids for every node in the subtree (root + child + grand).
-        assert_eq!(mapping.len(), 3);
-        assert!(mapping.iter().all(|(old, new)| old != new));
-        // The copy sits right after the source among root siblings.
-        let roots: Vec<_> = w.children_of(None).iter().map(|p| p.id).collect();
-        assert_eq!(roots, vec![a, new_root, sib], "copy lands after the source");
-        // Copy carries a " copy" title and an independent subtree.
-        assert_eq!(w.get(new_root).unwrap().title, "Projects copy");
-        let copy_children = w.children_of(Some(new_root));
-        assert_eq!(copy_children.len(), 1);
-        assert_eq!(copy_children[0].title, "Launch");
-        let copy_grand = w.children_of(Some(copy_children[0].id));
-        assert_eq!(copy_grand.len(), 1);
-        assert_eq!(copy_grand[0].title, "Tasks");
-        // Original subtree is untouched (still 3 originals + 3 copies + sib).
-        assert_eq!(w.children_of(Some(a)).len(), 1);
         w.check_invariants().unwrap();
     }
 

@@ -154,6 +154,21 @@ granted to an app through the GlobalShortcuts portal.
 | Toggle mouse keys | Alt+Shift+Num Lock |
 <!-- fixed-shell-chords:end -->
 
+## In the browser
+
+The browser desktop takes the Super chords above where the browser passes
+Super through, and the same keys with a stand-in no browser or system binds:
+Alt+Shift, or Ctrl+Option on a Mac. Search stays on Ctrl+K (Cmd+K on a Mac).
+
+| Intent | Keyboard |
+|---|---|
+| Search all Tilo | Ctrl+K / Cmd+K |
+| Open/close Overview | Alt+Shift+O, Super+Tab |
+| Previous/next window | Alt+Shift+Left/Right |
+| Previous/next strip | Alt+Shift+Up/Down |
+| Previous/next workspace | Alt+Shift+Page Up/Page Down |
+| Focus the Nth window of the strip | Alt+Shift+1 … Alt+Shift+9 |
+
 ## Overlay behavior
 
 - Quick Settings root: Tab/Shift+Tab moves through every enabled control,

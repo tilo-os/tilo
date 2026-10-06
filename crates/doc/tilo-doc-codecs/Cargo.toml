@@ -1,0 +1,73 @@
+[package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
+name = "tilo-doc-codecs"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+description = "Import/export projections between file formats and qdoc document resources, plus the format-provider registry"
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+# Every format is on by default. A crate that imports or exports only some formats depends on
+# this crate with `default-features = false` and names them, so it compiles no zip, XML or
+# Markdown machinery it does not use.
+default = ["all"]
+all = ["markdown", "html", "rtf", "epub", "docx", "odt", "xlsx", "ods"]
+markdown = ["dep:pulldown-cmark"]
+# HTML import (`HtmlCodec`) and export (`export_html`); images travel as `data:` URIs.
+html = ["dep:base64"]
+# RTF import (`RtfCodec`) and export (`export_rtf`).
+rtf = []
+epub = ["html", "dep:zip"]
+docx = ["office"]
+odt = ["office"]
+xlsx = ["office"]
+ods = ["office"]
+# Shared by the office package formats: the bounded zip reader (zip-bomb and XXE defence) and
+# XML parsing. Not useful on its own.
+office = ["dep:zip", "dep:bounded-zip", "dep:quick-xml"]
+
+[dependencies]
+tilo-doc = { version = "0.1.0", path = "../tilo-doc" }
+# A rich-text field's HTML is read and written under its own map of a larger document.
+automerge.workspace = true
+tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
+thiserror.workspace = true
+base64 = { workspace = true, optional = true }
+bounded-zip = { version = "0.1.0", path = "../bounded-zip", optional = true }
+pulldown-cmark = { version = "0.12", default-features = false, optional = true }
+quick-xml = { workspace = true, optional = true }
+zip = { workspace = true, optional = true }
+
+[dev-dependencies]
+tilo-doc = { path = "../tilo-doc", features = ["bulk-instrumentation"] }
+proptest.workspace = true
+serde_json.workspace = true
+tilo-automerge = { workspace = true, features = ["heap-probe"] }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+required-features = ["all"]
+
+[[example]]
+name = "codec_scaling"
+required-features = ["all"]
+
+[[example]]
+name = "host_import"
+required-features = ["rtf"]
+
+[[example]]
+name = "import_memory"
+required-features = ["markdown"]
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

@@ -141,6 +141,403 @@ pub enum Icon {
     Undo2,
     /// Redo — the mirror of [`Icon::Undo2`]. Lucide `redo-2`.
     Redo2,
+    // --- Drawing set ---
+    /// A paint brush. Lucide `brush`.
+    Brush,
+    /// A circle, for an ellipse tool. Lucide `circle`.
+    Circle,
+    /// A diagonal line. Lucide `slash`.
+    Slash,
+    /// A text tool. Lucide `type`.
+    Type,
+    /// An eyedropper that picks a colour. Lucide `pipette`.
+    Pipette,
+    /// An eraser. Lucide `eraser`.
+    Eraser,
+    /// Hidden. Lucide `eye-off`.
+    EyeOff,
+    /// Locked. Lucide `lock`.
+    Lock,
+    /// Unlocked. Lucide `lock-open`.
+    LockOpen,
+    /// Linked: moves with what it belongs to. Lucide `link`.
+    Link,
+    /// Unlinked: stays put on its own. Lucide `unlink`.
+    Unlink,
+    /// An agent. Lucide `bot`.
+    Bot,
+    /// A person. Lucide `user`.
+    User,
+    /// A named point, a checkpoint. Lucide `flag`.
+    Flag,
+    /// A paint drop. Lucide `droplet`.
+    Droplet,
+    /// A painter's palette. Lucide `palette`.
+    Palette,
+    /// A side panel on the right, shown or hidden. Lucide `panel-right`.
+    PanelRight,
+    /// A rectangle of an area being selected. Lucide `square-dashed`.
+    SquareDashed,
+    /// An ellipse of an area being selected. Lucide `circle-dashed`.
+    CircleDashed,
+    /// A freehand selection. Lucide `lasso`.
+    Lasso,
+    /// Selecting by colour, a magic wand. Lucide `wand-sparkles`.
+    WandSparkles,
+    /// Filling an area with colour. Lucide `paint-bucket`.
+    PaintBucket,
+    /// Half light, half dark: inverting. Lucide `contrast`.
+    Contrast,
+    /// Shapes united into one. Lucide `squares-unite`.
+    SquaresUnite,
+    /// One shape taken out of another. Lucide `squares-subtract`.
+    SquaresSubtract,
+    /// Only where shapes overlap. Lucide `squares-intersect`.
+    SquaresIntersect,
+    /// Where either shape is, but not both. Lucide `squares-exclude`.
+    SquaresExclude,
+    /// Something went wrong and needs attention. Lucide `circle-alert`.
+    CircleAlert,
+    /// Sign in with a fingerprint reader. Lucide `fingerprint`.
+    Fingerprint,
+    /// A battery taking charge. Lucide `battery-charging`.
+    BatteryCharging,
+    /// Sleep / suspend. Lucide `moon`.
+    Moon,
+    /// Text size. Lucide `a-large-small`.
+    ALargeSmall,
+    /// Accessibility options. Lucide `accessibility`.
+    Accessibility,
+    /// Lined up along their left edges. Lucide `align-start-vertical`.
+    AlignStartVertical,
+    /// Lined up on a vertical centre line. Lucide `align-center-vertical`.
+    AlignCenterVertical,
+    /// Lined up along their right edges. Lucide `align-end-vertical`.
+    AlignEndVertical,
+    /// Lined up along their top edges. Lucide `align-start-horizontal`.
+    AlignStartHorizontal,
+    /// Lined up on a horizontal centre line. Lucide `align-center-horizontal`.
+    AlignCenterHorizontal,
+    /// Lined up along their bottom edges. Lucide `align-end-horizontal`.
+    AlignEndHorizontal,
+    /// Spaced evenly from left to right. Lucide
+    /// `align-horizontal-distribute-center`.
+    AlignHorizontalDistributeCenter,
+    /// Spaced evenly from top to bottom. Lucide
+    /// `align-vertical-distribute-center`.
+    AlignVerticalDistributeCenter,
+    /// Emoji selection. Lucide `smile`; content emoji remain text.
+    Smile,
+}
+
+impl Icon {
+    /// The glyph lucide names `name` (its kebab name, `"layout-grid"`), for
+    /// a caller that names icons without linking the toolkit: a search
+    /// entry, a manifest.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "smile" => Self::Smile,
+            "layout-grid" => Self::LayoutGrid,
+            "settings-2" => Self::Settings2,
+            "mouse" => Self::Mouse,
+            "keyboard" => Self::Keyboard,
+            "users" => Self::Users,
+            "printer" => Self::Printer,
+            "globe" => Self::Globe,
+            "wifi" => Self::Wifi,
+            "bluetooth" => Self::Bluetooth,
+            "monitor" => Self::Monitor,
+            "battery" => Self::Battery,
+            "shield" => Self::Shield,
+            "maximize-2" => Self::Maximize2,
+            "minimize-2" => Self::Minimize2,
+            "x" => Self::X,
+            "chevron-up" => Self::ChevronUp,
+            "chevron-down" => Self::ChevronDown,
+            "chevron-left" => Self::ChevronLeft,
+            "plus" => Self::Plus,
+            "search" => Self::Search,
+            "pen-tool" => Self::PenTool,
+            "code" => Self::Code,
+            "terminal" => Self::Terminal,
+            "file-text" => Self::FileText,
+            "bar-chart" => Self::BarChart,
+            "layers" => Self::Layers,
+            "settings" => Self::Settings,
+            "home" => Self::Home,
+            "camera" => Self::Camera,
+            "power" => Self::Power,
+            "folder" => Self::Folder,
+            "folder-open" => Self::FolderOpen,
+            "file" => Self::File,
+            "image" => Self::Image,
+            "music" => Self::Music,
+            "film" => Self::Film,
+            "archive" => Self::Archive,
+            "file-code" => Self::FileCode,
+            "arrow-left" => Self::ArrowLeft,
+            "arrow-right" => Self::ArrowRight,
+            "arrow-up" => Self::ArrowUp,
+            "arrow-down" => Self::ArrowDown,
+            "chevron-right" => Self::ChevronRight,
+            "rotate-ccw" => Self::RotateCcw,
+            "rotate-cw" => Self::RotateCw,
+            "copy" => Self::Copy,
+            "scissors" => Self::Scissors,
+            "clipboard-paste" => Self::ClipboardPaste,
+            "trash-2" => Self::Trash2,
+            "pencil" => Self::Pencil,
+            "square" => Self::Square,
+            "minus" => Self::Minus,
+            "folder-plus" => Self::FolderPlus,
+            "file-plus" => Self::FilePlus,
+            "list" => Self::List,
+            "star" => Self::Star,
+            "pin" => Self::Pin,
+            "hard-drive" => Self::HardDrive,
+            "check" => Self::Check,
+            "flame" => Self::Flame,
+            "gallery-vertical-end" => Self::GalleryVerticalEnd,
+            "history" => Self::History,
+            "timer" => Self::Timer,
+            "thumbs-up" => Self::ThumbsUp,
+            "thumbs-down" => Self::ThumbsDown,
+            "list-video" => Self::ListVideo,
+            "picture-in-picture-2" => Self::PictureInPicture2,
+            "sparkles" => Self::Sparkles,
+            "eye" => Self::Eye,
+            "mouse-pointer-2" => Self::MousePointer2,
+            "menu" => Self::Menu,
+            "info" => Self::Info,
+            "cloud-download" => Self::CloudDownload,
+            "arrow-up-down" => Self::ArrowUpDown,
+            "bell" => Self::Bell,
+            "play" => Self::Play,
+            "pause" => Self::Pause,
+            "refresh" => Self::Refresh,
+            "external-link" => Self::ExternalLink,
+            "trash" => Self::Trash,
+            "more-horizontal" => Self::MoreHorizontal,
+            "inbox" => Self::Inbox,
+            "send" => Self::Send,
+            "reply" => Self::Reply,
+            "mail" => Self::Mail,
+            "paperclip" => Self::Paperclip,
+            "calendar" => Self::Calendar,
+            "ban" => Self::Ban,
+            "download" => Self::Download,
+            "sun" => Self::Sun,
+            "volume-2" => Self::Volume2,
+            "volume-x" => Self::VolumeX,
+            "wifi-off" => Self::WifiOff,
+            "ethernet-port" => Self::EthernetPort,
+            "mic" => Self::Mic,
+            "mic-off" => Self::MicOff,
+            "skip-forward" => Self::SkipForward,
+            "skip-back" => Self::SkipBack,
+            "arrow-big-up" => Self::ArrowBigUp,
+            "delete" => Self::Delete,
+            "corner-down-left" => Self::CornerDownLeft,
+            "undo-2" => Self::Undo2,
+            "redo-2" => Self::Redo2,
+            "brush" => Self::Brush,
+            "circle" => Self::Circle,
+            "slash" => Self::Slash,
+            "type" => Self::Type,
+            "pipette" => Self::Pipette,
+            "eraser" => Self::Eraser,
+            "eye-off" => Self::EyeOff,
+            "lock" => Self::Lock,
+            "lock-open" => Self::LockOpen,
+            "bot" => Self::Bot,
+            "user" => Self::User,
+            "flag" => Self::Flag,
+            "droplet" => Self::Droplet,
+            "palette" => Self::Palette,
+            "panel-right" => Self::PanelRight,
+            "square-dashed" => Self::SquareDashed,
+            "circle-dashed" => Self::CircleDashed,
+            "lasso" => Self::Lasso,
+            "wand-sparkles" => Self::WandSparkles,
+            "paint-bucket" => Self::PaintBucket,
+            "contrast" => Self::Contrast,
+            "squares-unite" => Self::SquaresUnite,
+            "squares-subtract" => Self::SquaresSubtract,
+            "squares-intersect" => Self::SquaresIntersect,
+            "squares-exclude" => Self::SquaresExclude,
+            "circle-alert" => Self::CircleAlert,
+            "fingerprint" => Self::Fingerprint,
+            "battery-charging" => Self::BatteryCharging,
+            "moon" => Self::Moon,
+            "a-large-small" => Self::ALargeSmall,
+            "accessibility" => Self::Accessibility,
+            "link" => Self::Link,
+            "unlink" => Self::Unlink,
+            "align-start-vertical" => Self::AlignStartVertical,
+            "align-center-vertical" => Self::AlignCenterVertical,
+            "align-end-vertical" => Self::AlignEndVertical,
+            "align-start-horizontal" => Self::AlignStartHorizontal,
+            "align-center-horizontal" => Self::AlignCenterHorizontal,
+            "align-end-horizontal" => Self::AlignEndHorizontal,
+            "align-horizontal-distribute-center" => Self::AlignHorizontalDistributeCenter,
+            "align-vertical-distribute-center" => Self::AlignVerticalDistributeCenter,
+            _ => return None,
+        })
+    }
+
+    /// The kebab name lucide gives this glyph, the one [`Self::from_name`]
+    /// reads back.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Smile => "smile",
+            Self::LayoutGrid => "layout-grid",
+            Self::Settings2 => "settings-2",
+            Self::Mouse => "mouse",
+            Self::Keyboard => "keyboard",
+            Self::Users => "users",
+            Self::Printer => "printer",
+            Self::Globe => "globe",
+            Self::Wifi => "wifi",
+            Self::Bluetooth => "bluetooth",
+            Self::Monitor => "monitor",
+            Self::Battery => "battery",
+            Self::Shield => "shield",
+            Self::Maximize2 => "maximize-2",
+            Self::Minimize2 => "minimize-2",
+            Self::X => "x",
+            Self::ChevronUp => "chevron-up",
+            Self::ChevronDown => "chevron-down",
+            Self::ChevronLeft => "chevron-left",
+            Self::Plus => "plus",
+            Self::Search => "search",
+            Self::PenTool => "pen-tool",
+            Self::Code => "code",
+            Self::Terminal => "terminal",
+            Self::FileText => "file-text",
+            Self::BarChart => "bar-chart",
+            Self::Layers => "layers",
+            Self::Settings => "settings",
+            Self::Home => "home",
+            Self::Camera => "camera",
+            Self::Power => "power",
+            Self::Folder => "folder",
+            Self::FolderOpen => "folder-open",
+            Self::File => "file",
+            Self::Image => "image",
+            Self::Music => "music",
+            Self::Film => "film",
+            Self::Archive => "archive",
+            Self::FileCode => "file-code",
+            Self::ArrowLeft => "arrow-left",
+            Self::ArrowRight => "arrow-right",
+            Self::ArrowUp => "arrow-up",
+            Self::ArrowDown => "arrow-down",
+            Self::ChevronRight => "chevron-right",
+            Self::RotateCcw => "rotate-ccw",
+            Self::RotateCw => "rotate-cw",
+            Self::Copy => "copy",
+            Self::Scissors => "scissors",
+            Self::ClipboardPaste => "clipboard-paste",
+            Self::Trash2 => "trash-2",
+            Self::Pencil => "pencil",
+            Self::Square => "square",
+            Self::Minus => "minus",
+            Self::FolderPlus => "folder-plus",
+            Self::FilePlus => "file-plus",
+            Self::List => "list",
+            Self::Star => "star",
+            Self::Pin => "pin",
+            Self::HardDrive => "hard-drive",
+            Self::Check => "check",
+            Self::Flame => "flame",
+            Self::GalleryVerticalEnd => "gallery-vertical-end",
+            Self::History => "history",
+            Self::Timer => "timer",
+            Self::ThumbsUp => "thumbs-up",
+            Self::ThumbsDown => "thumbs-down",
+            Self::ListVideo => "list-video",
+            Self::PictureInPicture2 => "picture-in-picture-2",
+            Self::Sparkles => "sparkles",
+            Self::Eye => "eye",
+            Self::MousePointer2 => "mouse-pointer-2",
+            Self::Menu => "menu",
+            Self::Info => "info",
+            Self::CloudDownload => "cloud-download",
+            Self::ArrowUpDown => "arrow-up-down",
+            Self::Bell => "bell",
+            Self::Play => "play",
+            Self::Pause => "pause",
+            Self::Refresh => "refresh",
+            Self::ExternalLink => "external-link",
+            Self::Trash => "trash",
+            Self::MoreHorizontal => "more-horizontal",
+            Self::Inbox => "inbox",
+            Self::Send => "send",
+            Self::Reply => "reply",
+            Self::Mail => "mail",
+            Self::Paperclip => "paperclip",
+            Self::Calendar => "calendar",
+            Self::Ban => "ban",
+            Self::Download => "download",
+            Self::Sun => "sun",
+            Self::Volume2 => "volume-2",
+            Self::VolumeX => "volume-x",
+            Self::WifiOff => "wifi-off",
+            Self::EthernetPort => "ethernet-port",
+            Self::Mic => "mic",
+            Self::MicOff => "mic-off",
+            Self::SkipForward => "skip-forward",
+            Self::SkipBack => "skip-back",
+            Self::ArrowBigUp => "arrow-big-up",
+            Self::Delete => "delete",
+            Self::CornerDownLeft => "corner-down-left",
+            Self::Undo2 => "undo-2",
+            Self::Redo2 => "redo-2",
+            Self::Brush => "brush",
+            Self::Circle => "circle",
+            Self::Slash => "slash",
+            Self::Type => "type",
+            Self::Pipette => "pipette",
+            Self::Eraser => "eraser",
+            Self::EyeOff => "eye-off",
+            Self::Lock => "lock",
+            Self::LockOpen => "lock-open",
+            Self::Bot => "bot",
+            Self::User => "user",
+            Self::Flag => "flag",
+            Self::Droplet => "droplet",
+            Self::Palette => "palette",
+            Self::PanelRight => "panel-right",
+            Self::SquareDashed => "square-dashed",
+            Self::CircleDashed => "circle-dashed",
+            Self::Lasso => "lasso",
+            Self::WandSparkles => "wand-sparkles",
+            Self::PaintBucket => "paint-bucket",
+            Self::Contrast => "contrast",
+            Self::SquaresUnite => "squares-unite",
+            Self::SquaresSubtract => "squares-subtract",
+            Self::SquaresIntersect => "squares-intersect",
+            Self::SquaresExclude => "squares-exclude",
+            Self::CircleAlert => "circle-alert",
+            Self::Fingerprint => "fingerprint",
+            Self::BatteryCharging => "battery-charging",
+            Self::Moon => "moon",
+            Self::ALargeSmall => "a-large-small",
+            Self::Accessibility => "accessibility",
+            Self::Link => "link",
+            Self::Unlink => "unlink",
+            Self::AlignStartVertical => "align-start-vertical",
+            Self::AlignCenterVertical => "align-center-vertical",
+            Self::AlignEndVertical => "align-end-vertical",
+            Self::AlignStartHorizontal => "align-start-horizontal",
+            Self::AlignCenterHorizontal => "align-center-horizontal",
+            Self::AlignEndHorizontal => "align-end-horizontal",
+            Self::AlignHorizontalDistributeCenter => "align-horizontal-distribute-center",
+            Self::AlignVerticalDistributeCenter => "align-vertical-distribute-center",
+        }
+    }
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -206,6 +603,12 @@ fn circle_path(cx: f64, cy: f64, r: f64) -> BezPath {
 )]
 pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
     match icon {
+        Icon::Smile => vec![
+            circle_path(12.0, 12.0, 10.0),
+            path_from_d("M8 14s1.5 2 4 2 4-2 4-2"),
+            path_from_d("M9 9h.01"),
+            path_from_d("M15 9h.01"),
+        ],
         Icon::LayoutGrid => vec![
             rect_path(3.0, 3.0, 7.0, 7.0, 1.0),
             rect_path(14.0, 3.0, 7.0, 7.0, 1.0),
@@ -714,6 +1117,309 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("m15 14 5-5-5-5"),
             path_from_d("M20 9H9.5A5.5 5.5 0 0 0 4 14.5 5.5 5.5 0 0 0 9.5 20H13"),
         ],
+        Icon::Brush => vec![
+            path_from_d("m11 10 3 3"),
+            path_from_d("M6.5 21A3.5 3.5 0 1 0 3 17.5a2.62 2.62 0 0 1-.708 1.792A1 1 0 0 0 3 21z"),
+            path_from_d("M9.969 17.031 21.378 5.624a1 1 0 0 0-3.002-3.002L6.967 14.031"),
+        ],
+        Icon::Circle => vec![circle_path(12.0, 12.0, 10.0)],
+        Icon::Slash => vec![path_from_d("M22 2 2 22")],
+        Icon::Type => vec![
+            path_from_d("M12 4v16"),
+            path_from_d("M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2"),
+            path_from_d("M9 20h6"),
+        ],
+        Icon::Pipette => vec![
+            path_from_d(
+                "m12 9-8.414 8.414A2 2 0 0 0 3 18.828v1.344a2 2 0 0 1-.586 1.414A2 2 0 0 1 3.828 21h1.344a2 2 0 0 0 1.414-.586L15 12",
+            ),
+            path_from_d(
+                "m18 9 .4.4a1 1 0 1 1-3 3l-3.8-3.8a1 1 0 1 1 3-3l.4.4 3.4-3.4a1 1 0 1 1 3 3z",
+            ),
+            path_from_d("m2 22 .414-.414"),
+        ],
+        Icon::Eraser => vec![
+            path_from_d(
+                "M21 21H8a2 2 0 0 1-1.42-.587l-3.994-3.999a2 2 0 0 1 0-2.828l10-10a2 2 0 0 1 2.829 0l5.999 6a2 2 0 0 1 0 2.828L12.834 21",
+            ),
+            path_from_d("m5.082 11.09 8.828 8.828"),
+        ],
+        Icon::EyeOff => vec![
+            path_from_d(
+                "M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49",
+            ),
+            path_from_d("M14.084 14.158a3 3 0 0 1-4.242-4.242"),
+            path_from_d(
+                "M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143",
+            ),
+            path_from_d("m2 2 20 20"),
+        ],
+        Icon::Lock => vec![
+            rect_path(3.0, 11.0, 18.0, 11.0, 2.0),
+            path_from_d("M7 11V7a5 5 0 0 1 10 0v4"),
+        ],
+        Icon::LockOpen => vec![
+            rect_path(3.0, 11.0, 18.0, 11.0, 2.0),
+            path_from_d("M7 11V7a5 5 0 0 1 9.9-1"),
+        ],
+        Icon::Link => vec![
+            path_from_d("M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"),
+            path_from_d("M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"),
+        ],
+        Icon::Unlink => vec![
+            path_from_d(
+                "m18.84 12.25 1.72-1.71h-.02a5.004 5.004 0 0 0-.12-7.07 5.006 5.006 0 0 0-6.95 0l-1.72 1.71",
+            ),
+            path_from_d(
+                "m5.17 11.75-1.71 1.71a5.004 5.004 0 0 0 .12 7.07 5.006 5.006 0 0 0 6.95 0l1.71-1.71",
+            ),
+            line_path(8.0, 2.0, 8.0, 5.0),
+            line_path(2.0, 8.0, 5.0, 8.0),
+            line_path(16.0, 19.0, 16.0, 22.0),
+            line_path(19.0, 16.0, 22.0, 16.0),
+        ],
+        Icon::Bot => vec![
+            path_from_d("M12 8V4H8"),
+            rect_path(4.0, 8.0, 16.0, 12.0, 2.0),
+            path_from_d("M2 14h2"),
+            path_from_d("M20 14h2"),
+            path_from_d("M15 13v2"),
+            path_from_d("M9 13v2"),
+        ],
+        Icon::User => vec![
+            path_from_d("M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"),
+            circle_path(12.0, 7.0, 4.0),
+        ],
+        Icon::Flag => vec![path_from_d(
+            "M4 22V4a1 1 0 0 1 .4-.8A6 6 0 0 1 8 2c3 0 5 2 7.333 2q2 0 3.067-.8A1 1 0 0 1 20 4v10a1 1 0 0 1-.4.8A6 6 0 0 1 16 16c-3 0-5-2-8-2a6 6 0 0 0-4 1.528",
+        )],
+        Icon::Droplet => vec![path_from_d(
+            "M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z",
+        )],
+        Icon::Palette => vec![
+            path_from_d(
+                "M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z",
+            ),
+            circle_path(13.5, 6.5, 0.5),
+            circle_path(17.5, 10.5, 0.5),
+            circle_path(6.5, 12.5, 0.5),
+            circle_path(8.5, 7.5, 0.5),
+        ],
+        Icon::PanelRight => vec![
+            rect_path(3.0, 3.0, 18.0, 18.0, 2.0),
+            line_path(15.0, 3.0, 15.0, 21.0),
+        ],
+        Icon::SquareDashed => [
+            "M5 3a2 2 0 0 0-2 2",
+            "M19 3a2 2 0 0 1 2 2",
+            "M21 19a2 2 0 0 1-2 2",
+            "M5 21a2 2 0 0 1-2-2",
+            "M9 3h1",
+            "M9 21h1",
+            "M14 3h1",
+            "M14 21h1",
+            "M3 9v1",
+            "M21 9v1",
+            "M3 14v1",
+            "M21 14v1",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::CircleDashed => [
+            "M10.1 2.182a10 10 0 0 1 3.8 0",
+            "M13.9 21.818a10 10 0 0 1-3.8 0",
+            "M17.609 3.721a10 10 0 0 1 2.69 2.7",
+            "M2.182 13.9a10 10 0 0 1 0-3.8",
+            "M20.279 17.609a10 10 0 0 1-2.7 2.69",
+            "M21.818 10.1a10 10 0 0 1 0 3.8",
+            "M3.721 6.391a10 10 0 0 1 2.7-2.69",
+            "M6.391 20.279a10 10 0 0 1-2.69-2.7",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::Lasso => vec![
+            path_from_d("M7 22a5 5 0 0 1-2-4"),
+            path_from_d("M7 16.93c.96.43 1.96.74 2.99.91"),
+            path_from_d(
+                "M3.34 14A6.8 6.8 0 0 1 2 10c0-4.42 4.48-8 10-8s10 3.58 10 8-4.48 8-10 8a12 12 0 0 1-1.57-.1",
+            ),
+            circle_path(5.0, 16.0, 2.0),
+        ],
+        Icon::WandSparkles => [
+            "m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72",
+            "m14 7 3 3",
+            "M5 6v4",
+            "M19 14v4",
+            "M10 2v2",
+            "M7 8H3",
+            "M21 16h-4",
+            "M11 3H9",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::PaintBucket => [
+            "m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11Z",
+            "m5 2 5 5",
+            "M2 13h15",
+            "M22 20a2 2 0 1 1-4 0c0-1.6 1.7-2.4 2-4 .3 1.6 2 2.4 2 4Z",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::Contrast => vec![
+            circle_path(12.0, 12.0, 10.0),
+            path_from_d("M12 18a6 6 0 0 0 0-12v12z"),
+        ],
+        Icon::SquaresUnite => vec![path_from_d(
+            "M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v3a1 1 0 0 0 1 1h3a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2v-3a1 1 0 0 0-1-1z",
+        )],
+        Icon::SquaresSubtract => [
+            "M10 22a2 2 0 0 1-2-2",
+            "M16 22h-2",
+            "M16 4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h3a1 1 0 0 0 1-1v-5a2 2 0 0 1 2-2h5a1 1 0 0 0 1-1z",
+            "M20 8a2 2 0 0 1 2 2",
+            "M22 14v2",
+            "M22 20a2 2 0 0 1-2 2",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::SquaresIntersect => [
+            "M10 22a2 2 0 0 1-2-2",
+            "M14 2a2 2 0 0 1 2 2",
+            "M16 22h-2",
+            "M2 10V8",
+            "M2 4a2 2 0 0 1 2-2",
+            "M20 8a2 2 0 0 1 2 2",
+            "M22 14v2",
+            "M22 20a2 2 0 0 1-2 2",
+            "M4 16a2 2 0 0 1-2-2",
+            "M8 10a2 2 0 0 1 2-2h5a1 1 0 0 1 1 1v5a2 2 0 0 1-2 2H9a1 1 0 0 1-1-1z",
+            "M8 2h2",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::SquaresExclude => [
+            "M16 12v2a2 2 0 0 1-2 2H9a1 1 0 0 0-1 1v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2h0",
+            "M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v3a1 1 0 0 1-1 1h-5a2 2 0 0 0-2 2v2",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::CircleAlert => vec![
+            circle_path(12.0, 12.0, 10.0),
+            line_path(12.0, 8.0, 12.0, 12.0),
+            line_path(12.0, 16.0, 12.01, 16.0),
+        ],
+        Icon::Fingerprint => [
+            "M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4",
+            "M14 13.12c0 2.38 0 6.38-1 8.88",
+            "M17.29 21.02c.12-.6.43-2.3.5-3.02",
+            "M2 12a10 10 0 0 1 18-6",
+            "M2 16h.01",
+            "M21.8 16c.2-2 .131-5.354 0-6",
+            "M5 19.5C5.5 18 6 15 6 12a6 6 0 0 1 .34-2",
+            "M8.65 22c.21-.66.45-1.32.57-2",
+            "M9 6.8a6 6 0 0 1 9 5.2v2",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::BatteryCharging => [
+            "m11 7-3 5h4l-3 5",
+            "M14.856 6H16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.935",
+            "M22 14v-4",
+            "M5.14 18H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2.936",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::Moon => vec![path_from_d(
+            "M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401",
+        )],
+        Icon::ALargeSmall => [
+            "m15 16 2.536-7.328a1.02 1.02 1 0 1 1.928 0L22 16",
+            "M15.697 14h5.606",
+            "m2 16 4.039-9.69a.5.5 0 0 1 .923 0L11 16",
+            "M3.304 13h6.392",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::Accessibility => {
+            let mut paths = vec![circle_path(16.0, 4.0, 1.0)];
+            paths.extend(
+                [
+                    "m18 19 1-7-6 1",
+                    "m5 8 3-3 5.5 3-2.36 3.5",
+                    "M4.24 14.5a5 5 0 0 0 6.88 6",
+                    "M13.76 17.5a5 5 0 0 0-6.88-6",
+                ]
+                .into_iter()
+                .map(path_from_d),
+            );
+            paths
+        }
+        Icon::AlignStartVertical => vec![
+            rect_path(6.0, 14.0, 9.0, 6.0, 2.0),
+            rect_path(6.0, 4.0, 16.0, 6.0, 2.0),
+            path_from_d("M2 2v20"),
+        ],
+        Icon::AlignCenterVertical => [
+            "M12 2v20",
+            "M8 10H4a2 2 0 0 1-2-2V6c0-1.1.9-2 2-2h4",
+            "M16 10h4a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-4",
+            "M8 20H7a2 2 0 0 1-2-2v-2c0-1.1.9-2 2-2h1",
+            "M16 14h1a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2h-1",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::AlignEndVertical => vec![
+            rect_path(2.0, 4.0, 16.0, 6.0, 2.0),
+            rect_path(9.0, 14.0, 9.0, 6.0, 2.0),
+            path_from_d("M22 22V2"),
+        ],
+        Icon::AlignStartHorizontal => vec![
+            rect_path(4.0, 6.0, 6.0, 16.0, 2.0),
+            rect_path(14.0, 6.0, 6.0, 9.0, 2.0),
+            path_from_d("M22 2H2"),
+        ],
+        Icon::AlignCenterHorizontal => [
+            "M2 12h20",
+            "M10 16v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-4",
+            "M10 8V4a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v4",
+            "M20 16v1a2 2 0 0 1-2 2h-2a2 2 0 0 1-2-2v-1",
+            "M14 8V7c0-1.1.9-2 2-2h2a2 2 0 0 1 2 2v1",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::AlignEndHorizontal => vec![
+            rect_path(4.0, 2.0, 6.0, 16.0, 2.0),
+            rect_path(14.0, 9.0, 6.0, 9.0, 2.0),
+            path_from_d("M22 22H2"),
+        ],
+        Icon::AlignHorizontalDistributeCenter => vec![
+            rect_path(4.0, 5.0, 6.0, 14.0, 2.0),
+            rect_path(14.0, 7.0, 6.0, 10.0, 2.0),
+            path_from_d("M17 22v-5"),
+            path_from_d("M17 7V2"),
+            path_from_d("M7 22v-3"),
+            path_from_d("M7 5V2"),
+        ],
+        Icon::AlignVerticalDistributeCenter => vec![
+            path_from_d("M22 17h-3"),
+            path_from_d("M22 7h-5"),
+            path_from_d("M5 17H2"),
+            path_from_d("M7 7H2"),
+            rect_path(5.0, 14.0, 14.0, 6.0, 2.0),
+            rect_path(7.0, 4.0, 10.0, 6.0, 2.0),
+        ],
     }
 }
 
@@ -896,6 +1602,145 @@ pub fn draw_icon_layered(
 mod tests {
     use super::*;
 
+    #[test]
+    fn every_glyph_is_found_by_its_lucide_name() {
+        for name in [
+            "smile",
+            "layout-grid",
+            "settings-2",
+            "mouse",
+            "keyboard",
+            "users",
+            "printer",
+            "globe",
+            "wifi",
+            "bluetooth",
+            "monitor",
+            "battery",
+            "shield",
+            "maximize-2",
+            "minimize-2",
+            "x",
+            "chevron-up",
+            "chevron-down",
+            "chevron-left",
+            "plus",
+            "search",
+            "pen-tool",
+            "code",
+            "terminal",
+            "file-text",
+            "bar-chart",
+            "layers",
+            "settings",
+            "home",
+            "camera",
+            "power",
+            "folder",
+            "folder-open",
+            "file",
+            "image",
+            "music",
+            "film",
+            "archive",
+            "file-code",
+            "arrow-left",
+            "arrow-right",
+            "arrow-up",
+            "arrow-down",
+            "chevron-right",
+            "rotate-ccw",
+            "rotate-cw",
+            "copy",
+            "scissors",
+            "clipboard-paste",
+            "trash-2",
+            "pencil",
+            "square",
+            "minus",
+            "folder-plus",
+            "file-plus",
+            "list",
+            "star",
+            "pin",
+            "hard-drive",
+            "check",
+            "flame",
+            "gallery-vertical-end",
+            "history",
+            "timer",
+            "thumbs-up",
+            "thumbs-down",
+            "list-video",
+            "picture-in-picture-2",
+            "sparkles",
+            "eye",
+            "mouse-pointer-2",
+            "menu",
+            "info",
+            "cloud-download",
+            "arrow-up-down",
+            "bell",
+            "play",
+            "pause",
+            "refresh",
+            "external-link",
+            "trash",
+            "more-horizontal",
+            "inbox",
+            "send",
+            "reply",
+            "mail",
+            "paperclip",
+            "calendar",
+            "ban",
+            "download",
+            "sun",
+            "volume-2",
+            "volume-x",
+            "wifi-off",
+            "ethernet-port",
+            "mic",
+            "mic-off",
+            "skip-forward",
+            "skip-back",
+            "arrow-big-up",
+            "delete",
+            "corner-down-left",
+            "undo-2",
+            "redo-2",
+            "brush",
+            "circle",
+            "slash",
+            "type",
+            "pipette",
+            "eraser",
+            "eye-off",
+            "lock",
+            "lock-open",
+            "bot",
+            "user",
+            "flag",
+            "droplet",
+            "palette",
+            "panel-right",
+            "square-dashed",
+            "circle-dashed",
+            "lasso",
+            "wand-sparkles",
+            "paint-bucket",
+            "contrast",
+            "squares-unite",
+            "squares-subtract",
+            "squares-intersect",
+            "squares-exclude",
+        ] {
+            let icon = Icon::from_name(name).unwrap_or_else(|| panic!("{name} names a glyph"));
+            assert_eq!(icon.name(), name);
+        }
+        assert_eq!(Icon::from_name("no-such-glyph"), None);
+    }
+
     /// Walk a path's elements; returns the count so tests can assert
     /// "non-empty" without matching against internal enum shapes.
     fn element_count(p: &BezPath) -> usize {
@@ -946,6 +1791,11 @@ mod tests {
         reason = "one scenario, one labelled phase per merged case"
     )]
     fn icon_families_have_their_lucide_subpath_counts() {
+        assert_eq!(
+            icon_subpaths(Icon::Smile).len(),
+            4,
+            "emoji selection = face, mouth, two eyes"
+        );
         // phase: status_tray_icons_have_their_expected_subpaths
         // Wi-Fi's subpaths are addressed *by index* to show signal strength
         // (see [`draw_icon_layered`]) — a reordering upstream would silently
@@ -1278,6 +2128,47 @@ mod tests {
                 Icon::CornerDownLeft,
                 Icon::Undo2,
                 Icon::Redo2,
+                Icon::Brush,
+                Icon::Circle,
+                Icon::Slash,
+                Icon::Type,
+                Icon::Pipette,
+                Icon::Eraser,
+                Icon::EyeOff,
+                Icon::Lock,
+                Icon::LockOpen,
+                Icon::Link,
+                Icon::Unlink,
+                Icon::Bot,
+                Icon::User,
+                Icon::Flag,
+                Icon::Droplet,
+                Icon::Palette,
+                Icon::PanelRight,
+                Icon::SquareDashed,
+                Icon::CircleDashed,
+                Icon::Lasso,
+                Icon::WandSparkles,
+                Icon::PaintBucket,
+                Icon::Contrast,
+                Icon::SquaresUnite,
+                Icon::SquaresSubtract,
+                Icon::SquaresIntersect,
+                Icon::SquaresExclude,
+                Icon::CircleAlert,
+                Icon::Fingerprint,
+                Icon::BatteryCharging,
+                Icon::Moon,
+                Icon::ALargeSmall,
+                Icon::Accessibility,
+                Icon::AlignStartVertical,
+                Icon::AlignCenterVertical,
+                Icon::AlignEndVertical,
+                Icon::AlignStartHorizontal,
+                Icon::AlignCenterHorizontal,
+                Icon::AlignEndHorizontal,
+                Icon::AlignHorizontalDistributeCenter,
+                Icon::AlignVerticalDistributeCenter,
             ] {
                 let sub = icon_subpaths(icon);
                 assert!(!sub.is_empty(), "{icon:?} produced no subpaths");

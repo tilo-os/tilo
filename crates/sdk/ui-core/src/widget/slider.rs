@@ -40,6 +40,14 @@ pub struct Slider {
     /// Where the value lives: a document key or process-local state.
     binding: Option<BoxedBinding<f64>>,
     on_change: Option<Box<dyn FnMut(f64)>>,
+    /// Invoke the bound action once per drag, when it is let go.
+    settles: bool,
+    /// The value when the current drag began.
+    drag_from: Option<f64>,
+    /// Where the pointer and the value were when Shift was pressed during
+    /// a drag: from there the value moves a tenth as fast, to place it
+    /// finely.
+    fine_from: Option<(f64, f64)>,
     action: Option<ActionEmitter<f64>>,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
@@ -68,6 +76,10 @@ pub struct Slider {
 }
 
 impl Slider {
+    /// How fast the value follows the pointer while Shift is held during a
+    /// drag, as a share of the usual pace.
+    const FINE_DRAG: f64 = 0.1;
+
     fn effectively_enabled(&self) -> bool {
         self.enabled && self.action.as_ref().is_none_or(ActionEmitter::is_available)
     }
@@ -79,8 +91,11 @@ impl Slider {
             is_dragging: false,
             is_focused: false,
             value: 0.5,
-            binding: Some(crate::doc_binding::number_key(on_change_path)),
+            binding: Some(crate::doc_source::number_key(on_change_path)),
             on_change: None,
+            settles: false,
+            drag_from: None,
+            fine_from: None,
             action: None,
             presence_path: Vec::new(),
             permission_scope: None,
@@ -115,6 +130,16 @@ impl Slider {
         if self.action.is_none() {
             self.on_change = Some(Box::new(callback));
         }
+        self
+    }
+
+    /// Invoke the bound action once per drag, with the value it is let go
+    /// at, rather than at every step of it; a key or an assistive action
+    /// still invokes it at once. For an action that is an undoable edit, so
+    /// one drag is one step.
+    #[must_use]
+    pub fn commits_on_release(mut self) -> Self {
+        self.settles = true;
         self
     }
 
@@ -223,15 +248,26 @@ impl Slider {
     /// Commit a new value to the CRDT iff it differs from the cached
     /// `value` by more than a frame-of-noise epsilon. Returns `true` if
     /// the commit happened so callers can flag the event as handled.
-    fn commit_value(&mut self, new_value: f64, state: &mut AppModel, root: &ModelPath) -> bool {
+    fn commit_value(&mut self, new_value: f64, _state: &AppModel, _root: &ModelPath) -> bool {
         if (new_value - self.value).abs() <= 0.001 {
             return false;
         }
         self.value = new_value;
         if let Some(action) = &mut self.action {
-            let _ = action.emit(self.value);
+            if !(self.settles && self.is_dragging) {
+                let _ = action.emit(self.value);
+            } else if let Some(binding) = self
+                .binding
+                .as_mut()
+                .filter(|binding| binding.document_key().is_none())
+            {
+                // The value a drag will settle on, shown to whatever reads
+                // the control's local state (a label, a live preview) before
+                // the action is invoked at release.
+                binding.publish(&self.value);
+            }
         } else if let Some(binding) = &mut self.binding {
-            binding.push(state, root, &self.value);
+            binding.publish(&self.value);
         }
         if self.action.is_none()
             && let Some(callback) = self.on_change.as_mut()
@@ -464,7 +500,7 @@ impl Widget for Slider {
         self.is_hovered &= environment.supports_hover();
     }
 
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if let Some(binding) = &mut self.binding
             && let Pulled::Value(value) = binding.pull(state, root)
         {
@@ -535,8 +571,15 @@ impl Widget for Slider {
                 }
 
                 if self.is_dragging {
-                    let new_value = self.value_from_cursor_x(p.x);
-                    if self.commit_value(new_value, ctx.state, ctx.path) {
+                    let new_value = if ctx.modifiers.state().shift_key() {
+                        let (x, value) = *self.fine_from.get_or_insert((p.x, self.value));
+                        let track = (self.rect.width() - TRACK_PADDING * 2.0).max(1.0);
+                        (value + (p.x - x) / track * Self::FINE_DRAG).clamp(0.0, 1.0)
+                    } else {
+                        self.fine_from = None;
+                        self.value_from_cursor_x(p.x)
+                    };
+                    if self.commit_value(new_value, ctx.state.doc(), ctx.path) {
                         *ctx.handled = true;
                     }
                 }
@@ -554,13 +597,25 @@ impl Widget for Slider {
                 // "press on track to jump" affordance.
                 if *element_state == ElementState::Pressed && self.rect.contains(self.last_cursor) {
                     self.is_dragging = true;
+                    self.drag_from = Some(self.value);
                     *ctx.focus_target = Some(ctx.node_id);
                     *ctx.handled = true;
                     let new_value = self.value_from_cursor_x(self.last_cursor.x);
-                    self.commit_value(new_value, ctx.state, ctx.path);
+                    self.commit_value(new_value, ctx.state.doc(), ctx.path);
                 } else if *element_state == ElementState::Released && self.is_dragging {
                     self.is_dragging = false;
+                    self.fine_from = None;
                     *ctx.handled = true;
+                    let moved = self
+                        .drag_from
+                        .take()
+                        .is_some_and(|from| (from - self.value).abs() > 0.001);
+                    if self.settles
+                        && moved
+                        && let Some(action) = &mut self.action
+                    {
+                        let _ = action.emit(self.value);
+                    }
                 }
             }
             _ => {}
@@ -642,7 +697,7 @@ impl Widget for Slider {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
@@ -652,10 +707,10 @@ impl Widget for Slider {
         }
         match action {
             Action::Increment => {
-                self.commit_value((self.value + STEP).clamp(0.0, 1.0), state, path)
+                self.commit_value((self.value + STEP).clamp(0.0, 1.0), state.doc(), path)
             }
             Action::Decrement => {
-                self.commit_value((self.value - STEP).clamp(0.0, 1.0), state, path)
+                self.commit_value((self.value - STEP).clamp(0.0, 1.0), state.doc(), path)
             }
             Action::SetValue(v) => {
                 // `f64::from_str` accepts "nan"/"inf"/"-inf" as valid text,
@@ -670,7 +725,7 @@ impl Widget for Slider {
                 }
                 // Accept either a 0..1 fraction or a 0..100 percentage.
                 let frac = if parsed > 1.0 { parsed / 100.0 } else { parsed };
-                self.commit_value(frac.clamp(0.0, 1.0), state, path)
+                self.commit_value(frac.clamp(0.0, 1.0), state.doc(), path)
             }
             _ => false,
         }
@@ -813,6 +868,10 @@ mod tests {
 
     /// Drive an event through the slider with default scaffolding.
     fn dispatch(s: &mut Slider, event: &WindowEvent) {
+        dispatch_with(s, event, winit::event::Modifiers::default());
+    }
+
+    fn dispatch_with(s: &mut Slider, event: &WindowEvent, modifiers: winit::event::Modifiers) {
         let mut tree = TaffyTree::<()>::new();
         let node = tree.leaf_node(Style::default());
         let mut handled = false;
@@ -823,8 +882,8 @@ mod tests {
             event,
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                modifiers: &modifiers,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -958,8 +1017,8 @@ mod tests {
             let mut document = AutoCommit::new();
 
             state.set(0.5);
-            Widget::sync(&mut first, &mut document, &automerge::ROOT);
-            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            Widget::sync(&mut first, &document, &automerge::ROOT);
+            Widget::sync(&mut second, &document, &automerge::ROOT);
             assert_eq!(first.value(), 0.5);
             assert_eq!(second.value(), 0.5);
             assert!(changes.borrow().is_empty(), "model sync is not user intent");
@@ -967,17 +1026,17 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &Action::Increment,
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
             assert_eq!(state.get(), 0.55);
             assert_eq!(&*changes.borrow(), &[0.55]);
-            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            Widget::sync(&mut second, &document, &automerge::ROOT);
             assert_eq!(second.value(), 0.55);
 
             second.set_value(0.8);
             assert_eq!(state.get(), 0.8);
-            Widget::sync(&mut first, &mut document, &automerge::ROOT);
+            Widget::sync(&mut first, &document, &automerge::ROOT);
             assert_eq!(first.value(), 0.8);
             assert_eq!(&*changes.borrow(), &[0.55]);
         }
@@ -1040,14 +1099,14 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut s,
                 &Action::Increment,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert!((s.value - 0.55).abs() < 1e-9, "increment steps +5%");
             assert!(Widget::perform_action(
                 &mut s,
                 &Action::Decrement,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert!((s.value - 0.50).abs() < 1e-9, "decrement steps -5%");
@@ -1056,7 +1115,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut s,
                 &Action::SetValue("80%".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert!((s.value - 0.80).abs() < 1e-9);
@@ -1065,7 +1124,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut s,
                 &Action::SetValue("0.2".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert!((s.value - 0.20).abs() < 1e-9);
@@ -1081,10 +1140,85 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut s,
                 &Action::Increment,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert_eq!(s.value, before, "a disabled slider must not change value");
+        }
+
+        // Case `a_settling_slider_invokes_its_action_once_per_drag`.
+        {
+            let mut slider = slider_at(0.0, 0.0, 200.0, 30.0)
+                .on_action(crate::widget::test_number_action_binding())
+                .commits_on_release();
+            crate::widget::controls::refresh_control_action_availability(
+                &mut slider,
+                &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
+                    "test:control",
+                    "set",
+                )]),
+            );
+            dispatch(&mut slider, &cursor_moved(20.0, 15.0));
+            dispatch(&mut slider, &mouse_press());
+            dispatch(&mut slider, &cursor_moved(100.0, 15.0));
+            dispatch(&mut slider, &cursor_moved(150.0, 15.0));
+            assert!(
+                crate::widget::controls::take_control_invocation(&mut slider).is_none(),
+                "nothing is invoked while the drag goes on"
+            );
+            dispatch(&mut slider, &mouse_release());
+            let invoked = crate::widget::controls::take_control_invocation(&mut slider)
+                .expect("letting go invokes the action");
+            let value = invoked.arguments["value"].as_f64().unwrap();
+            assert!((value - slider.value).abs() < 1e-9);
+            assert!(crate::widget::controls::take_control_invocation(&mut slider).is_none());
+        }
+
+        // Case `shift_drags_the_value_a_tenth_as_fast`.
+        {
+            let mut slider = slider_at(0.0, 0.0, 210.0, 30.0);
+            let shift = winit::event::Modifiers::from(winit::keyboard::ModifiersState::SHIFT);
+            dispatch(&mut slider, &cursor_moved(105.0, 15.0));
+            dispatch(&mut slider, &mouse_press());
+            let start = slider.value;
+            dispatch_with(&mut slider, &cursor_moved(105.0, 15.0), shift);
+            dispatch_with(&mut slider, &cursor_moved(205.0, 15.0), shift);
+            assert!(
+                (slider.value - start - 0.05).abs() < 1e-6,
+                "{start} -> {}",
+                slider.value
+            );
+            dispatch(&mut slider, &cursor_moved(205.0, 15.0));
+            assert!(
+                (slider.value - 1.0).abs() < 1e-6,
+                "without Shift it follows again"
+            );
+        }
+
+        // Case `a_settling_slider_shows_its_drag_in_its_local_state`.
+        {
+            let state = crate::LocalState::new(0.0);
+            let mut slider = Slider::from_state(&state)
+                .on_action(crate::widget::test_number_action_binding())
+                .commits_on_release();
+            slider.rect = Rect::new(0.0, 0.0, 200.0, 30.0);
+            crate::widget::controls::refresh_control_action_availability(
+                &mut slider,
+                &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
+                    "test:control",
+                    "set",
+                )]),
+            );
+            dispatch(&mut slider, &cursor_moved(20.0, 15.0));
+            dispatch(&mut slider, &mouse_press());
+            dispatch(&mut slider, &cursor_moved(150.0, 15.0));
+            assert!(
+                (state.with(|value| *value) - slider.value).abs() < 1e-9,
+                "the local state follows the drag"
+            );
+            assert!(crate::widget::controls::take_control_invocation(&mut slider).is_none());
+            dispatch(&mut slider, &mouse_release());
+            assert!(crate::widget::controls::take_control_invocation(&mut slider).is_some());
         }
 
         // Case `action_binding_owns_accessibility_value_changes`.
@@ -1109,7 +1243,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut slider,
                 &crate::a11y::Action::SetValue("80%".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());

@@ -336,6 +336,16 @@ that already requires root, which can change the system in other ways too.
 Only the unsealed development image (`os/Containerfile.dev`) unmasks
 `systemd-sysext.service`, for its development layers.
 
+The one caller that merges on purpose is `tilo-extension-activate.service`,
+for the downloaded extensions the owner turned on (the media codecs, say). At
+every boot and after every change it verifies each kept manifest against the
+image's extension-manifest key (`/usr/share/tilo/extensions.pub`, a KMS key
+separate from the OS release key), each kept artifact against
+the manifest's SHA-256, rebuilds every part from those bytes alone, and merges
+nothing if anything else is in the sysext search path. A file written to `/var`
+therefore still never reaches `/usr` across a reboot: it is replaced, or the
+merge is refused. See `os/usr/share/tilo/system-extensions/README.md`.
+
 PCR 7 measures the Secure Boot policy. A former LUKS TPM design bound only to
 that register; it has been removed because PCR 7 does not identify the selected
 Tilo UKI. With Secure Boot off, such a binding would merely record "Secure Boot
@@ -810,6 +820,10 @@ initrd generation to the image build.
 
 Tilo supports local roots only. The signed initramfs therefore explicitly omits
 Dracut's network, NetworkManager, NFS, iSCSI, Clevis/NBDE, and crypt-SSH modules.
+The `tilo-sibling-unlock` module (`docs/device-reach.md`) carries the image's
+NetworkManager binary for its own unit instead, which only a root whose LUKS2
+header holds a `tilo-sibling-unlock` token starts; it parses no network-root
+command line.
 Passphrase, TPM2, FIDO2, Plymouth, and rollback recovery remain mandatory. This
 cuts boot-time archive I/O and removes unused pre-root network and TLS parsers.
 

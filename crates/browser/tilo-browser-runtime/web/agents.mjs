@@ -13,9 +13,24 @@
  *   → `{grant, pairingCode}`: the host asks the user's approving device,
  *   which approves the agent and signs its delegation in one step; the
  *   grant's `state` in `status()` goes `pending` → `approved` (or `denied`);
- * - `spawn({grant, task, room?})`, `message(agentId, text)` → ids;
- * - `pause`, `resume`, `stop(agentId)`; `revoke(grantId)` withdraws a grant
- *   (its agent stops and the host refuses its device).
+ * - `spawn({grant, task, room?, id?})` → `{agentId, taskId}` and
+ *   `message(agentId, text, {id?})` → `{taskId}`. `id` (a UUID) is the
+ *   caller's idempotency id: it names the invocation, so a call resent with
+ *   the same id after a timeout or a reload gets the host's first answer
+ *   back while the host retains its receipt (the last 1024 invocations,
+ *   shared across callers, including status polls, until host restart). This is a recent retry
+ *   window, not a durable exactly-once guarantee. A page binds up to 1024
+ *   explicit ids until disposal; conflicting reuse is refused even after a
+ *   timeout, and new ids beyond that limit return `invocation_capacity`.
+ *   Without `id` every call is new;
+ * - `cancelTask(agentId, taskId)` marks that task cancelled: queued tasks
+ *   are skipped and running tasks stop at the next task-state check. An
+ *   already-started step may finish and publish changes after the receipt;
+ *   planning and accepted app operations are not interrupted. The receipt
+ *   acknowledges cancellation state, not execution quiescence. The agent
+ *   goes on with the next task; `pause`, `resume`, `stop(agentId)`
+ *   (every task, and the agent takes no more); `revoke(grantId)` withdraws
+ *   a grant (its agent stops and the host refuses its device).
  *
  * `actions(agentDevice)` is `actionsV1` for the apps an agent has open,
  * over the same frames addressed to the agent's device:
@@ -37,6 +52,8 @@ export const SUPERVISOR_RESOURCE = 'agents';
 export const agentResource = agentId => `agent:${agentId}`;
 const REMOTE_ACTIONS_VERSION = 1;
 const DEFAULT_TIMEOUT_MS = 30_000;
+const MAX_INVOCATION_BINDINGS = 1024;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** An error from the host: `code` is `refused`, `unknown_action`, … or `timeout`/`undeliverable`. */
 export class AgentsError extends Error {
@@ -76,6 +93,10 @@ export function createAgents({
   if (!peer || !room || !hostDevice) throw new TypeError('peer, room and hostDevice are required');
   const pending = new Map(); // invocation id or `catalogue:<n>` -> {resolve, reject, timer, to}
   let correlation = 0;
+  let closed = false;
+  // Explicit caller ids stay bound after timeout so a delayed receipt cannot
+  // answer another request. Bound memory by refusing new ids, never eviction.
+  const bindings = new Map();
 
   function settle(invocation, outcome) {
     const waiting = pending.get(invocation);
@@ -87,6 +108,7 @@ export function createAgents({
 
   /** Take the session's remote-action events; call on every peer change. */
   function pump() {
+    if (closed) return;
     for (const event of JSON.parse(peer.takeRemoteActionEvents())) {
       if (event.kind === 'undeliverable') {
         for (const [key, waiting] of [...pending]) {
@@ -122,27 +144,49 @@ export function createAgents({
   }
 
   function request(to, key, message, extra = {}) {
+    if (closed) return Promise.reject(new AgentsError('closed', 'the peer was disposed'));
     const frame = JSON.stringify({version: REMOTE_ACTIONS_VERSION, message});
-    return new Promise((resolve, reject) => {
+    let entry;
+    const promise = new Promise((resolve, reject) => {
       const timer = setTimer(() => settle(key, waiting => waiting.reject(
         new AgentsError('timeout', 'the device did not answer'))), timeoutMs);
-      pending.set(key, {resolve, reject, timer, to, ...extra});
-      try {
-        peer.sendRemoteAction(room, to, frame);
-      } catch (error) {
-        settle(key, waiting => waiting.reject(error));
-      }
+      entry = {resolve, reject, timer, to, ...extra};
+      pending.set(key, entry);
     });
+    entry.promise = promise;
+    try {
+      peer.sendRemoteAction(room, to, frame);
+    } catch (error) {
+      settle(key, waiting => waiting.reject(error));
+    }
+    return promise;
   }
 
-  function invokeOn(to, target, argument = 'None', {confirm = false, whole = false} = {}) {
-    const invocation = newId();
+  /** `id`: the caller's idempotency id; a call already waiting under it is joined, not resent. */
+  function invokeOn(to, target, argument = 'None', {confirm = false, whole = false, id} = {}) {
+    if (closed) return Promise.reject(new AgentsError('closed', 'the peer was disposed'));
+    if (id !== undefined && (typeof id !== 'string' || !UUID.test(id))) {
+      return Promise.reject(new TypeError('id must be a UUID'));
+    }
+    const invocation = id?.toLowerCase() ?? newId();
     const message = {Invoke: {invocation, target, argument, ...(confirm ? {confirmation: 'Confirmed'} : {})}};
-    return request(to, invocation, message, {whole});
+    const signature = JSON.stringify([to, message, whole]);
+    if (id !== undefined) {
+      const bound = bindings.get(invocation);
+      if (bound !== undefined && bound !== signature) return Promise.reject(new AgentsError('invocation_conflict', 'an invocation id already names another request'));
+      if (bound === undefined && bindings.size >= MAX_INVOCATION_BINDINGS) return Promise.reject(new AgentsError('invocation_capacity', 'the peer has reached its caller invocation limit'));
+      bindings.set(invocation, signature);
+    }
+    const waiting = pending.get(invocation);
+    if (waiting) {
+      if (waiting.signature !== signature) return Promise.reject(new AgentsError('invocation_conflict', 'an invocation id already names another request'));
+      return waiting.promise;
+    }
+    return request(to, invocation, message, {whole, signature});
   }
 
-  function invoke(resource, action, argument = 'None') {
-    return invokeOn(hostDevice, {provider: AGENTS_PROVIDER, address: {resource, action}}, argument);
+  function invoke(resource, action, argument = 'None', options = {}) {
+    return invokeOn(hostDevice, {provider: AGENTS_PROVIDER, address: {resource, action}}, argument, options);
   }
 
   /** `actionsV1` for the apps the agent at `device` (hex) has open. */
@@ -174,8 +218,12 @@ export function createAgents({
     status: () => invoke(SUPERVISOR_RESOURCE, 'status'),
     requestGrant: ({label, rooms, apps = [], expiresInSecs, color, mayConfirm = false}) =>
       invoke(SUPERVISOR_RESOURCE, 'request-grant', {Json: {label, rooms, apps, expiresInSecs, mayConfirm, ...(color ? {color} : {})}}),
-    spawn: ({grant, task, room}) => invoke(SUPERVISOR_RESOURCE, 'spawn', {Json: {grant, task, ...(room ? {room} : {})}}),
-    message: (agentId, text) => invoke(agentResource(agentId), 'message', {Text: String(text)}),
+    spawn: ({grant, task, room, id}) => invoke(SUPERVISOR_RESOURCE, 'spawn', {Json: {grant, task, ...(room ? {room} : {})}}, {id}),
+    message: (agentId, text, {id} = {}) => invoke(agentResource(agentId), 'message', {Text: String(text)}, {id}),
+    cancelTask: (agentId, taskId) => {
+      if (typeof taskId !== 'string' || !taskId) return Promise.reject(new TypeError('taskId must name a task'));
+      return invoke(agentResource(agentId), 'cancel-task', {Text: taskId}).then(() => undefined);
+    },
     pause: agentId => invoke(agentResource(agentId), 'pause').then(() => undefined),
     resume: agentId => invoke(agentResource(agentId), 'resume').then(() => undefined),
     stop: agentId => invoke(agentResource(agentId), 'stop').then(() => undefined),
@@ -203,6 +251,8 @@ export function createAgents({
     },
     pump,
     dispose() {
+      closed = true;
+      bindings.clear();
       for (const invocation of [...pending.keys()]) {
         settle(invocation, ({reject}) => reject(new AgentsError('closed', 'the peer was disposed')));
       }

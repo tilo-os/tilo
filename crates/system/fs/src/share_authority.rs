@@ -597,7 +597,7 @@ fn persist(path: &Path, state: &AuthorityState) -> Result<(), ShareAuthorityErro
     if bytes.len() as u64 > MAX_SHARE_AUTHORITY_FILE_BYTES {
         return Err(ShareAuthorityError::StateTooLarge);
     }
-    atomic_file::write_creating_parent(path, &bytes)?;
+    tilo_files::native::atomic::write_creating_parent(path, &bytes)?;
     Ok(())
 }
 

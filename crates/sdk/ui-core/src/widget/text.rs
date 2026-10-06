@@ -133,6 +133,8 @@ pub struct Text {
     /// across frames via `Scene::append` so an unchanged Text
     /// widget contributes ~zero shape / emit work per frame.
     cached: Scene,
+    /// The ink `cached` was drawn in, so a theme change redraws it.
+    drawn_color: Option<vello::peniko::Color>,
     /// Whether the cache content needs to be re-emitted, flipped on when
     /// the *size* of `self.rect` changes — pure translation (e.g.
     /// `Scrollable` offsetting child rects) keeps the cache, absorbed by
@@ -173,6 +175,7 @@ impl Text {
             presence_path: Vec::new(),
             permission_scope: None,
             cached: Scene::new(),
+            drawn_color: None,
             dirty: true,
             layout_dirty: false,
             cache_rect: vello::kurbo::Rect::ZERO,
@@ -230,10 +233,8 @@ impl Text {
         text
     }
 
-    /// Display a string scalar or Automerge `Text` object stored under `key`.
-    /// This is the zero-boilerplate companion to
-    /// [`TextInput::from_document_string`](super::TextInput::from_document_string)
-    /// using the same key; use [`Self::from_document`] for projections.
+    /// Display a string scalar or Automerge `Text` object stored under `key`;
+    /// use [`Self::from_document`] for projections.
     pub fn from_document_string(key: impl Into<String>) -> Self {
         use automerge::{ObjType, ReadDoc, ScalarValue, Value};
 
@@ -755,12 +756,11 @@ impl Text {
 impl Widget for Text {
     crate::provides!(
         dyn crate::permissions::capability::PermissionGated,
-        dyn crate::presence::capability::PublishesPresence,
-        dyn crate::undo::UndoPoints
+        dyn crate::presence::capability::PublishesPresence
     );
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = crate::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, path) = crate::doc::document_ref(state, path);
         self.observe_i18n_revision();
         self.observe_engine_revision();
         let label = match self.source.as_mut() {
@@ -883,6 +883,17 @@ impl Widget for Text {
         self.observe_i18n_revision();
         self.observe_engine_revision();
         self.observe_renderer_text_scale(text_renderer);
+        let color = self.color.unwrap_or({
+            if self.dimmed {
+                theme.text_dim
+            } else {
+                theme.tokens.colors.text_primary
+            }
+        });
+        if self.drawn_color != Some(color) {
+            self.drawn_color = Some(color);
+            self.dirty = true;
+        }
         if self.dirty || self.cache_rect == vello::kurbo::Rect::ZERO {
             self.cached.reset();
             let label = self.resolved_label();
@@ -891,13 +902,6 @@ impl Widget for Text {
                 reason = "label width in logical pixels is far below f32::MAX for any realistic UI element"
             )]
             let max_width = self.rect.width() as f32;
-            let color = self.color.unwrap_or({
-                if self.dimmed {
-                    theme.text_dim
-                } else {
-                    theme.tokens.colors.text_primary
-                }
-            });
             let origin = Affine::translate((self.rect.x0, self.rect.y0));
             let constraints = TextLayoutConstraints {
                 max_width: Some(max_width + 1.0),
@@ -1036,12 +1040,6 @@ impl Widget for Text {
         {
             presence.draw_peer_focus(scene, theme, user, self.rect);
         }
-    }
-}
-
-impl crate::undo::UndoPoints for Text {
-    fn needs_commit(&self) -> bool {
-        false
     }
 }
 
@@ -1284,8 +1282,8 @@ mod tests {
             assert!(!Widget::needs_redraw(&text));
             assert!(!Widget::is_layout_dirty(&text));
             revision.set(1);
-            let mut document = AutoCommit::new();
-            Widget::sync(&mut text, &mut document, &automerge::ROOT);
+            let document = AutoCommit::new();
+            Widget::sync(&mut text, &document, &automerge::ROOT);
             assert!(Widget::needs_redraw(&text));
             assert!(Widget::is_layout_dirty(&text));
         }
@@ -1666,13 +1664,13 @@ mod tests {
                 Some("Hello, Ada")
             );
 
-            let mut document = AutoCommit::new();
-            Widget::sync(&mut text, &mut document, &automerge::ROOT);
+            let document = AutoCommit::new();
+            Widget::sync(&mut text, &document, &automerge::ROOT);
             assert!(!Widget::needs_redraw(&text));
             assert!(!Widget::is_layout_dirty(&text));
 
             state.set(String::from("Grace"));
-            Widget::sync(&mut text, &mut document, &automerge::ROOT);
+            Widget::sync(&mut text, &document, &automerge::ROOT);
             assert!(Widget::needs_redraw(&text));
             assert!(Widget::is_layout_dirty(&text));
             assert_eq!(
@@ -1692,8 +1690,8 @@ mod tests {
             text.apply_layout_external(vello::kurbo::Rect::new(0.0, 0.0, 200.0, 40.0));
             Widget::mark_drawn(&mut text);
 
-            let mut document = AutoCommit::new();
-            Widget::sync(&mut text, &mut document, &automerge::ROOT);
+            let document = AutoCommit::new();
+            Widget::sync(&mut text, &document, &automerge::ROOT);
             assert_eq!(calls.get(), 2);
             assert!(!Widget::needs_redraw(&text));
             assert!(!Widget::is_layout_dirty(&text));
@@ -1719,8 +1717,8 @@ mod tests {
             let mut master = Text::from_document_string("title");
             let mut detail =
                 Text::from_document(|doc, root| format!("Editing: {}", title(doc, root)));
-            Widget::sync(&mut master, &mut state.doc, &state.root);
-            Widget::sync(&mut detail, &mut state.doc, &state.root);
+            Widget::sync(&mut master, &state.doc, &state.root);
+            Widget::sync(&mut detail, &state.doc, &state.root);
             assert_eq!(
                 Widget::accessibility(&master).unwrap().name.as_deref(),
                 Some("Alpha")
@@ -1736,8 +1734,8 @@ mod tests {
             Widget::mark_drawn(&mut detail);
             state.doc.put(&state.root, "title", "Beta").unwrap();
             state.commit_action(None, None);
-            Widget::sync(&mut master, &mut state.doc, &state.root);
-            Widget::sync(&mut detail, &mut state.doc, &state.root);
+            Widget::sync(&mut master, &state.doc, &state.root);
+            Widget::sync(&mut detail, &state.doc, &state.root);
             assert_eq!(
                 Widget::accessibility(&master).unwrap().name.as_deref(),
                 Some("Beta")
@@ -1750,8 +1748,8 @@ mod tests {
             assert!(Widget::needs_redraw(&detail));
 
             state.undo(None, None).unwrap();
-            Widget::sync(&mut master, &mut state.doc, &state.root);
-            Widget::sync(&mut detail, &mut state.doc, &state.root);
+            Widget::sync(&mut master, &state.doc, &state.root);
+            Widget::sync(&mut detail, &state.doc, &state.root);
             assert_eq!(
                 Widget::accessibility(&master).unwrap().name.as_deref(),
                 Some("Alpha")
@@ -2009,7 +2007,7 @@ mod tests {
                 let root = Column::new()
                     .push(Box::new(Text::new("title")))
                     .push(Box::new(
-                        Button::new("localized-action", "action", None).fit_content(40.0),
+                        Button::new("localized-action", "action").fit_content(40.0),
                     ));
                 let mut driver = crate::headless::Driver::new_with_controlled_inputs(
                     crate::State::new(),

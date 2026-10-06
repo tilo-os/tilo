@@ -141,9 +141,9 @@ fn valid_complete_archive_reconstructs_canonical_documents() {
         "so.tilo.word-processor".into(),
         "tab:0000000000000001".into(),
     )];
-    let c = qdoc::model::open(writer, &automerge::ROOT).unwrap();
+    let c = tilo_doc::model::open(writer, &automerge::ROOT).unwrap();
     assert_eq!(
-        qdoc::model::materialize_region(writer, &c, qdoc::model::Region::Body)[0].text,
+        tilo_doc::model::materialize_region(writer, &c, tilo_doc::model::Region::Body)[0].text,
         "Recovery test"
     );
     for row in &auth.bootstrap.records {

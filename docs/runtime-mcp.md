@@ -66,6 +66,24 @@ The first ordinary app may start the daemon before the assistant connects. A
 `--connect` client can also start it when no app is running. Stdio EOF ends only
 that proxy connection.
 
+
+
+## Agent host (MCP beside local relay)
+
+A Cursor/Grok-style box on an existing Linux OS should not install the Tilo
+desktop or OS image. Keep three roles distinct: the **relay** (store-and-forward),
+the **home peer** (always-on replica — same OCI as the relay Compose), and the
+**agent host** (MCP client → local `tilo-runtime` enrolled under the user).
+
+Preferred layout: run `tilo-relay` as a home peer, run `tilo-runtime` beside it
+with MCP on loopback (`TILO_RUNTIME_MCP_HTTP=127.0.0.1:7391` plus
+`TILO_RUNTIME_MCP_HTTP_TOKEN_FILE`), enroll the runtime as a personal device
+(`tilo-enroll pair-device --headless`), and point the assistant at that MCP.
+Never copy `user-identity/privkey.bin` into the container.
+
+Operator Compose and image: [`os/containers/tilo-agent-host/`](../os/containers/tilo-agent-host/).
+Architecture: [`architecture/agent-host.md`](architecture/agent-host.md).
+
 ## HTTP endpoint
 
 A hosted machine (for example a provider's per-user VM) exposes the same tools
@@ -79,16 +97,54 @@ TILO_RUNTIME_MCP_HTTP_TOKEN_FILE=/run/secrets/mcp-token \
   tilo-runtime --profile /data/tilo --daemon
 ```
 
+The standalone daemon defaults to the profile's own room. A host may explicitly
+set `TILO_RUNTIME_MCP_ROOM` to the canonical UUID of a room the runtime has
+**already joined**. Startup verifies current certified device admission and
+that its root principal is the selected profile actor. An invitation, saved
+room name, client label or supplied session metadata cannot select an audience.
+Missing, fenced or stale identity fails startup. The runtime checks current
+room-selected custody on every shared-room query, invocation, retry, status and
+cancel request; the action broker also rechecks current room policy on admission. Selecting a room
+never enrolls it, requests keys or changes membership or grants.
+
+A shared-room endpoint exposes the semantic action door only. It does not attach
+the private profile's computer input/watch lease, partner viewer or media reader.
+The native endpoint and local desktop keep their existing scope. Other runtime
+hosts refuse a different MCP audience unless they implement current-admission
+validation explicitly. The endpoint's room stays fixed for its lifetime; clients
+cannot switch it through `initialize` or tool arguments.
+
+This audience selection does not itself publish semantic presence. Authenticated
+invocation transport, exact mounted app/record/resource geometry and presentation
+coherence remain necessary before a panorama can show real semantic agent work.
+
 `POST /mcp` carries one JSON-RPC message and answers with JSON; `initialize`
 without an `Mcp-Session-Id` opens a session and returns its id, later requests
 must carry it, and `DELETE /mcp` ends it. No server-initiated stream is offered.
 `GET /health` needs no token.
 
-Each session is its own agent run: its invocations carry an `agent-run` action
-group named after the client's declared `clientInfo.name`, so history, undo and
-activity tell concurrent agents on one machine apart. Sessions act with the
-profile actor's authority. The token authenticates the fronting proxy only; that
-proxy owns end-user authentication and must route each user to their machine.
+Each admitted session receives a server-issued execution UUID, returned in
+`capabilities.experimental["so.tilo.mcp"].execution_id` at initialization.
+Repeated initialization on that session keeps the UUID. It scopes invocation
+retry, status and cancellation ownership; a second session acting as the same
+profile actor cannot borrow the first session's invocation IDs. Reusing an ID
+within its owning session reports the existing operation without dispatching it
+again. Reconnecting HTTP with the same valid `Mcp-Session-Id` retains ownership.
+Opening a new logical session (or a new stdio connection) receives a new
+execution UUID and cannot resume invocation ownership by supplying the old UUID.
+
+Invocations also carry an `agent-run` history group named after the client's
+declared `clientInfo.name`. Clients can continue a history group through the
+experimental `run` field, but names and history-group IDs are presentation
+metadata, not authenticated execution identity. An `execution_id` supplied by a
+client is ignored. The returned UUID is a correlation identifier, not a bearer
+credential, device identity or capability grant. It does not publish a cursor or
+prove that an action changed visible state.
+
+Sessions retain the profile actor's authority. The token authenticates the
+fronting proxy only; that proxy owns end-user authentication and must route each
+user to their machine. Ending an MCP session removes access to that session; it
+does not assert that its already-dispatched operations were cancelled.
 
 ## Pixel fallback
 
@@ -186,7 +242,14 @@ optional on `tilo_resolve` and `tilo_invoke`: omitted, the target resolves
 against the directory as it is now; named, a target that changed since is
 refused. `tilo_invoke` waits up to `wait_ms` (default 5 s) for the terminal
 update and answers with it; an invocation still running then says so in
-`pending` and is followed with `tilo_status`. A number outside the range its
+`pending` and is followed with `tilo_status`. One call is `resource`,
+`action` and `arguments`. Several that share a peer go in `calls`,
+`[{resource, action, arguments}, …]` (at most 32), and run in order: the
+first keeps the named revision, each later one reads the directory as it
+is then, and the first that does not succeed stops the rest. The answer is
+`results`, plus `stopped` at that call's index. The same `invocation_id`
+never runs the batch twice: the first step uses it, and each later step's
+id is derived from it. A number outside the range its
 action declares (`pageSize: 200` where the signature says `1..64`) fails
 validation before the action runs; the bridge then runs the call once more
 with the bound the refusal named and adds `adjusted` to the answer
@@ -203,7 +266,10 @@ launches an installed app and answers, once the new instance has published its
 directory, with its `peer_id` and its `directory`: the compact page of its
 top-level resources with all their actions, and the resources beneath them
 while the page stays within 12 KiB (`"truncated": true` when something was left
-for `tilo_query`). An agent acts on the reply without browsing first. An app
+for `tilo_query`). An action line there is its label and parameters
+(`"save-as": "Save document as (path?)"`); the description sentence is left
+to `tilo_query`, because this reply is read again on every later turn. An
+agent acts on the reply without browsing first. An app
 may publish again while it starts, and a directory read in between lists
 nothing, so the reply waits up to 3 s more for one that lists a resource.
 
@@ -294,7 +360,15 @@ resource id longer than 24 characters is shown as a session handle such as
 `r3`; workspace pages keep their ids (`app.<app_id>`, the permission roles),
 which provisioning code and prompts spell out. `tilo_query`'s
 `parent_resource`, `tilo_resolve` and `tilo_invoke` accept a handle wherever
-they take a resource, and full ids keep working. In `tilo_invoke`'s
+they take a resource, and full ids and a resource's kind or label
+(`canvas.artwork`) keep working. A `parent_resource` that lists nothing and
+names no resource is refused with the resources there are, rather than
+answered with an empty page. A compact session's `tilo_resolve` names the
+resource by its handle and says each parameter schema once: an optional
+property does not also list `null` (absent and `null` read alike), a `const`
+carries no `type`, bounds that only restate an integer type's range are left
+out, and a subschema repeated under several properties is one `$defs` entry
+each place `$ref`s, keeping its own description. In `tilo_invoke`'s
 `arguments`, a handle this session issued is replaced by its id where the
 action declares a `resource` parameter. Where the parameter is text, the handle
 goes as given, since it may be meant literally. If the action refuses it, the

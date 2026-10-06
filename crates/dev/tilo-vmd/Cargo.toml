@@ -17,7 +17,7 @@ path = "src/main.rs"
 [dependencies]
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
-tilo-atomic-file = { path = "../../system/atomic-file" }
+tilo-files = { path = "../../platform/tilo-files" }
 base64.workspace = true
 chrono = { workspace = true, features = ["clock", "std"] }
 clap.workspace = true
@@ -36,6 +36,9 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+# The device test drives tilo-vm's own commands against this daemon.
+tilo-test-env = { path = "../test-env" }
+tilo-vm = { path = "../tilo-vm" }
 
 [[test]]
 name = "it"

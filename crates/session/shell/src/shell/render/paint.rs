@@ -430,6 +430,12 @@ pub struct RetainedGpuTarget {
     phase_wait_override: Option<Duration>,
     /// The vello renderer parented to the same wgpu device as `texture`, cached across frames so we don't pay the pipeline-compile cost on every paint.
     renderer: Renderer,
+    /// Client frames `renderer` draws straight from their GPU textures.
+    client_frames: crate::shell::gpu_frames::AppliedFrames,
+    /// The presenting-device generation client frames are imported on, when
+    /// this target renders on that device.
+    present_generation: Option<u64>,
+
     /// Offscreen render target. Recreated on resize.
     texture: wgpu::Texture,
     view: wgpu::TextureView,
@@ -482,6 +488,67 @@ pub struct RetainedGpuTarget {
     last_sparse_render_stats: Option<vello::SparseRenderStats>,
 }
 
+/// Whether this process has published its pipelines for apps (see [`ui::pipeline_seed`]).
+static PIPELINE_SEED_PUBLISHED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// An empty pipeline cache for the first renderer this session builds, which then becomes the
+/// seed every app starts from. Later renderers compile exactly the same pipelines, so one seed
+/// per session is all there is to publish. Never in unit tests: they must not write into the
+/// real session's runtime directory.
+fn pipeline_seed_to_publish(gpu: &ui::gpu::DeviceHandle) -> Option<wgpu::PipelineCache> {
+    if cfg!(test) || PIPELINE_SEED_PUBLISHED.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return None;
+    }
+    ui::pipeline_seed::empty(gpu)
+}
+
+/// Replace the seed for `gpu` under `dir` atomically, readable by every app and writable by the
+/// session only. `Ok(false)` when the backend has no cache data to share.
+fn write_pipeline_seed(
+    gpu: &ui::gpu::DeviceHandle,
+    cache: &wgpu::PipelineCache,
+    dir: &std::path::Path,
+) -> std::io::Result<bool> {
+    let Some(file) = ui::pipeline_seed::seed_file(dir, &gpu.adapter.get_info()) else {
+        return Ok(false);
+    };
+    let Some(data) = cache.get_data() else {
+        return Ok(false);
+    };
+    std::fs::create_dir_all(dir)?;
+    let staging = file.with_extension("tmp");
+    std::fs::write(&staging, &data)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o644))?;
+    }
+    std::fs::rename(&staging, &file)?;
+    Ok(true)
+}
+
+/// Write the session's pipelines where the launcher binds them, read-only, into every app.
+fn publish_pipeline_seed(gpu: &ui::gpu::DeviceHandle, cache: &wgpu::PipelineCache) {
+    let dir = crate::shell::launcher::runtime_dir()
+        .join("tilo")
+        .join(launcher::gpu::PIPELINE_SEED_DIR_NAME);
+    match write_pipeline_seed(gpu, cache, &dir) {
+        Ok(true) => tracing::info!(
+            target: "shell::render",
+            dir = %dir.display(),
+            "published the session's vello pipelines for apps to start from"
+        ),
+        Ok(false) => {}
+        Err(error) => tracing::warn!(
+            target: "shell::render",
+            dir = %dir.display(),
+            %error,
+            "could not publish the session's vello pipelines; apps compile their own"
+        ),
+    }
+}
+
 impl RetainedGpuTarget {
     /// Construct an offscreen target on the supplied context-owned device and queue.
     ///
@@ -493,20 +560,28 @@ impl RetainedGpuTarget {
             return Err(BridgeError::DeviceLost(reason));
         }
         let (texture, view) = Self::allocate_texture(&gpu.device, width, height);
+        let seed = pipeline_seed_to_publish(gpu);
         let renderer = Renderer::new(
             &gpu.device,
             RendererOptions {
                 use_cpu: false,
-                antialiasing_support: AaSupport::all(),
+                // Every frame renders with area anti-aliasing; MSAA pipelines would go unused.
+                antialiasing_support: AaSupport::area_only(),
                 num_init_threads: None,
-                pipeline_cache: None,
+                pipeline_cache: seed.clone(),
             },
         )
         .map_err(|e| BridgeError::Renderer(format!("{e:?}")))?;
+        if let Some(seed) = seed {
+            publish_pipeline_seed(gpu, &seed);
+        }
         let mut target = Self {
             device: gpu.device.clone(),
             queue: gpu.queue.clone(),
             renderer,
+            client_frames: crate::shell::gpu_frames::AppliedFrames::default(),
+            present_generation: None,
+
             texture,
             view,
             band: None,
@@ -535,6 +610,20 @@ impl RetainedGpuTarget {
             last_clip_single_group_sparse_attempts: 0,
             last_sparse_render_stats: None,
         };
+        if gpu.adapter.get_info().device_type == wgpu::DeviceType::Cpu {
+            // Lavapipe compiles each pipeline on its first dispatch: on a cold shader cache,
+            // seconds of one-at-a-time work the warm-up below would add to the first frame.
+            // Extra devices come from the session's shared budget; without any, this device
+            // compiles in place.
+            let slots = super::warmup::acquire();
+            target.renderer.precompile_pipelines(
+                &target.device,
+                &target.queue,
+                slots.len(),
+                &|| gpu.open_peer(),
+            );
+            drop(slots);
+        }
         target.warm_pipelines()?;
         Ok(target)
     }
@@ -780,6 +869,11 @@ impl RetainedGpuTarget {
         F: Fn(&wgpu::Device, &mut wgpu::CommandEncoder, &wgpu::TextureView),
     {
         let sparse = damage.and_then(|damage| self.eligible_sparse_damage(damage));
+        crate::shell::gpu_frames::apply(
+            &mut self.renderer,
+            self.present_generation,
+            &mut self.client_frames,
+        );
         self.invalidate();
         self.reset_attempts();
         self.check_live(policy)?;
@@ -1586,6 +1680,69 @@ impl RetainedGpuTarget {
     }
 }
 
+/// Opt-in diagnostic coverage, independent of input or presentation causality.
+#[derive(Default)]
+struct DispatchStageObserver {
+    attempts: u64,
+    matched_current: u64,
+    stale_samples: u64,
+    missing_current: u64,
+    last_record: Option<serde_json::Value>,
+}
+
+impl DispatchStageObserver {
+    #[expect(
+        clippy::print_stderr,
+        reason = "explicit GPU diagnostics must reach the native compositor process log"
+    )]
+    fn record(
+        &mut self,
+        target: &mut RetainedGpuTarget,
+        revision: u64,
+        rendered: bool,
+        previous_submission: Option<u64>,
+        renderer_generation: Option<u64>,
+    ) {
+        self.attempts = self.attempts.saturating_add(1);
+        let latest = target
+            .renderer
+            .gpu_dispatch_timestamp_latest_submission_id();
+        let sample = target.renderer.take_gpu_dispatch_timestamp_sample();
+        let sample_id = sample.as_ref().map(|sample| sample.submission_id);
+        let expected = latest.filter(|_| latest != previous_submission && rendered);
+        let matched = sample_id.is_some() && sample_id == expected;
+        self.matched_current = self.matched_current.saturating_add(u64::from(matched));
+        self.stale_samples = self
+            .stale_samples
+            .saturating_add(u64::from(sample_id.is_some() && !matched));
+        self.missing_current = self.missing_current.saturating_add(u64::from(!matched));
+        let stages: Vec<_> = sample.as_ref().map(|sample| {
+            sample.stages.iter().take(usize::try_from(sample.stage_count).unwrap_or(0).min(sample.stages.len()))
+                .map(|stage| serde_json::json!({
+                    "stage_id": stage.stage_id,
+                    "stage": vello::gpu_dispatch_timestamp_stage_name(stage.stage_id).unwrap_or("unknown"),
+                    "dispatch_count": stage.dispatch_count,
+                    "duration_ns": stage.duration_ns.to_string(),
+                })).collect()
+        }).unwrap_or_default();
+        let row = serde_json::json!({
+            "process_id": std::process::id(), "renderer_generation": renderer_generation,
+            "revision": revision, "render_succeeded": rendered,
+            "latest_attempted_submission_id": latest, "expected_current_submission_id": expected,
+            "sample_submission_id": sample_id,
+            "matched_current": matched, "missing_current": !matched,
+            "stale_sample": sample_id.is_some() && !matched,
+            "status": format!("{:?}", target.renderer.gpu_dispatch_timestamp_status()),
+            "timestamp_buffer_bytes": target.renderer.gpu_dispatch_timestamp_buffer_bytes(),
+            "coverage": {"attempts": self.attempts, "matched_current": self.matched_current,
+                "stale_samples": self.stale_samples, "missing_current": self.missing_current},
+            "stages": stages,
+        });
+        eprintln!("VELLO-STAGES {row}");
+        self.last_record = Some(row);
+    }
+}
+
 /// CPU-fallback bridge between a vello `Scene` and an RGBA byte buffer. Owns its wgpu device +
 /// offscreen texture + readback buffer so callers can reuse it across frames. Single-output by design — multi-output is one bridge per output.
 #[cfg_attr(
@@ -1600,6 +1757,7 @@ pub struct VelloDrmBridge {
     target: RetainedGpuTarget,
     device_errors: DeviceErrorLatch,
     bgra_blitter: TextureBlitter,
+    dispatch_stage_observer: Option<DispatchStageObserver>,
     /// SDR → PQ encode passes, one per HDR scanout format in use.
     hdr_encoders: Vec<HdrEncodePipeline>,
     /// Composites HDR layers; built with the first frame that has any.
@@ -1628,6 +1786,17 @@ pub struct VelloDrmBridge {
     /// compositor's normal cadence would otherwise queue one more llvmpipe frame every tick.
     recovery_not_before: Option<Instant>,
     recovery_backoff: Duration,
+    /// Desktop pixels from before the current overview fade. Composite the
+    /// panel over this instead of rendering both outputs again.
+    overview_base: Vec<u8>,
+    overview_generation: u64,
+    /// Workspace whose pixels are on the scanouts, and up to two retained
+    /// images so switching back does not render both outputs again.
+    shown_workspace: Option<u64>,
+    workspace_snapshots: Vec<(u64, Vec<u8>)>,
+    /// Fixed-size renderer for the overview panel. Created once so a fade
+    /// does not compile pipelines on the first animated frame.
+    panel_renderer: Option<ui::offscreen::OffscreenRenderer>,
     /// Narrow fault injection for the tracked-swizzle cleanup test. It is absent from ordinary
     /// binaries and shortens only the test's mapped source view after GPU completion.
     #[cfg(test)]
@@ -1676,7 +1845,13 @@ impl VelloDrmBridge {
         );
 
         let device_errors = DeviceErrorLatch::install(device);
-        let target = RetainedGpuTarget::new(dev_handle, width, height)?;
+        let mut target = RetainedGpuTarget::new(dev_handle, width, height)?;
+        // Client buffers are imported where the scene is drawn, so their
+        // frames reach the panel without crossing the CPU.
+        target.present_generation = Some(crate::shell::gpu_frames::publish_present_device(
+            device,
+            &dev_handle.queue,
+        ));
         let bgra_blitter = TextureBlitter::new(device, wgpu::TextureFormat::Bgra8Unorm);
         let (readback_buf, padded_bytes_per_row) = Self::allocate_staging(device, width, height);
 
@@ -1685,6 +1860,9 @@ impl VelloDrmBridge {
             target,
             device_errors,
             bgra_blitter,
+            dispatch_stage_observer: std::env::var_os("TILO_PROFILE_GPU_STAGES")
+                .is_some_and(|value| value == "1")
+                .then(DispatchStageObserver::default),
             hdr_encoders: Vec::new(),
             hdr_compositor: None,
             dev_id,
@@ -1703,9 +1881,359 @@ impl VelloDrmBridge {
             xrgb_history_epoch: Some(1),
             recovery_not_before: None,
             recovery_backoff: RECOVERY_BACKOFF_INITIAL,
+            overview_base: Vec::new(),
+            overview_generation: 0,
+            shown_workspace: None,
+            workspace_snapshots: Vec::new(),
+            panel_renderer: None,
             #[cfg(test)]
             fail_next_tracked_swizzle: false,
         })
+    }
+
+    /// Whether [`Self::paint`] has stored a complete tight RGBA frame.
+    pub fn has_complete_readback(&self) -> bool {
+        let (width, height) = self.target.size;
+        let needed = usize::try_from(width)
+            .unwrap_or(0)
+            .saturating_mul(usize::try_from(height).unwrap_or(0))
+            .saturating_mul(4);
+        needed > 0 && self.readback.len() == needed
+    }
+
+    /// The tight RGBA of the last complete frame, when one is encoded.
+    pub(crate) fn encoded_rgba(&self) -> Option<&[u8]> {
+        self.has_complete_readback()
+            .then_some(self.readback.as_slice())
+    }
+
+    /// Render `scene` and copy only `clip` into the encoded desktop.
+    ///
+    /// The combined framebuffer is not mapped. Callers publish `clip` onto
+    /// the virtual head it meets.
+    ///
+    /// # Errors
+    /// The desktop image is missing, `clip` leaves it, or the clip copy fails.
+    pub(crate) fn refresh_encoded_clip(
+        &mut self,
+        scene: &Scene,
+        clip: vello::FineDamageRect,
+    ) -> Result<(), BridgeError> {
+        // A stale full-frame profile must not be reported for this clip.
+        self.last_phase_timing = None;
+        self.render_encoded_clip(scene, clip)?;
+        let tight = self.read_encoded_clip(clip)?;
+        self.patch_encoded_clip(clip, &tight)
+    }
+
+    fn render_encoded_clip(
+        &mut self,
+        scene: &Scene,
+        clip: vello::FineDamageRect,
+    ) -> Result<(), BridgeError> {
+        if !self.has_complete_readback() {
+            return Err(BridgeError::InvalidSize(
+                "no encoded desktop for the clip".to_owned(),
+            ));
+        }
+        let (width, height) = self.target.size;
+        let inside = clip.width > 0
+            && clip.height > 0
+            && clip.x.checked_add(clip.width).is_some_and(|x1| x1 <= width)
+            && clip
+                .y
+                .checked_add(clip.height)
+                .is_some_and(|y1| y1 <= height);
+        if !inside {
+            return Err(BridgeError::InvalidSize(
+                "clip is outside the encoded desktop".to_owned(),
+            ));
+        }
+        let revision = self
+            .target
+            .last_successful_revision
+            .map_or(1, |revision| revision.saturating_add(1));
+        let previous = self.target.last_successful_revision;
+        let regions = [clip];
+        let damage = SceneDamage {
+            revision,
+            previous_revision: previous,
+            regions: Some(&regions),
+        };
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        self.target.render_until(scene, damage, deadline)?;
+        Ok(())
+    }
+
+    fn read_encoded_clip(&self, clip: vello::FineDamageRect) -> Result<Vec<u8>, BridgeError> {
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let tight_row = clip.width.saturating_mul(4);
+        let padded = tight_row.div_ceil(align).saturating_mul(align);
+        let size = u64::from(padded).saturating_mul(u64::from(clip.height));
+        if size == 0 {
+            return Err(BridgeError::InvalidSize("empty clip readback".to_owned()));
+        }
+        let buffer = self.target.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("tilo-desktop-drm-clip-readback"),
+            size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder =
+            self.target
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("tilo-desktop-drm-clip-copy"),
+                });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.target.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: clip.x,
+                    y: clip.y,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(clip.height),
+                },
+            },
+            wgpu::Extent3d {
+                width: clip.width,
+                height: clip.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let submission = self.target.queue.submit(Some(encoder.finish()));
+        self.target
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: Some(Duration::from_secs(1)),
+            })
+            .map_err(|error| BridgeError::Map(format!("clip copy: {error:?}")))?;
+        let tight = {
+            let mapped = Self::map_device_readback(&self.target.device, &buffer)?;
+            tight_clip_rows(&mapped, padded, clip)
+        };
+        buffer.unmap();
+        tight
+    }
+
+    fn patch_encoded_clip(
+        &mut self,
+        clip: vello::FineDamageRect,
+        tight: &[u8],
+    ) -> Result<(), BridgeError> {
+        let scene_w = usize::try_from(self.target.size.0).unwrap_or(0);
+        let row = usize::try_from(clip.width).unwrap_or(0).saturating_mul(4);
+        let origin_x = usize::try_from(clip.x).unwrap_or(0);
+        let origin_y = usize::try_from(clip.y).unwrap_or(0);
+        let rows = usize::try_from(clip.height).unwrap_or(0);
+        if scene_w == 0 || row == 0 || rows == 0 {
+            return Err(BridgeError::InvalidSize(
+                "encoded clip does not fit the desktop".to_owned(),
+            ));
+        }
+        for row_index in 0..rows {
+            let src_off = row_index.saturating_mul(row);
+            let Some(src) = tight.get(src_off..src_off.saturating_add(row)) else {
+                break;
+            };
+            let dest_off = origin_y
+                .saturating_add(row_index)
+                .saturating_mul(scene_w)
+                .saturating_add(origin_x)
+                .saturating_mul(4);
+            let Some(dest) = self
+                .readback
+                .get_mut(dest_off..dest_off.saturating_add(row))
+            else {
+                break;
+            };
+            dest.copy_from_slice(src);
+        }
+        Ok(())
+    }
+
+    /// Fast overview clips stay under this edge. A 1080p panel plus its
+    /// shadow outset is taller than 1024, and rejecting that clip made the
+    /// fade GPU-read both outputs.
+    pub(crate) const OVERVIEW_PANEL_EDGE: u32 = 2048;
+
+    /// Whether `width`×`height` can be composited without a combined readback.
+    pub(crate) fn overview_clip_fits_fast_target(width: u32, height: u32) -> bool {
+        width > 0
+            && height > 0
+            && width <= Self::OVERVIEW_PANEL_EDGE
+            && height <= Self::OVERVIEW_PANEL_EDGE
+    }
+
+    /// Panel-sized overview frame over the desktop image captured before this fade.
+    ///
+    /// # Errors
+    /// The panel is larger than the fixed fast target, or no desktop image exists yet.
+    /// A missing desktop image may seed one full readback. A clip that merely
+    /// exceeds an old 1024px cap must not: a 1080p panel plus its shadow is
+    /// taller than that, and falling through read both outputs back.
+    pub(crate) fn composite_overview_frame(
+        &mut self,
+        patch: &crate::shell::overlay_host::OverviewFastPatch,
+    ) -> Result<Vec<u8>, BridgeError> {
+        if !Self::overview_clip_fits_fast_target(patch.panel.width, patch.panel.height) {
+            return Err(BridgeError::InvalidSize(format!(
+                "overview panel {}x{} exceeds the fast target",
+                patch.panel.width, patch.panel.height
+            )));
+        }
+        let generation_matches = self.overview_generation == patch.generation;
+        let base_matches = self.overview_base.len() == self.readback.len();
+        let base_ready = generation_matches && base_matches && self.has_complete_readback();
+        if !base_ready {
+            if !self.has_complete_readback() {
+                return Err(BridgeError::InvalidSize(
+                    "no desktop image to composite the overview over".to_owned(),
+                ));
+            }
+            self.overview_base.clone_from(&self.readback);
+            self.overview_generation = patch.generation;
+        }
+        let mut frame = self.overview_base.clone();
+        let stride = self.target.size.0;
+        blend_scrim_rect(&mut frame, stride, patch.panel, patch.scrim);
+        if patch.draw_panel {
+            let panel = self.render_overview_panel(&patch.panel_scene, patch.panel_size)?;
+            blit_straight(&mut frame, stride, patch.panel, &panel, patch.panel_size);
+        }
+        Ok(frame)
+    }
+
+    pub(crate) fn shown_workspace(&self) -> Option<u64> {
+        self.shown_workspace
+    }
+
+    pub(crate) fn has_workspace_snapshot(&self, id: u64) -> bool {
+        self.snapshot_index(id).is_some()
+    }
+
+    /// Keep the image of the workspace currently on screen, before a render
+    /// replaces it.
+    pub(crate) fn retain_shown_workspace(&mut self) {
+        if let Some(prev) = self.shown_workspace {
+            self.store_workspace_snapshot(prev);
+        }
+    }
+
+    /// Remember `id` as what the scanouts show. The image is kept once, when
+    /// this workspace first lands or replaces another — not on every repaint.
+    pub(crate) fn note_shown_workspace(&mut self, id: u64) {
+        let changed = self.shown_workspace != Some(id);
+        self.shown_workspace = Some(id);
+        if changed || !self.has_workspace_snapshot(id) {
+            self.store_workspace_snapshot(id);
+        }
+    }
+
+    /// Leave the workspace on screen and return a retained image of `id`,
+    /// when switching back to one this bridge already rendered.
+    pub(crate) fn replay_workspace(&mut self, id: u64) -> Option<Vec<u8>> {
+        if self.shown_workspace == Some(id) {
+            return None;
+        }
+        self.retain_shown_workspace();
+        let index = self.snapshot_index(id)?;
+        let bytes = self.workspace_snapshots.get(index)?.1.clone();
+        self.readback.clone_from(&bytes);
+        self.shown_workspace = Some(id);
+        Some(bytes)
+    }
+
+    fn store_workspace_snapshot(&mut self, id: u64) {
+        if !self.has_complete_readback() {
+            return;
+        }
+        if let Some(pos) = self
+            .workspace_snapshots
+            .iter()
+            .position(|(stored, _)| *stored == id)
+        {
+            {
+                let Some(entry) = self.workspace_snapshots.get_mut(pos) else {
+                    return;
+                };
+                entry.1.clone_from(&self.readback);
+            }
+            // Most recently kept, so the next eviction drops the other one.
+            let entry = self.workspace_snapshots.remove(pos);
+            self.workspace_snapshots.push(entry);
+            return;
+        }
+        if self.workspace_snapshots.len() >= 2 {
+            self.workspace_snapshots.remove(0);
+        }
+        self.workspace_snapshots.push((id, self.readback.clone()));
+    }
+
+    fn expected_readback_len(&self) -> usize {
+        let (width, height) = self.target.size;
+        usize::try_from(width)
+            .unwrap_or(0)
+            .saturating_mul(usize::try_from(height).unwrap_or(0))
+            .saturating_mul(4)
+    }
+
+    fn snapshot_index(&self, id: u64) -> Option<usize> {
+        let needed = self.expected_readback_len();
+        self.workspace_snapshots
+            .iter()
+            .position(|(stored, image)| *stored == id && needed > 0 && image.len() == needed)
+    }
+
+    fn render_overview_panel(
+        &mut self,
+        scene: &Scene,
+        size: (u32, u32),
+    ) -> Result<Vec<u8>, BridgeError> {
+        if self.panel_renderer.is_none() {
+            self.panel_renderer = Some(
+                ui::offscreen::OffscreenRenderer::try_new(
+                    Self::OVERVIEW_PANEL_EDGE,
+                    Self::OVERVIEW_PANEL_EDGE,
+                )
+                .map_err(|error| {
+                    BridgeError::Render(format!("overview panel renderer: {error}"))
+                })?,
+            );
+        }
+        let Some(renderer) = self.panel_renderer.as_mut() else {
+            return Err(BridgeError::Render(
+                "overview panel renderer missing".to_owned(),
+            ));
+        };
+        let panel_pixels = renderer.render_rgba_resilient(scene);
+        let stride = usize::try_from(renderer.width).unwrap_or(0);
+        let width = usize::try_from(size.0).unwrap_or(0);
+        let height = usize::try_from(size.1).unwrap_or(0);
+        if stride < width || panel_pixels.len() < stride.saturating_mul(height).saturating_mul(4) {
+            return Err(BridgeError::InvalidSize(
+                "overview panel render is smaller than the clip".to_owned(),
+            ));
+        }
+        let mut cropped = Vec::with_capacity(width.saturating_mul(height).saturating_mul(4));
+        for row in 0..height {
+            let start = row.saturating_mul(stride).saturating_mul(4);
+            let end = start.saturating_add(width.saturating_mul(4));
+            cropped.extend_from_slice(panel_pixels.get(start..end).unwrap_or_default());
+        }
+        Ok(cropped)
     }
 
     /// Override the per-frame clear color; matches the winit backend API so callers can swap themes uniformly.
@@ -1767,6 +2295,12 @@ impl VelloDrmBridge {
         if let Some(error) = self.take_device_error() {
             return Err(error);
         }
+        if self.target.poisoned {
+            // A failed direct frame must not leave the next attempt with a
+            // target that refuses to render.
+            let (width, height) = self.target.size;
+            self.reconstruct_target(width, height)?;
+        }
         if (target.width, target.height) != self.target.size {
             return Err(BridgeError::InvalidSize(format!(
                 "imported scanout target is {}x{}, expected {}x{}",
@@ -1817,6 +2351,11 @@ impl VelloDrmBridge {
         let view = &target.view;
         let format = target.format;
         let compositor = self.hdr_compositor.as_ref().filter(|_| composite);
+        let previous_dispatch_submission = self.dispatch_stage_observer.as_ref().and_then(|_| {
+            self.target
+                .renderer
+                .gpu_dispatch_timestamp_latest_submission_id()
+        });
         let rendered = self.target.render(
             scene,
             Some(damage),
@@ -1835,10 +2374,17 @@ impl VelloDrmBridge {
             // repair it sparsely, whether or not it composites.
             self.target.last_successful_revision = None;
         }
-        let (_, admitted) = rendered?;
-        if let Some(error) = self.take_device_error() {
-            return Err(error);
+        let rendered = rendered.and_then(|output| self.take_device_error().map_or(Ok(output), Err));
+        if let Some(observer) = &mut self.dispatch_stage_observer {
+            observer.record(
+                &mut self.target,
+                damage.revision,
+                rendered.is_ok(),
+                previous_dispatch_submission,
+                self.xrgb_history_generation,
+            );
         }
+        let (_, admitted) = rendered?;
         Ok(GpuFrameStats {
             revision: damage.revision,
             damage_admitted: admitted,
@@ -2175,6 +2721,15 @@ impl VelloDrmBridge {
 
         if self.readback.len() == needed {
             self.mark_retained_complete(None);
+        }
+        // Compile the panel renderer on a full frame, not on the first
+        // overview sample. A fade must not pay pipeline creation.
+        if self.panel_renderer.is_none() {
+            self.panel_renderer = ui::offscreen::OffscreenRenderer::try_new(
+                Self::OVERVIEW_PANEL_EDGE,
+                Self::OVERVIEW_PANEL_EDGE,
+            )
+            .ok();
         }
 
         Ok(&self.readback)
@@ -3432,6 +3987,7 @@ impl VelloDrmBridge {
             height,
         )?;
         target.set_base_color(color);
+        target.present_generation = self.target.present_generation;
         self.target = target;
         (self.readback_buf, self.padded_bytes_per_row) =
             Self::allocate_staging(&self.target.device, width, height);
@@ -3764,6 +4320,14 @@ impl VelloDrmBridge {
             Self::allocate_staging(&self.target.device, width, height);
         // Reset the tight buffer for the next `paint`; the new size may be larger, so clearing is cleaner than keeping capacity.
         self.readback.clear();
+        // Stale images no longer match the framebuffer. The next settled
+        // paint records the workspace again; replaying the old bytes would
+        // upload the wrong size, and rejecting them made the close render
+        // both outputs.
+        self.workspace_snapshots.clear();
+        self.shown_workspace = None;
+        self.overview_base.clear();
+        self.overview_generation = 0;
         Ok(())
     }
 
@@ -3897,6 +4461,22 @@ impl VelloDrmBridge {
     #[doc(hidden)]
     pub fn sparse_segment_row_mask_available(&self) -> bool {
         self.target.renderer.sparse_segment_row_mask_available()
+    }
+
+    /// Render with a fixed per-tile segment order, so repeated paints of one
+    /// scene are bit-identical. For exact-pixel oracles.
+    ///
+    /// # Errors
+    /// Returns [`BridgeError::Renderer`] if the shader set fails to compile.
+    #[doc(hidden)]
+    pub fn enable_canonical_segment_order(&mut self) -> Result<(), BridgeError> {
+        self.invalidate_retained();
+        let RetainedGpuTarget {
+            device, renderer, ..
+        } = &mut self.target;
+        renderer
+            .enable_canonical_segment_order(device)
+            .map_err(|e| BridgeError::Renderer(format!("{e:?}")))
     }
 
     /// Whether canonical segment ordering was requested for this renderer.
@@ -4043,6 +4623,32 @@ struct CompositedPixel<'a> {
     second: [u8; 4],
     x: u32,
     y: u32,
+}
+
+fn tight_clip_rows(
+    mapped: &[u8],
+    padded: u32,
+    clip: vello::FineDamageRect,
+) -> Result<Vec<u8>, BridgeError> {
+    let row = usize::try_from(clip.width).unwrap_or(0).saturating_mul(4);
+    let stride = usize::try_from(padded).unwrap_or(0);
+    let rows = usize::try_from(clip.height).unwrap_or(0);
+    if row == 0 || stride < row || rows == 0 {
+        return Err(BridgeError::InvalidSize(
+            "clip readback row does not fit".to_owned(),
+        ));
+    }
+    let mut tight = Vec::with_capacity(row.saturating_mul(rows));
+    for row_index in 0..rows {
+        let start = row_index.saturating_mul(stride);
+        let Some(src) = mapped.get(start..start.saturating_add(row)) else {
+            return Err(BridgeError::Map(
+                "clip readback row is outside the mapped buffer".to_owned(),
+            ));
+        };
+        tight.extend_from_slice(src);
+    }
+    Ok(tight)
 }
 
 impl CompositedPixel<'_> {
@@ -5275,6 +5881,9 @@ mod tests {
     /// animation at 5K) used to panic inside `Device::poll` and take the session to a black
     /// screen. The reset here is the driver's: every fence wait answers `DeviceError::Lost`, and
     /// wgpu-core invalidates the device and runs its lost callback as it does for a real one.
+    // This injects a Vulkan fence failure in the Linux DRM renderer.
+    // The backend-independent device-destruction tests remain available on macOS.
+    #[cfg(target_os = "linux")]
     #[test]
     fn gpu_target_a_gpu_reset_mid_session_is_survived_by_a_new_bridge() {
         const SIZE: u32 = 64;
@@ -5828,9 +6437,27 @@ mod tests {
             state: ElementState::Released,
             button: MouseButton::Left,
         };
-        let _ = frame.dispatch_event(&cursor, &modifiers, document, &ROOT, focus);
-        let pressed = frame.dispatch_event(&press, &modifiers, document, &ROOT, focus);
-        let released = frame.dispatch_event(&release, &modifiers, document, &ROOT, focus);
+        let _ = frame.dispatch_event(
+            &cursor,
+            &modifiers,
+            &mut ui::widget::Edits::lend(document),
+            &ROOT,
+            focus,
+        );
+        let pressed = frame.dispatch_event(
+            &press,
+            &modifiers,
+            &mut ui::widget::Edits::lend(document),
+            &ROOT,
+            focus,
+        );
+        let released = frame.dispatch_event(
+            &release,
+            &modifiers,
+            &mut ui::widget::Edits::lend(document),
+            &ROOT,
+            focus,
+        );
         assert!(
             pressed || released,
             "native benchmark target {target:?} must handle click"
@@ -7682,6 +8309,397 @@ mod tests {
         }
     }
 
+    /// A stand-in for an imported scanout image: an SDR target the test can read back.
+    #[cfg(target_os = "linux")]
+    fn direct_target(
+        bridge: &VelloDrmBridge,
+        width: u32,
+        height: u32,
+    ) -> ui::dmabuf_import::ImportedRenderTarget {
+        let (device, _) = bridge.gpu();
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("direct-scanout-test-target"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        ui::dmabuf_import::ImportedRenderTarget {
+            view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            texture,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            width,
+            height,
+            stride: width.saturating_mul(4),
+        }
+    }
+
+    /// Runs the ordinary direct paint, not a diagnostic helper or a fake GPU sample.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn direct_gpu_stage_records_keep_actual_submission_identity_and_coverage() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_PROFILE_GPU_STAGES", "0");
+        let ordinary = required_bridge(128, 96);
+        assert!(ordinary.dispatch_stage_observer.is_none());
+        drop(ordinary);
+        env.set("TILO_PROFILE_GPU_STAGES", "1");
+        env.set("VELLO_GPU_TIMESTAMPS", "1");
+        env.set("VELLO_GPU_DISPATCH_TIMESTAMPS", "1");
+        let mut bridge = required_bridge(128, 96);
+        let target = direct_target(&bridge, 128, 96);
+        let mut samples = 0;
+        for revision in 1..=12 {
+            bridge
+                .paint_imported_until(
+                    &rect_scene(128, 96, Color::WHITE),
+                    version(revision, None, None),
+                    &target,
+                    tilo_test_env::hang_deadline(),
+                    crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
+                    &[],
+                )
+                .expect("production direct GPU paint");
+            let row = bridge
+                .dispatch_stage_observer
+                .as_ref()
+                .unwrap()
+                .last_record
+                .as_ref()
+                .unwrap();
+            assert_eq!(row["process_id"], std::process::id());
+            assert_eq!(
+                row["renderer_generation"],
+                bridge.xrgb_history_generation.unwrap()
+            );
+            assert_eq!(row["revision"], revision);
+            assert_eq!(row["coverage"]["attempts"], revision);
+            assert_eq!(row["render_succeeded"], true);
+            assert_eq!(
+                row["coverage"]["matched_current"].as_u64().unwrap()
+                    + row["coverage"]["missing_current"].as_u64().unwrap(),
+                revision
+            );
+            if let Some(sample_id) = row["sample_submission_id"].as_u64() {
+                samples += 1;
+                let latest = row["latest_attempted_submission_id"].as_u64().unwrap();
+                assert!(sample_id <= latest);
+                assert_eq!(row["matched_current"], sample_id == latest);
+                assert_eq!(row["stale_sample"], sample_id != latest);
+                assert!(!row["stages"].as_array().unwrap().is_empty());
+            } else {
+                assert_eq!(row["missing_current"], true);
+                assert!(row["stages"].as_array().unwrap().is_empty());
+            }
+            bridge.wait_for_gpu_completion_for_test();
+        }
+        assert!(
+            samples > 0,
+            "the diagnostic must observe an actual GPU stage sample"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn direct_gpu_stage_failed_paints_and_recovery_keep_renderer_identity() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_PROFILE_GPU_STAGES", "1");
+        env.set("VELLO_GPU_TIMESTAMPS", "1");
+        env.set("VELLO_GPU_DISPATCH_TIMESTAMPS", "1");
+        let mut bridge = required_bridge(128, 96);
+        let target = direct_target(&bridge, 128, 96);
+        let scene = rect_scene(128, 96, Color::WHITE);
+        let white = crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS;
+        bridge
+            .paint_imported_until(
+                &scene,
+                version(1, None, None),
+                &target,
+                tilo_test_env::hang_deadline(),
+                white,
+                &[],
+            )
+            .expect("initial ordinary direct paint");
+        let old_generation = bridge.xrgb_history_generation;
+        let expired = bridge.paint_imported_until(
+            &scene,
+            version(2, None, None),
+            &target,
+            Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .expect("monotonic clock permits an expired deadline"),
+            white,
+            &[],
+        );
+        assert!(expired.is_err(), "an expired ordinary paint must fail");
+        let row = bridge
+            .dispatch_stage_observer
+            .as_ref()
+            .unwrap()
+            .last_record
+            .as_ref()
+            .unwrap();
+        assert_eq!(row["revision"], 2);
+        assert_eq!(row["render_succeeded"], false);
+        assert!(row["expected_current_submission_id"].is_null());
+        assert_eq!(row["matched_current"], false);
+        assert_eq!(row["missing_current"], true);
+        // An actual wgpu validation error enters the ordinary recovery path.
+        let (device, _) = bridge.gpu();
+        let refused = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("stage-observer-recovery-test"),
+            size: device.limits().max_buffer_size.saturating_add(4),
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        drop(refused);
+        assert!(
+            bridge
+                .paint_imported_until(
+                    &scene,
+                    version(3, None, None),
+                    &target,
+                    tilo_test_env::hang_deadline(),
+                    white,
+                    &[],
+                )
+                .is_err()
+        );
+        bridge
+            .paint_imported_until(
+                &scene,
+                version(4, None, None),
+                &target,
+                tilo_test_env::hang_deadline(),
+                white,
+                &[],
+            )
+            .expect("ordinary paint reconstructs after the reported GPU error");
+        let row = bridge
+            .dispatch_stage_observer
+            .as_ref()
+            .unwrap()
+            .last_record
+            .as_ref()
+            .unwrap();
+        assert_eq!(row["revision"], 4);
+        assert_ne!(bridge.xrgb_history_generation, old_generation);
+        assert_eq!(
+            row["renderer_generation"],
+            bridge.xrgb_history_generation.unwrap()
+        );
+    }
+
+    /// The direct swapchain alternates between two scanout images, so the image a frame lands in
+    /// holds the revision before last. The renderer's retained target holds the previous one, and
+    /// the image receives a whole copy of it: a typed character must repaint sparsely, not the
+    /// full panel (a dense 2944x1840 frame took ~45 ms on a Snapdragon X Elite).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn direct_frames_stay_sparse_across_the_swapchain_and_show_the_whole_scene() {
+        let (width, height) = (128, 96);
+        let mut bridge = required_bridge(width, height);
+        bridge.wait_for_gpu_completion_for_test();
+        let slots = [
+            direct_target(&bridge, width, height),
+            direct_target(&bridge, width, height),
+        ];
+        let white = crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS;
+        let region = vello::FineDamageRect {
+            x: 16,
+            y: 16,
+            width: 16,
+            height: 16,
+        };
+        let red = Color::from_rgb8(0xE0, 0x10, 0x20);
+        let mut typed = rect_scene(width, height, Color::WHITE);
+        typed.append(&region_scene(region, red), None);
+
+        bridge
+            .paint_imported_until(
+                &rect_scene(width, height, Color::WHITE),
+                version(1, None, None),
+                &slots[0],
+                tilo_test_env::hang_deadline(),
+                white,
+                &[],
+            )
+            .expect("the first direct frame renders");
+        let stats = bridge
+            .paint_imported_until(
+                &typed,
+                version(2, Some(1), Some(&[region])),
+                &slots[1],
+                tilo_test_env::hang_deadline(),
+                white,
+                &[],
+            )
+            .expect("the sparse direct frame renders");
+        if bridge.target.renderer.sparse_fine_supported() {
+            assert!(
+                stats.sparse_attempts > 0 && stats.full_attempts == 0,
+                "a damaged region repaints sparsely: {stats:?}"
+            );
+        }
+
+        let (device, queue) = bridge.gpu();
+        let (buffer, stride) = VelloDrmBridge::allocate_staging(device, width, height);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        VelloDrmBridge::append_full_copy(
+            &mut encoder,
+            &slots[1].texture,
+            &buffer,
+            stride,
+            width,
+            height,
+        );
+        queue.submit([encoder.finish()]);
+        let mapped = VelloDrmBridge::map_device_readback(device, &buffer).expect("slot readback");
+        let pixel = |x: u32, y: u32| {
+            let at = (y * stride + x * 4) as usize;
+            mapped[at..at + 4].to_vec()
+        };
+        assert_eq!(
+            pixel(20, 20),
+            vec![0x20, 0x10, 0xE0, 0xFF],
+            "the typed region"
+        );
+        assert_eq!(
+            pixel(100, 80),
+            vec![0xFF; 4],
+            "the rest of the slot comes from the retained frame, not the slot's stale image"
+        );
+        drop(mapped);
+        buffer.unmap();
+    }
+
+    /// A client frame kept on the GPU is drawn by the presenting renderer from its texture, and
+    /// by a renderer on another device from pixels read back on demand: both show the client.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_client_frame_on_the_gpu_reaches_every_renderer() {
+        let (width, height) = (64, 48);
+        let mut presenting = required_bridge(width, height);
+        presenting.wait_for_gpu_completion_for_test();
+        let (device, queue) = presenting.gpu();
+        let red = [0xE0, 0x10, 0x20, 0xFF];
+        let generation = presenting
+            .target
+            .present_generation
+            .expect("a presenting device");
+        let frame = crate::shell::gpu_frames::frame_for_test(
+            device,
+            queue,
+            generation,
+            (40, 30),
+            red,
+            9_001,
+        );
+        let image = frame.image((4, 2, 32, 24));
+        assert!(image.data.is_empty(), "the frame carries no CPU pixels");
+        let mut scene = rect_scene(width, height, Color::WHITE);
+        scene.fill(
+            Fill::NonZero,
+            Affine::translate((8.0, 8.0)),
+            &vello::peniko::ImageBrush::new(image),
+            None,
+            &vello::kurbo::Rect::new(0.0, 0.0, 32.0, 24.0),
+        );
+        let target = direct_target(&presenting, width, height);
+        presenting
+            .paint_imported_until(
+                &scene,
+                version(1, None, None),
+                &target,
+                tilo_test_env::hang_deadline(),
+                crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
+                &[],
+            )
+            .expect("the presenting renderer draws the frame");
+        let (device, queue) = presenting.gpu();
+        let (buffer, stride) = VelloDrmBridge::allocate_staging(device, width, height);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        VelloDrmBridge::append_full_copy(
+            &mut encoder,
+            &target.texture,
+            &buffer,
+            stride,
+            width,
+            height,
+        );
+        queue.submit([encoder.finish()]);
+        let mapped = VelloDrmBridge::map_device_readback(device, &buffer).expect("readback");
+        let at = (20 * stride + 20 * 4) as usize;
+        assert_eq!(
+            &mapped[at..at + 4],
+            &[0x20, 0x10, 0xE0, 0xFF],
+            "BGRA target"
+        );
+        drop(mapped);
+        buffer.unmap();
+
+        let mut elsewhere = required_bridge(width, height);
+        elsewhere.wait_for_gpu_completion_for_test();
+        let rgba = elsewhere
+            .paint(&scene)
+            .expect("a renderer without the texture still draws the frame")
+            .to_vec();
+        let at = ((20 * width + 20) * 4) as usize;
+        assert_eq!(&rgba[at..at + 4], &red);
+    }
+
+    /// One direct frame that missed its deadline -- a cold shader cache, a busy GPU -- poisons
+    /// the target. The retry after the readback presenter stood in must render again, or a single
+    /// slow frame keeps the output on the per-frame readback for the rest of the session.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_direct_frame_after_a_missed_deadline_renders_again() {
+        let mut bridge = required_bridge(128, 96);
+        let target = direct_target(&bridge, 128, 96);
+        let scene = rect_scene(128, 96, Color::WHITE);
+        let white = crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS;
+
+        let mut test = completion_clock();
+        test.failure = Some(WaitPhase::Marker);
+        let deadline = test.start + Duration::from_secs(1);
+        bridge.target.completion_test = Some(test);
+        assert!(matches!(
+            bridge.paint_imported_until(
+                &scene,
+                version(1, None, None),
+                &target,
+                deadline,
+                white,
+                &[]
+            ),
+            Err(BridgeError::DeadlineExceeded)
+        ));
+        assert!(
+            bridge.target.poisoned,
+            "the fixture must reach the poisoned state"
+        );
+
+        let stats = bridge
+            .paint_imported_until(
+                &scene,
+                version(2, None, None),
+                &target,
+                tilo_test_env::hang_deadline(),
+                white,
+                &[],
+            )
+            .expect("the retried direct frame renders");
+        assert_eq!(stats.revision, 2);
+        assert!(!bridge.target.poisoned);
+    }
+
     /// wgpu answers an uncaptured validation error by panicking, and the compositor aborts on
     /// panic: one oversized binding on the present thread ended the session and every client
     /// in it. The bridge's device must hand such an error to the bridge instead, which rebuilds
@@ -7727,5 +8745,136 @@ mod tests {
             adapter.max_storage_buffer_binding_size
         );
         assert_eq!(device.max_buffer_size, adapter.max_buffer_size);
+    }
+}
+
+fn src_over(src: [u8; 4], dst: [u8; 4]) -> [u8; 4] {
+    let [sr, sg, sb, sa_byte] = src;
+    let [dr, dg, db, _] = dst;
+    let sa = u32::from(sa_byte);
+    let inv = 255u32.saturating_sub(sa);
+    let mix = |source: u8, behind: u8| -> u8 {
+        let mixed = u32::from(source)
+            .saturating_mul(sa)
+            .saturating_add(u32::from(behind).saturating_mul(inv));
+        u8::try_from(mixed.saturating_div(255)).unwrap_or(255)
+    };
+    [mix(sr, dr), mix(sg, dg), mix(sb, db), 255]
+}
+
+fn blend_scrim_rect(
+    pixels: &mut [u8],
+    stride_px: u32,
+    rect: vello::FineDamageRect,
+    scrim: [u8; 4],
+) {
+    let stride = usize::try_from(stride_px).unwrap_or(0).saturating_mul(4);
+    let x = usize::try_from(rect.x).unwrap_or(0);
+    let y = usize::try_from(rect.y).unwrap_or(0);
+    let width = usize::try_from(rect.width).unwrap_or(0);
+    let height = usize::try_from(rect.height).unwrap_or(0);
+    let [sr, sg, sb, sa_byte] = scrim;
+    let sa = u32::from(sa_byte);
+    if sa == 0 || stride == 0 {
+        return;
+    }
+    for row in y..y.saturating_add(height) {
+        for col in x..x.saturating_add(width) {
+            let at = row
+                .saturating_mul(stride)
+                .saturating_add(col.saturating_mul(4));
+            let Some(pixel) = pixels.get(at..at.saturating_add(4)) else {
+                continue;
+            };
+            let Ok(existing) = <[u8; 4]>::try_from(pixel) else {
+                continue;
+            };
+            let mixed = src_over([sr, sg, sb, sa_byte], existing);
+            if let Some(slot) = pixels.get_mut(at..at.saturating_add(4)) {
+                slot.copy_from_slice(&mixed);
+            }
+        }
+    }
+}
+
+fn blit_straight(
+    destination: &mut [u8],
+    stride_px: u32,
+    rect: vello::FineDamageRect,
+    source: &[u8],
+    source_size: (u32, u32),
+) {
+    let stride = usize::try_from(stride_px).unwrap_or(0).saturating_mul(4);
+    let src_stride = usize::try_from(source_size.0)
+        .unwrap_or(0)
+        .saturating_mul(4);
+    let x = usize::try_from(rect.x).unwrap_or(0);
+    let y = usize::try_from(rect.y).unwrap_or(0);
+    let width = usize::try_from(source_size.0.min(rect.width)).unwrap_or(0);
+    let height = usize::try_from(source_size.1.min(rect.height)).unwrap_or(0);
+    for row in 0..height {
+        for col in 0..width {
+            let src_at = row
+                .saturating_mul(src_stride)
+                .saturating_add(col.saturating_mul(4));
+            let dst_at = (y.saturating_add(row))
+                .saturating_mul(stride)
+                .saturating_add((x.saturating_add(col)).saturating_mul(4));
+            let Some(src) = source.get(src_at..src_at.saturating_add(4)) else {
+                continue;
+            };
+            let Some(dst) = destination.get_mut(dst_at..dst_at.saturating_add(4)) else {
+                continue;
+            };
+            let Ok(src_px) = <[u8; 4]>::try_from(src) else {
+                continue;
+            };
+            let Ok(dst_px) = <[u8; 4]>::try_from(&dst[..]) else {
+                continue;
+            };
+            let mixed = src_over(src_px, dst_px);
+            dst.copy_from_slice(&mixed);
+        }
+    }
+}
+
+#[cfg(test)]
+mod overview_composite {
+    use super::{blend_scrim_rect, blit_straight};
+
+    #[test]
+    fn scrim_and_panel_stay_inside_the_clip() {
+        let mut pixels = vec![0u8; 8 * 4 * 4];
+        for pixel in pixels.chunks_exact_mut(4) {
+            pixel.copy_from_slice(&[10, 20, 30, 255]);
+        }
+        blend_scrim_rect(
+            &mut pixels,
+            8,
+            vello::FineDamageRect {
+                x: 1,
+                y: 1,
+                width: 2,
+                height: 1,
+            },
+            [0, 0, 0, 255],
+        );
+        assert_eq!(&pixels[0..4], &[10, 20, 30, 255]);
+        assert_eq!(&pixels[(8 + 1) * 4..(8 + 1) * 4 + 4], &[0, 0, 0, 255]);
+        let panel = [255u8, 0, 0, 255];
+        blit_straight(
+            &mut pixels,
+            8,
+            vello::FineDamageRect {
+                x: 1,
+                y: 1,
+                width: 1,
+                height: 1,
+            },
+            &panel,
+            (1, 1),
+        );
+        assert_eq!(&pixels[(8 + 1) * 4..(8 + 1) * 4 + 4], &[255, 0, 0, 255]);
+        assert_eq!(&pixels[(8 + 2) * 4..(8 + 2) * 4 + 4], &[0, 0, 0, 255]);
     }
 }

@@ -383,10 +383,130 @@ fn documents_replay_converge_version_index_and_migrate() {
     }
 }
 
+#[test]
+fn apply_and_group_name_the_declared_actions_instead_of_repeating_them() {
+    use serde_json::json;
+
+    let published = tilo_resource::publish::<Board>("board", "Board", &Board::default());
+    let schema = |id: &str| {
+        published
+            .actions
+            .iter()
+            .find(|spec| spec.id == id)
+            .unwrap()
+            .params()
+            .first()
+            .unwrap()
+            .schema
+            .clone()
+            .unwrap()
+    };
+    let declared = json!([
+        "rename",
+        "add-card",
+        "advance",
+        "move-card",
+        "delete-card",
+        "clear"
+    ]);
+    let apply = schema(tilo_resource::APPLY);
+    let operations = apply["properties"]["op"]["oneOf"].as_array().unwrap();
+    assert_eq!(operations.len(), 1, "{apply}");
+    assert_eq!(operations[0]["properties"]["action"]["enum"], declared);
+    let group = schema(tilo_resource::GROUP);
+    assert_eq!(
+        group["items"]["oneOf"][0]["properties"]["action"]["enum"],
+        declared
+    );
+    assert_eq!(
+        group["items"]["oneOf"][1]["properties"]["args"]["properties"][tilo_resource::APPLY_PARAM],
+        tilo_resource::schema::undescribed(&apply)
+    );
+
+    let invoke = |value: serde_json::Value| {
+        let mut args = serde_json::Map::new();
+        args.insert(tilo_resource::APPLY_PARAM.into(), value);
+        tilo_resource::build_action::<Board>(tilo_resource::APPLY, &args, 0)
+    };
+    assert!(invoke(json!({"op": {"action": "rename", "args": {"title": "Q3"}}})).is_ok());
+    let refused = invoke(json!({"op": {"action": "rename", "args": {"title": 3}}})).unwrap_err();
+    assert!(refused.starts_with("rename: "), "{refused}");
+    let refused = invoke(json!({"op": {"action": "rename", "args": {"name": "Q3"}}})).unwrap_err();
+    assert!(refused.contains("name"), "{refused}");
+
+    let mut args = serde_json::Map::new();
+    args.insert(
+        tilo_resource::GROUP_PARAM.into(),
+        json!([
+            {"action": "rename", "args": {"title": "Q3"}},
+            {"action": "move-card", "args": {"card": "c1"}},
+        ]),
+    );
+    let refused = tilo_resource::group::build_group::<Board>(&args, 0).unwrap_err();
+    assert!(refused.starts_with("member 1 (move-card): "), "{refused}");
+}
+
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     bytes.iter().fold(String::new(), |mut out, byte| {
         let _ = write!(out, "{byte:02x}");
         out
     })
+}
+
+#[test]
+fn an_action_without_arguments_is_built_when_it_is_taken() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let takings = Arc::new(AtomicUsize::new(0));
+    let clear = Board::declarations()
+        .into_iter()
+        .find(|decl| decl.id == "clear")
+        .unwrap();
+    let counted = Arc::clone(&takings);
+    let decl = tilo_resource::ActionDecl::<Board>::new("clear", "Clear", Vec::new(), {
+        let clear = Arc::clone(&clear.build);
+        move |args, now| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            clear(args, now)
+        }
+    });
+    let resource = tilo_actions::Resource::new("board", "test.board", "Board")
+        .with_action(tilo_resource::declaration_spec(&decl));
+    assert_eq!(
+        takings.load(Ordering::SeqCst),
+        0,
+        "publishing builds nothing"
+    );
+    assert!(matches!(
+        resource.actions[0].input,
+        tilo_actions::ActionInput::Deferred { .. }
+    ));
+    let address = tilo_actions::ActionAddress::new("board", "clear");
+    for taken in 1..=2 {
+        let encoded =
+            tilo_actions::door::encode(std::slice::from_ref(&resource), &address, None).unwrap();
+        assert_eq!(encoded.type_id, Board::ACTION_TYPE);
+        assert_eq!(
+            takings.load(Ordering::SeqCst),
+            taken,
+            "each taking builds anew"
+        );
+    }
+
+    let refusing =
+        tilo_resource::ActionDecl::<Board>::new("refuse", "Refuse", Vec::new(), |_, _| {
+            Err("nothing to clear".into())
+        });
+    let resource = tilo_actions::Resource::new("board", "test.board", "Board")
+        .with_action(tilo_resource::declaration_spec(&refusing));
+    let refused = tilo_actions::door::encode(
+        std::slice::from_ref(&resource),
+        &tilo_actions::ActionAddress::new("board", "refuse"),
+        None,
+    );
+    assert!(
+        matches!(&refused, Err(tilo_actions::DoorError::InvalidArguments(reason)) if reason == "nothing to clear"),
+        "{refused:?}"
+    );
 }

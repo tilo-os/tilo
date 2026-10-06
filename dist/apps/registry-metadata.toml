@@ -11,6 +11,9 @@ tagline = "Explore APIs with confidence"
 [apps.backups]
 description = "Protect important work with clear, restorable backups."
 tagline = "Your work, safely recoverable"
+[apps.browser]
+description = "Browse the web with built-in ad blocking, private windows, and Chrome extensions."
+tagline = "The web, without the clutter"
 [apps.calculator]
 description = "A fast calculator for everyday arithmetic, formulas, and graphs."
 tagline = "Work it out"
@@ -20,6 +23,9 @@ tagline = "Make time visible"
 [apps.camera]
 description = "Capture photos and video from your connected cameras."
 tagline = "Ready when the moment is"
+[apps.canvas]
+description = "Draw and paint with vector marks and real wet media that stay editable as objects."
+tagline = "Art agents can see and revise"
 [apps.chat]
 description = "A focused space for conversations, calls, and shared work."
 tagline = "Talk together, naturally"
@@ -68,9 +74,6 @@ tagline = "See every byte"
 [apps.hot-reload-demo]
 description = "A small document you can keep editing while its code reloads in the same windows."
 tagline = "Change the app without closing it"
-[apps.image-editor]
-description = "Make focused edits to images without leaving your desktop."
-tagline = "Images, made yours"
 [apps.imager]
 description = "Write verified Tilo and disk images to removable media."
 tagline = "Prepare media with confidence"

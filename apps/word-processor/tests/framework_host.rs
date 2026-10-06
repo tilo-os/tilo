@@ -2,15 +2,15 @@
 //! record storage, permissions, per-author undo and History mode, driven the
 //! way a person drives the editor — by typing into it.
 
-use qdoc_rich_text::RichText;
+use tilo_document::RichText;
 use ui::framework::testing::TestApp;
 use ui::permissions::Role;
-use word_processor::framework::WordProcessorApp;
+use word_processor::framework::{Document, WordProcessorApp};
 
 fn paragraphs(app: &TestApp<WordProcessorApp>) -> Vec<String> {
     app.read_document(|doc| {
-        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-        qdoc::model::materialize(doc, &c)
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::materialize(doc, &c)
             .blocks
             .into_iter()
             .map(|block| block.text)
@@ -38,7 +38,7 @@ fn a_keystroke_is_an_action_and_typing_undoes_a_word_at_a_time() {
             .resource
             .as_ref()
             .map(|resource| resource.kind.as_str()),
-        Some("qdoc.rich-text")
+        Some("tilo.rich-text")
     );
 
     // A word is one step: undo takes back "world", redo restores it, and a
@@ -104,19 +104,19 @@ fn the_document_survives_a_relaunch() {
     assert_eq!(paragraphs(&app), ["kept"]);
     assert_eq!(
         <RichText as ui::tilo_resource::Resource>::KIND,
-        "qdoc.rich-text"
+        "tilo.rich-text"
     );
 }
 
 #[test]
 fn one_apply_creates_a_filled_table_and_one_undo_takes_it_back() {
-    use qdoc_rich_text::action::insert_filled_table_action;
+    use tilo_document::action::insert_filled_table_action;
     let mut app = open();
     app.harness().type_text("These are the people");
     app.flush().unwrap();
     let after = app.read_document(|doc| {
-        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-        qdoc::model::blocks_in_order(doc, &c).remove(0)
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::blocks_in_order(doc, &c).remove(0)
     });
     let cells: Vec<Vec<String>> = [["Name", "Role"], ["Priya Natarajan", "Product lead"]]
         .iter()
@@ -124,7 +124,7 @@ fn one_apply_creates_a_filled_table_and_one_undo_takes_it_back() {
         .collect();
     let versions = app.versions().len();
     app.invoke_confirmed(
-        ui::tilo_resource::Invoke::<RichText>::apply(&insert_filled_table_action(&after, cells))
+        ui::tilo_resource::Invoke::<Document>::apply(&insert_filled_table_action(&after, cells))
             .unwrap(),
     )
     .unwrap();
@@ -140,8 +140,8 @@ fn one_apply_creates_a_filled_table_and_one_undo_takes_it_back() {
         ]
     );
     let kinds = app.read_document(|doc| {
-        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-        qdoc::model::materialize(doc, &c)
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::materialize(doc, &c)
             .blocks
             .into_iter()
             .map(|block| block.kind)
@@ -159,8 +159,8 @@ fn one_apply_creates_a_filled_table_and_one_undo_takes_it_back() {
 /// A record holding `paragraphs` paragraphs, pasted through the editor's own
 /// paste action.
 fn long_document(paragraphs: usize) -> TestApp<WordProcessorApp> {
-    use qdoc_rich_text::ClipBlock;
-    use qdoc_rich_text::action::{RegionKind, RichTextAction};
+    use tilo_document::ClipBlock;
+    use tilo_document::action::{RegionKind, RichTextAction};
     let mut app = open();
     let blocks: Vec<ClipBlock> = (0..paragraphs)
         .map(|n| ClipBlock {
@@ -174,8 +174,8 @@ fn long_document(paragraphs: usize) -> TestApp<WordProcessorApp> {
         })
         .collect();
     let first = app.read_document(|doc| {
-        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-        qdoc::model::blocks_in_order(doc, &c).remove(0)
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::blocks_in_order(doc, &c).remove(0)
     });
     let paste = RichTextAction::PasteFragment {
         region: RegionKind::Body,
@@ -186,7 +186,7 @@ fn long_document(paragraphs: usize) -> TestApp<WordProcessorApp> {
         blocks,
         adopt_first_style: false,
     };
-    app.invoke_confirmed(ui::tilo_resource::Invoke::<RichText>::apply(&paste).unwrap())
+    app.invoke_confirmed(ui::tilo_resource::Invoke::<Document>::apply(&paste).unwrap())
         .unwrap();
     app
 }
@@ -214,12 +214,12 @@ fn a_keystroke_in_a_long_document_costs_what_it_costs_in_a_short_one() {
 
     // Typing and Enter in the long document never list or sort its
     // paragraphs, and read only the paragraphs around the page on screen.
-    let scans = qdoc::model::ordered_keys_scan_count();
+    let scans = tilo_doc::model::ordered_keys_scan_count();
     let long_cost = keystroke_cost(&mut long);
     long.harness().key("Enter");
     long.harness().type_text("new line");
     assert_eq!(
-        qdoc::model::ordered_keys_scan_count(),
+        tilo_doc::model::ordered_keys_scan_count(),
         scans,
         "a keystroke listed the document's paragraphs"
     );
@@ -241,22 +241,22 @@ fn a_keystroke_in_a_long_document_costs_what_it_costs_in_a_short_one() {
 }
 
 /// The document as stored, formatting included.
-fn snapshot(app: &TestApp<WordProcessorApp>) -> qdoc::DocSnapshot {
+fn snapshot(app: &TestApp<WordProcessorApp>) -> tilo_doc::DocSnapshot {
     app.read_document(|doc| {
-        let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-        qdoc::model::materialize(doc, &c)
+        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        tilo_doc::model::materialize(doc, &c)
     })
 }
 
 #[test]
 fn undoing_a_mark_over_several_paragraphs_clears_it_from_every_one() {
-    use qdoc_rich_text::action::{MarkVal, RegionKind, RichTextAction, Span};
+    use tilo_document::action::{MarkVal, RegionKind, RichTextAction, Span};
     use ui::tilo_resource::Invoke;
     let mut app = open();
     let load = RichTextAction::ReplaceBody {
         markdown: "Background\n\nMethod\n\nResults\n".into(),
     };
-    app.invoke_confirmed(Invoke::<RichText>::apply(&load).unwrap())
+    app.invoke_confirmed(Invoke::<Document>::apply(&load).unwrap())
         .unwrap();
     let before = snapshot(&app);
     let spans = before
@@ -276,7 +276,7 @@ fn undoing_a_mark_over_several_paragraphs_clears_it_from_every_one() {
         also_clear: Vec::new(),
     };
     // Through `group`, the door an agent uses for a multi-part edit.
-    app.invoke_confirmed(Invoke::group([Invoke::<RichText>::apply(&bold).unwrap()]))
+    app.invoke_confirmed(Invoke::group([Invoke::<Document>::apply(&bold).unwrap()]))
         .unwrap();
     let marked = snapshot(&app);
     assert_eq!(marked.blocks.len(), 3);
@@ -328,6 +328,19 @@ fn action_ids(resource: &tilo_actions::Resource, out: &mut Vec<String>) {
     out.extend(resource.actions.iter().map(|action| action.id.clone()));
     for child in &resource.children {
         action_ids(child, out);
+    }
+}
+
+fn history_labels(resource: &tilo_actions::Resource, out: &mut Vec<String>) {
+    out.extend(
+        resource
+            .actions
+            .iter()
+            .filter(|action| action.id == "history")
+            .map(|action| action.label.clone()),
+    );
+    for child in &resource.children {
+        history_labels(child, out);
     }
 }
 
@@ -402,8 +415,13 @@ fn history_previews_a_version_and_restores_it_like_a_revert() {
         action_ids(&resource, &mut actions);
     }
     assert!(actions.iter().any(|id| id == "outline"), "{actions:?}");
-    assert!(
-        !actions.iter().any(|id| id == "history"),
+    let mut labels = Vec::new();
+    for resource in app.harness().resources() {
+        history_labels(&resource, &mut labels);
+    }
+    assert_eq!(
+        labels,
+        ["History"],
         "the editor's own version strip is not offered beside the shared History"
     );
     assert!(app.harness().targets().contains_key("history-open"));
@@ -529,7 +547,7 @@ fn open_with_a_path_imports_the_file_under_a_configured_collaboration_service() 
     arguments.insert("path".into(), path.to_string_lossy().into_owned().into());
     app.harness()
         .invoke_action(
-            &tilo_actions::ActionAddress::new("word-processor.document", "open"),
+            &tilo_actions::ActionAddress::new("tilo.rich-text", "open"),
             &arguments,
             true,
             None,
@@ -545,4 +563,243 @@ fn open_with_a_path_imports_the_file_under_a_configured_collaboration_service() 
     let app = app.reopen().unwrap();
     assert_eq!(paragraphs(&app), ["Report", "Our comittee met."]);
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// A launch naming a file opens the file's own record with the file
+/// imported; launched on it again, the record — with the edits made since —
+/// is the document, and another file is another record.
+#[test]
+fn a_file_launch_opens_the_files_own_record() {
+    ui::i18n::I18nManager::init("en-US");
+    let directory = tempfile::tempdir().unwrap();
+    let report = directory.path().join("report.md");
+    std::fs::write(&report, "# Report\n\nOur committee met.\n").unwrap();
+    let report = report.to_string_lossy().into_owned();
+
+    let mut app = TestApp::<WordProcessorApp>::launched(&[&report]).unwrap();
+    assert_eq!(app.record(), &ui::record::RecordId::for_file(&report));
+    assert_eq!(paragraphs(&app), ["Report", "Our committee met."]);
+    app.harness().type_text("Draft: ");
+    let edited = paragraphs(&app);
+    assert_ne!(edited, ["Report", "Our committee met."]);
+
+    let app = app.relaunch(&[&report]).unwrap();
+    assert_eq!(paragraphs(&app), edited, "a reopened file keeps its record");
+
+    let notes = directory.path().join("notes.txt");
+    std::fs::write(&notes, "first line\nsecond line\n").unwrap();
+    let notes = notes.to_string_lossy().into_owned();
+    let app = app.relaunch(&[&notes]).unwrap();
+    assert_eq!(app.record(), &ui::record::RecordId::for_file(&notes));
+    assert_eq!(paragraphs(&app), ["first line", "second line"]);
+}
+
+/// Every screenshot scenario stages the document through actions the
+/// record keeps: the review a collaborator left, a framed image.
+#[test]
+fn scenarios_stage_the_document_through_actions() {
+    ui::i18n::I18nManager::init("en-US");
+    for scenario in <WordProcessorApp as ui::framework::ResourceApp>::scenarios() {
+        let app = TestApp::<WordProcessorApp>::capture(Some(scenario)).unwrap();
+        let document = snapshot(&app);
+        match *scenario {
+            "comments" | "threaded-comments" => {
+                let comment = document.comments.first().expect("a staged comment");
+                assert_eq!(comment.author, "Maya Chen");
+                let replies = if *scenario == "comments" { 0 } else { 2 };
+                assert_eq!(comment.replies.len(), replies, "{scenario}");
+                assert!(
+                    document.blocks[0].text.ends_with(" — reviewed"),
+                    "a tracked insertion: {:?}",
+                    document.blocks[0].text
+                );
+            }
+            "image-object" => {
+                let image = document
+                    .blocks
+                    .iter()
+                    .find(|block| block.kind == "image")
+                    .expect("a staged image");
+                assert_eq!(
+                    image.attrs.get("width"),
+                    Some(&tilo_doc::snapshot::AttrVal::Int(300))
+                );
+            }
+            "find" => assert!(
+                document
+                    .blocks
+                    .iter()
+                    .any(|block| block.text.contains("report")),
+                "the find scenario searches text it has"
+            ),
+            _ => assert_eq!(
+                document
+                    .blocks
+                    .iter()
+                    .map(|block| block.text.as_str())
+                    .collect::<Vec<_>>(),
+                [""]
+            ),
+        }
+    }
+}
+
+/// The words a person added to the dictionary are their own settings: a
+/// window opened later, on any of their devices, knows them.
+#[test]
+fn the_persons_own_words_are_spelled_right_in_every_window() {
+    use word_processor::{PersonalDictionary, WordProcessorWidget};
+    let mut app = open();
+    let flagged =
+        app.with_surface(|editor: &mut WordProcessorWidget| !editor.is_spelled_right("qwordz"));
+    assert_eq!(flagged, Some(true), "an unknown word is flagged");
+    app.settings::<PersonalDictionary>()
+        .set(&PersonalDictionary {
+            dictionary_words: vec!["qwordz".into()],
+        })
+        .unwrap();
+    let mut app = app.reopen().unwrap();
+    let known =
+        app.with_surface(|editor: &mut WordProcessorWidget| editor.is_spelled_right("qwordz"));
+    assert_eq!(known, Some(true), "the person's own word is known");
+}
+
+/// The edits bound to the caret are published on the document itself, and
+/// invoking one there builds it at the caret.
+#[test]
+fn an_edit_bound_to_the_caret_is_invoked_on_the_document() {
+    let mut app = open();
+    app.harness().type_text("Hello");
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("text".into(), " world".into());
+    app.harness()
+        .invoke_action(
+            &tilo_actions::ActionAddress::new("tilo.rich-text", "type-text"),
+            &arguments,
+            true,
+            None,
+        )
+        .unwrap();
+    app.harness().relayout();
+    assert_eq!(paragraphs(&app), ["Hello world"]);
+}
+
+/// Two devices that each open the same file before they have synced create
+/// its record each, and converge on one document: the file's content once,
+/// and what each of them wrote.
+#[test]
+fn two_sessions_creating_one_files_record_converge_on_one_document() {
+    ui::i18n::I18nManager::init("en-US");
+    let directory = tempfile::tempdir().unwrap();
+    let report = directory.path().join("report.md");
+    std::fs::write(&report, "# Report\n\nOur committee met.\n").unwrap();
+    let report = report.to_string_lossy().into_owned();
+
+    let mut here = TestApp::<WordProcessorApp>::launched(&[&report]).unwrap();
+    let mut there = TestApp::<WordProcessorApp>::launched(&[&report]).unwrap();
+    assert_eq!(here.record(), there.record());
+    here.harness().type_text("Here: ");
+    there.harness().key("End");
+    there.harness().type_text(" There.");
+    let mut theirs = there.peer_document();
+    here.merge_peer(&mut theirs).unwrap();
+    let merged = paragraphs(&here);
+    assert_eq!(merged.len(), 2, "the file's paragraphs once: {merged:?}");
+    assert!(merged[0].starts_with("Here: "), "{merged:?}");
+    assert!(merged[0].contains("Report"), "{merged:?}");
+    assert!(merged[0].ends_with(" There."), "{merged:?}");
+}
+
+/// A file changed elsewhere since its record last read or wrote it is read
+/// again when it is opened; one saved from here, or untouched, is not.
+#[test]
+fn reopening_a_file_changed_elsewhere_reads_it_again() {
+    ui::i18n::I18nManager::init("en-US");
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("notes.md");
+    std::fs::write(&path, "First draft\n").unwrap();
+    let file = path.to_string_lossy().into_owned();
+
+    let mut app = TestApp::<WordProcessorApp>::launched(&[&file]).unwrap();
+    app.harness().type_text("Edited: ");
+    let app = app.relaunch(&[&file]).unwrap();
+    assert_eq!(
+        paragraphs(&app),
+        ["Edited: First draft"],
+        "an unchanged file leaves the record as it is"
+    );
+
+    std::fs::write(&path, "Rewritten elsewhere\n").unwrap();
+    let mut app = app.relaunch(&[&file]).unwrap();
+    assert_eq!(paragraphs(&app), ["Rewritten elsewhere"]);
+    assert!(
+        app.undo(),
+        "reading the file again is an edit Undo takes back"
+    );
+    assert_eq!(paragraphs(&app), ["Edited: First draft"]);
+}
+
+/// Saving the document to its own file records what the file now holds, so
+/// opening it again reads nothing back in.
+#[test]
+fn a_file_saved_here_is_not_read_again() {
+    ui::i18n::I18nManager::init("en-US");
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("notes.md");
+    std::fs::write(&path, "First draft\n").unwrap();
+    let file = path.to_string_lossy().into_owned();
+
+    let mut app = TestApp::<WordProcessorApp>::launched(&[&file]).unwrap();
+    app.harness().type_text("Edited: ");
+    app.effect_confirmed(&word_processor::effects::WordProcessorEffect::Save { path: None })
+        .unwrap();
+    for _ in 0..5 {
+        app.harness().relayout();
+    }
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap().trim(),
+        "Edited: First draft"
+    );
+    let versions = app.versions().len();
+    let app = app.relaunch(&[&file]).unwrap();
+    assert_eq!(paragraphs(&app), ["Edited: First draft"]);
+    assert_eq!(app.versions().len(), versions, "nothing was read back in");
+}
+
+/// The panels a person opens follow them to their next window, and the
+/// language their shared spelling preferences name is the one words are
+/// checked in.
+#[test]
+fn layout_and_spelling_language_follow_the_person() {
+    use word_processor::effects::WordProcessorEffect;
+    use word_processor::{WordProcessorWidget, WriterLayout};
+    let mut app = open();
+    let shown = app.with_surface(|editor: &mut WordProcessorWidget| editor.panels_shown());
+    assert_eq!(shown, Some((true, false, false)), "the default layout");
+    app.effect(&WordProcessorEffect::Styles).unwrap();
+    app.effect(&WordProcessorEffect::Ruler).unwrap();
+    app.harness().relayout();
+    assert_eq!(
+        app.settings::<WriterLayout>().get(),
+        WriterLayout {
+            show_ruler: false,
+            show_styles_panel: true,
+            show_outline: false,
+        },
+        "the layout is kept with the person's settings"
+    );
+
+    app.settings::<ui::text_assistance::TextAssistancePrefs>()
+        .update(|prefs| prefs.spelling_language = "de_DE".into())
+        .unwrap();
+    let mut app = app.reopen().unwrap();
+    let shown = app.with_surface(|editor: &mut WordProcessorWidget| editor.panels_shown());
+    assert_eq!(
+        shown,
+        Some((false, true, false)),
+        "a new window opens as left"
+    );
+    let language =
+        app.with_surface(|editor: &mut WordProcessorWidget| editor.spell_language().to_owned());
+    assert_eq!(language.as_deref(), Some("de_DE"));
 }

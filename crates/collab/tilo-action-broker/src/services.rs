@@ -2,6 +2,9 @@
 use std::sync::Arc;
 use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceTaskStatus};
 
+/// The normal desktop opening deadline, shared with placement retirement.
+pub const APPLICATION_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 pub use crate::collab_broker_capnp::{
     DocumentBytes, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
     NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices,
@@ -130,6 +133,44 @@ pub struct LaunchContent<'a> {
     pub author: Option<&'a str>,
 }
 
+/// One admitted launch's actual startup observation. Dropping an unanswered
+/// observation retires its host-side subscription; enqueueing a worker is
+/// never sufficient to produce this receipt.
+pub struct LaunchReadiness {
+    receiver: tokio::sync::oneshot::Receiver<Result<(), String>>,
+    retire: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl LaunchReadiness {
+    pub fn new(
+        receiver: tokio::sync::oneshot::Receiver<Result<(), String>>,
+        retire: impl FnOnce() + Send + 'static,
+    ) -> Self {
+        Self {
+            receiver,
+            retire: Some(Box::new(retire)),
+        }
+    }
+
+    /// Wait for an adopted window or a terminal startup failure.
+    ///
+    /// # Errors
+    /// Returns the launcher failure, or that its observer disappeared.
+    pub async fn wait(mut self) -> Result<(), String> {
+        (&mut self.receiver)
+            .await
+            .map_err(|_| "the application startup observer stopped".to_string())?
+    }
+}
+
+impl Drop for LaunchReadiness {
+    fn drop(&mut self) {
+        if let Some(retire) = self.retire.take() {
+            retire();
+        }
+    }
+}
+
 pub trait LauncherServices: Send + Sync {
     fn applications(&self) -> Vec<LaunchableApplication>;
     /// Launches `app` into `workspace`.
@@ -138,6 +179,22 @@ pub trait LauncherServices: Send + Sync {
     ///
     /// Returns a message when the host cannot launch the application.
     fn launch(&self, app: &str, workspace: &Workspace) -> Result<(), String>;
+    /// Launch an exact installed package, or an ordinary host application,
+    /// and observe its real startup in the authenticated workspace.
+    ///
+    /// # Errors
+    /// Refuses when this host cannot provide startup observations. An empty
+    /// package root selects the ordinary installed application identity.
+    fn begin_launch(
+        &self,
+        app: &str,
+        package_root: Option<&str>,
+        workspace: &Workspace,
+        author: Option<&str>,
+    ) -> Result<LaunchReadiness, String> {
+        let _ = (app, package_root, workspace, author);
+        Err("observed application startup is unavailable on this host".into())
+    }
     /// Launch `app` into `workspace`, opening the content-addressed bytes
     /// `content` names read-only, read through the calling application's own
     /// scope. An empty hash is a plain launch. A host that cannot stage
@@ -159,6 +216,13 @@ pub trait LauncherServices: Send + Sync {
         }
     }
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool;
+    /// An action invocation reached `app` in `room`. A person, an agent or
+    /// another device drives an app through its actions as much as through
+    /// keys and clicks, so a window the app closes after one was closed on
+    /// request, not lost.
+    fn note_acted_on(&self, app: &str, room: &str) {
+        let _ = (app, room);
+    }
     /// Whether [`Self::close`] can close applications on this host.
     fn closes_applications(&self) -> bool {
         false
@@ -533,6 +597,13 @@ pub struct HostServices {
     pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
     pub realtime: Option<Arc<dyn RealtimeServices>>,
     pub speakers: Option<Arc<dyn SpeakerServices>>,
+    /// The session's settings, of which each app reaches its own entries
+    /// and the shared sections (`settings_store::app_scope`). Without it
+    /// apps have no settings beyond their own process.
+    pub settings: Option<Arc<dyn settings_store::SettingsSource>>,
+    /// Every app's live activity, as the host presents it. Without it no
+    /// app shows anything outside its windows.
+    pub live_activities: Option<Arc<runtime_collab::LiveActivities>>,
     pub wifi_continuity: Option<Arc<dyn WifiContinuityServices>>,
     pub nearby_transfer: Option<Arc<dyn NearbyTransferServices>>,
     /// What each application declared it may do on the action door under
@@ -545,4 +616,8 @@ pub struct HostServices {
     /// Where the launchable action catalogue survives a restart. Without it
     /// closed apps' actions are retained for this broker's lifetime only.
     pub launchable_catalogue: Option<std::path::PathBuf>,
+    /// Content records reference, kept on this device and asked of each
+    /// record's route (`offerBlob`, `wantBlob`, `subscribeBlobs`). Without
+    /// it apps' content stays in their own process.
+    pub record_content: Option<Arc<crate::record_content::RouteContent>>,
 }

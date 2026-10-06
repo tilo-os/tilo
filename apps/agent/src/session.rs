@@ -7,8 +7,7 @@ use ui::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use tilo_actions::remote::RemoteActionMessage;
 use ui::collaboration::{
-    CertifiedEndpointIdentity, CollabEvent, CollabRequest, DocumentMutation, PresencePayload,
-    RouteSpec,
+    CertifiedEndpointIdentity, CollabEvent, CollabRequest, PresencePayload, RouteSpec,
 };
 use ui::permissions::PermissionContext;
 use ui::presence::{PathSegment, PresenceKey};
@@ -19,7 +18,7 @@ use crate::apply::Editor;
 use crate::model::{Chooser, Route};
 use crate::plan::{self, Block, ConfirmationEvidence, Instruction, Plan};
 use crate::providers::default_selection;
-use crate::surface::{self, AppContract, View};
+use crate::surface::{self, AppContract};
 use crate::wire::Link;
 
 mod agent_loop;
@@ -65,10 +64,6 @@ struct TaskAction {
 struct StepOutcome {
     /// The application-declared result returned by the broker.
     output: tilo_actions::ActionOutput,
-    /// A local document's app-derived product. Local document actions predate
-    /// `ActionOutput`; this preserves their existing honest hand-off without
-    /// pretending the model or the generic action door produced it.
-    product: Option<surface::Product>,
 }
 
 impl StepOutcome {
@@ -83,26 +78,17 @@ impl StepOutcome {
         Ok(Self {
             output: serde_json::from_value(output.clone())
                 .map_err(|_| "the committed step output is not valid".to_string())?,
-            product: None,
         })
     }
 
     fn content_hash(&self) -> Result<&str, String> {
         match self.output.resources.as_slice() {
-            [] => {}
-            [resource] => {
-                return tilo_actions::content_hash(resource).ok_or_else(|| {
-                    "the previous action produced a resource that is not tilo.content".into()
-                });
-            }
-            _ => {
-                return Err("the previous action must produce exactly one content resource".into());
-            }
+            [] => Err("the previous action produced no content resource".into()),
+            [resource] => tilo_actions::content_hash(resource).ok_or_else(|| {
+                "the previous action produced a resource that is not tilo.content".into()
+            }),
+            _ => Err("the previous action must produce exactly one content resource".into()),
         }
-        if let Some(surface::Product::Content { hash }) = &self.product {
-            return Ok(hash);
-        }
-        Err("the previous action produced no content resource".into())
     }
 }
 
@@ -382,9 +368,6 @@ pub struct Config {
     /// person is actively typing into, where every keystroke would else
     /// race the agent's own read.
     pub settle: Duration,
-    /// The directory the agent is browsing, for an app whose subject is
-    /// the filesystem rather than a document.
-    pub directory: Option<PathBuf>,
     /// What the agent may enumerate and perform. A denied operation is
     /// absent from what it discovers, never merely refused — see
     /// [`crate::surface::offers`].
@@ -1370,10 +1353,9 @@ impl Session {
             self.publish_task_interaction(run, action, &update, interaction_sequence)?;
         }
         match update {
-            tilo_actions::InvocationUpdate::Succeeded { output, .. } => Ok(Ok(StepOutcome {
-                output,
-                product: None,
-            })),
+            tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
+                Ok(Ok(StepOutcome { output }))
+            }
             tilo_actions::InvocationUpdate::Cancelled { message, .. } => {
                 Ok(Err(TaskActionStop::Cancelled(message)))
             }
@@ -1563,18 +1545,7 @@ impl Session {
                     self.set_broker_surfaces(surfaces);
                 }
                 Some(event @ CollabEvent::Document { .. }) => {
-                    match event
-                        .document_mutation()
-                        .transpose()?
-                        .ok_or_else(|| anyhow::anyhow!("document event lost its mutation"))?
-                    {
-                        DocumentMutation::Snapshot(data) => {
-                            let _ = self.absorb_snapshot(&data)?;
-                        }
-                        DocumentMutation::Incremental(data) => {
-                            let _ = self.merge_incremental_anywhere(&data)?;
-                        }
-                    }
+                    let _ = self.absorb_document_event(&event)?;
                 }
                 Some(event) => deferred.push(event),
             }
@@ -1708,19 +1679,39 @@ impl Session {
     /// something.
     ///
     /// Returns whether the agent's replica moved.
-    fn absorb_snapshot(&mut self, data: &[u8]) -> Result<bool> {
+    fn absorb_snapshot(&mut self, artifact: collab_types::ArtifactId, data: &[u8]) -> Result<bool> {
+        let cluster = self.cfg.cluster.to_string();
+        let primary = surface::for_app_id(&self.cfg.app_id);
+        let on_primary_route = artifact
+            == collab_types::document_artifact_id(
+                &self.cfg.app_id,
+                &cluster,
+                self.cfg.record.as_deref().unwrap_or_default(),
+            );
         let Some(ed) = self.editor.as_mut() else {
-            if !crate::apply::looks_like_a_document(data) {
+            let Some(contract) = primary else {
+                return self.absorb_peer(artifact, data);
+            };
+            // Without a record, the page is whichever document arrives
+            // first; with one, the route settles it.
+            let ours = on_primary_route
+                || (self.cfg.record.is_none() && Editor::looks_like_a_document(data));
+            if !ours {
                 // Not a page this agent authors into — but it may still be
                 // another application's room state, which belongs in
                 // `peers` rather than being dropped outright.
-                return self.absorb_peer(data);
+                return self.absorb_peer(artifact, data);
             }
-            self.editor = Some(Editor::from_snapshot(data, &self.cfg.agent_id)?);
+            self.editor = Some(Editor::from_snapshot(
+                contract,
+                data,
+                &self.cfg.agent_id,
+                self.cfg.permissions.clone(),
+            )?);
             tracing::info!(bytes = data.len(), "received the document");
             return Ok(true);
         };
-        if ed.merge_full(data)? {
+        if ed.merge_full(data) {
             return Ok(true);
         }
         // It did not merge, so it is not this document. Worth having only
@@ -1741,25 +1732,32 @@ impl Session {
         // the room holds more than the document we were invited to, and an
         // instruction may name an operation that belongs to whatever else
         // is here.
-        self.absorb_peer(data)
+        self.absorb_peer(artifact, data)
     }
 
     /// Take a peer's whole-document frame as a *second* application's
     /// state — one this session was not invited to, but whose operations
     /// [`Self::offers`] can still discover and [`Self::perform`] can still
-    /// dispatch, once its own contract recognises it.
-    fn absorb_peer(&mut self, data: &[u8]) -> Result<bool> {
-        let Some(contract) = crate::apply::attribute(data) else {
+    /// dispatch. Which app it is comes from the authenticated route it
+    /// arrived on.
+    fn absorb_peer(&mut self, artifact: collab_types::ArtifactId, data: &[u8]) -> Result<bool> {
+        let Some(contract) = surface::for_artifact(&self.cfg.cluster.to_string(), artifact) else {
             tracing::debug!(
                 bytes = data.len(),
-                "ignored a peer's state: no app here claims it"
+                "ignored a peer's state: no app the agent speaks to wrote it"
             );
             return Ok(false);
         };
         if let Some(peer) = self.peers.get_mut(contract.namespace) {
-            return peer.merge_full_any(data);
+            return Ok(peer.merge_full(data));
         }
-        let peer = Editor::peer_from_snapshot(contract, data, &self.cfg.agent_id)?;
+        let peer = Editor::peer_from_snapshot_on_route(
+            contract,
+            contract.app_id(),
+            data,
+            &self.cfg.agent_id,
+            self.cfg.permissions.clone(),
+        )?;
         tracing::info!(
             app = contract.namespace,
             bytes = data.len(),
@@ -1769,33 +1767,15 @@ impl Session {
         Ok(true)
     }
 
-    /// Apply a peer's incremental change to whichever replica it belongs
-    /// to — the primary document first, since that is the common case,
-    /// then each held peer. A delta belonging to a document this session
-    /// holds neither of is silently not this agent's business.
-    fn merge_incremental_anywhere(&mut self, data: &[u8]) -> Result<bool> {
-        if let Some(ed) = self.editor.as_mut()
-            && ed.merge_incremental(data)?
-        {
-            return Ok(true);
-        }
-        for peer in self.peers.values_mut() {
-            if peer.merge_incremental(data)? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
     /// Every document this session holds, primary first, as the pairs
     /// [`surface::offers`] and [`surface::facts`] are built from.
     fn held(&self) -> Vec<(&'static AppContract, &automerge::AutoCommit)> {
         let mut out = Vec::new();
         if let Some(ed) = self.editor.as_ref() {
-            out.push((ed.contract(), &ed.doc));
+            out.push((ed.contract(), ed.doc()));
         }
         for peer in self.peers.values() {
-            out.push((peer.contract(), &peer.doc));
+            out.push((peer.contract(), peer.doc()));
         }
         out
     }
@@ -1808,7 +1788,6 @@ impl Session {
     fn offers(
         &self,
         held: &[(&'static AppContract, &automerge::AutoCommit)],
-        view: &View,
     ) -> Vec<surface::Offer> {
         if is_chat_app_id(&self.cfg.app_id) {
             // Canonical Chat acts only through package-primary routes in its
@@ -1828,14 +1807,20 @@ impl Session {
         }
         let mut offers =
             Self::document_broker_offers(&self.broker_catalogue, &self.cfg.permissions);
-        for local in surface::offers(held, view, &self.cfg.permissions) {
-            if !offers
-                .iter()
-                .any(|broker| broker.address() == local.address())
-            {
-                offers.push(local);
-            }
-        }
+        // An app's own live publication is the whole of what it offers:
+        // beside its document's tree it carries what only its window knows
+        // (an edit at the caret). The tree read off the held replica stands
+        // in only for an app whose publication has not arrived yet.
+        let live: HashSet<String> = offers.iter().map(|offer| offer.app.clone()).collect();
+        let mut local = surface::offers(held, &offers, &self.cfg.permissions);
+        local.retain(|offer| {
+            surface::for_namespace(&offer.app)
+                .is_none_or(|contract| !live.contains(contract.app_id()))
+                && !offers
+                    .iter()
+                    .any(|broker| broker.address() == offer.address())
+        });
+        offers.extend(local);
         offers
     }
 
@@ -1850,24 +1835,10 @@ impl Session {
     ) -> Vec<surface::Offer> {
         surface::broker_offers(catalogue)
             .into_iter()
-            .filter(|offer| surface::permitted_descriptor(permissions, &offer.descriptor))
+            .filter(|offer| {
+                surface::permitted_descriptor(permissions, &offer.app, &offer.descriptor)
+            })
             .collect()
-    }
-
-    /// Where the agent is looking: `focus` on a document, and the
-    /// directory it was configured to browse, when it has one.
-    fn view(&self, focus: Option<String>) -> View {
-        View {
-            focus_block: focus.clone(),
-            focus_offset: 0,
-            target_blocks: focus.into_iter().collect(),
-            format_spans: Vec::new(),
-            selection: None,
-            region: word_processor::actions::RegionKind::Body,
-            subject: None,
-            directory: self.cfg.directory.clone(),
-            content: self.cfg.content.clone(),
-        }
     }
 
     /// Perform the discovered operation `id` names, through the broker, as
@@ -1957,12 +1928,21 @@ impl Session {
         Ok(found)
     }
 
-    /// Fetch the catalogue unless the one held is fresh.
+    /// Fetch the catalogue unless the one held is fresh and already names
+    /// every app whose document the agent holds: an app publishes its
+    /// actions before its document reaches the agent, so a document from an
+    /// app the catalogue does not name means the catalogue is older than it.
     fn refresh_stale_catalogue(&mut self) -> Result<()> {
-        if self
+        let fresh = self
             .catalogue_fetched
-            .is_some_and(|at| at.elapsed() < CATALOGUE_FRESH_FOR)
-        {
+            .is_some_and(|at| at.elapsed() < CATALOGUE_FRESH_FOR);
+        let names_every_held_app = self.held().iter().all(|(contract, _)| {
+            self.broker_catalogue
+                .rows
+                .iter()
+                .any(|row| row.app_id == contract.app_id())
+        });
+        if fresh && names_every_held_app {
             return Ok(());
         }
         self.refresh_catalogue()
@@ -2151,6 +2131,7 @@ impl Session {
         let invocation = tilo_actions::InvocationId::new();
         self.link.send(&CollabRequest::RemoteAction {
             message: RemoteActionMessage::Invoke(tilo_actions::remote::InvokeRequest {
+                on_behalf_of: None,
                 invocation,
                 target: tilo_actions::remote::RemoteActionTarget {
                     provider,
@@ -2236,10 +2217,7 @@ impl Session {
             tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
                 tracing::info!(%id, invocation = %invocation.0, ?output, "broker action completed");
                 std::thread::sleep(self.cfg.pace);
-                Ok(Ok(StepOutcome {
-                    output,
-                    product: None,
-                }))
+                Ok(Ok(StepOutcome { output }))
             }
             _ => Ok(Err(format!(
                 "action {} was admitted but did not reach a terminal state in time",
@@ -2344,11 +2322,12 @@ impl Session {
     fn instruction_issuer(&mut self) -> Option<String> {
         let editor = self.editor.as_mut()?;
         let mine = editor.actor_hex();
-        tilo_resource::history::versions(&mut editor.doc)
+        editor
+            .versions()
             .into_iter()
             .rev()
             .find(|version| {
-                !qdoc::model::is_schema_genesis(version)
+                !tilo_doc::model::is_schema_genesis(version)
                     && !version.actor.eq_ignore_ascii_case(&mine)
             })
             .map(|version| version.actor)
@@ -2394,23 +2373,13 @@ impl Session {
         if run.steps.is_empty() {
             return Ok(());
         }
-        let by = editor.actor_hex();
-        if ui::record_run_with_details(
-            &mut editor.doc,
+        if let Some(data) = editor.record_run(
             &run.instruction,
-            Some(&by),
             run.issued_by.as_deref(),
-            Some(&run.instruction),
             Some(&run.decision),
             &run.steps,
-        )
-        .is_some()
-        {
-            tilo_resource::history::commit_stamped(&mut editor.doc);
-            let data = editor.doc.save_incremental();
-            if !data.is_empty() {
-                self.link.send(&CollabRequest::document_incremental(data))?;
-            }
+        ) {
+            self.link.send(&CollabRequest::document_incremental(data))?;
         }
         for editor in self.peers.values_mut() {
             editor.set_history_context(None);
@@ -2454,10 +2423,9 @@ impl Session {
     /// those, only in the single catalogue request that never needed it.
     fn decide(&mut self, ins_id: &str, asked: &str, blocks: &[Block]) -> Plan {
         let held = self.held();
-        let view = self.view(Some(ins_id.to_string()));
         let catalogue = surface::Catalogue {
-            offers: self.offers(&held, &view),
-            facts: surface::facts(&held, &view),
+            offers: self.offers(&held),
+            facts: surface::facts(&held),
             held: held
                 .iter()
                 .map(|(contract, _)| contract.namespace)
@@ -2664,7 +2632,8 @@ impl Session {
     fn edit(&mut self, focus: &str, action: &RichTextAction) -> Result<()> {
         let before = self.editor.as_mut().and_then(Editor::latest_entry_id);
         let invocation = tilo_actions::InvocationId::new();
-        let resource_id = "word-processor.document".to_string();
+        let resource_id =
+            <word_processor::framework::Document as ui::tilo_resource::Resource>::KIND.to_string();
         let agent_id = self.cfg.agent_id.clone();
         let app_id = self.cfg.app_id.clone();
         let resource_label = self
@@ -2692,14 +2661,13 @@ impl Session {
             },
             resource: tilo_actions::ActionResource {
                 id: resource_id.clone(),
-                kind: "word-processor.document".into(),
+                kind: resource_id.clone(),
                 label: resource_label.clone(),
             },
             anchor: word_action_anchor(action, focus),
             group: group.clone(),
         };
-        let interaction_key =
-            PresenceKey::resource(&self.cfg.app_id, &resource_id, "word-processor.document");
+        let interaction_key = PresenceKey::resource(&self.cfg.app_id, &resource_id, &resource_id);
         let _ = self.link.send(&CollabRequest::Presence {
             key: interaction_key.clone(),
             payload: PresencePayload::Interaction(Box::new(semantic(
@@ -2722,11 +2690,9 @@ impl Session {
             key: block_key(focus),
             payload: PresencePayload::Caret { pos: caret_pos },
         })?;
-        let delta = self
-            .editor
-            .as_mut()
-            .context("no document yet")?
-            .apply(action)?;
+        let editor = self.editor.as_mut().context("no document yet")?;
+        let delta =
+            editor.apply::<word_processor::framework::Document>(std::slice::from_ref(action))?;
         if let Some(data) = delta {
             self.link.send(&CollabRequest::document_incremental(data))?;
             if let RichTextAction::SpliceText { at, ins, .. } = action
@@ -2844,28 +2810,34 @@ fn word_action_anchor(action: &RichTextAction, _focus: &str) -> tilo_actions::In
             end,
             ..
         } => selection_text_anchor(start_block, *start, end_block, *end),
-        RichTextAction::SetMark { spans, .. } => tilo_actions::InteractionAnchor::Text {
-            region: "document".into(),
-            ranges: spans
-                .iter()
-                .map(|span| tilo_actions::InteractionTextRange {
-                    block: span.block.clone(),
-                    start: u64::try_from(span.start).unwrap_or(u64::MAX),
-                    end: u64::try_from(span.end).unwrap_or(u64::MAX),
-                })
-                .collect(),
-        },
+        RichTextAction::SetMark { spans, .. } | RichTextAction::ReplaceMatches { spans, .. } => {
+            tilo_actions::InteractionAnchor::Text {
+                region: "document".into(),
+                ranges: spans
+                    .iter()
+                    .map(|span| tilo_actions::InteractionTextRange {
+                        block: span.block.clone(),
+                        start: u64::try_from(span.start).unwrap_or(u64::MAX),
+                        end: u64::try_from(span.end).unwrap_or(u64::MAX),
+                    })
+                    .collect(),
+            }
+        }
         RichTextAction::SetParagraphStyle { blocks, .. }
         | RichTextAction::ApplyNamedStyle { blocks, .. }
         | RichTextAction::SetBlockAttr { blocks, .. }
         | RichTextAction::ClearBlockAttr { blocks, .. }
         | RichTextAction::RemoveBlocks { blocks }
+        | RichTextAction::RemoveRegionBlocks { blocks, .. }
         | RichTextAction::MoveBlocks { blocks, .. } => tilo_actions::InteractionAnchor::Objects {
             ids: blocks.clone(),
         },
         RichTextAction::SetPageMargins { .. }
         | RichTextAction::GenerateToc { .. }
-        | RichTextAction::ReplaceBody { .. } => tilo_actions::InteractionAnchor::Resource,
+        | RichTextAction::ReplaceBody { .. }
+        | RichTextAction::ReplaceFormatted { .. }
+        | RichTextAction::NoteFileWritten { .. }
+        | RichTextAction::EnsureRegionBlock { .. } => tilo_actions::InteractionAnchor::Resource,
         RichTextAction::SetStyleProperty { style, .. }
         | RichTextAction::DeleteStyle { style, .. } => object_anchor(style),
         RichTextAction::EditTable { table, .. } => object_anchor(table),
@@ -2889,6 +2861,9 @@ fn word_action_anchor(action: &RichTextAction, _focus: &str) -> tilo_actions::In
         RichTextAction::ResolveComment { id } => tilo_actions::InteractionAnchor::Objects {
             ids: vec![id.clone()],
         },
+        RichTextAction::TrackInsert {
+            block, at, text, ..
+        } => comment_text_anchor(block, *at, at.saturating_add(text.chars().count())),
         RichTextAction::AddComment {
             block, start, end, ..
         } => comment_text_anchor(block, *start, *end),
@@ -3044,6 +3019,44 @@ mod handoff_test_peer;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replace_matches_anchors_every_original_character_range() {
+        let action = RichTextAction::ReplaceMatches {
+            region: word_processor::actions::RegionKind::Body,
+            spans: vec![
+                word_processor::actions::Span {
+                    block: "first".into(),
+                    start: 3,
+                    end: 8,
+                },
+                word_processor::actions::Span {
+                    block: "second".into(),
+                    start: 7,
+                    end: 12,
+                },
+            ],
+            ins: "β😀".into(),
+        };
+        assert_eq!(
+            word_action_anchor(&action, "unrelated-focus"),
+            tilo_actions::InteractionAnchor::Text {
+                region: "document".into(),
+                ranges: vec![
+                    tilo_actions::InteractionTextRange {
+                        block: "first".into(),
+                        start: 3,
+                        end: 8
+                    },
+                    tilo_actions::InteractionTextRange {
+                        block: "second".into(),
+                        start: 7,
+                        end: 12
+                    },
+                ],
+            }
+        );
+    }
 
     #[test]
     fn word_actions_anchor_the_exact_document_objects_they_change() {
@@ -3280,7 +3293,6 @@ mod tests {
                         model_timeout: Duration::ZERO,
                         await_document: Duration::ZERO,
                         settle: Duration::ZERO,
-                        directory: None,
                         permissions: PermissionContext::from_capabilities(
                             ui::permissions::Actor::agent("agent-1"),
                             vec![],
@@ -3534,7 +3546,6 @@ mod tests {
                     model_timeout: Duration::ZERO,
                     await_document: Duration::ZERO,
                     settle: Duration::ZERO,
-                    directory: None,
                     permissions: PermissionContext::from_capabilities(
                         ui::permissions::Actor::agent("agent-1"),
                         vec![],
@@ -3895,12 +3906,7 @@ mod tests {
                         .expect("the producer returned a valid content hash"),
                 ],
             };
-            let previous = StepOutcome {
-                output,
-                product: Some(surface::Product::Content {
-                    hash: "legacy-derived-product".into(),
-                }),
-            };
+            let previous = StepOutcome { output };
             let planned = serde_json::Map::from_iter([(
                 tilo_actions::PROMPTED_PARAM.to_string(),
                 serde_json::Value::String("model-invented".into()),
@@ -3911,7 +3917,7 @@ mod tests {
             assert_eq!(
                 bound.get(tilo_actions::PROMPTED_PARAM),
                 Some(&serde_json::Value::String("abc123".into())),
-                "the preceding app result must replace model input and its legacy product fallback"
+                "the preceding app result must replace model input"
             );
             assert!(
                 arguments_for_step(true, &planned, None).is_err(),
@@ -3926,7 +3932,6 @@ mod tests {
                     value: None,
                     resources: vec!["tilo.content:first".into(), "tilo.content:second".into()],
                 },
-                product: None,
             };
             assert!(
                 arguments_for_step(true, &serde_json::Map::new(), Some(&ambiguous)).is_err(),
@@ -3938,7 +3943,6 @@ mod tests {
                     value: None,
                     resources: vec!["files.entry:/tmp/picture.png".into()],
                 },
-                product: None,
             };
             assert!(
                 arguments_for_step(true, &serde_json::Map::new(), Some(&wrong_kind)).is_err(),
@@ -3946,19 +3950,12 @@ mod tests {
             );
         }
 
-        // Case `a_local_apps_declared_product_can_feed_the_next_content_step`.
+        // Case `an_empty_result_feeds_no_content_step`.
         {
-            let previous = StepOutcome {
-                output: tilo_actions::ActionOutput::default(),
-                product: Some(surface::Product::Content {
-                    hash: "rendered-photo".into(),
-                }),
-            };
-            let bound = arguments_for_step(true, &serde_json::Map::new(), Some(&previous))
-                .expect("the app, not the agent, declared the local document's product");
-            assert_eq!(
-                bound.get(tilo_actions::PROMPTED_PARAM),
-                Some(&serde_json::Value::String("rendered-photo".into()))
+            let previous = StepOutcome::default();
+            assert!(
+                arguments_for_step(true, &serde_json::Map::new(), Some(&previous)).is_err(),
+                "a step that produced nothing cannot feed a content input"
             );
         }
 
@@ -4056,7 +4053,7 @@ mod tests {
             Arc, Mutex,
             atomic::{AtomicBool, Ordering},
         };
-        use tilo_actions::{ActionOutput, ResourceProvider, ResultSpec};
+        use tilo_actions::{ActionOutput, ResultSpec};
         use tilo_content::ContentStore;
 
         const PHOTOS: &str = "so.tilo.photos";
@@ -4106,7 +4103,7 @@ mod tests {
             caret: &str,
             content: &ContentStore,
         ) -> Vec<tilo_actions::Resource> {
-            wp::provide_resources(
+            wp::published_for(
                 &wp::WpResourceCtx {
                     caret_block: caret.into(),
                     caret_offset: 0,
@@ -4168,17 +4165,22 @@ mod tests {
                 &[(PHOTOS, PRODUCE), (PHOTOS, "view"), (WRITER, "place-image")],
             );
             let mut photo = automerge::AutoCommit::new();
-            photos::doc::PhotosDoc::seed(&mut photo);
             let source = photos::pixels::encode_png(&photos::shots_pattern(3, 2)).unwrap();
             let source_hash = content.put(&source).unwrap();
-            let open = photos::OpenImage::from_path("held.png", 3, 2).with_content(source_hash);
-            photos::doc::PhotosDoc::set_image(&mut photo, Some(&open));
-            let image_id = photos::actions::resource_id(&open);
+            let held = photos::model::LibraryPhoto::from_image(
+                photos::OpenImage::from_path("held.png", 3, 2).with_content(source_hash),
+            );
+            let image_id = held.id.clone();
+            tilo_actions::Action::apply(
+                &photos::actions::PhotosAction::ImportPhoto { photo: held },
+                &mut photo,
+            )
+            .unwrap();
             let mut document = automerge::AutoCommit::new();
-            let model = qdoc::model::init(&mut document, &automerge::ROOT);
-            let mut ids = qdoc::model::seeded_id_gen(&document, &model);
+            let model = tilo_doc::model::init(&mut document, &automerge::ROOT);
+            let mut ids = tilo_doc::model::seeded_id_gen(&document, &model);
             let instruction_id = {
-                let mut edit = qdoc::DocMut {
+                let mut edit = tilo_doc::DocMut {
                     doc: &mut document,
                     c: &model,
                     ids: &mut ids,
@@ -4201,12 +4203,18 @@ mod tests {
                 let content = content.clone();
                 let mut replica = document.clone();
                 let caret = instruction_id.clone();
+                let open_image = image_id.clone();
                 threads.push(std::thread::spawn(move || {
                     // Each typed manager is constructed and used on its owner thread.
                     let mut client = if is_photo {
                         let mut client = connect_peer(&worker_socket, PHOTOS, "photos", None);
-                        let mut photo_resources =
-                            photos::actions::PhotosResources.resources(&photo);
+                        // The open photograph, as Photos publishes it.
+                        let mut photo_resources: Vec<_> =
+                            surface::tree(surface::for_app_id(PHOTOS).unwrap(), &photo)
+                                .into_iter()
+                                .flat_map(|library| library.children)
+                                .filter(|child| child.id.as_str() == open_image)
+                                .collect();
                         for resource in &mut photo_resources {
                             resource.children.clear();
                             resource
@@ -4299,7 +4307,7 @@ mod tests {
             }
             let permissions = PermissionContext::from_capabilities(
                 ui::permissions::Actor::agent("Scribe"),
-                ["photos", "word-processor"]
+                [PHOTOS, WRITER]
                     .into_iter()
                     .map(|app| {
                         ui::permissions::CapOverride::grant(
@@ -4324,20 +4332,29 @@ mod tests {
                 model_timeout: Duration::from_millis(1),
                 await_document: Duration::from_secs(5),
                 settle: Duration::ZERO,
-                directory: None,
                 permissions,
                 content: content.clone(),
             })
             .unwrap();
-            session.editor = Some(Editor::from_snapshot(&document.save(), "Scribe").unwrap());
+            session.editor = Some(
+                Editor::from_snapshot(
+                    surface::for_app_id(WRITER).unwrap(),
+                    &document.save(),
+                    "Scribe",
+                    session.cfg.permissions.clone(),
+                )
+                .unwrap(),
+            );
             // A usable held photo is essential: it exposes the forbidden
             // broker-result fallback that empty-replica tests would miss.
             session.peers.insert(
                 "photos",
-                Editor::peer_from_snapshot(
+                Editor::peer_from_snapshot_on_route(
                     surface::for_app_id(PHOTOS).unwrap(),
+                    PHOTOS,
                     &photo.save(),
                     "Scribe",
+                    session.cfg.permissions.clone(),
                 )
                 .unwrap(),
             );
@@ -4418,12 +4435,14 @@ mod tests {
                     .iter()
                     .filter(|block| block.kind == "image")
                     .filter_map(|block| match block.attrs.get("blob") {
-                        Some(qdoc::AttrVal::Str(hash)) => Some(hash.clone()),
+                        Some(tilo_doc::AttrVal::Str(hash)) => Some(hash.clone()),
                         _ => None,
                     })
                     .collect(),
-                rotation: photos::doc::PhotosDoc::edits(&session.peers["photos"].doc)
-                    .rotate_quarters,
+                rotation: photos::doc::PhotosDoc::library(session.peers["photos"].doc())
+                    .photos
+                    .first()
+                    .map_or(0, |photo| photo.edits.rotate_quarters),
             }
         }
 

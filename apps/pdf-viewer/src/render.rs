@@ -352,11 +352,24 @@ fn draw_page_raster_image(scene: &mut Scene, base: Affine, card: Rect, img: &Pen
 }
 
 /// Stroke a page card's outline. Shared by the raster and vector-text paths.
-fn draw_page_border(scene: &mut Scene, base: Affine, card_rr: &RoundedRect) {
+///
+/// The paper itself is document content (always white); the edge that seats
+/// it on the desk is chrome, so it is measured from the theme against that
+/// paper. High contrast steps a white `border_standard` out until the card
+/// still reads as a card.
+fn page_card_edge(theme: &Theme) -> Color {
+    theme.tokens.colors.ink_on(
+        paper(theme),
+        theme.tokens.colors.border_standard,
+        ui::tokens::NON_TEXT_MIN_CONTRAST,
+    )
+}
+
+fn draw_page_border(scene: &mut Scene, theme: &Theme, base: Affine, card_rr: &RoundedRect) {
     scene.stroke(
         &Stroke::new(1.0),
         base,
-        Color::from_rgb8(203, 213, 225),
+        page_card_edge(theme),
         None,
         card_rr,
     );
@@ -553,7 +566,7 @@ pub fn draw_page(
         }
         draw_page_markup(ctx, page, frame, markup);
         ctx.scene.pop_layer();
-        draw_page_border(ctx.scene, base, &card_rr);
+        draw_page_border(ctx.scene, ctx.theme, base, &card_rr);
         return;
     }
 
@@ -561,7 +574,7 @@ pub fn draw_page(
     draw_page_markup(ctx, page, frame, markup);
 
     ctx.scene.pop_layer();
-    draw_page_border(ctx.scene, base, &card_rr);
+    draw_page_border(ctx.scene, ctx.theme, base, &card_rr);
 }
 
 fn draw_figure_glyph(scene: &mut Scene, theme: &Theme, base: Affine, b: Rect) {
@@ -1133,6 +1146,23 @@ pub fn crop_page_region(
 mod tests {
     use super::*;
     use crate::model::sample_document;
+
+    /// The page card's outline is chrome: it must clear the non-text floor
+    /// on the paper under every shipped theme, including high contrast.
+    #[test]
+    fn page_card_edge_is_chrome_and_reads_on_the_paper() {
+        use ui::a11y::contrast_ratio;
+        use ui::tokens::NON_TEXT_MIN_CONTRAST;
+        for name in Theme::ALL {
+            let theme = Theme::named(name).expect("shipped theme resolves");
+            let edge = page_card_edge(&theme);
+            assert!(
+                contrast_ratio(edge, paper(&theme)) >= NON_TEXT_MIN_CONTRAST,
+                "{name} page edge must read on the paper, got {:.2}:1",
+                contrast_ratio(edge, paper(&theme))
+            );
+        }
+    }
 
     #[test]
     fn collect_text_lines_produces_bands_inside_the_page() {

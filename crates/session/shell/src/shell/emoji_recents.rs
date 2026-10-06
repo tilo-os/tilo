@@ -34,7 +34,7 @@ impl FileRecentsStore {
             std::fs::create_dir_all(parent)?;
             std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
         }
-        atomic_file::write_with_mode(&self.path, &bytes, 0o600)
+        tilo_files::native::atomic::write_with_mode(&self.path, &bytes, 0o600)
     }
 }
 

@@ -1,4 +1,8 @@
 use super::*;
+use crate::text_edit::SUGGESTION_SETTLE;
+use crate::text_selection::{next_word_boundary, prev_word_boundary};
+use automerge::ObjType;
+use automerge::transaction::Transactable as _;
 
 #[test]
 fn caret_paints_with_real_line_geometry_and_can_be_suppressed() {
@@ -7,11 +11,11 @@ fn caret_paints_with_real_line_geometry_and_can_be_suppressed() {
         let mut input = TextInput::local().with_initial_value("editable");
         input.set_focus(true);
         input.set_selection(1, 4);
-        input.preedit = "composing".into();
+        input.core.set_preedit("composing", None);
         let before = (
             input.cursor_pos(),
             input.selection_range(),
-            input.preedit.clone(),
+            input.core.preedit().to_owned(),
         );
         let theme = Theme::dark();
         let mut visible = Scene::new();
@@ -29,7 +33,7 @@ fn caret_paints_with_real_line_geometry_and_can_be_suppressed() {
             (
                 input.cursor_pos(),
                 input.selection_range(),
-                input.preedit.clone()
+                input.core.preedit().to_owned()
             ),
             before
         );
@@ -326,8 +330,7 @@ fn caret_and_selection_survive_widget_state_round_trip() {
     // Case `selection_survives_widget_state_round_trip_and_legacy_state_still_loads`.
     {
         let mut original = TextInput::local().with_initial_value("hello world");
-        original.cursor_pos = 5;
-        original.selection_anchor = Some(1);
+        original.core.set_selection(1, 5);
         let saved = crate::undo::get_state(&original).unwrap();
         let mut rebuilt = TextInput::local().with_initial_value("hello world");
         crate::undo::set_state(&mut rebuilt, &saved);
@@ -445,7 +448,7 @@ fn a_collapsed_anchor_does_not_select_the_text_inserted_after_it() {
     let mut ti = TextInput::local();
     ti.set_focus(true);
     ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
-    ti.selection_anchor = Some(0);
+    ti.core.set_selection(0, 0);
     let mut doc = AutoCommit::new();
     for text in ["Hello", " ", "world"] {
         assert!(drive(
@@ -496,7 +499,7 @@ fn ime_preedit_is_shaped_underlined_and_committed_without_touching_the_document(
             mods(false, false),
         ));
         assert_eq!(ti.value(), "a漢b");
-        assert!(ti.preedit.is_empty());
+        assert!(!ti.core.has_preedit());
 
         ti.set_focus(false);
         assert!(Widget::ime_cursor_rect(&ti).is_none());
@@ -533,8 +536,7 @@ fn ime_preedit_is_shaped_underlined_and_committed_without_touching_the_document(
         );
         assert!(Widget::ime_cursor_rect(&ti).is_some());
 
-        ti.preedit.clear();
-        ti.preedit_cursor = None;
+        ti.core.clear_preedit();
         draw_with_theme(&mut ti, &Theme::dark());
         let dark_signature = ti.shaped_layout_signature;
         draw_with_theme(&mut ti, &Theme::light());
@@ -564,8 +566,7 @@ fn shaped_layout_is_cached_until_display_inputs_or_fonts_change() {
             "caret-only movement reuses the shaped paragraph"
         );
 
-        ti.preedit = "漢".into();
-        ti.preedit_cursor = Some(("漢".len(), "漢".len()));
+        ti.core.set_preedit("漢", Some(("漢".len(), "漢".len())));
         draw_to_populate(&mut ti);
         assert_ne!(
             ti.shaped_layout_signature, initial_signature,
@@ -748,8 +749,8 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         let mut document = AutoCommit::new();
 
         state.set(String::from("Grace"));
-        Widget::sync(&mut first, &mut document, &automerge::ROOT);
-        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        Widget::sync(&mut first, &document, &automerge::ROOT);
+        Widget::sync(&mut second, &document, &automerge::ROOT);
         assert_eq!(first.value(), "Grace");
         assert_eq!(second.value(), "Grace");
         assert_eq!(first.take_dirty(), None, "model updates are not user edits");
@@ -757,18 +758,18 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         assert!(Widget::perform_action(
             &mut first,
             &crate::a11y::Action::SetValue("Lin".into()),
-            &mut document,
+            &mut crate::widget::Edits::lend(&mut document),
             &automerge::ROOT,
         ));
         assert_eq!(state.get(), "Lin", "user edits publish typed state");
 
-        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        Widget::sync(&mut second, &document, &automerge::ROOT);
         assert_eq!(second.value(), "Lin", "sibling input follows the model");
         assert_eq!(second.take_dirty(), None);
 
         first.set_text("programmatic");
         assert_eq!(state.get(), "programmatic");
-        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        Widget::sync(&mut second, &document, &automerge::ROOT);
         assert_eq!(second.value(), "programmatic");
         assert_eq!(first.take_dirty(), None);
     }
@@ -785,7 +786,7 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         assert!(Widget::perform_action(
             &mut input,
             &crate::a11y::Action::SetValue("after".into()),
-            &mut document,
+            &mut crate::widget::Edits::lend(&mut document),
             &automerge::ROOT,
         ));
         assert_eq!(state.get(), "after");
@@ -800,8 +801,8 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         assert!(!Widget::layout_needs_measure(&input));
 
         state.set(String::from("a much longer line\nwith another row"));
-        let mut document = AutoCommit::new();
-        Widget::sync(&mut input, &mut document, &automerge::ROOT);
+        let document = AutoCommit::new();
+        Widget::sync(&mut input, &document, &automerge::ROOT);
 
         assert!(Widget::layout_needs_measure(&input));
         assert_eq!(input.take_dirty(), None, "model sync is not a user edit");
@@ -994,7 +995,7 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1016,7 +1017,7 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1050,7 +1051,7 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1068,7 +1069,7 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1147,7 +1148,7 @@ fn right_click(ti: &mut TextInput, doc: &mut AutoCommit, x: f64, y: f64) -> bool
         &mut crate::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::default(),
-            state: doc,
+            state: crate::widget::Edits::lend(doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus_target,
@@ -1165,7 +1166,7 @@ fn right_click(ti: &mut TextInput, doc: &mut AutoCommit, x: f64, y: f64) -> bool
         &mut crate::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::default(),
-            state: doc,
+            state: crate::widget::Edits::lend(doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus_target,
@@ -1206,10 +1207,8 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
     {
         let mut ti = TextInput::local().with_initial_value("hello world");
         ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
-        let mut doc = AutoCommit::new();
         // Pre-select "world" so Cut/Copy are present and the selection survives a copy.
-        ti.selection_anchor = Some(6);
-        ti.cursor_pos = 11;
+        ti.core.set_selection(6, 11);
 
         ti.open_context_menu([50.0, 18.0]);
         let labels = ti.context_menu_labels();
@@ -1230,10 +1229,7 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
             "Copy row maps to the Copy action (label idx {copy_idx})"
         );
 
-        assert!(
-            ti.dispatch_context_action(item_idx, &mut doc, None),
-            "dispatch ran"
-        );
+        assert!(ti.dispatch_context_action(item_idx), "dispatch ran");
         assert!(!ti.context_menu.is_open(), "menu closed after dispatch");
         // Copy preserves the selection (it's a read-only action).
         assert_eq!(ti.selected_str(), Some("world"));
@@ -1243,9 +1239,7 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
     {
         let mut ti = TextInput::local().with_initial_value("hello world");
         ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
-        let mut doc = AutoCommit::new();
-        ti.selection_anchor = Some(0);
-        ti.cursor_pos = 5; // "hello"
+        ti.core.set_selection(0, 5); // "hello"
         ti.open_context_menu([10.0, 18.0]);
         let cut_idx = ti
             .context_menu
@@ -1254,7 +1248,7 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
             .position(|i| i.label() == Some("Cut"))
             .expect("Cut row present");
         assert_eq!(ti.context_actions[cut_idx], Some(CtxAction::Cut));
-        ti.dispatch_context_action(cut_idx, &mut doc, None);
+        ti.dispatch_context_action(cut_idx);
         assert_eq!(ti.value(), " world", "cut removed the selected word");
     }
 
@@ -1281,7 +1275,7 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1299,7 +1293,7 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1319,8 +1313,7 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
         let mut ti = TextInput::local()
             .with_spell_language("en_US")
             .with_initial_value("teh");
-        ti.selection_anchor = Some(0);
-        ti.cursor_pos = 3;
+        ti.core.set_selection(0, 3);
         ti.open_context_menu([10.0, 10.0]);
 
         let item_idx = ti
@@ -1334,8 +1327,7 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
                 )
             })
             .expect("the correction is offered");
-        let mut doc = AutoCommit::new();
-        assert!(ti.dispatch_context_action(item_idx, &mut doc, None));
+        assert!(ti.dispatch_context_action(item_idx));
         assert_eq!(ti.value(), "the");
     }
 
@@ -1345,8 +1337,7 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
             .with_spellcheck(false)
             .with_text_action("translate", "Translate")
             .with_initial_value("hello world");
-        ti.selection_anchor = Some(0);
-        ti.cursor_pos = 5;
+        ti.core.set_selection(0, 5);
         ti.open_context_menu([10.0, 10.0]);
         let item_idx = ti
             .context_actions
@@ -1354,8 +1345,7 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
             .position(|action| matches!(action, Some(CtxAction::TextAction(0))))
             .expect("registered action is in the context menu");
 
-        let mut doc = AutoCommit::new();
-        assert!(ti.dispatch_context_action(item_idx, &mut doc, None));
+        assert!(ti.dispatch_context_action(item_idx));
         assert_eq!(
             ti.take_text_action_request(),
             Some(TextActionRequest {
@@ -1469,13 +1459,13 @@ fn spellcheck_squiggles_appear_at_word_boundaries_and_after_settling() {
             .with_spell_language("en_US")
             .with_initial_value("teh wrold");
         ti.set_focus(true);
-        ti.cursor_pos = ti.text.len();
-        ti.last_edit_time = Some(crate::time::now());
+        ti.core.set_caret(ti.text.len());
+        ti.typing.touch();
 
         ti.refresh_spelling();
         // Dictionary warm-up can dominate this unit test in an unoptimised
         // build. Model a fresh edit after checking to test presentation timing.
-        ti.last_edit_time = Some(crate::time::now());
+        ti.typing.touch();
 
         assert_eq!(ti.spell_spans, vec![(0, 3), (4, 9)]);
         assert!(ti.spelling_span_is_visible(0, 3));
@@ -1490,8 +1480,8 @@ fn spellcheck_squiggles_appear_at_word_boundaries_and_after_settling() {
             .with_spell_language("en_US")
             .with_initial_value("wrold ");
         ti.set_focus(true);
-        ti.cursor_pos = ti.text.len();
-        ti.last_edit_time = Some(crate::time::now());
+        ti.core.set_caret(ti.text.len());
+        ti.typing.touch();
 
         ti.refresh_spelling();
 
@@ -1506,10 +1496,13 @@ fn spellcheck_squiggles_appear_at_word_boundaries_and_after_settling() {
             .with_spell_language("en_US")
             .with_initial_value("wrold");
         ti.set_focus(true);
-        ti.cursor_pos = ti.text.len();
-        ti.last_edit_time = crate::time::now()
+        ti.core.set_caret(ti.text.len());
+        if let Some(at) = crate::time::now()
             .checked_sub(SPELL_EDIT_SETTLE)
-            .and_then(|t| t.checked_sub(Duration::from_millis(1)));
+            .and_then(|t| t.checked_sub(Duration::from_millis(1)))
+        {
+            ti.typing.touch_at(at);
+        }
 
         ti.refresh_spelling();
 
@@ -1517,29 +1510,129 @@ fn spellcheck_squiggles_appear_at_word_boundaries_and_after_settling() {
         assert!(ti.spelling_span_is_visible(0, 5));
         assert!(!Widget::needs_animation_frame(&ti));
     }
+}
 
-    // Case `external_language_check_coalesces_rapid_prefixes_without_dropping_old_spans`.
-    {
-        let mut ti = TextInput::local()
-            .with_spellcheck(true)
-            .with_spell_language("de_DE")
-            .with_initial_value("alt neu");
-        ti.set_focus(true);
-        ti.cursor_pos = ti.text.len();
-        ti.spell_spans = vec![(0, 3)];
-        ti.spell_cache_key = Some(("de_DE".to_string(), "alt".to_string()));
-        ti.last_edit_time = Some(crate::time::now());
+/// A focused en-US field holding `text` with the caret at its end.
+fn suggesting_field(text: &str) -> TextInput {
+    let mut ti = TextInput::local()
+        .with_spellcheck(true)
+        .with_autocorrect(true)
+        .with_spell_language("en_US")
+        .with_initial_value(text);
+    ti.set_focus(true);
+    ti.core.set_caret(ti.text.len());
+    ti
+}
 
-        ti.refresh_spelling();
+#[test]
+fn a_short_pause_at_the_end_of_a_misspelled_word_shows_its_suggestion() {
+    let mut ti = suggesting_field("so beautifull");
+    let start = crate::time::now();
 
-        assert_eq!(ti.spell_spans, vec![(0, 3)]);
-        assert_eq!(
-            ti.spell_cache_key,
-            Some(("de_DE".to_string(), "alt".to_string()))
-        );
-        assert!(!Widget::needs_animation_frame(&ti));
-        assert!(Widget::next_wake_deadline(&ti).is_some());
-    }
+    ti.refresh_suggestion_at(start);
+    assert!(
+        ti.autocorrection_preview.is_none(),
+        "nothing is offered while the word may still be growing"
+    );
+    assert_eq!(ti.caret_word.deadline(), Some(start + SUGGESTION_SETTLE));
+
+    ti.refresh_suggestion_at(start + SUGGESTION_SETTLE - Duration::from_millis(1));
+    assert!(ti.autocorrection_preview.is_none());
+
+    ti.refresh_suggestion_at(start + SUGGESTION_SETTLE);
+    let preview = ti
+        .autocorrection_preview
+        .clone()
+        .expect("a settled misspelled word gets a suggestion");
+    assert_eq!(
+        (preview.start, preview.end, preview.original.as_str()),
+        (3, 13, "beautifull")
+    );
+    assert_eq!(preview.replacement, "beautiful");
+    assert!(
+        !preview.automatic,
+        "an ordinary suggestion, not autocorrect"
+    );
+    assert!(!ti.spelling_span_is_visible(3, 13));
+
+    // A boundary does not apply an ordinary suggestion …
+    let mut boundary = suggesting_field("so beautifull");
+    boundary.refresh_suggestion_at(start);
+    boundary.refresh_suggestion_at(start + SUGGESTION_SETTLE);
+    assert!(boundary.autocorrection_preview.is_some());
+    boundary.insert_word_boundary(" ");
+    assert_eq!(boundary.value(), "so beautifull ");
+
+    // … a click on its chip does.
+    assert!(ti.accept_suggestion());
+    assert_eq!(ti.value(), "so beautiful");
+    assert_eq!(ti.cursor_pos(), "so beautiful".len());
+    assert!(ti.autocorrection_preview.is_none());
+}
+
+#[test]
+fn moving_the_caret_back_into_an_earlier_word_shows_its_suggestion() {
+    let mut ti = suggesting_field("beautifull day");
+    let start = crate::time::now();
+    ti.refresh_suggestion_at(start);
+    ti.refresh_suggestion_at(start + SUGGESTION_SETTLE);
+    assert!(
+        ti.autocorrection_preview.is_none(),
+        "`day` is spelled right"
+    );
+
+    // Back into the first word: it settles after the same short wait.
+    let back = start + SUGGESTION_SETTLE * 2;
+    ti.set_cursor_pos(4);
+    ti.refresh_suggestion_at(back);
+    assert!(ti.autocorrection_preview.is_none());
+    ti.refresh_suggestion_at(back + SUGGESTION_SETTLE);
+    let preview = ti.autocorrection_preview.clone().expect("suggestion");
+    assert_eq!((preview.start, preview.end), (0, 10));
+    assert_eq!(preview.replacement, "beautiful");
+
+    // Moving within the word keeps the suggestion; leaving it clears it.
+    ti.set_cursor_pos(7);
+    ti.refresh_suggestion_at(back + SUGGESTION_SETTLE);
+    assert!(ti.autocorrection_preview.is_some());
+    ti.set_cursor_pos(10);
+    ti.refresh_suggestion_at(back + SUGGESTION_SETTLE);
+    assert!(
+        ti.autocorrection_preview.is_some(),
+        "the word's end is in it"
+    );
+    ti.set_cursor_pos(ti.text.len());
+    ti.refresh_suggestion_at(back + SUGGESTION_SETTLE);
+    assert!(ti.autocorrection_preview.is_none());
+
+    // A selection or an unfocused field offers nothing.
+    ti.set_selection(0, 4);
+    ti.refresh_suggestion_at(back + SUGGESTION_SETTLE * 3);
+    assert!(ti.autocorrection_preview.is_none());
+    ti.set_cursor_pos(4);
+    ti.set_focus(false);
+    ti.refresh_suggestion_at(back + SUGGESTION_SETTLE * 4);
+    assert!(ti.autocorrection_preview.is_none());
+}
+
+#[test]
+fn the_settling_word_schedules_its_own_wake() {
+    let mut ti = suggesting_field("so beautifull");
+    // Far enough ahead that a slow test run never sees the deadline pass.
+    let now = crate::time::now() + Duration::from_secs(3600);
+    ti.refresh_suggestion_at(now);
+    assert_eq!(
+        Widget::next_wake_deadline(&ti),
+        Some(now + SUGGESTION_SETTLE),
+        "the suggestion appears without further input"
+    );
+    let mut off = TextInput::local()
+        .with_spellcheck(false)
+        .with_autocorrect(false)
+        .with_initial_value("so beautifull");
+    off.set_focus(true);
+    off.refresh_suggestion_at(now);
+    assert_eq!(Widget::next_wake_deadline(&off), None);
 }
 
 #[test]
@@ -1551,14 +1644,13 @@ fn autocorrect_previews_applies_restores_and_respects_opt_outs() {
             .with_autocorrect(true)
             .with_spell_language("en_US")
             .with_initial_value("teh");
-        ti.cursor_pos = ti.text.len();
-        let mut doc = AutoCommit::new();
-        ti.insert_word_boundary(" ", &mut doc, None);
+        ti.core.set_caret(ti.text.len());
+        ti.insert_word_boundary(" ");
         assert_eq!(ti.value(), "the ");
         assert!(ti.last_autocorrection.is_some());
 
         let mut handled = false;
-        ti.handle_backspace_key(false, &mut doc, None, &mut handled);
+        ti.handle_backspace_key(false, &mut handled);
         assert!(handled);
         assert_eq!(ti.value(), "teh");
         assert!(ti.last_autocorrection.is_none());
@@ -1571,7 +1663,7 @@ fn autocorrect_previews_applies_restores_and_respects_opt_outs() {
             .with_spell_language("en_US")
             .with_initial_value("adress");
         ti.set_focus(true);
-        ti.cursor_pos = ti.text.len();
+        ti.core.set_caret(ti.text.len());
 
         ti.refresh_autocorrection_preview();
         ti.refresh_spelling();
@@ -1584,8 +1676,7 @@ fn autocorrect_previews_applies_restores_and_respects_opt_outs() {
         assert_eq!(preview.replacement, "address");
         assert!(!ti.spelling_span_is_visible(0, 6));
 
-        let mut doc = AutoCommit::new();
-        ti.insert_word_boundary(" ", &mut doc, None);
+        ti.insert_word_boundary(" ");
         assert_eq!(ti.value(), "address ");
     }
 
@@ -1595,18 +1686,17 @@ fn autocorrect_previews_applies_restores_and_respects_opt_outs() {
             .with_autocorrect(false)
             .with_spell_language("en_US")
             .with_initial_value("teh");
-        off.cursor_pos = off.text.len();
-        let mut doc = AutoCommit::new();
-        off.insert_word_boundary(" ", &mut doc, None);
+        off.core.set_caret(off.text.len());
+        off.insert_word_boundary(" ");
         assert_eq!(off.value(), "teh ");
 
         let mut known = TextInput::local()
             .with_autocorrect(true)
             .with_spell_language("en_US")
             .with_initial_value("teh");
-        known.cursor_pos = known.text.len();
+        known.core.set_caret(known.text.len());
         known.spell_dictionary = Some(spellcheck::Dictionary::from_words(["teh"]));
-        known.insert_word_boundary(" ", &mut doc, None);
+        known.insert_word_boundary(" ");
         assert_eq!(known.value(), "teh ");
     }
 }
@@ -1652,18 +1742,17 @@ fn word_boundaries_walk_starts_ends_and_snap() {
 fn editing_primitives_splice_replace_filter_and_repeat() {
     // Case `delete_selection_removes_range_and_collapses`.
     {
-        let mut ti = TextInput::new(Vec::new()).with_on_change_path("text_1");
+        let mut ti = TextInput::local();
         ti.text = "hello world".to_string();
-        ti.selection_anchor = Some(6);
-        ti.cursor_pos = 11;
+        ti.core.set_selection(6, 11);
         let mut doc = AutoCommit::new();
         let obj_id = doc
             .put_object(&automerge::ROOT, "text_1", ObjType::Text)
             .unwrap();
         let _ = doc.splice_text(&obj_id, 0, 0, "hello world");
-        ti.delete_selection(&mut doc, Some(&obj_id));
+        ti.delete_selection();
         assert_eq!(ti.text, "hello ");
-        assert_eq!(ti.cursor_pos, 6);
+        assert_eq!(ti.core.caret(), 6);
         assert!(!ti.has_selection());
     }
 
@@ -1700,18 +1789,17 @@ fn editing_primitives_splice_replace_filter_and_repeat() {
     // Case `insert_str_replaces_selection`.
     // The path Ctrl+V uses when pasting over selected text.
     {
-        let mut ti = TextInput::new(Vec::new()).with_on_change_path("text_1");
+        let mut ti = TextInput::local();
         ti.text = "hello world".to_string();
-        ti.selection_anchor = Some(6);
-        ti.cursor_pos = 11;
+        ti.core.set_selection(6, 11);
         let mut doc = AutoCommit::new();
         let obj_id = doc
             .put_object(&automerge::ROOT, "text_1", ObjType::Text)
             .unwrap();
         let _ = doc.splice_text(&obj_id, 0, 0, "hello world");
-        ti.insert_str("there", &mut doc, Some(&obj_id));
+        ti.insert_str("there");
         assert_eq!(ti.text, "hello there");
-        assert_eq!(ti.cursor_pos, "hello there".len());
+        assert_eq!(ti.core.caret(), "hello there".len());
         assert!(!ti.has_selection());
     }
 
@@ -1777,17 +1865,16 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
     // Case `secret_input_masks_glyphs_but_keeps_value`.
     // Proven end-to-end through a real Automerge `Text` object.
     {
-        let mut ti = TextInput::new(Vec::new())
-            .with_on_change_path("password")
-            .with_secret(true);
+        let mut ti = TextInput::local().with_secret(true);
 
         let mut doc = AutoCommit::new();
         let obj_id = doc
             .put_object(&automerge::ROOT, "password", ObjType::Text)
             .unwrap();
         let _ = doc.splice_text(&obj_id, 0, 0, "hunter2");
+        ti.bind_text(obj_id);
 
-        ti.sync(&mut doc, &automerge::ROOT);
+        ti.sync(&doc, &automerge::ROOT);
         assert_eq!(ti.text, "hunter2", "stored value must be the real secret");
 
         assert_eq!(ti.display_text(), "•••••••");
@@ -1808,8 +1895,8 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
             .with_secret(true);
         input.text = "correct horse battery staple".into();
         input.dirty = true;
-        let mut document = AutoCommit::new();
-        input.sync(&mut document, &automerge::ROOT);
+        let document = AutoCommit::new();
+        input.sync(&document, &automerge::ROOT);
 
         assert_eq!(&*buffer.lock().unwrap(), "correct horse battery staple");
         assert!(document.keys(&automerge::ROOT).next().is_none());
@@ -1858,7 +1945,7 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
         assert_eq!(ti.display_text(), "•••••••", "toggles back to masked");
     }
 
-    // Case `secret_masks_render_but_clipboard_and_caret_use_the_real_value`.
+    // Case `secret_caret_moves_over_the_real_value`.
     {
         let mut ti = TextInput::local()
             .with_secret(true)
@@ -1874,16 +1961,251 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
             mods(false, false),
         );
         assert_eq!(ti.cursor_pos(), 1, "Right moved one real char boundary");
+    }
+}
 
-        drive(&mut ti, &mut doc, &char_key_event("a"), mods(true, false));
+#[test]
+fn a_secret_never_reaches_the_clipboard() {
+    let services = crate::host::HostServices::null();
+    let _host = crate::host::enter(&services);
+    let clipboard = || crate::text_selection::clipboard_paste();
+
+    for revealed in [false, true] {
+        // Case `copy_and_cut_leave_the_clipboard_alone`.
+        {
+            crate::text_selection::clipboard_copy("before");
+            let mut ti = TextInput::local()
+                .with_secret(true)
+                .with_initial_value("s3cr3t");
+            if revealed {
+                ti.toggle_reveal();
+            }
+            ti.set_focus(true);
+            let mut doc = AutoCommit::new();
+
+            drive(&mut ti, &mut doc, &char_key_event("a"), mods(true, false));
+            assert_eq!(ti.selected_str(), Some("s3cr3t"), "Select All still works");
+            drive(&mut ti, &mut doc, &char_key_event("c"), mods(true, false));
+            assert_eq!(
+                clipboard().as_deref(),
+                Some("before"),
+                "revealed: {revealed}"
+            );
+            drive(&mut ti, &mut doc, &char_key_event("x"), mods(true, false));
+            assert_eq!(
+                clipboard().as_deref(),
+                Some("before"),
+                "revealed: {revealed}"
+            );
+            assert_eq!(ti.value(), "s3cr3t", "a refused cut keeps the value");
+            assert_eq!(ti.selected_str(), Some("s3cr3t"), "and the selection");
+        }
+
+        // Case `the_menu_offers_neither_copy_nor_cut_nor_text_actions`.
+        {
+            crate::text_selection::clipboard_copy("pasted");
+            let mut ti = TextInput::local()
+                .with_secret(true)
+                .with_initial_value("s3cr3t")
+                .with_text_action("translate", "Translate");
+            if revealed {
+                ti.toggle_reveal();
+            }
+            ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+            ti.select_all();
+            ti.open_context_menu([20.0, 18.0]);
+            let labels = ti.context_menu_labels();
+            assert!(!labels.contains(&"Cut".to_string()), "got {labels:?}");
+            assert!(!labels.contains(&"Copy".to_string()), "got {labels:?}");
+            assert!(!labels.contains(&"Translate".to_string()), "got {labels:?}");
+            assert!(labels.contains(&"Paste".to_string()), "got {labels:?}");
+            assert!(labels.contains(&"Select All".to_string()), "got {labels:?}");
+        }
+
+        // Case `paste_still_fills_a_secret`.
+        {
+            crate::text_selection::clipboard_copy("hunter2");
+            let mut ti = TextInput::local().with_secret(true);
+            if revealed {
+                ti.toggle_reveal();
+            }
+            ti.set_focus(true);
+            let mut doc = AutoCommit::new();
+            drive(&mut ti, &mut doc, &char_key_event("v"), mods(true, false));
+            assert_eq!(ti.value(), "hunter2");
+        }
+    }
+}
+
+#[test]
+fn secret_field_carries_a_focusable_show_hide_control() {
+    use crate::a11y::{Action, Role};
+
+    // Case `secret_is_hidden_by_default_with_a_named_show_control`.
+    {
+        let mut ti = TextInput::local()
+            .with_secret(true)
+            .with_initial_value("hunter2");
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 40.0));
+        assert!(!ti.is_revealed(), "a secret starts hidden");
+        assert_eq!(ti.display_text(), "•••••••");
+        assert!(ti.has_reveal_control());
+        let control = ti.reveal_control_rect().unwrap();
         assert_eq!(
-            ti.selected_str(),
-            Some("s3cr3t"),
-            "copy sends the real value, never the mask"
+            control,
+            Rect::new(200.0, 0.0, 240.0, 40.0),
+            "trailing square"
         );
 
-        drive(&mut ti, &mut doc, &char_key_event("x"), mods(true, false));
-        assert_eq!(ti.value(), "", "Ctrl+X cut the real selection");
+        let children = Widget::children(&ti);
+        assert_eq!(children.len(), 1, "the control is a real child widget");
+        let child = children.first().unwrap();
+        assert!(child.is_focusable(), "keyboard reaches the control");
+        let node = child.accessibility().unwrap();
+        assert_eq!(node.role, Role::Button);
+        assert_eq!(node.name.as_deref(), Some("Show password"));
+        assert_eq!(
+            Widget::tooltip_target_at(&ti, control.center()).map(|(_, tip)| tip),
+            Some("Show password".to_string())
+        );
+        assert_eq!(
+            Widget::cursor_shape(&ti, control.center()),
+            Some(winit::window::CursorIcon::Pointer)
+        );
+    }
+
+    // Case `activating_the_control_toggles_glyphs_and_its_name_only`.
+    {
+        let mut ti = TextInput::local()
+            .with_secret(true)
+            .with_initial_value("hunter2");
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 40.0));
+        let mut doc = AutoCommit::new();
+        let activated = Widget::children_mut(&mut ti)
+            .into_iter()
+            .next()
+            .unwrap()
+            .perform_action(
+                &Action::Activate,
+                &mut crate::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            );
+        assert!(activated, "Enter/Space and AT activation toggle");
+        assert!(ti.is_revealed());
+        assert_eq!(ti.display_text(), "hunter2");
+        let child = Widget::children(&ti).into_iter().next().unwrap();
+        assert_eq!(
+            child.accessibility().unwrap().name.as_deref(),
+            Some("Hide password")
+        );
+        let field = Widget::accessibility(&ti).unwrap();
+        assert_eq!(field.value, None, "revealing never exposes the value");
+        assert!(field.state.protected);
+        assert!(Widget::text_review(&ti).is_none());
+        assert!(
+            doc.keys(&automerge::ROOT).next().is_none(),
+            "nothing persisted"
+        );
+
+        let _ = Widget::children_mut(&mut ti)
+            .into_iter()
+            .next()
+            .unwrap()
+            .perform_action(
+                &Action::Activate,
+                &mut crate::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            );
+        assert!(!ti.is_revealed(), "a second activation hides it again");
+    }
+
+    // Case `pointer_toggle_keeps_focus_and_caret_in_the_field`.
+    {
+        let mut ti = TextInput::local()
+            .with_secret(true)
+            .with_initial_value("hunter2");
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 40.0));
+        ti.set_focus(true);
+        draw_to_populate(&mut ti);
+        let caret = ti.cursor_pos();
+        let mut doc = AutoCommit::new();
+        let target = ti.reveal_control_rect().unwrap().center();
+        drive(
+            &mut ti,
+            &mut doc,
+            &mouse_move(target.x, target.y),
+            mods(false, false),
+        );
+
+        let mut handled = false;
+        let mut focus_target = None;
+        let (taffy, node) = test_node();
+        for event in [left_press(), left_release()] {
+            ti.handle_event(
+                &event,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods(false, false),
+                    state: crate::widget::Edits::lend(&mut doc),
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+        }
+        assert!(handled);
+        assert!(ti.is_revealed(), "a click reveals");
+        assert_eq!(focus_target, None, "the click does not move focus");
+        assert!(ti.is_focused());
+        assert_eq!(ti.cursor_pos(), caret, "the caret stays where it was");
+
+        let tap = Point::new(target.x, target.y);
+        drive(
+            &mut ti,
+            &mut doc,
+            &touch(TouchPhase::Started, 7, tap),
+            mods(false, false),
+        );
+        drive(
+            &mut ti,
+            &mut doc,
+            &touch(TouchPhase::Ended, 7, tap),
+            mods(false, false),
+        );
+        assert!(!ti.is_revealed(), "a tap hides it again");
+    }
+
+    // Case `tab_order_visits_the_text_then_the_control`.
+    {
+        let mut ti = TextInput::local().with_secret(true);
+        let mut taffy = TaffyTree::new();
+        let mut node_map = std::collections::HashMap::new();
+        let root = ti.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let (order, trapped) = crate::focus_navigation::order(root, &ti, &taffy);
+        assert!(!trapped);
+        assert_eq!(order.len(), 2, "field, then its show/hide control");
+        assert_eq!(order.first(), Some(&root));
+        assert_eq!(order.get(1), taffy.children(root).unwrap().first());
+    }
+
+    // Case `only_single_line_secrets_carry_the_control`.
+    {
+        let plain = TextInput::local();
+        assert!(!plain.has_reveal_control());
+        assert!(Widget::children(&plain).is_empty());
+        let multiline = TextInput::local().with_secret(true).multiline(true);
+        assert!(!multiline.has_reveal_control());
+    }
+
+    // Case `a_disabled_secret_offers_no_reachable_control`.
+    {
+        let mut ti = TextInput::local().with_secret(true).disabled(true);
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 40.0));
+        let child = Widget::children(&ti).into_iter().next().unwrap();
+        assert!(!child.is_focusable());
+        assert!(child.accessibility().unwrap().state.disabled);
     }
 }
 
@@ -1894,8 +2216,7 @@ fn accessibility_exposes_role_name_value_and_grapheme_actions() {
         use crate::a11y::{AccessibleTextSelection, Role};
         let mut ti = TextInput::new(Vec::new());
         ti.text = "hello".to_string();
-        ti.selection_anchor = Some(1);
-        ti.cursor_pos = 4;
+        ti.core.set_selection(1, 4);
         let node = Widget::accessibility(&ti).unwrap();
         assert_eq!(node.role, Role::TextInput);
         assert_eq!(node.value.as_deref(), Some("hello"));
@@ -1921,19 +2242,20 @@ fn accessibility_exposes_role_name_value_and_grapheme_actions() {
         assert_ne!(node.name.as_deref(), Some(input.placeholder()));
     }
 
-    // Case `accessibility_actions_use_extended_grapheme_indices_and_update_crdt`.
+    // Case `accessibility_actions_use_extended_grapheme_indices_and_leave_the_document_to_the_owner`.
     {
         use crate::a11y::Action;
 
         let family = "👩‍👩‍👧‍👦";
         let original = format!("a{family}b");
-        let mut ti = TextInput::new(Vec::new()).with_on_change_path("body");
+        let mut ti = TextInput::local();
         ti.text = original.clone();
         let mut doc = AutoCommit::new();
         let obj = doc
             .put_object(&automerge::ROOT, "body", ObjType::Text)
             .unwrap();
         doc.splice_text(&obj, 0, 0, &original).unwrap();
+        ti.bind_text(obj.clone());
 
         assert!(Widget::perform_action(
             &mut ti,
@@ -1941,7 +2263,7 @@ fn accessibility_exposes_role_name_value_and_grapheme_actions() {
                 anchor: 1,
                 focus: 2,
             },
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(
@@ -1953,11 +2275,12 @@ fn accessibility_exposes_role_name_value_and_grapheme_actions() {
         assert!(Widget::perform_action(
             &mut ti,
             &Action::SetValue("new value".into()),
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(ti.value(), "new value");
-        assert_eq!(doc.text(&obj).unwrap(), "new value");
+        assert_eq!(doc.text(&obj).unwrap(), original, "the owner writes it");
+        assert_eq!(ti.take_dirty().as_deref(), Some("new value"));
     }
 
     // Case `multiline_sets_accessibility_flag`.
@@ -1973,50 +2296,46 @@ fn accessibility_exposes_role_name_value_and_grapheme_actions() {
 }
 
 #[test]
-fn path_bound_text_materialises_only_on_first_edit() {
-    // Case `first_path_bound_edit_materialises_shared_text`.
-    {
-        use crate::a11y::Action;
+fn a_bound_text_is_only_read_and_edits_wait_for_the_owner() {
+    use crate::a11y::Action;
 
-        let mut input = TextInput::local().with_on_change_path("title");
-        let mut document = AutoCommit::new();
+    let mut document = AutoCommit::new();
+    let title = document
+        .put_object(&automerge::ROOT, "title", ObjType::Text)
+        .unwrap();
+    document.splice_text(&title, 0, 0, "Draft").unwrap();
+    let mut input = TextInput::local();
+    input.bind_text(title.clone());
+    input.sync(&document, &automerge::ROOT);
+    assert_eq!(input.value(), "Draft");
+    assert!(
+        input.take_dirty().is_none(),
+        "showing the text is not an edit"
+    );
 
-        assert!(Widget::perform_action(
-            &mut input,
-            &Action::SetValue("Project Atlas".into()),
-            &mut document,
-            &automerge::ROOT,
-        ));
+    assert!(Widget::perform_action(
+        &mut input,
+        &Action::SetSelection {
+            anchor: 0,
+            focus: 0,
+        },
+        &mut crate::widget::Edits::lend(&mut document),
+        &automerge::ROOT,
+    ));
+    assert_eq!(input.value(), "Draft", "moving the caret changes no text");
 
-        let Some((Value::Object(ObjType::Text), object)) =
-            document.get(&automerge::ROOT, "title").unwrap()
-        else {
-            panic!("the first effective edit must create a document text object");
-        };
-        assert_eq!(document.text(&object).unwrap(), "Project Atlas");
-    }
-
-    // Case `path_bound_selection_does_not_materialise_shared_text`.
-    {
-        use crate::a11y::Action;
-
-        let mut input = TextInput::local().with_on_change_path("title");
-        let mut document = AutoCommit::new();
-
-        assert!(Widget::perform_action(
-            &mut input,
-            &Action::SetSelection {
-                anchor: 0,
-                focus: 0,
-            },
-            &mut document,
-            &automerge::ROOT,
-        ));
-        assert!(
-            document.get(&automerge::ROOT, "title").unwrap().is_none(),
-            "selection and navigation must not create document history"
-        );
-    }
+    assert!(Widget::perform_action(
+        &mut input,
+        &Action::SetValue("Project Atlas".into()),
+        &mut crate::widget::Edits::lend(&mut document),
+        &automerge::ROOT,
+    ));
+    assert_eq!(
+        document.text(&title).unwrap(),
+        "Draft",
+        "the input never writes the document"
+    );
+    assert_eq!(input.take_dirty().as_deref(), Some("Project Atlas"));
 }
 
 // Driven through `handle_event`, never by poking private fields, so a
@@ -2108,7 +2427,7 @@ fn drive(ti: &mut TextInput, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifier
         &mut crate::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &m,
-            state: doc,
+            state: crate::widget::Edits::lend(doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus_target,
@@ -2193,7 +2512,7 @@ fn touch_owns_text_selection_until_release() {
 
 #[test]
 fn action_bindings_own_edits_and_accessibility_set_value() {
-    // Case `action_owned_bound_text_edits_optimistically_without_splicing_document`.
+    // Case `bound_text_edits_optimistically_without_splicing_document`.
     {
         let mut doc = AutoCommit::new();
         let text = doc
@@ -2203,10 +2522,9 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
             .expect("seed note text");
         let mut input = TextInput::local();
         input.bind_text(text.clone());
-        input.sync(&mut doc, &automerge::ROOT);
+        input.sync(&doc, &automerge::ROOT);
         input.set_focus(true);
         input.set_cursor_pos("before".len());
-        input.set_direct_crdt_writes(false);
 
         assert!(drive(
             &mut input,
@@ -2220,11 +2538,14 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
 
     // Case `action_binding_owns_accessibility_set_value`.
     {
+        let mut doc = AutoCommit::new();
+        let object = doc
+            .put_object(&automerge::ROOT, "legacy", ObjType::Text)
+            .unwrap();
         let mut input = TextInput::local()
-            .with_on_change_path("legacy")
             .on_change(|_| panic!("legacy callback must be suppressed"))
             .on_action(crate::widget::test_string_action_binding());
-        let mut doc = AutoCommit::new();
+        input.bind_text(object.clone());
         crate::widget::controls::refresh_control_action_availability(
             &mut input,
             &std::collections::HashSet::new(),
@@ -2241,21 +2562,18 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
         assert!(Widget::perform_action(
             &mut input,
             &crate::a11y::Action::SetValue("Project Atlas".into()),
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
-        assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
+        assert_eq!(doc.text(&object).unwrap(), "");
         assert_eq!(
             crate::widget::controls::take_control_invocation(&mut input)
                 .unwrap()
                 .arguments["value"],
             "Project Atlas"
         );
-        let object = doc
-            .put_object(&automerge::ROOT, "legacy", ObjType::Text)
-            .unwrap();
         doc.splice_text(&object, 0, 0, "Remote title").unwrap();
-        Widget::sync(&mut input, &mut doc, &automerge::ROOT);
+        Widget::sync(&mut input, &doc, &automerge::ROOT);
         assert_eq!(input.value(), "Remote title");
     }
 }
@@ -2546,8 +2864,9 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
             .expect("seed document text");
         state.commit_action(None, None);
 
-        let mut input = TextInput::from_document_string("body").multiline(true);
-        Widget::sync(&mut input, &mut state.doc, &state.root);
+        let mut input = TextInput::local().multiline(true);
+        input.bind_text(text_obj.clone());
+        Widget::sync(&mut input, &state.doc, &state.root);
         let mut renderer = TextRenderer::new();
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map = std::collections::HashMap::new();
@@ -2582,7 +2901,7 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
             )
             .expect("replace with wrapping text");
         state.commit_action(None, None);
-        Widget::sync(&mut input, &mut state.doc, &state.root);
+        Widget::sync(&mut input, &state.doc, &state.root);
         assert_eq!(input.take_dirty(), None, "model sync is not a user edit");
         assert!(
             Widget::layout_needs_measure(&input),
@@ -2592,13 +2911,13 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
         assert!(long_height > short_height * 1.8, "long text wraps at 2x");
 
         state.undo(None, None).expect("undo long text");
-        Widget::sync(&mut input, &mut state.doc, &state.root);
+        Widget::sync(&mut input, &state.doc, &state.root);
         assert!(Widget::layout_needs_measure(&input));
         let undo_height = measure(&mut input, &mut renderer);
         assert!((undo_height - short_height).abs() < 0.1);
 
         state.redo(None, None).expect("redo long text");
-        Widget::sync(&mut input, &mut state.doc, &state.root);
+        Widget::sync(&mut input, &state.doc, &state.root);
         assert!(Widget::layout_needs_measure(&input));
         let redo_height = measure(&mut input, &mut renderer);
         assert!((redo_height - long_height).abs() < 0.1);
@@ -2972,7 +3291,7 @@ fn primary_selection_publishes_pointer_selections_and_middle_click_pastes() {
         );
         drive(&mut ti, &mut doc, &left_release(), mods(false, false));
 
-        assert_eq!(ti.primary_selection_text(), Some("hello"));
+        assert_eq!(ti.shareable_selection(), Some("hello"));
     }
 
     // Case `double_and_triple_click_selections_are_eligible_for_primary_publication`.
@@ -2986,10 +3305,10 @@ fn primary_selection_publishes_pointer_selections_and_middle_click_pastes() {
         drive(&mut ti, &mut doc, &left_press(), mods(false, false));
         drive(&mut ti, &mut doc, &left_release(), mods(false, false));
         drive(&mut ti, &mut doc, &left_press(), mods(false, false));
-        assert_eq!(ti.primary_selection_text(), Some("world"));
+        assert_eq!(ti.shareable_selection(), Some("world"));
         drive(&mut ti, &mut doc, &left_release(), mods(false, false));
         drive(&mut ti, &mut doc, &left_press(), mods(false, false));
-        assert_eq!(ti.primary_selection_text(), Some("hello world"));
+        assert_eq!(ti.shareable_selection(), Some("hello world"));
     }
 
     // Case `middle_click_pastes_primary_at_clicked_caret_and_applies_filter`.
@@ -3007,8 +3326,6 @@ fn primary_selection_publishes_pointer_selections_and_middle_click_pastes() {
         let mut handled = false;
         ti.handle_middle_click_with_primary(
             Some(" P A "),
-            &mut doc,
-            &ObjId::Root,
             &mut focus_target,
             test_node().1,
             &mut handled,
@@ -3043,7 +3360,7 @@ fn primary_selection_publishes_pointer_selections_and_middle_click_pastes() {
             mods(false, false),
         );
         drive(&mut secret, &mut doc, &left_release(), mods(false, false));
-        assert_eq!(secret.primary_selection_text(), None);
+        assert_eq!(secret.shareable_selection(), None);
 
         drive(
             &mut secret,
@@ -3055,8 +3372,6 @@ fn primary_selection_publishes_pointer_selections_and_middle_click_pastes() {
         let mut handled = false;
         secret.handle_middle_click_with_primary(
             Some("public"),
-            &mut doc,
-            &ObjId::Root,
             &mut focus_target,
             test_node().1,
             &mut handled,
@@ -3357,14 +3672,12 @@ fn clearing_direct_binding_preserves_interaction_and_cannot_write_stale_object()
         .expect("stale text");
     doc.splice_text(&stale, 0, 0, "draft")
         .expect("seed stale text");
-    let mut input = TextInput::from_document_string("fallback");
+    let mut input = TextInput::local();
     input.bind_text(stale.clone());
-    input.sync(&mut doc, &automerge::ROOT);
+    input.sync(&doc, &automerge::ROOT);
     input.set_focus(true);
-    input.cursor_pos = 4;
-    input.selection_anchor = Some(1);
-    input.preedit = "編".into();
-    input.preedit_cursor = Some((0, "編".len()));
+    input.core.set_selection(1, 4);
+    input.core.set_preedit("編", Some((0, "編".len())));
     input.scroll_x = 17.0;
     input.scroll_y = 23.0;
 
@@ -3378,22 +3691,20 @@ fn clearing_direct_binding_preserves_interaction_and_cannot_write_stale_object()
     assert_eq!(input.bound_obj(), None);
     assert_eq!(input.value(), "draft");
     assert!(input.is_focused);
-    assert_eq!(input.cursor_pos, 4);
-    assert_eq!(input.selection_anchor, Some(1));
-    assert_eq!(input.preedit, "編");
-    assert_eq!(input.preedit_cursor, Some((0, "編".len())));
+    assert_eq!(input.core.caret(), 4);
+    assert_eq!(input.core.anchor(), 1);
+    assert_eq!(input.core.preedit(), "編");
+    assert_eq!(input.core.preedit_cursor(), Some((0, "編".len())));
     assert_eq!(input.scroll_x, 17.0);
     assert_eq!(input.scroll_y, 23.0);
 
     doc.splice_text(&stale, 0, 5, "historical")
         .expect("replace stale text");
-    input.sync(&mut doc, &automerge::ROOT);
+    input.sync(&doc, &automerge::ROOT);
     assert_eq!(input.value(), "draft", "sync ignores the stale object");
 
-    input.preedit.clear();
-    input.preedit_cursor = None;
-    input.selection_anchor = None;
-    input.cursor_pos = input.value().len();
+    input.core.clear_preedit();
+    input.core.set_caret(input.value().len());
     assert!(drive(
         &mut input,
         &mut doc,
@@ -3402,42 +3713,18 @@ fn clearing_direct_binding_preserves_interaction_and_cannot_write_stale_object()
     ));
     assert_eq!(input.value(), "draft!");
     assert_eq!(doc.text(&stale).expect("stale text"), "historical");
-    assert!(
-        doc.get(&automerge::ROOT, "fallback")
-            .expect("fallback lookup")
-            .is_none(),
-        "detach disables the discarded path fallback"
-    );
 }
 
 #[test]
-fn clearing_without_direct_binding_is_a_noop_for_path_and_local_users() {
+fn clearing_without_a_binding_is_a_noop_for_local_users() {
     let mut doc = AutoCommit::new();
-    let path = doc
-        .put_object(&automerge::ROOT, "path", ObjType::Text)
-        .expect("path text");
-    doc.splice_text(&path, 0, 0, "path")
-        .expect("seed path text");
-    let mut path_input = TextInput::from_document_string("path");
-    path_input.sync(&mut doc, &automerge::ROOT);
-    path_input.set_focus(true);
-    path_input.set_cursor_pos(path_input.value().len());
-    path_input.clear_text_binding();
-    assert!(drive(
-        &mut path_input,
-        &mut doc,
-        &char_key_event("!"),
-        mods(false, false)
-    ));
-    assert_eq!(doc.text(&path).expect("path text"), "path!");
-
     let state = crate::LocalState::new(String::from("local"));
     let mut local_input = TextInput::from_state(&state);
     local_input.clear_text_binding();
     assert!(Widget::perform_action(
         &mut local_input,
         &crate::a11y::Action::SetValue("updated".into()),
-        &mut doc,
+        &mut crate::widget::Edits::lend(&mut doc),
         &automerge::ROOT,
     ));
     assert_eq!(state.get(), "updated");
@@ -3542,7 +3829,7 @@ fn attributed_single_line_preedit_preserves_utf8_marks_and_commit_route() {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &Modifiers::default(),
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &automerge::ROOT,
                     handled: &mut false,
                     focus_target: &mut None,
@@ -3699,7 +3986,7 @@ fn attributed_single_line_sync_undo_redo_rebuilds_runs() {
     state.commit_action(None, None);
     let mut line = crate::widget::RichTextLine::new();
     line.bind_text(text.clone());
-    line.sync(&mut state.doc, &state.root);
+    line.sync(&state.doc, &state.root);
     line.set_marks(vec![MarkSpan::new(0..3, Mark::Bold)]);
     line.apply_layout_external(Rect::new(0.0, 0.0, 400.0, 60.0));
     let theme = Theme::dark().with_text_scale(2.0);
@@ -3714,7 +4001,7 @@ fn attributed_single_line_sync_undo_redo_rebuilds_runs() {
         if step == 2 {
             state.redo(None, None).unwrap();
         }
-        line.sync(&mut state.doc, &state.root);
+        line.sync(&state.doc, &state.root);
         let _ = line.take_dirty(); // preserve direct-binding reconciliation semantics
         assert!(line.layout_needs_measure());
         draw_rich_line_for_test(&mut line, &theme);
@@ -3743,8 +4030,7 @@ fn attributed_single_line_sync_undo_redo_rebuilds_runs() {
 #[test]
 fn accessible_selection_preserves_anchor_and_focus_direction() {
     let mut input = TextInput::local().with_initial_value("Ae\u{301}👋B");
-    input.selection_anchor = Some(8);
-    input.cursor_pos = 1;
+    input.core.set_selection(8, 1);
 
     assert_eq!(input.selection_range_public(), Some((1, 8)));
     assert_eq!(input.selection_anchor_focus_public(), Some((8, 1)));
@@ -3756,13 +4042,11 @@ fn insertion_collapses_an_empty_drag_selection() {
         let mut ti = TextInput::new(Vec::new());
         ti.set_text(text);
         // A real same-position drag may retain an anchor at its caret.
-        ti.cursor_pos = caret;
-        ti.selection_anchor = Some(caret);
-        let mut doc = AutoCommit::new();
-        ti.insert_str("N", &mut doc, None);
+        ti.core.set_selection(caret, caret);
+        ti.insert_str("N");
         assert_eq!(ti.selection_range_public(), None);
         assert_eq!(ti.cursor_pos(), caret + 1);
-        ti.insert_str("x", &mut doc, None);
+        ti.insert_str("x");
         assert_eq!(ti.value(), expected);
         assert_eq!(ti.selection_range_public(), None);
     }

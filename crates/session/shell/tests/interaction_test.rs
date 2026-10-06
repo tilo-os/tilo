@@ -565,13 +565,29 @@ fn test_click_interaction_in_sandbox() {
         })
         .unwrap();
 
-    // 5. Verify Log — the client writes EVENT:CLICK when the button release
-    // reaches it; wait for that production log line instead of sleeping 2 s.
+    // The server may flush the presses to the client in a later batch than
+    // the click. A final B press (evdev KEY_B 48 + 8) reaches the client
+    // after every input above, so once it is logged the log holds them all.
+    input_tx
+        .send(WaylandInput::Key {
+            key: 56,
+            state: smithay::backend::input::KeyState::Pressed,
+        })
+        .unwrap();
+    input_tx
+        .send(WaylandInput::Key {
+            key: 56,
+            state: smithay::backend::input::KeyState::Released,
+        })
+        .unwrap();
+
+    // 5. Verify Log — wait for the production log line of the last input
+    // instead of sleeping.
     let expected_pattern = format!("EVENT:CLICK AT {test_x:.1},{test_y:.1}");
-    tilo_test_env::wait_until("client logged the click at the pointer", || {
+    tilo_test_env::wait_until("client logged the final key press", || {
         fs::read_to_string(&log_path)
             .unwrap_or_default()
-            .contains(&expected_pattern)
+            .contains("EVENT:KEY PRESS Some(\"b\")")
     });
     let log_content = fs::read_to_string(&log_path).unwrap_or_default();
     println!("DEBUG: Final Client Log:\n{log_content}");
