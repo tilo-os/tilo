@@ -65,20 +65,68 @@ fn click(app: &mut Framed<StoreApp>, at: Point) {
     }
 }
 
-/// A remote's trailing row action asks the host to remove that remote, through its published address.
+fn row_action_target(root: &dyn Widget, id: &str, label: &str) -> Option<String> {
+    if root.test_id() == Some(id) {
+        return root.accessibility()?.children.into_iter().find_map(|node| {
+            (node.name.as_deref() == Some(label))
+                .then_some(node.action_target)
+                .flatten()
+        });
+    }
+    root.children()
+        .into_iter()
+        .find_map(|child| row_action_target(child, id, label))
+}
+
+fn activate_row_action(
+    root: &mut dyn Widget,
+    id: &str,
+    target: &str,
+    state: &mut ui::State,
+) -> bool {
+    if root.test_id() == Some(id) {
+        return root.perform_semantic_action(
+            target,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut state.doc),
+            &state.root,
+        );
+    }
+    root.children_mut()
+        .into_iter()
+        .any(|child| activate_row_action(child, id, target, state))
+}
+
+/// Remove names its published row action rather than a coordinate now occupied by Disable.
 #[test]
 fn a_remote_rows_action_invokes_the_remotes_own_remove_action() {
     let mut app = lay_out(staged("remotes"));
-    let row = rect_of(&*app, "store.remote:flathub");
-    // The row reveals its action while the pointer is on it.
-    cursor(&mut app, row.center());
-    let action = Point::new(row.x1 - 24.0, row.center().y);
-    click(&mut app, action);
+    let row = "store.remote:flathub";
+    let target = row_action_target(&*app, row, "Remove remote")
+        .expect("the remote row publishes its own Remove control");
+    let (root, state) = Framed::split(&mut app);
+    assert!(
+        activate_row_action(root, row, &target, state),
+        "the published Remove action activates its production widget binding"
+    );
     let invocation = ui::widget::controls::take_control_invocation(&mut *app)
         .expect("the row action queued an invocation");
     assert_eq!(invocation.address.resource, store::Store::KIND);
     assert_eq!(invocation.address.action, "remove-remote");
     assert_eq!(invocation.arguments["name"], "flathub");
+}
+
+/// The persistent account toggle stays visible and invokes Disable independently of Remove.
+#[test]
+fn a_remote_rows_persistent_toggle_invokes_its_own_disable_action() {
+    let mut app = lay_out(staged("remotes"));
+    let toggle = rect_of(&*app, "store.remote:flathub.enabled");
+    click(&mut app, toggle.center());
+    let invocation = ui::widget::controls::take_control_invocation(&mut *app)
+        .expect("the persistent toggle queued an invocation");
+    assert_eq!(invocation.address.resource, store::Store::KIND);
+    assert_eq!(invocation.address.action, "disable-remote");
+    assert_eq!(invocation.arguments["remote"], "remote:flathub");
 }
 
 /// While a query narrows the catalogue the page offers one way back, bound to the browse action.
