@@ -413,7 +413,9 @@ $CARGO run --locked -p tilo-agent-participant --example mounted-resource -- targ
 
 The example uses a native Chat replica and production native publisher, an owner
 issued Viewer invitation, the real HTTPS relay, existing Settings account records
-and fixture certificates, and Chromium on a disposable profile. It mounts the
+and fixture certificates, and Chromium on a disposable profile. Loopback TLS
+credentials come from the existing Rust-native `tilo-crypto` fixture generator
+and reach Node only over the temporary stdin pipe. It mounts the
 compiled Chat at a Unicode character range, discovers and invokes its public
 consent/Stop sharing actions, verifies no video capture, and exercises native
 Copy into the actual browser clipboard and Open to the exact resource destination.

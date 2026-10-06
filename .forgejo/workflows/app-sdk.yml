@@ -307,7 +307,6 @@ jobs:
           target/debug/tilo-app build --target web --bundle desktop apps/calculator
       - name: Headless Chromium for Testing
         run: |
-          command -v openssl || dnf install -y --setopt=install_weak_deps=False openssl
           # Chrome's shared-library dependencies; present on current builders.
           dnf install -y nss atk at-spi2-atk cups-libs libdrm libXcomposite libXdamage \
             libXrandr mesa-libgbm pango alsa-lib libxkbcommon || true

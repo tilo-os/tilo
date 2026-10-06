@@ -1,5 +1,8 @@
 //! Mounted acceptance fixture, deliberately separate from the native test suite.
-use super::*;
+use super::{
+    ActionAddress, Browser, CatalogueQuery, DeviceCapabilities, DocumentRoute, Duration, Path,
+    Replica, RevocationList, Seed, common, enrol, record_provider, start_browser,
+};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
 fn account_document(root: &str, origin: &str, name: &str) -> Vec<u8> {
@@ -45,6 +48,15 @@ pub async fn run() {
         .unwrap();
     let mut input = child.stdin.take().unwrap();
     let mut output = BufReader::new(child.stdout.take().unwrap()).lines();
+    let tls = tilo_crypto::generate_tls_fixture(std::net::Ipv4Addr::LOCALHOST.into()).unwrap();
+    let credentials = serde_json::json!({
+        "key": tls.server_private_key_pem,
+        "cert": tls.server_certificate_pem,
+    });
+    input
+        .write_all(format!("{credentials}\n").as_bytes())
+        .await
+        .unwrap();
     let page = output
         .next_line()
         .await
@@ -76,7 +88,9 @@ pub async fn run() {
                 recipient_user_public_key: Some(bob.verifying_key().to_bytes()),
                 invitee_name: Some("Fixture reader".into()),
                 inviter_name: None,
-                expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
+                expires_at_ns: tilo_clock::unix_now_ns()
+                    .checked_add(600_000_000_000)
+                    .unwrap(),
             },
         )
         .await
@@ -183,15 +197,15 @@ pub async fn run() {
         }
     })
     .await;
-    let root = hex::encode(recipient.cert.user_public_key);
+    let reader_identity = hex::encode(recipient.cert.user_public_key);
     let decoy = "ab".repeat(32);
     let bootstrap = serde_json::json!({
         "origin": hosted.web.origin, "room": room.room,
         "hostDevice": hex::encode(host.cert.device_public_key), "provider": provider,
         "reference": reference, "shared": format!("chat.message:{}", shared.id),
-        "root": root, "decoy": decoy, "seed": recipient.key.to_bytes(),
+        "root": reader_identity, "decoy": decoy, "seed": recipient.key.to_bytes(),
         "certificate": {"cert": recipient.cert, "hostCert": host.cert},
-        "accounts": account_document(&root, &hosted.web.origin, "Fixture reader"),
+        "accounts": account_document(&reader_identity, &hosted.web.origin, "Fixture reader"),
         "decoyAccounts": account_document(&decoy, &hosted.web.origin, "Unadmitted fixture account"),
     });
     input
