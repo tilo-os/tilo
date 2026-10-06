@@ -14,7 +14,7 @@ struct SpeechContext {
     whisper_state * state;
 };
 
-extern "C" void * tilo_speech_load(uint8_t * bytes, size_t length) noexcept {
+extern "C" void * tilo_speech_load(uint8_t * bytes, size_t length) noexcept try {
     whisper_log_set(discard_log, nullptr);
     auto params = whisper_context_default_params();
     params.use_gpu = false;
@@ -26,13 +26,21 @@ extern "C" void * tilo_speech_load(uint8_t * bytes, size_t length) noexcept {
     auto * context = new (std::nothrow) SpeechContext{model, nullptr};
     if (!context) whisper_free(model);
     return context;
+} catch (...) {
+    // Native allocation/model exceptions must never unwind across the Rust ABI.
+    // The confined worker reports a typed failure and exits; no automatic retry.
+    return nullptr;
 }
 
-extern "C" bool tilo_speech_ready(void * context) noexcept {
+extern "C" bool tilo_speech_ready(void * context) noexcept try {
     auto * ctx = static_cast<SpeechContext *>(context);
     if (!ctx) return false;
     if (!ctx->state) ctx->state = whisper_init_state(ctx->model);
     return ctx->state != nullptr;
+} catch (...) {
+    // Native allocation/model exceptions must never unwind across the Rust ABI.
+    // The confined worker reports a typed failure and exits; no automatic retry.
+    return false;
 }
 
 extern "C" void tilo_speech_free(void * context) noexcept {
@@ -43,7 +51,7 @@ extern "C" void tilo_speech_free(void * context) noexcept {
     delete ctx;
 }
 
-extern "C" bool tilo_speech_accepts(void * context, const char * language) noexcept {
+extern "C" bool tilo_speech_accepts(void * context, const char * language) noexcept try {
     if (std::strcmp(language, "auto") == 0) return true;
     const int id = whisper_lang_id(language);
     auto * handle = static_cast<SpeechContext *>(context);
@@ -54,13 +62,17 @@ extern "C" bool tilo_speech_accepts(void * context, const char * language) noexc
     // offered on older models whose vocabulary has no token for them.
     const int languages = whisper_model_n_vocab(ctx) - 51766;
     return id >= 0 && id < languages;
+} catch (...) {
+    // Native allocation/model exceptions must never unwind across the Rust ABI.
+    // The confined worker reports a typed failure and exits; no automatic retry.
+    return false;
 }
 
 // Returns a UTF-8 byte count, or a typed negative failure. Model parameters
 // stay in C++ so Rust never assumes the layout of whisper_full_params.
 extern "C" int tilo_speech_transcribe(void * context, const float * samples,
                                     int count, const char * language,
-                                    uint8_t * output, size_t capacity) noexcept {
+                                    uint8_t * output, size_t capacity) noexcept try {
     if (!context || count < 0 || count > 16000 * 120 || capacity > 16384) return -1;
     auto * handle = static_cast<SpeechContext *>(context);
     auto * ctx = handle->model;
@@ -99,4 +111,8 @@ extern "C" int tilo_speech_transcribe(void * context, const float * samples,
     }
     std::memcpy(output, text.data(), text.size());
     return static_cast<int>(text.size());
+} catch (...) {
+    // Native allocation/model exceptions must never unwind across the Rust ABI.
+    // The confined worker reports a typed failure and exits; no automatic retry.
+    return -3;
 }

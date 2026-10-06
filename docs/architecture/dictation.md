@@ -487,7 +487,7 @@ Normalization is NFKC/casefold and punctuation/whitespace cleanup only. It does
 not hide number, accent or Chinese script errors. Mandarin uses CER because
 space-token WER is not meaningful; Simplified/Traditional differences count.
 
-| Three short probes | Tiny baseline WER | Base baseline WER | Small current WER |
+| Three short probes | Tiny current WER | Base baseline WER | Small earlier bounded run WER |
 | --- | ---: | ---: | ---: |
 | English | 16.44% | 10.96% | 10.96% |
 | German | 27.42% | 20.97% | 1.61% |
@@ -496,13 +496,29 @@ space-token WER is not meaningful; Simplified/Traditional differences count.
 | Arabic | 59.42% | 42.03% | 31.88% |
 | Mandarin CER | 24.69% | 33.33% | 14.81% |
 
-Tiny/base rows are the prior upstream-parameter baseline, not qualification of
-the changed decoder. Small rows use the current bounded CPU implementation:
+The Tiny column has now been verified by a complete 21-case run of the changed
+decoder; the Base column remains the earlier upstream-parameter baseline. Small
+rows preserve an earlier completed run of the bounded CPU implementation:
 weights are loaded without decoder arenas, verified input is dropped before
 readiness allocation, greedy fallback uses one candidate, and each transcription
 gets fresh decoder state. Each probe runs in its own confined worker process.
-All 21 small probes pass the unchanged 1 GiB address-space limit; each long
-final is also repeated exactly after automatic-language recognition.
+That earlier run completed all 21 Small probes under the unchanged 1 GiB
+address-space limit; each long final was repeated exactly after automatic-language
+recognition. A new same-configuration Small comparison aborted with native
+`std::bad_alloc` on `ar_eg-1`, after 13 completed probes. An isolated retry of that
+case completed all three phases under the same cap. This failure is intermittent
+and unresolved; the passing retry does not establish stability. The new C++ ABI
+exception boundary and phase diagnostics have compiled, but the exception path
+has not yet been reproduced with the boundary. The incomplete run is recorded
+separately rather than presented as a complete comparison.
+
+Current Tiny short fixed-language final medians are 0.58–0.74 seconds, versus
+1.05–1.28 seconds with automatic detection. Its median cold load is 1.132 seconds.
+Arabic WER remains 59.42% and Mandarin CER 24.69%; latency alone does not make it
+a sufficient default for every language. Current Tiny long English/French WER
+is 66.03%/53.45%, Mandarin CER 45.49%, with fixed-language final times of
+1.75/3.14/4.20 seconds. Keep these Tiny results separate from the larger Small
+candidate and from model release staging.
 
 Small's median cold load is 2.748 seconds. Short final medians are 4.37–4.79
 seconds, with automatic language approximately another four seconds; long
@@ -513,9 +529,9 @@ work. The actor preserves bounded audio under decoder backpressure and allows
 60 seconds for a final, rather than discarding these valid long results after
 15 seconds. Cancellation remains responsive and retires the exact child.
 
-Long English WER improves from 66.03%/64.74% (tiny/base baseline) to 17.31%
-(small); French from 53.45%/40.09% to 26.29%, and Mandarin CER from
-49.02%/42.75% to 14.90%. These are one artificial splice per language, not
+The earlier Small long run reported English WER 17.31%, French WER 26.29% and
+Mandarin CER 14.90%, compared with Base's earlier 64.74%/40.09%/42.75%.
+These are one artificial splice per language, not
 conversational accuracy. Small still omits the first French sentence, mishears
 proper names, and sometimes hallucinates words in a short draft. It is an
 improved local candidate, not proof of Wispr Flow parity. Draft revision scores

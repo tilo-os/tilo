@@ -323,7 +323,8 @@
     "Public assets only; no microphone, installed model, production signing or account permissions.",
     "Bare decoder probes run after worker preparation and full confinement; signed-store/process/session journeys are separately tested.",
     "Final latency excludes cold loading and the end of capture; automatic language adds its detection pass.",
-    "All tested models still make significant errors. Small improves these public probes but is not evidence of Flow parity; long French omits its initial sentence and some drafts hallucinate words."
+    "All tested models still make significant errors. Small improves these public probes but is not evidence of Flow parity; long French omits its initial sentence and some drafts hallucinate words.",
+    "A current Small rerun aborted intermittently under the unchanged 1 GiB limit. One passing isolated retry does not establish memory stability; keep it separate from the completed current Tiny run and the earlier completed Small receipt."
   ],
   "models": [
     {
@@ -951,7 +952,7 @@
     "model": "small-q5_1",
     "sha256": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
     "size_bytes": 190085487,
-    "result": "All 21 public probes pass under the unchanged 1 GiB cap after bounded loading, one fallback decoder, per-case process isolation, and fresh per-transcription decoder state. Each of the three long final calls was repeated exactly after auto recognition.",
+    "result": "The earlier bounded run completed all 21 public probes, with exact repeats of the three long finals. A subsequent same-configuration run aborted on ar_eg-1 with native std::bad_alloc after 13 completed cases; see current_followup. Stability remains unqualified.",
     "initial_failures": [
       "Default eager state plus verified weight buffer exceeded cap even on one short clip.",
       "Unrealistic all-fixture preload exceeded cap after deferred state initialization.",
@@ -966,5 +967,263 @@
   "loader_regression": {
     "before": "Base worker exited abnormally during native loading with geometrically grown read buffer.",
     "after": "Exact receipt size plus one byte reserved before read; base loaded in 2053 ms and all 21 probes completed under unchanged 1 GiB limit. The independent signed-store fixture checks the production loader capacity."
+  },
+  "hardware_followup": {
+    "architecture": "x86_64",
+    "cpu_model": "AMD EPYC 9R45",
+    "visible_logical_cpus": 64,
+    "cgroup_cpu_max": "max 100000",
+    "decoder_threads": 2,
+    "observation": "Observed on 2026-10-06 in the same remote worktree/container after the public benchmark. Original timing receipt recorded x86_64 only; this is not contemporaneous CPU telemetry or proof of dedicated CPU availability."
+  },
+  "current_followup": {
+    "date": "2026-10-06",
+    "configuration": "Same current two-thread, best_of=1, fresh-state CPU decoder and unchanged 1 GiB per-child address-space cap; each clip isolated in a non-root confined worker. Fixed language versus auto tested separately.",
+    "tiny": {
+      "load": {
+        "model": "tiny",
+        "load_ms": 1113,
+        "threads": 2,
+        "memory_limit_bytes": 1073741824,
+        "loaded_probes": 1,
+        "probes": 1,
+        "observed_primary_probes": 21,
+        "loads": 21,
+        "cold_load_ms": {
+          "median": 1132,
+          "max": 1162
+        }
+      },
+      "short": {
+        "en": {
+          "cases": 3,
+          "text_wer": 0.1644,
+          "auto_text_wer": 0.1644,
+          "text_cer": 0.0526,
+          "auto_text_cer": 0.0526,
+          "draft_prefix_revision_fraction": 0.0732,
+          "draft_ms": {
+            "median": 563,
+            "max": 584
+          },
+          "final_ms": {
+            "median": 739,
+            "max": 744
+          },
+          "auto_ms": {
+            "median": 1051,
+            "max": 1087
+          },
+          "audio_seconds": 30.78
+        },
+        "de": {
+          "cases": 3,
+          "text_wer": 0.2742,
+          "auto_text_wer": 0.2742,
+          "text_cer": 0.0349,
+          "auto_text_cer": 0.0349,
+          "draft_prefix_revision_fraction": 0.2381,
+          "draft_ms": {
+            "median": 639,
+            "max": 659
+          },
+          "final_ms": {
+            "median": 703,
+            "max": 742
+          },
+          "auto_ms": {
+            "median": 1277,
+            "max": 1305
+          },
+          "audio_seconds": 41.52
+        },
+        "fr": {
+          "cases": 3,
+          "text_wer": 0.367,
+          "auto_text_wer": 0.367,
+          "text_cer": 0.153,
+          "auto_text_cer": 0.153,
+          "draft_prefix_revision_fraction": 0.2821,
+          "draft_ms": {
+            "median": 650,
+            "max": 665
+          },
+          "final_ms": {
+            "median": 696,
+            "max": 928
+          },
+          "auto_ms": {
+            "median": 1165,
+            "max": 1287
+          },
+          "audio_seconds": 41.88
+        },
+        "es": {
+          "cases": 3,
+          "text_wer": 0.1667,
+          "auto_text_wer": 0.1667,
+          "text_cer": 0.0372,
+          "auto_text_cer": 0.0372,
+          "draft_prefix_revision_fraction": 0.125,
+          "draft_ms": {
+            "median": 536,
+            "max": 586
+          },
+          "final_ms": {
+            "median": 612,
+            "max": 715
+          },
+          "auto_ms": {
+            "median": 1088,
+            "max": 1151
+          },
+          "audio_seconds": 43.92
+        },
+        "ar": {
+          "cases": 3,
+          "text_wer": 0.5942,
+          "auto_text_wer": 0.5942,
+          "text_cer": 0.2566,
+          "auto_text_cer": 0.2566,
+          "draft_prefix_revision_fraction": 0.25,
+          "draft_ms": {
+            "median": 573,
+            "max": 602
+          },
+          "final_ms": {
+            "median": 716,
+            "max": 741
+          },
+          "auto_ms": {
+            "median": 1180,
+            "max": 1220
+          },
+          "audio_seconds": 38.34
+        },
+        "zh": {
+          "cases": 3,
+          "text_wer": 1.0,
+          "auto_text_wer": 1.0,
+          "text_cer": 0.2469,
+          "auto_text_cer": 0.2469,
+          "draft_prefix_revision_fraction": 0.3333,
+          "draft_ms": {
+            "median": 559,
+            "max": 1040
+          },
+          "final_ms": {
+            "median": 584,
+            "max": 618
+          },
+          "auto_ms": {
+            "median": 1100,
+            "max": 1112
+          },
+          "audio_seconds": 32.52
+        }
+      },
+      "long": {
+        "en": {
+          "cases": 1,
+          "text_wer": 0.6603,
+          "auto_text_wer": 0.6603,
+          "text_cer": 0.6367,
+          "auto_text_cer": 0.6367,
+          "draft_prefix_revision_fraction": 0.0,
+          "draft_ms": {
+            "median": 517,
+            "max": 517
+          },
+          "final_ms": {
+            "median": 1753,
+            "max": 1753
+          },
+          "auto_ms": {
+            "median": 2290,
+            "max": 2290
+          },
+          "audio_seconds": 70.04
+        },
+        "fr": {
+          "cases": 1,
+          "text_wer": 0.5345,
+          "auto_text_wer": 0.5345,
+          "text_cer": 0.2819,
+          "auto_text_cer": 0.2819,
+          "draft_prefix_revision_fraction": 1.0,
+          "draft_ms": {
+            "median": 537,
+            "max": 537
+          },
+          "final_ms": {
+            "median": 3135,
+            "max": 3135
+          },
+          "auto_ms": {
+            "median": 3563,
+            "max": 3563
+          },
+          "audio_seconds": 87.66
+        },
+        "zh": {
+          "cases": 1,
+          "text_wer": 1.0,
+          "auto_text_wer": 1.0,
+          "text_cer": 0.4549,
+          "auto_text_cer": 0.4549,
+          "draft_prefix_revision_fraction": 0.5385,
+          "draft_ms": {
+            "median": 572,
+            "max": 572
+          },
+          "final_ms": {
+            "median": 4199,
+            "max": 4199
+          },
+          "auto_ms": {
+            "median": 4611,
+            "max": 4611
+          },
+          "audio_seconds": 89.76
+        }
+      },
+      "sha256": "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+      "size_bytes": 77691713,
+      "log_sha256": "488c706bd2bf4d685dc5d3c72816323157db04d7a837c10e1bd34ab52c829dd8"
+    },
+    "small_rerun": {
+      "sha256": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+      "size_bytes": 190085487,
+      "completed_primary_probes": 13,
+      "completed_ids": [
+        "en_us-0",
+        "en_us-1",
+        "en_us-2",
+        "de_de-0",
+        "de_de-1",
+        "de_de-2",
+        "fr_fr-0",
+        "fr_fr-1",
+        "fr_fr-2",
+        "es_419-0",
+        "es_419-1",
+        "es_419-2",
+        "ar_eg-0"
+      ],
+      "failed_probe": "ar_eg-1",
+      "failure": "Native std::bad_alloc, SIGABRT; the 21-case comparison did not complete. Failed phase was not instrumented in this original rerun.",
+      "log_sha256": "6cc421cb5dfc58ed49c33f925090f24a6f0125dc140744807f55c38427ed20d5",
+      "isolated_followup": {
+        "case": "ar_eg-1",
+        "result": "Completed draft, fixed-language final and auto-language final under the same cap after adding ABI exception handling and public phase diagnostics. This passing retry does not establish stability or reproduce the typed exception path.",
+        "load_ms": 2714,
+        "draft_ms": 4467,
+        "final_ms": 4827,
+        "auto_ms": 9078
+      },
+      "qualification": "Intermittent allocation failure unresolved. Preserve the previous completed receipt, but do not claim current Small stability or use this partial run as a complete comparison."
+    },
+    "model_selection": "The existing signed installed-model service chooses the most recently installed valid SpeechRecognition model. Language is persisted independently in Settings. No new model preference, signing, installation or publication is included.",
+    "limits": "Decoder timings exclude cold loading, capture completion and editable-field ACK. No live microphone, older-device, Arm or end-to-end Flow-parity claim."
   }
 }
