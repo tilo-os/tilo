@@ -1,6 +1,6 @@
 use anyhow::{Context as _, ensure};
 use ed25519_dalek::SigningKey;
-use registry_review::{App, Draft, Review};
+use registry_review::{App, Draft, PackageReview, Review};
 use registry_server::applications::{self, ProofSource};
 use registry_server::{ServerIdentity, Storage};
 use registry_types::application::{
@@ -148,6 +148,7 @@ fn shared_launch_does_not_read_the_registry_or_publish_operator_effects() -> any
             .is_some()
     );
     ensure!(app.effect(&Review::Refresh).is_err());
+    ensure!(app.effect(&PackageReview::RefreshPackages).is_err());
     ensure!(
         !absent.exists(),
         "opening the view must not initialize a registry"
@@ -365,6 +366,7 @@ fn opening_a_private_window_never_initializes_or_reads_a_queue_automatically() -
     );
     let result = app.effect(&Review::Refresh);
     ensure!(result.is_err());
+    ensure!(app.effect(&PackageReview::RefreshPackages).is_err());
     ensure!(
         !absent.exists(),
         "refresh refuses an uninitialized registry"
