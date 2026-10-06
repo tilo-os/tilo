@@ -5174,12 +5174,18 @@ impl FileExplorerWidget {
                         self.context_menu.focus_first_action();
                     }
                     "recent-revealed" => {
-                        self.run_effect(crate::effects::FilesEffect::RevealRecent { entry: row })
-                            .expect("prepared Recent target exists");
+                        if let Err(error) = self
+                            .run_effect(crate::effects::FilesEffect::RevealRecent { entry: row })
+                        {
+                            self.set_external_status(error);
+                        }
                     }
                     "recent-forgotten" => {
-                        self.run_effect(crate::effects::FilesEffect::ForgetRecent { entry: row })
-                            .expect("prepared Recent target exists");
+                        if let Err(error) = self
+                            .run_effect(crate::effects::FilesEffect::ForgetRecent { entry: row })
+                        {
+                            self.set_external_status(error);
+                        }
                     }
                     _ => {}
                 }

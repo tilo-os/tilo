@@ -5700,6 +5700,59 @@ mod recent_resource_tests {
     use crate::resource::FileExplorerShell;
     use ui::prelude::TestApp;
 
+    #[test]
+    fn recent_capture_stages_actual_rows_and_effect_outcomes() {
+        for scenario in [
+            "recent",
+            "recent-menu",
+            "recent-revealed",
+            "recent-forgotten",
+        ] {
+            let mut app = TestApp::<FileExplorerShell>::capture(Some(scenario)).unwrap();
+            app.with_surface(|files: &mut FileExplorerWidget| {
+                assert!(
+                    files.status.is_none(),
+                    "a capture must not hide a failed effect"
+                );
+                match scenario {
+                    "recent-revealed" => {
+                        assert!(!files.is_recent_view());
+                        let selected = files.selected_index().unwrap();
+                        assert_eq!(files.entries()[selected].name, "Quarterly report.pdf");
+                        assert!(files.entries()[selected].path.exists());
+                    }
+                    "recent-forgotten" => {
+                        assert!(files.is_recent_view());
+                        assert_eq!(files.entries().len(), 1);
+                        assert_eq!(files.entries()[0].name, "Notes.txt");
+                        assert!(
+                            files.entries()[0]
+                                .path
+                                .parent()
+                                .unwrap()
+                                .join("Quarterly report.pdf")
+                                .exists()
+                        );
+                    }
+                    _ => {
+                        assert!(files.is_recent_view());
+                        assert_eq!(files.entries().len(), 2);
+                        if scenario == "recent-menu" {
+                            assert!(
+                                files
+                                    .context_menu
+                                    .items()
+                                    .iter()
+                                    .any(|item| item.label() == Some("Open containing folder"))
+                            );
+                        }
+                    }
+                }
+            })
+            .unwrap();
+        }
+    }
+
     fn invoke(app: &mut TestApp<FileExplorerShell>, row: &str, action: &str) {
         let instance = app.harness().component_instance_id().unwrap();
         app.harness()
@@ -5724,6 +5777,7 @@ mod recent_resource_tests {
         std::fs::write(&sibling, b"notes").unwrap();
         let mut app =
             TestApp::<FileExplorerShell>::launched(&[root.path().to_str().unwrap()]).unwrap();
+        let shared_before = app.state();
         app.with_surface(|files: &mut FileExplorerWidget| {
             files.note_recent(&sibling, crate::recent::RecentUse::Opened);
             files.note_recent(&target, crate::recent::RecentUse::Opened);
@@ -5777,6 +5831,11 @@ mod recent_resource_tests {
         .unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"budget");
         assert_eq!(std::fs::read(&sibling).unwrap(), b"notes");
+        assert_eq!(
+            app.state(),
+            shared_before,
+            "shared bookmarks and file operations stay unchanged"
+        );
         assert_eq!(
             app.settings::<crate::recent::RecentFiles>()
                 .get()
