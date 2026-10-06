@@ -3294,6 +3294,7 @@ impl FileExplorerWidget {
             .copied()
             .chain(self.selection.primary())
             .chain(self.selection.anchor())
+            .chain(self.renaming)
             .filter_map(|index| {
                 self.entries
                     .get(index)
@@ -3309,6 +3310,8 @@ impl FileExplorerWidget {
             .collect();
         self.selection
             .remap_indices(|old| remapped.get(&old).copied());
+        self.renaming = self.renaming.and_then(|old| remapped.get(&old).copied());
+        self.rename_rect.set(None);
         // A previous click's row cannot be used for double-click detection
         // after reordering: that row may now contain a different file.
         self.last_click = None;

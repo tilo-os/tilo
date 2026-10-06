@@ -129,6 +129,11 @@ files, the keyboard cursor and the Shift range anchor. The cursor still follows
 an item deselected by Ctrl-click. The next Shift gesture extends from that
 item's new row. A click remembered before sorting cannot turn a click on a
 different file into a double-click and open it.
+An active inline rename follows its original file as well, keeping the draft
+name and editor focus. At the intermediate candidate `f32dfec47a`, the rename
+regression still renamed `b.txt` while editing `a.txt` after sorting by size;
+the final regression checks the renamed file's exact bytes and leaves `b.txt`
+untouched.
 
 The implementation uses the shared selection model and remaps only its tracked
 items against the existing directory snapshot. It adds linear listing work and
@@ -140,7 +145,7 @@ identity handling.
 The production regression copies a multiselection into a scratch destination
 after invoking the published sort action and checks the exact file bytes and
 absence of the unselected file. Additional journeys exercise every published
-sort, Shift extension, a deselected cursor, an empty selection and click/open
+sort, Shift extension, a deselected cursor, an empty selection, active rename and click/open
 continuity. Run:
 
 ```sh
