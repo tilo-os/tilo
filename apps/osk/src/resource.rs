@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn the_published_keyboard_offers_its_configuration_and_never_what_is_typed() {
         let mut app = keyboard();
-        for letter in ["s", "e", "c", "r", "e", "t", "space", "m", "a"] {
+        for letter in ["s", "e", "c", "r", "e", "t", "Space", "m", "a"] {
             tap(&mut app, letter);
         }
         app.settle();
@@ -307,7 +307,7 @@ mod tests {
     #[test]
     fn what_typing_teaches_is_the_persons_own_and_survives_a_relaunch() {
         let mut app = keyboard();
-        for key in ["h", "i", "space", "y", "o", "u", "space"] {
+        for key in ["h", "i", "Space", "y", "o", "u", "Space"] {
             tap(&mut app, key);
         }
         app.settle();
@@ -331,7 +331,7 @@ mod tests {
     #[test]
     fn clearing_learned_suggestions_forgets_the_saved_lessons() {
         let mut app = keyboard();
-        for key in ["h", "i", "space"] {
+        for key in ["h", "i", "Space"] {
             tap(&mut app, key);
         }
         app.settle();
