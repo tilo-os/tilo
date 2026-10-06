@@ -314,6 +314,36 @@ Reports and PNGs stay outside tracked source. This is real FUSE/ART execution on
 one remote x86-64 host with software graphics, not qualification of a signed OS
 image, multiple physical machines, native Btrfs projection, ARM64 or physical GPU.
 
+## Started-service lifecycle
+
+The owned SDK-built `ServiceActivity` APK reproduced a concrete runtime defect:
+two `startService` calls both received request ID zero, an older
+`stopSelfResult` returned true, and neither completion invoked `onDestroy`.
+Android requires a distinct start-request token and rejects a stop for an older
+request. See the [Android Service API](https://developer.android.com/reference/android/app/Service#stopSelfResult(int)).
+
+The bounded framework patch now reserves increasing IDs before main-looper
+dispatch, verifies the registered service instance when stopping, and calls
+`onDestroy` on the main looper. It changes neither launcher permissions nor host
+authority. All eight modified upstream sources are hash-pinned before mutation.
+
+On 2026-10-06, the unchanged signed APK passed on the patched actual ART runtime:
+IDs 1 and 2, stale stop false, current stop true, exactly one main-looper service
+destruction, ordered activity pause/stop/destroy, three preserved visits in one
+workspace and a fresh independent visit in another. Every launch presented an
+Android frame through the production Tilo compositor with enforced Landlock and
+no-new-privileges. Camera permission remained denied and no grants were added.
+Run `tools/android/run_service_journey.py --help` for the pinned before/after
+journey; source and build instructions are in `tools/android/mediation/README.md`.
+Generated reports, original screenshots, APKs and signing material stay outside
+tracked source.
+
+This qualifies a self-stopping started service in the existing isolated APK
+process. Sticky restarts, bound-client lifetimes, foreground services, worker-thread
+stop requests, process-loss recovery and service survival after closing an activity
+still need separate app journeys. This run did not exercise new file grants or
+their revocation, signed OS admission, physical devices or ARM64.
+
 ## Compatibility assessment
 
 | Area | Confirmed | Remaining acceptance |
@@ -322,7 +352,7 @@ image, multiple physical machines, native Btrfs projection, ARM64 or physical GP
 | Files/state | App-private history and separate room state; approved document metadata/read/save, Unicode names and editor modes; actual FUSE cold read, verified safe eviction, recipient restart and APK restoration; read-only/sibling denial; revoked metadata/read/write denied with resident source | Android content providers, Android sharing intents, persisted URI authority, immediate running-process revocation, native projection and legacy external storage mapping |
 | Notifications | Actual filtered-provider delivery/withdrawal with authenticated room attribution; unavailable without capability | Full Android notification tags, actions, resource mapping and background persistence |
 | Permissions | Strict launcher policy, no requested storage/phone grants, isolated networking | Capability-backed Android permission consent, camera/mic/service grants remain |
-| Lifecycle | Actual Android close/reopen and workspace return, saved state, explicit pause/stop/destroy callbacks, owned compositor teardown | Workspace stop, compositor loss, background workers, service apps, updates and migration |
+| Lifecycle | Actual Android close/reopen and workspace return, saved state, explicit pause/stop/destroy callbacks; started-service request IDs and stale/current self-stop with main-looper destruction; owned compositor teardown | Workspace stop, compositor loss, background workers, bound/foreground/sticky services, updates and migration |
 | Security | Production launcher and authenticated surface adoption; mandatory fully enforced Landlock and no-new-privileges; negative file/network fixture | Malicious JNI/ART probes, cross-room input/bus/clipboard, broader native attack surface review |
 | Collaboration/accessibility | Foreign surface display, semantic shell actions, real picker AT-SPI actions and external Android TextView content description | APK state is not system-owned CRDT state; complete Android semantic resource/action and accessibility coverage |
 
