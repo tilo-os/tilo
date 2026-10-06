@@ -1712,11 +1712,11 @@ fn draw_mark(
     }
     let picture = matches!(mark.shape, Shape::Image { .. });
     let graded;
-    let grades = grades_of(&[mark.style.adjust.as_ref(), cx.layer_adjust]);
-    let mark = if picture || grades.is_empty() {
+    let adjustments = grades_of(&[mark.style.adjust.as_ref(), cx.layer_adjust]);
+    let mark = if picture || adjustments.is_empty() {
         mark
     } else {
-        graded = graded_mark(mark, palette, &grades);
+        graded = graded_mark(mark, palette, &adjustments);
         &graded
     };
     let mut layers = 0;
@@ -2625,12 +2625,11 @@ fn draw_vector_path(
         }
         shape => {
             let fresh;
-            let path = match cached {
-                Some(path) => path,
-                None => {
-                    fresh = shape.path();
-                    &fresh
-                }
+            let path = if let Some(path) = cached {
+                path
+            } else {
+                fresh = shape.path();
+                &fresh
             };
             if shape.closed() {
                 if let Some(gradient) = style
