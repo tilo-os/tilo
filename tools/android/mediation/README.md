@@ -3,7 +3,7 @@
 This is a private runtime integration and an owned SDK-built test APK. It is not
 an installed Tilo app, a package-store publisher, or a general Android framework.
 
-`patch_framework.py` checks exact SHA-256 pins for the five modified Java sources
+`patch_framework.py` checks exact SHA-256 pins for the six modified Java sources
 from ATL commit `f4622e36186f5757b75a605deff543145df3094b` before changing anything.
 Upstream Java sources retain GPL-3.0-only licensing. The added chooser and fixture
 sources carry MIT notices. No upstream or built framework/APK binary is vendored.
@@ -16,6 +16,16 @@ reply, oversized frame, stream loss and timeout return cancellation. A transport
 failure closes the stream permanently so a late reply cannot satisfy another
 request. Requests serialize off the UI thread; a finishing activity gets no reply.
 Multiple selection and persisted Android URI permissions are unsupported.
+
+File-URI `ContentResolver.query` supports a null projection, `_display_name`,
+`_size` and filename-derived `mime_type`; unknown columns are null. Metadata
+requires a successful read-authorized open inside the existing launcher sandbox,
+then uses `fstat` on that descriptor. It never reopens a checked path or reads
+content to guess MIME type. UTF-16/UTF-8 conversion preserves supplementary-plane
+filenames and rejects embedded NUL. Projection and path sizes are bounded.
+Precancelled queries fail before access. The two-argument `openOutputStream`
+delegates to ATL's existing descriptor mode parsing and confinement.
+This does not add `content://` providers, grant authority or cold-hydration proof.
 
 Notification APIs check Tilo's existing provider over the already registered
 GApplication filtered bus. Explicit fixture preparation with `--notifications`
@@ -78,6 +88,18 @@ Write generated reports under `target/android-acceptance/` or outside the checko
 the runners reject output in tracked source. Publish selected reports and PNGs as
 PR attachments or CI artifacts, never private session profiles or signing keys.
 
+For document metadata and editor modes, compile `DocumentActivity.java` with
+`DocumentManifest.xml` into one separately signed APK, then qualify those exact
+bytes against both the previous and changed runtimes. Run
+`tools/android/run_document_journey.py --fixture-grants --help` for inputs.
+`--expect-incompatibility` requires the previous runtime's actual null-projection
+`NullPointerException` and missing-overload `NoSuchMethodError`; it never marks that
+runtime compatible. The changed runtime must pass Unicode names, byte sizes,
+projections, cancellation, input bounds, `wt`/`wa`/`rw`/`rwt` modes and invalid-mode
+denial. Source writes and ungranted sibling metadata/reads must fail. After grants
+are revoked, relaunch must deny former metadata, reads and writes. Both runs use
+the actual production launcher, compositor, ART and external accessibility client.
+
 ## Acceptance checklist
 
 - [x] Actual unchanged Arity APK calculation, persistence and separate room state.
@@ -90,6 +112,9 @@ PR attachments or CI artifacts, never private session profiles or signing keys.
 - [x] Filtered notification delivery/withdrawal reaches Tilo with room attribution.
 - [x] External AT-SPI client selects real picker controls and observes Android TextView description.
 - [x] Real close invokes pause, stop and destroy; owned session/bus clean up.
+- [x] Same signed APK reproduces old metadata/mode failures and passes the changed runtime.
+- [x] Unicode metadata, byte size, projections, cancellation and editor modes retain file isolation.
+- [x] Relaunch denies metadata as well as reads/writes after fixture grants are revoked.
 - [ ] Cold P2P hydration, persisted URI authority and already-open FD revocation.
 - [ ] Full notification identity/tags, actions and background persistence.
 - [ ] Compositor loss, room stop, background services and updates.

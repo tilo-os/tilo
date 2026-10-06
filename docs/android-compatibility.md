@@ -259,12 +259,37 @@ strict C builds, SDK signature verification, all three actual APK journeys and
 visual inspection of the owned fixture PNGs. All Rust builds/tests run remotely
 with local fallback disabled.
 
+## Document metadata and editor modes
+
+Ordinary file clients exposed two framework gaps: `ContentResolver.query` crashed
+with a null projection, and `openOutputStream(Uri, String)` was absent. One signed
+SDK fixture reproduces both failures in actual ART on the previous accepted
+runtime, then passes on the changed runtime with its APK bytes unchanged.
+
+The private integration supports file-URI display names, byte sizes, explicit
+projections, unknown-column nulls, precancelled queries and bounded inputs. An
+actual `android-π-📄.txt` fixture preserves its supplementary-plane filename.
+Editor modes `wt`, `wa`, `rw` and `rwt` use the existing descriptor implementation;
+invalid modes fail without changing bytes. The runner verifies exact output,
+read-only source protection, denied sibling metadata/reads, close callbacks and
+denied former metadata/reads/writes after grant revocation and relaunch.
+
+Metadata requires a read-authorized open inside the unchanged launcher sandbox,
+then observes that descriptor with `fstat`; a swapped path cannot redirect the
+metadata lookup. MIME is inferred from the caller-supplied filename without reading
+content. This remains a local file-URI path: Android content providers, cold P2P
+hydration, persisted URI authority and already-open descriptor revocation remain
+unqualified. The [document journey source](../tools/android/run_document_journey.py)
+records actual runtime, APK and production binary pins outside tracked source.
+The original signed integration, denial and Arity APKs are rerun against the new
+runtime to preserve their prior behavior.
+
 ## Compatibility assessment
 
 | Area | Confirmed | Remaining acceptance |
 | --- | --- | --- |
 | Graphics/input | Actual Arity DEX/ART execution, tiled Wayland tab, OS chrome, software rendering, pointer field focus and keyboard calculation | Real GPU/DRM, resize/rotation, ARM64, touch, IME, Back; ATL focus/widget quirks and unsupported listener methods |
-| Files/state | App-private history and separate room state; approved local document read/save, read-only and sibling denial; revoked URI read/write denied on relaunch | Cold P2P hydration, sharing, persisted URI authority, immediate running-process revocation and legacy external storage mapping |
+| Files/state | App-private history and separate room state; approved local document metadata/read/save, Unicode names and editor modes; read-only/sibling denial; revoked metadata/read/write denied on relaunch | Android content providers, cold P2P hydration, sharing, persisted URI authority, immediate running-process revocation and legacy external storage mapping |
 | Notifications | Actual filtered-provider delivery/withdrawal with authenticated room attribution; unavailable without capability | Full Android notification tags, actions, resource mapping and background persistence |
 | Permissions | Strict launcher policy, no requested storage/phone grants, isolated networking | Capability-backed Android permission consent, camera/mic/service grants remain |
 | Lifecycle | Actual Android close/reopen and workspace return, saved state, explicit pause/stop/destroy callbacks, owned compositor teardown | Workspace stop, compositor loss, background workers, service apps, updates and migration |
