@@ -237,6 +237,12 @@ fn source_attention(
     {
         return Some(MessageAttention::MembershipChanged);
     }
+    // Runs under the same serialized owner turn as first binding, delivery,
+    // acceptance and reply preparation. A saved source digest is not proof
+    // that the original parent still exists unchanged in current Chat.
+    if crate::agent_message_commit::verify_row(view, &message.source, now).is_err() {
+        return Some(MessageAttention::RequestChanged);
+    }
     None
 }
 

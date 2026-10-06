@@ -214,6 +214,9 @@ pub(crate) enum MessageAttention {
     AuthorRevoked,
     HostChanged,
     ExecutionRetired,
+    /// The original canonical request version cannot be revalidated. This
+    /// does not revoke input already delivered or claim model cancellation.
+    RequestChanged,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

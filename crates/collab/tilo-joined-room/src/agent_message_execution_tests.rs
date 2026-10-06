@@ -246,6 +246,130 @@ fn phase(fixture: &Fixture, invocation: uuid::Uuid) -> MessagePhase {
         .unwrap()
 }
 
+fn change_chat(fixture: &Fixture, invocation: uuid::Uuid, change: usize) {
+    use automerge::transaction::Transactable;
+    use automerge::{AutoCommit, ROOT, ReadDoc};
+    let room = RoomId::parse(crate::testing::ROOM).unwrap();
+    let mutation = fixture
+        .owner
+        .with_current(room, |view| {
+            let mut doc = AutoCommit::load(&view.peer().document("so.tilo.chat", "").unwrap())
+                .map_err(|error| error.to_string())?;
+            doc.set_actor(automerge::ActorId::from(b"ordinary-person-editor".to_vec()));
+            if change == 2 {
+                doc.put(ROOT, "ordinary-person-note", "Unrelated change")
+                    .unwrap();
+            } else {
+                let channel = tilo_actions::agent_message::agent_conversation_channel_id(
+                    crate::testing::ROOM,
+                    "scribe",
+                );
+                let (_, messages) = doc.get(ROOT, "messages").unwrap().unwrap();
+                let (_, list) = doc.get(&messages, channel).unwrap().unwrap();
+                assert_eq!(doc.length(&list), 1);
+                let (_, row) = doc.get(&list, 0).unwrap().unwrap();
+                assert_eq!(
+                    doc.get(&row, "id").unwrap().unwrap().0.as_str(),
+                    Some(format!("m_{}", invocation.simple()).as_str())
+                );
+                if change == 0 {
+                    doc.delete(&list, 0).unwrap();
+                } else {
+                    let (_, text) = doc.get(&row, "text").unwrap().unwrap();
+                    let length = isize::try_from(doc.length(&text)).unwrap();
+                    doc.splice_text(&text, 0, length, "Changed explicit input")
+                        .unwrap();
+                    doc.put(&row, "edited", true).unwrap();
+                }
+            }
+            view.peer().clone().publish_document(
+                "so.tilo.chat",
+                "",
+                doc.save(),
+                &fixture.key,
+                fixture.now,
+            )
+        })
+        .unwrap();
+    fixture
+        .owner
+        .commit_document(crate::publication::request(&mutation).unwrap(), fixture.now)
+        .unwrap();
+}
+
+#[test]
+fn current_request_edit_or_deletion_fences_each_actual_process_boundary() {
+    for change in 0..2 {
+        for boundary in 0..3 {
+            let (fixture, invocation) = admitted();
+            let mut running = launch(&fixture);
+            if boundary > 0 {
+                running.service.deliver(invocation, fixture.now).unwrap();
+            }
+            if boundary > 1 {
+                running.service.accept(invocation, fixture.now).unwrap();
+            }
+            let room = RoomId::parse(crate::testing::ROOM).unwrap();
+            let original = fixture
+                .owner
+                .with_current(room, |view| {
+                    Ok(view.record.agent_messages[&invocation].clone())
+                })
+                .unwrap();
+            change_chat(&fixture, invocation, change);
+            assert!(
+                running.process.facts().is_ok(),
+                "actual process remains live"
+            );
+            let result = match boundary {
+                0 => running.service.deliver(invocation, fixture.now).map(|_| ()),
+                1 => running.service.accept(invocation, fixture.now),
+                _ => running
+                    .service
+                    .prepare_reply(invocation, "Must not retain", fixture.now)
+                    .map(|_| ()),
+            };
+            assert!(result.is_err());
+            assert!(running.service.deliver(invocation, fixture.now).is_err());
+            let reopened = crate::open_file(&fixture.directory.path().join("owner.json")).unwrap();
+            reopened
+                .with_current(room, |view| {
+                    let current = &view.record.agent_messages[&invocation];
+                    assert!(matches!(
+                        current.phase,
+                        MessagePhase::NeedsAttention(MessageAttention::RequestChanged)
+                    ));
+                    // Preserve immutable already-delivered custody and the request;
+                    // attention must not rewrite input, cancel the model or retarget.
+                    assert!(current.execution == original.execution);
+                    assert_eq!(
+                        current.source.digest().unwrap(),
+                        original.source.digest().unwrap()
+                    );
+                    assert_eq!(current.source.invocation, invocation);
+                    Ok(())
+                })
+                .unwrap();
+            running.launcher.shutdown().unwrap();
+        }
+    }
+}
+
+#[test]
+fn unrelated_person_document_edit_does_not_invalidate_addressed_input() {
+    let (fixture, invocation) = admitted();
+    let mut running = launch(&fixture);
+    change_chat(&fixture, invocation, 2);
+    let delivered = running.service.deliver(invocation, fixture.now).unwrap();
+    assert_eq!(delivered.text, "Explicit input");
+    running.service.accept(invocation, fixture.now).unwrap();
+    assert!(matches!(
+        phase(&fixture, invocation),
+        MessagePhase::Accepted
+    ));
+    running.launcher.shutdown().unwrap();
+}
+
 #[test]
 fn real_process_binds_accepts_and_prepares_only_explicit_input() {
     let (fixture, invocation) = admitted();

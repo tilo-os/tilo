@@ -83,7 +83,7 @@ fn matching_rows(doc: &AutoCommit, source: &MessageSource) -> Result<Vec<(String
     Ok(rows)
 }
 
-fn verify_row(
+pub(crate) fn verify_row(
     view: &NativeCommittedView,
     source: &MessageSource,
     now: SystemTime,
