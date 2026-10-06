@@ -65,7 +65,9 @@ pub mod collab_capnp {
     include!("generated/collab_capnp.rs");
 }
 
+mod agent_messages;
 pub mod committed_document;
+pub use agent_messages::AgentMessageInput;
 #[cfg(feature = "client")]
 pub mod live_activity;
 pub mod native_media;
