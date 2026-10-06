@@ -758,6 +758,16 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
                 meter.string_capacity(content_hash);
             }
         }
+        CollabRequest::LaunchInstalledApplication {
+            app_id,
+            package_root,
+            ..
+        } => {
+            meter.string_capacity(app_id);
+            if let Some(root) = package_root {
+                meter.string_capacity(root);
+            }
+        }
         CollabRequest::RemoteAction { message } => serialized_bytes(message, &mut meter),
         CollabRequest::OfferContent { hash, bytes } => {
             meter.string_capacity(hash);
@@ -1230,7 +1240,8 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
         },
         #[cfg(unix)]
         CollabEvent::ManagedInvocationObservation { result } => meter.add(result.meter_bytes()),
-        CollabEvent::PublishedInvocationResult { result, .. } => match result {
+        CollabEvent::PublishedInvocationResult { result, .. }
+        | CollabEvent::InstalledApplicationLaunchResult { result, .. } => match result {
             Ok((_, update)) => serialized_bytes(update, &mut meter),
             Err(error) => meter.string_capacity(error),
         },
@@ -2558,6 +2569,10 @@ impl CollaborationManager {
     fn from_connected(connected: ConnectedBroker) -> Self {
         let mut manager = Self::with_transport(Box::new(connected.transport));
         manager.primary_route = connected.primary_route;
+        // The bootstrap already acknowledged Ready, but the owner has not
+        // observed it. Its first pump must still announce the initial action
+        // surface and request the document snapshot on the admitted route.
+        manager.reported_state = None;
         manager
     }
 
@@ -3717,7 +3732,7 @@ async fn spawn_context_stream(
                     .map(|collaborator| Collaborator {
                         id: collaborator.user_id,
                         name: collaborator.display_name,
-                        color: unpack_color(collaborator.color),
+                        colour: Collaborator::colour_from_packed(collaborator.color),
                         is_agent: collaborator.is_agent,
                         is_self: collaborator.is_self,
                     })
@@ -5660,6 +5675,30 @@ async fn dispatch_sdk_request(
             let _ = inbound_tx
                 .send_durable(CollabEvent::PublishedInvocationResult { request_id, result });
         }
+        CollabRequest::LaunchInstalledApplication {
+            request_id,
+            app_id,
+            package_root,
+            on_behalf_of,
+        } => {
+            let result = route
+                .channel
+                .launch_installed_application_for(
+                    &app_id,
+                    None,
+                    package_root.as_deref(),
+                    on_behalf_of.map(|id| *id.0.as_bytes()),
+                )
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|(id, update)| {
+                    serde_json::from_str(&update)
+                        .map(|update| (id, update))
+                        .map_err(|error| error.to_string())
+                });
+            let _ = inbound_tx
+                .send_durable(CollabEvent::InstalledApplicationLaunchResult { request_id, result });
+        }
         CollabRequest::SubscribeEnrolledTasks { request_id } => {
             let result = route
                 .channel
@@ -5903,20 +5942,6 @@ fn decrypt_document_payload(
             Err(refused(collab_types::DocumentMutationError::RouteMismatch))
         }
     }
-}
-
-/// Unpack the SDK's 0x00RRGGBB u32 into [R, G, B] floats in 0..1 — the
-/// shape the legacy dialect already used, so existing consumers render
-/// identically.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "each channel is masked to 0..=255 by `& 0xFF`, always exactly representable in f32"
-)]
-fn unpack_color(packed: u32) -> [f32; 3] {
-    let r = ((packed >> 16) & 0xFF) as f32 / 255.0;
-    let g = ((packed >> 8) & 0xFF) as f32 / 255.0;
-    let b = (packed & 0xFF) as f32 / 255.0;
-    [r, g, b]
 }
 
 /// Translate an SDK [`runtime_collab::PresenceEvent`] into a
@@ -7167,6 +7192,9 @@ mod tests {
             // Returning a manager must include the existing Hello/primary barrier.
             assert!(manager.is_connected());
             assert!(manager.primary_route.current(true).is_some());
+            assert_eq!(manager.state(), CollaborationState::Ready);
+            assert_eq!(manager.take_state_change(), Some(CollaborationState::Ready));
+            assert_eq!(manager.take_state_change(), None);
             let joined = captures.lock().unwrap().joined.clone();
             assert_eq!(joined.len(), 1);
             assert_eq!(
@@ -10288,7 +10316,7 @@ mod tests {
                 context_backlog: vec![SeedContext {
                     collaborators: vec![
                         ("alice".to_owned(), "Alice".to_owned(), 0x00FF_8000),
-                        ("bob".to_owned(), "Bob".to_owned(), 0x0000_80FF),
+                        ("bob".to_owned(), "Bob".to_owned(), 0),
                     ],
                     permissions: vec!["edit".to_owned(), "share".to_owned()],
                 }],
@@ -10316,10 +10344,9 @@ mod tests {
             assert_eq!(collabs.len(), 2);
             assert_eq!(collabs[0].id, "alice");
             assert_eq!(collabs[0].name, "Alice");
-            // 0x00FF8000 → R=255, G=128, B=0.
-            assert!((collabs[0].color[0] - 1.0).abs() < 1e-3);
-            assert!((collabs[0].color[1] - 128.0 / 255.0).abs() < 1e-3);
-            assert!(collabs[0].color[2].abs() < 1e-3);
+            // 0x00FF8000 is an orange; 0 says no colour.
+            assert_eq!(collabs[0].colour, Some(crate::tokens::PresenceHue::Orange));
+            assert_eq!(collabs[1].colour, None);
             assert_eq!(perms, vec!["edit".to_owned(), "share".to_owned()]);
         }
 

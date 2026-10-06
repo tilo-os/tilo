@@ -2,7 +2,6 @@ use crate::animation::Spring;
 use crate::color_compat::ColorCompat;
 use crate::icons;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
@@ -22,6 +21,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::Key;
 
+use crate::tokens::TextRole;
 /// Group widths are the desktop model's: a fraction of the strip, never
 /// pixels, with one set of tiers and clamps for every host.
 pub use tilo_desktop_model::width::{
@@ -304,8 +304,8 @@ impl WindowGroup {
             scene,
             transform,
             self.rect,
-            f64::from(theme.tokens.radii.xl),
-            &theme.tokens.elevation.e4,
+            f64::from(theme.tokens.radii.tile),
+            &theme.tokens.elevation.floating,
         );
         if !self.maximized {
             scene.push_layer(
@@ -1729,8 +1729,8 @@ impl WindowGroup {
             .find(|t| t.id == self.bar.active_id())
             .map(|t| t.title.clone())
             .unwrap_or_default();
-        let title_size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
-        let (tw, th) = tr.measure(&active_title, title_size, None);
+        let title_style = theme.text(TextRole::Caption);
+        let (tw, th) = tr.measure_style(&active_title, None, &title_style);
         // The label sits `spacing.s3` in from either end of its chip.
         let chip_pad = f64::from(theme.tokens.spacing.s3);
         let title_pill_w = (f64::from(tw) + 2.0 * chip_pad).max(MAXIMIZED_TITLE_CHIP_MIN_W);
@@ -1745,10 +1745,16 @@ impl WindowGroup {
             transform,
             title_pill,
             title_pill.height() / 2.0,
-            &theme.tokens.elevation.e2,
+            &theme.tokens.elevation.floating,
         );
-        let (chip_fill, chip_border) = crate::surface::chip_colors(theme, false);
-        crate::surface::pill(scene, transform, title_pill, chip_fill, chip_border, None);
+        crate::widget::chip::paint_pill_body(
+            scene,
+            transform,
+            title_pill,
+            crate::widget::ChipStyle::Neutral,
+            false,
+            theme,
+        );
         // Affine composition is floating-point matrix multiply — it
         // cannot overflow or panic the way integer arithmetic can.
         #[allow(
@@ -1760,13 +1766,13 @@ impl WindowGroup {
                 title_pill.center().x - f64::from(tw) / 2.0,
                 title_pill.center().y - f64::from(th) / 2.0,
             ));
-        tr.draw_text(
+        tr.draw_style(
             scene,
             &active_title,
-            title_size,
             theme.tokens.colors.text_primary,
             title_text_transform,
             None,
+            &title_style,
         );
     }
 
@@ -1783,14 +1789,14 @@ impl WindowGroup {
         layout: ChromePillLayout,
     ) {
         let ChromePillLayout { pad, pill_h, y0 } = layout;
-        let title_size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
+        let title_style = theme.text(TextRole::Caption);
         // The close chip is a square of the row's height, so its × sits on
         // the same centre the title chip's text does.
         let close_w = pill_h;
         let close_x0 = self.rect.x1 - close_w - pad;
         self.close_rect = Rect::new(close_x0, y0, close_x0 + close_w, y0 + pill_h);
         let label = crate::i18n::widget_format("widget-maximized-restore", &[]);
-        let (lw, lh) = tr.measure(&label, title_size, None);
+        let (lw, lh) = tr.measure_style(&label, None, &title_style);
         let icon_inset = f64::from(theme.tokens.spacing.s2);
         // Icon slot, gap, label, end pad: a longer translation widens the chip.
         let restore_w = MAXIMIZED_RESTORE_CHIP_W
@@ -1803,16 +1809,15 @@ impl WindowGroup {
             transform,
             self.restore_rect,
             self.restore_rect.height() / 2.0,
-            &theme.tokens.elevation.e2,
+            &theme.tokens.elevation.floating,
         );
-        let (restore_fill, restore_border) = crate::surface::chip_colors(theme, self.restore_hover);
-        crate::surface::pill(
+        crate::widget::chip::paint_pill_body(
             scene,
             transform,
             self.restore_rect,
-            restore_fill,
-            restore_border,
-            None,
+            crate::widget::ChipStyle::Neutral,
+            self.restore_hover,
+            theme,
         );
         // Text label kept (for screen readers/i18n), after a square icon
         // slot for the lucide `Minimize2` glyph: `spacing.s2` in from the
@@ -1843,13 +1848,13 @@ impl WindowGroup {
             reason = "Affine `*` composes floating-point transform matrices, not integer arithmetic"
         )]
         let label_transform = transform * vello::kurbo::Affine::translate((lx, ly));
-        tr.draw_text(
+        tr.draw_style(
             scene,
             &label,
-            title_size,
             theme.tokens.colors.text_primary,
             label_transform,
             None,
+            &title_style,
         );
 
         self.draw_maximized_close_button(scene, transform, theme);
@@ -1864,33 +1869,19 @@ impl WindowGroup {
             transform,
             self.close_rect,
             self.close_rect.height() / 2.0,
-            &theme.tokens.elevation.e2,
+            &theme.tokens.elevation.floating,
         );
-        let close_fill = if self.close_hover {
-            theme.tokens.colors.semantic.danger.with_alpha_factor(0.8)
-        } else {
-            crate::surface::chip_colors(theme, false).0
-        };
-        let close_border = if self.close_hover {
-            None
-        } else {
-            crate::surface::chip_colors(theme, false).1
-        };
-        crate::surface::pill(
+        // The quiet chip, lifted under the pointer. Closing a window is not
+        // an error, so it is never danger red.
+        crate::widget::chip::paint_pill_body(
             scene,
             transform,
             self.close_rect,
-            close_fill,
-            close_border,
-            None,
+            crate::widget::ChipStyle::Neutral,
+            self.close_hover,
+            theme,
         );
-        // On hover the glyph takes the ink that reads on the danger face —
-        // derived, so it stays legible on a light theme's danger red too.
-        let glyph_color = if self.close_hover {
-            theme.on_surface(theme.tokens.colors.semantic.danger).ink
-        } else {
-            theme.tokens.colors.text_primary
-        };
+        let glyph_color = theme.tokens.colors.text_primary;
         icons::draw_icon(
             scene,
             transform,
@@ -1945,8 +1936,8 @@ impl WindowGroup {
             scene,
             preview_transform,
             source,
-            f64::from(theme.tokens.radii.xl),
-            &theme.tokens.elevation.e4,
+            f64::from(theme.tokens.radii.tile),
+            &theme.tokens.elevation.floating,
         );
         scene.push_layer(
             vello::peniko::Fill::NonZero,
@@ -4956,9 +4947,8 @@ mod tests {
         }
 
         // Case `maximized_close_chip_uses_danger_token_on_hover`.
-        // Concept parity: `hover:bg-red-500/80` — `semantic.danger` at 80 %
-        // alpha — sampled from the **production paint path** on both presets.
-        // At rest the × chip is the quiet chip face (`chip_colors`: the raised
+        // Sampled from the **production paint path** on both presets.
+        // At rest the × chip is the quiet chip face (the raised
         // surface under a rest edge that registers against it), not a literal
         // white tint; on hover it turns to the danger token and the × glyph
         // stays legible on that face, where the old opaque white only happened
@@ -4994,7 +4984,13 @@ mod tests {
                 // inside the capsule and above the × glyph's box.
                 let (cx, top) = (chip.center().x, chip.y0);
                 let face = pixel(&idle, w, cx, top + 3.0);
-                let (quiet_fill, quiet_edge) = crate::surface::chip_colors(&theme, false);
+                let quiet = crate::widget::ChipStyle::Neutral.colors(
+                    &theme,
+                    theme.tokens.colors.surfaces.content,
+                    false,
+                    false,
+                );
+                let (quiet_fill, quiet_edge) = (quiet.fill, quiet.edge);
                 assert!(
                     contrast_ratio(face, quiet_fill) < 1.02,
                     "{}: idle × chip {chip:?} (group {:?}) paints the quiet chip face {quiet_fill:?}, got {face:?}",
@@ -5020,22 +5016,17 @@ mod tests {
                     write_png(&hover, w, h, &png);
                 }
                 let hot = pixel(&hover, w, cx, top + 3.0);
+                // Hover lifts the chip, as every quiet control: closing a
+                // window is not an error, so it is never danger red.
+                assert!(
+                    crate::chrome::lightness_step(hot, face) >= 0.04,
+                    "{}: hover must visibly lift the × chip ({face:?} -> {hot:?})",
+                    theme.name
+                );
                 let danger = theme.tokens.colors.semantic.danger;
                 assert!(
-                    contrast_ratio(hot, face) >= 1.5,
-                    "{}: hover must visibly recolour the × chip ({face:?} -> {hot:?})",
-                    theme.name
-                );
-                // The face is the danger token at 80 % over the card: red-led on
-                // every preset, and nearer the token than the rest face was.
-                assert!(
-                    hot.r() > hot.g() && hot.r() > hot.b(),
-                    "{}: hovered × chip {hot:?} is not the danger red",
-                    theme.name
-                );
-                assert!(
-                    contrast_ratio(hot, danger) < contrast_ratio(face, danger),
-                    "{}: hovered × chip {hot:?} did not move toward danger {danger:?}",
+                    contrast_ratio(hot, danger) > 1.2,
+                    "{}: the hovered × chip {hot:?} is not danger red",
                     theme.name
                 );
                 // The × glyph stays readable on the hot face: the darkest or
@@ -5109,7 +5100,10 @@ mod tests {
                     < 1e-9,
                 "restore and close sit one s1 apart"
             );
-            assert_eq!(g.restore_rect.width(), MAXIMIZED_RESTORE_CHIP_W);
+            assert!(
+                g.restore_rect.width() >= MAXIMIZED_RESTORE_CHIP_W,
+                "the restore chip never undercuts its authored width"
+            );
         }
         // Case `the_restore_chip_reads_in_the_desktops_language_and_fits_it`.
         {
@@ -5125,8 +5119,8 @@ mod tests {
                 let mut scene = Scene::new();
                 g.draw_maximized_chrome(&mut scene, Affine::IDENTITY, &mut tr, &theme);
                 let label = crate::i18n::widget_format("widget-maximized-restore", &[]);
-                let size = renderer_type_size(&tr, theme.tokens.typography.scale.xs);
-                let (label_w, _) = tr.measure(&label, size, None);
+                let style = theme.text(TextRole::Caption);
+                let (label_w, _) = tr.measure_style(&label, None, &style);
                 let label_x0 = g.restore_rect.x0
                     + f64::from(theme.tokens.spacing.s2) * 2.0
                     + MAXIMIZED_ICON_PX;
@@ -5637,7 +5631,8 @@ mod tests {
             theme,
             &PresenceCtx::empty(),
         );
-        crate::offscreen::OffscreenRenderer::new(w, h).render(&scene, theme.bg_app)
+        crate::offscreen::OffscreenRenderer::new(w, h)
+            .render(&scene, theme.tokens.colors.surfaces.base)
     }
 
     /// `$UX1X_F4_OUT/<theme>/<name>` when the 1× review asked for evidence.

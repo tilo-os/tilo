@@ -228,7 +228,7 @@ fn dismissed_palette_semantics_match_observation_after_bounded_frames() {
     send(
         &mut input,
         &mut output,
-        json!({"op":"key","key":"k","modifiers":["meta"]}),
+        json!({"op":"key","key":"Space","modifiers":["meta"]}),
     );
     send(&mut input, &mut output, json!({"op":"type","text":"Files"}));
     let selected = send(

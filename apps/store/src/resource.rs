@@ -111,12 +111,12 @@ impl Resource for Store {
     /// someone typing it.
     fn children(state: &StoreState) -> Vec<PublishedResource> {
         let mut moderation =
-            PublishedResource::new(MODERATION_ID, "store.moderation", "Trust & moderation");
+            PublishedResource::new(MODERATION_ID, "store.moderation", "Trust and moderation");
         for report in &state.reports {
             let mut resource = PublishedResource::new(
                 report.id.clone(),
                 "store.report",
-                format!("{} · {}", report.app_id, report.status),
+                format!("{}: {}", report.app_id, report.status),
             );
             let app_id = report.app_id.clone();
             resource.children.push(publish_child::<PlainText, Self>(
@@ -138,8 +138,11 @@ impl Resource for Store {
             .reports
             .iter()
             .map(|report| {
-                SearchEntry::new(format!("Report · {}", report.app_id), report.status.clone())
-                    .anchored(format!("store.report:{}", report.app_id))
+                SearchEntry::new(
+                    format!("Report for {}", report.app_id),
+                    report.status.clone(),
+                )
+                .anchored(format!("store.report:{}", report.app_id))
             })
             .collect()
     }
@@ -330,6 +333,18 @@ pub enum StoreEffect {
         #[param("Enabled device Flathub repository identity")]
         remote: String,
     },
+    /// Enable source.
+    #[effect(job, permission = "admin")]
+    EnableRemote {
+        #[param("Account repository identity")]
+        remote: String,
+    },
+    /// Disable source.
+    #[effect(job, permission = "admin")]
+    DisableRemote {
+        #[param("Account repository identity")]
+        remote: String,
+    },
     /// Remove remote.
     #[effect(job, destructive, permission = "admin")]
     RemoveRemote {
@@ -428,13 +443,18 @@ pub struct CaptureCatalogue {
     pub items: Vec<crate::StoreItem>,
 }
 
-/// The screenshots: the wide and narrow catalogue, an app's details, the
-/// remotes, a package job in flight and one that failed, each moderation
-/// state, and an empty and an unreachable catalogue.
+/// The screenshots: the wide and narrow catalogue, a search, an app's details
+/// (wide and narrow, one with an update, a Flatpak app), the remotes, a
+/// package job in flight and one that failed, each moderation state, and an
+/// empty and an unreachable catalogue.
 const SCENARIOS: &[&str] = &[
     "wide",
     "narrow",
+    "search",
     "detail",
+    "detail-narrow",
+    "detail-update",
+    "detail-flatpak",
     "remotes",
     "progress",
     "error",
@@ -516,10 +536,9 @@ impl ResourceApp for StoreShell {
     }
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
-        match scenario {
-            Some("narrow") => (420, 860),
-            _ => (1200, 760),
-        }
+        scenario
+            .filter(|name| name.ends_with("narrow"))
+            .map_or((1280, 800), |_| (520, 820))
     }
 
     /// A capture shows a made-up catalogue (none at all when it shows an
@@ -545,9 +564,8 @@ impl ResourceApp for StoreShell {
         }];
         let status = match name {
             "moderation-case" => Some("Needs information"),
-            "moderation-loading" => Some("Open"),
-            "moderation-offline" => Some("Last confirmed · Open"),
-            "moderation-error" => Some("Last confirmed · Quarantined"),
+            "moderation-loading" | "moderation-offline" => Some("Open"),
+            "moderation-error" => Some("Quarantined"),
             _ => None,
         };
         if let Some(status) = status {
@@ -736,8 +754,8 @@ mod tests {
                 app.settle();
             }
             for name in match page {
-                "catalogue" => &["Refresh", "Remotes"][..],
-                "remotes" => &["Back to apps", "Refresh"][..],
+                "catalogue" => &["Refresh catalogues", "Flatpak remotes"][..],
+                "remotes" => &["Back", "Refresh remotes"][..],
                 _ => &[],
             } {
                 let control = app
@@ -748,18 +766,30 @@ mod tests {
                     .unwrap_or_else(|| panic!("{page}: missing control {name}"));
                 assert!(!control.disabled, "{page}: live owner control {name}");
             }
-            let resources = app.harness().resources();
+            // The production audit resolves each binding against both the
+            // mounted app and the real window-owned search/History doors.
+            let audit = app.harness().native_app_audit();
             let bindings =
                 ui::widget::controls::control_action_bindings(app.harness().root_widget());
             assert!(!bindings.is_empty(), "{page}");
             for binding in bindings {
                 if let ui::widget::ControlBindingKind::Action(address) = &binding.kind {
                     assert!(
-                        ui::tilo_actions::door::resolve(&resources, address).is_some(),
-                        "{page}: control {} binds {address:?}, which is not published",
+                        !audit.issues.iter().any(|issue| {
+                            issue.control == binding.control_id
+                                && issue.code == "stale-action-binding"
+                        }),
+                        "{page}: control {} binds {address:?}, which the host cannot resolve: {:?}",
                         binding.control_id,
+                        audit.issues,
                     );
                 }
+            }
+            if page == "catalogue" {
+                app.harness().click_named("search-open").unwrap();
+                let targets = app.harness().targets();
+                assert!(targets.contains_key("action-palette"), "{targets:?}");
+                app.harness().key("Escape");
             }
         }
     }
@@ -797,6 +827,106 @@ mod tests {
         assert_eq!(app.versions().len(), versions, "a report needs no repair");
         assert!(app.undo());
         assert_eq!(app.state().reports[0].note, "");
+    }
+
+    #[test]
+    fn declared_open_job_waits_for_its_original_channel_startup_receipt() {
+        use ui::collaboration::{CollabEvent, CollabRequest};
+        use ui::widget::Collaborative;
+        let _offline = offline();
+        let mut app = TestApp::<StoreShell>::new().unwrap();
+        tilo_test_env::wait_until("the ordinary catalogue worker settles", || {
+            app.settle();
+            app.with_surface::<StoreApp, _>(|surface| {
+                surface.inspect_catalogue(None).unwrap()["worker_busy"] == false
+            })
+            .unwrap()
+        });
+        let selected = crate::fixture::fixture_catalog()
+            .into_iter()
+            .find(|item| {
+                matches!(item.source, crate::model::StoreSource::Flathub)
+                    && item.allows_action(ActionKind::FlatpakOpen, true)
+            })
+            .unwrap();
+        let id = selected.id.clone();
+        app.with_surface::<StoreApp, _>(|surface| {
+            surface.set_flatpak_available(true);
+            surface.set_items(vec![selected]);
+        })
+        .unwrap();
+        let invocation = app
+            .start_effect(&StoreEffect::FlatpakOpen { app: id.clone() })
+            .unwrap();
+        let mut request = None;
+        tilo_test_env::wait_until("the original channel carries the admitted launch", || {
+            app.settle();
+            request = app
+                .with_surface::<StoreApp, _>(|surface| {
+                    surface.take_collab_requests().into_iter().next()
+                })
+                .flatten();
+            request.is_some()
+        });
+        let Some(CollabRequest::LaunchInstalledApplication {
+            request_id,
+            app_id,
+            package_root,
+            on_behalf_of,
+        }) = request
+        else {
+            panic!("the original channel must carry startup");
+        };
+        assert_eq!(app_id, format!("host:{id}.desktop"));
+        assert!(package_root.is_none());
+        assert!(
+            on_behalf_of.is_none(),
+            "a local UI job does not invent a broker parent"
+        );
+        assert!(
+            !app.harness()
+                .job_updates(invocation)
+                .iter()
+                .any(ui::tilo_actions::InvocationUpdate::is_terminal)
+        );
+        let update = ui::tilo_actions::InvocationUpdate::Succeeded {
+            invocation,
+            output: ui::tilo_actions::ActionOutput::default(),
+        };
+        app.with_surface::<StoreApp, _>(|surface| {
+            surface.handle_collab_event(&CollabEvent::PublishedInvocationResult {
+                request_id,
+                result: Ok((7, update.clone())),
+            });
+            surface.set_worker_busy(false);
+            assert!(
+                surface
+                    .package_operation(&id, ActionKind::FlatpakOpen)
+                    .is_err()
+            );
+        })
+        .unwrap();
+        assert!(
+            !app.harness()
+                .job_updates(invocation)
+                .iter()
+                .any(ui::tilo_actions::InvocationUpdate::is_terminal)
+        );
+        app.with_surface::<StoreApp, _>(|surface| {
+            surface.handle_collab_event(&CollabEvent::InstalledApplicationLaunchResult {
+                request_id,
+                result: Ok((7, update)),
+            });
+        })
+        .unwrap();
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(5), |harness| {
+                    harness.job_updates(invocation).iter().any(|update| {
+                        matches!(update, ui::tilo_actions::InvocationUpdate::Succeeded { .. })
+                    })
+                })
+        );
     }
 
     /// Opening a `.flatpakref` shows its app ready to install — and
@@ -851,13 +981,13 @@ mod tests {
     #[test]
     fn captures_stage_their_scenes() {
         let mut wide = TestApp::<StoreShell>::capture(Some("wide")).unwrap();
-        assert_eq!(wide.harness().inspection().viewport, [1200, 760]);
+        assert_eq!(wide.harness().inspection().viewport, [1280, 800]);
         assert!(frame(&mut wide).contains("Terminal"));
         assert!(wide.state().reports.is_empty());
 
         let narrow = TestApp::<StoreShell>::capture(Some("narrow")).unwrap();
         let mut narrow = narrow;
-        assert_eq!(narrow.harness().inspection().viewport, [420, 860]);
+        assert_eq!(narrow.harness().inspection().viewport, [520, 820]);
 
         let mut detail = TestApp::<StoreShell>::capture(Some("detail")).unwrap();
         let shown = frame(&mut detail);

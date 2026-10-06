@@ -5,12 +5,12 @@
 
 use std::fs;
 
+use tilo_ui::TextRole;
 use tilo_ui::i18n::I18nManager;
-use tilo_ui::icons::Icon;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::{
-    Banner, Button, Chip, Column, Container, Row, SearchField, Spacer, StatTile, Text, TextInput,
-    Trend, Widget,
+    Banner, Button, Chip, Column, Container, Row, SearchField, Spacer, StatGroup, StatTile, Text,
+    TextInput, Trend, Widget,
 };
 use tilo_ui::{App, State};
 
@@ -47,7 +47,7 @@ fn build_root_widget(theme: &Theme) -> Box<dyn Widget> {
             .with_gap(14.0)
             .push(Box::new(
                 Row::new()
-                    .push(Box::new(Text::new("title").with_size(24.0)))
+                    .push(Box::new(Text::new("title").with_role(TextRole::LargeTitle)))
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(Button::new("btn_save", "save")))
                     .push(Box::new(Button::new("btn_load", "load"))),
@@ -73,31 +73,18 @@ fn build_root_widget(theme: &Theme) -> Box<dyn Widget> {
             .push(Box::new(
                 Row::new()
                     .push(Box::new(Chip::new("All").selected(true)))
-                    .push(Box::new(
-                        Chip::new("Design")
-                            .selectable()
-                            .with_dot(theme.tokens.colors.semantic.info),
-                    ))
+                    .push(Box::new(Chip::new("Design").selectable().with_lead(
+                        tilo_ui::widget::ChipLead::Dot(theme.tokens.colors.presence.series(0)),
+                    )))
                     .push(Box::new(Chip::new("Engineering").selectable()))
                     .push(Box::new(Chip::new("Research").selectable()))
                     .push(Box::new(Chip::new("archived").removable())),
             ))
-            .push(Box::new(
-                Row::new()
-                    .push(Box::new(
-                        StatTile::new("Sessions", "12")
-                            .with_icon(Icon::List)
-                            .with_delta("3", Trend::Up),
-                    ))
-                    .push(Box::new(
-                        StatTile::new("Saved", "48 KB").with_icon(Icon::Check),
-                    ))
-                    .push(Box::new(
-                        StatTile::new("Peers", "2")
-                            .with_icon(Icon::Bell)
-                            .with_delta("1", Trend::Down),
-                    )),
-            ))
+            .push(Box::new(StatGroup::new(vec![
+                Box::new(StatTile::new("Sessions", "12").change("3 since this morning", Trend::Up)),
+                Box::new(StatTile::new("Saved", "48").unit("KB")),
+                Box::new(StatTile::new("Peers", "2").change("1 left", Trend::Down)),
+            ])))
             .push(Box::new(
                 Row::new()
                     .push(Box::new(Button::new("b1", "Wrap Item 1")))
