@@ -306,3 +306,37 @@ proposal is pending explicit approval; no part of the rejected command was execu
 Before it is published, the governed HTTPS fixture must pass, with additional
 unauthorized/revoked-device and missing-source refusals. The ordinary document action
 service and its invocation authority must remain unchanged.
+
+### Read-only browser deployment discovery
+
+The sibling Cloud repository owns browser hosting. Its
+`deployment/aws/template.yaml` publishes the public console origin as the
+CloudFormation `SiteUrl` output, derived from `SiteDistribution.DomainName`.
+The configured runtime paths are `/qos-runtime/` and `/qos-session-runtime/`,
+not an inferred path on the native relay API. `apps.tilo.so/artifacts/` in the
+infrastructure operation notes is an application-package destination, not evidence
+of a hosted resource viewer.
+
+A concrete `SiteUrl` could not be retrieved with existing access: read-only
+CloudFormation `describe-stacks` queries in the documented us-east-1/us-west-2
+regions returned an expired default AWS session. No login, role switch, credential
+change, or deployment was attempted. The Cloud deployment owner must retrieve the
+existing output and selected runtime release; this does not require a user-invented
+browser URL.
+
+There is also an exact packaging gap. Cloud's
+`scripts/prepare-qos-runtime.mjs` selects authored `.mjs` modules, package bindings,
+and fonts. Its production `deployment/aws/scripts/deploy.py::runtime_assets`
+allowlist similarly excludes HTML, and `runtime_delivery.py` publishes the selected
+assets under a digest release with a stable `cloud.mjs` alias. Neither establishes
+`resource.html`; the frontend contains no resource-viewer route. Tilo's native
+browser build already copies `resource.html` into its output, but that does not
+make Cloud publish it. The existing Cloud packaging fixture asserts that an HTML
+page is excluded. A supported resource entry needs an explicitly inventoried,
+versioned production-page route owned by Cloud, rather than admitting arbitrary
+HTML from the build directory.
+
+Cloud's response-header policy also limits connection destinations to the configured
+packet relay and listed AWS/Cognito origins. Its hosting owner must verify that the
+resource viewer's admitted relay origin is supported by that existing policy. This
+investigation does not change CSP, CORS, trust, or permission configuration.
