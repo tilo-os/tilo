@@ -556,6 +556,23 @@ impl Widget for WebView {
             self.send_resize_if_needed();
         }
 
+        // Modifier releases may never become mapped page keys (and system
+        // shortcuts consume their presses). Pointer default actions must use
+        // the current host state rather than the last key sent to Chromium.
+        if matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+        ) {
+            let modifiers = ctx.modifiers.state();
+            self.engine.set_modifiers(KeyModifiers {
+                ctrl: modifiers.control_key(),
+                shift: modifiers.shift_key(),
+                alt: modifiers.alt_key(),
+                meta: modifiers.super_key(),
+            });
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let logical =
@@ -738,10 +755,25 @@ mod tests {
     struct NativeHistory {
         inner: crate::webview::SharedEngine,
         requests: std::sync::Mutex<Vec<crate::undo::UndoRequest>>,
+        modifiers: std::sync::Mutex<Vec<KeyModifiers>>,
+        pointer_modifiers: std::sync::Mutex<Vec<KeyModifiers>>,
     }
     impl WebViewEngine for NativeHistory {
         fn send(&self, command: WebViewCommand) {
+            if matches!(command, WebViewCommand::MouseButton { .. }) {
+                let modifiers = self
+                    .modifiers
+                    .lock()
+                    .unwrap()
+                    .last()
+                    .copied()
+                    .unwrap_or_default();
+                self.pointer_modifiers.lock().unwrap().push(modifiers);
+            }
             self.inner.send(command);
+        }
+        fn set_modifiers(&self, modifiers: KeyModifiers) {
+            self.modifiers.lock().unwrap().push(modifiers);
         }
         fn frames(&self) -> crate::webview::FrameSlot {
             self.inner.frames()
@@ -767,6 +799,8 @@ mod tests {
         let engine = Arc::new(NativeHistory {
             inner: TestEngine::new(),
             requests: Default::default(),
+            modifiers: Default::default(),
+            pointer_modifiers: Default::default(),
         });
         let mut page = WebView::new(engine.clone());
         assert!(!handle_local_undo_request(&mut page, UndoRequest::Undo));
@@ -841,7 +875,7 @@ mod tests {
         }
     }
 
-    fn laid_out(engine: Arc<TestEngine>) -> (WebView, TaffyTree<()>, NodeId) {
+    fn laid_out(engine: SharedEngine) -> (WebView, TaffyTree<()>, NodeId) {
         let mut w = WebView::new(engine);
         let mut tree = TaffyTree::<()>::new();
         let mut node_map = std::collections::HashMap::new();
@@ -1365,6 +1399,47 @@ mod tests {
                 "draw caches the engine frame as a vello image",
             );
         }
+    }
+
+    #[test]
+    fn pointer_press_uses_released_modifiers_after_a_native_shortcut() {
+        let engine = Arc::new(NativeHistory {
+            inner: TestEngine::new(),
+            requests: std::sync::Mutex::new(Vec::new()),
+            modifiers: std::sync::Mutex::new(Vec::new()),
+            pointer_modifiers: std::sync::Mutex::new(Vec::new()),
+        });
+        engine.set_modifiers(KeyModifiers {
+            ctrl: true,
+            shift: true,
+            ..KeyModifiers::default()
+        });
+        let (mut page, tree, node) = laid_out(engine.clone());
+        let device = unsafe { std::mem::zeroed() };
+        dispatch(
+            &mut page,
+            &tree,
+            node,
+            &WindowEvent::CursorMoved {
+                device_id: device,
+                position: (50.0, 60.0).into(),
+            },
+        );
+        dispatch(
+            &mut page,
+            &tree,
+            node,
+            &WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            },
+        );
+        assert_eq!(
+            &*engine.pointer_modifiers.lock().unwrap(),
+            &[KeyModifiers::default()],
+            "pointer default actions must see the current released modifiers before delivery"
+        );
     }
 
     #[test]
