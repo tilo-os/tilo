@@ -715,7 +715,6 @@ impl Daemon {
         source: LayerSource,
     ) -> Result<AppInstallResult, DaemonError> {
         let (record, session) = self.user_slot(slot)?;
-        let user = session.user;
         let (path, uploaded) = match source {
             LayerSource::Upload(id) => (
                 self.uploads
@@ -725,7 +724,7 @@ impl Daemon {
             ),
             LayerSource::Path(path) => (PathBuf::from(path), false),
         };
-        let output = self.apply.install_app(&user, &path);
+        let output = self.apply.install_app(&session, &path);
         if uploaded {
             let _ = fs::remove_file(&path);
         }
