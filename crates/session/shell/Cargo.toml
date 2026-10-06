@@ -124,6 +124,7 @@ quick-xml.workspace = true
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-import"] }
 
 tilo-actions = { path = "../../collab/actions" }
+console-control = { path = "../console-control" }
 tilo-automation = { path = "../../collab/automation" }
 # The record/room-index store. The compositor keeps one document per room
 # listing which records that room holds, in the same store shape (atomic
@@ -302,6 +303,8 @@ tilo-search = { path = "../../sdk/search", features = ["disk"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# Private native-pair acceptance uses the governed host's real voice relay.
+tilo-relay = { path = "../../hosting/tilo-relay", features = ["web"] }
 # Signs the TPM quotes the disk-unlock auto-approval tests verify.
 p256 = { version = "0.14", features = ["ecdsa"] }
 tilo-copy-lint = { path = "../../dev/copy-lint" }
@@ -321,8 +324,6 @@ collab-fixtures = { path = "../../collab/collab-fixtures" }
 # A browser in the room a node governs, for the node's own session to share
 # sealed records with.
 tilo-browser-peer = { path = "../../browser/tilo-browser-peer" }
-# The CPU replay of shell scenes, checked against vello on the same scenes.
-tilo-cpu-raster = { path = "../../sdk/tilo-cpu-raster" }
 rand_chacha.workspace = true
 pollster.workspace = true
 wgpu.workspace = true
@@ -410,3 +411,6 @@ windows-vm = { path = "../../windows/windows-vm" }
 # The shell runtime's policy, where the person's allow for Terminal's Host
 # target (the device's own shell) is recorded.
 ush = { path = "../../runtime/ush" }
+# The DRM backend rasterizes on the CPU where the GPU cannot run vello's
+# compute pipeline (Mali Bifrost under panvk).
+tilo-cpu-raster = { path = "../../sdk/tilo-cpu-raster" }
