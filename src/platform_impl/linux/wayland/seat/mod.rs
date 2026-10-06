@@ -11,6 +11,7 @@ use sctk::reexports::client::protocol::wl_touch::WlTouch;
 use sctk::reexports::client::{Connection, Proxy, QueueHandle};
 use sctk::reexports::protocols::wp::pointer_gestures::zv1::client::zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1;
 use sctk::reexports::protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_v1::ZwpRelativePointerV1;
+use sctk::reexports::protocols::wp::tablet::zv2::client::zwp_tablet_seat_v2::ZwpTabletSeatV2;
 use sctk::reexports::protocols::wp::text_input::zv3::client::zwp_text_input_v3::ZwpTextInputV3;
 
 use sctk::seat::pointer::{ThemeSpec, ThemedPointer};
@@ -23,6 +24,7 @@ use crate::platform_impl::wayland::state::WinitState;
 pub mod data_device;
 mod keyboard;
 mod pointer;
+mod tablet;
 mod text_input;
 mod touch;
 
@@ -31,6 +33,7 @@ pub use pointer::relative_pointer::RelativePointerState;
 pub use pointer::{PointerConstraintsState, WinitPointerData, WinitPointerDataExt};
 pub use data_device::DndState;
 pub use text_input::{TextInputState, ZwpTextInputV3Ext};
+pub use tablet::TabletState;
 
 use keyboard::{KeyboardData, KeyboardState};
 use text_input::TextInputData;
@@ -61,6 +64,9 @@ pub struct WinitSeatState {
 
     /// The data device bound on the seat, receiving drag-and-drop.
     data_device: Option<sctk::data_device_manager::data_device::DataDevice>,
+
+    /// The tablet seat of the seat, reporting pens.
+    tablet_seat: Option<ZwpTabletSeatV2>,
 
     /// The current modifiers state on the seat.
     modifiers: ModifiersState,
@@ -168,6 +174,11 @@ impl SeatHandler for WinitState {
             _ => (),
         }
 
+        if seat_state.tablet_seat.is_none() {
+            seat_state.tablet_seat =
+                self.tablet.as_ref().map(|tablet| tablet.tablet_seat(&seat, queue_handle));
+        }
+
         if let Some(text_input_state) =
             seat_state.text_input.is_none().then_some(self.text_input_state.as_ref()).flatten()
         {
@@ -258,7 +269,11 @@ impl SeatHandler for WinitState {
         _queue_handle: &QueueHandle<Self>,
         seat: WlSeat,
     ) {
-        let _ = self.seats.remove(&seat.id());
+        if let Some(tablet_seat) =
+            self.seats.remove(&seat.id()).and_then(|seat_state| seat_state.tablet_seat)
+        {
+            tablet_seat.destroy();
+        }
         self.on_keyboard_destroy(&seat.id());
     }
 }

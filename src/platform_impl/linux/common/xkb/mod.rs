@@ -199,7 +199,7 @@ impl KeyContext<'_> {
         let (key_without_modifiers, _) = event.key_without_modifiers();
         let text_with_all_modifiers = event.text_with_all_modifiers();
 
-        let platform_specific = KeyEventExtra { text_with_all_modifiers, key_without_modifiers };
+        let platform_specific = KeyEventExtra { text_with_all_modifiers, key_without_modifiers, wayland_stamp: None };
 
         KeyEvent { physical_key, logical_key, text, location, state, repeat, platform_specific }
     }
