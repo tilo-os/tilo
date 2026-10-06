@@ -529,3 +529,68 @@ fn action_parameter_examples_are_guidance_not_a_value_restriction() {
     replica.apply_action(&action, "Rename").unwrap();
     assert_eq!(replica.state().unwrap().title, "Another valid title");
 }
+
+#[test]
+fn schema_reuse_keeps_resource_types_and_live_children_distinct() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static SCHEMA_BUILDS: AtomicUsize = AtomicUsize::new(0);
+    struct SchemaProbe;
+    impl Resource for SchemaProbe {
+        const KIND: &'static str = "test.schema-probe";
+        const LABEL: &'static str = "Schema probe";
+        const ACTION_TYPE: &'static str = Board::ACTION_TYPE;
+        type State = Board;
+        type Action = <Board as Resource>::Action;
+        fn read(doc: &tilo_resource::Doc) -> Result<Board, tilo_resource::ModelError> {
+            Board::read(doc)
+        }
+        fn action_schema() -> Option<serde_json::Value> {
+            SCHEMA_BUILDS.fetch_add(1, Ordering::SeqCst);
+            let mut schema = Board::action_schema()?;
+            schema["description"] = serde_json::json!("The schema probe's board action");
+            Some(schema)
+        }
+        fn children(state: &Board) -> Vec<tilo_actions::Resource> {
+            Board::children(state)
+        }
+    }
+    let mut replica = Replica::<Board>::new();
+    let empty = tilo_resource::publish::<SchemaProbe>("probe", "Empty", &replica.state().unwrap());
+    assert!(empty.children.is_empty());
+    replica
+        .apply(Board::ADD_CARD.with("Fresh card".into()))
+        .unwrap();
+    let populated =
+        tilo_resource::publish::<SchemaProbe>("probe", "Populated", &replica.state().unwrap());
+    assert_eq!(populated.label, "Populated");
+    assert_eq!(
+        populated.children.len(),
+        1,
+        "live rows are never cached with type schemas"
+    );
+    let schema = |resource: &tilo_actions::Resource| {
+        resource
+            .actions
+            .iter()
+            .find(|action| action.id == tilo_resource::APPLY)
+            .unwrap()
+            .params()
+            .first()
+            .unwrap()
+            .schema
+            .clone()
+            .unwrap()
+    };
+    assert_eq!(schema(&empty), schema(&populated));
+    let board = tilo_resource::publish::<Board>("board", "Board", &replica.state().unwrap());
+    assert_ne!(
+        schema(&board),
+        schema(&populated),
+        "resources sharing one action type keep their own declaration folding"
+    );
+    assert_eq!(
+        SCHEMA_BUILDS.load(Ordering::SeqCst),
+        1,
+        "repeated publications and group reuse the compiled action schema"
+    );
+}
