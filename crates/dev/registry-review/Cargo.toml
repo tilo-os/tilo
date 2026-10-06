@@ -20,6 +20,8 @@ workspace-hack = { version = "0.1" }
 anyhow.workspace = true
 tempfile.workspace = true
 ed25519-dalek.workspace = true
+hex.workspace = true
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
 
 [lints]
 workspace = true

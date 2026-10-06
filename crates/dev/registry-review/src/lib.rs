@@ -10,6 +10,9 @@ use ui::framework::EffectAnswer;
 use ui::prelude::*;
 use ui::tilo_actions::PermissionRequirement;
 
+mod packages;
+pub use packages::PackageReview;
+
 const CATALOG: &str = include_str!("../locales/en-US.ftl");
 const PAGE_SIZE: usize = 20;
 
@@ -84,6 +87,10 @@ pub enum Review {
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Pane {
     applications: Vec<StoredApplication>,
+    packages: Vec<registry_server::PendingSubmission>,
+    package_selected: Option<packages::Snapshot>,
+    package_page: usize,
+    packages_loaded: bool,
     selected: Option<StoredApplication>,
     page: usize,
     busy: bool,
@@ -206,6 +213,7 @@ fn install(
                 });
                 let changed = state.selected.as_ref() != Some(&application);
                 state.selected = Some(application);
+                state.package_selected = None;
                 state.error = None;
                 if changed {
                     cx.invoke(Draft::SET_FEEDBACK.with(String::new()));
@@ -373,6 +381,9 @@ fn queue(cx: &mut ViewCx<Draft>, pane: &Pane) -> Element {
     let mut column = Column::new()
         .with_intrinsic_height()
         .with_id("review-queue")
+        .push(Box::new(
+            Text::new("review-title").with_role(TextRole::Heading),
+        ))
         .push(Box::new(Text::new("review-help")))
         .push(Box::new(actions.bind_effect_invocation(
             Button::new("refresh-applications", "review-refresh"),
@@ -421,6 +432,7 @@ fn queue(cx: &mut ViewCx<Draft>, pane: &Pane) -> Element {
             &Review::Page { page: next },
         )));
     }
+    column = column.push(packages::queue(cx, pane));
     Box::new(
         Scrollable::new_vertical()
             .fill_parent_height()
@@ -469,7 +481,8 @@ impl ResourceApp for App {
         let directory = PathBuf::from(cx.launch_option("--registry-dir").unwrap_or_default());
         let pane = cx.local(Pane::default());
         let navigation = cx.local(NavPane::Overview);
-        install(cx, directory, &pane, &navigation);
+        install(cx, directory.clone(), &pane, &navigation);
+        packages::install(cx, directory, &pane, &navigation);
         let admin = cx.permission_state(PermissionRequirement::Admin);
         cx.switch(&admin, move |cx, allowed| {
             if !*allowed {
@@ -477,7 +490,11 @@ impl ResourceApp for App {
             }
             let overview = cx.switch(&pane, queue);
             let content = cx.switch(&pane, |cx, pane| {
-                let Some(application) = &pane.selected else {
+                let detail = if let Some(snapshot) = &pane.package_selected {
+                    packages::detail(cx, snapshot)
+                } else if let Some(application) = &pane.selected {
+                    detail(cx, application)
+                } else {
                     return Box::new(Text::new("review-select"));
                 };
                 let mut body = Column::new().with_intrinsic_height();
@@ -487,7 +504,7 @@ impl ResourceApp for App {
                 if pane.busy {
                     body = body.push(Box::new(Spinner::new()));
                 }
-                body = body.push(detail(cx, application));
+                body = body.push(detail);
                 Box::new(
                     Scrollable::new_vertical()
                         .fill_parent_height()
@@ -498,12 +515,12 @@ impl ResourceApp for App {
                 NavShell::new()
                     .with_pane_state(&navigation)
                     .overview_header(
-                        ui::i18n::I18nManager::format("review-title", &[]),
+                        ui::i18n::I18nManager::format("review-window-title", &[]),
                         Vec::new(),
                     )
                     .overview(overview)
                     .content_header(
-                        ui::i18n::I18nManager::format("review-details-title", &[]),
+                        ui::i18n::I18nManager::format("review-selected-title", &[]),
                         Vec::new(),
                     )
                     .content(content),
