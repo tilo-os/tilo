@@ -1501,6 +1501,32 @@ pub trait Widget {
         true
     }
 
+    /// This field needs a host that consumes deferred receipts. Ordinary native
+    /// Wayland windows must not advertise it until they have that delivery path.
+    fn ime_requires_deferred_ack(&self) -> bool {
+        let caret = self.ime_cursor_rect();
+        let mut required = false;
+        self.for_each_child(&mut |child| {
+            if child.ime_cursor_rect() == caret && child.ime_purpose().is_some() {
+                required |= child.ime_requires_deferred_ack();
+            }
+        });
+        required
+    }
+
+    /// A private asynchronous final. None leaves ordinary synchronous IME dispatch
+    /// to the host. A receipt binds this original field and must be acknowledged
+    /// before the host releases its private recovery transcript.
+    fn commit_deferred_text(&mut self, text: &str) -> Option<crate::webview::text_input::Receipt> {
+        let caret = self.ime_cursor_rect()?;
+        for child in self.children_mut() {
+            if child.ime_cursor_rect() == Some(caret) && child.ime_purpose().is_some() {
+                return child.commit_deferred_text(text);
+            }
+        }
+        None
+    }
+
     /// The focused widget wants platform text input (Wayland
     /// `text-input-v3`, native IMEs elsewhere). `None` is intentionally the
     /// default: enabling an IME for buttons, canvas tools or games makes the

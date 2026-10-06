@@ -26,6 +26,7 @@ pub use credentials::{
 };
 pub mod page;
 pub mod paint;
+pub mod text_input;
 pub use page::{PageFailure, PageKey, PageReply, PageRequest};
 pub mod profile;
 pub mod test_engine;
@@ -539,6 +540,16 @@ pub struct MediaElementInfo {
 /// the widget, the host app, and the engine's own thread can share one
 /// handle.
 pub trait WebViewEngine: Send + Sync {
+    fn supports_text_input(&self) -> bool {
+        self.wrapped()
+            .is_some_and(|engine| engine.supports_text_input())
+    }
+
+    /// Private text transactions never enter the app event or page-agent stream.
+    fn text_input(&self, request: text_input::Request) -> Option<text_input::Receipt> {
+        self.wrapped()?.text_input(request)
+    }
+
     /// Create an independent document in the same runtime/profile.
     ///
     /// # Errors

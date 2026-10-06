@@ -81,6 +81,23 @@ class GuardedTextInput(unittest.TestCase):
         self.assertEqual(self.main_world(f'{target}.value'), 'alpha beta gamma')
         self.assertEqual(self.main_world('second.value'), 'second')
 
+    def test_private_lease_check_observes_the_original_edit_stamp(self):
+        lease = self.prepare()
+        self.assertEqual(self.request_input('check', lease=lease)['data'], {'lease': lease})
+        self.main_world("(first.setSelectionRange(0,5),true)")
+        self.assertFalse(self.request_input('check', lease=lease)['ok'])
+        self.assertFalse(self.request_input('commit', lease=lease, text='stale')['ok'])
+        self.unchanged()
+
+    def test_expired_delivery_cannot_insert_or_consume_a_successor(self):
+        lease = self.prepare()
+        result = self.request_input('commit', lease=lease, text='expired', expires_ms=1)
+        self.assertFalse(result['ok'])
+        self.unchanged()
+        self.assertTrue(self.request_input('check', lease=lease)['ok'])
+        self.assertTrue(self.request_input('commit', lease=lease, text='fresh')['ok'])
+        self.assertEqual(self.main_world('first.value'), 'alpha fresh gamma')
+
     def test_selected_unicode_replacement_is_one_native_undo_and_cannot_repeat(self):
         lease = self.prepare()
         result = self.request_input('commit', lease=lease, text='日本語 café العربية')
@@ -189,6 +206,28 @@ class GuardedTextInput(unittest.TestCase):
         self.assertFalse(self.request_input('commit', lease=lease, text='lost')['ok'])
         self.request_input('cancel', lease=lease)
         self.unchanged()
+
+    def test_transient_css_masking_permanently_retires_the_lease(self):
+        lease = self.prepare()
+        self.main_world("(first.style.webkitTextSecurity='disc',first.style.webkitTextSecurity='none',true)")
+        self.assertFalse(self.request_input('commit', lease=lease, text='lost')['ok'])
+        self.unchanged()
+
+    def test_shadow_host_readonly_is_part_of_field_eligibility(self):
+        for attribute in ['aria-readonly', 'aria-disabled', 'inert']:
+            with self.subTest(attribute=attribute):
+                self.main_world(f"(shadow.shadowRoot.querySelector('input').focus(),shadow.setAttribute('{attribute}','true'),true)")
+                self.assertFalse(self.request_input('prepare')['ok'])
+                self.assertEqual(self.main_world("shadow.shadowRoot.querySelector('input').value"), 'alpha beta gamma')
+                self.main_world(f"(shadow.removeAttribute('{attribute}'),true)")
+
+    def test_nested_shadow_host_revocation_and_restore_retire_the_original(self):
+        self.main_world("(()=>{shadow.shadowRoot.innerHTML='<div id=inner></div>';const inner=shadow.shadowRoot.querySelector('#inner');inner.attachShadow({mode:'open'}).innerHTML='<input value=original>';const field=inner.shadowRoot.querySelector('input');field.focus();field.setSelectionRange(0,8);return true})()")
+        lease = self.prepare()
+        self.main_world("(()=>{const inner=shadow.shadowRoot.querySelector('#inner');inner.setAttribute('aria-readonly','true');inner.removeAttribute('aria-readonly');return true})()")
+        self.assertFalse(self.request_input('commit', lease=lease, text='lost')['ok'])
+        self.assertEqual(self.main_world("shadow.shadowRoot.querySelector('#inner').shadowRoot.querySelector('input').value"), 'original')
+        self.assertEqual(self.main_world('second.value'), 'second')
 
     def test_readonly_revocation_and_restore_still_retire_the_lease(self):
         lease = self.prepare()

@@ -81,6 +81,13 @@ pub enum DictationError {
     RecognizerUnavailable,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryReason {
+    TooLong,
+    Rejected,
+    UnknownDelivery,
+}
+
 /// Status exposes no recording or draft to a remote collaborator.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DictationStatus {
@@ -94,6 +101,7 @@ pub enum DictationStatus {
     Stopping,
     Unavailable(runtime::RuntimeError),
     Recovery {
+        reason: RecoveryReason,
         copied: bool,
         copy_failed: bool,
     },
@@ -115,6 +123,7 @@ struct Target {
 
 struct Session {
     id: SessionId,
+    native_deferred: bool,
     target: Target,
     deadline: Instant,
     draft: zeroize::Zeroizing<String>,
@@ -122,11 +131,18 @@ struct Session {
 
 // Private bounded transcript; never part of workspace state or diagnostic output.
 struct Recovery {
+    reason: RecoveryReason,
     id: SessionId,
     text: zeroize::Zeroizing<String>,
     deadline: Instant,
     copied: bool,
     copy_failed: bool,
+}
+
+struct NativeDelivery {
+    requires_ack: bool,
+    recovery: Recovery,
+    receipt: Option<ui::webview::text_input::Receipt>,
 }
 
 struct Preparation {
@@ -144,6 +160,8 @@ pub(crate) struct Dictation {
     recognition: Option<Recognition>,
     last_failure: Option<runtime::RuntimeError>,
     native_commit_pending: bool,
+    native_field_deferred: bool,
+    native_delivery: Option<NativeDelivery>,
     recovery: Option<Recovery>,
 }
 
@@ -181,6 +199,7 @@ impl State {
             || self.text_commit.dictation.preparation.is_some()
             || self.text_commit.dictation.recognition.is_some()
             || self.text_commit.dictation.native_commit_pending
+            || self.text_commit.dictation.native_delivery.is_some()
             || self.text_commit.dictation.recovery.is_some()
         {
             return Err(DictationError::Busy);
@@ -270,6 +289,8 @@ impl State {
             };
             self.text_commit.dictation.session = Some(Session {
                 id,
+                native_deferred: self.shell_field_active
+                    && self.text_commit.dictation.native_field_deferred,
                 target,
                 deadline: now.checked_add(SESSION_WINDOW).unwrap_or(now),
                 draft: zeroize::Zeroizing::new(String::new()),
@@ -288,15 +309,19 @@ impl State {
             || self.text_commit.dictation.preparation.is_some()
             || self.text_commit.dictation.recognition.is_some()
             || self.text_commit.dictation.native_commit_pending
+            || self.text_commit.dictation.native_delivery.is_some()
             || self.text_commit.dictation.recovery.is_some()
         {
             return Err(DictationError::Busy);
         }
         let target = self.dictation_target()?;
+        let native_deferred =
+            self.shell_field_active && self.text_commit.dictation.native_field_deferred;
         let dictation = &mut self.text_commit.dictation;
         let id = dictation.allocate_id()?;
         dictation.session = Some(Session {
             id,
+            native_deferred,
             target,
             deadline: now.checked_add(SESSION_WINDOW).unwrap_or(now),
             draft: zeroize::Zeroizing::new(String::new()),
@@ -353,6 +378,7 @@ impl State {
             .ok_or(DictationError::StaleSession)?;
         if session.draft.len() > MAX_COMMIT_BYTES {
             self.text_commit.dictation.recovery = Some(Recovery {
+                reason: RecoveryReason::TooLong,
                 id,
                 text: session.draft,
                 deadline: now.checked_add(RECOVERY_WINDOW).unwrap_or(now),
@@ -366,12 +392,27 @@ impl State {
             self.cancel_active_dictation();
             return Ok(());
         }
-        // Validation and commit run together on the compositor thread. There
-        // is no delayed request that could re-target itself while waiting.
+        // Emit the Wayland final on this compositor thread. Deferred native
+        // owners additionally retain this original draft until their private ACK;
+        // the receiving guard never acquires a replacement target for this final.
         self.seat.text_input().with_active_text_input(|field, _| {
             field.commit_string(Some(session.draft.to_string()));
         });
         self.seat.text_input().done(false);
+        if self.shell_field_active {
+            self.text_commit.dictation.native_delivery = Some(NativeDelivery {
+                requires_ack: session.native_deferred,
+                recovery: Recovery {
+                    reason: RecoveryReason::UnknownDelivery,
+                    id,
+                    text: session.draft,
+                    deadline: now.checked_add(Duration::from_secs(10)).unwrap_or(now),
+                    copied: false,
+                    copy_failed: false,
+                },
+                receipt: None,
+            });
+        }
         self.cancel_active_dictation();
         // Native fields are on this same compositor thread. The native loop
         // must drain and dispatch their bridge before another input turn can
@@ -402,6 +443,11 @@ impl State {
     }
 
     pub(crate) fn discard_dictation_recovery(&mut self) {
+        if let Some(delivery) = self.text_commit.dictation.native_delivery.take()
+            && let Some(receipt) = delivery.receipt
+        {
+            receipt.cancel();
+        }
         self.text_commit.dictation.recovery = None;
         self.cancel_active_dictation();
     }
@@ -416,6 +462,72 @@ impl State {
         {
             self.text_commit.dictation.recovery = None;
             self.text_commit.dictation.last_failure = Some(runtime::RuntimeError::TimedOut);
+        }
+    }
+
+    pub(crate) fn set_native_dictation_deferred(&mut self, required: bool) {
+        self.text_commit.dictation.native_field_deferred = required;
+    }
+
+    pub(crate) fn native_dictation_requires_ack(&self) -> bool {
+        self.text_commit
+            .dictation
+            .native_delivery
+            .as_ref()
+            .is_some_and(|delivery| delivery.requires_ack)
+    }
+
+    /// Called in the same native dispatch turn. None acknowledges a synchronous
+    /// native edit; browser receipts remain private until the original reply.
+    pub(crate) fn acknowledge_native_dictation(
+        &mut self,
+        receipt: Option<ui::webview::text_input::Receipt>,
+    ) {
+        if let Some(delivery) = self.text_commit.dictation.native_delivery.as_mut() {
+            if let Some(receipt) = receipt {
+                delivery.receipt = Some(receipt);
+            } else if delivery.requires_ack {
+                delivery.receipt = Some(ui::webview::text_input::Receipt::failed(
+                    ui::webview::text_input::Failure::Rejected,
+                ));
+            } else {
+                self.text_commit.dictation.native_delivery = None;
+            }
+        }
+    }
+
+    pub(crate) fn poll_native_dictation_delivery(&mut self, now: Instant) {
+        let Some(delivery) = self.text_commit.dictation.native_delivery.as_ref() else {
+            return;
+        };
+        let outcome = delivery
+            .receipt
+            .as_ref()
+            .and_then(ui::webview::text_input::Receipt::poll);
+        if outcome.is_none() && now < delivery.recovery.deadline {
+            return;
+        }
+        let Some(mut delivery) = self.text_commit.dictation.native_delivery.take() else {
+            return;
+        };
+        if !matches!(outcome, Some(Ok(None))) {
+            if outcome.is_none()
+                && let Some(receipt) = delivery.receipt.as_ref()
+            {
+                receipt.cancel();
+            }
+            delivery.recovery.reason = if matches!(
+                outcome,
+                Some(Err(ui::webview::text_input::Failure::Rejected
+                    | ui::webview::text_input::Failure::Retired
+                    | ui::webview::text_input::Failure::Busy))
+            ) {
+                RecoveryReason::Rejected
+            } else {
+                RecoveryReason::UnknownDelivery
+            };
+            delivery.recovery.deadline = now.checked_add(RECOVERY_WINDOW).unwrap_or(now);
+            self.text_commit.dictation.recovery = Some(delivery.recovery);
         }
     }
 
@@ -443,6 +555,12 @@ impl State {
                 .recovery
                 .as_ref()
                 .is_some_and(|r| r.id == id)
+            || self
+                .text_commit
+                .dictation
+                .native_delivery
+                .as_ref()
+                .is_some_and(|delivery| delivery.recovery.id == id)
         {
             self.discard_dictation_recovery();
             true
@@ -523,8 +641,12 @@ impl State {
     }
 
     pub fn dictation_status(&self) -> DictationStatus {
+        if self.text_commit.dictation.native_delivery.is_some() {
+            return DictationStatus::Finishing;
+        }
         if let Some(recovery) = &self.text_commit.dictation.recovery {
             return DictationStatus::Recovery {
+                reason: recovery.reason,
                 copied: recovery.copied,
                 copy_failed: recovery.copy_failed,
             };
@@ -563,7 +685,10 @@ impl State {
     /// Wake an otherwise idle compositor while a private actor or target lives.
     /// No periodic work is scheduled while dictation is inactive.
     pub(crate) fn dictation_service_deadline(&self, now: Instant) -> Option<Instant> {
-        if self.has_dictation_target() || self.text_commit.dictation.recognition.is_some() {
+        if self.has_dictation_target()
+            || self.text_commit.dictation.recognition.is_some()
+            || self.text_commit.dictation.native_delivery.is_some()
+        {
             return now.checked_add(Duration::from_millis(50));
         }
         self.text_commit
@@ -576,6 +701,7 @@ impl State {
     /// Poll on every native service tick, even without paint/input events.
     /// A canceled actor occupies its slot until actual capture/worker cleanup.
     pub(crate) fn pump_dictation_worker(&mut self, now: Instant) {
+        self.poll_native_dictation_delivery(now);
         let Some(mut recognition) = self.text_commit.dictation.recognition.take() else {
             return;
         };

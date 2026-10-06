@@ -2459,3 +2459,6 @@ search-action-tab-drag-cancel-unavailable = Das Tab-Ziehen kann bei gesperrter S
 
 dictation-live-preview = Entwurf · { $text }
 dictation-open-settings = Einrichten
+
+dictation-edit-rejected = Mikrofon aus · Das ursprüngliche Feld hat den Text abgelehnt oder wurde geändert. Dein Transkript bleibt 10 Minuten privat aufbewahrt. Kopieren überträgt es in die Zwischenablage; Verwerfen entfernt es.
+dictation-delivery-unknown = Mikrofon aus · Das Einfügen wurde nicht bestätigt. Prüfe das ursprüngliche Feld, bevor du erneut einfügst. Dein Transkript bleibt 10 Minuten privat aufbewahrt; Kopieren überträgt es in die Zwischenablage.

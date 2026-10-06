@@ -260,18 +260,26 @@ stamps now come from the shared host input contract described above.
    document, Terminal and browser journeys with selected-range replacement and
    system undo. Current actor, worker-core and Wayland tests prove separate
    production boundaries, not a complete assembled microphone journey.
-   Browser address fields use the shared input contract, but Chromium page DOM
-   fields still fail closed as `NoEditableField`. The backend now implements
-   private leased text transactions in its isolated world: real CEF tests prove
-   original selection replacement, native undo/redo, focus/content/selection
-   invalidation, canceled/repeated leases, hidden-view and read-only revocation,
-   and rejection of protected fields or page handlers that redirect the edit.
-   `apps/browser/chromium/README.md` documents this independent boundary. The
-   SDK/compositor still needs to retain the transcript through asynchronous
-   commit acknowledgement and recover it on rejection. Iframes, selection-less
-   email/number inputs, closed shadow roots and composition already active when
-   the isolated world starts need renderer lifecycle support before admission.
-   Unguarded asynchronous IME or simulated paste would violate the focus boundary.
+   Browser address fields use the shared input contract. Native-hosted Chromium
+   DOM fields now use opaque original-selection leases with deferred private
+   acknowledgement. The SDK waits for an outstanding original-field check before
+   admitting one final; cancellation suppresses queued admission. The compositor
+   retains the complete transcript through acknowledgement and offers explicit
+   ten-minute Copy/Discard recovery on rejection or unknown delivery. Unknown
+   delivery warns to inspect the original field before inserting again; there is
+   no automatic retry, clipboard write or successor-field targeting. The need
+   for private acknowledgement is pinned to the original session, so a missing
+   deferred owner cannot be acknowledged as a synchronous edit.
+   `apps/browser/chromium/README.md` documents the backend and mounted SDK
+   qualification. Ordinary composition/OSK and standalone native runners remain
+   closed for deferred DOM fields. Iframes, selection-less email/number inputs,
+   closed shadow roots and composition already active when the isolated world
+   starts need renderer lifecycle support before admission. A complete assembled
+   browser microphone journey remains unqualified. Before that qualification,
+   align the DOM lease's three-minute lifetime with explicit consent/session
+   start: background preparation currently ages the lease before recording.
+   Preserve the original field/edit stamp and bounded lifetime in that handoff.
+
 3. Extend the public six-language read-speech qualification below to noisy
    natural conversation, and measure an older CPU and Arm device. Three short
    probes per language and artificial long splices remain narrow evidence.

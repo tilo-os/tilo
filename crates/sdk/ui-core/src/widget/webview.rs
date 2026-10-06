@@ -77,6 +77,7 @@ fn frame_quantization_slack(scale_factor: f32) -> u32 {
 
 /// See module docs.
 pub struct WebView {
+    text_input: crate::webview::text_input::Guard,
     rect: Rect,
     engine: SharedEngine,
     scale_factor: f32,
@@ -102,6 +103,7 @@ pub struct WebView {
 impl WebView {
     pub fn new(engine: SharedEngine) -> Self {
         Self {
+            text_input: Default::default(),
             rect: Rect::ZERO,
             engine,
             scale_factor: 1.0,
@@ -308,6 +310,11 @@ impl crate::widget::NativeViewLifecycle for WebView {
     }
 
     fn unmount_native_view(&mut self) {
+        self.text_input.invalidate(&self.engine);
+        if self.focused {
+            self.engine.send(WebViewCommand::SetFocused(false));
+        }
+        self.focused = false;
         self.native_mounted = false;
     }
 
@@ -316,6 +323,54 @@ impl crate::widget::NativeViewLifecycle for WebView {
 
 impl Widget for WebView {
     crate::provides!(dyn crate::widget::NativeViewLifecycle);
+
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        self.text_input.pump(
+            &self.engine,
+            self.focused && self.engine.supports_text_input(),
+        );
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        (self.focused && self.engine.supports_text_input() && self.text_input.ready())
+            .then_some(winit::window::ImePurpose::Normal)
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.ime_purpose()?;
+        Some(Rect::new(
+            self.rect.x0,
+            self.rect.y1 - 1.0,
+            self.rect.x0 + 1.0,
+            self.rect.y1,
+        ))
+    }
+
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.ime_purpose()?;
+        self.text_input.stamp(key)
+    }
+
+    fn ime_requires_deferred_ack(&self) -> bool {
+        true
+    }
+
+    fn commit_deferred_text(&mut self, text: &str) -> Option<crate::webview::text_input::Receipt> {
+        let receipt = self
+            .focused
+            .then(|| self.text_input.commit(&self.engine, text))
+            .flatten();
+        Some(receipt.unwrap_or_else(|| {
+            let receipt = crate::webview::text_input::Receipt::pending();
+            receipt.complete(Err(crate::webview::text_input::Failure::Rejected));
+            receipt
+        }))
+    }
+
+    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        ((self.focused || self.text_input.has_work()) && self.engine.supports_text_input())
+            .then(|| self.text_input.deadline())
+    }
 
     fn build_layout(
         &mut self,
@@ -519,6 +574,7 @@ impl Widget for WebView {
                         if down && mapped == MouseButton::Left {
                             *ctx.focus_target = Some(ctx.node_id);
                         }
+                        self.text_input.invalidate(&self.engine);
                         crate::webview::profile::record_input("mouse");
                         self.engine.send(WebViewCommand::MouseButton {
                             button: mapped,
@@ -568,6 +624,7 @@ impl Widget for WebView {
                     return;
                 }
                 if let Some(key) = Self::map_key(&key_event.logical_key) {
+                    self.text_input.invalidate(&self.engine);
                     crate::webview::profile::record_input("key");
                     let m = ctx.modifiers.state();
                     self.engine.send(WebViewCommand::Key {
@@ -640,6 +697,7 @@ impl Widget for WebView {
 
     fn set_focus(&mut self, focused: bool) {
         if self.focused != focused {
+            self.text_input.invalidate(&self.engine);
             self.focused = focused;
             self.engine.send(WebViewCommand::SetFocused(focused));
         }

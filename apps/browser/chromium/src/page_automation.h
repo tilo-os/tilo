@@ -6,6 +6,7 @@
 #include "include/base/cef_callback.h"
 #include "include/wrapper/cef_closure_task.h"
 #include <functional>
+#include <chrono>
 #include <optional>
 #include <string>
 #include <utility>
@@ -40,10 +41,19 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     const int request=command->GetInt("request_id");
     if(!browser_) return;
     if(pending_) { Reply(request,Failure("busy","Another page action is still running in this tab"),command->GetString("op")=="text_input");return; }
-    pending_=Pending{request,++token_,navigations_,false,command->Copy(false),{}};
+    const bool private_text=command->GetString("op")=="text_input";
+    auto owned=command->Copy(false);
+    if(private_text) {
+      const double now=std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
+      if(!owned->HasKey("expires_ms")) owned->SetDouble("expires_ms",now+5000);
+      if(Number(owned,"expires_ms")<=now || Number(owned,"expires_ms")>now+10000) {
+        Reply(request,Failure("text_input_expired","The original text request expired"),true);return;
+      }
+    }
+    pending_=Pending{request,++token_,navigations_,false,owned,{}};
     CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,uint64_t token) {
       if(self->pending_ && self->pending_->token==token) self->Fail("timeout","The page did not answer in time");
-    },CefRefPtr<PageAutomation>(this),token_),kTimeoutMs);
+    },CefRefPtr<PageAutomation>(this),token_),private_text?5000:kTimeoutMs);
     Begin();
   }
   void OnDevToolsMethodResult(CefRefPtr<CefBrowser>,int id,bool success,const void* result,size_t size) override {
@@ -109,6 +119,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       Evaluate();
     } else {
       if(!success) {
+        if(pending_->command->GetString("op")=="text_input") { Fail("unavailable","The original text request was not acknowledged");return; }
         // The document changed under a cached context. Retry once in the new
         // document; a ref from the old one then fails as stale.
         world_=0;loader_.clear();
@@ -134,6 +145,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     for(const char* key:{"cross_origin","secret"}) if(pending_->command->HasKey(key)) command->SetBool(key,pending_->command->GetBool(key));
     for(const char* key:{"x","y"}) if(pending_->command->HasKey(key)) command->SetDouble(key,Number(pending_->command,key));
     for(const char* key:{"quiet_ms","timeout_ms"}) if(pending_->command->HasKey(key)) command->SetInt(key,pending_->command->GetInt(key));
+    if(pending_->command->HasKey("expires_ms")) command->SetDouble("expires_ms",Number(pending_->command,"expires_ms"));
     if(pending_->command->HasKey("values")) command->SetList("values",pending_->command->GetList("values")->Copy());
     auto wrapped=CefValue::Create();wrapped->SetDictionary(command);
     auto params=CefDictionaryValue::Create();
@@ -142,12 +154,13 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     params->SetBool("userGesture",true);params->SetBool("silent",true);
     // `settle` answers with a promise; everything else with a value.
     params->SetBool("awaitPromise",true);
+    if(pending_->command->GetString("op")=="text_input") params->SetDouble("timeout",5000);
     Call(Stage::Evaluate,"Runtime.evaluate",params);
   }
   void Act(CefRefPtr<CefDictionaryValue> value) {
     const auto action=Action();
     if(action=="outline" || action=="changes") { Succeed(Text(value,"message"),Text(value,"outline"));return; }
-    if(action=="at" || action=="settle" || action=="prepare_text_input" || action=="commit_text_input" || action=="cancel_text_input") {
+    if(action=="at" || action=="settle" || action=="prepare_text_input" || action=="check_text_input" || action=="commit_text_input" || action=="cancel_text_input") {
       Succeed(Text(value,"message"),std::nullopt,value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr);return;
     }
     if(action=="click") {

@@ -547,6 +547,17 @@ globalThis.__tiloPage ||= (() => {
     while (element?.shadowRoot?.activeElement) element = element.shadowRoot.activeElement;
     return element;
   }
+  function composedParent(node) { return node?.parentNode || node?.host || null; }
+  function composedContains(ancestor, node) {
+    for (; node; node = composedParent(node)) if (node === ancestor) return true;
+    return false;
+  }
+  function composedReadOnly(element) {
+    for (let node = element; node; node = composedParent(node)) {
+      if (node instanceof Element && node.matches('[inert],[aria-readonly="true"],[aria-disabled="true"]')) return true;
+    }
+    return false;
+  }
   function textSnapshot(element) {
     if (!element?.isConnected || !document.hasFocus() || activeTextElement() !== element || composing)
       throw failure('text_input_changed', 'The original text field is no longer available');
@@ -555,7 +566,7 @@ globalThis.__tiloPage ||= (() => {
         (textSecurity && textSecurity !== 'none'))
       throw failure('secret_field', 'This field cannot accept deferred text input');
     if (element.matches(':disabled') || element.readOnly ||
-        element.closest('[inert],[aria-readonly="true"],[aria-disabled="true"]'))
+        composedReadOnly(element))
       throw failure('not_editable', 'This field is disabled or read-only');
     const field = element.localName === 'textarea' ||
       (element.localName === 'input' && ['text', 'search', 'email', 'url', 'tel'].includes(type(element)));
@@ -582,8 +593,8 @@ globalThis.__tiloPage ||= (() => {
     return Object.keys(original).every(key => current[key] === original[key]);
   }
   function touchesTextLease(lease, record) {
-    return record.target === lease.element || record.target.contains(lease.element) ||
-      lease.element.contains(record.target);
+    return composedContains(record.target, lease.element) ||
+      composedContains(lease.element, record.target);
   }
   addEventListener('selectionchange', () => {
     if (textLease) {
@@ -592,6 +603,8 @@ globalThis.__tiloPage ||= (() => {
     }
   }, true);
   function guardedTextInput(command) {
+    if (!Number.isFinite(command.expires_ms) || Date.now() >= command.expires_ms)
+      throw failure('text_input_expired', 'The original text request expired');
     if (textLease && performance.now() >= textLease.expires) retireTextLease();
     if (command.action === 'prepare_text_input') {
       if (textLease || committingTextLease) throw failure('busy', 'A text-input lease is already active');
@@ -606,9 +619,11 @@ globalThis.__tiloPage ||= (() => {
       });
       const options = {subtree: true, childList: true, characterData: true, attributes: true,
         attributeFilter: ['type', 'readonly', 'disabled', 'autocomplete', 'contenteditable',
-          'aria-readonly', 'aria-disabled', 'inert']};
-      owned.observer.observe(document, options);
-      if (element.getRootNode() !== document) owned.observer.observe(element.getRootNode(), options);
+          'aria-readonly', 'aria-disabled', 'inert', 'style', 'class', 'hidden']};
+      // Observe every composed root: nested shadow hosts carry eligibility too.
+      const roots = new Set([document]);
+      for (let node = element; node; node = composedParent(node)) roots.add(node.getRootNode());
+      for (const root of roots) owned.observer.observe(root, options);
       owned.timer = setTimeout(() => { if (textLease === owned) retireTextLease(); }, 180000);
       return {ok: true, message: 'Text input prepared', data: {lease}};
     }
@@ -626,6 +641,7 @@ globalThis.__tiloPage ||= (() => {
       retireTextLease();
       throw failure('text_input_changed', 'The original text field or selection changed');
     }
+    if (command.action === 'check_text_input') return {ok: true, message: 'Text input unchanged', data: {lease: owned.lease}};
     if (typeof command.text !== 'string' || !command.text ||
         new TextEncoder().encode(command.text).length > 4096)
       throw failure('invalid_request', 'The final text is empty or too large');
@@ -633,7 +649,7 @@ globalThis.__tiloPage ||= (() => {
     try {
       const event = new InputEvent('beforeinput', {bubbles: true, composed: true,
         cancelable: true, inputType: 'insertText', data: command.text});
-      if (!owned.element.dispatchEvent(event) || !sameTextSnapshot(owned))
+      if (!owned.element.dispatchEvent(event) || Date.now() >= command.expires_ms || !sameTextSnapshot(owned))
         throw failure('text_input_changed', 'The page rejected or changed the original field');
       if (!document.execCommand('insertText', false, command.text))
         throw failure('rejected', 'The original field did not accept the text');
@@ -646,7 +662,7 @@ globalThis.__tiloPage ||= (() => {
       try {
         if (!doc) doc = command.doc;
         switch (command.action) {
-          case 'prepare_text_input': case 'commit_text_input': case 'cancel_text_input':
+          case 'prepare_text_input': case 'check_text_input': case 'commit_text_input': case 'cancel_text_input':
             return guardedTextInput(command);
           case 'outline': return outline();
           case 'changes': return changes();

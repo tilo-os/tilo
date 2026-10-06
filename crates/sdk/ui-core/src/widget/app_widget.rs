@@ -1305,6 +1305,29 @@ mod component_adapter {
             };
             root.is_enabled()
         }
+        fn ime_requires_deferred_ack(&self) -> bool {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return true;
+            };
+            self.component
+                .root
+                .as_deref()
+                .is_none_or(|root| root.ime_requires_deferred_ack())
+        }
+
+        fn commit_deferred_text(
+            &mut self,
+            text: &str,
+        ) -> Option<crate::webview::text_input::Receipt> {
+            let binding = self.component.callback_binding();
+            let _entry = binding.enter().ok()?;
+            self.component
+                .root
+                .as_deref_mut()?
+                .commit_deferred_text(text)
+        }
+
         fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
