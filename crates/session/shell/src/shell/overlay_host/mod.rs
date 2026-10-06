@@ -4696,7 +4696,6 @@ impl ShellOverlayHost {
                         }
                         if let Some(group) =
                             strip.window_groups.iter_mut().find(|g| g.id == w.group)
-                            && group.active_tab != w.tab
                         {
                             // A stale `bar.active_id` (mid-detach
                             // frame) would write a phantom active-tab
@@ -4705,8 +4704,8 @@ impl ShellOverlayHost {
                             if !tab_exists {
                                 continue;
                             }
+                            selection_changed |= group.active_tab != w.tab;
                             group.active_tab = w.tab;
-                            selection_changed = true;
                             if ws.id == active_workspace {
                                 focus_writes.push((ws.id, w.strip, w.group));
                                 activated_file_tabs.push(w.tab);
@@ -4716,11 +4715,19 @@ impl ShellOverlayHost {
                 }
             }
         }
-        if selection_changed {
+        // Activating a group's already-selected tab is still a focus edge.
+        if selection_changed || !focus_writes.is_empty() {
             let mut tree = st.tree_mut();
             for (ws_id, strip_id, group_id) in focus_writes {
+                selection_changed |= tree.desktop.active_strip.get(&ws_id) != Some(&strip_id)
+                    || tree.desktop.active_group.get(&strip_id) != Some(&group_id);
                 tree.desktop.active_strip.insert(ws_id, strip_id);
                 tree.desktop.active_group.insert(strip_id, group_id);
+                // Assistive activation has no pointer event to choose its display.
+                if let Some(display) = tree.desktop.outputs.display_of(group_id) {
+                    selection_changed |= tree.desktop.outputs.focused_display() != Some(display);
+                    tree.desktop.outputs.set_focused(display);
+                }
             }
             let activated_file_tabs: Vec<_> = activated_file_tabs
                 .into_iter()
@@ -4729,7 +4736,9 @@ impl ShellOverlayHost {
             // Selection is session state, not merely paint state. Persist it
             // in the same input/frame boundary that accepted the click so a
             // compositor crash cannot restore the previously visible tab.
-            tree.queue_save();
+            if selection_changed {
+                tree.queue_save();
+            }
             drop(tree);
             drop(st);
             for tab in activated_file_tabs {
