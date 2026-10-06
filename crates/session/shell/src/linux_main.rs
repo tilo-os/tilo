@@ -418,12 +418,25 @@ pub fn run() -> std::process::ExitCode {
         }
     }
 
+    let portal_only = compositor::parse_portal_server_only_from_args();
+    let firstboot_requested = compositor::parse_firstboot_from_args();
+    let firstboot_only_requested = compositor::parse_firstboot_only_from_args();
+    let provision_identity_requested = compositor::parse_provision_identity_from_args();
+    let verify_identity_requested = compositor::parse_verify_collaboration_identity_from_args();
+    // Systemd also invokes this binary for setup and identity checks. Those
+    // commands never paint: font discovery and shader warmup only compete
+    // with the greeter and the session they are preparing.
+    let paints = !(portal_only
+        || firstboot_only_requested
+        || provision_identity_requested
+        || verify_identity_requested);
+
     // Decide which GPU this session runs on before anything opens one — the
     // warmup thread below builds a wgpu context, and on a multi-GPU box its
     // adapter may disagree with what the compositor advertises to clients.
     // Pinning here, while `main` is still single-threaded, makes the
     // compositor and every launched app agree on one device.
-    let gpu_pin = compositor::render_node::pin_process();
+    let gpu_pin = paints.then(compositor::render_node::pin_process).flatten();
 
     // Cold-start warmup on a background thread, as early as possible.
     // cosmic-text's `FontSystem::new` (mmaps every face, up to ~1s) and
@@ -444,7 +457,9 @@ pub fn run() -> std::process::ExitCode {
                 "" | "0" | "off" | "false" | "no"
             )
         });
-    let _warmup_handle = ui::warmup::spawn_warmup(!want_vello);
+    let _warmup_handle = paints
+        .then(|| ui::warmup::spawn_warmup(!want_vello))
+        .flatten();
 
     tracing_subscriber::fmt::init();
     shell::crash_log::install("tilo shell panic");
@@ -454,12 +469,6 @@ pub fn run() -> std::process::ExitCode {
     tilo_rt::panic_boundary::abort_outside_boundaries();
     log_gpu_pin(gpu_pin.as_ref());
     compositor::dev_env::report_build_mode();
-
-    let portal_only = compositor::parse_portal_server_only_from_args();
-    let firstboot_requested = compositor::parse_firstboot_from_args();
-    let firstboot_only_requested = compositor::parse_firstboot_only_from_args();
-    let provision_identity_requested = compositor::parse_provision_identity_from_args();
-    let verify_identity_requested = compositor::parse_verify_collaboration_identity_from_args();
 
     if portal_only && (firstboot_requested || firstboot_only_requested) {
         eprintln!(

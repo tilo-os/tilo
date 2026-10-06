@@ -3,7 +3,7 @@
 
 pub mod custody {
     pub use account_custody::{
-        Capability, ClientTable, Custodian, OAuthIssuer, OAuthUse, TokenSet,
+        Authorization, Capability, ClientTable, Custodian, OAuthIssuer, OAuthUse, TokenSet,
     };
 }
 pub use accounts::AccountId;
