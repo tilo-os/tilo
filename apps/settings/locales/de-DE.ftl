@@ -1772,3 +1772,14 @@ shortcut-name-dictation-finish = Diktat beenden
 shortcut-name-dictation-cancel = Diktat abbrechen
 shortcut-name-tab-menu = Tab-Menü öffnen
 
+
+# Network connection guidance
+net-connectivity-caption = Zeigt, ob dieses Gerät das Internet erreichen kann.
+net-wifi-caption = Wähle ein Netzwerk zum Verbinden. Aktualisieren sucht nach Netzwerken in der Nähe.
+net-diag-idle = Starte die Diagnose, um Verbindung, Adresse und DNS zu prüfen.
+net-enterprise-caption = Für Arbeits- oder Schulnetzwerke, die einen Benutzernamen und ein Zertifikat erfordern.
+net-hotspot-clients-caption = Geräte, die gerade mit deinem Hotspot verbunden sind.
+net-share-caption = Teile ein gespeichertes WLAN sicher mit deinen anderen Geräten.
+net-sim-pin-caption = Gib die PIN der ausgewählten SIM ein, um Mobilfunk zu entsperren.
+net-ipv4-caption = Verwende automatische Adressen, sofern dein Netzwerk keine feste Adresse erfordert.
+net-vpn-caption = Wähle ein gespeichertes VPN zum Verbinden. Füge Verbindungen in VPN Studio hinzu.
