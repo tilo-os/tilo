@@ -5,6 +5,82 @@ use crate::shell::chrome_state::{ChromeState, WsTab};
 use crate::shell::state::WorkspaceTree;
 use automerge::{ReadDoc as _, ScalarValue};
 
+#[derive(Default)]
+struct AgentNavigationLauncher(std::sync::atomic::AtomicBool);
+
+impl tilo_action_broker::services::LauncherServices for AgentNavigationLauncher {
+    fn applications(&self) -> Vec<tilo_action_broker::services::LaunchableApplication> {
+        vec![tilo_action_broker::services::LaunchableApplication {
+            package_id: "so.tilo.chat".into(),
+            display_name: "Chat".into(),
+            unconfined: false,
+        }]
+    }
+
+    fn launch(&self, app: &str, _workspace: &tilo_desktop_model::Workspace) -> Result<(), String> {
+        if app != "so.tilo.chat" {
+            return Err("unexpected application".into());
+        }
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
+    fn attest_process(&self, _pid: u32, _app: &str, _room: &str) -> bool {
+        false
+    }
+}
+
+fn cold_agent_navigation_fixture() -> (
+    PendingAgentNavigation,
+    crate::shell::collab_broker::AppActionBroker,
+    Arc<AgentNavigationLauncher>,
+) {
+    use crate::shell::broker_services::NativeWorkspaceAuthority;
+    use crate::shell::state::{Workspace, WorkspaceId};
+    use tilo_action_broker::services::{HostServices, LegacyWorkspaceProjection};
+    use tilo_actions::remote::CatalogueQuery;
+
+    let owner = "a1".repeat(32);
+    let mut workspace = Workspace::new(WorkspaceId(42), "Cold agent room");
+    workspace.set_owner(owner.clone());
+    let room = workspace.room.to_string();
+    let mut tree = WorkspaceTree::default();
+    tree.desktop.workspaces.push(workspace);
+    let membership = tree.shared();
+    let launcher = Arc::new(AgentNavigationLauncher::default());
+    let authority = Arc::new(NativeWorkspaceAuthority(membership));
+    let broker =
+        tilo_action_broker::collab_broker_capnp::CapnpBrokerState::test_broker_with_authority(
+            authority.clone(),
+            HostServices {
+                legacy_workspace: Some(authority as Arc<dyn LegacyWorkspaceProjection>),
+                launcher: Some(launcher.clone()),
+                ..HostServices::default()
+            },
+        );
+    let session =
+        crate::shell::certified_action_session::ActionSessionSource::fixture(broker.clone())
+            .open(&room, Some(&owner))
+            .expect("fixture certified action session");
+    let providers = session.query(CatalogueQuery {
+        max_results: 0,
+        ..CatalogueQuery::default()
+    });
+    (
+        PendingAgentNavigation {
+            room,
+            agent: "scribe".into(),
+            title: "Open Scribe".into(),
+            session,
+            lookup: AgentNavigationLookup::Providers(providers),
+            give_up_at: agent_navigation_deadline(),
+            pages_remaining: AGENT_NAVIGATION_MAX_PAGES,
+        },
+        broker,
+        launcher,
+    )
+}
+
 fn agent_navigation_fixture(
     actions: Vec<crate::shell::collab_broker_capnp::PublishedAction>,
 ) -> (
@@ -98,6 +174,88 @@ fn marker_navigation_invokes_only_the_unique_published_semantic_chat_target() {
 }
 
 #[test]
+fn cold_marker_navigation_launches_chat_then_resolves_its_fresh_published_view() {
+    use crate::shell::collab_broker::CrdtRoute;
+    use crate::shell::collab_broker_capnp::PublishedSurface;
+
+    let (mut pending, broker, launcher) = cold_agent_navigation_fixture();
+    for _ in 0..16 {
+        assert!(matches!(
+            ShellOverlayHost::poll_agent_navigation(&mut pending),
+            AgentNavigationPoll::Waiting
+        ));
+        if matches!(pending.lookup, AgentNavigationLookup::AwaitPublisher { .. }) {
+            break;
+        }
+    }
+    assert!(launcher.0.load(std::sync::atomic::Ordering::Acquire));
+    assert!(matches!(
+        pending.lookup,
+        AgentNavigationLookup::AwaitPublisher { .. }
+    ));
+    let pages_before_wait = pending.pages_remaining;
+    assert!(matches!(
+        ShellOverlayHost::poll_agent_navigation(&mut pending),
+        AgentNavigationPoll::Waiting
+    ));
+    assert_eq!(pending.pages_remaining, pages_before_wait);
+    assert!(matches!(
+        pending.lookup,
+        AgentNavigationLookup::AwaitPublisher { reply: None, .. }
+    ));
+
+    let identity = tilo_actions::ResourceSemanticIdentity::new("chat.agent", "chat.person:scribe")
+        .expect("valid identity");
+    broker.replace_published_surfaces_for_test(vec![PublishedSurface {
+        peer_id: 9,
+        app_id: "so.tilo.chat".into(),
+        route: CrdtRoute::app("so.tilo.chat", pending.room.clone()),
+        actions: vec![published_agent_open("opaque-after-launch", Some(identity))],
+        live: true,
+    }]);
+    let AgentNavigationLookup::AwaitPublisher { next_query_at, .. } = &mut pending.lookup else {
+        panic!("the cold navigation left its bounded publisher wait");
+    };
+    *next_query_at = Instant::now();
+    let mut invocations = broker.capture_invocations_for_test(9);
+    let mut outcome = AgentNavigationPoll::Waiting;
+    for _ in 0..16 {
+        outcome = ShellOverlayHost::poll_agent_navigation(&mut pending);
+        if !matches!(outcome, AgentNavigationPoll::Waiting) {
+            break;
+        }
+    }
+    assert!(matches!(outcome, AgentNavigationPoll::Invoke(_)));
+    let invocation = invocations
+        .try_recv()
+        .expect("freshly published opaque Chat View was invoked");
+    assert_eq!(invocation.resource, "opaque-after-launch");
+}
+
+#[test]
+fn pending_agent_navigation_is_consumed_when_the_active_room_changes() {
+    use crate::shell::state::{Workspace, WorkspaceId};
+
+    let (pending, _broker, launcher) = cold_agent_navigation_fixture();
+    let mut other = WorkspaceTree::default();
+    other
+        .desktop
+        .workspaces
+        .push(Workspace::new(WorkspaceId(87), "Other room"));
+    let mut host = ShellOverlayHost::new(Box::new(StubContent::new()));
+    host.chrome = Some(ChromeState::new(other));
+    host.pending_agent_navigations.push(pending);
+
+    host.poll_pending_agent_navigations();
+
+    assert!(host.pending_agent_navigations.is_empty());
+    assert!(
+        !launcher.0.load(std::sync::atomic::Ordering::Acquire),
+        "a stale marker from the previous room cannot launch Chat in the new room"
+    );
+}
+
+#[test]
 fn marker_navigation_refuses_missing_or_ambiguous_semantic_chat_targets() {
     let identity = tilo_actions::ResourceSemanticIdentity::new("chat.agent", "chat.person:scribe")
         .expect("valid identity");
@@ -176,9 +334,9 @@ fn marker_navigation_refuses_a_publisher_that_repeats_a_page_cursor() {
         agent_navigation_fixture(vec![published_agent_open("opaque-row", Some(identity))]);
     let cursor = vec![9, 4, 2];
     pending.lookup = AgentNavigationLookup::Rows {
-        providers: VecDeque::new(),
-        provider: Some("7".into()),
-        revision: Some("same-revision".into()),
+        scopes: VecDeque::new(),
+        active_scope: Some(("7".into(), None)),
+        revisions: HashMap::from([("7".into(), "same-revision".into())]),
         cursor: cursor.clone(),
         reply: Some(Pending::ready(Ok(CataloguePage {
             revision: "same-revision".into(),
@@ -186,7 +344,8 @@ fn marker_navigation_refuses_a_publisher_that_repeats_a_page_cursor() {
             ..CataloguePage::default()
         }))),
         matches: Vec::new(),
-        seen_cursors: HashSet::from([("7".into(), cursor)]),
+        seen_pages: HashSet::from([("7".into(), None, cursor)]),
+        seen_resources: HashSet::new(),
     };
 
     assert!(matches!(

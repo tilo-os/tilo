@@ -9,7 +9,7 @@ use ed25519_dalek::Signer as _;
 use std::sync::Arc;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvokeRequest, Pending,
+    InvocationState, InvokeRequest, Pending,
 };
 
 use super::collab_broker::AppActionBroker;
@@ -94,10 +94,21 @@ impl DesktopActionSession {
             Self::Fixture { host, caller } => host.invoke_job(caller, request),
         }
     }
+
+    pub(crate) fn observe(
+        &self,
+        invocation: &tilo_actions::InvocationId,
+    ) -> Option<InvocationState> {
+        match self {
+            Self::Certified(session) => session.observe(invocation),
+            #[cfg(test)]
+            Self::Fixture { host, caller } => host.observe(caller, invocation),
+        }
+    }
 }
 
 impl CertifiedActionSession {
-    /// Bind a fresh execution to the selected Person and device in `room`.
+    /// Retain the genuine certified Person caller and device for `room`.
     ///
     /// `expected_person` is only a consistency fence for the UI projection;
     /// the certified device presentation remains the authority.
@@ -168,5 +179,9 @@ impl CertifiedActionSession {
                 .ok_or(ActionHostError::UnknownInvocation)?;
             Ok((job, receipt))
         })
+    }
+
+    fn observe(&self, invocation: &tilo_actions::InvocationId) -> Option<InvocationState> {
+        self.host.observe(&self.caller, invocation)
     }
 }
