@@ -113,6 +113,12 @@ mod tests {
             "chat-thread-back",
             "chat-thread-close",
             "chat-thread-replies",
+            "chat-agent-kind",
+            "chat-agents-section",
+            "chat-agent-message-placeholder",
+            "chat-agent-empty-title",
+            "chat-agent-empty-message",
+            "chat-agent-roster-label",
         ] {
             let s = t(key);
             assert_ne!(s, key, "{key} has no entry in the catalogue");

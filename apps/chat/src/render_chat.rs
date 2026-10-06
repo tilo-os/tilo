@@ -15,6 +15,7 @@ use vello::peniko::Color;
 
 use ui::TextKind;
 use ui::Widget;
+use ui::agent_identity::{AgentIdentityStyle, draw_agent_identity_mark};
 use ui::chrome::{
     self, NavCount, NavRowFace, NavSectionFace, SelectionState, nav_rail_row_height,
     nav_row_height, nav_row_layout, nav_section_height, nav_section_layout,
@@ -641,6 +642,76 @@ impl ChatApp {
                 );
             }
         }
+        self.draw_agent_navigation(PaintCtx::new(scene, tf, tr, theme), side, y, first, hits);
+    }
+
+    /// Broker-authenticated Agents are ordinary conversation destinations,
+    /// so they belong in the ordinary navigation rather than only in the
+    /// collaborator drawer. Membership says nothing about liveness: these
+    /// rows deliberately carry no online dot or invented readiness label.
+    fn draw_agent_navigation(
+        &self,
+        paint: PaintCtx<'_>,
+        side: Rect,
+        mut y: f64,
+        first: bool,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        if self.room_agents.is_empty() || y > side.y1 {
+            return;
+        }
+        let PaintCtx {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let section_h = nav_section_height(theme, first);
+        let header = Rect::new(side.x0, y, side.x1, y + section_h);
+        chrome::paint_nav_section(
+            scene,
+            tf,
+            tr,
+            theme,
+            &NavSectionFace::new(header, &crate::i18n::t("chat-agents-section")),
+        );
+        y += section_h;
+        let row_h = nav_row_height(theme);
+        let kind = crate::i18n::t("chat-agent-kind");
+        for agent in &self.room_agents {
+            if y + row_h > side.y1 {
+                break;
+            }
+            let name = self.agent_display_name(agent);
+            let row = Rect::new(side.x0, y, side.x1, y + row_h);
+            let face = NavRowFace::new(row, &name)
+                .secondary(&kind)
+                .swatch(Color::TRANSPARENT)
+                .state(SelectionState::new(
+                    self.direct_agent.as_deref() == Some(agent.as_str()),
+                    self.hovered(row),
+                    false,
+                ));
+            let layout = nav_row_layout(theme, tr, &face);
+            chrome::paint_nav_row(scene, tf, tr, theme, &face);
+            if let Some(mark) = layout.icon {
+                let canonical = format!("agent:{agent}");
+                draw_agent_identity_mark(
+                    scene,
+                    tf,
+                    mark,
+                    theme
+                        .tokens
+                        .colors
+                        .presence
+                        .of_rgb(self.participant_color(&canonical)),
+                    theme,
+                    AgentIdentityStyle::Solid,
+                );
+            }
+            ChatApp::push_hit(hits, row, Hit::Agent(agent.clone()));
+            y += row_h;
+        }
     }
 
     /// The channels of one category (`""` for the uncategorised group), each
@@ -889,19 +960,26 @@ impl ChatApp {
         let cluster_left = self.draw_header_action_buttons(scene, tf, tr, theme, controls, hits);
 
         let ch = self.channel(&self.active_channel).cloned();
-        let (name, mut topic) = match &ch {
-            Some(ch) => {
-                let topic = if self.inbox_open {
-                    self.workspaces
-                        .iter()
-                        .find(|workspace| workspace.id == ch.workspace)
-                        .map_or_else(String::new, |workspace| workspace.name.clone())
-                } else {
-                    ch.topic.clone()
-                };
-                (ch.name.clone(), topic)
+        let (name, mut topic) = if let Some(agent) = &self.direct_agent {
+            (
+                self.agent_display_name(agent),
+                crate::i18n::t("chat-agent-kind"),
+            )
+        } else {
+            match &ch {
+                Some(ch) => {
+                    let topic = if self.inbox_open {
+                        self.workspaces
+                            .iter()
+                            .find(|workspace| workspace.id == ch.workspace)
+                            .map_or_else(String::new, |workspace| workspace.name.clone())
+                    } else {
+                        ch.topic.clone()
+                    };
+                    (ch.name.clone(), topic)
+                }
+                None => (String::new(), String::new()),
             }
-            None => (String::new(), String::new()),
         };
         if self.sharing_context {
             topic = crate::i18n::t("chat-context-sharing");
@@ -1009,11 +1087,55 @@ impl ChatApp {
             &ButtonFace::icon_only(search, Icon::Search, "Search").hovered(self.hovered(search)),
         );
         ChatApp::push_hit(hits, search, Hit::Search);
+        let mut cluster_left = search.x0;
+        if self.direct_agent.is_some() {
+            let window = square(
+                Point::new(cluster_left - f64::from(sp.s2) - control / 2.0, cy),
+                control,
+            );
+            let label = if self.agent_window_is_return() {
+                crate::i18n::t("chat-agent-return")
+            } else {
+                crate::i18n::t("chat-agent-float")
+            };
+            Button::paint(
+                scene,
+                tf,
+                tr,
+                theme,
+                &ButtonFace::icon_only(window, Icon::ExternalLink, &label)
+                    .hovered(self.hovered(window)),
+            );
+            ChatApp::push_hit(hits, window, Hit::AgentWindow);
+            cluster_left = window.x0;
+            // A direct Agent conversation has no voice capability merely
+            // because human conversations do. The detached child is also a
+            // conversation, not a second workspace-navigation surface.
+            if self.conversation_surface {
+                return cluster_left;
+            }
+        }
         // Calls and the people roster matter once a workspace is shared. In
         // a private workspace the unadorned conversation header is the
         // resting state; inviting belongs to the workspace surface.
         if !self.has_other_collaborator() {
-            return search.x0;
+            return cluster_left;
+        }
+        let right = cluster_left - f64::from(sp.s2);
+        if self.direct_agent.is_some() {
+            let people = square(Point::new(right - control / 2.0, cy), control);
+            let open = self.right_flap_open() && self.thread_open.is_none();
+            Button::paint(
+                scene,
+                tf,
+                tr,
+                theme,
+                &ButtonFace::icon_only(people, Icon::Users, self.roster_label())
+                    .hovered(self.hovered(people))
+                    .pressed(open),
+            );
+            ChatApp::push_hit(hits, people, Hit::ToggleRightFlap);
+            return people.x0;
         }
         let right = search.x0 - f64::from(sp.s2);
         let call_label = crate::i18n::t(if self.call.active {
@@ -1070,7 +1192,7 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let toggle = self.left_flap.toggle_rect();
-        if self.thread_is_page() || toggle.width() <= 0.0 {
+        if self.conversation_surface || self.thread_is_page() || toggle.width() <= 0.0 {
             return;
         }
         self.left_flap
@@ -1079,6 +1201,47 @@ impl ChatApp {
     }
 
     // ------------------------------------------------------------ messages
+    fn draw_empty_messages(&mut self, paint: PaintCtx<'_>, area: Rect) {
+        let PaintCtx {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        self.scroll_content = 0.0;
+        self.scroll_viewport = area.height().max(0.0);
+        self.scroll = 0.0;
+        let agent_name = self
+            .direct_agent
+            .as_deref()
+            .map(|agent| self.agent_display_name(agent));
+        let direct_title = agent_name
+            .as_deref()
+            .map(|name| crate::i18n::t_args("chat-agent-empty-title", &[("name", name.into())]));
+        let direct_message = self
+            .direct_agent
+            .as_ref()
+            .map(|_| crate::i18n::t("chat-agent-empty-message"));
+        let title = if let Some(title) = direct_title.as_deref() {
+            title
+        } else if self.can_participate() {
+            "No messages yet"
+        } else {
+            "Nothing has been said here yet"
+        };
+        let content = EmptyStateContent {
+            icon: self.direct_agent.is_none().then_some(Icon::Send),
+            message: direct_message.as_deref(),
+            ..EmptyStateContent::new(title)
+        };
+        EmptyState::paint(
+            &mut PaintCtx::new(scene, tf, tr, theme),
+            area,
+            &content,
+            self.last_mouse,
+        );
+    }
+
     pub(crate) fn draw_messages(
         &mut self,
         paint: PaintCtx<'_>,
@@ -1103,24 +1266,7 @@ impl ChatApp {
 
         // An empty channel says so in one sentence.
         if self.messages.is_empty() {
-            self.scroll_content = 0.0;
-            self.scroll_viewport = area.height().max(0.0);
-            self.scroll = 0.0;
-            let title = if self.can_participate() {
-                "No messages yet"
-            } else {
-                "Nothing has been said here yet"
-            };
-            let content = EmptyStateContent {
-                icon: Some(Icon::Send),
-                ..EmptyStateContent::new(title)
-            };
-            EmptyState::paint(
-                &mut PaintCtx::new(scene, tf, tr, theme),
-                area,
-                &content,
-                self.last_mouse,
-            );
+            self.draw_empty_messages(PaintCtx::new(scene, tf, tr, theme), area);
             return;
         }
 
@@ -2644,6 +2790,12 @@ impl ChatApp {
             let row_h = face.height(ctx.text, theme);
             let row = Rect::new(body.x0 + inset, y, body.x1 - inset, y + row_h);
             face.paint(&mut ctx, row);
+            if person.is_agent
+                && let Some(agent) = person.id.strip_prefix("agent:")
+                && self.room_agents.iter().any(|known| known == agent)
+            {
+                ChatApp::push_hit(hits, row, Hit::Agent(agent.to_owned()));
+            }
             y += row_h;
         }
         scene.pop_layer();

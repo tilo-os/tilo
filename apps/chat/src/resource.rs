@@ -11,10 +11,12 @@ use automerge::{ObjType, ROOT, ReadDoc, Value};
 use tilo_content::ContentStore;
 use tilo_document::RichText;
 use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, ResourceApp, ResourceSurface, RunMode, SeedCx, SurfaceCx,
-    ViewCx,
+    EffectAnswer, EffectCx, EffectStatus, LiveRow, ResourceApp, ResourceSurface, RunMode, SeedCx,
+    SurfaceCx, ViewCx,
 };
-use ui::tilo_actions::{ActionAddress, Resource as PublishedResource};
+use ui::tilo_actions::{
+    ActionAddress, ActionParam, PROMPTED_PARAM, ParamType, Resource as PublishedResource,
+};
 use ui::tilo_resource::{
     ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry, publish_child,
 };
@@ -293,6 +295,8 @@ pub struct ChatShell;
 
 /// Every named scenario `--shots --scenario NAME` captures.
 const SCENARIOS: &[&str] = &[
+    "agent-direct",
+    "agent-direct-compact",
     "agent-work",
     "narrow",
     "history",
@@ -358,8 +362,12 @@ impl ResourceApp for ChatShell {
         SCENARIOS
     }
 
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        if scenario == Some("agent-direct-compact") {
+            (800, 600)
+        } else {
+            (1280, 800)
+        }
     }
 
     /// The first-run workspace for `starter`, the demo conversation for
@@ -548,6 +556,73 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
 
     fn effects(&self) -> Vec<EffectStatus> {
         self.effect_statuses()
+    }
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.room_agents
+            .iter()
+            .map(|agent| {
+                let actor = format!("agent:{agent}");
+                let label = self
+                    .room_names
+                    .get(&actor)
+                    .map_or(agent.as_str(), String::as_str);
+                LiveRow::new(format!("chat.person:{agent}"), "chat.agent", label).effect(
+                    &ChatEffect::OpenAgentConversation {
+                        workspace: self.context_ws.clone(),
+                        agent: agent.clone(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        let agent = id.strip_prefix("chat.person:")?;
+        self.room_agents
+            .iter()
+            .any(|known| known == agent)
+            .then(|| {
+                let actor = format!("agent:{agent}");
+                let label = self.room_names.get(&actor).map_or(agent, String::as_str);
+                LiveRow::new(id, "chat.agent", label)
+            })
+    }
+
+    fn row_declarations(&self, row: &str) -> Vec<ActionDecl<Chat>> {
+        let Some(agent) = row.strip_prefix("chat.person:") else {
+            return Vec::new();
+        };
+        if !self.room_agents.iter().any(|known| known == agent)
+            || !self
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.id == self.active_ws)
+        {
+            return Vec::new();
+        }
+        let workspace = self.active_ws.clone();
+        let agent = agent.to_owned();
+        vec![ActionDecl::new(
+            "message",
+            "Message",
+            vec![ActionParam::required(
+                PROMPTED_PARAM,
+                ParamType::Text,
+                "Message this agent",
+            )],
+            move |args, now_ms| {
+                let text = args
+                    .text(PROMPTED_PARAM)
+                    .ok_or_else(|| "a message needs text".to_owned())?;
+                Ok(actions::post_agent_message_action(
+                    &workspace,
+                    &agent,
+                    text,
+                    crate::model::AgentIntent::Message,
+                    now_ms.div_euclid(1_000),
+                ))
+            },
+        )]
     }
 }
 

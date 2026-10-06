@@ -362,6 +362,16 @@ impl DraftComposer {
         self.host.widget().source().private_plain()
     }
 
+    #[cfg(test)]
+    pub(crate) fn private_plain_for(&self, workspace: &str, agent: &str) -> Option<String> {
+        let key = agent_draft_key(workspace, agent);
+        self.host
+            .widget()
+            .source()
+            .private
+            .with(|drafts| drafts.get(&key).map(Draft::plain_text))
+    }
+
     /// Clear only the currently attached direct-agent draft.
     pub fn clear_private(&mut self) -> bool {
         let cleared = self.host.widget_mut().source_mut().clear_private();
@@ -369,6 +379,13 @@ impl DraftComposer {
             self.host.widget_mut().present_now();
         }
         cleared
+    }
+
+    /// Share the peer-local draft backing store without copying editor text.
+    /// The retained editor itself moves between attached and floated views;
+    /// the inactive view only needs the same keyed store for later routes.
+    pub(crate) fn share_private_store_from(&mut self, other: &Self) {
+        self.host.widget_mut().source_mut().private = other.host.widget().source().private.clone();
     }
 }
 
@@ -404,14 +421,17 @@ impl MessageEditor {
         };
         self.load(&blocks);
     }
-
-    /// What the edit holds, as an action carries paragraphs.
-    pub fn clips(&self) -> Vec<tilo_document::ClipBlock> {
-        self.host.widget().source().clip_blocks()
-    }
 }
 
 impl<S: RichTextSource + 'static> Composer<S> {
+    /// What the editor holds, as an action carries paragraphs.
+    pub fn clips(&self) -> Vec<tilo_document::ClipBlock> {
+        self.blocks()
+            .iter()
+            .map(tilo_rich_text::clip_of_content)
+            .collect()
+    }
+
     /// The paragraphs the editor shows.
     pub fn blocks(&self) -> Vec<BlockContent> {
         self.host

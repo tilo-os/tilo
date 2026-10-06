@@ -881,6 +881,25 @@ impl ChatApp {
                 self.on_hit_workspace(self.context_ws.clone());
             }
             Hit::Channel(id) => self.on_hit_channel(id, doc),
+            Hit::Agent(agent) if self.room_agents.iter().any(|known| known == &agent) => {
+                self.direct_agent = Some(agent.clone());
+                self.active_channel =
+                    crate::doc::ChatDoc::agent_conversation_channel_id(&self.active_ws, &agent);
+                self.thread_open = None;
+                self.reset_timeline_to_latest();
+                self.focus = Focus::Main;
+                if self.left_overlay() {
+                    self.left_flap.close();
+                }
+            }
+            Hit::AgentWindow => {
+                if self.conversation_surface {
+                    self.conversation_return_requested = true;
+                } else if let Some(agent) = self.direct_agent.clone() {
+                    let workspace = self.context_ws.clone();
+                    let _ = self.float_agent_conversation(&workspace, &agent);
+                }
+            }
             Hit::VoiceChannel(id) => self.join_voice(&id, doc),
             Hit::CategoryToggle(id) => self.toggle_category(&id),
             Hit::EditSave => self.commit_edit(doc),
@@ -982,6 +1001,7 @@ impl ChatApp {
     }
 
     fn on_hit_workspace(&mut self, id: Id) {
+        self.direct_agent = None;
         if self.active_ws != id {
             self.active_ws = id;
             self.thread_open = None;
@@ -992,6 +1012,7 @@ impl ChatApp {
     }
 
     fn on_hit_channel(&mut self, id: Id, doc: &mut ui::widget::Edits<'_>) {
+        self.direct_agent = None;
         let kind = self.channel(&id).map(|c| c.kind);
         if kind == Some(ChannelKind::Voice) {
             self.join_voice(&id, doc);
@@ -1534,6 +1555,35 @@ impl ChatApp {
         if !self.can_participate() {
             return;
         }
+        if matches!(self.focus, Focus::Main)
+            && let Some(agent) = self.direct_agent.clone()
+        {
+            let text = self.composer_main.private_plain().unwrap_or_default();
+            if text.trim().is_empty() || !self.room_agents.iter().any(|known| known == &agent) {
+                return;
+            }
+            let action = actions::post_agent_message_action(
+                &self.active_ws,
+                &agent,
+                &text,
+                crate::model::AgentIntent::Message,
+                now_secs(),
+            )
+            .with_body(self.composer_main.clips());
+            #[cfg(test)]
+            self.dispatched.borrow_mut().push(action.clone());
+            let sent = self.dispatch.as_ref().is_some_and(|dispatch| {
+                dispatch
+                    .apply_now_with(doc, &action, actions::history_context(&action))
+                    .is_ok()
+            });
+            if sent {
+                self.composer_main.clear_private();
+                self.jump_to_latest();
+                self.reload(doc);
+            }
+            return;
+        }
         let (key, parent) = match self.focus {
             Focus::Thread => match self.thread_draft_key() {
                 Some(key) => (key, self.thread_open.clone()),
@@ -1925,6 +1975,222 @@ mod tests {
         let mut app = ChatApp::new_ephemeral();
         app.reload(&doc);
         (app, doc)
+    }
+
+    #[test]
+    fn authenticated_agent_route_keeps_private_draft_and_sends_one_message() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.room_names
+            .insert("agent:scribe".into(), "Scribe".into());
+        app.reload(&doc);
+
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        assert_eq!(app.active_ws, "ws_home");
+        assert_eq!(app.direct_agent.as_deref(), Some("scribe"));
+        let private_key = app.composer_main.key();
+        type_str(&mut app, &mut doc, "Keep this private");
+        assert_eq!(
+            app.composer_main.private_plain().as_deref(),
+            Some("Keep this private")
+        );
+        assert!(ChatDoc::draft_text(&doc, &app.active_channel).is_empty());
+
+        app.on_hit(
+            Hit::Channel("c_general".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        assert!(app.direct_agent.is_none());
+        assert_eq!(
+            app.composer_main
+                .private_plain_for("ws_home", "scribe")
+                .as_deref(),
+            Some("Keep this private")
+        );
+        assert_eq!(app.active_ws, "ws_home");
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        assert_eq!(app.composer_main.key(), private_key);
+        assert_eq!(
+            app.composer_main.private_plain().as_deref(),
+            Some("Keep this private")
+        );
+
+        app.send_focused(&mut ui::widget::Edits::lend(&mut doc));
+        let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
+        let messages = ChatDoc::list_messages(&doc, &channel);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].text, "Keep this private");
+        assert_eq!(messages[0].author, "u_alice");
+        assert_eq!(messages[0].agent_intent, Some(model::AgentIntent::Message));
+        assert_eq!(app.composer_main.private_plain().as_deref(), Some(""));
+    }
+
+    #[test]
+    fn authenticated_agent_is_discoverable_without_inventing_voice_capability() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.room_names
+            .insert("agent:scribe".into(), "Scribe".into());
+        app.reload(&doc);
+        render_frame(&mut app, 1280.0, 800.0);
+
+        assert_eq!(
+            count_hits(
+                &app,
+                |hit| matches!(hit, Hit::Agent(agent) if agent == "scribe")
+            ),
+            1,
+            "the authenticated Agent has one ordinary navigation destination"
+        );
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        render_frame(&mut app, 1280.0, 800.0);
+        assert_eq!(
+            count_hits(&app, |hit| matches!(hit, Hit::StartCall)),
+            0,
+            "a direct Agent route does not inherit human voice capability"
+        );
+        assert_eq!(
+            count_hits(&app, |hit| matches!(hit, Hit::AgentWindow)),
+            1,
+            "the real Float lifecycle remains available"
+        );
+    }
+
+    #[test]
+    fn floated_agent_conversation_returns_the_same_private_editor() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.room_names
+            .insert("agent:scribe".into(), "Scribe".into());
+        app.reload(&doc);
+        render_frame(&mut app, 1200.0, 800.0);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        type_str(&mut app, &mut doc, "Private direction");
+        app.composer_main.select(2, 9);
+        let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
+
+        app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
+        let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
+            .expect("Float publishes one shared-host request");
+        let surface = app
+            .agent_surfaces
+            .get(&channel)
+            .expect("the direct conversation remains retained");
+        assert_eq!(surface.view.composer_main.value(), "Private direction");
+        assert_eq!(surface.view.composer_main.selection(), (2, 9));
+        assert!(
+            app.direct_agent.is_none(),
+            "the parent leaves the moved route"
+        );
+
+        let surface = app.agent_surfaces.get_mut(&channel).unwrap();
+        render_frame(&mut surface.view, 520.0, 640.0);
+        assert_eq!(
+            count_hits(&surface.view, |hit| matches!(
+                hit,
+                Hit::StartCall | Hit::ToggleLeftFlap
+            )),
+            0,
+            "the detached conversation is not a second workspace navigation surface"
+        );
+
+        let rect = request.initial_rect.expect("the source geometry is exact");
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+            &mut app,
+            &ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
+                id: request.id.clone(),
+                token: "0123456789abcdef0123456789abcdef".into(),
+                rect: ui::floating_surface::protocol_rect_array(rect),
+                content_rect: ui::floating_surface::protocol_rect_array(rect),
+                transfer_covered: true,
+                coordinate_offset: [0.0, 0.0],
+            },
+        );
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+            &mut app,
+            &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+                id: request.id.clone(),
+                rect: ui::floating_surface::protocol_rect_array(rect),
+            },
+        );
+        app.agent_surfaces
+            .get_mut(&channel)
+            .unwrap()
+            .view
+            .on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
+        app.settle_agent_surface_commands();
+        assert!(app.agent_surfaces[&channel].placement.is_return_pending());
+
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+            &mut app,
+            &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id: request.id },
+        );
+        assert_eq!(app.direct_agent.as_deref(), Some("scribe"));
+        assert_eq!(app.composer_main.value(), "Private direction");
+        assert_eq!(app.composer_main.selection(), (2, 9));
+        assert!(ChatDoc::draft_text(&doc, &channel).is_empty());
+    }
+
+    #[test]
+    fn declined_agent_float_restores_the_exact_route_and_private_editor() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.room_names
+            .insert("agent:scribe".into(), "Scribe".into());
+        app.reload(&doc);
+        render_frame(&mut app, 1200.0, 800.0);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        type_str(&mut app, &mut doc, "Private recovery draft");
+        app.composer_main.select(3, 11);
+        app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
+        let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
+            .expect("Float publishes one shared-host request");
+        assert!(
+            app.direct_agent.is_none(),
+            "the handoff left its source route"
+        );
+
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+            &mut app,
+            &ui::floating_surface::FloatingSurfaceHostMessage::Reattach { id: request.id },
+        );
+
+        assert_eq!(app.direct_agent.as_deref(), Some("scribe"));
+        assert_eq!(app.active_ws, "ws_home");
+        assert_eq!(
+            app.active_channel,
+            ChatDoc::agent_conversation_channel_id("ws_home", "scribe")
+        );
+        assert_eq!(app.composer_main.value(), "Private recovery draft");
+        assert_eq!(app.composer_main.selection(), (3, 11));
+        assert!(
+            app.agent_surfaces.contains_key(&app.active_channel),
+            "a declined handoff stays retained for another Float attempt"
+        );
+        assert!(ChatDoc::draft_text(&doc, &app.active_channel).is_empty());
     }
 
     /// Exercise a domain action through the retained menu's semantic

@@ -60,6 +60,9 @@ pub enum ChatEffect {
     /// Open person
     #[effect(view, row)]
     OpenPerson { user: String },
+    /// Open a direct conversation with an Agent authenticated by this room.
+    #[effect(view, row)]
+    OpenAgentConversation { workspace: String, agent: String },
     /// Read message
     ///
     /// The message as a value: who wrote it, whether that is an agent, its
@@ -164,6 +167,9 @@ impl ChatApp {
                 unit,
             } => return self.reveal_message_range(&message, start, end, &unit),
             ChatEffect::OpenPerson { user } => self.open_person(&user)?,
+            ChatEffect::OpenAgentConversation { workspace, agent } => {
+                self.open_agent_conversation(&workspace, &agent)?;
+            }
             ChatEffect::ReadMessage { message } => {
                 return self.read_message(&message).map(Effected::value);
             }

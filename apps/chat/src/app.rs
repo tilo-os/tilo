@@ -14,7 +14,7 @@
 //! projection + an input router, in keeping with the toolkit's
 //! "state lives in the CRDT" contract.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{Receiver, SyncSender};
 use ui::widget::{AppModel, ModelPath};
 
@@ -273,6 +273,10 @@ pub(crate) enum Hit {
     /// Return from Inbox to channels belonging to the active Tilo workspace.
     CurrentContext,
     Channel(Id),
+    /// Open a direct conversation with an Agent authenticated by the room.
+    Agent(Id),
+    /// Move the open direct conversation to a secondary surface, or return it.
+    AgentWindow,
     /// A voice-channel member chip in the sidebar — clicking joins the call.
     VoiceChannel(Id),
     /// Toggle a category's collapsed state.
@@ -361,6 +365,8 @@ impl Hit {
             Self::Inbox => "chat.inbox".into(),
             Self::CurrentContext => "chat.current-context".into(),
             Self::Channel(id) => format!("chat.channel:{id}"),
+            Self::Agent(id) => format!("chat.agent:{id}"),
+            Self::AgentWindow => "chat.agent-window".into(),
             Self::VoiceChannel(id) => format!("chat.voice-channel:{id}"),
             Self::CategoryToggle(id) => format!("chat.category-toggle:{id}"),
             Self::AddChannel {
@@ -649,6 +655,16 @@ pub struct ChatApp {
     /// measured by the paint pass.
     pub(crate) huddle_chip_rows: usize,
     pub(crate) pending_floating: Option<ui::floating_surface::FloatingSurfaceRequest>,
+    /// Direct Agent conversations retained while shell-owned secondary
+    /// surfaces present them. Keyed by their deterministic conversation id.
+    pub(crate) agent_surfaces:
+        HashMap<Id, crate::agent_conversation_surface::AgentConversationSurface>,
+    pub(crate) agent_surface_requests: VecDeque<ui::floating_surface::FloatingSurfaceRequest>,
+    pub(crate) focused_agent_surface: Option<String>,
+    pub(crate) input_agent_surface: Option<String>,
+    /// This instance is itself the content of one secondary conversation.
+    pub(crate) conversation_surface: bool,
+    pub(crate) conversation_return_requested: bool,
     /// Authoritative combined-output bounds supplied by the shell. Standalone
     /// app/test hosts leave this empty and fall back to the app rect.
     pub(crate) floating_surface_bounds: Rect,
@@ -676,6 +692,13 @@ pub struct ChatApp {
     // this map — only what the room says about a participant lands here.
     pub(crate) room_names: HashMap<Id, String>,
     pub(crate) room_colors: HashMap<Id, (u8, u8, u8)>,
+    /// Stable bare ids of agents authenticated by the room's latest complete
+    /// broker Context. Names and document rows never populate this set.
+    pub(crate) room_agents: Vec<Id>,
+    /// The peer-local route currently presenting a direct Agent conversation.
+    /// Authority still comes from `room_agents`; this value is never read from
+    /// the shared Chat document.
+    pub(crate) direct_agent: Option<Id>,
 
     // Agent display names of agent-authored messages (`agent_authors` in the
     // document): what every member renders as "<name> (agent)".
@@ -921,6 +944,12 @@ impl ChatApp {
             call_chrome_motion: CallChromeMotion::default(),
             huddle_chip_rows: 0,
             pending_floating: None,
+            agent_surfaces: HashMap::new(),
+            agent_surface_requests: VecDeque::new(),
+            focused_agent_surface: None,
+            input_agent_surface: None,
+            conversation_surface: false,
+            conversation_return_requested: false,
             floating_surface_bounds: Rect::ZERO,
             search_opener: ui::search::SearchOpener::new(),
             left_flap: Self::navigation_drawer(),
@@ -930,6 +959,8 @@ impl ChatApp {
             me: LocalIdentity::demo(),
             room_names: HashMap::new(),
             room_colors: HashMap::new(),
+            room_agents: Vec::new(),
+            direct_agent: None,
             agent_authors: HashMap::new(),
             body_views: std::cell::RefCell::new(HashMap::new()),
             body_text_inset: std::cell::Cell::new(0.0),
@@ -1132,6 +1163,18 @@ impl ChatApp {
         }
         self.sharing_context = scenario == "live-context";
         self.stage_view(scenario);
+        if matches!(scenario, "agent-direct" | "agent-direct-compact") {
+            self.room_agents = vec!["scribe".into()];
+            self.room_names
+                .insert("agent:scribe".into(), "Scribe".into());
+            self.active_channel = ChatDoc::agent_conversation_channel_id("ws_acme", "scribe");
+            self.direct_agent = Some("scribe".into());
+            self.composer_main.set_agent_draft("ws_acme", "scribe");
+            self.composer_main.set_placeholder(&crate::i18n::t_args(
+                "chat-agent-message-placeholder",
+                &[("name", "Scribe".into())],
+            ));
+        }
         self.reselect();
         self.request_relayout();
         self.stage_floating_call(scenario);
@@ -1168,6 +1211,12 @@ impl ChatApp {
                 self.thread_open = None;
                 self.right_flap.snap(false);
                 self.call = CallState::default();
+            }
+            "agent-direct" | "agent-direct-compact" => {
+                self.thread_open = None;
+                self.right_flap.snap(false);
+                self.call = CallState::default();
+                self.left_flap.snap(scenario == "agent-direct");
             }
             "people" => {
                 self.thread_open = None;
@@ -1649,6 +1698,227 @@ impl ChatApp {
         id.to_string()
     }
 
+    /// The room-owned display name for an authenticated bare Agent id.
+    /// Agent and Person namespaces remain distinct even when their bare ids
+    /// happen to have the same spelling.
+    pub(crate) fn agent_display_name(&self, agent: &str) -> String {
+        self.room_names
+            .get(&format!("agent:{agent}"))
+            .filter(|name| !name.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| agent.to_owned())
+    }
+
+    pub(crate) fn open_agent_conversation(
+        &mut self,
+        workspace: &str,
+        agent: &str,
+    ) -> Result<(), String> {
+        if workspace != self.context_ws
+            || !self
+                .workspaces
+                .iter()
+                .any(|candidate| candidate.id == workspace)
+            || !self.room_agents.iter().any(|known| known == agent)
+        {
+            return Err("agent is not admitted to this workspace".into());
+        }
+        workspace.clone_into(&mut self.active_ws);
+        self.active_channel = ChatDoc::agent_conversation_channel_id(workspace, agent);
+        self.direct_agent = Some(agent.into());
+        self.inbox_open = false;
+        self.thread_open = None;
+        self.focus = Focus::Main;
+        self.reset_timeline_to_latest();
+        let channel = self.active_channel.clone();
+        self.restore_attached_agent_surface(&channel);
+        Ok(())
+    }
+
+    pub(crate) fn conversation_instance(parent: &Self, agent: &str) -> Self {
+        let mut view = Self::bare(parent.content.clone());
+        view.workspaces.clone_from(&parent.workspaces);
+        view.channels.clone_from(&parent.channels);
+        view.categories.clone_from(&parent.categories);
+        view.users.clone_from(&parent.users);
+        view.messages.clone_from(&parent.messages);
+        view.search_messages.clone_from(&parent.search_messages);
+        view.search_users.clone_from(&parent.search_users);
+        view.voice_members.clone_from(&parent.voice_members);
+        view.me = parent.me.clone();
+        view.perms = parent.perms.clone();
+        view.room_names.clone_from(&parent.room_names);
+        view.room_colors.clone_from(&parent.room_colors);
+        view.room_agents.clone_from(&parent.room_agents);
+        view.agent_authors.clone_from(&parent.agent_authors);
+        view.former_ids.clone_from(&parent.former_ids);
+        view.context_ws.clone_from(&parent.context_ws);
+        view.active_ws.clone_from(&parent.active_ws);
+        view.active_channel = ChatDoc::agent_conversation_channel_id(&parent.active_ws, agent);
+        view.direct_agent = Some(agent.into());
+        view.conversation_surface = true;
+        view.thread_open = None;
+        view.left_flap.snap(false);
+        view.right_flap.snap(false);
+        view.external_services = parent.external_services;
+        if let Some(dispatcher) = parent.dispatch.clone() {
+            view.attach_framework(dispatcher);
+        }
+        view
+    }
+
+    pub(crate) fn float_agent_conversation(
+        &mut self,
+        workspace: &str,
+        agent: &str,
+    ) -> Result<(), String> {
+        self.open_agent_conversation(workspace, agent)?;
+        if self.rect.area() <= 0.0 {
+            return Err("Chat must be visible before its conversation can move".into());
+        }
+        let channel = self.active_channel.clone();
+        if let Some(mut surface) = self.agent_surfaces.remove(&channel) {
+            if matches!(
+                surface.placement.attachment(),
+                ui::floating_surface::Attachment::App { .. }
+            ) {
+                surface.move_editor_to_view(self);
+                surface.placement.detach_to_desktop(surface.source);
+                self.agent_surface_requests.push_back(surface.request());
+            }
+            self.agent_surfaces.insert(channel, surface);
+            self.leave_floated_agent_route(workspace);
+            return Ok(());
+        }
+        let mut surface =
+            crate::agent_conversation_surface::AgentConversationSurface::from_attached(self, agent);
+        surface.placement.detach_to_desktop(surface.source);
+        self.agent_surface_requests.push_back(surface.request());
+        self.agent_surfaces.insert(channel, surface);
+        self.leave_floated_agent_route(workspace);
+        Ok(())
+    }
+
+    fn leave_floated_agent_route(&mut self, workspace: &str) {
+        let fallback = self
+            .channels
+            .iter()
+            .filter(|channel| {
+                channel.workspace == workspace
+                    && !channel.archived
+                    && channel.kind == model::ChannelKind::Text
+            })
+            .min_by_key(|channel| channel.order)
+            .map(|channel| channel.id.clone());
+        if let Some(channel) = fallback {
+            self.active_channel = channel;
+            self.direct_agent = None;
+            self.thread_open = None;
+            self.focus = Focus::Main;
+            self.reset_timeline_to_latest();
+        } else {
+            self.active_channel.clear();
+            self.direct_agent = None;
+            self.reselect();
+        }
+    }
+
+    pub(crate) fn agent_window_is_return(&self) -> bool {
+        self.conversation_surface
+            || self
+                .agent_surfaces
+                .get(&self.active_channel)
+                .is_some_and(|surface| {
+                    surface.placement.is_desktop_adopted() || surface.placement.is_return_pending()
+                })
+    }
+
+    fn settle_returned_agent_surface(&mut self, id: &str, closed: bool) {
+        let Some(channel) = self
+            .agent_surfaces
+            .iter()
+            .find_map(|(channel, surface)| (surface.id == id).then(|| channel.clone()))
+        else {
+            return;
+        };
+        if !closed {
+            self.restore_retained_agent_route(&channel);
+        }
+        if closed && let Some(surface) = self.agent_surfaces.get_mut(&channel) {
+            surface.close();
+        }
+        if self.focused_agent_surface.as_deref() == Some(id) {
+            self.focused_agent_surface = None;
+        }
+        if self.input_agent_surface.as_deref() == Some(id) {
+            self.input_agent_surface = None;
+        }
+        self.restore_attached_agent_surface(&channel);
+    }
+
+    /// Restore the route a retained secondary surface came from without
+    /// re-authorising it from display strings. This is only reached from the
+    /// host lifecycle for an already-created local surface. If membership was
+    /// withdrawn while it floated, the private draft remains recoverable but
+    /// [`Self::send_focused`] still refuses because `room_agents` no longer
+    /// contains the destination.
+    fn restore_retained_agent_route(&mut self, channel: &str) {
+        let Some(surface) = self.agent_surfaces.get(channel) else {
+            return;
+        };
+        let Some(agent) = surface.view.direct_agent.clone() else {
+            return;
+        };
+        self.active_ws.clone_from(&surface.view.active_ws);
+        channel.clone_into(&mut self.active_channel);
+        self.direct_agent = Some(agent);
+        self.inbox_open = false;
+        self.thread_open = None;
+        self.focus = Focus::Main;
+        self.reset_timeline_to_latest();
+    }
+
+    fn restore_attached_agent_surface(&mut self, channel: &str) {
+        let Some(mut surface) = self.agent_surfaces.remove(channel) else {
+            return;
+        };
+        let attached = matches!(
+            surface.placement.attachment(),
+            ui::floating_surface::Attachment::App { .. }
+        );
+        let route_is_active = self.active_channel == channel;
+        if attached && route_is_active {
+            surface.move_editor_to_parent(self);
+            self.set_composer_focus();
+        }
+        if !surface.is_closed() || !route_is_active {
+            self.agent_surfaces.insert(channel.to_owned(), surface);
+        }
+    }
+
+    pub(crate) fn settle_agent_surface_commands(&mut self) {
+        let requested = self
+            .agent_surfaces
+            .iter_mut()
+            .find_map(|(channel, surface)| {
+                std::mem::take(&mut surface.view.conversation_return_requested).then(|| {
+                    (
+                        channel.clone(),
+                        surface.view.active_ws.clone(),
+                        surface.view.direct_agent.clone(),
+                    )
+                })
+            });
+        let Some((channel, workspace, Some(agent))) = requested else {
+            return;
+        };
+        if self.open_agent_conversation(&workspace, &agent).is_ok()
+            && let Some(surface) = self.agent_surfaces.get_mut(&channel)
+        {
+            surface.placement.request_app_return();
+        }
+    }
+
     /// What to call `id` on screen, with "You" for this session's own
     /// participant and an honest placeholder for someone the room has not
     /// named yet — nobody is ever shown their raw routing id.
@@ -1950,11 +2220,14 @@ impl ChatApp {
         {
             self.context_ws = context.id.clone();
         }
-        // Keep the active channel valid (e.g. after a workspace switch).
-        if self
-            .channel(&self.active_channel)
-            .map(|c| c.workspace.clone())
-            != Some(self.active_ws.clone())
+        // Keep the active channel valid (e.g. after a workspace switch). A
+        // direct Agent route owns its deterministic channel independently;
+        // the first Message creates it atomically.
+        if self.direct_agent.is_none()
+            && self
+                .channel(&self.active_channel)
+                .map(|c| c.workspace.clone())
+                != Some(self.active_ws.clone())
             && let Some(first) = self
                 .ws_channels()
                 .into_iter()
@@ -1982,6 +2255,9 @@ impl ChatApp {
             .iter()
             .map(|channel| (channel.id.clone(), ChatDoc::list_messages(doc, &channel.id)))
             .collect();
+        if let Some(agent) = &self.direct_agent {
+            self.active_channel = ChatDoc::agent_conversation_channel_id(&self.active_ws, agent);
+        }
         self.messages = per_channel
             .iter()
             .find(|(id, _)| *id == self.active_channel)
@@ -2006,14 +2282,23 @@ impl ChatApp {
         self.users = self.workspace_people_from(doc, &per_channel);
         // Point each composer at its surface's draft; the editors read it on
         // their next sync (`sync_composers`), keeping the caret while typing.
-        self.composer_main.set_key(&self.active_channel);
-        self.draft_main = ChatDoc::draft_text(doc, &self.active_channel);
-        let ch_name = self
-            .channel(&self.active_channel)
-            .map(|c| c.name.clone())
-            .unwrap_or_default();
-        self.composer_main
-            .set_placeholder(&format!("Message #{ch_name}"));
+        if let Some(agent) = &self.direct_agent {
+            self.composer_main.set_agent_draft(&self.active_ws, agent);
+            self.draft_main = self.composer_main.private_plain().unwrap_or_default();
+            self.composer_main.set_placeholder(&crate::i18n::t_args(
+                "chat-agent-message-placeholder",
+                &[("name", self.agent_display_name(agent).into())],
+            ));
+        } else {
+            self.composer_main.set_key(&self.active_channel);
+            self.draft_main = ChatDoc::draft_text(doc, &self.active_channel);
+            let ch_name = self
+                .channel(&self.active_channel)
+                .map(|c| c.name.clone())
+                .unwrap_or_default();
+            self.composer_main
+                .set_placeholder(&format!("Message #{ch_name}"));
+        }
         self.composer_main
             .set_local_author(Some(self.me.id.clone()));
         let thread_key = self.thread_draft_key().unwrap_or_default();
@@ -2218,6 +2503,25 @@ impl ChatApp {
                 (u, voice)
             })
             .collect();
+        for agent in &self.room_agents {
+            let canonical = format!("agent:{agent}");
+            if rows.iter().any(|(user, _)| user.id == canonical) {
+                continue;
+            }
+            let name = self.agent_display_name(agent);
+            let color_idx = crate::identity::color_index_for(canonical.as_bytes());
+            rows.push((
+                User {
+                    id: canonical,
+                    initials: crate::identity::initials_for(&name),
+                    color_idx,
+                    name,
+                    status: crate::model::Presence::Offline,
+                    is_agent: true,
+                },
+                None,
+            ));
+        }
         let rank = |u: &User, voice: &Option<String>| -> u8 {
             if voice.is_some() {
                 0
@@ -2242,14 +2546,14 @@ impl ChatApp {
     /// agent is still a collaborator (and should surface collaboration
     /// controls), but it is never counted or labelled as a person.
     pub(crate) fn has_other_collaborator(&self) -> bool {
-        self.users.iter().any(|u| !self.is_me(&u.id))
+        self.users.iter().any(|u| !self.is_me(&u.id)) || !self.room_agents.is_empty()
     }
 
     /// The roster's public destination name. `People` is precise when every
     /// entry is human; once an agent is present, `Collaborators` accurately
     /// covers both and the row itself keeps the agent visibly typed.
     pub(crate) fn roster_label(&self) -> &'static str {
-        if self.users.iter().any(|u| u.is_agent) {
+        if !self.room_agents.is_empty() || self.users.iter().any(|u| u.is_agent) {
             "Collaborators"
         } else {
             "People"
@@ -2656,6 +2960,23 @@ impl ChatApp {
                             channel.id == self.active_channel,
                         )
                     }
+                    Hit::Agent(agent) => (
+                        crate::i18n::t_args(
+                            "chat-agent-roster-label",
+                            &[("name", self.agent_display_name(agent).into())],
+                        ),
+                        Role::ListItem,
+                        self.direct_agent.as_deref() == Some(agent.as_str()),
+                    ),
+                    Hit::AgentWindow => (
+                        if self.agent_window_is_return() {
+                            crate::i18n::t("chat-agent-return")
+                        } else {
+                            crate::i18n::t("chat-agent-float")
+                        },
+                        Role::Button,
+                        false,
+                    ),
                     Hit::CategoryToggle(id) => {
                         let category = self.categories.iter().find(|category| category.id == *id);
                         let name = category.map_or("category", |category| category.name.as_str());
@@ -3010,10 +3331,58 @@ impl Collaborative for ChatApp {
 }
 
 impl FloatingSurfaceProvider for ChatApp {
+    fn floating_surface_accessibility(&self, id: &str) -> Option<ui::a11y::AccessNode> {
+        self.agent_surfaces
+            .values()
+            .find(|surface| surface.id == id)?
+            .accessibility()
+    }
+
+    fn perform_floating_surface_accessibility_action(
+        &mut self,
+        id: &str,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::Edits<'_>,
+        path: &ObjId,
+    ) -> bool {
+        let Some((source, child_target)) = target
+            .strip_prefix("agent-surface:")
+            .and_then(|target| target.split_once('|'))
+        else {
+            return false;
+        };
+        if source != id {
+            return false;
+        }
+        let Some(surface) = self
+            .agent_surfaces
+            .values_mut()
+            .find(|surface| surface.id == id)
+        else {
+            return false;
+        };
+        let handled = surface
+            .view
+            .perform_semantic_action(child_target, action, state, path);
+        self.settle_agent_surface_commands();
+        handled
+    }
+
+    fn floating_surface_ime(&self, id: &str) -> Option<(winit::window::ImePurpose, Rect)> {
+        let surface = self
+            .agent_surfaces
+            .values()
+            .find(|surface| surface.id == id)?;
+        Some((surface.view.ime_purpose()?, surface.view.ime_cursor_rect()?))
+    }
+
     fn take_floating_surface_request(
         &mut self,
     ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
-        self.pending_floating.take()
+        self.agent_surface_requests
+            .pop_front()
+            .or_else(|| self.pending_floating.take())
     }
 
     fn draw_floating_surfaces(
@@ -3024,6 +3393,18 @@ impl FloatingSurfaceProvider for ChatApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        let desktop = self.desktop_floating_bounds();
+        for surface in self.agent_surfaces.values_mut() {
+            surface.view.room_agents.clone_from(&self.room_agents);
+            surface.view.room_names.clone_from(&self.room_names);
+            surface.view.room_colors.clone_from(&self.room_colors);
+            if surface.placement.is_desktop_adopted() || surface.placement.is_return_pending() {
+                surface.view.rect = surface.placement.rect(surface.source, desktop);
+                surface
+                    .view
+                    .draw(scene, transform, text_renderer, theme, presence);
+            }
+        }
         if !self.call.active
             || self.call.expanded
             || (!self.call.placement.is_return_pending()
@@ -3042,6 +3423,11 @@ impl FloatingSurfaceProvider for ChatApp {
     fn floating_surface_presentations(
         &self,
     ) -> Vec<ui::floating_surface::FloatingSurfacePresentation> {
+        let mut presentations: Vec<_> = self
+            .agent_surfaces
+            .values()
+            .filter_map(|surface| surface.presentation(self.desktop_floating_bounds()))
+            .collect();
         let returning_to_app = self.call.placement.is_return_pending();
         if !self.call.active
             || self.call.expanded
@@ -3051,22 +3437,30 @@ impl FloatingSurfaceProvider for ChatApp {
                     ui::floating_surface::Attachment::Desktop { .. }
                 ))
         {
-            return Vec::new();
+            return presentations;
         }
-        vec![ui::floating_surface::FloatingSurfacePresentation {
+        presentations.push(ui::floating_surface::FloatingSurfacePresentation {
             id: format!("chat-call:{}", self.call.channel),
             content_rect: self.call_video_rect(),
             window_rect: self.huddle_panel().inflate(8.0, 8.0),
             returning_to_app,
-        }]
+        });
+        presentations
     }
 
     fn active_floating_surface_ids(&self) -> Vec<String> {
-        self.call
-            .active
-            .then(|| format!("chat-call:{}", self.call.channel))
-            .into_iter()
-            .collect()
+        let mut ids = self
+            .agent_surfaces
+            .values()
+            .filter(|surface| !surface.is_closed())
+            .map(|surface| surface.id.clone())
+            .collect::<Vec<_>>();
+        ids.extend(
+            self.call
+                .active
+                .then(|| format!("chat-call:{}", self.call.channel)),
+        );
+        ids
     }
 
     fn set_floating_surface_bounds(&mut self, bounds: Rect) {
@@ -3077,6 +3471,28 @@ impl FloatingSurfaceProvider for ChatApp {
         &mut self,
         message: &ui::floating_surface::FloatingSurfaceHostMessage,
     ) {
+        let desktop = self.desktop_floating_bounds();
+        let returned = match message {
+            ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id }
+            | ui::floating_surface::FloatingSurfaceHostMessage::Reattach { id } => {
+                Some((id.clone(), false))
+            }
+            ui::floating_surface::FloatingSurfaceHostMessage::Closed { id } => {
+                Some((id.clone(), true))
+            }
+            _ => None,
+        };
+        if self
+            .agent_surfaces
+            .values_mut()
+            .any(|surface| surface.host_message(message, desktop))
+        {
+            if let Some((id, closed)) = returned {
+                self.settle_returned_agent_surface(&id, closed);
+            }
+            self.canonical_dirty = true;
+            return;
+        }
         let id = format!("chat-call:{}", self.call.channel);
         if let ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
             id: request_id,
@@ -3125,6 +3541,23 @@ impl FloatingSurfaceProvider for ChatApp {
         ) {
             self.call.placement.confirm_app_adoption(self.rect);
         }
+    }
+
+    fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
+        if focused {
+            self.focused_agent_surface = id.map(str::to_owned);
+        } else if self.focused_agent_surface.as_deref() == id {
+            self.focused_agent_surface = None;
+        }
+        for surface in self.agent_surfaces.values_mut() {
+            surface
+                .view
+                .set_focus(focused && id == Some(surface.id.as_str()));
+        }
+    }
+
+    fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
+        self.input_agent_surface = id.map(str::to_owned);
     }
 }
 
@@ -3225,10 +3658,26 @@ impl Widget for ChatApp {
         self.set_composer_focus();
     }
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        if let Some(id) = self.focused_agent_surface.as_deref()
+            && let Some(surface) = self
+                .agent_surfaces
+                .values()
+                .find(|surface| surface.id == id)
+        {
+            return surface.view.ime_purpose();
+        }
         self.host_focused
             .then_some(winit::window::ImePurpose::Normal)
     }
     fn ime_cursor_rect(&self) -> Option<Rect> {
+        if let Some(id) = self.focused_agent_surface.as_deref()
+            && let Some(surface) = self
+                .agent_surfaces
+                .values()
+                .find(|surface| surface.id == id)
+        {
+            return surface.view.ime_cursor_rect();
+        }
         if !self.host_focused {
             return None;
         }
@@ -3293,6 +3742,14 @@ impl Widget for ChatApp {
             self.mark_active_read(doc);
         }
         self.sync_composers(doc);
+        for surface in self.agent_surfaces.values_mut() {
+            surface.view.room_agents.clone_from(&self.room_agents);
+            surface.view.room_names.clone_from(&self.room_names);
+            surface.view.room_colors.clone_from(&self.room_colors);
+            surface.view.perms = self.perms.clone();
+            surface.view.reload(doc);
+            surface.view.sync_composers(doc);
+        }
         self.request_visible_images();
         // Native capture/transport belongs to the shell's lease-bound service.
     }
@@ -3548,6 +4005,21 @@ impl Widget for ChatApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let secondary = self
+            .input_agent_surface
+            .as_deref()
+            .or(self.focused_agent_surface.as_deref());
+        if let Some(id) = secondary
+            && let Some(surface) = self
+                .agent_surfaces
+                .values_mut()
+                .find(|surface| surface.id == id)
+        {
+            surface.view.handle_event(event, ctx);
+            self.canonical_dirty |= surface.view.canonical_dirty;
+            self.settle_agent_surface_commands();
+            return;
+        }
         // Embedded inputs request focus with a temporary layout node. Map
         // that actual request to Chat's retained keyboard/IME owner.
         let was_handled = *ctx.handled;

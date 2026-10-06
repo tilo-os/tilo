@@ -103,3 +103,11 @@ chat-identity-in-voice = In voice
 
 chat-resource-copy-link = Copy resource link
 chat-resource-open-link = Open resource in browser
+chat-agent-kind = Agent
+chat-agents-section = Agents
+chat-agent-message-placeholder = Message { $name }
+chat-agent-empty-title = Message { $name }
+chat-agent-empty-message = Send a message without creating a task.
+chat-agent-roster-label = { $name }, agent
+chat-agent-float = Float conversation
+chat-agent-return = Return conversation

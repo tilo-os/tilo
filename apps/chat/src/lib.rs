@@ -51,6 +51,7 @@
 )]
 
 pub mod actions;
+mod agent_conversation_surface;
 pub mod app;
 pub mod body;
 pub mod call;
