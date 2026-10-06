@@ -3,11 +3,15 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
+import signal
+import time
 import tempfile
 import unittest
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "web" / "run_smoke_shards.sh"
+ENTRY = Path(__file__).resolve().parents[2] / "crates/browser/tilo-web-desktop/scripts/smoke.mjs"
 
 
 class SmokeShards(unittest.TestCase):
@@ -48,7 +52,7 @@ class SmokeShards(unittest.TestCase):
                 "time.sleep(.05)\n"
                 "pathlib.Path(os.environ['FIXTURE_ROOT'],"
                 "f'worker-{os.environ[\"CDP_PORT\"]}.json').write_text("
-                "json.dumps({'args':sys.argv[1:],'port':os.environ['CDP_PORT']}))\n"
+                "json.dumps({'args':sys.argv[1:],'port':os.environ['CDP_PORT'],'worker':os.environ.get('TILO_WEB_SMOKE_WORKER')}))\n"
                 "sys.exit(7 if os.environ['FAILING_APP'] in sys.argv[3:] else 0)\n"
             )
             for executable in (browser, curl, node):
@@ -76,6 +80,74 @@ class SmokeShards(unittest.TestCase):
             self.assertEqual(list(root.glob("smoke-browsers.*")), [])
             return result, workers, browsers
 
+    def run_entrypoint(self, *, ci="true", worker="", code=0):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            driver = root / "tools/web/run_smoke_shards.sh"
+            driver.parent.mkdir(parents=True)
+            driver.write_text(
+                'printf "%s\\n" "$CDP_PORT" "$@" >"$RUNNER_TEMP/entry"\n'
+                f"exit {code}\n"
+            )
+            node = shutil.which("node")
+            self.assertIsNotNone(node, "the CI policy image provides Node")
+            environment = dict(os.environ, CI=ci, CHROME="fixture", RUNNER_TEMP=directory,
+                               TILO_WEB_SMOKE_WORKER=worker, CDP_PORT="0")
+            result = subprocess.run([node, str(ENTRY), "http://fixture", "calculator", "desktop"],
+                                    cwd=root, env=environment, capture_output=True, text=True, timeout=5)
+            entry = (root / "entry").read_text().splitlines() if (root / "entry").exists() else None
+            return result, entry
+
+    def test_legacy_ci_entrypoint_starts_driver_outside_existing_browser_port(self):
+        result, entry = self.run_entrypoint()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(entry, ["1", "http://fixture", "calculator", "desktop"])
+
+    def test_legacy_ci_entrypoint_propagates_driver_failure(self):
+        result, _ = self.run_entrypoint(code=7)
+        self.assertEqual(result.returncode, 7)
+
+    def test_manual_and_worker_entrypoints_do_not_start_another_driver(self):
+        for options in ({"ci": "false"}, {"worker": "1"}):
+            with self.subTest(options=options):
+                result, entry = self.run_entrypoint(**options)
+                self.assertEqual(result.returncode, 1)
+                self.assertIsNone(entry)
+
+    def test_entrypoint_forwards_termination_to_its_driver(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            driver = root / "tools/web/run_smoke_shards.sh"
+            driver.parent.mkdir(parents=True)
+            driver.write_text(
+                "trap 'echo terminated >\"$RUNNER_TEMP/stopped\"; exit 143' TERM\n"
+                'echo $$ >"$RUNNER_TEMP/ready"\n'
+                'while :; do sleep .02; done\n'
+            )
+            environment = dict(os.environ, CI="true", CHROME="fixture", RUNNER_TEMP=directory,
+                               TILO_WEB_SMOKE_WORKER="", CDP_PORT="9333")
+            process = subprocess.Popen([shutil.which("node"), str(ENTRY), "http://fixture", "desktop"],
+                                       cwd=root, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                for _ in range(100):
+                    if (root / "ready").exists():
+                        break
+                    time.sleep(.01)
+                self.assertTrue((root / "ready").exists(), "driver never started")
+                process.terminate()
+                process.communicate(timeout=3)
+                self.assertEqual(process.returncode, 143)
+                self.assertTrue((root / "stopped").exists())
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+                if (root / "ready").exists():
+                    try:
+                        os.kill(int((root / "ready").read_text()), signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+
     def test_every_probe_runs_once_in_separate_browser_profiles(self):
         apps = ["calculator", "calendar", "file-explorer", "desktop", "terminal"]
         result, workers, browsers = self.run_driver(apps)
@@ -89,6 +161,7 @@ class SmokeShards(unittest.TestCase):
         for worker in workers:
             self.assertEqual(worker["args"][0], "crates/browser/tilo-web-desktop/scripts/smoke.mjs")
             self.assertEqual(worker["args"][1], "http://fixture")
+            self.assertEqual(worker["worker"], "1")
 
     def test_failure_is_propagated_and_other_shard_finishes(self):
         result, workers, _ = self.run_driver(["calculator", "calendar", "desktop"], failing_app="calculator")
