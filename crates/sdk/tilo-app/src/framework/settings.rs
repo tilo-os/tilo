@@ -204,6 +204,8 @@ impl ViewStorage {
     /// Read every followed setting whose document changed, dropping those
     /// of views that are gone.
     pub(crate) fn refresh(&self) {
+        #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+        let _profile = super::testing::phases::Scope::start("framework.view_storage_refresh");
         if let Some(person) = &self.person {
             person.refresh();
         }
