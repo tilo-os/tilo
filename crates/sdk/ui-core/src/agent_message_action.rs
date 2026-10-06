@@ -95,11 +95,20 @@ pub enum AgentMessageOfferPoll {
 }
 
 #[must_use]
-pub fn begin(actions: &RemoteActions) -> AgentMessageSubmission {
+pub fn begin(actions: &RemoteActions, workspace: &str) -> AgentMessageSubmission {
     AgentMessageSubmission::Providers(actions.catalogue(CatalogueQuery {
+        canonical_route: Some(canonical_chat_route(workspace)),
         max_results: 0,
         ..CatalogueQuery::default()
     }))
+}
+
+fn canonical_chat_route(workspace: &str) -> tilo_actions::remote::CanonicalActionRoute {
+    tilo_actions::remote::CanonicalActionRoute {
+        room: workspace.to_owned(),
+        app_id: "so.tilo.chat".into(),
+        record_id: String::new(),
+    }
 }
 
 /// Discover and freshly confirm the exact Chat Message action without
@@ -261,7 +270,17 @@ fn poll_providers(
             AgentMessagePoll::Failed
         };
     };
-    if page.stale_cursor || page.budget_exhausted {
+    if page.stale_cursor || page.budget_exhausted || !page.exhausted || !page.next_cursor.is_empty()
+    {
+        return AgentMessagePoll::Failed;
+    }
+    if page.providers.len() > 1
+        || page.providers.iter().any(|provider| {
+            provider.app_id != "so.tilo.chat"
+                || provider.room != workspace
+                || !provider.record_id.is_empty()
+        })
+    {
         return AgentMessagePoll::Failed;
     }
     let mut providers = page
@@ -456,6 +475,7 @@ fn poll_await_publisher(
         return AgentMessagePoll::Advance {
             submission: AgentMessageSubmission::AwaitPublisher {
                 call: Some(actions.catalogue(CatalogueQuery {
+                    canonical_route: Some(canonical_chat_route(workspace)),
                     max_results: 0,
                     ..CatalogueQuery::default()
                 })),
@@ -470,7 +490,17 @@ fn poll_await_publisher(
         RemoteCall::Refused(_) => return AgentMessagePoll::Failed,
         RemoteCall::Done(page) => page,
     };
-    if page.stale_cursor || page.budget_exhausted {
+    if page.stale_cursor || page.budget_exhausted || !page.exhausted || !page.next_cursor.is_empty()
+    {
+        return AgentMessagePoll::Failed;
+    }
+    if page.providers.len() > 1
+        || page.providers.iter().any(|provider| {
+            provider.app_id != "so.tilo.chat"
+                || provider.room != workspace
+                || !provider.record_id.is_empty()
+        })
+    {
         return AgentMessagePoll::Failed;
     }
     let mut providers = page
@@ -801,7 +831,10 @@ mod tests {
 
     #[test]
     fn absent_chat_provider_enters_the_certified_app_launch_walk() {
-        let providers = LocalState::new(RemoteCall::Done(CataloguePage::default()));
+        let providers = LocalState::new(RemoteCall::Done(CataloguePage {
+            exhausted: true,
+            ..CataloguePage::default()
+        }));
         let result = poll(
             &RemoteActions::session(),
             "room-a",
@@ -818,6 +851,37 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn incomplete_canonical_provider_lookup_never_launches_or_selects_a_publisher() {
+        use crate::widget::Collaborative;
+        let providers = LocalState::new(RemoteCall::Done(CataloguePage::default()));
+        let mut actions = RemoteActions::session();
+        let result = poll(
+            &actions,
+            "room-a",
+            "scribe",
+            "hello",
+            &AgentMessageSubmission::Providers(providers),
+            crate::time::now().checked_add(RESOLVE_WINDOW).unwrap(),
+            MAX_PAGES,
+        );
+        assert!(matches!(result, AgentMessagePoll::Failed));
+        assert!(actions.take_collab_requests().is_empty());
+    }
+
+    #[test]
+    fn discovery_requests_exact_canonical_chat_room_record() {
+        use crate::collaboration::CollabRequest;
+        use crate::widget::Collaborative;
+        use tilo_actions::remote::RemoteActionMessage;
+        let mut actions = RemoteActions::session();
+        let _submission = begin(&actions, "room-a");
+        assert!(matches!(actions.take_collab_requests().as_slice(),
+            [CollabRequest::RemoteAction { message: RemoteActionMessage::CatalogueRequest { query, .. } }]
+            if query.max_results == 0 && query.canonical_route == Some(canonical_chat_route("room-a"))
+                && query.provider.is_none()));
     }
 
     #[test]

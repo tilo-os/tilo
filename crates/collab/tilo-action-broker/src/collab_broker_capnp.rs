@@ -21,6 +21,7 @@ use execution_activity::{ActivityBus, ActivityTarget, ExecutionScope};
 pub use execution_activity::{ExecutionActivity, ExecutionStatus};
 #[cfg(test)]
 mod app_settings_tests;
+mod canonical_route;
 mod committed_document;
 mod durable_local_invocation;
 #[path = "invocation_journal.rs"]
@@ -2804,6 +2805,7 @@ pub struct CapnpBrokerState {
     peer_action_queue: super::peer_actions::PeerActionQueue,
     peer_action_rx: Mutex<Option<tokio::sync::mpsc::Receiver<super::peer_actions::Request>>>,
     action_directory_roots: Mutex<HashMap<u64, ActionDirectoryRoot>>,
+    canonical_directories: Mutex<canonical_route::CanonicalDirectories>,
     action_directory_root_snapshot: Mutex<ActionDirectoryRootSnapshot>,
     /// Directed invocation stream registered by each application connection.
     invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
@@ -3580,6 +3582,7 @@ impl CapnpBrokerState {
                 peer_action_queue,
                 peer_action_rx: Mutex::new(Some(peer_action_rx)),
                 action_directory_roots: Mutex::new(HashMap::new()),
+                canonical_directories: Mutex::new(canonical_route::CanonicalDirectories::default()),
                 action_directory_root_snapshot: Mutex::new(ActionDirectoryRootSnapshot::default()),
                 invocation_subscribers: Mutex::new(HashMap::new()),
                 action_catalogue_subscribers: Mutex::new(HashMap::new()),
@@ -5620,6 +5623,9 @@ impl CapnpBrokerState {
     }
 
     fn remove_connection(&self, peer_id: u64) {
+        if let Ok(mut directories) = self.canonical_directories.lock() {
+            directories.remove(peer_id);
+        }
         if let Some(media) = self.services.native_media.as_ref() {
             media.disconnect(peer_id);
         }
@@ -8171,10 +8177,22 @@ impl channel_handle::Server for CapnpChannelHandle {
             Err(error) => return Promise::err(error),
         };
         let route = self.route();
+        let registration = Rc::new(uuid::Uuid::new_v4());
+        let Ok(_admission) = self.state.admission_lock.lock() else {
+            return Promise::err(capnp::Error::failed(
+                "directory admission unavailable".into(),
+            ));
+        };
+        if let Err(error) =
+            self.state
+                .register_canonical_directory(self.peer_id, &route, *registration)
+        {
+            return Promise::err(capnp::Error::failed(error));
+        }
         self.directories.directories.borrow_mut().insert(
             self.peer_id,
             RegisteredActionDirectory {
-                registration: Rc::new(uuid::Uuid::new_v4()),
+                registration,
                 app_id: app_id.clone(),
                 route: route.clone(),
                 directory,
@@ -8359,6 +8377,26 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(request) => request.get_stable_invocation_ids(),
             Err(error) => return Promise::err(error),
         };
+        // Stream replacement and resolved dispatch share the admission boundary:
+        // an admitted old token must never dispatch to a replacement stream.
+        let Ok(admission) = self.state.admission_lock.lock() else {
+            return Promise::err(capnp::Error::failed(
+                "invocation admission registry unavailable".into(),
+            ));
+        };
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        if let Ok(mut directories) = self.state.canonical_directories.lock() {
+            directories.stream_replaced(self.peer_id);
+        } else {
+            return Promise::err(capnp::Error::failed(
+                "canonical stream registry unavailable".into(),
+            ));
+        }
         if let Ok(mut capabilities) = self.state.stable_invocation_subscribers.lock() {
             if stable {
                 capabilities.insert(self.peer_id);
@@ -8378,6 +8416,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "invocation subscriber registry unavailable".into(),
             ));
         }
+        drop(admission);
         // The app the launcher attested, else the one this channel names.
         let (app, room) = self
             .lease
@@ -12876,6 +12915,8 @@ pub mod tests {
     include!("resolved_invocation_tests.rs");
     #[cfg(test)]
     include!("reliable_resolution_tests.rs");
+    #[cfg(test)]
+    include!("canonical_route_tests.rs");
     #[cfg(test)]
     include!("durable_local_invocation_matrix_tests.rs");
     #[cfg(test)]

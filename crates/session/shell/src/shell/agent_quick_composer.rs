@@ -689,7 +689,7 @@ impl AgentQuickComposer {
         self.message_offer = None;
         self.next_message_offer_refresh = None;
         self.pending_message_offer = Some(PendingMessageOffer {
-            state: ui::agent_message_action::begin(actions),
+            state: ui::agent_message_action::begin(actions, &self.room),
             deadline: std::time::Instant::now()
                 .checked_add(ui::agent_message_action::RESOLVE_WINDOW)
                 .unwrap_or_else(std::time::Instant::now),

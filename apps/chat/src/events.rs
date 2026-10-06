@@ -1635,7 +1635,7 @@ impl ChatApp {
             if self.agent_submissions.get().contains_key(&key) {
                 return;
             }
-            let message = ui::agent_message_action::begin(&self.agent_task_actions);
+            let message = ui::agent_message_action::begin(&self.agent_task_actions, &key.0);
             self.agent_submission_errors
                 .update(|errors| _ = errors.remove(&key));
             self.agent_submissions.update(|pending| {
@@ -2321,6 +2321,13 @@ mod tests {
             }
 
             if query.max_results == 0 && query.target.is_none() {
+                if query.canonical_route.as_ref().is_some_and(|route| {
+                    route.room != "ws_home"
+                        || route.app_id != "so.tilo.chat"
+                        || !route.record_id.is_empty()
+                }) {
+                    return Pending::ready(Err(ActionHostError::NotPermitted));
+                }
                 return Pending::ready(Ok(CataloguePage {
                     revision: "chat-providers-1".into(),
                     exhausted: true,
@@ -2328,7 +2335,11 @@ mod tests {
                         provider: "chat-peer".into(),
                         app_id: "so.tilo.chat".into(),
                         room: "ws_home".into(),
-                        record_id: "discussion".into(),
+                        record_id: if query.canonical_route.is_some() {
+                            String::new()
+                        } else {
+                            "discussion".into()
+                        },
                         browsable: true,
                     }],
                     ..CataloguePage::default()
