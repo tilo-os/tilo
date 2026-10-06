@@ -16,7 +16,7 @@ mod model;
 mod persistence;
 mod stack;
 
-pub use center::{CenterLayout, CenterOutcome, NotificationCenter, RowControl};
+pub use center::{CenterLayout, CenterMetrics, CenterOutcome, NotificationCenter, RowControl};
 pub use history::{
     HistoryActivation, HistoryRow, RowIdentity, accessible_description, group_key, group_label,
     history_rows, relative_time, source_label,

@@ -21,8 +21,8 @@ use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::winit::keyboard::{Key, NamedKey};
 
 use crate::notifications::{
-    CenterLayout, CenterOutcome, HistoryActivation, Notification, NotificationCenter,
-    NotificationHost, NotificationLog, NotificationStack,
+    CenterLayout, CenterMetrics, CenterOutcome, HistoryActivation, Notification,
+    NotificationCenter, NotificationHost, NotificationLog, NotificationStack,
 };
 
 /// Width of the centre panel, and its inset from the surface's edges.
@@ -438,7 +438,7 @@ pub(super) struct NotificationLayer {
     cursor: Option<Point>,
     /// The caption and label line boxes the centre lays out with, captured from the
     /// theme each paint so input between paints measures the same type.
-    type_lines: (f64, f64),
+    type_lines: CenterMetrics,
     drawn_revision: Cell<Option<u64>>,
     /// Input changed what the layer shows; its layout (one full-size leaf)
     /// never changes, so this only asks for a repaint.
@@ -455,7 +455,7 @@ impl NotificationLayer {
             open_app: None,
             rect: Rect::ZERO,
             cursor: None,
-            type_lines: CenterLayout::type_lines(&ui::Theme::dark()),
+            type_lines: CenterLayout::metrics(&ui::Theme::dark(), &mut ui::TextRenderer::new()),
             drawn_revision: Cell::new(None),
             dirty: true,
         }
@@ -636,7 +636,7 @@ impl Widget for NotificationLayer {
         theme: &ui::Theme,
         _presence: &ui::presence::PresenceCtx,
     ) {
-        self.type_lines = CenterLayout::type_lines(theme);
+        self.type_lines = CenterLayout::metrics(theme, text);
         let notifications = self.notifications.clone();
         let host = notifications.host();
         self.stack.set_viewport(self.rect);
