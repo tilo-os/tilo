@@ -7,17 +7,25 @@ use std::{
 
 use anyhow::{Result, anyhow, bail};
 use futures::StreamExt;
+use getrandom as auth_random;
 use google_cast_protocol::{
     self as protocol, CONNECTION_NAMESPACE, HEARTBEAT_NAMESPACE, MEDIA_NAMESPACE, MediaInformation,
     PlayerState, QueueItem, QueueRepeatMode, RECEIVER_NAMESPACE, StreamType, namespaces,
     prost::Message, protos,
 };
 use log::{debug, error, warn};
+use prost as wire_proto;
+use rand_core as auth_rng;
 #[cfg(test)]
 use rcgen as certificates;
+#[cfg(test)]
+use rsa as rsa_crypto;
 use rustls_pki_types as pki;
 use serde::Serialize;
 use serde_json as json;
+use sha2 as auth_crypto;
+#[cfg(test)]
+use time as test_clock;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -26,6 +34,8 @@ use tokio::{
 };
 use tokio_rustls as tls_runtime;
 use tokio_rustls::client::TlsStream;
+use webpki as cert_path;
+use x509_parser as cert_parser;
 
 use crate::{
     IpAddr,
@@ -112,6 +122,8 @@ impl ChromecastDevice {
     }
 }
 
+#[path = "chromecast_auth.rs"]
+mod auth;
 #[path = "chromecast_tls.rs"]
 mod tls;
 
@@ -142,6 +154,7 @@ struct InnerDevice {
     event_handler: Arc<dyn DeviceEventHandler>,
     transport_id: Option<String>,
     writer: Option<tokio::io::WriteHalf<TlsStream<TcpStream>>>,
+    auth_window: Option<auth::Window>,
     request_id: RequestId,
     media_session_id: u64,
     current_player_state: PlayerState,
@@ -160,6 +173,7 @@ impl InnerDevice {
             event_handler,
             transport_id: None,
             writer: None,
+            auth_window: None,
             request_id: RequestId::new(),
             media_session_id: 0,
             current_player_state: PlayerState::Idle,
@@ -200,8 +214,14 @@ impl InnerDevice {
         }
         cast_message.encode(&mut self.write_buffer[..encoded_len].as_mut())?;
         let serialized_size_be = (encoded_len as u32).to_be_bytes();
-        writer.write_all(&serialized_size_be).await?;
-        writer.write_all(&self.write_buffer[..encoded_len]).await?;
+        self.auth_window
+            .ok_or_else(|| anyhow!("Cast receiver has not authenticated"))?
+            .write_frame(
+                writer,
+                &serialized_size_be,
+                &self.write_buffer[..encoded_len],
+            )
+            .await?;
 
         debug!("Sent {encoded_len} bytes, payload: {obj:?}");
 
@@ -625,7 +645,24 @@ impl InnerDevice {
             return Ok(());
         };
 
-        debug!("Connected to {remote_addr:?}");
+        let Some((stream, auth_window)) = auth::authenticate(
+            stream,
+            async {
+                while let Some(command) = self.cmd_rx.recv().await {
+                    if command == Command::Quit {
+                        break;
+                    }
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await?
+        else {
+            return Ok(());
+        };
+
+        self.auth_window = Some(auth_window);
+        debug!("Authenticated Cast receiver at {remote_addr:?}");
 
         let (reader, writer) = tokio::io::split(stream);
         self.writer = Some(writer);
@@ -695,9 +732,12 @@ impl InnerDevice {
         };
 
         let mut get_status_interval = tokio::time::interval(DEFAULT_GET_STATUS_DELAY);
+        let expired = auth_window.expired();
+        tokio::pin!(expired);
 
         loop {
             tokio::select! {
+                () = &mut expired => return Err(anyhow!("Cast authenticated session expired").into()),
                 packet = packet_stream.next() => {
                     let message = packet.ok_or(anyhow!("No more packets"))?;
                     if self.handle_message(&mut shared_state, message).await? {
