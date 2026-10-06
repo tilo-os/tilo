@@ -8818,6 +8818,7 @@ impl ShellOverlayHost {
     /// previous value rather than blanking it.
     /// Bind the owning native session's existing event-loop wake.
     pub fn set_quick_settings_wake(&mut self, wake: crate::session_runtime::Wake) {
+        self.qs_action_slot.set_radio_wake(Arc::clone(&wake));
         self.qs_refresh.set_host_wake(wake);
     }
 
@@ -8911,6 +8912,9 @@ impl ShellOverlayHost {
         let (brightness, volume, wifi, bluetooth, power, wired, battery, wifi_nets, bt_devices) =
             match reading {
                 QsReading::Fast(reading) => {
+                    if let Some(radios) = reading.radios.as_ref() {
+                        self.qs_action_slot.observe_radio_availability(radios);
+                    }
                     let (brightness, volume, wifi, bluetooth, power, wired, battery) =
                         Self::apply_fast_qs_reading(st, reading);
                     (
@@ -13609,6 +13613,9 @@ impl ShellOverlayHost {
         outcome: crate::shell::quick_settings::wifi::WifiPaneOutcome,
     ) {
         match outcome {
+            crate::shell::quick_settings::wifi::WifiPaneOutcome::RequestWifi(enabled) => {
+                self.dispatch_quick_settings_radio(os_actions::RadioChange::Wifi(enabled));
+            }
             crate::shell::quick_settings::wifi::WifiPaneOutcome::DrillIn(outcome) => {
                 Self::finish_quick_settings_drill_in_click(chrome, outcome);
             }
@@ -15081,14 +15088,7 @@ impl ShellOverlayHost {
         pending: crate::shell::quick_settings::root::PendingRootActions,
     ) {
         if let Some(v) = pending.wifi {
-            let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
-                self.qs_actions.as_ref(),
-            )
-            .set_wifi(v);
-            self.finish_quick_settings_action("set_wifi", t("host-qs-change-failed-wifi"), result);
-            if v {
-                self.qs_refresh.kick_wifi_networks();
-            }
+            self.dispatch_quick_settings_radio(os_actions::RadioChange::Wifi(v));
         }
         if let Some(v) = pending.bluetooth {
             let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
@@ -15113,15 +15113,7 @@ impl ShellOverlayHost {
             );
         }
         if let Some(v) = pending.airplane {
-            let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
-                self.qs_actions.as_ref(),
-            )
-            .set_airplane_mode(v);
-            self.finish_quick_settings_action(
-                "set_airplane_mode",
-                t("host-qs-change-failed-airplane"),
-                result,
-            );
+            self.dispatch_quick_settings_radio(os_actions::RadioChange::Airplane(v));
         }
         if let Some(v) = pending.hotspot {
             let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
@@ -15170,6 +15162,57 @@ impl ShellOverlayHost {
                 result,
             );
         }
+    }
+
+    fn dispatch_quick_settings_radio(&mut self, change: os_actions::RadioChange) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        match self.qs_action_slot.start_radio(change, &chrome) {
+            Ok(Some(_)) => {}
+            Ok(None) => self.reconcile_quick_settings_radio(change),
+            Err(error) => {
+                self.finish_quick_settings_action(
+                    match change {
+                        os_actions::RadioChange::Wifi(_) => "set_wifi",
+                        os_actions::RadioChange::Airplane(_) => "set_airplane_mode",
+                    },
+                    t(match change {
+                        os_actions::RadioChange::Wifi(_) => "host-qs-change-failed-wifi",
+                        os_actions::RadioChange::Airplane(_) => "host-qs-change-failed-airplane",
+                    }),
+                    Err(error),
+                );
+            }
+        }
+    }
+
+    fn reconcile_quick_settings_radio(&mut self, change: os_actions::RadioChange) {
+        self.qs_refresh.kick_fast_after_write();
+        if change == os_actions::RadioChange::Wifi(true) && self.qs_refresh.os_reads_enabled() {
+            if let Some(chrome) = &self.chrome {
+                let mut state = chrome.borrow_mut();
+                state.quick_settings.wifi_scanning = true;
+                state.quick_settings.wifi_scan_error = None;
+                state.bump();
+            }
+            self.qs_refresh.kick_wifi_networks();
+        }
+    }
+
+    fn poll_quick_settings_radio(&mut self) -> bool {
+        let Some(job) = self.qs_action_slot.take_radio_completion() else {
+            return false;
+        };
+        if let Some(chrome) = &self.chrome {
+            job.apply(chrome);
+        }
+        if job.result().is_some_and(|result| result.is_ok()) {
+            self.reconcile_quick_settings_radio(job.change);
+        } else {
+            self.qs_refresh.kick_fast_after_write();
+        }
+        true
     }
 
     /// Reconcile every optimistic device toggle after the OS accepts or
@@ -16542,6 +16585,7 @@ impl Widget for ShellOverlayHost {
             return onboarding_dirty || dialog_dirty;
         }
         let pairing_dirty = self.pairing.pump(doc, path);
+        let radio_dirty = self.poll_quick_settings_radio();
         let quick_settings_dirty = self.apply_quick_settings_readings();
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
@@ -16695,6 +16739,7 @@ impl Widget for ShellOverlayHost {
         }
         content_dirty
             || quick_settings_dirty
+            || radio_dirty
             || pairing_dirty
             || close_dirty
             || palette_dirty
