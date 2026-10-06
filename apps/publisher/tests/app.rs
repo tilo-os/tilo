@@ -39,18 +39,42 @@ fn home() -> Machine {
 #[test]
 fn the_registry_must_be_https_or_this_machine() {
     let mut profile = Replica::<Publisher>::new();
-    assert!(
+    for address in [
+        "https://apps.example.com",
+        "http://127.0.0.1:8080",
+        "http://127.1.2.3:8080",
+        "http://localhost:8080",
+        "http://[::1]:8080",
+    ] {
+        assert!(registry_client::RegistryClient::validate_url(address).is_ok());
         profile
-            .apply(Publisher::SET_REGISTRY.with("http://apps.example.com".into()))
-            .is_err()
-    );
-    profile
-        .apply(Publisher::SET_REGISTRY.with("http://127.0.0.1:8080".into()))
-        .expect("a local registry");
-    assert_eq!(
-        profile.state().expect("profile").registry,
-        "http://127.0.0.1:8080"
-    );
+            .apply(Publisher::SET_REGISTRY.with(address.into()))
+            .expect("HTTPS or an actual loopback host");
+        assert_eq!(profile.state().expect("profile").registry, address);
+    }
+    let saved = profile.state().expect("profile").registry;
+    for address in [
+        "http://apps.example.com",
+        "http://localhost.example.com",
+        "http://127.0.0.1.example.com",
+        "http://localhost@apps.example.com",
+        "https://",
+        "not a URL",
+        "file:///tmp/registry",
+    ] {
+        assert!(registry_client::RegistryClient::validate_url(address).is_err());
+        assert!(
+            profile
+                .apply(Publisher::SET_REGISTRY.with(address.into()))
+                .is_err(),
+            "reject an invalid address at the action door: {address}"
+        );
+        assert_eq!(
+            profile.state().expect("profile").registry,
+            saved,
+            "rejected edits preserve the valid registry"
+        );
+    }
 }
 
 #[test]

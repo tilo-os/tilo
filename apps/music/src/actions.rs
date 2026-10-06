@@ -227,6 +227,113 @@ pub enum Place {
 #[derive(Debug, Clone, PartialEq, Effect)]
 #[effect(operation = "music.effects")]
 pub enum MusicEffect {
+    /// Choose music source
+    ///
+    /// Opens the source picker without starting sign-in or changing a grant.
+    #[effect(device_only)]
+    Sources,
+    /// Connect Spotify
+    ///
+    /// Opens Spotify's PKCE sign-in in the system browser; grants stay in system custody.
+    #[effect(job, device_only)]
+    ConnectSpotify,
+    /// Authorize Spotify playback
+    ///
+    /// Separately grants native streaming for the same Premium account.
+    #[effect(job, device_only)]
+    ConnectSpotifyPlayback,
+    /// Refresh Spotify devices
+    #[effect(job, device_only)]
+    SpotifyDevices,
+    /// Show Spotify's remote queue
+    ///
+    /// Reads a provider snapshot; never replaces this device's queue.
+    #[effect(job, device_only)]
+    SpotifyQueue,
+    /// Load more Spotify library collections
+    #[effect(job, device_only)]
+    SpotifyLibraryMore,
+    /// Name a new private Spotify playlist
+    #[effect(device_only)]
+    NewSpotifyPlaylist,
+    /// Create private Spotify playlist
+    ///
+    /// Creates an empty private playlist. Refresh before retrying an uncertain result.
+    #[effect(job, device_only)]
+    SpotifyCreatePlaylist {
+        #[param("Playlist name")]
+        name: String,
+    },
+    /// Transfer Spotify playback
+    #[effect(job, device_only)]
+    SpotifyTransfer {
+        #[param("Spotify Connect device ID")]
+        device: String,
+    },
+    /// Play on a Spotify device
+    #[effect(job, device_only)]
+    SpotifyRemotePlay {
+        #[param("Spotify Connect device ID")]
+        device: String,
+        #[param("Spotify track URI")]
+        track: String,
+    },
+    /// Pause a Spotify device
+    #[effect(job, device_only)]
+    SpotifyRemotePause {
+        #[param("Spotify Connect device ID")]
+        device: String,
+    },
+    /// Save to Spotify library
+    #[effect(job, device_only)]
+    SpotifySave {
+        #[param("Spotify track, album, artist or playlist URI")]
+        uri: String,
+    },
+    /// Remove from Spotify library
+    #[effect(job, device_only)]
+    SpotifyUnsave {
+        #[param("Spotify track, album, artist or playlist URI")]
+        uri: String,
+    },
+    /// Rename Spotify playlist
+    #[effect(job, device_only)]
+    SpotifyRenamePlaylist {
+        #[param("Spotify playlist URI")]
+        playlist: String,
+        #[param("New name")]
+        name: String,
+    },
+    /// Add to Spotify playlist
+    #[effect(job, device_only)]
+    SpotifyPlaylistAdd {
+        #[param("Spotify playlist URI")]
+        playlist: String,
+        #[param("Spotify track URI")]
+        track: String,
+    },
+    /// Remove from Spotify playlist
+    ///
+    /// Removes every occurrence of the track from this Spotify playlist.
+    #[effect(job, device_only)]
+    SpotifyPlaylistRemove {
+        #[param("Spotify playlist URI")]
+        playlist: String,
+        #[param("Spotify track URI")]
+        track: String,
+    },
+    /// Disconnect Spotify
+    ///
+    /// Forgets the local grant. Revoke Tilo in Spotify account settings to remove provider-side access.
+    #[effect(job, device_only)]
+    DisconnectSpotify,
+    /// Browse Spotify
+    #[effect(job, device_only)]
+    BrowseSpotify,
+    /// Browse `YouTube` Music
+    #[effect(job, device_only)]
+    BrowseYouTube,
+
     /// Search the remote catalogue
     /// Results join the canonical search index after the worker answers.
     #[effect(job, device_only, permission = "read")]
@@ -332,7 +439,7 @@ pub(crate) fn effect_payload(effect: &MusicEffect) -> Vec<u8> {
 }
 
 /// `effect` bound to the row it acts on, under the row's own `label`.
-fn bound(effect: &MusicEffect, label: &str) -> ActionSpec {
+pub(crate) fn bound(effect: &MusicEffect, label: &str) -> ActionSpec {
     let mut spec = effect.bound();
     label.clone_into(&mut spec.label);
     spec
@@ -550,6 +657,10 @@ impl Action for MusicAction {
                 mdoc::set_saved_album(doc, album, *saved);
             }
             MusicAction::SetFollowedArtist { artist, followed } => {
+                require(
+                    !artist.starts_with("spotify:artist:"),
+                    "Spotify following requires a provider-authorized effect",
+                )?;
                 require(
                     mdoc::has_artist(doc, artist),
                     "artist is no longer in the library",
@@ -1581,40 +1692,64 @@ fn playlist_track_resource(
 
 pub(crate) fn catalog_track_resource(track: &CatalogTrackResource) -> Resource {
     let tracks = vec![track.id.clone()];
-    let mut resource = Resource::new(track_resource_id(&track.id), "music.track", &track.label)
-        .with_action(bound(
-            &MusicEffect::Play {
-                track: track.id.clone(),
-                queued: None,
-            },
-            "Play track",
-        ))
-        .with_action(if track.offline {
-            MusicEffect::RemoveOffline { tracks }.bound()
-        } else {
-            MusicEffect::KeepOffline { tracks }.bound()
-        })
-        .with_action(immediate_spec(
-            "toggle-like",
-            if track.liked {
-                "Unlike song"
-            } else {
-                "Like song"
-            },
-            &set_liked_action(&track.id, !track.liked),
-        ))
-        .with_action(
-            MusicEffect::AddToQueue {
-                track: track.id.clone(),
-            }
-            .bound(),
+    let mut resource = Resource::new(
+        track_resource_id(&track.id),
+        "music.track",
+        track.label.clone(),
+    )
+    .with_action(bound(
+        &MusicEffect::Play {
+            track: track.id.clone(),
+            queued: None,
+        },
+        "Play track",
+    ))
+    .with_action(if track.id.starts_with("spotify:") {
+        MusicEffect::KeepOffline { tracks }.bound().unavailable(
+            "spotify_offline_unsupported",
+            "Spotify protected audio cannot be downloaded through Tilo",
         )
-        .with_action(
-            MusicEffect::PlayNext {
-                track: track.id.clone(),
-            }
-            .bound(),
-        );
+    } else if track.offline {
+        MusicEffect::RemoveOffline { tracks }.bound()
+    } else {
+        MusicEffect::KeepOffline { tracks }.bound()
+    })
+    .with_action(immediate_spec(
+        "toggle-like",
+        if track.liked {
+            "Unlike song"
+        } else {
+            "Like song"
+        },
+        &set_liked_action(&track.id, !track.liked),
+    ))
+    .with_action(
+        MusicEffect::AddToQueue {
+            track: track.id.clone(),
+        }
+        .bound(),
+    )
+    .with_action(
+        MusicEffect::PlayNext {
+            track: track.id.clone(),
+        }
+        .bound(),
+    );
+    if track.id.starts_with("spotify:track:") {
+        resource = resource
+            .with_action(
+                MusicEffect::SpotifySave {
+                    uri: track.id.clone(),
+                }
+                .bound(),
+            )
+            .with_action(
+                MusicEffect::SpotifyUnsave {
+                    uri: track.id.clone(),
+                }
+                .bound(),
+            );
+    }
     if !track.album_id.is_empty() {
         resource = resource.with_action(
             MusicEffect::OpenAlbum {
@@ -1682,7 +1817,7 @@ pub fn live_catalogue_resource(address: &ActionAddress, label: &str) -> Option<R
 }
 
 fn catalog_artist_resource(artist: &CatalogArtistResource) -> Resource {
-    Resource::new(
+    let resource = Resource::new(
         artist_resource_id(&artist.id),
         "music.artist",
         artist.label.clone(),
@@ -1692,8 +1827,26 @@ fn catalog_artist_resource(artist: &CatalogArtistResource) -> Resource {
             place: Place::Artist(artist.id.clone()),
         },
         "Open artist",
-    ))
-    .with_action(immediate_spec(
+    ));
+    if artist.id.starts_with("spotify:artist:") {
+        return resource.with_action(bound(
+            &if artist.followed {
+                MusicEffect::SpotifyUnsave {
+                    uri: artist.id.clone(),
+                }
+            } else {
+                MusicEffect::SpotifySave {
+                    uri: artist.id.clone(),
+                }
+            },
+            if artist.followed {
+                "Unfollow artist"
+            } else {
+                "Follow artist"
+            },
+        ));
+    }
+    resource.with_action(immediate_spec(
         "toggle-follow",
         if artist.followed {
             "Unfollow artist"

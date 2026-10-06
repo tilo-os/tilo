@@ -572,6 +572,7 @@ files-place-recent = Zuletzt verwendet
 files-empty-recent = Dateien, die Sie öffnen oder erstellen, erscheinen hier
 files-recent-reveal = Enthaltenden Ordner öffnen
 files-recent-forget = Aus „Zuletzt verwendet“ entfernen
+files-recent-action-unavailable = Dieser zuletzt verwendete Eintrag ist nicht mehr verfügbar. Öffnen Sie „Zuletzt verwendet“ und wählen Sie einen aktuellen Eintrag.
 files-recent-not-a-folder = „Zuletzt verwendet“ ist kein Ordner; öffnen Sie einen, um Dateien hinzuzufügen
 
 ## Cloud-Konten
@@ -582,3 +583,12 @@ files-account-service-at-host = { $service } unter { $host }
 files-account-folder = Ordner: { $path }
 files-account-check-again = Erneut prüfen
 files-account-check-again-detail = Liest den Zustand des Kontos neu und öffnet seinen Ordner, sobald er verfügbar ist.
+files-action-send-airdrop = An überprüften AirDrop-Laborempfänger senden…
+files-airdrop-unavailable = Eine überprüfte AirDrop-Laborübertragung ist auf diesem Gerät nicht verfügbar.
+files-airdrop-endpoint-invalid = Die IP-Adresse des Empfängers und einen TLS-Port von 1 bis 65535 eingeben.
+files-airdrop-source-unavailable = Diese Datei ist nicht mehr verfügbar.
+files-airdrop-file-only = Eine reguläre Datei für die AirDrop-Laborübertragung auswählen.
+files-airdrop-verifying = Empfängerüberprüfung und Erlaubnis zum Senden dieser Datei werden erwartet.
+files-airdrop-address = IP-Adresse des Empfängers
+files-airdrop-port = TLS-Port des Empfängers
+files-airdrop-action-detail = Den gewählten Laborempfänger auf dem Bestätigungsdialog des Systems prüfen, bevor diese Datei einmal gesendet wird.

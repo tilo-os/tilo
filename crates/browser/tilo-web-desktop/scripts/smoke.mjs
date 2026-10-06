@@ -31,6 +31,8 @@ const results = [];
 for (const app of apps) {
   const {result: {targetId}} = await send('Target.createTarget', {url: 'about:blank'});
   const {result: {sessionId}} = await send('Target.attachToTarget', {targetId, flatten: true});
+  // Give the page under test foreground scheduling, as a user's selected app gets.
+  await send('Target.activateTarget', {targetId});
   const log = [];
   const onMsg = msg => {
     if (msg.sessionId !== sessionId) return;

@@ -72,6 +72,7 @@ pub struct Dispatcher<R: Resource> {
     /// Absent outside a host: a past version, which nobody edits, or a
     /// test's detached dispatcher, which may do what writing allows.
     permissions: Rc<RefCell<Option<LivePermissions>>>,
+    permission_states: PermissionStates,
     /// What applying an action needs: the resource's own
     /// [`Resource::permission`], or for a child its parent's action's.
     permission_of: PermissionOf<R>,
@@ -105,6 +106,9 @@ pub struct Dispatcher<R: Resource> {
 /// What applying one action needs.
 type PermissionOf<R> = Rc<dyn Fn(&<R as Resource>::Action) -> PermissionRequirement>;
 
+/// One observable per requested permission, shared by this resource's views.
+type PermissionStates = Rc<RefCell<Vec<(PermissionRequirement, LocalState<bool>)>>>;
+
 /// An immediate action and the serial it was applied at.
 type Serialed<R> = (u64, <R as Resource>::Action);
 
@@ -129,6 +133,7 @@ impl<R: Resource> Clone for Dispatcher<R> {
             group: Rc::clone(&self.group),
             read_only: self.read_only.clone(),
             permissions: Rc::clone(&self.permissions),
+            permission_states: Rc::clone(&self.permission_states),
             permission_of: Rc::clone(&self.permission_of),
             refused: self.refused.clone(),
             host: Rc::clone(&self.host),
@@ -160,6 +165,7 @@ impl<R: Resource> Dispatcher<R> {
             group: Rc::default(),
             read_only: LocalState::new(read_only),
             permissions: Rc::default(),
+            permission_states: Rc::default(),
             permission_of: Rc::new(R::permission),
             refused: LocalState::new(None),
             host: Rc::default(),
@@ -202,6 +208,7 @@ impl<R: Resource> Dispatcher<R> {
     pub(crate) fn past(mut self) -> Self {
         self.past = true;
         self.read_only.set(true);
+        self.permission_states = Rc::default();
         self
     }
 
@@ -229,6 +236,30 @@ impl<R: Resource> Dispatcher<R> {
     /// Follow the participant's permissions as the host keeps them.
     pub(crate) fn follow(&self, permissions: LivePermissions) {
         *self.permissions.borrow_mut() = Some(permissions);
+        self.refresh_permission_states();
+    }
+
+    /// Whether the host currently grants `requirement`, as observable view
+    /// state. It follows changes even when writing remains allowed and the
+    /// resource document does not change. Bind it to a conditional pane or
+    /// label; action invocation still checks the host's current authority.
+    pub fn permission_state(&self, requirement: PermissionRequirement) -> LocalState<bool> {
+        let mut states = self.permission_states.borrow_mut();
+        if let Some((_, state)) = states.iter().find(|(needed, _)| *needed == requirement) {
+            return state.clone();
+        }
+        let state = LocalState::new(self.may(requirement));
+        states.push((requirement, state.clone()));
+        state
+    }
+
+    pub(crate) fn refresh_permission_states(&self) {
+        for (requirement, state) in self.permission_states.borrow().iter() {
+            let allowed = self.may(*requirement);
+            if state.get() != allowed {
+                state.set(allowed);
+            }
+        }
     }
 
     /// The same dispatcher deciding by `permissions`, for a test of a
@@ -582,6 +613,7 @@ impl<R: Resource> Dispatcher<R> {
             group: Rc::default(),
             read_only: self.read_only.clone(),
             permissions: Rc::clone(&self.permissions),
+            permission_states: Rc::clone(&self.permission_states),
             permission_of: Rc::new(move |action: &C::Action| {
                 parent_permission(&wrap_for_permission(action.clone()))
             }),

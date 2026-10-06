@@ -668,6 +668,12 @@ impl Widget for SlashMenu {
             .flatten()
     }
 
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.ime_cursor_rect()?;
+        self.filter_composition
+            .ime_edit_fingerprint(&self.filter, &self.filter_selection, key)
+    }
+
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         Some(winit::window::ImePurpose::Normal)
     }

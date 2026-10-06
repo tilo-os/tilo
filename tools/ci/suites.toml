@@ -370,6 +370,7 @@ suites = [
   "scripts/perf/check_app_coverage_test.py",
   "scripts/perf/code_editor_effects_test.py",
   "scripts/perf/device_notes_latency_test.py",
+  "scripts/perf/device_notes_trace_test.py",
   "scripts/perf/collect_code_editor_native_test.py",
   "scripts/perf/collect_file_explorer_native_test.py",
   "scripts/perf/collect_scratchpad_native_test.py",
@@ -600,6 +601,8 @@ inputs = [
   "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/Cargo.toml", "crates/dev/ui-builder/Cargo.toml",
   ".cargo/config.toml",
   "examples/apps/", "examples/README.md", "docs/examples.md",
+  # Task guides are embedded by the CLI from the published documentation.
+  "docs/developers/tasks/",
   # The portability lint compiles in the policy gate's rules table, and the
   # capability check the table of what each capability's code uses.
   "tools/policy/app_portability_rules.toml", "tools/policy/app_capability_usage.toml",
@@ -609,14 +612,75 @@ inputs = [
   "Cargo.toml", "crates/sdk/", "crates/platform/", "vendor/",
   # Canonical worker builder sources and the real packaging manifest fixture.
   "crates/browser/tilo-browser-compute/", "apps/calculator/tilo-app.toml",
+  # The production resource regression reads Music and its whole normal local
+  # dependency closure. SDK/platform/vendor roots above already cover theirs;
+  # keep the remaining source roots explicit when the Music graph changes.
+  "apps/music/", "crates/doc/tilo-doc/", "crates/system/accounts/",
+  "crates/browser/paint-stream/",
+  "crates/collab/actions/",
+  "crates/collab/automation/",
+  "crates/collab/channel-crypto/",
+  "crates/collab/collab-types/",
+  "crates/collab/threshold-identity/",
+  "crates/collab/tilo-user-identity/",
+  "crates/dev/headless-schema/",
+  "crates/dev/test-env/",
+  "crates/dev/test-http/",
+  "crates/dev/ui-graph/",
+  "crates/doc/bounded-zip/",
+  "crates/doc/tilo-automerge/",
+  "crates/doc/tilo-doc-codecs/",
+  "crates/media/thumbnail/",
+  "crates/packaging/package-store/",
+  "crates/packaging/registry-types/",
+  "crates/packaging/tilo-app-package/",
+  "crates/runtime/cli/",
+  "crates/runtime/runtime-collab/",
+  "crates/runtime/runtime-fs/",
+  "crates/runtime/runtime-identity/",
+  "crates/runtime/runtime-portal/",
+  "crates/session/desktop-model/",
+  "crates/system/account-custody/",
+  "crates/system/advisory-lock/",
+  "crates/system/app-state/",
+  "crates/system/bounded-command/",
+  "crates/system/cloud-source-dav/",
+  "crates/system/cloud-source-dropbox/",
+  "crates/system/cloud-source-gdrive/",
+  "crates/system/cloud-source-icloud/",
+  "crates/system/cloud-source-onedrive/",
+  "crates/system/cloud-source/",
+  "crates/system/content/",
+  "crates/system/desktop-policy/",
+  "crates/system/durable-store/",
+  "crates/system/fs-content/",
+  "crates/system/fs-native/",
+  "crates/system/fs/",
+  "crates/system/power/",
+  "crates/system/private-fs/",
+  "crates/system/sandbox-core/",
+  "crates/system/secret-vault/",
+  "crates/system/settings-store/",
+  "crates/system/tilo-dav/",
+  "crates/system/tilo-native-certs/",
+  "crates/system/tilo-oauth/",
+  "crates/system/tilo-seal/",
+  "crates/system/tilo-startup-metrics/",
+  "crates/system/tts/",
+  "crates/system/wire-frame/",
+  "crates/system/xdg-paths/",
+  "crates/text/spellcheck/",
+  "crates/workspace-hack/",
 ]
 readers = [
   "crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/portability.rs",
+  "crates/dev/tilo-app-cli/src/guide.rs",
   "crates/dev/tilo-app-cli/src/standalone.rs", "crates/dev/tilo-app-cli/tests/outside_repo.rs",
   "crates/dev/tilo-app-cli/src/capability_usage.rs",
   # Android packaging copies the standalone font catalog out of the SDK.
   "crates/dev/tilo-app-cli/src/android.rs",
   "crates/dev/tilo-app-cli/src/targets/web.rs",
+  "crates/dev/tilo-app-cli/src/resource_kinds.rs",
 ]
 
 [[cargo]]
@@ -699,6 +763,15 @@ inputs = ["os/usr/lib/systemd/user/tilo-ush.service"]
 readers = ["crates/runtime/ush/tests/serve_handoff.rs"]
 
 [[cargo]]
+package = "local-model-service"
+# Verifies the actual image catalogue and public trust keys retain their signature.
+inputs = [
+  "os/usr/share/tilo/system-extensions/local-model-catalog.json",
+  "os/usr/share/tilo/system-extensions/local-model-keys.json",
+]
+readers = ["crates/agent/local-model-service/src/main.rs"]
+
+[[cargo]]
 package = "tilo-font-catalog"
 # Compiles in the catalog's manifest and verifies the checkout's copy; the PDF
 # helper reads the fonts through it.
@@ -749,16 +822,21 @@ readers = ["apps/ebook/src/app/interaction_tests.rs"]
 [[cargo]]
 package = "shell"
 inputs = [
+  "apps/browser/tilo-app.toml",
+  "tools/protocols/airdrop_sender.py",
   "crates/sdk/ui-core/assets/fonts/",
   "dist/VERSION",
   "docs/shell-navigation-keyboard-map.md",
 ]
 readers = [
+  "crates/session/shell/src/shell/broker_services/airdrop_transfer.rs",
   "crates/session/shell/examples/support/populated_shell_fixture.rs",
   "crates/session/shell/src/linux_main.rs",
   "crates/session/shell/src/shell/fixed_chords.rs",
   "crates/session/shell/src/shell/fixture_inputs.rs",
+  "crates/session/shell/src/shell/network/paired_continuity_tests.rs",
   "crates/session/shell/src/shell/test_support.rs",
+  "crates/session/shell/tests/input_method_wire.rs",
 ]
 
 [[cargo]]
@@ -873,6 +951,10 @@ by = "tools/tests/test_focused_test.py"
 
 # Cannot be a required check. "fails on main" entries are hermetic enough to
 # gate but do not pass today; fix the suite, then move it into a group.
+
+[[unrequired]]
+suite = "tools/ci/test_airdrop_sender.py"
+reason = "requires an unmodified pinned GPL-3.0 OpenDrop checkout, external Python dependencies, system libarchive/OpenSSL and loopback TLS sockets; the offline ci-fast image cannot fetch the oracle; run explicitly as documented in continuity-interop.md, failing if prerequisites are absent"
 
 [[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"

@@ -737,6 +737,7 @@ pub struct ChromeState {
     /// drains them on its next update and runs each exactly as its chord
     /// would, since the focused group's widgets live there.
     shortcut_action_requests: Vec<settings_store::hardware::ShortcutAction>,
+    cancel_tab_drag_requested: bool,
     axis_navigation_enabled: bool,
     axis_gather_requested: bool,
     /// The input-source chord chose this source. The native compositor
@@ -886,6 +887,7 @@ impl ChromeState {
             fullscreen_toggle_requested: false,
             transition_paints_remaining: 0,
             shortcut_action_requests: Vec::new(),
+            cancel_tab_drag_requested: false,
             axis_navigation_enabled: false,
             axis_gather_requested: false,
             input_source_request: None,
@@ -1109,6 +1111,16 @@ impl ChromeState {
         &mut self,
     ) -> Vec<settings_store::hardware::ShortcutAction> {
         std::mem::take(&mut self.shortcut_action_requests)
+    }
+
+    /// Cancel the shell's pending tab gesture through the same path as Escape.
+    pub fn request_tab_drag_cancel(&mut self) {
+        self.cancel_tab_drag_requested = true;
+        self.bump();
+    }
+
+    pub fn take_tab_drag_cancel_request(&mut self) -> bool {
+        std::mem::take(&mut self.cancel_tab_drag_requested)
     }
 
     pub fn request_input_source(&mut self, index: usize) {
