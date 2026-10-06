@@ -2704,8 +2704,9 @@ impl RecordStore {
     }
 
     /// The route native component admission joins before the factory runs:
-    /// the open record's, or a live New reservation's, whose genesis the
-    /// factory has yet to write. The reservation is the custody proof there.
+    /// the open record's, a live New reservation's, or an exact native original
+    /// creation capture whose genesis the factory has yet to write. This does
+    /// not make the record publishable before the owner's Initialize reply.
     pub(crate) fn admission_route(
         &self,
         checkout: &RecordCheckout,
@@ -2716,6 +2717,26 @@ impl RecordStore {
                 if reserved.kind != checkout.kind {
                     return Err(RecordOpenError::IdentityMismatch);
                 }
+                return set.wire_route(&checkout.id);
+            }
+            if set
+                .open
+                .get(&checkout.id)
+                .is_some_and(|slot| slot.kind != checkout.kind)
+            {
+                return Err(RecordOpenError::IdentityMismatch);
+            }
+            if let Some(doc) = set.peek(&checkout.id)
+                && validate_identity(doc, checkout, &set.home).is_err()
+            {
+                let bridge = set
+                    .native_initial
+                    .as_ref()
+                    .ok_or(RecordOpenError::IdentityMismatch)?;
+                let read = bridge
+                    .record(&set.package_id, &set.home, checkout)
+                    .map_err(RecordOpenError::Initialization)?;
+                validate_creation_capture(doc, checkout, &set.home, &read)?;
                 return set.wire_route(&checkout.id);
             }
         }
