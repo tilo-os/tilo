@@ -2390,17 +2390,7 @@ struct Finger {
 
 /// Shift capitalizes a gesture's first letter; Caps Lock applies to its word.
 fn case_swipe_word(word: &str, shift: ShiftState) -> String {
-    match shift {
-        ShiftState::Off => word.to_owned(),
-        ShiftState::CapsLock => word.to_uppercase(),
-        ShiftState::Shift => {
-            let mut letters = word.chars();
-            letters
-                .next()
-                .map(|first| first.to_uppercase().chain(letters).collect())
-                .unwrap_or_default()
-        }
-    }
+    shift.case_word(word)
 }
 
 /// Keep gesture sampling bounded while retaining the latest endpoint.

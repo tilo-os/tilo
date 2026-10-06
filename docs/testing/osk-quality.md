@@ -9,7 +9,7 @@ recorded in [`apps/osk/data/README.md`](../../apps/osk/data/README.md).
 
 ## Acceptance journeys
 
-Run through `rcargo` on the existing remote builder when working on the laptop.
+Run the public Cargo commands below on an approved remote builder when working on the laptop.
 Use four build jobs for this suite. No personal text, captured typing or training
 is needed. The touch fixtures are authored words and paths; the noisy-tap
 benchmark uses the checked-in `typing_phrases.txt` and a fixed random seed.
@@ -66,10 +66,10 @@ emit zero characters after cancellation.
 ## Commands and limits
 
 ```sh
-rcargo test --locked -p osk --lib -j 4 -- --nocapture
-rcargo test --locked -p osk --test it -j 4 -- --nocapture
-rcargo clippy --locked -p osk --all-targets -j 4 -- -D warnings
-rcargo check --locked -p shell --tests -j 4
+cargo test --locked -p osk --lib -j 4 -- --nocapture
+cargo test --locked -p osk --test it -j 4 -- --nocapture
+cargo clippy --locked -p osk --all-targets -j 4 -- -D warnings
+cargo check --locked -p shell --tests -j 4
 ```
 
 Current-base qualification (`b941e4f47f`) passes all 158 normal library and
@@ -104,8 +104,8 @@ is committed to Git or shipped in the OS image. No training was performed.
 Run this concrete production-decoder evaluation on the remote builder:
 
 ```sh
-rcargo --on-builder --fetch osk-eval run --locked -p osk --example swipe_eval -j 4 -- target/osk-eval --fetch-validation 256
-rcargo --on-builder --fetch osk-eval run --locked --release -p osk --example swipe_eval -j 4 -- target/osk-eval
+cargo run --locked -p osk --example swipe_eval -j 4 -- target/osk-eval --fetch-validation 256
+cargo run --locked --release -p osk --example swipe_eval -j 4 -- target/osk-eval
 ```
 
 The importer caps the prefix at 1000 rows and 16 MiB of source bytes. The
@@ -133,6 +133,6 @@ measure the decoder only; no touch-to-photon or representative accuracy claim
 is implied.
 
 Future training or CPU-intensive evaluation must run on the approved existing
-SSH/rcargo runner with a bounded resource budget. Keep donor-session partitions
+remote runner with a bounded resource budget. Keep donor-session partitions
 intact, leave the test set untouched during tuning, and audit any separately
 introduced code, weights or dictionaries on their own licenses.
