@@ -70,6 +70,10 @@ pub const SYSTEM_READ_PATHS: &[&str] = &[
     // `[sandbox.net]` and the egress gate. The CA bundle only decides
     // whether a *permitted* connection verifies — withholding it produces
     // certificate errors, not security, and it's the same bytes for every user.
+    // Fedora's NSS trust module is a public library in /usr/lib64 whose
+    // symlink passes through this one system alternative. Bind the file,
+    // not the alternatives directory, so dlopen can resolve the CA provider.
+    "/etc/alternatives/libnssckbi.so",
     "/etc/pki",
     "/etc/ssl",
     "/etc/crypto-policies",
