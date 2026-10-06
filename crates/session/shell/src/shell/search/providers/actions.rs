@@ -3887,6 +3887,8 @@ mod tests {
         let rows = {
             let state = chrome.borrow();
             provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "tab menu",
                 wanted: &[ResourceKind::Action],
                 chrome: &state,
