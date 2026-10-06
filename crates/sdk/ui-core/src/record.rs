@@ -2164,6 +2164,8 @@ impl RecordStore {
         if workspace.id != self.0.borrow().home {
             return Err(RecordOpenError::IdentityMismatch);
         }
+        initialization.validate_original(&original, checkout, &workspace.id)?;
+        let original_heads = original.base_heads();
         let mut document = original.clone();
         genesis(&mut document, checkout, &workspace.id, initialize)?;
         let mut preserved = original;
@@ -2175,10 +2177,33 @@ impl RecordStore {
         validate_identity(&document, checkout, &workspace.id)?;
         let bytes = document.save();
         initialization
-            .commit(checkout.kind.as_str(), bytes.clone())
+            .commit(checkout.kind.as_str(), bytes)
             .map_err(RecordOpenError::Initialization)?;
-        self.merge_peer_document(checkout, bytes)
-            .map_err(RecordOpenError::Initialization)?;
+        // Ordinary peer merges require an already initialized local identity.
+        // Only this exact original creation may install its acknowledged genesis.
+        // Recheck after the blocking owner ACK: never replace intervening edits.
+        let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
+        if set.home != workspace.id {
+            return Err(RecordOpenError::IdentityMismatch);
+        }
+        let slot = set
+            .open
+            .get_mut(&checkout.id)
+            .filter(|slot| slot.kind == checkout.kind)
+            .ok_or(RecordOpenError::IdentityMismatch)?;
+        let current = slot.doc.as_mut().ok_or(RecordOpenError::Busy)?;
+        if current.pending_ops() != 0 || current.base_heads() != original_heads {
+            return Err(RecordOpenError::IdentityMismatch);
+        }
+        slot.history.rebase(&mut document);
+        slot.action_state.generation = slot
+            .action_state
+            .generation
+            .and_then(|generation| generation.checked_add(1));
+        *current = document;
+        if let Some(writer) = &mut slot.autosave {
+            writer.request(current);
+        }
         Ok(())
     }
     pub(crate) fn from_owner(owner: std::rc::Rc<std::cell::RefCell<RecordSet>>) -> Self {
@@ -2421,7 +2446,7 @@ fn validate_created_identity(
     Ok(())
 }
 
-fn validate_creation_capture(
+pub(crate) fn validate_creation_capture(
     doc: &AutoCommit,
     want: &RecordCheckout,
     workspace: &str,
@@ -2456,9 +2481,13 @@ fn creation_capture_heads(
 ) -> Result<Vec<automerge::ChangeHash>, RecordOpenError> {
     read.with_mutation(|mutation| {
         let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
-            return Err(RecordOpenError::IdentityMismatch);
+            return Err(RecordOpenError::Initialization(
+                "creation capture is not a snapshot".into(),
+            ));
         };
-        let original = AutoCommit::load(bytes).map_err(|_| RecordOpenError::IdentityMismatch)?;
+        let original = AutoCommit::load(bytes).map_err(|_| {
+            RecordOpenError::Initialization("creation capture snapshot cannot be parsed".into())
+        })?;
         Ok(original.base_heads())
     })
     .map_err(RecordOpenError::Initialization)?
