@@ -68,6 +68,12 @@ pub enum PanelHit {
     BranchName,
     /// The "Create branch" button.
     CreateBranch,
+    WorktreeBranch,
+    WorktreePath,
+    WorktreeStart,
+    CreateWorktree,
+    WorktreeInfo(usize),
+    WorktreeError,
 }
 
 /// What the screen shows this frame.
@@ -78,6 +84,7 @@ pub struct PanelsInput<'a> {
     /// A repository on disk: branches can be created here.
     pub can_create: bool,
     /// The new branch name typed so far.
+    pub worktree_fields: [&'a str; 3],
     pub branch_name: &'a str,
 }
 
@@ -90,6 +97,7 @@ pub struct PanelsDraw {
     pub semantic: Vec<(Rect, PanelHit)>,
     /// Where the owner lays out the new branch name field.
     pub branch_field: Rect,
+    pub worktree_fields: [Rect; 3],
     /// Height of everything, for clamping the scroll.
     pub content_height: f64,
 }
@@ -102,6 +110,7 @@ struct SectionRows<'a> {
     form: bool,
     /// Stands in the leading column of a two-column page.
     leading: bool,
+    worktree_form: bool,
 }
 
 /// One row: what it shows and what can be done to it.
@@ -247,30 +256,59 @@ fn sections(model: &RepoModel, can_create: bool) -> Vec<SectionRows<'_>> {
             rows: local,
             form: can_create,
             leading: true,
+            worktree_form: false,
         },
         SectionRows {
             title: t("git-section-remote-branches"),
             rows: remote,
             form: false,
             leading: true,
+            worktree_form: false,
+        },
+        SectionRows {
+            title: t("git-section-worktrees"),
+            rows: model
+                .worktrees
+                .iter()
+                .map(|worktree| RowSpec {
+                    title: &worktree.head,
+                    secondary: Some(worktree.path.clone()),
+                    meta: None,
+                    current: worktree.current,
+                    actions: Vec::new(),
+                })
+                .chain(model.worktree_error.iter().map(|error| RowSpec {
+                    title: error,
+                    secondary: Some(t("git-worktree-read-failed")),
+                    meta: None,
+                    current: false,
+                    actions: Vec::new(),
+                }))
+                .collect(),
+            form: can_create,
+            leading: false,
+            worktree_form: true,
         },
         SectionRows {
             title: t("git-section-tags"),
             rows: tags,
             form: false,
             leading: false,
+            worktree_form: false,
         },
         SectionRows {
             title: t("git-section-stashes"),
             rows: stashes,
             form: false,
             leading: false,
+            worktree_form: false,
         },
         SectionRows {
             title: t("git-section-remotes"),
             rows: remotes,
             form: false,
             leading: false,
+            worktree_form: false,
         },
     ]
 }
@@ -291,6 +329,7 @@ pub fn paint(ctx: &mut PaintCtx<'_>, area: Rect, input: &PanelsInput<'_>) -> Pan
         targets: Vec::new(),
         semantic: Vec::new(),
         branch_field: Rect::ZERO,
+        worktree_fields: [Rect::ZERO; 3],
         content_height: 0.0,
     };
     ctx.scene.push_layer(
@@ -382,7 +421,11 @@ fn paint_section(
     let mut y = band.y1 + f64::from(s.s2);
 
     if section.form {
-        y = paint_branch_form(ctx, column, input, y, out) + f64::from(s.s2);
+        y = if section.worktree_form {
+            paint_worktree_form(ctx, column, input, y, out)
+        } else {
+            paint_branch_form(ctx, column, input, y, out)
+        } + f64::from(s.s2);
     }
 
     // Rows run out to the section's edges by their own padding, so their
@@ -429,6 +472,16 @@ fn paint_section(
         face.interaction(interaction)
             .hovered_action(hovered_action)
             .paint(ctx, rect);
+        if section.worktree_form {
+            out.semantic.push((
+                rect.intersect(clip),
+                if i < input.model.worktrees.len() {
+                    PanelHit::WorktreeInfo(i)
+                } else {
+                    PanelHit::WorktreeError
+                },
+            ));
+        }
         for ((_, _, action), r) in row.actions.iter().zip(&action_rects) {
             out.targets
                 .push((r.intersect(clip), PanelHit::Branch(action.clone())));
@@ -553,6 +606,7 @@ mod tests {
                 pointer: None,
                 can_create: true,
                 branch_name: "",
+                worktree_fields: ["", "", "HEAD"],
             },
         );
         (out, model)
@@ -611,4 +665,46 @@ mod tests {
         };
         assert_eq!(stash_title(&stash), "try the msaa path");
     }
+}
+
+/// Lay out shared toolkit inputs; all submission routes invoke CreateWorktree.
+fn paint_worktree_form(
+    ctx: &mut PaintCtx<'_>,
+    column: Rect,
+    input: &PanelsInput<'_>,
+    mut y: f64,
+    out: &mut PanelsDraw,
+) -> f64 {
+    let theme = ctx.theme;
+    let h = ButtonFace::height(ControlSize::Regular, theme);
+    let gap = f64::from(theme.tokens.spacing.s2);
+    for (slot, hit) in out.worktree_fields.iter_mut().zip([
+        PanelHit::WorktreeBranch,
+        PanelHit::WorktreePath,
+        PanelHit::WorktreeStart,
+    ]) {
+        let rect = Rect::new(column.x0, y, column.x1, y + h);
+        *slot = rect;
+        out.targets.push((rect, hit.clone()));
+        out.semantic.push((rect, hit));
+        y += h + gap;
+    }
+    let label = t("git-create-worktree");
+    let face = ButtonFace::new(Rect::ZERO, &label);
+    let w = face.intrinsic_width(ctx.text, theme);
+    let button = Rect::new(column.x0, y, column.x0 + w, y + h);
+    let enabled = input
+        .worktree_fields
+        .iter()
+        .all(|text| !text.trim().is_empty());
+    let face = ButtonFace::new(button, &label)
+        .role(ButtonRole::Secondary)
+        .disabled(!enabled)
+        .hovered(enabled && input.pointer.is_some_and(|p| button.contains(p)));
+    Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
+    if enabled {
+        out.targets.push((button, PanelHit::CreateWorktree));
+    }
+    out.semantic.push((button, PanelHit::CreateWorktree));
+    button.y1
 }
