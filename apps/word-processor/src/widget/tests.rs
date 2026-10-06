@@ -722,6 +722,47 @@ fn open_hosted_toolbar_overflow(framed: &mut Framed<WordProcessorWidget>) {
 }
 
 #[test]
+fn toolbar_controls_publish_before_drawing_and_report_retained_replacement() {
+    let (mut state, mut wp) = bound();
+    assert!(
+        wp.children()
+            .into_iter()
+            .flat_map(|child| ui::resources::resources(child, &state.doc))
+            .any(|resource| resource.id.as_str() == "tilo.control:word.toolbar.bold"),
+        "sync constructs the native toolbar before the host publishes or draws"
+    );
+    assert!(
+        wp.take_structure_dirty(),
+        "initial retained toolbar appears"
+    );
+    assert!(
+        !wp.take_structure_dirty(),
+        "the structural signal is consumed"
+    );
+    wp.model_mut()
+        .insert_str(&mut edits(&mut state.doc), "Selected text");
+    wp.model_mut().select_all(&state.doc);
+    wp.sync(&state.doc, &state.root);
+    assert!(
+        wp.children()
+            .into_iter()
+            .flat_map(|child| ui::resources::resources(child, &state.doc))
+            .any(|resource| resource.id.as_str() == "tilo.control:word.toolbar.hyperlink"),
+        "selection-dependent controls exist before publication"
+    );
+    assert!(
+        wp.take_structure_dirty(),
+        "the selection changes retained controls"
+    );
+    assert!(!wp.take_structure_dirty());
+    wp.sync(&state.doc, &state.root);
+    assert!(
+        !wp.take_structure_dirty(),
+        "unchanged command shape preserves retained toolbar identity"
+    );
+}
+
+#[test]
 fn retained_toolbar_admits_edit_effects_and_transient_views() {
     let (mut state, mut wp) = bound();
     wp.model_mut()
