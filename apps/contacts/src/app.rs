@@ -227,6 +227,7 @@ pub struct ContactsApp {
     dispatcher: Option<Dispatcher<Contacts>>,
     pub(crate) jobs: Option<Jobs<Contacts>>,
     pub(crate) account_editor: Option<crate::account_editor::Editor>,
+    account_pane: Option<Element>,
     pub(crate) identity_directory:
         Option<ui::framework::PersonRecord<tilo_contact_directory::ContactDirectory>>,
     unconfirmed_save: Option<EditForm>,
@@ -435,7 +436,6 @@ impl ContactsApp {
     ) -> Self {
         self.shell = self
             .shell
-            .inspector(pane)
             .inspector_header(
                 crate::account_editor::CATALOG.t("contacts-accounts"),
                 Vec::new(),
@@ -443,6 +443,7 @@ impl ContactsApp {
             .with_inspector_hidden()
             .with_inspector_state(&editor.visible);
         self.account_editor = Some(editor);
+        self.account_pane = Some(pane);
         self
     }
 
@@ -515,6 +516,7 @@ impl ContactsApp {
             dispatcher: None,
             jobs: None,
             account_editor: None,
+            account_pane: None,
             identity_directory: None,
             unconfirmed_save: None,
             import_conflicts: Vec::new(),
@@ -1634,6 +1636,13 @@ impl Widget for ContactsApp {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some(editor) = &self.account_editor {
             editor.sync_visibility();
+            // Accounts is a contact's inspector, first entered through that
+            // resource's action. Keep browsing chrome free of an unused toggle.
+            if editor.visible.get()
+                && let Some(pane) = self.account_pane.take()
+            {
+                self.shell.set_inspector(Some(pane));
+            }
         }
         self.import_opened_cards();
         self.announce_refusal();
