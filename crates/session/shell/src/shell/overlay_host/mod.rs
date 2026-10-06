@@ -8637,6 +8637,20 @@ impl ShellOverlayHost {
         )
     }
 
+    pub fn action_catalog_query(
+        &self,
+        args: &crate::shell::search::QueryArgs<'_>,
+        visibility: &dyn crate::shell::search::action_api::ActionVisibility,
+        include_programmatic: bool,
+    ) -> crate::shell::search::action_api::ActionCatalog {
+        crate::shell::search::action_api::ActionCatalog::build_query(
+            &self.search_registry,
+            args,
+            visibility,
+            include_programmatic,
+        )
+    }
+
     /// Resolve a previously enumerated action by its stable address. Dynamic
     /// providers can preserve their retained discovery page while
     /// revalidating the route used to invoke it.
