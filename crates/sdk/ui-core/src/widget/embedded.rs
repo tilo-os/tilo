@@ -41,6 +41,11 @@ pub struct Embedded<W: Widget> {
     /// The rectangle last laid out and the height it came to, reused while
     /// nothing about the child changed (a thumbnail redrawn every frame).
     laid: Option<(Rect, f64)>,
+    /// A press inside the child asked for keyboard focus since the owner
+    /// last looked ([`Embedded::take_focus_request`]).
+    focus_request: bool,
+    /// The child takes exactly the rectangle it is given.
+    fill: bool,
 }
 
 impl<W: Widget + 'static> Embedded<W> {
@@ -56,7 +61,18 @@ impl<W: Widget + 'static> Embedded<W> {
             transform: Affine::IDENTITY,
             text_color: None,
             laid: None,
+            focus_request: false,
+            fill: false,
         }
+    }
+
+    /// The child takes exactly the rectangle it is laid out in, rather than
+    /// its content's height: a viewport of its own (a terminal, a viewer)
+    /// that scrolls inside the rectangle the owner gives it.
+    #[must_use]
+    pub fn filling(mut self) -> Self {
+        self.fill = true;
+        self
     }
 
     /// Place the child's own space in the owner's: layout rectangles are in
@@ -148,8 +164,21 @@ impl<W: Widget + 'static> Embedded<W> {
         };
         let available = Size {
             width: AvailableSpace::Definite(rect.width() as f32),
-            height: AvailableSpace::MaxContent,
+            height: if self.fill {
+                AvailableSpace::Definite(rect.height() as f32)
+            } else {
+                AvailableSpace::MaxContent
+            },
         };
+        if self.fill
+            && let Ok(mut style) = self.tree.style(root).cloned()
+        {
+            style.size = Size {
+                width: taffy::Dimension::length(rect.width() as f32),
+                height: taffy::Dimension::length(rect.height() as f32),
+            };
+            let _ = self.tree.set_style(root, style);
+        }
         // SAFETY: the tree, node map and bindings were built from this exact
         // boxed widget, which nothing else borrows while the layout runs.
         let solved = unsafe {
@@ -191,6 +220,23 @@ impl<W: Widget + 'static> Embedded<W> {
         self.widget
             .draw(scene, transform * self.transform, text, theme, presence);
         self.widget.mark_drawn();
+    }
+
+    /// Paint what the widget floats over everything (its menus, a link's
+    /// popover). Call from the owner's own `draw_overlay`, so it lands in the
+    /// window's top layer, above the rest of the owner's paint.
+    pub fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let recoloured = self.recoloured(theme);
+        let theme = recoloured.as_ref().unwrap_or(theme);
+        self.widget
+            .draw_overlay(scene, transform * self.transform, text, theme, presence);
     }
 
     /// Route one window event to the widget.
@@ -243,6 +289,19 @@ impl<W: Widget + 'static> Embedded<W> {
                 taffy: &self.tree,
             },
         );
+        // The owner holds the window's focus for its embedded child: a press
+        // that focused something inside is the owner's cue to take it.
+        if focus.is_some() {
+            self.focus_request = true;
+        }
+    }
+
+    /// Whether the child asked for keyboard focus (a press on a field)
+    /// since the last call. The owner takes the host's focus in response
+    /// (`*ctx.focus_target = Some(ctx.node_id)`) and keeps routing keys and
+    /// the input method to the child.
+    pub fn take_focus_request(&mut self) -> bool {
+        std::mem::take(&mut self.focus_request)
     }
 
     /// Bring the widget up to date with the document.
@@ -309,6 +368,11 @@ mod tests {
             Point::new(drawn.x0 + 20.0, drawn.y0 + 4.0),
         );
         assert!(host.widget().is_focused(), "the click reached the box");
+        assert!(
+            host.take_focus_request(),
+            "the owner is asked to take focus"
+        );
+        assert!(!host.take_focus_request(), "once");
         let caret = host.ime_cursor_rect().expect("a focused line has a caret");
         assert!(
             drawn.inflate(1.0, 1.0).contains(caret.center()),

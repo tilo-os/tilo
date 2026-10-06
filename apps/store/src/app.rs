@@ -1,34 +1,29 @@
 //! `StoreApp` — the root widget.
 //!
-//! Composition sketch:
+//! The Store has four pages, each one column on the window ground, composed
+//! in [`view`] from the toolkit's content widgets:
 //!
 //! ```text
-//! ┌ Store header (search box + refresh)  ─────────────────────────┐
-//! │ [    Search…                       ] [ Refresh ]              │
-//! ├───────────────────────────────────────────────────────────────┤
-//! │ [ All | Tilo | Flatpak | Installed ]      ← filter chip row    │
-//! ├───────────────────────────────────────────────────────────────┤
-//! │ Categories: [ All | Games | Productivity | System | Utils ]   │
-//! ├───────────────────────────────────────────────────────────────┤
-//! │  ┌───────────────────────────────────────────────────────┐    │
-//! │  │  [icon]  Notes                v0.1.0 · Tilo main [Add] │    │
-//! │  │  [ ⎔  ]  A CRDT notes app                             │    │
-//! │  └───────────────────────────────────────────────────────┘    │
-//! │  ... more cards, spanning to the window bottom ...            │
-//! │                                    ╭─────────────────────────╮ │
-//! │                                    │ Installing so.tilo.notes…│ │  ← transient bubble
-//! └────────────────────────────────────╰─────────────────────────╯─┘
+//! header row      Apps               [search] [remotes] [trust] [refresh] [History]
+//! catalogue         6 apps from 2 sources
+//!                   Updates (1)        ┌ card ┐
+//!                   On this device (2) ┌ card ┐ ┌ card ┐
+//!                   Discover (3)       ┌ card ┐ ┌ card ┐ ┌ card ┐
+//! details           (the window's Back returns here)
+//!                   [icon] Name, its badges, its actions and description,
+//!                   then Details (one property list) and Trust
+//! flatpak remotes   the add form and the configured remotes
+//! trust             report drafts and how decisions are made
 //! ```
 //!
-//! There is no permanent footer strip: the catalog counts (`N apps · M
-//! shown`) and the running action status surface in a floating
-//! [`ui::StatusBubble`], revealed on a change or on hover of the
-//! bottom-right band, then faded — so the card list reclaims the height.
+//! People find apps through the platform search (the magnifier, Ctrl+K): the
+//! Store only provides it, with source, category and status as facets (see
+//! [`crate::search_provider`]). The catalogue itself has no search field.
+//! An operation's progress and failures read in a banner in the page; its
 //!
 //! The surface is read-mostly: in a live window the catalogue comes from
 //! the Store's worker ([`crate::worker`]), in a screenshot from its fixture,
 //! and every change — a package job, a filter, a report edit — goes through
-//! the Store's effects and actions ([`crate::resource`]).
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -37,32 +32,21 @@ use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::a11y::{AccessNode, Politeness, Role};
-use ui::framework::{
-    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow, TextControl,
-};
+use ui::framework::{Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
 use ui::tilo_actions::{ActionSpec, ResourcePresentation};
 use ui::tilo_resource::Effect as _;
-use ui::widget::{
-    Badge, BadgeTone, Banner, CardGrid, Column, Container, Dropdown, EmptyState, ProgressBar, Row,
-    ScrollAxis, Scrollable, Spacer, Text, TextInput, Widget,
-};
-use ui::{
-    Theme,
-    icons::Icon,
-    permissions::PermissionContext,
-    presence::PresenceCtx,
-    text_render::{TextRenderer, TextWeight},
-};
+use ui::widget::Widget;
+use ui::{Theme, permissions::PermissionContext, presence::PresenceCtx, text_render::TextRenderer};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
 use crate::bindings;
 use crate::doc_actions::StoreDocumentAction;
 use crate::model::{ActionKind, SourceFilter, StoreItem, StoreSource};
-use crate::resource::{ReportProjection, Store, StoreEffect, report_note_dispatcher};
+use crate::resource::{ReportProjection, Store, StoreEffect};
 use crate::sources::distinct_categories;
-use crate::widgets::{CardAction, CardDetails, CardLayout};
 use crate::worker::{Outcome, Request, StoreWorker};
+mod view;
 
 /// Build a taffy node from `children` already built in the same tree.
 /// `new_with_children` only fails when a child id does not resolve in this
@@ -76,11 +60,6 @@ fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> 
 }
 
 const PAGE_SIZE: usize = 48;
-const CATALOGUE_CONTENT_MAX_WIDTH: f32 = 1_120.0;
-/// Minimum width (logical px) of one cell in the browse filter band. Wide
-/// enough for the longest source/category value; every cell grows equally
-/// from this basis so the labels row and the controls row share column edges.
-const FILTER_CELL_MIN_W: f32 = 176.0;
 /// Bound remote configuration before it is rendered, serialized, or
 /// forwarded to the Flatpak worker. These limits are deliberately generous
 /// relative to remote names and HTTPS URLs, but keep a caller from handing
@@ -102,7 +81,7 @@ const RESOURCE_SNAPSHOT_LIMIT: usize = 200;
 /// How many remote and moderation jobs may wait on the worker at once.
 const MAX_PENDING_EXTERNAL_OPERATIONS: usize = 16;
 /// The status a submitted report shows until a verified case status arrives.
-const SUBMITTED_STATUS: &str = "Submitted · awaiting verified status";
+const SUBMITTED_STATUS: &str = "Submitted, awaiting verified status";
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct ReportEnvelope {
@@ -154,79 +133,6 @@ fn full_publisher(item: &StoreItem) -> String {
         },
         |key| format!("ed25519:{key}"),
     )
-}
-
-/// Human-facing device state must distinguish Tilo's content-addressed,
-/// fetch-on-open cache from a conventional Flatpak installation.
-fn device_state_label(item: &StoreItem) -> String {
-    match (&item.source, &item.installed) {
-        (crate::StoreSource::Tilo { .. }, crate::InstalledState::Not) => {
-            "Available on demand · fetched when opened\nNot kept on this device".into()
-        }
-        (
-            crate::StoreSource::Tilo { .. },
-            crate::InstalledState::Installed {
-                version,
-                available,
-                pinned,
-                user_managed,
-            },
-        ) => format!(
-            "Cached {version} · available {available}\n{}",
-            if !*user_managed {
-                "Provided by the system"
-            } else if *pinned {
-                "Kept on this device"
-            } else {
-                "Not kept · cache may be reclaimed"
-            }
-        ),
-        (
-            crate::StoreSource::Flathub | crate::StoreSource::FlatpakRemote { .. },
-            crate::InstalledState::Installed {
-                version,
-                user_managed: false,
-                ..
-            },
-        ) => ui::i18n::I18nManager::format(
-            "store-device-provided-version",
-            &[("version", ui::i18n::ArgValue::Text(version.clone()))],
-        ),
-        (
-            crate::StoreSource::Flathub | crate::StoreSource::FlatpakRemote { .. },
-            crate::InstalledState::Not,
-        ) => "Not installed".into(),
-        (
-            crate::StoreSource::Flathub | crate::StoreSource::FlatpakRemote { .. },
-            crate::InstalledState::Installed {
-                version, available, ..
-            },
-        ) => format!("Installed {version} · available {available}"),
-    }
-}
-
-/// Render a readable, stable publisher identity summary. The full identity is
-/// retained in the canonical app resource and report envelope; the detail
-/// page intentionally avoids turning a human decision surface into a wall of
-/// repeated hex characters.
-#[cfg(test)]
-fn publisher_identity_lines(item: &StoreItem) -> Vec<String> {
-    let Some(key) = item.publisher_pubkey_hex.as_deref() else {
-        return vec!["Publisher identity: not published by this distributor".into()];
-    };
-    let prefix: String = key.chars().take(12).collect();
-    let suffix: String = key
-        .chars()
-        .rev()
-        .take(12)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect();
-    vec![format!(
-        "Publisher fingerprint · ed25519:{prefix}…{suffix} ({} characters)",
-        key.chars().count()
-    )]
 }
 
 fn format_size(bytes: u64) -> String {
@@ -303,17 +209,6 @@ fn resource_detail_excerpt(value: &str) -> String {
 /// large-text layout may choose one catalogue list instead of availability
 /// shelves, but that must not turn an untouched catalogue into “Search
 /// results” for sighted or screen-reader users.
-#[cfg(test)]
-fn catalogue_region_heading(grouped_by_availability: bool, query: &str) -> &'static str {
-    if grouped_by_availability {
-        "Browse apps"
-    } else if query.trim().is_empty() {
-        "All apps"
-    } else {
-        "Search results"
-    }
-}
-
 pub(crate) fn moderation_status_label(
     status: registry_types::ModerationCaseStatus,
 ) -> &'static str {
@@ -322,103 +217,10 @@ pub(crate) fn moderation_status_label(
         ModerationCaseStatus::Open => "Open",
         ModerationCaseStatus::NeedsInformation => "Needs information",
         ModerationCaseStatus::Appealed => "Appealed",
-        ModerationCaseStatus::ClosedNoAction => "Closed · no action",
+        ModerationCaseStatus::ClosedNoAction => "Closed, no action",
         ModerationCaseStatus::Quarantined => "Quarantined",
         ModerationCaseStatus::Restored => "Restored",
     }
-}
-
-fn detail_section(
-    title: &str,
-    lines: impl IntoIterator<Item = String>,
-    theme: &Theme,
-    compact: bool,
-    roomy_desktop: bool,
-) -> Box<dyn Widget> {
-    let mut column = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .with_gap(theme.tokens.spacing.s2)
-        .push(Box::new(
-            Text::new(title)
-                .with_scaled_size(18.0)
-                .with_heading_level(2),
-        ));
-    for line in lines {
-        column = column.push(Box::new(
-            Text::new(&line)
-                .with_scaled_size(13.0)
-                .with_color(theme.text_dim),
-        ));
-    }
-    bounded_detail_card(Box::new(column), compact, roomy_desktop)
-}
-
-/// The header of a secondary Store page (Flatpak remotes, Trust & moderation):
-/// the back affordance, the page title and its one-line explanation.
-///
-/// Title and explanation hug each other by `s2`; the back control sits one
-/// `s3` above the title so it reads as navigation rather than as part of the
-/// heading. Both pages share this block so their titles use one size and the
-/// return route always lands at the same place.
-fn secondary_page_header(
-    back: Box<dyn Widget>,
-    title: &str,
-    subtitle: &str,
-    theme: &Theme,
-) -> Box<dyn Widget> {
-    Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(theme.tokens.spacing.s3)
-            .push(back)
-            .push(Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .with_gap(theme.tokens.spacing.s2)
-                    .push(Box::new(
-                        Text::new(title)
-                            .with_scaled_size(24.0)
-                            .with_heading_level(1),
-                    ))
-                    .push(Box::new(
-                        Text::new(subtitle)
-                            .with_scaled_size(13.0)
-                            .with_color(theme.text_dim),
-                    )),
-            )),
-    )
-}
-
-/// A secondary page: its header one section step (`s6`) above the body, whose
-/// own groups are spaced by the body column. The header is always nearer its
-/// own title/explanation than to the first card beneath it.
-fn secondary_page(
-    header: Box<dyn Widget>,
-    body: Box<dyn Widget>,
-    theme: &Theme,
-) -> Box<dyn Widget> {
-    Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(theme.tokens.spacing.s6)
-            .push(header)
-            .push(body),
-    )
-}
-
-/// A page-level reading column owns desktop centring. Individual detail
-/// sections only provide the themed surface, so nested sections never widen
-/// back to the viewport and create broad, disconnected slabs.
-fn bounded_detail_card(
-    child: Box<dyn Widget>,
-    _compact: bool,
-    _roomy_desktop: bool,
-) -> Box<dyn Widget> {
-    Box::new(Container::new().with_background().with_child(child))
 }
 
 fn report_envelope(report: &ReportProjection, item: Option<&StoreItem>) -> ReportEnvelope {
@@ -504,7 +306,7 @@ fn app_row(item: &StoreItem, flatpak_available: bool, error: Option<&str>) -> Li
     let badge = if latest.is_empty() {
         source.to_string()
     } else {
-        format!("{source} · v{latest}")
+        format!("{source}, v{latest}")
     };
     let mut row = LiveRow::new(app_row_id(&item.id), "store.app", item.name.clone())
         .presentation(ResourcePresentation {
@@ -549,10 +351,10 @@ fn app_row(item: &StoreItem, flatpak_available: bool, error: Option<&str>) -> Li
 fn review_label(item: &StoreItem) -> String {
     match item.trust {
         crate::StoreTrust::PublisherSigned => {
-            "Signature verified · no independent review".to_string()
+            "Signature verified, no independent review".to_string()
         }
         crate::StoreTrust::ConfiguredRemote => ui::i18n!("store-remote-trust"),
-        crate::StoreTrust::Flathub => "Flathub distribution · no Tilo review".to_string(),
+        crate::StoreTrust::Flathub => "Flathub distribution, no Tilo review".to_string(),
     }
 }
 
@@ -573,23 +375,12 @@ fn publisher_of(item: &StoreItem) -> (String, String) {
     )
 }
 
-fn safety_back_button() -> ui::widget::Button {
-    let mut button = ui::widget::Button::new("store.safety.back", "Back");
-    if let Some(binding) = bindings::effect(&StoreEffect::ShowCatalogue) {
-        button = button.on_action(binding);
-    }
-    button
-        .with_icon(Icon::ArrowLeft)
-        .fit_content(40.0)
-        .tooltip("Return to the app catalogue")
-}
-
 /// Root widget.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent, unrelated flag (host flatpak \
               availability, a layout-rebuild gate, a pending worker action, \
-              the remotes view's open/closed state, and the screenshot status chip); \
+              and which of the remotes and trust pages is open); \
               grouping them into enums would not express any real invariant \
               between them and would touch sync/draw/handle_event call sites \
               across this file"
@@ -620,17 +411,13 @@ pub struct StoreApp {
     /// intentionally window-local; resources remain globally searchable via
     /// `directory` without making a colleague's catalogue jump around.
     query: String,
-    query_state: ui::LocalState<String>,
-    source_filter_state: ui::LocalState<String>,
-    category_filter_state: ui::LocalState<String>,
     /// An unsubmitted remote form is device-local. Only the canonical Add
     /// remote effect crosses into machine-scoped package configuration.
     remote_name_state: ui::LocalState<String>,
     remote_url_state: ui::LocalState<String>,
-    /// Rolling status line the worker overwrites while an action
-    /// runs. Surfaced transiently in the floating status bubble (see
-    /// [`draw_status_bubble`](Self::draw_status_bubble)); the catalog
-    /// counts stand in while it is empty.
+    /// Rolling status line the worker overwrites while an action runs. It
+    /// reads in the operation notice while busy, and once, in the status
+    /// bubble, when the operation settles.
     status_line: String,
     worker_busy: bool,
     /// The one app mutation currently accepted by the serialized worker.
@@ -657,10 +444,15 @@ pub struct StoreApp {
     rect: Rect,
     /// Root of the built layout so events can be routed to the
     /// composed sub-tree.
-    root: Option<Box<dyn Widget>>,
+    root: Option<Box<ui::widget::NavShell>>,
+    /// Whether the open page has somewhere to go back to; the window's Back reads it.
+    can_go_back: Rc<Cell<bool>>,
+    /// The window's Back was pressed; the next event or sync returns to the catalogue.
+    back_requested: Rc<Cell<bool>>,
     /// Remote and moderation jobs waiting on the worker.
     pending_jobs: usize,
     pending_search: Option<String>,
+    search_opener: ui::search::SearchOpener,
     pending_detail: Option<String>,
     remotes: Vec<crate::flathub_client::Remote>,
     remotes_open: bool,
@@ -671,29 +463,14 @@ pub struct StoreApp {
     /// filter, search result, or catalogue update.
     scroll_offset: Rc<Cell<(f32, f32)>>,
     catalog_page: usize,
-    /// Transient floating status chip. The catalog counts / action
-    /// status surface here — revealed on a real change or while the
-    /// pointer hovers the bottom-left band, then faded — in place of a
-    /// permanent full-width footer strip, so the card list reclaims the
-    /// height. See [`draw_status_bubble`](Self::draw_status_bubble).
+    /// The transient status bubble: an operation's result, shown once when
+    /// it changes.
     status_bubble: ui::StatusBubble,
-    /// The label the bubble last reflected, so we only poke it (reveal
-    /// + restart the linger) when the surfaced text actually changes.
-    last_status_label: String,
     /// Last pointer position (window coords), tracked from `CursorMoved`
-    /// so the bubble can reveal on hover of its zone.
+    /// so the bubble can stay open while the pointer rests on it.
     last_cursor: Point,
-    /// `--shots` forces the bubble fully visible so a single headless
-    /// frame captures the floating chip.
-    shots_status: bool,
     /// Shared async, bounded decoded-artwork cache. `None` for hermetic shots.
     images: Option<ui::ImageStore>,
-    reduce_motion: bool,
-    /// Sampled from the shared theme at layout time.  Store keeps its view
-    /// state local, but its responsive composition must still react to the
-    /// person's global readable-type preference.
-    text_scale: f32,
-    layout_width_hint: f64,
 }
 
 impl Default for StoreApp {
@@ -717,9 +494,6 @@ impl StoreApp {
             active_filter: SourceFilter::All,
             active_category: None,
             query: String::new(),
-            query_state: ui::LocalState::new(String::new()),
-            source_filter_state: ui::LocalState::new("All".into()),
-            category_filter_state: ui::LocalState::new("All".into()),
             remote_name_state: ui::LocalState::new(String::new()),
             remote_url_state: ui::LocalState::new(String::new()),
             status_line: String::new(),
@@ -733,8 +507,11 @@ impl StoreApp {
             structure_dirty: true,
             rect: Rect::ZERO,
             root: None,
+            can_go_back: Rc::new(Cell::new(false)),
+            back_requested: Rc::new(Cell::new(false)),
             pending_jobs: 0,
             pending_search: None,
+            search_opener: ui::search::SearchOpener::new(),
             pending_detail: None,
             remotes: Vec::new(),
             remotes_open: false,
@@ -743,13 +520,8 @@ impl StoreApp {
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
             catalog_page: 0,
             status_bubble: ui::StatusBubble::new(),
-            last_status_label: String::new(),
             last_cursor: Point::ZERO,
-            shots_status: false,
             images: None,
-            reduce_motion: false,
-            text_scale: 1.0,
-            layout_width_hint: 0.0,
         }
     }
 
@@ -794,10 +566,19 @@ impl StoreApp {
         self.structure_dirty = true;
     }
 
-    /// Show a capture's made-up catalogue.
+    /// Show a capture's made-up catalogue, with the bundled artwork its
+    /// icons and previews name.
     pub(crate) fn show_capture_catalogue(&mut self, items: Vec<StoreItem>) {
         self.set_flatpak_available(true);
+        self.set_image_store(Some(crate::fixture::artwork_store()));
         self.set_items(items);
+    }
+
+    /// Replace the artwork cache: `None` shows every app with its generated
+    /// icon and no previews.
+    pub fn set_image_store(&mut self, images: Option<ui::ImageStore>) {
+        self.images = images;
+        self.structure_dirty = true;
     }
 
     pub fn reports(&self) -> &[ReportProjection] {
@@ -829,7 +610,10 @@ impl StoreApp {
     /// applied.
     pub fn stage_scene(&mut self, scenario: Option<&str>) {
         match scenario {
-            Some("detail") => self.focus_detail("so.tilo.notes"),
+            Some("search") => self.set_query("te".into()),
+            Some("detail" | "detail-narrow") => self.focus_detail("so.tilo.notes"),
+            Some("detail-update") => self.focus_detail("so.tilo.files"),
+            Some("detail-flatpak") => self.focus_detail("org.inkscape.Inkscape"),
             Some("remotes") => {
                 self.show_remotes();
                 self.set_remotes(vec![crate::flathub_client::Remote {
@@ -841,16 +625,18 @@ impl StoreApp {
                 }]);
             }
             Some("progress") => {
-                // Terminal is already installed and its offered action is
-                // Open, so the busy card and masthead describe the same
-                // operation rather than claiming an install for an open-only
-                // row.
+                // Terminal is already on the device and its offered action is
+                // Open, so the busy card and the notice describe the same
+                // real operation rather than claiming an install for an
+                // open-only row.
                 self.active_operation = Some(("so.tilo.terminal".into(), ActionKind::Open));
-                self.set_status_line("Starting Terminal · launching installed app…");
+                self.set_status_line("Starting Terminal, launching the installed app…");
                 self.set_worker_busy(true);
             }
             Some("error") => {
-                self.show_failure("Install failed · package signature did not match the catalogue");
+                self.show_failure(
+                    "Install failed: the package signature did not match the catalogue.",
+                );
             }
             Some("moderation" | "moderation-case") => self.show_trust(),
             Some("moderation-loading") => {
@@ -861,21 +647,39 @@ impl StoreApp {
             Some("moderation-offline") => {
                 self.show_trust();
                 self.show_failure(
-                    "Registry is offline · draft and last confirmed status are unchanged",
+                    "The registry is offline. Your draft and the last confirmed status are unchanged.",
                 );
             }
             Some("moderation-error") => {
                 self.show_trust();
                 self.show_failure(
-                    "Appeal was refused · this workspace identity is not the package publisher",
+                    "The appeal was refused: this workspace identity is not the package publisher.",
                 );
             }
-            Some("empty") => self.set_status_line("No catalogue entries are available."),
             Some("offline") => self.show_failure("Could not reach any configured catalogue."),
-            _ => self.set_status_line("6 apps available."),
+            _ => {}
         }
-        // A still cannot hover the floating status chip: show it.
-        self.arm_status_bubble_for_shots();
+        self.structure_dirty = true;
+    }
+
+    /// The page's title in the window header; the catalogue leaves it to the window's own name.
+    fn page_title(&self) -> &'static str {
+        if self.safety_open {
+            "Trust and moderation"
+        } else if self.remotes_open {
+            "Flatpak remotes"
+        } else if self.focused_detail.is_some() {
+            "App details"
+        } else {
+            "Apps"
+        }
+    }
+
+    /// Return to the catalogue from whichever page is open.
+    fn show_catalogue(&mut self) {
+        self.focused_detail = None;
+        self.remotes_open = false;
+        self.safety_open = false;
         self.structure_dirty = true;
     }
 
@@ -903,43 +707,6 @@ impl StoreApp {
         self.remotes_open = false;
         self.focused_detail = None;
         self.structure_dirty = true;
-    }
-
-    pub fn set_layout_width_hint(&mut self, width: f64) {
-        self.layout_width_hint = width;
-        self.structure_dirty = true;
-    }
-
-    fn compact_layout(&self) -> bool {
-        let width = if self.rect.width() > 0.0 {
-            self.rect.width()
-        } else {
-            self.layout_width_hint
-        };
-        width > 0.0 && width < 620.0
-    }
-
-    /// Large text needs the same space as a narrow viewport even on a wide
-    /// monitor: a three-column fixed-height card grid would otherwise hide
-    /// the decision controls below enlarged descriptions.  This is only a
-    /// presentation choice; filters, selection, and every canonical resource
-    /// address remain unchanged.
-    fn readable_type_layout(&self) -> bool {
-        self.text_scale > 1.25
-    }
-
-    fn stacked_catalogue_layout(&self) -> bool {
-        self.compact_layout() || self.readable_type_layout()
-    }
-
-    fn card_layout(&self) -> CardLayout {
-        if self.stacked_catalogue_layout() {
-            CardLayout::Stacked {
-                large_text: self.readable_type_layout(),
-            }
-        } else {
-            CardLayout::Wide
-        }
     }
 
     pub fn set_remotes(&mut self, remotes: Vec<crate::flathub_client::Remote>) {
@@ -1014,7 +781,6 @@ impl StoreApp {
     pub fn set_active_filter(&mut self, f: SourceFilter) {
         if self.active_filter != f {
             self.active_filter = f;
-            self.source_filter_state.set(f.label().into());
             self.catalog_page = 0;
             self.scroll_offset.set((0.0, 0.0));
             self.structure_dirty = true;
@@ -1038,8 +804,6 @@ impl StoreApp {
     pub fn set_active_category(&mut self, c: Option<String>) {
         if self.active_category != c {
             self.active_category = c;
-            self.category_filter_state
-                .set(self.active_category.clone().unwrap_or_else(|| "All".into()));
             self.catalog_page = 0;
             self.scroll_offset.set((0.0, 0.0));
             self.structure_dirty = true;
@@ -1053,7 +817,6 @@ impl StoreApp {
     pub fn set_query(&mut self, q: String) {
         if self.query != q {
             self.query = q;
-            self.query_state.set(self.query.clone());
             self.catalog_page = 0;
             self.scroll_offset.set((0.0, 0.0));
             self.pending_search = Some(self.query.clone());
@@ -1131,2241 +894,13 @@ impl StoreApp {
         all
     }
 
-    // ---- layout ----
-
-    /// Compose the whole tree. Called from `build_layout`; also used
-    /// by tests to inspect the composition graph directly.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the root owns the catalogue-only masthead composition alongside the shared detail, remote, safety, and list routes"
-    )]
-    fn compose(&self, theme: &Theme) -> Box<dyn Widget> {
-        let header = self.build_header(theme);
-        let content = if self.safety_open {
-            self.build_safety_center(theme)
-        } else if self.remotes_open {
-            self.build_remotes(theme)
-        } else {
-            self.build_detail(theme)
-                .unwrap_or_else(|| self.build_list(theme))
-        };
-        // No permanent footer strip: the catalog counts / action status
-        // float as a transient bubble (see `draw_status_bubble`), so the
-        // card list spans to the window bottom.
-        let mut column = Column::new()
-            // The masthead is an intrinsic sibling above a scroll body. Give
-            // the root column the remaining-height contract so the busy body
-            // cannot receive a second full viewport and paint over header
-            // controls during a progress update.
-            .with_fill_remaining_height()
-            .with_vertical_padding(0.0)
-            .with_horizontal_padding(0.0, 0.0)
-            .with_gap(0.0);
-        if !self.remotes_open && !self.safety_open && self.focused_detail.is_none() {
-            // One compact browse bar keeps the filters close to the results.
-            // The old labelled band spent a third of a laptop viewport before
-            // users saw a single app.
-            // The native picker names remain explicit for assistive
-            // technology; their visible values carry the context in this
-            // compact, scan-friendly band. The stacked (phone / large-text)
-            // layout carries the catalogue summary in the header instead.
-            let catalogue_controls = Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_gap(theme.tokens.spacing.s2)
-                .push(header)
-                .push(self.build_filter_band(theme, !self.stacked_catalogue_layout()));
-            column = column.push(
-                self.centered_content(Box::new(
-                    Container::new()
-                        .with_no_padding()
-                        .with_child(Box::new(catalogue_controls)),
-                )),
-            );
-        }
-        column = column.push(content);
-        Box::new(
-            Container::new()
-                .filling()
-                .with_fill(theme.bg_app)
-                .with_child(Box::new(column)),
-        )
+    /// Whether the catalogue is narrowed by a query, a source or a category.
+    pub(crate) fn filters_active(&self) -> bool {
+        !self.query.trim().is_empty()
+            || self.active_filter != SourceFilter::All
+            || self.active_category.is_some()
     }
 
-    fn centered_content(&self, child: Box<dyn Widget>) -> Box<dyn Widget> {
-        let width = if self.rect.width() > 0.0 {
-            self.rect.width()
-        } else {
-            self.layout_width_hint
-        };
-        // A fixed desktop reading width should never create a clipped middle
-        // breakpoint. Between phone and roomy desktop widths the masthead and
-        // pages simply use the available canvas.
-        if self.compact_layout() || (width > 0.0 && width < 1_180.0) {
-            child
-        } else if self.readable_type_layout() {
-            // Enlarged type does not turn a wide monitor into an invitation
-            // for 1400px one-column cards.  Keep the same calm editorial
-            // measure used by detail pages while retaining every desktop
-            // control and full touch target.
-            Box::new(
-                Row::new()
-                    .push(Box::new(Spacer::new()))
-                    .push(Box::new(
-                        Container::new()
-                            .with_width(760.0)
-                            .with_no_padding()
-                            .with_child(child),
-                    ))
-                    .push(Box::new(Spacer::new())),
-            )
-        } else {
-            Box::new(
-                Row::new()
-                    .push(Box::new(Spacer::new()))
-                    .push(Box::new(
-                        Container::new()
-                            .with_width(CATALOGUE_CONTENT_MAX_WIDTH)
-                            .with_no_padding()
-                            .with_child(child),
-                    ))
-                    .push(Box::new(Spacer::new())),
-            )
-        }
-    }
-
-    /// Whether there is enough room for the deliberately bounded desktop
-    /// canvas.  Keeping this decision in one place prevents the masthead
-    /// from adapting at one breakpoint while the catalogue still forces a
-    /// wider, horizontally clipped grid at another.
-    fn roomy_desktop(&self) -> bool {
-        let width = if self.rect.width() > 0.0 {
-            self.rect.width()
-        } else {
-            self.layout_width_hint
-        };
-        width >= 1_180.0
-    }
-
-    fn desktop_browse_layout(&self) -> bool {
-        self.roomy_desktop() && !self.readable_type_layout()
-    }
-
-    /// Minimum width for a discovery card at the current layout mode. A wide
-    /// Store canvas resolves to three editorial tiles: enough room for real
-    /// artwork, a reason-to-care and an action rail, without the sparse
-    /// 2+1 shelves that made a catalogue look unfinished.
-    #[cfg(test)]
-    fn catalogue_card_min_width(&self) -> f64 {
-        if self.desktop_browse_layout() {
-            348.0
-        } else {
-            330.0
-        }
-    }
-
-    /// Idle browsing benefits from the explicit "ready" and "discover"
-    /// decision groups when the viewport can show a complete row. At the
-    /// medium desktop breakpoint those groups commonly contain an odd count,
-    /// leaving a conspicuous empty quadrant; one balanced catalogue grid is
-    /// clearer there. Search always preserves its relevance-ranked sequence.
-    fn group_catalogue_by_availability(&self) -> bool {
-        self.query.trim().is_empty() && (self.compact_layout() || self.roomy_desktop())
-    }
-
-    fn catalogue_source_summary(&self) -> String {
-        // This line stays about catalogue scope even while an operation is
-        // running. Progress and failures receive their own semantic notice
-        // below, rather than making this quiet provenance label unexpectedly
-        // change meaning or compete with the result count.
-        let source_count = self
-            .items
-            .iter()
-            .map(|item| match &item.source {
-                StoreSource::Tilo { .. } => "Tilo catalogue",
-                StoreSource::Flathub | StoreSource::FlatpakRemote { .. } => {
-                    item.source.distribution_name()
-                }
-            })
-            .collect::<std::collections::BTreeSet<_>>()
-            .len();
-        if self.items.is_empty() {
-            "No apps loaded from configured sources yet".to_string()
-        } else {
-            format!(
-                "{} apps from {source_count} configured source{}",
-                self.items.len(),
-                if source_count == 1 { "" } else { "s" }
-            )
-        }
-    }
-
-    /// Persistent operation feedback belongs in document flow, not in a
-    /// tiny subtitle or a transient overlay. `Banner` is the shared native
-    /// alert treatment: it honours every theme, retains a readable measure at
-    /// 200% type, and exposes a status role to assistive technology.
-    fn operation_notice(&self) -> Option<Box<dyn Widget>> {
-        if self.worker_busy {
-            let detail = if self.status_line.is_empty() {
-                "Package operation in progress…".to_string()
-            } else {
-                visible_operation_status(&self.status_line)
-            };
-            // Worker operations do not publish one trustworthy unit: a
-            // launch, catalogue refresh, and Flatpak update cannot honestly
-            // share a made-up percentage. The shared indeterminate bar makes
-            // activity visible without pretending otherwise, respects
-            // reduce-motion, and carries a polite accessible label.
-            return Some(Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .with_gap(7.0)
-                    .push(Box::new(
-                        Banner::info("Working in background").with_message(detail),
-                    ))
-                    .push(Box::new(
-                        ProgressBar::indeterminate().with_label("Operation in progress"),
-                    )),
-            ));
-        }
-        self.operation_error.as_ref().map(|error| {
-            Box::new(
-                Banner::error("The last operation failed")
-                    .with_message(visible_operation_status(error)),
-            ) as Box<dyn Widget>
-        })
-    }
-
-    /// Detail, remote-management, and moderation views have a much shorter
-    /// comfortable reading measure than a discovery grid. Keep their whole
-    /// editorial flow—not merely its individual cards—within that measure
-    /// from typical laptop widths upward.
-    fn bounded_page_content(&self, child: Box<dyn Widget>) -> Box<dyn Widget> {
-        let width = if self.rect.width() > 0.0 {
-            self.rect.width()
-        } else {
-            self.layout_width_hint
-        };
-        if self.compact_layout() || (width > 0.0 && width < 900.0) {
-            child
-        } else {
-            let page_width = if self.roomy_desktop() && !self.readable_type_layout() {
-                1120.0
-            } else {
-                760.0
-            };
-            Box::new(
-                Row::new()
-                    .with_fill_remaining_height()
-                    .push(Box::new(Spacer::new()))
-                    .push(Box::new(
-                        Container::new()
-                            .with_width(page_width)
-                            .with_no_padding()
-                            .with_child(child),
-                    ))
-                    .push(Box::new(Spacer::new())),
-            )
-        }
-    }
-
-    /// Use a desktop window as a product decision workspace, with narrative
-    /// and project facts in the reading column and a visible action/trust rail.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the desktop product page keeps its paired narrative and decision-rail composition in one reviewable reading order"
-    )]
-    fn build_desktop_detail(&self, item: &StoreItem, theme: &Theme) -> Box<dyn Widget> {
-        let source = match &item.source {
-            StoreSource::Tilo { registry_name } => format!("Tilo · {registry_name}"),
-            StoreSource::Flathub | StoreSource::FlatpakRemote { .. } => {
-                format!("Flatpak · {}", item.source.distribution_name())
-            }
-        };
-        let trust_label = match item.trust {
-            crate::StoreTrust::PublisherSigned => "Publisher signature verified".to_string(),
-            crate::StoreTrust::ConfiguredRemote => ui::i18n!("store-remote-trust"),
-            crate::StoreTrust::Flathub => "Distributed by Flathub".to_string(),
-        };
-        let action = item.action_kind(self.flatpak_available);
-        let operation_active = self
-            .active_operation
-            .as_ref()
-            .is_some_and(|(id, active_action)| id == &item.id && *active_action == action);
-        let mut primary = ui::widget::Button::new(
-            &format!("store.app.{}.{}", item.id, action_code(action)),
-            &self.package_label(action),
-        )
-        .primary()
-        .tooltip(format!("{} {}", self.package_label(action), item.name));
-        if let Some(binding) = bindings::package(item, action) {
-            primary = primary.on_action(binding);
-        }
-        let mut device_actions = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(8.0)
-            .push(Box::new(primary));
-        if !matches!(item.source, StoreSource::Tilo { .. })
-            && let Some(button) = self.flathub_account_button()
-        {
-            device_actions = device_actions.push(button);
-        }
-        if let Some(pin_action) = item.pin_action() {
-            let mut button = ui::widget::Button::new(
-                &format!("store.app.{}.{}", item.id, action_code(pin_action)),
-                pin_action.label(),
-            )
-            .tooltip(format!("{} {}", pin_action.label(), item.name));
-            if let Some(binding) = bindings::package(item, pin_action) {
-                button = button.on_action(binding);
-            }
-            device_actions = device_actions.push(Box::new(button));
-        }
-        if let Some(remove_action) = item.remove_action() {
-            let mut button =
-                ui::widget::Button::new(&format!("store.app.{}.remove", item.id), "Remove")
-                    .ghost()
-                    .tooltip(format!("Remove {}", item.name));
-            if let Some(binding) = bindings::package(item, remove_action) {
-                button = button.on_action(binding);
-            }
-            device_actions = device_actions.push(Box::new(button));
-        }
-        let installed = device_state_label(item);
-        let package_lines = item.versions.first().map_or_else(
-            || vec!["No version metadata was published by this source.".to_string()],
-            |version| {
-                let mut lines = vec![format!("Latest release · {}", version.version)];
-                if version.size_bytes > 0 {
-                    lines.push(format!(
-                        "Download size · {}",
-                        format_size(version.size_bytes)
-                    ));
-                }
-                if let Some(hash) = version.root_hash_hex.as_deref() {
-                    let prefix = hash.chars().take(16).collect::<String>();
-                    lines.push(format!("Package digest · BLAKE3:{prefix}…"));
-                }
-                if version.download_url.is_some() {
-                    lines.push("Package download record published".to_string());
-                }
-                lines
-            },
-        );
-        let mut back = ui::widget::Button::new("store.detail.back", "Back to apps")
-            .with_icon(Icon::ArrowLeft)
-            .fit_content(40.0)
-            .tooltip("Return to the catalogue");
-        if let Some(binding) = bindings::effect(&StoreEffect::ShowCatalogue) {
-            back = back.on_action(binding);
-        }
-        let trust_explanation = match item.trust {
-            crate::StoreTrust::PublisherSigned => {
-                "Identity and package integrity are verified. This is not an independent quality review.".to_string()
-            }
-            crate::StoreTrust::ConfiguredRemote => {
-                ui::i18n!("store-remote-trust-explanation")
-            }
-            crate::StoreTrust::Flathub => {
-                "This app is distributed by Flathub. Tilo has not independently reviewed it.".to_string()
-            }
-        };
-        let mut report = ui::widget::Button::new(
-            &format!("store.report.create.{}", item.id),
-            "Create report draft",
-        )
-        .fit_content(40.0)
-        .tooltip("Create a local, collaborative report draft");
-        if let Some(binding) = bindings::draft_report(item) {
-            report = report.on_action(binding);
-        }
-        let mut moderation = ui::widget::Button::new("store.safety.detail", "Moderation details")
-            .fit_content(40.0)
-            .tooltip("Review the Store trust and moderation model");
-        if let Some(binding) = bindings::effect(&StoreEffect::ShowTrust) {
-            moderation = moderation.on_action(binding);
-        }
-        let availability = if operation_active {
-            Badge::semantic_pill("Working", BadgeTone::Accent)
-        } else if item.installed.update_available() {
-            Badge::semantic_pill("Update available", BadgeTone::Warning)
-        } else if item.installed.is_installed() {
-            Badge::semantic_pill("On this device", BadgeTone::Success)
-        } else if matches!(item.source, StoreSource::Tilo { .. }) {
-            Badge::semantic_pill("On demand", BadgeTone::Accent)
-        } else {
-            Badge::semantic_pill("Not installed", BadgeTone::Neutral)
-        };
-        let hero = bounded_detail_card(
-            Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_height(154.0)
-                    .with_child(Box::new(
-                        Row::new()
-                            .no_wrap()
-                            .push(Box::new(crate::widgets::Artwork::new(
-                                self.images.clone(),
-                                item.icon_url.as_deref(),
-                                &item.name,
-                                104.0,
-                                104.0,
-                            )))
-                            .push(Box::new(
-                                Container::new().with_no_padding().with_width(14.0),
-                            ))
-                            .push(Box::new(
-                                Container::new()
-                                    .with_no_padding()
-                                    .with_flex_grow()
-                                    .with_child(Box::new(
-                                        Column::new()
-                                            .with_no_padding()
-                                            .with_intrinsic_height()
-                                            .with_gap(5.0)
-                                            .push(Box::new(
-                                                Text::new(&item.name)
-                                                    .with_scaled_size(32.0)
-                                                    .with_weight(TextWeight::Semibold)
-                                                    .with_heading_level(1),
-                                            ))
-                                            .push(Box::new(
-                                                Text::new(&format!("{source} · {trust_label}"))
-                                                    .with_scaled_size(13.0)
-                                                    .with_color(theme.text_dim),
-                                            ))
-                                            .push(Box::new(
-                                                Row::new().no_wrap().push(Box::new(availability)),
-                                            ))
-                                            .push(Box::new(
-                                                Text::new(&item.description)
-                                                    .with_scaled_size(16.0)
-                                                    .with_color(theme.text_dim),
-                                            )),
-                                    )),
-                            ))
-                            .push(Box::new(
-                                Container::new()
-                                    .with_width(212.0)
-                                    .with_no_padding()
-                                    .with_child(Box::new(device_actions)),
-                            )),
-                    )),
-            ),
-            false,
-            true,
-        );
-        let mut publisher_facts = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(8.0)
-            .push(Box::new(
-                Text::new("Source & publisher")
-                    .with_scaled_size(18.0)
-                    .with_weight(TextWeight::Semibold)
-                    .with_heading_level(2),
-            ))
-            .push(Box::new(
-                Text::new(&source)
-                    .with_scaled_size(13.0)
-                    .with_color(theme.text_dim),
-            ))
-            .push(Box::new(
-                Text::new(&trust_label)
-                    .with_scaled_size(13.0)
-                    .with_weight(TextWeight::Semibold),
-            ));
-        if let Some(key) = item.publisher_pubkey_hex.as_deref() {
-            let full_key = format!("ed25519:{key}");
-            let clipboard_key = full_key.clone();
-            let key_button = ui::widget::Button::new(
-                &format!("store.publisher.copy.{}", item.id),
-                &format!("Publisher · {}", short_publisher(item)),
-            )
-            .ghost()
-            .fit_content(40.0)
-            .with_accessible_name(&format!("Copy full publisher key {full_key}"))
-            .tooltip(format!("Copy full publisher key {full_key}"))
-            .on_effect(move || {
-                ui::text_selection::clipboard_copy(&clipboard_key);
-            });
-            publisher_facts = publisher_facts.push(Box::new(key_button));
-        } else {
-            publisher_facts = publisher_facts.push(Box::new(
-                Text::new(&format!("Publisher · {}", full_publisher(item)))
-                    .with_scaled_size(13.0)
-                    .with_color(theme.text_dim),
-            ));
-        }
-        let fact_surface = |child: Box<dyn Widget>| {
-            bounded_detail_card(
-                Box::new(
-                    Container::new()
-                        .with_no_padding()
-                        .with_height(188.0)
-                        .with_child(child),
-                ),
-                false,
-                true,
-            )
-        };
-        let package_facts = fact_surface(Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_gap(8.0)
-                .push(Box::new(
-                    Text::new("Package")
-                        .with_scaled_size(18.0)
-                        .with_weight(TextWeight::Semibold)
-                        .with_heading_level(2),
-                ))
-                .push(Box::new(
-                    Text::new(&format!("App ID · {}", item.id))
-                        .with_scaled_size(12.0)
-                        .with_color(theme.text_tertiary),
-                ))
-                .push(Box::new(
-                    Text::new(&format!("Categories · {}", item.categories.join(", ")))
-                        .with_scaled_size(13.0)
-                        .with_color(theme.text_dim),
-                ))
-                .push(Box::new(
-                    Text::new(&package_lines.join("\n"))
-                        .with_scaled_size(13.0)
-                        .with_color(theme.text_dim),
-                )),
-        ));
-        let publisher_facts = fact_surface(Box::new(publisher_facts));
-        let device_facts = fact_surface(Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_gap(8.0)
-                .push(Box::new(
-                    Text::new("On this device")
-                        .with_scaled_size(18.0)
-                        .with_weight(TextWeight::Semibold)
-                        .with_heading_level(2),
-                ))
-                .push(Box::new(Text::new(&installed).with_scaled_size(14.0)))
-                .push(Box::new(
-                    Text::new(&trust_explanation)
-                        .with_scaled_size(13.0)
-                        .with_color(theme.text_dim),
-                ))
-                .push(Box::new(
-                    Row::new()
-                        .no_wrap()
-                        .push(Box::new(report))
-                        .push(Box::new(moderation)),
-                )),
-        ));
-        let facts = Row::new()
-            .no_wrap()
-            .push(Box::new(
-                Container::new()
-                    .with_width(364.0)
-                    .with_no_padding()
-                    .with_child(package_facts),
-            ))
-            .push(Box::new(
-                Container::new()
-                    .with_width(364.0)
-                    .with_no_padding()
-                    .with_child(publisher_facts),
-            ))
-            .push(Box::new(
-                Container::new()
-                    .with_width(364.0)
-                    .with_no_padding()
-                    .with_child(device_facts),
-            ));
-        let mut page = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(16.0)
-            // Back is navigation, not a content surface. A no-wrap row
-            // retains the compact control width instead of painting an empty
-            // full-width slab before the product hero.
-            .push(Box::new(
-                Row::new()
-                    .no_wrap()
-                    .push(Box::new(back))
-                    .push(Box::new(Spacer::new())),
-            ));
-        if let Some(notice) = self.operation_notice() {
-            page = page.push(notice);
-        }
-        let page = page.push(hero).push(Box::new(facts));
-        Box::new(
-            Scrollable::new(ScrollAxis::Vertical)
-                .fill_parent_height()
-                .with_child(Box::new(
-                    Row::new()
-                        .with_fill_remaining_height()
-                        .push(Box::new(Spacer::new()))
-                        .push(Box::new(
-                            Container::new()
-                                .with_width(1120.0)
-                                .with_no_padding()
-                                .with_child(Box::new(page)),
-                        ))
-                        .push(Box::new(Spacer::new())),
-                )),
-        )
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one cohesive decision sheet keeps trust, package, permission, link, preview, and action sections in display order"
-    )]
-    fn build_detail(&self, theme: &Theme) -> Option<Box<dyn Widget>> {
-        let id = self.focused_detail.as_ref()?;
-        let item = self.items.iter().find(|item| &item.id == id)?;
-        if self.desktop_browse_layout() {
-            return Some(self.build_desktop_detail(item, theme));
-        }
-        let source = match &item.source {
-            crate::StoreSource::Tilo { registry_name } => format!("Tilo · {registry_name}"),
-            crate::StoreSource::Flathub | StoreSource::FlatpakRemote { .. } => {
-                format!("Flatpak · {}", item.source.distribution_name())
-            }
-        };
-        let locally_retained = matches!(
-            &item.source,
-            crate::StoreSource::Tilo { registry_name } if registry_name == "Installed on this device"
-        );
-        let trust_summary = if locally_retained {
-            "Verified when installed. Current registry metadata is unavailable, so update availability is unknown.".to_string()
-        } else {
-            match item.trust {
-                crate::StoreTrust::PublisherSigned => {
-                    "Publisher identity and package integrity are verified. This is not an independent quality review.".to_string()
-                }
-                crate::StoreTrust::ConfiguredRemote => {
-                    ui::i18n!("store-remote-trust-explanation")
-                }
-                crate::StoreTrust::Flathub => {
-                    "Distributed by Flathub. Tilo has not independently reviewed this app.".to_string()
-                }
-            }
-        };
-        let mut column = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            // Detail content mixes an intrinsic artwork row, paragraph and
-            // actions. A real gap prevents the paragraph's baseline from
-            // colliding with the first action at larger text metrics.
-            .with_gap(theme.tokens.spacing.s3);
-        let action = item.action_kind(self.flatpak_available);
-        let mut primary = ui::widget::Button::new(
-            &format!("store.app.{}.{}", item.id, action_code(action)),
-            &self.package_label(action),
-        );
-        if let Some(binding) = bindings::package(item, action) {
-            primary = primary.on_action(binding);
-        }
-        let mut action_buttons: Vec<Box<dyn Widget>> = vec![Box::new(
-            primary
-                .primary()
-                .tooltip(format!("{} {}", self.package_label(action), item.name)),
-        )];
-        if let Some(pin_action) = item.pin_action() {
-            let mut button = ui::widget::Button::new(
-                &format!("store.app.{}.{}", item.id, action_code(pin_action)),
-                pin_action.label(),
-            );
-            if let Some(binding) = bindings::package(item, pin_action) {
-                button = button.on_action(binding);
-            }
-            action_buttons.push(Box::new(button.ghost().tooltip(format!(
-                "{} {}",
-                pin_action.label(),
-                item.name
-            ))));
-        }
-        if let Some(remove_action) = item.remove_action() {
-            let mut button =
-                ui::widget::Button::new(&format!("store.app.{}.remove", item.id), "Remove");
-            if let Some(binding) = bindings::package(item, remove_action) {
-                button = button.on_action(binding);
-            }
-            action_buttons.push(Box::new(
-                button.ghost().tooltip(format!("Remove {}", item.name)),
-            ));
-        }
-        if !matches!(item.source, StoreSource::Tilo { .. })
-            && let Some(button) = self.flathub_account_button()
-        {
-            action_buttons.push(button);
-        }
-        let mut report_button = ui::widget::Button::new(
-            &format!("store.report.create.{}", item.id),
-            "Create report draft",
-        );
-        if let Some(binding) = bindings::draft_report(item) {
-            report_button = report_button.on_action(binding);
-        }
-        // Report controls live in an intrinsic detail footer.  Reserve their
-        // normal touch target explicitly: otherwise Taffy's intrinsic pass
-        // can collapse a neutral button to its text baseline and make the
-        // footer look like two stray labels rather than usable controls.
-        report_button = report_button.fit_content(40.0);
-        let trust_lines = if self.compact_layout() {
-            vec![
-                match item.trust {
-                    crate::StoreTrust::PublisherSigned => {
-                        "Publisher signature verified".to_string()
-                    }
-                    crate::StoreTrust::ConfiguredRemote => {
-                        ui::i18n!("store-remote-trust")
-                    }
-                    crate::StoreTrust::Flathub => "Distributed by Flathub".to_string(),
-                },
-                "No independent quality review".into(),
-            ]
-        } else {
-            vec![trust_summary]
-        };
-        let actions: Box<dyn Widget> = if self.compact_layout() {
-            let mut column = Column::new().with_no_padding().with_intrinsic_height();
-            for button in action_buttons {
-                column = column.push(button);
-            }
-            Box::new(column)
-        } else {
-            let mut row = Row::new();
-            for button in action_buttons {
-                row = row.push(button);
-            }
-            Box::new(row)
-        };
-        let mut back = ui::widget::Button::new("store.detail.back", "Back to apps");
-        if let Some(binding) = bindings::effect(&StoreEffect::ShowCatalogue) {
-            back = back.on_action(binding);
-        }
-        let back = Box::new(
-            back.with_icon(Icon::ArrowLeft)
-                .fit_content(40.0)
-                .tooltip("Return to the catalogue"),
-        );
-        let artwork = Box::new(crate::widgets::Artwork::new(
-            self.images.clone(),
-            item.icon_url.as_deref(),
-            &item.name,
-            if self.compact_layout() { 56.0 } else { 88.0 },
-            if self.compact_layout() { 56.0 } else { 88.0 },
-        ));
-        let trust_label = match item.trust {
-            crate::StoreTrust::PublisherSigned => "Publisher verified".to_string(),
-            crate::StoreTrust::ConfiguredRemote => ui::i18n!("store-remote-trust"),
-            crate::StoreTrust::Flathub => "Flathub distribution".to_string(),
-        };
-        let summary: Box<dyn Widget> = if self.compact_layout() {
-            // Keep the compact identity stack intrinsic and separate from the
-            // artwork. The previous wrapped row could underreport its height
-            // and let the description paint across the icon.
-            Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .push(Box::new(Text::new(&item.name).with_scaled_size(26.0)))
-                    .push(Box::new(
-                        Text::new(&source)
-                            .with_scaled_size(12.0)
-                            .with_color(theme.text_dim),
-                    ))
-                    .push(Box::new(
-                        Text::new(&trust_label)
-                            .with_scaled_size(12.0)
-                            .with_color(theme.text_tertiary),
-                    )),
-            )
-        } else {
-            Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_fill_remaining_height()
-                    .push(Box::new(
-                        Text::new(&item.name)
-                            .with_scaled_size(32.0)
-                            .with_weight(TextWeight::Semibold),
-                    ))
-                    .push(Box::new(
-                        Text::new(&source)
-                            .with_scaled_size(12.0)
-                            .with_color(theme.text_dim),
-                    ))
-                    .push(Box::new(
-                        Text::new(&trust_label)
-                            .with_scaled_size(12.0)
-                            .with_color(theme.text_tertiary),
-                    )),
-            )
-        };
-        // One section gap (`s6`) separates the back affordance from the
-        // identity block and the identity block from the description/actions.
-        // An intrinsic column honours that gap itself, so no extra spacer is
-        // stacked on top of it: the earlier fixed bands doubled the distance
-        // between artwork and title on a phone.
-        let hero_gap = theme.tokens.spacing.s6;
-        let hero: Box<dyn Widget> = if self.compact_layout() {
-            Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .with_gap(hero_gap)
-                    // The back control keeps its own explicit 40 px height, so
-                    // the intrinsic column's row already spans the full touch
-                    // target — no wrapper band is needed to hold the artwork
-                    // below it.
-                    .push(back)
-                    .push(artwork)
-                    .push(summary)
-                    .push(Box::new(
-                        Text::new(&item.description).with_scaled_size(14.0),
-                    ))
-                    .push(actions),
-            )
-        } else {
-            Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .with_gap(hero_gap)
-                    .push(back)
-                    .push(Box::new(
-                        Row::new()
-                            .no_wrap()
-                            .push(Box::new(
-                                Container::new()
-                                    .with_no_padding()
-                                    .with_flex_grow()
-                                    .with_child(Box::new(
-                                        Row::new().no_wrap().push(artwork).push(Box::new(
-                                            Column::new()
-                                                .with_no_padding()
-                                                .with_intrinsic_height()
-                                                .with_gap(theme.tokens.spacing.s3)
-                                                .push(summary)
-                                                .push(Box::new(
-                                                    Text::new(&item.description)
-                                                        .with_scaled_size(15.0)
-                                                        .with_color(theme.text_dim),
-                                                )),
-                                        )),
-                                    )),
-                            ))
-                            .push(Box::new(
-                                Container::new()
-                                    .with_width(214.0)
-                                    .with_no_padding()
-                                    .with_child(Box::new(
-                                        Column::new()
-                                            .with_no_padding()
-                                            .with_intrinsic_height()
-                                            .with_gap(theme.tokens.spacing.s2)
-                                            .push(actions)
-                                            .push(Box::new(
-                                                Text::new(&match item.trust {
-                                                    crate::StoreTrust::PublisherSigned => {
-                                                        "Publisher verified".to_string()
-                                                    }
-                                                    crate::StoreTrust::ConfiguredRemote => {
-                                                        ui::i18n!("store-remote-trust-short")
-                                                    }
-                                                    crate::StoreTrust::Flathub => {
-                                                        "Flathub distribution".to_string()
-                                                    }
-                                                })
-                                                .with_scaled_size(12.0)
-                                                .with_color(theme.text_dim),
-                                            )),
-                                    )),
-                            )),
-                    )),
-            )
-        };
-        let hero = bounded_detail_card(hero, self.compact_layout(), self.roomy_desktop());
-        column = column.push(hero);
-
-        let version_lines = if item.versions.is_empty() {
-            vec!["No version metadata published.".into()]
-        } else if self.compact_layout() {
-            item.versions
-                .iter()
-                .map(|version| {
-                    format!(
-                        "Version {} · {}",
-                        version.version,
-                        format_size(version.size_bytes),
-                    )
-                })
-                .collect()
-        } else {
-            item.versions
-                .iter()
-                .map(|version| {
-                    format!(
-                        "Version {} · {} · signed package record available",
-                        version.version,
-                        format_size(version.size_bytes),
-                    )
-                })
-                .collect()
-        };
-        let installed = device_state_label(item);
-        let fact_block = |title: &str, lines: Vec<String>| {
-            let mut block = Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_gap(theme.tokens.spacing.s1)
-                .push(Box::new(
-                    Text::new(title)
-                        .with_scaled_size(14.0)
-                        .with_weight(TextWeight::Semibold),
-                ));
-            for line in lines {
-                block = block.push(Box::new(
-                    Text::new(&line)
-                        .with_scaled_size(13.0)
-                        .with_color(theme.text_dim),
-                ));
-            }
-            // The encompassing decision surface supplies the visual boundary.
-            // Keeping facts unboxed avoids a third nested-card treatment and
-            // reads as one concise, scannable safety summary.
-            Box::new(block) as Box<dyn Widget>
-        };
-        // The heading and its fact blocks share one `s3` rhythm; each block
-        // keeps its own tighter title/line gap.
-        let facts = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(theme.tokens.spacing.s3)
-            .push(Box::new(
-                Text::new("At a glance")
-                    .with_scaled_size(20.0)
-                    .with_heading_level(2),
-            ))
-            .push(fact_block("Trust & safety", trust_lines))
-            .push(fact_block("Package", version_lines))
-            .push(fact_block(
-                "Availability",
-                vec![
-                    installed,
-                    "Tilo asks before sensitive capabilities; the package sandbox remains enforced."
-                        .into(),
-                ],
-            ));
-        column = column.push(bounded_detail_card(
-            Box::new(facts),
-            self.compact_layout(),
-            self.roomy_desktop(),
-        ));
-
-        let links: Vec<String> = [
-            item.homepage_url
-                .as_deref()
-                .map(|url| format!("Homepage · {url}")),
-            item.source_url
-                .as_deref()
-                .map(|url| format!("Source · {url}")),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        if !links.is_empty() {
-            column = column.push(detail_section(
-                "Project links",
-                links,
-                theme,
-                self.compact_layout(),
-                self.roomy_desktop(),
-            ));
-        }
-
-        if !item.screenshot_urls.is_empty() && self.images.is_some() {
-            let mut previews: Vec<Box<dyn Widget>> = Vec::new();
-            for (index, preview) in item.screenshot_urls.iter().take(3).enumerate() {
-                previews.push(Box::new(crate::widgets::Artwork::new(
-                    self.images.clone(),
-                    Some(preview),
-                    &format!("{} preview {}", item.name, index + 1),
-                    248.0,
-                    140.0,
-                )));
-            }
-            let gallery: Box<dyn Widget> = if self.compact_layout() {
-                let mut column = Column::new().with_no_padding();
-                for preview in previews {
-                    column = column.push(preview);
-                }
-                Box::new(column)
-            } else {
-                let mut row = Row::new();
-                for preview in previews {
-                    row = row.push(preview);
-                }
-                Box::new(row)
-            };
-            // Gallery artwork must share the same bounded reading column as
-            // the rest of the decision sheet. Leaving the heading and images
-            // directly in the outer scroll column made a missing/remote
-            // preview look like an unrelated strip at the viewport edge.
-            let gallery_section = Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_gap(theme.tokens.spacing.s3)
-                .push(Box::new(
-                    Text::new("Preview gallery")
-                        .with_scaled_size(18.0)
-                        .with_heading_level(2),
-                ))
-                .push(gallery);
-            column = column.push(bounded_detail_card(
-                Box::new(gallery_section),
-                self.compact_layout(),
-                self.roomy_desktop(),
-            ));
-        }
-
-        let report_button: Box<dyn Widget> = Box::new(
-            report_button
-                .primary()
-                .tooltip("Create a local, collaborative report draft"),
-        );
-        let mut moderation_button =
-            ui::widget::Button::new("store.safety.detail", "Moderation details");
-        if let Some(binding) = bindings::effect(&StoreEffect::ShowTrust) {
-            moderation_button = moderation_button.on_action(binding);
-        }
-        let moderation_button: Box<dyn Widget> = Box::new(
-            moderation_button
-                .fit_content(40.0)
-                .tooltip("Review the Store trust and moderation model"),
-        );
-        // Keep supporting safety actions in the same bounded surface system
-        // as the decision content.  Previously this utility pair sat outside
-        // the 1040px cards, which made it appear detached at desktop widths
-        // and let its hit targets collide with the last surface on a fresh
-        // layout pass.
-        let support_actions: Box<dyn Widget> = if self.compact_layout() {
-            Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .with_gap(theme.tokens.spacing.s2)
-                    .push(report_button)
-                    .push(moderation_button),
-            )
-        } else {
-            // The two compact, explicitly-sized buttons now fit comfortably
-            // in a single desktop action row.  This gives the support area a
-            // clear primary action without wasting a card-height on two
-            // orphaned text lines.
-            Box::new(
-                Row::new()
-                    .no_wrap()
-                    .push(report_button)
-                    .push(moderation_button),
-            )
-        };
-        let report_actions = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(theme.tokens.spacing.s2)
-            .push(Box::new(
-                Text::new("Help keep the catalogue safe")
-                    .with_scaled_size(16.0)
-                    .with_weight(TextWeight::Semibold)
-                    .with_heading_level(2),
-            ))
-            .push(Box::new(
-                Text::new("Report concerns collaboratively, or review how verified decisions and appeals work.")
-                    .with_scaled_size(13.0)
-                    .with_color(theme.text_dim),
-            ))
-            .push(support_actions);
-        column = column.push(bounded_detail_card(
-            Box::new(report_actions),
-            self.compact_layout(),
-            self.roomy_desktop(),
-        ));
-        Some(Box::new(
-            Scrollable::new(ScrollAxis::Vertical)
-                .fill_parent_height()
-                .with_child(Box::new(
-                    Container::new()
-                        .with_no_padding()
-                        .with_child(self.bounded_page_content(Box::new(column))),
-                )),
-        ))
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the complete responsive moderation surface is composed in one place so draft, case, appeal, and explanatory ordering cannot drift"
-    )]
-    fn build_safety_center(&self, theme: &Theme) -> Box<dyn Widget> {
-        let back = safety_back_button()
-            .with_icon(Icon::ArrowLeft)
-            .fit_content(40.0)
-            .tooltip("Return to the previous Store view");
-        let header = secondary_page_header(
-            Box::new(back),
-            "Trust & moderation",
-            "Signed reports, accountable decisions and publisher appeals",
-            theme,
-        );
-        // The body's groups — the note field, report cards and explanations —
-        // sit one `s3` apart; the page header is a section step (`s6`) above
-        // the first of them.
-        let mut column = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(theme.tokens.spacing.s3);
-        if self.reports.is_empty() {
-            column = column.push(Box::new(
-                EmptyState::new("No report drafts")
-                    .with_message("Open an app and choose Create report draft."),
-            ));
-        } else {
-            for report in &self.reports {
-                let mut export =
-                    ui::widget::Button::new(&format!("{}.export", report.id), "Export evidence");
-                if let Some(binding) =
-                    bindings::report(|app| StoreEffect::ExportEvidence { app }, &report.app_id)
-                {
-                    export = export.on_action(binding);
-                }
-                let mut action_buttons: Vec<Box<dyn Widget>> = vec![Box::new(export.tooltip(
-                    "Save a bounded JSON evidence envelope through the system file picker",
-                ))];
-                if self.reported_app(report).is_ok() {
-                    if report.is_case() {
-                        let case_actions: [CaseControl; 2] = [
-                            ("refresh-status", "Refresh status", |app| {
-                                StoreEffect::RefreshStatus { app }
-                            }),
-                            ("appeal", "Appeal decision", |app| StoreEffect::Appeal {
-                                app,
-                            }),
-                        ];
-                        for (action, label, effect) in case_actions {
-                            let key = format!("{}.{}", report.id, action);
-                            let mut button = ui::widget::Button::new(&key, label);
-                            if let Some(binding) = bindings::report(effect, &report.app_id) {
-                                button = button.on_action(binding);
-                            }
-                            action_buttons.push(Box::new(button));
-                        }
-                    } else {
-                        let key = format!("{}.submit", report.id);
-                        let mut submit = ui::widget::Button::new(&key, "Submit report")
-                            .tooltip("Sign and submit this report to the authoritative registry");
-                        if let Some(binding) = bindings::report(
-                            |app| StoreEffect::SubmitReport { app },
-                            &report.app_id,
-                        ) {
-                            submit = submit.on_action(binding);
-                        }
-                        action_buttons.push(Box::new(submit));
-                    }
-                }
-                let actions: Box<dyn Widget> = if self.compact_layout() {
-                    let mut column = Column::new().with_no_padding();
-                    for button in action_buttons {
-                        column = column.push(button);
-                    }
-                    Box::new(column)
-                } else {
-                    let mut row = Row::new();
-                    for button in action_buttons {
-                        row = row.push(button);
-                    }
-                    Box::new(row)
-                };
-                let report_title = if report.id.starts_with("case-") {
-                    "Moderation case"
-                } else {
-                    "Report draft"
-                };
-                let report_card = Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .with_gap(theme.tokens.spacing.s2)
-                    .push(Box::new(Text::new(&report.app_id).with_scaled_size(16.0)))
-                    .push(Box::new(
-                        Text::new(report_title)
-                            .with_scaled_size(20.0)
-                            .with_weight(TextWeight::Semibold)
-                            .with_heading_level(2),
-                    ))
-                    .push(Box::new(
-                        Text::new(&report.app_id)
-                            .with_scaled_size(15.0)
-                            .with_weight(TextWeight::Semibold),
-                    ))
-                    .push(Box::new(
-                        Text::new(&format!("Status · {}", report.status))
-                            .with_scaled_size(13.0)
-                            .with_color(theme.text_dim),
-                    ))
-                    .push(Box::new(
-                        Text::new("What happened?")
-                            .with_scaled_size(15.0)
-                            .with_weight(TextWeight::Semibold),
-                    ))
-                    .push(Box::new(
-                        Text::new("Describe observable behavior and evidence another reviewer can verify.")
-                            .with_scaled_size(12.0)
-                            .with_color(theme.text_dim),
-                    ))
-                    .push(self.report_note_field(&report.app_id))
-                    .push(actions);
-                column = column.push(bounded_detail_card(
-                    Box::new(report_card),
-                    self.compact_layout(),
-                    self.roomy_desktop(),
-                ));
-            }
-        }
-        column = column
-            .push(detail_section("How reports and appeals work", [
-                "Reports are signed by your workspace identity. Publisher replies and appeals must match the package publisher key; reviewer decisions must match the pinned registry owner.".into(),
-                "Drafts stay collaborative. A submission receipt does not replace the last verified status: status changes appear only after the Store verifies the complete event chain against an owner-signed snapshot. Offline or refused requests remain drafts and can be retried.".into(),
-            ], theme, self.compact_layout(), self.roomy_desktop()))
-            .push(detail_section("Verified identity & integrity", [
-                "Tilo packages are bound to a publisher key, app id, version, exact size and content hash. A pinned registry owner controls which publishers may list apps.".into(),
-            ], theme, self.compact_layout(), self.roomy_desktop()))
-            .push(detail_section("Review is a separate claim", [
-                "A valid package signature does not mean an app is useful, private or honest. Moderation decisions are separately signed; the Store never invents a review badge.".into(),
-                "Public moderation events form a numbered signed hash chain. The Store derives case status itself, checks publisher and reviewer authorization, and requires the final head committed by the registry owner's current snapshot.".into(),
-            ], theme, self.compact_layout(), self.roomy_desktop()))
-            .push(detail_section("Publishing guidelines", [
-                "Listings must accurately describe behavior, identify paid or remote-service dependencies, request only necessary permissions, preserve user data during updates, provide an accessible UI, and avoid impersonation, manipulation and undisclosed tracking.".into(),
-            ], theme, self.compact_layout(), self.roomy_desktop()));
-        let page = secondary_page(header, Box::new(column), theme);
-        Box::new(
-            Scrollable::new(ScrollAxis::Vertical)
-                .fill_parent_height()
-                .with_child(Box::new(
-                    Container::new()
-                        .with_no_padding()
-                        .with_child(self.bounded_page_content(page)),
-                )),
-        )
-    }
-
-    /// The note of `app_id`'s report: every keystroke one edit of the
-    /// document's text, merging with a collaborator typing in it.
-    fn report_note_field(&self, app_id: &str) -> Box<dyn Widget> {
-        let input = TextInput::new(vec![])
-            .with_id(&format!("store.report.note.{app_id}"))
-            .with_accessible_name("Concern and supporting evidence")
-            .with_placeholder("Describe what happened");
-        let note_of = app_id.to_owned();
-        let locate =
-            move |doc: &ui::tilo_resource::Doc| crate::doc_actions::report_note(doc, &note_of);
-        match &self.dispatcher {
-            Some(dispatcher) => Box::new(TextControl::new(
-                input,
-                report_note_dispatcher(dispatcher, app_id),
-                locate,
-            )),
-            None => Box::new(TextControl::view_only(input, locate)),
-        }
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the machine-scoped remote editor and its canonical remove controls are deliberately composed together so their responsive layouts cannot diverge"
-    )]
-    fn build_remotes(&self, theme: &Theme) -> Box<dyn Widget> {
-        crate::resource::STORE_CATALOG.ensure();
-        let mut back = ui::widget::Button::new("store.remotes.back", "Back to apps");
-        if let Some(binding) = bindings::effect(&StoreEffect::ShowCatalogue) {
-            back = back.on_action(binding);
-        }
-        let back = Box::new(
-            back.with_icon(Icon::ArrowLeft)
-                .fit_content(40.0)
-                .tooltip("Return to the app catalogue"),
-        );
-        let header = secondary_page_header(
-            back,
-            &ui::i18n!("store-remotes-title"),
-            &ui::i18n!("store-remotes-description"),
-            theme,
-        );
-        // The body separates its groups — add form, configured list — by one
-        // `s3` step; within a group the heading hugs its cards, and the page
-        // header is a section step (`s6`) above the first group.
-        let mut column = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(theme.tokens.spacing.s3);
-        if let Some(button) = self.flathub_account_button() {
-            column = column.push(button);
-        }
-        let mut remote_rows: Vec<Box<dyn Widget>> = Vec::new();
-        for remote in &self.remotes {
-            let mut remove = ui::widget::Button::new(
-                &format!("store.{}.remove", remote.resource_id()),
-                "Remove remote",
-            );
-            if let Some(binding) = bindings::remove_remote(remote) {
-                remove = remove.on_action(binding);
-            }
-            let remove = Box::new(
-                remove
-                    .with_enabled(remote.user_managed)
-                    .danger()
-                    .fit_content(40.0)
-                    .tooltip(format!("Remove {} from this machine", remote.title)),
-            );
-            let mut browse = ui::widget::Button::new(
-                &format!("store.{}.browse", remote.resource_id()),
-                &ui::i18n::I18nManager::lookup_plain("store-remote-browse"),
-            )
-            .fit_content(40.0)
-            .with_enabled(!remote.disabled);
-            if let Some(binding) = bindings::effect(&StoreEffect::BrowseRemote {
-                remote: remote.resource_id(),
-            }) {
-                browse = browse.on_action(binding);
-            }
-            let controls = Box::new(
-                Row::new()
-                    .with_gap(theme.tokens.spacing.s2)
-                    .push(Box::new(browse))
-                    .push(remove),
-            );
-            let remote_row: Box<dyn Widget> = if self.compact_layout() {
-                Box::new(
-                    Container::new().with_no_padding().with_child(Box::new(
-                        Column::new()
-                            .with_no_padding()
-                            .with_intrinsic_height()
-                            .with_gap(theme.tokens.spacing.s1)
-                            .push(Box::new(Text::new(&remote.title).with_scaled_size(16.0)))
-                            .push(Box::new(
-                                Text::new(&remote.url)
-                                    .with_scaled_size(13.0)
-                                    .with_color(theme.text_dim),
-                            ))
-                            .push(Box::new(
-                                Text::new(&remote_state_label(remote))
-                                    .with_scaled_size(12.0)
-                                    .with_color(theme.text_dim),
-                            ))
-                            .push(controls),
-                    )),
-                )
-            } else {
-                Box::new(
-                    Row::new()
-                        .no_wrap()
-                        .push(Box::new(
-                            Container::new()
-                                .with_no_padding()
-                                .with_flex_grow()
-                                .with_child(Box::new(
-                                    Column::new()
-                                        .with_no_padding()
-                                        .with_intrinsic_height()
-                                        .with_gap(theme.tokens.spacing.s1)
-                                        .push(Box::new(
-                                            Text::new(&remote.title).with_scaled_size(16.0),
-                                        ))
-                                        .push(Box::new(
-                                            Text::new(&remote.url)
-                                                .with_scaled_size(13.0)
-                                                .with_color(theme.text_dim),
-                                        ))
-                                        .push(Box::new(
-                                            Text::new(&remote_state_label(remote))
-                                                .with_scaled_size(12.0)
-                                                .with_color(theme.text_dim),
-                                        )),
-                                )),
-                        ))
-                        .push(controls),
-                )
-            };
-            remote_rows.push(remote_row);
-        }
-        let remote_name: Box<dyn Widget> = Box::new(
-            TextInput::from_state(&self.remote_name_state)
-                .with_id("store.remote.name")
-                .with_kind(ui::widget::TextInputKind::Name)
-                .with_placeholder("Remote name"),
-        );
-        let remote_url: Box<dyn Widget> = Box::new(
-            TextInput::from_state(&self.remote_url_state)
-                .with_id("store.remote.url")
-                .with_kind(ui::widget::TextInputKind::Url)
-                .with_placeholder("Repository URL"),
-        );
-        let mut add = ui::widget::Button::new("store.remote.add", "Add remote");
-        if let Some(binding) = bindings::add_remote(&self.remote_name_state, &self.remote_url_state)
-        {
-            add = add.on_action(binding);
-        }
-        let add: Box<dyn Widget> = Box::new(add.primary());
-        let mut refresh = ui::widget::Button::new("store.remote.refresh", "Refresh");
-        if let Some(binding) = bindings::effect(&StoreEffect::RefreshRemotes) {
-            refresh = refresh.on_action(binding);
-        }
-        let refresh: Box<dyn Widget> = Box::new(refresh);
-        let actions: Box<dyn Widget> = if self.compact_layout() {
-            Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .with_gap(theme.tokens.spacing.s2)
-                    .push(add)
-                    .push(refresh),
-            )
-        } else {
-            Box::new(Row::new().push(add).push(refresh))
-        };
-        let form = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(theme.tokens.spacing.s3)
-            .push(Box::new(
-                Text::new("Add a remote")
-                    .with_scaled_size(18.0)
-                    .with_heading_level(2),
-            ))
-            .push(Box::new(
-                Text::new("Use a descriptive name and an HTTPS repository URL.")
-                    .with_scaled_size(13.0)
-                    .with_color(theme.text_dim),
-            ))
-            .push(remote_name)
-            .push(remote_url)
-            .push(actions);
-        column = column.push(bounded_detail_card(
-            Box::new(form),
-            self.compact_layout(),
-            self.roomy_desktop(),
-        ));
-        // The list heading belongs to the cards beneath it: `s2` between the
-        // heading and its first card, `s2` between cards, and the page gap
-        // before the whole group. Previously the heading sat flush on the
-        // first card while the form above it had a spacer of its own.
-        let mut configured = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(theme.tokens.spacing.s2)
-            .push(Box::new(
-                Text::new("Configured remotes")
-                    .with_scaled_size(18.0)
-                    .with_heading_level(2),
-            ));
-        for remote_row in remote_rows {
-            configured = configured.push(bounded_detail_card(
-                remote_row,
-                self.compact_layout(),
-                self.roomy_desktop(),
-            ));
-        }
-        column = column.push(Box::new(configured));
-        let page = secondary_page(header, Box::new(column), theme);
-        Box::new(
-            Scrollable::new(ScrollAxis::Vertical)
-                .fill_parent_height()
-                .with_child(Box::new(
-                    Container::new()
-                        .with_no_padding()
-                        .with_child(self.bounded_page_content(page)),
-                )),
-        )
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the responsive catalogue header is one cohesive search, navigation, status, and toolbar surface"
-    )]
-    fn build_header(&self, theme: &Theme) -> Box<dyn Widget> {
-        // Use the same actual-width decision as the catalogue. A medium-width
-        // short window has room for the title and utility actions on one row;
-        // forcing it through a separate arbitrary header breakpoint both
-        // displaced results and repeated the source summary beside filters.
-        let compact_header = self.stacked_catalogue_layout();
-        // Search state belongs to this window. Agents still discover every
-        // stable app through the Store search provider; typing never changes
-        // a collaborator's view or document history.
-        let mut search = TextInput::from_state(&self.query_state)
-            .with_id("store.search")
-            .with_kind(ui::widget::TextInputKind::Search)
-            .with_placeholder("Search apps, publishers, or categories…");
-        if let Some(binding) = bindings::search() {
-            search = search.on_action(binding);
-        }
-        let mut refresh_btn = ui::widget::Button::new("store.refresh", "Refresh");
-        if let Some(binding) = bindings::effect(&StoreEffect::Refresh) {
-            refresh_btn = refresh_btn.on_action(binding);
-        }
-        let refresh_btn = refresh_btn.tooltip("Refresh configured catalogues");
-        let mut remotes_btn = ui::widget::Button::new("store.remotes", "Remotes")
-            .with_icon(Icon::Globe)
-            .fit_content(40.0)
-            .tooltip("Manage Flatpak remotes");
-        if let Some(binding) = bindings::effect(&StoreEffect::ShowRemotes) {
-            remotes_btn = remotes_btn.on_action(binding);
-        }
-        let mut safety_btn = ui::widget::Button::new("store.safety", "Trust")
-            .with_icon(Icon::Shield)
-            .fit_content(40.0)
-            .tooltip("Understand signatures, review, reports and appeals");
-        if let Some(binding) = bindings::effect(&StoreEffect::ShowTrust) {
-            safety_btn = safety_btn.on_action(binding);
-        }
-        let refresh_btn = refresh_btn.with_icon(Icon::Refresh).fit_content(40.0);
-        if compact_header {
-            let mut header = Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_horizontal_padding(0.0, 0.0)
-                .with_vertical_padding(theme.tokens.spacing.s3)
-                .with_gap(theme.tokens.spacing.s2)
-                .push(Box::new(
-                    Text::new("Apps")
-                        .with_scaled_size(28.0)
-                        .with_weight(TextWeight::Semibold)
-                        .with_heading_level(1),
-                ))
-                .push(Box::new(
-                    Text::new("Useful software from sources you choose.")
-                        .with_scaled_size(13.0)
-                        .with_color(theme.text_dim),
-                ))
-                .push(Box::new(search));
-            if let Some(banner) = self.build_updates_banner(theme) {
-                header = header.push(banner);
-            }
-            header = header
-                .push(Box::new(
-                    Row::new()
-                        .no_wrap()
-                        .push(Box::new(safety_btn))
-                        .push(Box::new(remotes_btn))
-                        .push(Box::new(refresh_btn)),
-                ))
-                .push(Box::new(
-                    Text::new(&self.catalogue_source_summary())
-                        .with_scaled_size(13.0)
-                        .with_color(theme.text_tertiary),
-                ));
-            if self.operation_error.is_some() && !self.items.is_empty() {
-                header = header.push(Box::new(
-                    Container::new().with_background().with_child(Box::new(
-                        Column::new()
-                            .with_no_padding()
-                            .with_intrinsic_height()
-                            .with_gap(theme.tokens.spacing.s1)
-                            .push(Box::new(
-                                Text::new(operation_error_summary())
-                                    .with_scaled_size(13.0)
-                                    .with_color(theme.text_dim),
-                            ))
-                            .push(Box::new(
-                                Text::new(&format!(
-                                    "Status · {}",
-                                    visible_operation_status(&self.status_line)
-                                ))
-                                .with_scaled_size(12.0)
-                                .with_color(theme.text_tertiary),
-                            )),
-                    )),
-                ));
-            }
-            return Box::new(header);
-        }
-
-        let controls = Row::new()
-            .no_wrap()
-            .push(Box::new(safety_btn))
-            .push(Box::new(remotes_btn))
-            .push(Box::new(refresh_btn));
-        let title_row: Box<dyn Widget> = Box::new(
-            Row::new()
-                .no_wrap()
-                .push(Box::new(
-                    Container::new()
-                        .with_no_padding()
-                        .with_flex_grow()
-                        .with_child(Box::new(
-                            Column::new()
-                                .with_no_padding()
-                                .with_intrinsic_height()
-                                .with_gap(theme.tokens.spacing.s2)
-                                .push(Box::new(
-                                    Text::new("App Store")
-                                        .with_scaled_size(29.0)
-                                        .with_weight(TextWeight::Semibold)
-                                        .with_heading_level(1),
-                                ))
-                                .push(Box::new(
-                                    Text::new("Useful software, with source and trust details before you act.")
-                                        .with_scaled_size(14.0)
-                                        .with_color(theme.text_dim),
-                                )),
-                        )),
-                ))
-                .push(Box::new(
-                    Container::new()
-                        .with_width(318.0)
-                        .with_no_padding()
-                        .with_child(Box::new(controls)),
-                )),
-        );
-        // Title row and search field are one `s3` apart inside an `s6` band.
-        let mut header = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_horizontal_padding(0.0, 0.0)
-            .with_vertical_padding(theme.tokens.spacing.s6)
-            .with_gap(theme.tokens.spacing.s3);
-        header = header.push(title_row);
-        header = header.push(Box::new(search));
-        if let Some(banner) = self.build_updates_banner(theme) {
-            header = header.push(banner);
-        }
-        if self.operation_error.is_some() && !self.items.is_empty() {
-            header = header.push(Box::new(
-                Container::new().with_background().with_child(Box::new(
-                    Column::new()
-                        .with_no_padding()
-                        .with_intrinsic_height()
-                        .with_gap(theme.tokens.spacing.s1)
-                        .push(Box::new(
-                            Text::new(operation_error_summary())
-                                .with_scaled_size(13.0)
-                                .with_color(theme.text_dim),
-                        ))
-                        .push(Box::new(
-                            Text::new(&format!(
-                                "Status · {}",
-                                visible_operation_status(&self.status_line)
-                            ))
-                            .with_scaled_size(12.0)
-                            .with_color(theme.text_tertiary),
-                        )),
-                )),
-            ));
-        }
-        Box::new(header)
-    }
-
-    fn build_source_filter(&self) -> Dropdown {
-        let values = SourceFilter::ALL
-            .iter()
-            .map(|filter| {
-                let display = filter.label().to_owned();
-                (filter.label().to_owned(), display)
-            })
-            .collect();
-        let mut dropdown = Dropdown::from_state(Vec::new(), &self.source_filter_state)
-            .with_id("store.source-filter")
-            .with_accessible_name("App source");
-        if let Some(binding) = bindings::source() {
-            dropdown = dropdown.on_action(binding);
-        }
-        dropdown.set_value_options(values);
-        dropdown.set_selected(self.active_filter.label());
-        dropdown
-    }
-
-    fn build_category_filter(&self) -> Dropdown {
-        let labels = self.category_labels();
-        let values = labels
-            .iter()
-            .map(|label| {
-                let display = label.clone();
-                (label.clone(), display)
-            })
-            .collect();
-        let mut dropdown = Dropdown::from_state(Vec::new(), &self.category_filter_state)
-            .with_id("store.category-filter")
-            .with_accessible_name("App category");
-        if let Some(binding) = bindings::category() {
-            dropdown = dropdown.on_action(binding);
-        }
-        dropdown.set_value_options(values);
-        dropdown.set_selected(self.active_category.as_deref().unwrap_or("All"));
-        dropdown
-    }
-
-    /// The browse band under the search field: the source and category
-    /// pickers with their labels, plus — on a wide catalogue — the source
-    /// summary in a third column.
-    ///
-    /// It is composed as two rows with identical cells (labels above,
-    /// controls below) rather than one row of label/control stacks, so the
-    /// summary text sits on the dropdowns' centre line instead of being
-    /// centred against a taller label+control stack and drifting above the
-    /// values it accompanies. Every cell shares one flex basis, so the two
-    /// rows resolve to the same column edges.
-    fn build_filter_band(&self, theme: &Theme, with_summary: bool) -> Box<dyn Widget> {
-        let cell = |child: Box<dyn Widget>| -> Box<dyn Widget> {
-            Box::new(
-                Container::new()
-                    .with_no_padding()
-                    // Both pickers plus the row gap fit inside the compact
-                    // viewport instead of clipping the category affordance at
-                    // the trailing edge.
-                    .with_width(FILTER_CELL_MIN_W)
-                    .with_flex_grow()
-                    .with_child(child),
-            )
-        };
-        let label = |text: &str| -> Box<dyn Widget> {
-            Box::new(Text::new(text).with_scaled_size(12.0).dimmed())
-        };
-        let mut labels = Row::new()
-            .no_wrap()
-            .push(cell(label("Source")))
-            .push(cell(label("Category")));
-        let mut controls = Row::new()
-            .no_wrap()
-            .push(cell(Box::new(self.build_source_filter())))
-            .push(cell(Box::new(self.build_category_filter())));
-        if with_summary {
-            // An empty cell keeps the label row's flex structure identical to
-            // the control row's, so the summary column starts where both rows
-            // agree.
-            labels = labels.push(cell(Box::new(Container::new().with_no_padding())));
-            controls = controls.push(cell(Box::new(
-                Text::new(&self.catalogue_source_summary())
-                    .with_scaled_size(13.0)
-                    .with_color(theme.text_dim),
-            )));
-        }
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_gap(theme.tokens.spacing.s1)
-                .push(Box::new(labels))
-                .push(Box::new(controls)),
-        )
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the catalogue's empty, paging and responsive-card states are one cohesive view"
-    )]
-    fn build_list(&self, theme: &Theme) -> Box<dyn Widget> {
-        let visible = self.visible_items();
-        if visible.is_empty() {
-            let (title, message) = if self.items.is_empty() {
-                if self.worker_busy {
-                    (
-                        "Loading apps…",
-                        "Checking your configured catalogues.".to_string(),
-                    )
-                } else if self.operation_error.is_some() {
-                    (
-                        if self.readable_type_layout() {
-                            "Offline"
-                        } else {
-                            "Catalogues offline"
-                        },
-                        // With no catalogue cards there is no separate error
-                        // masthead: this is the sole actionable failure
-                        // surface, paired with the Refresh catalogue CTA.
-                        // A bounded worker detail is more useful than a
-                        // second generic connection warning.
-                        if self.readable_type_layout() {
-                            "Couldn’t load apps".into()
-                        } else {
-                            visible_operation_status(&self.status_line)
-                        },
-                    )
-                } else {
-                    (
-                        "No apps available",
-                        "Add or enable a catalogue you trust, then refresh.".to_string(),
-                    )
-                }
-            } else {
-                (
-                    "No apps found",
-                    "Try a different search or category.".to_string(),
-                )
-            };
-            if self.desktop_browse_layout()
-                || (self.readable_type_layout() && self.operation_error.is_none())
-            {
-                let large_text = self.readable_type_layout();
-                let mut panel = Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .with_gap(10.0)
-                    .push(Box::new(
-                        Container::new()
-                            .with_no_padding()
-                            .with_height(if large_text { 18.0 } else { 28.0 }),
-                    ))
-                    .push(Box::new(
-                        Text::new(title)
-                            .with_scaled_size(if large_text { 20.0 } else { 24.0 })
-                            .with_weight(TextWeight::Semibold)
-                            .with_heading_level(2),
-                    ))
-                    .push(Box::new(
-                        Text::new(&message)
-                            .with_scaled_size(14.0)
-                            .with_color(theme.text_dim),
-                    ));
-                if self.items.is_empty() && !self.worker_busy {
-                    let mut refresh =
-                        ui::widget::Button::new("store.empty.refresh", "Refresh catalog")
-                            .primary()
-                            .fit_content(40.0)
-                            .tooltip("Refresh configured catalogues");
-                    if let Some(binding) = bindings::effect(&StoreEffect::Refresh) {
-                        refresh = refresh.on_action(binding);
-                    }
-                    panel = panel.push(Box::new(refresh));
-                }
-                if large_text {
-                    // Bound the intrinsic measurement of wrapped failure copy
-                    // so it cannot displace the fixed masthead before Taffy
-                    // resolves the final narrow width.
-                    return Box::new(
-                        Container::new()
-                            .with_no_padding()
-                            .with_height(300.0)
-                            .with_child(Box::new(panel)),
-                    );
-                }
-                return Box::new(panel);
-            }
-            let empty = EmptyState::new(title).with_message(&message);
-            // An unavailable or genuinely empty catalogue is recoverable by
-            // refreshing. Route the visible CTA through the same one-shot
-            // canonical `store.refresh` resource action, so pointer, keyboard,
-            // assistive activation and agents all request the same serialized
-            // worker operation.
-            let empty: Box<dyn Widget> = if self.items.is_empty() && !self.worker_busy {
-                let empty = empty
-                    .with_action("Refresh catalog")
-                    .with_action_id("store.empty.refresh");
-                Box::new(match bindings::effect(&StoreEffect::Refresh) {
-                    Some(binding) => empty.on_action(binding),
-                    None => empty,
-                })
-            } else {
-                Box::new(empty)
-            };
-            // Keep the centred empty state inside the same remaining-height
-            // scroll body as a populated catalogue. Without this wrapper its
-            // intrinsic height competes with the masthead and can push title
-            // and utility controls above the viewport when a CTA is present.
-            return Box::new(
-                Scrollable::new(ScrollAxis::Vertical)
-                    .fill_parent_height()
-                    .with_child(empty),
-            );
-        }
-        let page_count = visible.len().div_ceil(PAGE_SIZE).max(1);
-        let visible_count = visible.len();
-        let page = self.catalog_page.min(page_count.saturating_sub(1));
-        let start = page.saturating_mul(PAGE_SIZE);
-        // The result area has its own deliberate breathing room.  Do not use
-        // `Column`'s default padding here: on a desktop it compounded the
-        // masthead inset into a large, accidental blank band between the
-        // browse controls and the first section.  A single explicit 28px
-        // transition reads as hierarchy without wasting a row of catalogue
-        // space on an ordinary 800px-tall window.
-        let mut column = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(theme.tokens.spacing.s2)
-            .push(Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_height(theme.tokens.spacing.s3),
-            ));
-        if let Some(button) = self.flathub_account_button() {
-            column = column.push(button);
-        }
-        if page_count > 1 {
-            column = column.push(Box::new(
-                Container::new().with_child(Box::new(
-                    Text::new(&format!(
-                        "Page {} of {} · {} results",
-                        page + 1,
-                        page_count,
-                        visible.len()
-                    ))
-                    .with_scaled_size(12.0)
-                    .with_color(theme.text_dim),
-                )),
-            ));
-        }
-        // Installed software is a materially different decision state from
-        // software that is merely available to install.  Keep the stable
-        // sort from `visible_items`, then give those two honest states their
-        // own editorial groups instead of presenting one anonymous wall of
-        // identical cards.
-        let mut update_cards: Vec<Box<dyn Widget>> = Vec::new();
-        let mut ready_cards: Vec<Box<dyn Widget>> = Vec::new();
-        let mut discover_cards: Vec<Box<dyn Widget>> = Vec::new();
-        let mut search_cards: Vec<Box<dyn Widget>> = Vec::new();
-        // A live search is relevance-ranked, so preserving a single result
-        // sequence is more useful than interrupting it with availability
-        // groups. Idle browsing gets the stronger installed/discover split.
-        let group_by_availability = self.group_catalogue_by_availability();
-        for item in visible.into_iter().skip(start).take(PAGE_SIZE) {
-            let action = item.action_kind(self.flatpak_available);
-            let operation_active = self
-                .active_operation
-                .as_ref()
-                .is_some_and(|(id, active_action)| id == &item.id && *active_action == action);
-            let click_key = format!("store.app.{}.{}", item.id, action_code(action));
-            let select_key = format!("store.detail.{}", item.id);
-            let card = crate::widgets::store_card(
-                item,
-                CardAction {
-                    kind: action,
-                    key: &click_key,
-                    binding: bindings::package(item, action),
-                    in_progress: operation_active,
-                },
-                CardDetails {
-                    key: &select_key,
-                    binding: bindings::show_details(item),
-                },
-                theme,
-                self.images.clone(),
-                self.card_layout(),
-            );
-            if !group_by_availability {
-                search_cards.push(card);
-            } else if item.installed.update_available() {
-                update_cards.push(card);
-            } else if item.installed.is_installed() {
-                ready_cards.push(card);
-            } else {
-                discover_cards.push(card);
-            }
-        }
-        if self.stacked_catalogue_layout() {
-            if !group_by_availability {
-                column = column.push(Box::new(
-                    Text::new(&format!("Matches · {visible_count}"))
-                        .with_scaled_size(16.0)
-                        .with_weight(TextWeight::Semibold)
-                        .with_heading_level(2),
-                ));
-            }
-            if group_by_availability && !ready_cards.is_empty() {
-                column = column.push(Box::new(
-                    Text::new(&format!("Updates ready · {}", update_cards.len()))
-                        .with_scaled_size(16.0)
-                        .with_weight(TextWeight::Semibold)
-                        .with_heading_level(2),
-                ));
-            }
-            for card in update_cards {
-                column = column.push(card);
-            }
-            if group_by_availability && !ready_cards.is_empty() {
-                column = column.push(Box::new(
-                    Container::new().with_no_padding().with_height(16.0),
-                ));
-                column = column.push(Box::new(
-                    Text::new(&format!("Ready to use · {}", ready_cards.len()))
-                        .with_scaled_size(16.0)
-                        .with_weight(TextWeight::Semibold)
-                        .with_heading_level(2),
-                ));
-            }
-            if !ready_cards.is_empty() {
-                column = column.push(Box::new(
-                    CardGrid::content_sized(ready_cards)
-                        .with_min_card_width(f64::from(CATALOGUE_CONTENT_MAX_WIDTH))
-                        .with_gap(f64::from(theme.tokens.spacing.s2)),
-                ));
-            }
-            if group_by_availability && !discover_cards.is_empty() {
-                // One `s4` step separates the two stacked groups.
-                column = column.push(Box::new(
-                    Container::new()
-                        .with_no_padding()
-                        .with_height(theme.tokens.spacing.s4),
-                ));
-                column = column.push(Box::new(
-                    Text::new(&format!("Discover more · {}", discover_cards.len()))
-                        .with_scaled_size(16.0)
-                        .with_weight(TextWeight::Semibold)
-                        .with_heading_level(2),
-                ));
-            }
-            let remaining_cards = if group_by_availability {
-                discover_cards
-            } else {
-                search_cards
-            };
-            if !remaining_cards.is_empty() {
-                column = column.push(Box::new(
-                    CardGrid::content_sized(remaining_cards)
-                        .with_min_card_width(f64::from(CATALOGUE_CONTENT_MAX_WIDTH))
-                        .with_gap(f64::from(theme.tokens.spacing.s2)),
-                ));
-            }
-        } else {
-            // This is nested in the deliberately inset scroll column above;
-            // inheriting `Column`'s default gutter here created a second,
-            // invisible desktop margin before every section heading.
-            let mut recommended = Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_gap(0.0);
-            // A section is a heading group (title hugging its caption by `s1`)
-            // one `s3` above its card grid; the grid gutters share that `s3`
-            // so every card edge, row and column, sits on the same step.
-            let make_section = |title: &str, caption: &str, cards: Vec<Box<dyn Widget>>| {
-                Box::new(
-                    Column::new()
-                        .with_no_padding()
-                        .with_intrinsic_height()
-                        .with_gap(theme.tokens.spacing.s3)
-                        .push(Box::new(
-                            Column::new()
-                                .with_no_padding()
-                                .with_intrinsic_height()
-                                .with_gap(theme.tokens.spacing.s1)
-                                .push(Box::new(
-                                    Text::new(title)
-                                        .with_scaled_size(17.0)
-                                        .with_weight(TextWeight::Semibold)
-                                        .with_heading_level(2),
-                                ))
-                                .push(Box::new(
-                                    Text::new(caption)
-                                        .with_scaled_size(12.0)
-                                        .with_color(theme.text_dim),
-                                )),
-                        ))
-                        .push(Box::new(
-                            CardGrid::content_sized(cards)
-                                .with_min_card_width(292.0)
-                                .with_gap(f64::from(theme.tokens.spacing.s3)),
-                        )),
-                ) as Box<dyn Widget>
-            };
-            if group_by_availability && !update_cards.is_empty() {
-                let update_count = update_cards.len();
-                recommended = recommended.push(make_section(
-                    &format!("Updates ready · {update_count}"),
-                    "A newer verified version is available on this device.",
-                    update_cards,
-                ));
-                if !ready_cards.is_empty() || !discover_cards.is_empty() {
-                    recommended = recommended.push(Box::new(
-                        Container::new().with_no_padding().with_height(22.0),
-                    ));
-                }
-            }
-            if group_by_availability && !ready_cards.is_empty() {
-                let ready_count = ready_cards.len();
-                recommended = recommended.push(make_section(
-                    &format!("Ready to use · {ready_count}"),
-                    "Open or update apps already on this device.",
-                    ready_cards,
-                ));
-                if !discover_cards.is_empty() {
-                    // One section step (`s6`) between the two editorial groups.
-                    recommended = recommended.push(Box::new(
-                        Container::new()
-                            .with_no_padding()
-                            .with_height(theme.tokens.spacing.s6),
-                    ));
-                }
-            }
-            let remaining_cards = if group_by_availability {
-                discover_cards
-            } else {
-                search_cards
-            };
-            if !remaining_cards.is_empty() {
-                let title = if group_by_availability {
-                    format!("Discover · {}", remaining_cards.len())
-                } else if self.query.trim().is_empty() {
-                    format!("All apps · {}", remaining_cards.len())
-                } else {
-                    format!("Matches · {}", remaining_cards.len())
-                };
-                recommended = recommended.push(make_section(
-                    &title,
-                    if group_by_availability {
-                        "Useful additions, available when you need them."
-                    } else if self.query.trim().is_empty() {
-                        "Available apps, arranged to make the most of this window."
-                    } else {
-                        "Results stay in relevance order across names, publishers, descriptions, and categories."
-                    },
-                    remaining_cards,
-                ));
-            }
-            // At a medium desktop width the header deliberately becomes a
-            // vertical composition.  The result grid must make the same
-            // transition: pinning it to 1120px here previously produced a
-            // cut-off third column and a horizontal scrollbar around 920px.
-            if self.roomy_desktop() && !self.desktop_browse_layout() {
-                column = column.push(Box::new(
-                    Row::new()
-                        .push(Box::new(Spacer::new()))
-                        .push(Box::new(
-                            Container::new()
-                                .with_width(CATALOGUE_CONTENT_MAX_WIDTH)
-                                .with_no_padding()
-                                .with_child(Box::new(recommended)),
-                        ))
-                        .push(Box::new(Spacer::new())),
-                ));
-            } else {
-                column = column.push(Box::new(recommended));
-            }
-        }
-        if page_count > 1 {
-            let mut paging = Row::new();
-            if page > 0 {
-                let mut previous = ui::widget::Button::new("store.page.previous", "Previous");
-                if let Some(binding) = bindings::effect(&StoreEffect::PreviousPage) {
-                    previous = previous.on_action(binding);
-                }
-                paging = paging.push(Box::new(previous.tooltip("Previous catalogue page")));
-            }
-            if page + 1 < page_count {
-                let mut next = ui::widget::Button::new("store.page.next", "Next");
-                if let Some(binding) = bindings::effect(&StoreEffect::NextPage) {
-                    next = next.on_action(binding);
-                }
-                paging = paging.push(Box::new(next.primary().tooltip("Next catalogue page")));
-            }
-            column = column.push(Box::new(paging));
-        }
-        // A quiet landing zone keeps the transient status pill from sitting
-        // over the last app's action when the catalogue is scrolled to end.
-        // Sized from the pill band itself, so the reservation follows the
-        // text scale instead of restating one height.
-        column = column.push(Box::new(Spacer::fixed(Self::status_bubble_band(theme))));
-        Box::new(
-            Scrollable::new(ScrollAxis::Vertical)
-                .fill_parent_height()
-                .with_content_gutter(0.0)
-                .with_persisted_offset(self.scroll_offset.clone())
-                .with_child(Box::new(column)),
-        )
-    }
-
-    /// The label for the floating status bubble: a running action
-    /// status while one is set, else the catalog counts (`N apps · M
-    /// shown`). Never empty.
-    fn footer_label(&self) -> String {
-        if self.operation_error.is_some() {
-            return "Operation failed".into();
-        }
-        if self.status_line.is_empty() {
-            format!(
-                "{} apps · {} shown",
-                self.items.len(),
-                self.visible_items().len()
-            )
-        } else {
-            self.status_line.clone()
-        }
-    }
-
-    /// `--shots`: force the desktop status bubble fully visible so a single
-    /// headless frame captures the floating chip. Compact layouts keep the
-    /// same information in the catalogue surface and never overlay a card.
-    pub fn arm_status_bubble_for_shots(&mut self) {
-        self.shots_status = true;
-        self.status_bubble.poke(ui::time::now());
-    }
-
-    /// The pill's type: the theme's small step, handed to the renderer once
-    /// (the theme size already carries the text scale; the renderer would
-    /// otherwise apply it again).
-    fn status_bubble_text_size(theme: &Theme, tr: &TextRenderer) -> f32 {
-        tr.renderer_input_style(&ui::text_render::TextStyle::new(
-            theme.tokens.typography.scale.sm,
-        ))
-        .size
-    }
-
-    /// Height of the band the catalogue reserves under its last row for the
-    /// floating pill: a pill sized for the theme's small type *at the current
-    /// text scale* (its label line plus [`ui::status_bubble::pill_size`]'s
-    /// padding, never under that helper's 30 px floor) with one `s4` margin
-    /// above and below. The shared `pill_size` today pads from the
-    /// renderer-relative size, so the pill it paints stays 30 px at every
-    /// scale while its glyphs grow (recorded for the toolkit); this band
-    /// reserves the height that pill *should* have, so the reservation is
-    /// right the day the helper is, and merely generous until then. Public
-    /// so the geometry test asserts the reservation, not a retyped number.
-    pub fn status_bubble_band(theme: &Theme) -> f32 {
-        let pill_h = (theme.tokens.typography.scale.sm + 16.0).max(30.0);
-        pill_h + 2.0 * theme.tokens.spacing.s4
-    }
-
-    /// Left edge of the catalogue column inside the window: the centred
-    /// 1120 px canvas on a roomy desktop, else the root container's inset.
-    /// The same decision [`Self::centered_content`] makes, so the pill sits
-    /// on the cards' own edge instead of the window's.
-    fn catalogue_left_inset(&self, theme: &Theme) -> f64 {
-        if self.roomy_desktop() {
-            (self.rect.width() - f64::from(CATALOGUE_CONTENT_MAX_WIDTH)) / 2.0
-        } else {
-            f64::from(theme.padding_standard)
-        }
-    }
-
-    /// Where the status pill floats for a pill of `(w, h)`: the window's
-    /// bottom-**left**, on the catalogue's leading edge, one `s4` above the
-    /// bottom. Every card puts its actions at its trailing edge, so the
-    /// leading corner is the one place a floating pill — and the hover band
-    /// that reveals it — can never land on an Install or Open button. Public
-    /// so the geometry test checks the pill against the real card buttons.
-    pub fn status_bubble_rect(&self, theme: &Theme, tr: &mut TextRenderer) -> Rect {
-        let label = self.footer_label();
-        let text_size = Self::status_bubble_text_size(theme, tr);
-        self.status_bubble_rect_for(theme, tr, &label, text_size)
-    }
-
-    /// [`Self::status_bubble_rect`] for a label and type size the caller has
-    /// already resolved, so the draw path measures each once per frame.
-    fn status_bubble_rect_for(
-        &self,
-        theme: &Theme,
-        tr: &mut TextRenderer,
-        label: &str,
-        text_size: f32,
-    ) -> Rect {
-        let (w, h) = ui::status_bubble::pill_size(label, tr, text_size, 0.0);
-        let margin = f64::from(theme.tokens.spacing.s4);
-        let x0 = self.rect.x0 + self.catalogue_left_inset(theme);
-        Rect::new(x0, self.rect.y1 - margin - h, x0 + w, self.rect.y1 - margin)
-    }
-
-    /// Draw the transient floating status bubble at the window's
-    /// bottom-left — the reclaimed home of the old footer strip. It
-    /// surfaces on a real change (catalog refresh, filter, an action
-    /// result) or while the pointer hovers the bottom-left band, then
-    /// fades. Colours come from the theme.
     fn draw_status_bubble(
         &mut self,
         scene: &mut Scene,
@@ -3373,66 +908,14 @@ impl StoreApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        // On a narrow window a bottom-right pill can visually cover the only
-        // primary action in the viewport. The catalogue masthead already
-        // carries app count, in-flight status and error feedback in document
-        // flow, so retaining an overlay there adds no information and harms
-        // touch/keyboard discoverability.
-        if self.compact_layout()
-            || self.worker_busy
-            || self.operation_error.is_some()
-            || self.items.is_empty()
-            || self.focused_detail.is_some()
-            || self.safety_open
-            || self.remotes_open
-        {
-            return;
-        }
         let now = ui::time::now();
-        let label = self.footer_label();
-        if label != self.last_status_label {
-            self.last_status_label.clone_from(&label);
-            self.status_bubble.poke(now);
+        if !self.worker_busy && self.operation_error.is_none() && !self.status_line.is_empty() {
+            self.status_bubble.show(&self.status_line, now);
         }
-        if label.is_empty() {
-            return;
-        }
-        let text_size = Self::status_bubble_text_size(theme, tr);
-        let rect = self.status_bubble_rect_for(theme, tr, &label, text_size);
-        // The reveal band: the pill plus a section step above and a hit
-        // target's worth beside it, out to the window's own corner.
-        let zone = Rect::new(
-            self.rect.x0,
-            rect.y0 - f64::from(theme.tokens.spacing.s6),
-            rect.x1 + f64::from(theme.tokens.metrics.min_pointer_target),
-            self.rect.y1,
-        );
-        let over = self.shots_status || zone.contains(self.last_cursor);
-        self.status_bubble.set_hover(over, now);
-        let alpha = if self.reduce_motion {
-            if self.shots_status || over || self.worker_busy || self.operation_error.is_some() {
-                1.0
-            } else {
-                0.0
-            }
-        } else {
-            self.status_bubble.alpha(now)
-        };
-        if alpha <= 0.0 {
-            return;
-        }
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            alpha,
-            transform,
-            &rect.inflate(
-                f64::from(theme.tokens.spacing.s3),
-                f64::from(theme.tokens.spacing.s4),
-            ),
-        );
-        ui::status_bubble::draw_pill(scene, transform, tr, theme, rect, &label, text_size);
-        scene.pop_layer();
+        self.status_bubble
+            .pointer_moved(self.rect, self.last_cursor, tr, theme, now);
+        self.status_bubble
+            .paint(scene, transform, tr, theme, self.rect, now);
     }
 }
 
@@ -3469,26 +952,26 @@ impl ui::widget::Collaborative for StoreApp {
 
 impl Widget for StoreApp {
     ui::provides!(dyn ui::widget::Collaborative);
+
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        let changed = self
+            .root
+            .as_mut()
+            .is_some_and(|root| root.update(state, path));
+        if self.back_requested.take() {
+            self.show_catalogue();
+            self.structure_dirty = true;
+            true
+        } else {
+            changed
+        }
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.drain_worker();
         if let Some(root) = self.root.as_mut() {
             root.sync(state, path);
         }
-        // The catalogue chrome is process-local presentation state. Reconcile
-        // the local widget bindings after children have handled input; a
-        // remote document can never overwrite another person's search, view,
-        // or facet selection.
-        let source = self.source_filter_state.with(Clone::clone);
-        self.set_active_filter_from_local(&source);
-        let category = self.category_filter_state.with(Clone::clone);
-        let category = (category != "All").then_some(category);
-        let valid = category.as_ref().is_none_or(|candidate| {
-            self.category_labels()
-                .iter()
-                .any(|label| label == candidate)
-        });
-        self.set_active_category(if valid { category } else { None });
-        self.set_query(self.query_state.with(Clone::clone));
         self.request_from_worker();
     }
 
@@ -3499,14 +982,37 @@ impl Widget for StoreApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.structure_dirty = false;
-        self.reduce_motion = theme.reduce_motion;
-        self.text_scale = theme.text_scale;
-        let mut root = self.compose(theme);
+        let page = self.compose(theme);
+        self.can_go_back
+            .set(self.safety_open || self.remotes_open || self.focused_detail.is_some());
+        let title = self.page_title();
+        let mut root = self.root.take().unwrap_or_else(|| {
+            let can = Rc::clone(&self.can_go_back);
+            let requested = Rc::clone(&self.back_requested);
+            Box::new(
+                ui::widget::NavShell::new()
+                    .with_id("store.shell")
+                    .on_back(move || can.get(), move || requested.set(true)),
+            )
+        });
+        // The catalogue's actions share the header row with History; a page
+        // opened from it carries its own title and actions in its body.
+        let catalogue = !self.safety_open && !self.remotes_open && self.focused_detail.is_none();
+        let actions = if catalogue {
+            Self::catalogue_actions()
+        } else {
+            Vec::new()
+        };
+        root.set_content_header(title, actions);
+        root.set_content(page);
         let child = root.build_layout(taffy, theme, node_map);
         self.root = Some(root);
+        // A column, so the page's scroller can absorb the window's height.
         let node = parent_node(
             taffy,
             Style {
+                flex_direction: taffy::FlexDirection::Column,
+                flex_grow: 1.0,
                 size: Size {
                     width: Dimension::percent(1.0),
                     height: Dimension::percent(1.0),
@@ -3520,7 +1026,6 @@ impl Widget for StoreApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let was_compact = self.compact_layout();
         let Ok(l) = taffy.layout(node) else {
             return;
         };
@@ -3530,9 +1035,6 @@ impl Widget for StoreApp {
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        if was_compact != self.compact_layout() {
-            self.structure_dirty = true;
-        }
         if let (Some(root), Ok(children)) = (self.root.as_mut(), taffy.children(node))
             && let Some(&child_node) = children.first()
         {
@@ -3582,8 +1084,8 @@ impl Widget for StoreApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Child overlays (any dropdown / popover) first, then the
-        // floating status bubble on top of the content.
+        // Child overlays first, then the transient status bubble on top of
+        // the content.
         if let Some(root) = self.root.as_mut() {
             root.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
@@ -3595,8 +1097,8 @@ impl Widget for StoreApp {
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        // Track the pointer so the bubble can reveal on hover of its
-        // bottom-right zone (coords are window-space, unscaled).
+        // Track the pointer so the bubble stays open while it rests on it
+        // (coords are window-space, unscaled).
         if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor =
                 Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
@@ -3605,6 +1107,10 @@ impl Widget for StoreApp {
             && let Some(&child_node) = children.first()
         {
             root.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
+        }
+        if self.back_requested.take() {
+            self.show_catalogue();
+            self.structure_dirty = true;
         }
     }
 
@@ -3658,9 +1164,7 @@ impl Widget for StoreApp {
         self.root
             .as_ref()
             .is_some_and(|r| r.needs_animation_frame())
-            || (!self.compact_layout()
-                && !self.reduce_motion
-                && self.status_bubble.needs_frame(ui::time::now()))
+            || self.status_bubble.needs_frame(ui::time::now())
             || self
                 .images
                 .as_ref()
@@ -3740,11 +1244,11 @@ impl StoreApp {
     /// shows. Without a worker (a capture, a past version) nothing is
     /// fetched.
     fn request_from_worker(&mut self) {
-        let search = self.pending_search.take();
-        let detail = self.pending_detail.take();
         let Some(worker) = self.worker.as_ref() else {
             return;
         };
+        let search = self.pending_search.take();
+        let detail = self.pending_detail.take();
         if let Some(query) = search {
             worker.request(Request::Search(query));
         }
@@ -3857,6 +1361,8 @@ impl StoreApp {
                 if query.chars().count() > 512 {
                     return Err("search query is too long".into());
                 }
+                self.search_opener
+                    .open(ui::search::SearchRequest::this_app().with_query(query.clone()));
                 self.set_query(query);
             }
             StoreEffect::BrowseRemote { remote } => {
@@ -3939,12 +1445,7 @@ impl StoreApp {
                 self.status_line = "Opening the Flatpak reference…".into();
                 self.structure_dirty = true;
             }
-            StoreEffect::ShowCatalogue => {
-                self.focused_detail = None;
-                self.remotes_open = false;
-                self.safety_open = false;
-                self.structure_dirty = true;
-            }
+            StoreEffect::ShowCatalogue => self.show_catalogue(),
             StoreEffect::PreviousPage => {
                 self.catalog_page = self.catalog_page.saturating_sub(1);
                 self.scroll_offset.set((0.0, 0.0));
@@ -3996,6 +1497,12 @@ impl StoreApp {
                     },
                     Finish::Status,
                 ));
+            }
+            StoreEffect::EnableRemote { remote } => {
+                return self.admit_remote_enabled(&remote, true);
+            }
+            StoreEffect::DisableRemote { remote } => {
+                return self.admit_remote_enabled(&remote, false);
             }
             StoreEffect::RemoveRemote { name } => {
                 validate_remote_name(&name)?;
@@ -4084,93 +1591,6 @@ impl StoreApp {
             | StoreEffect::FlatpakSetup { .. } => {}
         }
         Ok(Admitted::Done)
-    }
-
-    /// One job updating every app with an update.
-    ///
-    /// # Errors
-    /// Returns why nothing can be updated now.
-    fn admit_update_all(&mut self) -> Result<Admitted, String> {
-        if self.active_operation.is_some() {
-            return Err("a package operation is already in progress".into());
-        }
-        let updatable = self.updatable();
-        let Some(&(first, action)) = updatable.first() else {
-            return Err("every installed app is up to date".into());
-        };
-        let first = first.id.clone();
-        let items: Vec<StoreItem> = updatable.iter().map(|(item, _)| (*item).clone()).collect();
-        self.status_line = format!(
-            "Updating {} app{}…",
-            items.len(),
-            if items.len() == 1 { "" } else { "s" }
-        );
-        self.active_operation = Some((first, action));
-        self.operation_error = None;
-        self.structure_dirty = true;
-        Ok(Job::admitted(Request::UpdateAll(items), Finish::Package))
-    }
-
-    /// The installed apps a source offers a newer version of, with the
-    /// action that updates each.
-    pub fn updatable(&self) -> Vec<(&StoreItem, ActionKind)> {
-        self.items
-            .iter()
-            .filter(|item| item.installed.update_available())
-            .filter_map(|item| {
-                let action = item.action_kind(self.flatpak_available);
-                matches!(action, ActionKind::Update | ActionKind::FlatpakUpdate)
-                    .then_some((item, action))
-            })
-            .collect()
-    }
-
-    /// "N updates available" with the Update all button, when any app has
-    /// an update.
-    fn build_updates_banner(&self, theme: &Theme) -> Option<Box<dyn Widget>> {
-        let updatable = self.updatable();
-        if updatable.is_empty() {
-            return None;
-        }
-        let count = updatable.len();
-        let names = updatable
-            .iter()
-            .take(3)
-            .map(|(item, _)| item.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let more = count.saturating_sub(3);
-        let summary = if more == 0 {
-            format!(
-                "{count} update{} available: {names}",
-                if count == 1 { "" } else { "s" }
-            )
-        } else {
-            format!("{count} updates available: {names} and {more} more")
-        };
-        let mut button = ui::widget::Button::new("store.update-all", "Update all")
-            .with_icon(Icon::Refresh)
-            .fit_content(40.0)
-            .tooltip("Install the newest version of every app listed under Updates");
-        if let Some(binding) = crate::bindings::effect(&StoreEffect::UpdateAll) {
-            button = button.on_action(binding);
-        }
-        let button = button.with_enabled(self.active_operation.is_none());
-        Some(Box::new(
-            Row::new()
-                .no_wrap()
-                .push(Box::new(
-                    Container::new()
-                        .with_no_padding()
-                        .with_flex_grow()
-                        .with_child(Box::new(
-                            Text::new(&summary)
-                                .with_scaled_size(13.0)
-                                .with_color(theme.text_dim),
-                        )),
-                ))
-                .push(Box::new(button.primary())),
-        ))
     }
 
     /// The app `action` is asked of, if the action is the one the app
@@ -4452,6 +1872,8 @@ impl StoreApp {
             StoreEffect::FLATPAK_OPEN,
             StoreEffect::FLATPAK_REMOVE,
             StoreEffect::FLATPAK_SETUP,
+            StoreEffect::ENABLE_REMOTE,
+            StoreEffect::DISABLE_REMOTE,
         ]
         .into_iter()
         .map(|effect| EffectStatus::unavailable(effect, "flatpak_host_unavailable", reason))
@@ -4601,7 +2023,7 @@ impl StoreApp {
         Some(Box::new(
             ui::widget::Button::new("store.flathub.account", &ui::i18n!("store-flathub-account"))
                 .on_action(binding)
-                .fit_content(40.0),
+                .control_size(ui::widget::ControlSize::Small),
         ))
     }
 
@@ -4609,8 +2031,29 @@ impl StoreApp {
         package_action_label(action, self.flatpak_error.as_deref())
     }
 
+    fn admit_remote_enabled(&self, id: &str, enabled: bool) -> Result<Admitted, String> {
+        if !self.flatpak_available {
+            return Err(flatpak_unavailable_reason(self.flatpak_error.as_deref()).into());
+        }
+        let remote = self
+            .remotes
+            .iter()
+            .find(|remote| remote.resource_id() == id && remote.user_managed)
+            .ok_or_else(|| ui::i18n!("store-remote-managed-change"))?;
+        let name = remote.name.clone();
+        validate_remote_name(&name)?;
+        self.reserve_job()?;
+        Ok(Job::admitted(
+            Request::RemoteSetEnabled { name, enabled },
+            Finish::Status,
+        ))
+    }
+
     fn remote_live_row(&self, remote: &crate::flathub_client::Remote) -> LiveRow {
-        let row = remote_row(remote);
+        let mut row = remote_row(remote);
+        if remote.user_managed {
+            row = row.effect(&remote_enabled_effect(remote));
+        }
         if self.flathub_account_source(&remote.resource_id()).is_ok() {
             row.effect(&StoreEffect::UseFlathubForAccount {
                 remote: remote.resource_id(),
@@ -4640,7 +2083,7 @@ impl StoreApp {
                 LiveRow::new(
                     crate::resource::MODERATION_ID,
                     "store.moderation",
-                    "Trust & moderation",
+                    "Trust and moderation",
                 )
                 .effect(&StoreEffect::ShowTrust),
                 LiveRow::row,
@@ -4654,7 +2097,7 @@ impl StoreApp {
         let mut row = LiveRow::new(
             report.id.clone(),
             "store.report",
-            format!("{} · {}", report.app_id, report.status),
+            format!("{}: {}", report.app_id, report.status),
         )
         .effect(&StoreEffect::ExportEvidence { app: app.clone() });
         if self.reported_app(report).is_ok() {
@@ -4700,6 +2143,18 @@ const REMOTES_ID: &str = "store:remotes";
 const LATEST_JOB_ID: &str = "store:latest-job";
 const CATALOGUE_SNAPSHOT_ID: &str = "store:catalogue-snapshot";
 
+fn remote_enabled_effect(remote: &crate::flathub_client::Remote) -> StoreEffect {
+    if remote.disabled {
+        StoreEffect::EnableRemote {
+            remote: remote.resource_id(),
+        }
+    } else {
+        StoreEffect::DisableRemote {
+            remote: remote.resource_id(),
+        }
+    }
+}
+
 fn remote_scope_label(remote: &crate::flathub_client::Remote) -> String {
     crate::resource::STORE_CATALOG.ensure();
     ui::i18n!(if remote.user_managed {
@@ -4707,6 +2162,41 @@ fn remote_scope_label(remote: &crate::flathub_client::Remote) -> String {
     } else {
         "store-remote-system"
     })
+}
+
+impl StoreApp {
+    fn admit_update_all(&mut self) -> Result<Admitted, String> {
+        if self.active_operation.is_some() {
+            return Err("a package operation is already in progress".into());
+        }
+        let updatable = self.updatable();
+        let Some(&(first, action)) = updatable.first() else {
+            return Err("every installed app is up to date".into());
+        };
+        let first = first.id.clone();
+        let items: Vec<StoreItem> = updatable.iter().map(|(item, _)| (*item).clone()).collect();
+        self.status_line = format!(
+            "Updating {} app{}…",
+            items.len(),
+            if items.len() == 1 { "" } else { "s" }
+        );
+        self.active_operation = Some((first, action));
+        self.operation_error = None;
+        self.structure_dirty = true;
+        Ok(Job::admitted(Request::UpdateAll(items), Finish::Package))
+    }
+    pub fn updatable(&self) -> Vec<(&StoreItem, ActionKind)> {
+        self.items
+            .iter()
+            .filter(|item| item.installed.update_available())
+            .filter_map(|item| {
+                let action = item.action_kind(self.flatpak_available);
+                (matches!(action, ActionKind::Update | ActionKind::FlatpakUpdate)
+                    && item.allows_action(action, self.flatpak_available))
+                .then_some((item, action))
+            })
+            .collect()
+    }
 }
 
 fn remote_state_label(remote: &crate::flathub_client::Remote) -> String {
@@ -4779,13 +2269,10 @@ fn inspect_item(
     })
 }
 
-fn operation_error_summary() -> &'static str {
-    "The last operation failed. Refresh the catalogue and try again."
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bindings;
 
     fn inspected_store() -> (
         tilo_test_env::ScopedEnv,
@@ -4833,6 +2320,13 @@ mod tests {
         assert!(
             !control.disabled,
             "the normal owner can use the declared account setup control"
+        );
+        assert!(
+            app.harness().controls().iter().any(|control| {
+                control.name.as_deref() == Some(ui::i18n!("store-flatpak-unavailable").as_str())
+                    && control.disabled
+            }),
+            "the actual catalogue button reports the observation failure and refuses installation"
         );
         let snapshot = app
             .effect(&StoreEffect::InspectCatalogue { app: None })
@@ -4960,8 +2454,10 @@ mod tests {
     }
 
     use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
+    use crate::widgets::{CardAction, CardDetails};
     use automerge::{AutoCommit, ReadDoc};
     use ui::tilo_resource::Resource as _;
+    use ui::widget::CardGrid;
 
     fn item(name: &str, source: StoreSource, cat: &str, installed: InstalledState) -> StoreItem {
         let trust = match &source {
@@ -5025,8 +2521,6 @@ mod tests {
         app
     }
 
-    /// Installed apps with a newer catalogue version, the system image's
-    /// among them, are listed under Updates and updated by one job.
     #[test]
     fn flatpak_observation_failure_preserves_error_and_never_claims_missing() {
         let mut app = seeded_app();
@@ -5062,6 +2556,107 @@ mod tests {
                 .unwrap_err()
                 .contains("not installed")
         );
+    }
+
+    #[test]
+    fn remote_enabled_actions_preserve_account_scope_and_declaration() {
+        let mut app = seeded_app();
+        let user = crate::flathub_client::Remote {
+            name: "custom-tools".into(),
+            title: "Custom tools".into(),
+            url: "https://tools.example.test/repo/".into(),
+            disabled: true,
+            user_managed: true,
+        };
+        let system = crate::flathub_client::Remote {
+            user_managed: false,
+            ..user.clone()
+        };
+        app.set_remotes(vec![user.clone(), system.clone()]);
+        for (disabled, expected, enabled) in [
+            (true, "enable-remote", true),
+            (false, "disable-remote", false),
+        ] {
+            let remote = crate::flathub_client::Remote {
+                disabled,
+                ..user.clone()
+            };
+            app.set_remotes(vec![remote.clone(), system.clone()]);
+            let row = app.live_row(&remote.resource_id()).unwrap().into_resource();
+            let action = row
+                .actions
+                .iter()
+                .find(|action| action.id == expected)
+                .unwrap();
+            assert_eq!(
+                action.contract.permission,
+                tilo_actions::PermissionRequirement::Admin
+            );
+            let job = admitted_job(&mut app, remote_enabled_effect(&remote));
+            assert!(
+                matches!(job.request, Request::RemoteSetEnabled { ref name, enabled: value } if name == "custom-tools" && value == enabled)
+            );
+            let system_row = app.live_row(&system.resource_id()).unwrap().into_resource();
+            assert!(
+                !system_row
+                    .actions
+                    .iter()
+                    .any(|action| matches!(action.id.as_str(), "enable-remote" | "disable-remote"))
+            );
+            assert!(
+                app.admit(StoreEffect::EnableRemote {
+                    remote: system.resource_id()
+                })
+                .is_err()
+            );
+            assert!(
+                app.admit(StoreEffect::DisableRemote {
+                    remote: "remote:user:missing".into()
+                })
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn account_remote_enabled_controls_are_accessible_on_the_owner_surface() {
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            store.show_capture_catalogue(crate::fixture::fixture_catalog());
+            store.set_remotes(vec![crate::flathub_client::Remote {
+                name: "custom-tools".into(),
+                title: "Custom tools".into(),
+                url: "https://tools.example.test/repo/".into(),
+                disabled: true,
+                user_managed: true,
+            }]);
+            store.show_remotes();
+        })
+        .unwrap();
+        let control = app
+            .harness()
+            .controls()
+            .into_iter()
+            .find(|control| {
+                control.name.as_deref() == Some(ui::i18n!("store-remote-enable").as_str())
+            })
+            .unwrap();
+        assert!(!control.disabled);
+        app.with_surface(|store: &mut StoreApp| {
+            store.remotes[0].disabled = false;
+            store.structure_dirty = true;
+        })
+        .unwrap();
+        let control = app
+            .harness()
+            .controls()
+            .into_iter()
+            .find(|control| {
+                control.name.as_deref() == Some(ui::i18n!("store-remote-disable").as_str())
+            })
+            .unwrap();
+        assert!(!control.disabled);
     }
 
     #[test]
@@ -5331,7 +2926,10 @@ mod tests {
         }
         app.set_active_filter(SourceFilter::Updates);
         assert_eq!(app.visible_items().len(), 2);
-        assert!(app.build_updates_banner(&Theme::default()).is_some());
+        assert_eq!(
+            accessible_name_count(&*app.build_list(&Theme::default()), "Update all"),
+            1
+        );
 
         let Admitted::Job(job) = app.admit(StoreEffect::UpdateAll).unwrap() else {
             panic!("update all is a job");
@@ -5350,7 +2948,10 @@ mod tests {
         );
 
         let mut current = seeded_app();
-        assert!(current.build_updates_banner(&Theme::default()).is_none());
+        assert_eq!(
+            accessible_name_count(&*current.build_list(&Theme::default()), "Update all"),
+            0
+        );
         assert!(
             current.admit(StoreEffect::UpdateAll).is_err(),
             "nothing to update"
@@ -5613,7 +3214,7 @@ mod tests {
                 .into_resource()
                 .presentation
                 .expect("app row has a search and history summary");
-            assert_eq!(presentation.badge.as_deref(), Some("Tilo verified · v1"));
+            assert_eq!(presentation.badge.as_deref(), Some("Tilo verified, v1"));
             assert!(
                 presentation
                     .detail
@@ -5670,55 +3271,27 @@ mod tests {
             );
             let flatpak = item("Chess", StoreSource::Flathub, "Games", InstalledState::Not);
             assert_eq!(
-                device_state_label(&tilo),
-                "Available on demand · fetched when opened\nNot kept on this device"
+                view::device_properties(&tilo),
+                vec![
+                    ("On this device", "Available on demand".to_string()),
+                    (
+                        "Storage",
+                        "Fetched when opened, not kept on this device".to_string()
+                    ),
+                ]
             );
-            assert_eq!(device_state_label(&flatpak), "Not installed");
+            assert_eq!(
+                view::device_properties(&flatpak),
+                vec![("On this device", "Not installed".to_string())]
+            );
             assert_eq!(tilo.action_kind(true).label(), "Open");
             assert_eq!(flatpak.action_kind(true).label(), "Install");
         }
 
-        // Case `catalogue_heading_does_not_claim_an_empty_query_is_a_search`.
-        {
-            assert_eq!(catalogue_region_heading(true, ""), "Browse apps");
-            assert_eq!(catalogue_region_heading(false, "  "), "All apps");
-            assert_eq!(catalogue_region_heading(false, "notes"), "Search results");
-        }
-
-        // Case `catalogue_source_summary_is_honest_about_loaded_sources`.
-        {
-            let app = seeded_app();
-            assert_eq!(
-                app.catalogue_source_summary(),
-                "3 apps from 2 configured sources"
-            );
-
-            let empty = StoreApp::new();
-            assert_eq!(
-                empty.catalogue_source_summary(),
-                "No apps loaded from configured sources yet"
-            );
-        }
-    }
-
-    /// Availability groups, narrow cards, medium summaries and the narrow discover section.
-    #[test]
-    fn catalogue_grids_keep_cards_apart_at_narrow_and_medium_widths() {
-        // Case `availability_groups_avoid_an_odd_medium_desktop_grid`.
+        // Case `availability_groups_give_way_to_one_ranked_list_while_searching`.
         {
             let mut app = seeded_app();
-            app.set_layout_width_hint(1_024.0);
-            assert!(
-                !app.group_catalogue_by_availability(),
-                "a medium desktop uses one balanced catalogue grid"
-            );
-
-            app.set_layout_width_hint(1_440.0);
             assert!(app.group_catalogue_by_availability());
-
-            app.set_layout_width_hint(480.0);
-            assert!(app.group_catalogue_by_availability());
-
             app.set_query("notes".into());
             assert!(
                 !app.group_catalogue_by_availability(),
@@ -5726,10 +3299,27 @@ mod tests {
             );
         }
 
+        // Case `catalogue_source_summary_is_honest_about_loaded_sources`.
+        {
+            let app = seeded_app();
+            assert_eq!(app.catalogue_source_summary(3), "3 apps from 2 sources");
+
+            let empty = StoreApp::new();
+            assert_eq!(empty.catalogue_source_summary(0), "No apps loaded yet");
+
+            let mut filtered = seeded_app();
+            filtered.set_active_filter(SourceFilter::Tilo);
+            assert_eq!(filtered.catalogue_source_summary(2), "Showing 2 of 3 apps");
+        }
+    }
+
+    /// Availability groups, narrow cards, medium summaries and the narrow discover section.
+    #[test]
+    fn catalogue_grids_keep_cards_apart_at_narrow_and_medium_widths() {
         // Case `narrow_cards_do_not_cover_each_others_actions`.
         {
             fn check(widget: &dyn Widget) {
-                if widget.name() == "ContentCard" {
+                if widget.name() == "Card" {
                     let mut buttons = Vec::new();
                     named_rects(widget, "Button", &mut buttons);
                     for button in buttons {
@@ -5751,59 +3341,95 @@ mod tests {
                 item.description =
                     "Useful software with a description that wraps onto another line.".into();
             }
-            app.set_layout_width_hint(480.0);
             let list = frame_composition(app.compose(&Theme::dark()), 480.0);
             check(list.root_widget());
         }
 
-        // Case `medium_short_viewport_uses_one_width_appropriate_source_summary`.
+        // Case `catalogue_states_its_summary_once_and_never_titles_the_window`.
         {
-            let mut app = seeded_app();
-            app.set_layout_width_hint(800.0);
+            let app = seeded_app();
             let tree = app.compose(&Theme::dark());
-            let summary = app.catalogue_source_summary();
+            let summary = app.catalogue_source_summary(app.visible_items().len());
             assert_eq!(accessible_name_count(tree.as_ref(), &summary), 1);
-            assert_eq!(accessible_name_count(tree.as_ref(), "App Store"), 1);
-            assert_eq!(accessible_name_count(tree.as_ref(), "Apps"), 0);
+            assert_eq!(
+                accessible_name_count(tree.as_ref(), "App Store"),
+                0,
+                "the operating system names the window, not the page"
+            );
         }
 
         // Case `first_empty_busy_catalogue_is_real_chrome_not_a_flat_fill`.
         {
             let mut app = StoreApp::new();
             app.set_worker_busy(true);
-            app.set_layout_width_hint(1051.0);
             let tree = app.compose(&Theme::dark());
-            assert_eq!(accessible_name_count(tree.as_ref(), "App Store"), 1);
-            assert_eq!(accessible_name_count(tree.as_ref(), "Loading apps…"), 1);
+            assert_eq!(accessible_name_count(tree.as_ref(), "Loading apps"), 1);
         }
 
         // Case `full_narrow_catalogue_keeps_discover_section_below_ready_cards`.
         {
             let mut app = seeded_app();
             app.set_items(crate::fixture::fixture_catalog());
-            app.set_layout_width_hint(480.0);
             let frame = frame_composition(app.compose(&Theme::dark()), 480.0);
             let tree = frame.root_widget();
 
-            let discover = accessible_rect(tree, "Discover more · 3")
-                .expect("discover heading in full catalogue");
+            let discover =
+                accessible_rect(tree, "Discover").expect("discover heading in full catalogue");
             let mut grids = Vec::new();
             card_grid_extents(tree, &mut grids);
-            assert_eq!(grids.len(), 2, "ready and discover grids");
+            assert_eq!(grids.len(), 3, "updates, on this device and discover grids");
             assert!(
-                grids[0].1 <= discover.y0,
-                "ready descendants end at {}, over discover heading {:?}; allocated grid {:?}",
-                grids[0].1,
-                discover,
-                grids[0].0
-            );
-            assert!(
-                discover.y1 <= grids[1].0.y0,
-                "discover heading {:?} must precede discover grid {:?}",
+                grids[1].1 <= discover.y0,
+                "device descendants end at {}, over discover heading {:?}; allocated grid {:?}",
+                grids[1].1,
                 discover,
                 grids[1].0
             );
+            assert!(
+                discover.y1 <= grids[2].0.y0,
+                "discover heading {:?} must precede discover grid {:?}",
+                discover,
+                grids[2].0
+            );
         }
+    }
+
+    /// A catalogue longer than one page offers Previous and Next only where they lead somewhere.
+    #[test]
+    fn a_long_catalogue_pages_with_previous_and_next() {
+        let mut app = StoreApp::new();
+        let items = (0..(PAGE_SIZE * 2 + 5))
+            .map(|index| {
+                let mut entry = item(
+                    "Utility",
+                    StoreSource::Flathub,
+                    "Utilities",
+                    InstalledState::Not,
+                );
+                entry.id = format!("dev.example.utility{index:03}");
+                entry.name = format!("Utility {index:03}");
+                entry
+            })
+            .collect();
+        app.set_items(items);
+        let has = |app: &StoreApp, id: &str| {
+            let frame = frame_composition(app.compose(&Theme::dark()), 800.0);
+            has_test_id(frame.root_widget(), id)
+        };
+        assert!(has(&app, "store.page.next"));
+        assert!(!has(&app, "store.page.previous"));
+        app.catalog_page = 1;
+        assert!(has(&app, "store.page.next") && has(&app, "store.page.previous"));
+        app.catalog_page = 2;
+        assert!(!has(&app, "store.page.next") && has(&app, "store.page.previous"));
+    }
+
+    fn has_test_id(widget: &dyn Widget, id: &str) -> bool {
+        widget.test_id() == Some(id)
+            || widget
+                .children()
+                .into_iter()
+                .any(|child| has_test_id(child, id))
     }
 
     /// Mount a composed tree and run one frame at `width` × 900.
@@ -5949,6 +3575,7 @@ mod tests {
                         item,
                         CardAction {
                             kind: action,
+                            label: None,
                             key: "primary",
                             binding: bindings::package(item, action),
                             in_progress: busy,
@@ -5957,17 +3584,11 @@ mod tests {
                             key: "select",
                             binding: bindings::show_details(item),
                         },
-                        &Theme::dark(),
                         None,
-                        if width < 600.0 {
-                            CardLayout::Stacked { large_text: false }
-                        } else {
-                            CardLayout::Wide
-                        },
                     );
-                    let mut grid = CardGrid::content_sized(vec![card]);
+                    let mut grid = CardGrid::new(vec![card]);
                     let (tree, node) = layout_card_grid(&mut grid, width);
-                    let center = control_mut(&mut grid, "select.button")
+                    let center = control_mut(&mut grid, "select")
                         .unwrap()
                         .get_rect()
                         .center();
@@ -6006,7 +3627,7 @@ mod tests {
                         );
                     }
                     let details = ui::widget::controls::take_control_invocation(&mut grid)
-                        .expect("pointer Details");
+                        .expect("pressing the card shows its details");
                     assert_eq!(details.address.resource, Store::KIND);
                     assert_eq!(details.address.action, "show-details");
                     assert_eq!(details.arguments["app"], item.id.as_str());
@@ -6034,17 +3655,13 @@ mod tests {
     /// Stacked geometry, contained actions, the three-column measure and the large-text layout.
     #[test]
     fn catalogue_measures_stay_finite_contained_and_stacked_under_large_text() {
-        // Case `full_catalogue_geometry_stays_finite_in_stacked_layouts`.
+        // Case `full_catalogue_geometry_stays_finite_at_every_width_and_text_scale`.
         {
             for (width, scale) in [(480.0, 1.0), (1_280.0, 2.0)] {
                 let mut app = seeded_app();
                 app.set_items(crate::fixture::fixture_catalog());
-                app.set_layout_width_hint(width);
-                app.text_scale = scale;
-                let frame = frame_composition(
-                    app.compose(&Theme::dark().with_text_scale(scale)),
-                    width as f32,
-                );
+                let frame =
+                    frame_composition(app.compose(&Theme::dark().with_text_scale(scale)), width);
                 assert_finite_rects(frame.root_widget());
             }
         }
@@ -6080,39 +3697,11 @@ mod tests {
                 }
             }
             let mut app = seeded_app();
-            app.set_layout_width_hint(1200.0);
             app.items[0].description = "A useful app with a longer description. ".repeat(7);
             let list = frame_composition(app.build_list(&Theme::dark()), 1200.0);
             let mut found = 0;
             check(list.root_widget(), &mut found);
             assert_eq!(found, 3);
-        }
-
-        // Case `bounded_desktop_catalogue_keeps_a_balanced_three_column_measure`.
-        {
-            let mut app = seeded_app();
-            app.set_layout_width_hint(1_440.0);
-            assert!((app.catalogue_card_min_width() - 348.0).abs() < f64::EPSILON);
-            assert_eq!(
-                ui::widget::card_columns(1_120.0, app.catalogue_card_min_width(), 16.0),
-                3
-            );
-
-            app.set_layout_width_hint(1_024.0);
-            assert!((app.catalogue_card_min_width() - 330.0).abs() < f64::EPSILON);
-
-            app.text_scale = 2.0;
-            assert!((app.catalogue_card_min_width() - 330.0).abs() < f64::EPSILON);
-        }
-
-        // Case `large_text_uses_the_safe_stacked_catalogue_layout`.
-        {
-            let mut app = seeded_app();
-            app.set_layout_width_hint(1_280.0);
-            assert!(!app.stacked_catalogue_layout());
-
-            app.text_scale = 2.0;
-            assert!(app.stacked_catalogue_layout());
         }
     }
 
@@ -6121,6 +3710,14 @@ mod tests {
     fn status_and_accessibility_surfaces_are_named_bounded_live_regions() {
         // Case `operation_notice_uses_shared_live_banner_semantics`.
         {
+            fn banner(widget: &dyn Widget) -> Option<AccessNode> {
+                if let Some(node) = widget.accessibility()
+                    && node.name.as_deref() == Some("Working in background")
+                {
+                    return Some(node);
+                }
+                widget.children().into_iter().find_map(banner)
+            }
             let mut app = seeded_app();
             assert!(app.operation_notice().is_none());
 
@@ -6129,20 +3726,10 @@ mod tests {
             let busy_notice = app
                 .operation_notice()
                 .expect("busy work has a semantic notice");
-            let busy = busy_notice
-                .children()
-                .first()
-                .and_then(|child| child.accessibility())
+            let busy = banner(&*busy_notice)
                 .expect("busy banner remains a live child of the progress notice");
-            assert_eq!(busy.name.as_deref(), Some("Working in background"));
             assert_eq!(busy.live, Some(Politeness::Polite));
             assert_eq!(busy.description.as_deref(), Some("Installing Notes…"));
-            let progress = busy_notice
-                .children()
-                .get(1)
-                .and_then(|child| child.accessibility())
-                .expect("progress remains visible to a screen reader");
-            assert_eq!(progress.name.as_deref(), Some("Operation in progress"));
 
             app.set_worker_busy(false);
             app.set_operation_error(Some("signature mismatch".into()));
@@ -6164,7 +3751,7 @@ mod tests {
             assert!(node.bounds.is_some());
         }
 
-        // Case `trust_sheet_uses_a_scannable_publisher_identity_summary`.
+        // Case `publisher_identity_reads_as_a_short_fingerprint_with_the_full_key_kept`.
         {
             let mut signed = item(
                 "Signed",
@@ -6175,10 +3762,11 @@ mod tests {
                 InstalledState::Not,
             );
             signed.publisher_pubkey_hex = Some("ab".repeat(32));
-            let lines = publisher_identity_lines(&signed);
-            assert_eq!(lines.len(), 1);
-            assert!(lines[0].contains("ed25519:abababababab…abababababab"));
-            assert!(lines[0].contains("64 characters"));
+            assert_eq!(short_publisher(&signed), "ed25519:abababababab…");
+            assert_eq!(
+                full_publisher(&signed),
+                format!("ed25519:{}", "ab".repeat(32))
+            );
         }
 
         // Case `visible_operation_status_is_printable_and_bounded`.
@@ -6327,13 +3915,14 @@ mod tests {
             assert!(app.query().is_empty());
         }
 
-        // Case `typed_search_query_filters_through_local_sync`.
+        // Case `search_effect_filters_the_catalogue_and_reaches_the_worker`.
         {
             let mut app = seeded_app();
             let doc = AutoCommit::new();
-            app.query_state.set("Term".into());
+            app.set_query("Term".into());
             app.sync(&doc, &automerge::ROOT);
             assert_eq!(app.query(), "Term");
+            assert_eq!(app.pending_search.as_deref(), Some("Term"));
             let names: Vec<&str> = app
                 .visible_items()
                 .iter()
@@ -6348,8 +3937,8 @@ mod tests {
             let mut second = seeded_app();
             let mut doc = AutoCommit::new();
             let heads = doc.get_heads();
-            first.source_filter_state.set("Tilo".into());
-            first.category_filter_state.set("Games".into());
+            first.set_active_filter(SourceFilter::Tilo);
+            first.set_active_category(Some("Games".into()));
             first.sync(&doc, &automerge::ROOT);
             second.sync(&doc, &automerge::ROOT);
             assert_eq!(first.active_filter(), SourceFilter::Tilo);

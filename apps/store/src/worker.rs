@@ -52,6 +52,10 @@ pub enum Request {
         url: String,
     },
     RemoteRemove(String),
+    RemoteSetEnabled {
+        name: String,
+        enabled: bool,
+    },
     /// Boxed: [`StoreItem`] is far larger than every other variant's
     /// payload, and this is a queued message — boxing keeps every
     /// `Request` (and the channel that carries them) sized to the common
@@ -379,6 +383,18 @@ fn handle(
             let result = state.host.as_ref().map_or_else(
                 || Err("App service unavailable.".to_string()),
                 |host| host.remote(true, &name, Some(&url)),
+            );
+            if result.is_ok() {
+                refresh(state);
+            } else {
+                refresh_flatpak(state);
+            }
+            remote_result(snapshots, state, result)
+        }
+        Request::RemoteSetEnabled { name, enabled } => {
+            let result = state.host.as_ref().map_or_else(
+                || Err("App service unavailable.".to_string()),
+                |host| host.set_remote_enabled(&name, enabled),
             );
             if result.is_ok() {
                 refresh(state);

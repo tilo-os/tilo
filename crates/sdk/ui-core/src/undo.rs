@@ -171,7 +171,7 @@ pub fn shortcut(
     match HostShortcut::resolve(conventions, character, shift)? {
         HostShortcut::Undo => Some(UndoRequest::Undo),
         HostShortcut::Redo => Some(UndoRequest::Redo),
-        HostShortcut::Search | HostShortcut::History => None,
+        HostShortcut::Search | HostShortcut::History | HostShortcut::Sidebar => None,
     }
 }
 
@@ -200,7 +200,7 @@ pub fn shortcut(
 /// * **Draining only the root.** This is the third host→widget channel of its
 ///   kind, and it was the only one that read a single widget: no container in
 ///   the toolkit forwards `take_committed_action`, so an app that put its
-///   editor inside a `Row`, a `Column`, or an `AppShell` lost every boundary
+///   editor inside a `Row`, a `Column`, or a `NavShell` lost every boundary
 ///   with no error anywhere. Like [`UndoStatus`] and [`UndoRequest`], this
 ///   sweeps `node_map` — every laid-out widget registers itself there — so a
 ///   widget is reached at any depth.

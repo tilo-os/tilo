@@ -1589,7 +1589,7 @@ mod tests {
                 Some("CTRL+SHIFT+KEYK")
             );
             assert!(canonical_accelerator("k").is_none());
-            assert!(is_reserved_accelerator("SUPER+KEYK", &defaults()));
+            assert!(is_reserved_accelerator("SUPER+SPACE", &defaults()));
             assert!(!is_reserved_accelerator("CTRL+SHIFT+KEYK", &defaults()));
             let modifiers = Modifiers::default();
             assert!(accelerator_for_code("KeyK", modifiers).is_none());
@@ -1606,7 +1606,7 @@ mod tests {
                     GlobalShortcut {
                         id: "shell".into(),
                         description: None,
-                        preferred_trigger: Some("Super+K".into()),
+                        preferred_trigger: Some("Super+Space".into()),
                     },
                     GlobalShortcut {
                         id: "ok".into(),
@@ -1717,7 +1717,6 @@ mod tests {
             "SUPER+PAGEUP",
             "SUPER+ESCAPE",
             "SUPER+SPACE",
-            "SUPER+KEYK",
             "CTRL+TAB",
             "SUPER+TAB",
             "SUPER+ARROWLEFT",

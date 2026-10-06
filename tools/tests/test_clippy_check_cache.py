@@ -1,8 +1,10 @@
 """clippy-check.sh hands Cargo a compiler argument sccache can cache."""
+import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -38,6 +40,44 @@ class ClippyCheckCacheTests(unittest.TestCase):
 
     def test_an_explicit_compiler_is_kept(self) -> None:
         self.assertEqual(self.run_script({"RUSTC": "/opt/rust/bin/rustc"}), "/opt/rust/bin/rustc")
+
+    def test_independent_package_failures_are_reported_without_retrying(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            tree = Path(folder)
+            (tree / "tools/ci").mkdir(parents=True)
+            shutil.copy(SCRIPT, tree / "tools/ci/clippy-check.sh")
+            shutil.copy(ROOT / "tools/ci/compiler_inputs.py", tree / "tools/ci/compiler_inputs.py")
+            bin_dir = tree / "bin"
+            bin_dir.mkdir()
+            (bin_dir / "cargo").write_text(
+                f"#!{sys.executable}\n"
+                "import json, sys\nfrom pathlib import Path\n"
+                "if sys.argv[1] == 'metadata':\n"
+                "    print(json.dumps({'workspace_members': [], 'packages': []}))\n"
+                "    sys.exit(0)\n"
+                "calls = Path(__file__).parent.parent / 'clippy-calls'\n"
+                "calls.write_text(calls.read_text() + 'clippy\\n' if calls.exists() else 'clippy\\n')\n"
+                "packages = ['first'] + (['second'] if '--keep-going' in sys.argv else [])\n"
+                "for package in packages:\n"
+                "    print(json.dumps({'reason': 'compiler-message', 'message': "
+                "{'level': 'error', 'rendered': package + ' package lint failure'}}))\n"
+                "print(json.dumps({'reason': 'build-finished', 'success': False}))\n"
+                "sys.exit(101)\n")
+            (bin_dir / "git").write_text(
+                "#!/usr/bin/env bash\n"
+                "case \"$1\" in rev-parse) echo head ;; status|ls-files) : ;; esac\n")
+            for tool in ("cargo", "git"):
+                (bin_dir / tool).chmod(0o755)
+            env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}")
+            result = subprocess.run(
+                ["bash", str(tree / "tools/ci/clippy-check.sh"), "--workspace"],
+                env=env, capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            for package in ("first", "second"):
+                self.assertEqual(result.stderr.count(package + " package lint failure"), 1)
+            self.assertEqual((tree / "clippy-calls").read_text(), "clippy\n")
+            receipt = json.loads((tree / "target/ci/clippy-head-inputs.json").read_text())
+            self.assertEqual(receipt["cargo_exit_code"], 101)
 
 
 if __name__ == "__main__":

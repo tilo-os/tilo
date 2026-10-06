@@ -176,6 +176,7 @@ impl ResourceSurface<DiskUsage, DiskUsageEffect> for DiskUsageApp {
     fn attach(&mut self, cx: SurfaceCx<DiskUsage>) {
         self.immediate = cx.mode() == RunMode::Capture;
         self.dispatcher = Some(cx.dispatcher());
+        self.actions = (cx.mode() == RunMode::Live).then(|| cx.actions());
         match cx.mode() {
             RunMode::Capture => {
                 if let Some(recent) = cx.fixture::<RecentFolders>() {
@@ -185,6 +186,7 @@ impl ResourceSurface<DiskUsage, DiskUsageEffect> for DiskUsageApp {
             RunMode::Live => self.recents = Some(cx.settings::<RecentFolders>()),
             RunMode::Past => {}
         }
+        self.refresh_home();
         if let Some(scan) = cx.fixture::<ScanResult>() {
             self.set_result((*scan).clone());
         }
@@ -359,5 +361,70 @@ mod tests {
         let mut live = TestApp::<DiskUsageShell>::new().unwrap();
         let frame = live.harness().inspection_json().unwrap();
         assert!(!frame.contains("Projects"), "{frame}");
+    }
+
+    /// Folder controls use the same admitted Analyze effect as published
+    /// locations, including a physical click on a remembered folder.
+    #[test]
+    fn folder_controls_are_certified_and_analyze_through_the_resource() {
+        for scenario in ["home", "analysis"] {
+            let mut capture = TestApp::<DiskUsageShell>::capture(Some(scenario)).unwrap();
+            let bindings =
+                ui::widget::controls::control_action_bindings(capture.harness().root_widget());
+            assert!(
+                bindings.iter().all(|binding| {
+                    !binding.control_id.starts_with("disk-usage.place:")
+                        && !binding.control_id.starts_with("disk-usage.folder-row:")
+                }),
+                "{scenario}: a capture must not bind unavailable device effects: {bindings:?}",
+            );
+            assert!(
+                capture
+                    .harness()
+                    .controls()
+                    .into_iter()
+                    .any(|control| control.role == ui::accesskit::Role::ListItem),
+                "{scenario}: folder rows must remain visible"
+            );
+            let audit = capture.harness().native_app_audit();
+            assert!(audit.is_certified(), "{scenario}: {audit:?}");
+        }
+
+        let folder = scratch_folder("folder-control");
+        let mut app = TestApp::<DiskUsageShell>::new().unwrap();
+        let audit = app.harness().native_app_audit();
+        assert!(audit.is_certified(), "live home: {audit:?}");
+        let bindings = ui::widget::controls::control_action_bindings(app.harness().root_widget());
+        let folders: Vec<_> = bindings
+            .iter()
+            .filter(|binding| binding.control_id.starts_with("disk-usage.place:"))
+            .collect();
+        assert!(!folders.is_empty(), "live home: no folder controls");
+        for binding in folders {
+            let ui::widget::ControlBindingKind::Action(address) = &binding.kind else {
+                panic!("live home: folder is not action-bound: {binding:?}");
+            };
+            assert_eq!(address.action, "analyze");
+        }
+        app.settings::<RecentFolders>()
+            .update(|recent| recent.remember(folder.clone()))
+            .unwrap();
+        app.settle();
+        let id = format!("disk-usage.place:{}", folder.display());
+        let target = app.harness().targets()[&id];
+        app.harness().click_at(target.center().x, target.center().y);
+        let mut frame = String::new();
+        for _ in 0..600 {
+            app.settle();
+            frame = app.harness().inspection_json().unwrap();
+            if frame.contains("photos") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(frame.contains("photos"), "the click must analyze: {frame}");
+        let audit = app.harness().native_app_audit();
+        assert!(audit.is_certified(), "analysis: {audit:?}");
+        let _ = std::fs::remove_dir_all(&folder);
     }
 }

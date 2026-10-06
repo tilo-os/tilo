@@ -1,4 +1,3 @@
-canvas-title = Canvas
 canvas-tool-select = Select
 canvas-tool-brush = Brush
 canvas-tool-rect = Rectangle
@@ -115,7 +114,6 @@ canvas-artwork-title = Artwork title
 canvas-zoom-in = Zoom in
 canvas-zoom-out = Zoom out
 canvas-zoom-fit = Fit to window
-canvas-sidebar = Show or hide the panels
 canvas-well = Brush loaded with { $paint }, { $size } wide
 canvas-artwork-width = Width
 canvas-artwork-height = Height
