@@ -113,8 +113,8 @@ publisher review; this private execution is not distribution approval.
 
 ## Repeat the acceptance journey
 
-Use the existing approved remote builder and `rcargo --no-fallback` for Rust
-builds. Never share a worktree target directory or build locally for this task.
+Use the existing approved remote builder and a Cargo drop-in with local fallback
+disabled for Rust builds. Never share a worktree target directory or build locally for this task.
 The C entrypoint can be compiled inside the disposable remote task container:
 
 ```sh
@@ -226,7 +226,7 @@ Current redesign validation passed: 21 focused Python admission/archive tests,
 three launcher account/descriptor tests, five production chooser-service tests,
 remote shell/launcher test-target compile, strict remote Clippy, SDK signature
 verification, both final APK journeys and visual inspection of the original API
-PNG. All Rust compilation and testing used `rcargo --no-fallback`.
+PNG. All Rust compilation and testing ran remotely with local fallback disabled.
 
 ## Compatibility assessment
 
