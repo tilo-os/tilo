@@ -1443,6 +1443,9 @@ impl ChatApp {
                 }]
             }),
         );
+        if current_staged {
+            self.stage_agent_task_catalogue(!scenario.starts_with("agent-permission-revoked"));
+        }
 
         if current_staged && scenario.starts_with("agent-direction-saved") {
             self.set_direct_agent_intent(AgentComposerIntent::Steer);
@@ -1497,6 +1500,67 @@ impl ChatApp {
             });
         self.poll_agent_tasks();
         true
+    }
+
+    fn stage_agent_task_catalogue(&mut self, offered: bool) {
+        use tilo_actions::remote::{CataloguePage, CatalogueResource, RemoteActionMessage};
+        use tilo_actions::{
+            ActionContract, ActionDescriptor, ExecutionLocus, InputSpec, OperationKind,
+        };
+        use ui::collaboration::{CollabEvent, CollabRequest};
+
+        let requests = self.agent_task_actions.take_collab_requests();
+        for request in requests {
+            let CollabRequest::RemoteAction {
+                message: RemoteActionMessage::CatalogueRequest { correlation, query },
+            } = request
+            else {
+                continue;
+            };
+            let Some(target) = query.target else {
+                continue;
+            };
+            let row = tilo_actions::remote::CatalogueRow {
+                provider: query.provider.unwrap_or_default(),
+                app_id: "task-center".into(),
+                parent_resource: String::new(),
+                resource: CatalogueResource {
+                    id: target.resource.clone(),
+                    kind: "desktop.task".into(),
+                    label: "Task".into(),
+                    presentation: None,
+                },
+                action: Some(ActionDescriptor {
+                    address: target,
+                    semantic_identity: None,
+                    resource_kind: "desktop.task".into(),
+                    resource_label: "Task".into(),
+                    action_label: "Task action".into(),
+                    description: None,
+                    locus: ExecutionLocus::ClientLocal,
+                    kind: OperationKind::Document,
+                    contract: ActionContract::default(),
+                    input: InputSpec::None,
+                    params: Vec::new(),
+                    view: None,
+                }),
+                has_children: false,
+                visibility: None,
+            };
+            self.agent_task_actions
+                .handle_collab_event(&CollabEvent::RemoteAction {
+                    message: RemoteActionMessage::CatalogueResponse {
+                        correlation,
+                        result: Ok(CataloguePage {
+                            revision: "shots-task-controls-1".into(),
+                            rows: offered.then_some(row).into_iter().collect(),
+                            exhausted: true,
+                            ..CataloguePage::default()
+                        }),
+                    },
+                });
+        }
+        self.poll_agent_tasks();
     }
 
     /// The panels, menus and call state of `scenario`.
@@ -2162,6 +2226,30 @@ impl ChatApp {
         self.agent_tasks
             .get(&(self.active_ws.clone(), agent.clone()))
             .cloned()
+    }
+
+    pub(crate) fn direct_agent_intent_allowed(&self, intent: AgentComposerIntent) -> bool {
+        if !self.direct_agent_is_available() {
+            return false;
+        }
+        match intent {
+            AgentComposerIntent::Message => self.can_participate(),
+            AgentComposerIntent::Queue => self
+                .direct_agent_tasks()
+                .is_some_and(|tasks| tasks.borrow().can_queue()),
+            AgentComposerIntent::Steer => self
+                .direct_agent_tasks()
+                .is_some_and(|tasks| tasks.borrow().can_steer()),
+        }
+    }
+
+    pub(crate) fn focused_composer_can_edit(&self) -> bool {
+        (matches!(self.focus, Focus::Main)
+            && self
+                .direct_agent
+                .as_ref()
+                .is_some_and(|_| self.direct_agent_intent_allowed(self.direct_agent_intent())))
+            || (self.direct_agent.is_none() && self.can_participate())
     }
 
     pub(crate) fn agent_message_awaiting_confirmation(&self, agent: &str) -> bool {
@@ -3501,8 +3589,10 @@ impl ChatApp {
             );
             lines.receipt = Some(crate::i18n::t("chat-agent-unavailable"));
             lines.queue = None;
-        } else if !self.can_participate() {
-            lines.receipt = Some(crate::i18n::t("chat-conversation-read-only"));
+        } else if !self.can_participate()
+            && self.direct_agent_intent() == AgentComposerIntent::Message
+        {
+            lines.receipt = Some(crate::i18n::t("chat-agent-message-read-only"));
         } else if let Some(agent) = self.direct_agent.as_ref()
             && let Some(error) = self
                 .agent_submission_errors
@@ -4596,7 +4686,9 @@ impl ChatApp {
                     .then(|| crate::i18n::t("chat-agent-message-awaiting-confirmation"))
             })
             .or_else(|| {
-                (!self.can_participate()).then(|| crate::i18n::t("chat-conversation-read-only"))
+                (!self.can_participate()
+                    && self.direct_agent_intent() == AgentComposerIntent::Message)
+                    .then(|| crate::i18n::t("chat-agent-message-read-only"))
             });
         if let Some(status) = status {
             nodes.push(
@@ -4605,7 +4697,7 @@ impl ChatApp {
                     .with_hashed_key(("agent-submission-status", &self.active_ws, agent)),
             );
         }
-        if !self.can_participate() {
+        if !self.direct_agent_intent_allowed(self.direct_agent_intent()) {
             let draft = self.composer_main.value();
             if !draft.is_empty() {
                 nodes.push(

@@ -117,6 +117,7 @@ mod tests {
             "chat-agents-section",
             "chat-agent-message-placeholder",
             "chat-conversation-read-only",
+            "chat-agent-message-read-only",
             "chat-agent-empty-title",
             "chat-agent-empty-message",
             "chat-agent-roster-label",

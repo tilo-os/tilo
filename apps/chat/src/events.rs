@@ -580,7 +580,7 @@ impl ChatApp {
             return;
         }
 
-        let composer_owns = self.can_participate()
+        let composer_owns = self.focused_composer_can_edit()
             && self.menu.is_none()
             && !self.emoji_open
             && self.history_open.is_none()
@@ -613,7 +613,7 @@ impl ChatApp {
         } else if self.emoji_open {
             self.route_emoji_search(event, scale, modifiers, doc);
             true
-        } else if self.can_participate()
+        } else if self.focused_composer_can_edit()
             && self.menu.is_none()
             && !self.emoji_open
             && self.history_open.is_none()
@@ -925,13 +925,7 @@ impl ChatApp {
             Hit::AgentIntent(intent)
                 if self.direct_agent.is_some() && self.direct_agent_is_available() =>
             {
-                if intent != crate::app::AgentComposerIntent::Steer
-                    || self
-                        .direct_agent
-                        .clone()
-                        .map(|agent| self.agent_task_context(&self.active_ws.clone(), &agent))
-                        .is_some_and(|tasks| tasks.borrow().can_steer())
-                {
+                if self.direct_agent_intent_allowed(intent) {
                     self.set_direct_agent_intent(intent);
                     self.set_composer_focus();
                 }
@@ -979,7 +973,7 @@ impl ChatApp {
                 self.history_anchor = anchor;
             }
             Hit::EmojiChoice(e) => self.on_hit_emoji_choice(&e, doc),
-            Hit::FocusMain => {
+            Hit::FocusMain if self.focused_composer_can_edit() => {
                 self.focus = Focus::Main;
                 self.set_composer_focus();
             }
@@ -989,7 +983,7 @@ impl ChatApp {
             }
             Hit::Send => self.send_focused(doc),
             Hit::JumpToLatest => self.jump_to_latest(),
-            Hit::ComposerEmoji(anchor) if self.can_participate() => {
+            Hit::ComposerEmoji(anchor) if self.focused_composer_can_edit() => {
                 self.open_emoji_picker(None, anchor);
             }
             Hit::EmojiGroup(group) => {
@@ -1620,6 +1614,9 @@ impl ChatApp {
         }
         let workspace = self.active_ws.clone();
         let intent = self.direct_agent_intent();
+        if !self.direct_agent_intent_allowed(intent) {
+            return;
+        }
         let Some(draft_revision) = self.composer_main.private_revision_for(&workspace, &agent)
         else {
             return;
@@ -1695,15 +1692,16 @@ impl ChatApp {
     }
 
     fn send_focused(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        // Posting is a write into the workspace: gated by the OS permission
-        // context (a View-only / ungranted peer can read but not send).
-        if !self.can_participate() {
-            return;
-        }
         if matches!(self.focus, Focus::Main)
             && let Some(agent) = self.direct_agent.clone()
         {
             self.send_agent_focused(agent);
+            return;
+        }
+        // Posting an ordinary Chat message is a write into the workspace.
+        // Agent task intents have their own owner-published action authority
+        // and are routed above without borrowing Chat's permission.
+        if !self.can_participate() {
             return;
         }
         let (key, parent) = match self.focus {
@@ -2096,6 +2094,7 @@ mod tests {
         current_unavailable: AtomicBool,
         message_refused: AtomicBool,
         message_catalogue_mode: AtomicU8,
+        task_controls_revoked: AtomicBool,
     }
 
     impl TaskControlHost {
@@ -2117,6 +2116,10 @@ mod tests {
 
         fn message_catalogue_mode(&self, mode: u8) {
             self.message_catalogue_mode.store(mode, Ordering::Release);
+        }
+
+        fn revoke_task_controls(&self) {
+            self.task_controls_revoked.store(true, Ordering::Release);
         }
 
         fn message_catalogue_page(&self, query: &CatalogueQuery) -> CataloguePage {
@@ -2247,6 +2250,36 @@ mod tests {
         row
     }
 
+    fn task_control_row(provider: &str, target: &ActionAddress) -> CatalogueRow {
+        CatalogueRow {
+            provider: provider.into(),
+            app_id: "task-center".into(),
+            parent_resource: String::new(),
+            resource: CatalogueResource {
+                id: target.resource.clone(),
+                kind: "desktop.task".into(),
+                label: "Task".into(),
+                presentation: None,
+            },
+            action: Some(ActionDescriptor {
+                address: target.clone(),
+                semantic_identity: None,
+                resource_kind: "desktop.task".into(),
+                resource_label: "Task".into(),
+                action_label: target.action.clone(),
+                description: None,
+                locus: ExecutionLocus::ClientLocal,
+                kind: OperationKind::Document,
+                contract: ActionContract::default(),
+                input: InputSpec::None,
+                params: Vec::new(),
+                view: None,
+            }),
+            has_children: false,
+            visibility: None,
+        }
+    }
+
     fn cycle_catalogue_page(query: &CatalogueQuery) -> CataloguePage {
         CataloguePage {
             revision: "chat-task-controls-1".into(),
@@ -2269,6 +2302,28 @@ mod tests {
             query: CatalogueQuery,
         ) -> Pending<Result<CataloguePage, ActionHostError>> {
             use tilo_actions::remote::CatalogueProvider;
+
+            if let Some(target) = query.target.as_ref()
+                && (target.resource == "desktop:tasks"
+                    || target.resource.starts_with("desktop:task:"))
+            {
+                if self.task_controls_revoked.load(Ordering::Acquire) {
+                    return Pending::ready(Ok(CataloguePage {
+                        revision: "task-controls-revoked".into(),
+                        exhausted: true,
+                        ..CataloguePage::default()
+                    }));
+                }
+                return Pending::ready(Ok(CataloguePage {
+                    revision: "task-controls-1".into(),
+                    rows: vec![task_control_row(
+                        query.provider.as_deref().unwrap_or_default(),
+                        target,
+                    )],
+                    exhausted: true,
+                    ..CataloguePage::default()
+                }));
+            }
 
             if query.max_results == 0 && query.target.is_none() {
                 return Pending::ready(Ok(CataloguePage {
@@ -2972,11 +3027,25 @@ mod tests {
             &mut ui::widget::Edits::lend(&mut doc),
         );
         app.poll_agent_tasks();
+        app.perms = crate::permissions::ChatPermissions::from_context(
+            ui::permissions::PermissionContext::from_capabilities(
+                ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), model::ME),
+                vec![],
+            ),
+        );
         render_frame(&mut app, 1280.0, 800.0);
         assert_eq!(
             count_hits(&app, |hit| matches!(hit, Hit::AgentIntent(_))),
-            3,
-            "Message, Queue and owner-fenced Steer share one composer"
+            2,
+            "Task actions remain independently available to a Chat viewer"
+        );
+        assert_eq!(
+            count_hits(&app, |hit| matches!(
+                hit,
+                Hit::AgentIntent(crate::app::AgentComposerIntent::Message)
+            )),
+            0,
+            "Chat read-only access never borrows Task authority for Message"
         );
         assert_eq!(count_hits(&app, |hit| matches!(hit, Hit::AgentStop)), 1);
         let tasks = app.direct_agent_tasks().expect("owner-backed task context");
@@ -2986,6 +3055,7 @@ mod tests {
             Hit::AgentIntent(crate::app::AgentComposerIntent::Queue),
             &mut ui::widget::Edits::lend(&mut doc),
         );
+        render_frame(&mut app, 1280.0, 800.0);
         type_str(&mut app, &mut doc, "Inspect the compact layout");
         app.on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
         assert!(matches!(
@@ -3015,6 +3085,7 @@ mod tests {
             Hit::AgentIntent(crate::app::AgentComposerIntent::Steer),
             &mut ui::widget::Edits::lend(&mut doc),
         );
+        render_frame(&mut app, 1280.0, 800.0);
         type_str(&mut app, &mut doc, "Include keyboard evidence");
         app.on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
         assert!(matches!(
@@ -3036,6 +3107,51 @@ mod tests {
             tasks.borrow().stop_state(),
             AgentStopState::Stopping { run_epoch: 7, .. }
         ));
+    }
+
+    #[test]
+    fn chat_writer_without_task_actions_can_message_but_not_queue_steer_or_stop() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.room_names
+            .insert("agent:scribe".into(), "Scribe".into());
+        let host = Arc::new(TaskControlHost::default());
+        host.revoke_task_controls();
+        app.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
+            Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
+            Caller::local_app("so.tilo.chat").in_room("ws_home"),
+        );
+        app.reload(&doc);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        app.poll_agent_tasks();
+        render_frame(&mut app, 1280.0, 800.0);
+
+        assert_eq!(
+            count_hits(&app, |hit| matches!(
+                hit,
+                Hit::AgentIntent(crate::app::AgentComposerIntent::Message)
+            )),
+            1
+        );
+        assert_eq!(
+            count_hits(&app, |hit| matches!(
+                hit,
+                Hit::AgentIntent(
+                    crate::app::AgentComposerIntent::Queue | crate::app::AgentComposerIntent::Steer
+                ) | Hit::AgentStop
+            )),
+            0
+        );
+        type_str(&mut app, &mut doc, "Message remains a Chat action");
+        app.on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
+        settle_agent_submissions(&mut app);
+        assert_one_agent_message(&host, "Message remains a Chat action");
+        assert_eq!(app.composer_main.private_plain().as_deref(), Some(""));
     }
 
     #[test]
@@ -3474,6 +3590,9 @@ mod tests {
             Hit::Agent("scribe".into()),
             &mut ui::widget::Edits::lend(&mut doc),
         );
+        let tasks = app
+            .direct_agent_tasks()
+            .expect("the attached conversation owns its task context");
         type_str(&mut app, &mut doc, "Keep this view-only draft");
         app.composer_main.select(5, 14);
         app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
@@ -3484,6 +3603,9 @@ mod tests {
                 vec![],
             ),
         );
+        host.revoke_task_controls();
+        tasks.borrow_mut().refresh();
+        app.poll_agent_tasks();
         let mut scene = vello::Scene::new();
         let mut text = ui::text_render::TextRenderer::new();
         ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
@@ -3525,8 +3647,7 @@ mod tests {
         }));
         assert!(accessible.children.iter().any(|node| {
             node.role == ui::a11y::Role::StaticText
-                && node.name.as_deref()
-                    == Some("You can read this conversation but not write in it.")
+                && node.name.as_deref() == Some("You cannot send messages in this conversation.")
         }));
         let requests_before = host.requests().len();
         app.agent_surfaces

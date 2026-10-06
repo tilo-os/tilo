@@ -133,6 +133,7 @@ chat-agent-send-steer = Save direction
 chat-agent-message-send-failed = Message was not sent. Your draft is still here.
 chat-agent-message-awaiting-confirmation = Message sent. Still awaiting confirmation.
 chat-conversation-read-only = You can read this conversation but not write in it.
+chat-agent-message-read-only = You cannot send messages in this conversation.
 chat-agent-unavailable = This agent is no longer available here. Your draft is kept on this device.
 chat-agent-message-plain-only = Agent messages currently support plain text only. Remove formatting or attachments to send.
 chat-agent-task-loading = Loading current task…

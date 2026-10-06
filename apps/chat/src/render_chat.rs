@@ -1358,13 +1358,15 @@ impl ChatApp {
                         Some(crate::i18n::t("chat-agent-unavailable")),
                     );
                 }
-                if !self.can_participate() {
+                if self.direct_agent_intent() == crate::app::AgentComposerIntent::Message
+                    && !self.can_participate()
+                {
                     return (
                         Some(crate::i18n::t_args(
                             "chat-agent-empty-read-only-title",
                             &name_arg,
                         )),
-                        Some(crate::i18n::t("chat-conversation-read-only")),
+                        Some(crate::i18n::t("chat-agent-message-read-only")),
                     );
                 }
                 match self.direct_agent_intent() {
@@ -2464,11 +2466,9 @@ impl ChatApp {
             Self::draw_read_only_composer(scene, tf, tr, theme, rect);
             return;
         }
-        let interactive = can_write
-            && self
-                .direct_agent
-                .as_ref()
-                .is_none_or(|_| self.direct_agent_is_available());
+        let interactive = self.direct_agent.as_ref().map_or(can_write, |_| {
+            self.direct_agent_intent_allowed(self.direct_agent_intent())
+        });
         self.composer_main.set_read_only(!interactive);
         // While an inline message edit is in progress the caret lives in the
         // editor, not the composer.
@@ -2508,24 +2508,7 @@ impl ChatApp {
             };
             self.composer_main.set_placeholder(&placeholder);
         }
-        let send_enabled = can_write
-            && !draft.trim().is_empty()
-            && (self.direct_agent.is_none() || self.direct_agent_is_available())
-            && match self.direct_agent_intent() {
-                crate::app::AgentComposerIntent::Message => true,
-                crate::app::AgentComposerIntent::Queue => {
-                    self.direct_agent_tasks().is_some_and(|tasks| {
-                        matches!(
-                            tasks.borrow().discovery(),
-                            ui::agent_task_frontier::AgentTaskDiscovery::Ready
-                                | ui::agent_task_frontier::AgentTaskDiscovery::Incomplete { .. }
-                        )
-                    })
-                }
-                crate::app::AgentComposerIntent::Steer => self
-                    .direct_agent_tasks()
-                    .is_some_and(|tasks| tasks.borrow().can_steer()),
-            };
+        let send_enabled = interactive && !draft.trim().is_empty();
         let inner = self.draw_input_box(
             PaintCtx::new(scene, tf, tr, theme),
             input,
@@ -2642,8 +2625,8 @@ impl ChatApp {
             .as_ref()
             .is_some_and(|task| task.cancellation_requested)
             || matches!(tasks.stop_state(), AgentStopState::Stopping { .. });
-        let can_act = self.can_participate() && self.direct_agent_is_available();
-        let can_stop = current.is_some() && !stopping && can_act;
+        let can_stop =
+            current.is_some() && !stopping && self.direct_agent_is_available() && tasks.can_stop();
         let mut lines = self.direct_agent_status_lines(tasks, stopping);
         if self.agent_notice_in_empty_hero {
             lines.receipt = None;
@@ -2700,22 +2683,19 @@ impl ChatApp {
         tasks: &ui::agent_task_frontier::AgentTaskFrontiers,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let can_act = self.can_participate() && self.direct_agent_is_available();
-        let task_provider_ready = matches!(
-            tasks.discovery(),
-            ui::agent_task_frontier::AgentTaskDiscovery::Ready
-                | ui::agent_task_frontier::AgentTaskDiscovery::Incomplete { .. }
-        );
+        let available = self.direct_agent_is_available();
+        let can_message = available && self.can_participate();
+        let can_queue = available && tasks.can_queue();
+        let can_steer = available && tasks.can_steer();
         let segments = vec![
-            Segment::new(crate::i18n::t("chat-agent-mode-message")).with_enabled(can_act),
-            Segment::new(crate::i18n::t("chat-agent-mode-queue"))
-                .with_enabled(can_act && task_provider_ready),
-            Segment::new(crate::i18n::t(if tasks.can_steer() {
+            Segment::new(crate::i18n::t("chat-agent-mode-message")).with_enabled(can_message),
+            Segment::new(crate::i18n::t("chat-agent-mode-queue")).with_enabled(can_queue),
+            Segment::new(crate::i18n::t(if can_steer {
                 "chat-agent-mode-steer"
             } else {
                 "chat-agent-mode-steer-unavailable"
             }))
-            .with_enabled(tasks.can_steer() && can_act),
+            .with_enabled(can_steer),
         ];
         let parts = SegmentedFace::partition_segments(
             rect,
@@ -2740,9 +2720,9 @@ impl ChatApp {
         );
         for (index, part) in parts.into_iter().enumerate() {
             let enabled = match index {
-                0 => can_act,
-                1 => can_act && task_provider_ready,
-                _ => can_act && tasks.can_steer(),
+                0 => can_message,
+                1 => can_queue,
+                _ => can_steer,
             };
             if enabled {
                 let intent = match index {
