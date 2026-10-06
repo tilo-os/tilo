@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {webcrypto} from 'node:crypto';
+import {readFile} from 'node:fs/promises';
 import {createFontDemandPump,createFontLoader,createIdleFontInstaller,createIdlePrewarm} from './font-loader.mjs';
 
 const bytes={
@@ -39,6 +40,33 @@ test('startup fetches only declared startup fonts and verifies immutable bytes',
   assert.deepEqual([...startup['core.ttf']],[1,2,3]);
   assert.deepEqual(requested.map(([url])=>new URL(url).pathname),['/app/fonts.json','/app/fonts/core.ttf']);
   assert(requested.every(([,options])=>options.mode==='same-origin'&&options.redirect==='error'&&options.credentials==='same-origin'));
+});
+
+test('the actual canonical catalog accepts multi-axis variable font filenames',async()=>{
+  const source=await readFile(new URL('../../../sdk/font-catalog/manifest.toml',import.meta.url),'utf8');
+  const assets=source.split('[[font]]').slice(1).filter(block=>/^scope = "product"$/m.test(block)).map(block=>({
+    name: /^file = "([^"\n]+)"$/m.exec(block)[1],
+    bytes: Number(/^bytes = (\d+)$/m.exec(block)[1]),
+    sha256: /^sha256 = "([0-9a-f]+)"$/m.exec(block)[1],
+    startup: /^browser_startup = true$/m.test(block),
+  }));
+  assert(assets.some(asset=>asset.name==='TiloSans[wdth,wght].ttf'&&asset.startup));
+  assert(assets.some(asset=>asset.name==='TiloSans-Italic[wdth,wght].ttf'&&asset.startup));
+  const manifest={schema:1,catalog:'actual-canonical-product',assets};
+  const loader=createFontLoader({baseURL:'https://example.test/app/',fetch:async url=>{
+    assert.equal(new URL(url).pathname,'/app/fonts.json');
+    return response(manifest);
+  }});
+  const parsed=await loader.manifest();
+  assert.deepEqual([...parsed.assets.keys()],assets.map(asset=>asset.name));
+});
+
+test('font descriptors still refuse paths, encoded paths and cross-origin names',async()=>{
+  for(const name of ['../secret.ttf','dir/font.ttf','dir\\font.ttf','https://evil.test/font.ttf','font%2fsecret.ttf','font.ttf?query']){
+    const manifest=await descriptor();manifest.assets[0].name=name;
+    const loader=createFontLoader({baseURL:'https://example.test/app/',fetch:async()=>response(manifest)});
+    await assert.rejects(loader.manifest(),/invalid canonical font asset descriptor/,name);
+  }
 });
 
 test('optional demands are deduplicated and bounded to two concurrent fetches',async()=>{

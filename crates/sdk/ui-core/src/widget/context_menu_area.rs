@@ -52,7 +52,7 @@ impl MenuEntry {
 
     /// The keys that do the same, shown at the row's end.
     #[must_use]
-    pub fn with_shortcut(mut self, keys: impl Into<String>) -> Self {
+    pub fn with_shortcut(mut self, keys: impl Into<crate::platform::Shortcut>) -> Self {
         self.item = self.item.with_shortcut(keys);
         self
     }
@@ -393,7 +393,7 @@ mod tests {
         );
         assert_eq!(
             area.menu().items().first().and_then(MenuItem::shortcut),
-            Some("Ctrl+T")
+            Some(&crate::platform::Shortcut::command("T"))
         );
         area.choose(0);
         assert_eq!(chosen.get(), 7);

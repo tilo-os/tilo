@@ -61,7 +61,7 @@ use crate::widget::identity_flow::sheet::{
 use crate::widget::identity_flow::{
     IdentityFlowError, IdentityRecord, IdentityStore, ScreenOutcome,
 };
-use crate::widget::modal_frame::ModalAction;
+use crate::widget::modal_dialog::ModalAction;
 use crate::widget::text_input::TextInput;
 
 /// Default accent-tile palette. Picked so each tile reads as a
@@ -423,7 +423,7 @@ impl CreateIdentityScreen {
         self.body_height = body.height();
         // The widget takes the whole row (the body clip trims its paint);
         // its pointer target is the part inside the visible body.
-        place_field(&mut self.name, resolved.plan.input, text_renderer, theme);
+        place_field(&mut self.name, resolved.plan.input);
         self.input_rect = BodyScroll::visible(body, resolved.plan.input);
         self.tile_rects = resolved
             .plan
@@ -498,10 +498,10 @@ impl CreateIdentityScreen {
         }
     }
 
-    /// The accent-colour tiles: `radii.md` swatches, the chosen one ringed
+    /// The accent-colour tiles: `radii.control` swatches, the chosen one ringed
     /// in the card's ink a hairline outside its edge.
     fn draw_accent_tiles(&self, scene: &mut Scene, transform: Affine, theme: &Theme, plan: &Plan) {
-        let radius = f64::from(theme.tokens.radii.md);
+        let radius = f64::from(theme.tokens.radii.control);
         let ring_gap = f64::from(theme.tokens.spacing.s1) / 2.0;
         for (i, r) in plan.tiles.iter().enumerate() {
             // `tiles` is built 1:1 with `ACCENT_PALETTE`, so this is
@@ -591,57 +591,61 @@ impl Widget for CreateIdentityScreen {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let resolved = self.resolve(theme, text_renderer);
-        let actions = self.actions();
-        let spec = SheetSpec {
-            title: TITLE,
-            max_width: FORM_SHEET_WIDTH,
-            actions: &actions,
-        };
-        let sheet = &resolved.sheet;
-        let plan = &resolved.plan;
+        // Identity ceremonies, invites and joins are security surfaces:
+        // every look-alike letter is set apart.
+        text_renderer.security_surface(|text_renderer| {
+            let resolved = self.resolve(theme, text_renderer);
+            let actions = self.actions();
+            let spec = SheetSpec {
+                title: TITLE,
+                max_width: FORM_SHEET_WIDTH,
+                actions: &actions,
+            };
+            let sheet = &resolved.sheet;
+            let plan = &resolved.plan;
 
-        sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
-        sheet.clip_body(scene, transform);
-        paint_text(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            plan.explanation,
-            EXPLANATION,
-            Role::Body,
-            Align::Start,
-            true,
-        );
-        paint_text(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            plan.name_label,
-            NAME_LABEL,
-            Role::Label,
-            Align::Start,
-            false,
-        );
-        self.name
-            .draw(scene, transform, text_renderer, theme, presence);
-        paint_text(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            plan.accent_label,
-            ACCENT_LABEL,
-            Role::Label,
-            Align::Start,
-            false,
-        );
-        self.draw_accent_tiles(scene, transform, theme, plan);
-        if let (Some(rect), Some(err)) = (plan.error, self.submit_error.as_deref()) {
+            sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
+            sheet.clip_body(scene, transform);
             paint_text(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                rect,
-                err,
-                Role::Error,
+                plan.explanation,
+                EXPLANATION,
+                Role::Body,
                 Align::Start,
                 true,
             );
-        }
-        scene.pop_layer();
-        sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
+            paint_text(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                plan.name_label,
+                NAME_LABEL,
+                Role::Label,
+                Align::Start,
+                false,
+            );
+            self.name
+                .draw(scene, transform, text_renderer, theme, presence);
+            paint_text(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                plan.accent_label,
+                ACCENT_LABEL,
+                Role::Label,
+                Align::Start,
+                false,
+            );
+            self.draw_accent_tiles(scene, transform, theme, plan);
+            if let (Some(rect), Some(err)) = (plan.error, self.submit_error.as_deref()) {
+                paint_text(
+                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                    rect,
+                    err,
+                    Role::Error,
+                    Align::Start,
+                    true,
+                );
+            }
+            scene.pop_layer();
+            sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
+        });
     }
 
     fn name(&self) -> &'static str {

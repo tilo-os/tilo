@@ -36,7 +36,6 @@ live = ["dep:rustypipe", "dep:tokio", "dep:reqwest", "tilo-net/http", "tilo-net/
 lyrics = ["tilo-net/http", "tilo-net/blocking"]
 
 [dependencies]
-fnv.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }

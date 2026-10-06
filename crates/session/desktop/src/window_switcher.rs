@@ -27,7 +27,7 @@ use ui::a11y::{AccessNode, AccessState, Role};
 use ui::i18n::ArgValue;
 use ui::icons::AppImage;
 use ui::paint::PaintCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::{Duration, Instant};
 use ui::widget::AppKind as UiAppKind;
@@ -35,6 +35,7 @@ use ui::widget::AppKind as UiAppKind;
 use tilo_desktop_model::{DesktopTree, GroupId, StripId, TileContent, WorkspaceId};
 
 use crate::i18n::{t, t_args};
+use ui::TextRole;
 
 /// Where a window's preview comes from.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -432,37 +433,31 @@ struct Metrics {
     margin: f64,
     radius: f64,
     card_radius: f64,
-    title_size: f32,
-    caption_size: f32,
     caption_h: f64,
 }
 
 impl Metrics {
     fn from_tokens(tokens: &ui::tokens::Tokens) -> Self {
         let spacing = &tokens.spacing;
-        let scale = &tokens.typography.scale;
-        let title_size = scale.sm;
-        let caption_size = scale.base;
+        let line = |role| f64::from(tokens.typography.style(role).line_height_px());
         let inset = f64::from(spacing.s2);
-        let title_h = f64::from(title_size) * 1.4;
+        let title_h = line(TextRole::Label);
         let well_w = f64::from(spacing.s16) * 2.5;
         let well_h = well_w * 10.0 / 16.0;
         Self {
             icon: f64::from(spacing.s12),
             mark: f64::from(tokens.metrics.icon_sm),
             well_h,
-            well_radius: f64::from(tokens.radii.md),
+            well_radius: f64::from(tokens.radii.control),
             card_w: well_w + 2.0 * inset,
             card_h: inset + well_h + inset + title_h + inset,
             inset,
             gap: f64::from(spacing.s2),
             pad: f64::from(spacing.s4),
             margin: f64::from(spacing.s8),
-            radius: f64::from(tokens.radii.xl),
-            card_radius: f64::from(tokens.radii.lg),
-            title_size,
-            caption_size,
-            caption_h: f64::from(caption_size) * 1.4 + f64::from(spacing.s3),
+            radius: f64::from(tokens.radii.panel),
+            card_radius: f64::from(tokens.radii.control),
+            caption_h: line(TextRole::Subheading) + f64::from(spacing.s3),
         }
     }
 }
@@ -1057,7 +1052,13 @@ impl WindowSwitcher {
 
         // A Panel (HIG §9.1): the shell's floating-surface ground, edge and
         // elevation, like the overview and the palette.
-        ui::surface::shadow(scene, transform, panel, m.radius, &tokens.elevation.e4);
+        ui::surface::shadow(
+            scene,
+            transform,
+            panel,
+            m.radius,
+            &tokens.elevation.floating,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -1110,18 +1111,16 @@ impl WindowSwitcher {
             } else {
                 window.title.clone()
             };
-            let text = text_renderer.elide_to_width_weighted(
+            let text = text_renderer.elide_to_width_style(
                 &caption,
-                m.caption_size,
                 f32_of(geometry.caption.width()),
-                TextWeight::Semibold,
+                &theme.text(TextRole::Subheading),
             );
             let (w, h) =
-                text_renderer.measure_weighted(&text, m.caption_size, None, TextWeight::Semibold);
-            text_renderer.draw_text_weighted(
+                text_renderer.measure_style(&text, None, &theme.text(TextRole::Subheading));
+            text_renderer.draw_style(
                 scene,
                 &text,
-                m.caption_size,
                 colors.text_primary,
                 transform.pre_translate(
                     (
@@ -1131,7 +1130,7 @@ impl WindowSwitcher {
                         .into(),
                 ),
                 None,
-                TextWeight::Semibold,
+                &theme.text(TextRole::Subheading),
             );
         }
     }
@@ -1198,8 +1197,12 @@ impl WindowSwitcher {
         let gap = f64::from(tokens.spacing.s1);
         let lead = if live { m.mark + gap } else { 0.0 };
         let title_w = (card.width() - 2.0 * m.inset - lead).max(0.0);
-        let title = text_renderer.elide_to_width(&window.title, m.title_size, f32_of(title_w));
-        let (w, h) = text_renderer.measure(&title, m.title_size, None);
+        let title = text_renderer.elide_to_width_style(
+            &window.title,
+            f32_of(title_w),
+            &theme.text(TextRole::Label),
+        );
+        let (w, h) = text_renderer.measure_style(&title, None, &theme.text(TextRole::Label));
         let line_top = well.y1 + m.inset;
         let line_w = lead + f64::from(w);
         let x0 = card.center().x - line_w * 0.5;
@@ -1214,10 +1217,9 @@ impl WindowSwitcher {
                 colors.text_primary,
             );
         }
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &title,
-            m.title_size,
             if state.active {
                 colors.text_primary
             } else {
@@ -1225,6 +1227,7 @@ impl WindowSwitcher {
             },
             transform.pre_translate((x0 + lead, line_top).into()),
             None,
+            &theme.text(TextRole::Label),
         );
     }
 }
@@ -1255,7 +1258,7 @@ pub fn draw_preview_well(
     scene.fill(
         Fill::NonZero,
         transform,
-        colors.surfaces.window_card,
+        colors.surfaces.content,
         None,
         &well_rr,
     );
@@ -1276,7 +1279,7 @@ pub fn draw_preview_well(
     scene.stroke(
         &vello::kurbo::Stroke::new(1.0),
         transform,
-        colors.surfaces.window_card_border,
+        colors.surfaces.content_edge,
         None,
         &well_rr,
     );
@@ -1294,7 +1297,7 @@ pub fn draw_preview_well(
             ),
             window.app.icon.as_ref(),
             window.app.kind,
-            colors.on_card().ink,
+            colors.on_content().ink,
         );
     }
     live

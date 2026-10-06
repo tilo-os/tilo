@@ -203,20 +203,6 @@ pub enum TubeEffect {
 }
 
 impl TubeEffect {
-    /// The screen `ShowScreen` names.
-    /// The name [`Self::ShowScreen`] gives `route`, for a screen it shows.
-    pub(crate) fn screen_name(route: &Route) -> Option<&'static str> {
-        Some(match route {
-            Route::Home => "home",
-            Route::Trending => "trending",
-            Route::Subscriptions => "subscriptions",
-            Route::Queue => "queue",
-            Route::History => "history",
-            Route::Settings => "settings",
-            _ => return None,
-        })
-    }
-
     pub(crate) fn screen(name: &str) -> Option<Route> {
         Some(match name {
             "home" => Route::Home,

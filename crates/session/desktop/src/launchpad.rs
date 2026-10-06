@@ -28,6 +28,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::i18n::t;
+use ui::TextRole;
 
 pub const EMPTY_WORKSPACE_OPEN_APP: &str = "shell.empty-workspace.open-app";
 
@@ -318,7 +319,8 @@ impl CollaborationLaunchpad {
             selected: 0,
             app_button_size: (160.0, 36.0),
             hint_line_h: f64::from(
-                ui::text_render::TextStyle::new(ui::tokens::TypeScale::default().xs)
+                ui::Theme::dark()
+                    .text(ui::TextRole::Caption)
                     .line_height_px(),
             ),
             dirty: true,
@@ -696,10 +698,10 @@ impl Widget for CollaborationLaunchpad {
         // Theme tokens already include accessibility scaling; TextRenderer
         // also applies its configured scale to authored font sizes.
         let scale = text.text_scale();
-        let base = theme.tokens.typography.scale.base / scale;
-        let small = theme.tokens.typography.scale.sm / scale;
-        let caption = theme.tokens.typography.scale.xs / scale;
-        let heading = theme.tokens.typography.scale.x3l / scale;
+        let base = theme.tokens.typography.size(TextRole::Body) / scale;
+        let small = theme.tokens.typography.size(TextRole::Caption) / scale;
+        let caption = theme.tokens.typography.size(TextRole::Caption) / scale;
+        let heading = theme.tokens.typography.size(TextRole::Display) / scale;
         let (button_w, button_h) = text.measure(&t("launchpad-open-app"), base, None);
         self.app_button_size = (
             (f64::from(button_w) + 32.0).max(160.0),
@@ -748,14 +750,14 @@ impl Widget for CollaborationLaunchpad {
             );
         }
 
-        // Control role (HIG §9.1/§9.3): an action tile takes `radii.lg`. The
+        // Control role (HIG §9.1/§9.3): an action tile takes `radii.control`. The
         // hovered or keyboard-selected tile is a lift with the tier's
         // hairline — never an accent wash, which is reserved for live state
         // (§9.4) — and an idle tile rests on its translucent floor with an
         // edge derived from that floor (§9.5), so the six cards read as cards
         // on the dark grid as well as the light one.
-        let floor = theme.bg_primary.with_alpha_factor(0.78);
-        let idle_edge = ui::surface::edge_on(theme.bg_primary);
+        let floor = theme.tokens.colors.surfaces.raised.with_alpha_factor(0.78);
+        let idle_edge = ui::surface::edge_on(theme.tokens.colors.surfaces.raised);
         for (index, (action, rect)) in LaunchpadAction::ALL.into_iter().zip(cards).enumerate() {
             let active = hovered == Some(index) || (self.focused && self.selected == index);
             let tier =
@@ -784,9 +786,13 @@ impl Widget for CollaborationLaunchpad {
                 rect.x0 + 42.0,
                 rect.y0 + 42.0,
             );
-            action
-                .icon()
-                .draw_with_stroke(scene, transform, icon_rect, theme.accent_primary, 1.6);
+            action.icon().draw_with_stroke(
+                scene,
+                transform,
+                icon_rect,
+                theme.tokens.colors.intent.inverted,
+                1.6,
+            );
             let label = text.elide_to_width(&action.label(), base, (rect.width() - 72.0) as f32);
             text.draw_text(
                 scene,
@@ -825,8 +831,7 @@ impl Widget for CollaborationLaunchpad {
             text,
             theme,
             &ButtonFace::new(button, &t("launchpad-open-app"))
-                .radius(ui::chrome::ChromeRole::Control.radius(theme, button.height()))
-                .text_size(base)
+                .control_size(ui::widget::ControlSize::Large)
                 .focused(self.focused && self.selected == 6)
                 .hovered(button.contains(self.last_cursor)),
         );
@@ -1079,7 +1084,7 @@ mod tests {
         /// 0.72 alpha was invisible on the dark grid.
         fn launchpad_cards_keep_an_edge_on_every_palette() {
             for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-                let floor = theme.bg_primary;
+                let floor = theme.tokens.colors.surfaces.raised;
                 let delta = ui::surface::edge_delta(ui::surface::edge_on(floor), floor);
                 assert!(
                     delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
@@ -1127,7 +1132,7 @@ mod tests {
                     let button = pad.app_button_rect();
                     let (label_w, label_h) = text.measure(
                         "Open an app",
-                        theme.tokens.typography.scale.base / scale,
+                        theme.tokens.typography.size(TextRole::Body) / scale,
                         None,
                     );
                     assert!(

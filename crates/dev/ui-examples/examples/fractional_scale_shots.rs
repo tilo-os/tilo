@@ -113,7 +113,7 @@ fn shoot(base: &Theme, ui_scale: f32, text_scale: f32, device_scale: f64, out: &
     let pw = px_dim(physical_len(LOGICAL_W, device_scale));
     let ph = px_dim(physical_len(LOGICAL_H, device_scale));
     let mut r = OffscreenRenderer::new(pw, ph);
-    r.render_png(&scene, theme.bg_app, out);
+    r.render_png(&scene, theme.tokens.colors.surfaces.content, out);
     println!(
         "wrote {} ({}×{} px, device {device_scale}×, ui {ui_scale}×, text {text_scale}×)",
         out.display(),
