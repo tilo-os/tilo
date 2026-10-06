@@ -2775,6 +2775,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                     "room": hierarchy.map(|value| &value.room),
                     "record": hierarchy.map(|value| &value.record),
                     "resource": hierarchy.map(|value| &value.resource),
+                    "semantic_identity": hierarchy.and_then(|value| value.semantic_identity.as_ref()),
                     "operation": hierarchy.map(|value| &value.operation),
                 })
             })
@@ -15286,6 +15287,7 @@ mod tests {
                         presentation: None,
                     },
                     action: Some(tilo_actions::ActionDescriptor {
+                        semantic_identity: None,
                         address: tilo_actions::ActionAddress::new(
                             "calculator.graph:curve2d:stable-17",
                             "toggle-visibility",

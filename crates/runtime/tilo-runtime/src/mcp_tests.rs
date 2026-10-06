@@ -187,6 +187,7 @@ fn action_row(
             presentation: None,
         },
         action: Some(tilo_actions::ActionDescriptor {
+            semantic_identity: None,
             address: tilo_actions::ActionAddress::new(resource, action),
             resource_kind: "writer.document".into(),
             resource_label: "Document".into(),

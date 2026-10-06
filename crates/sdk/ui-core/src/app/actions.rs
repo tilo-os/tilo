@@ -781,6 +781,7 @@ impl App {
     ) -> crate::collaboration::ExportedAction {
         crate::collaboration::ExportedAction {
             resource: descriptor.address.resource.clone(),
+            semantic_identity: descriptor.semantic_identity.clone(),
             action: descriptor.address.action.clone(),
             resource_kind: descriptor.resource_kind.clone(),
             resource_label: descriptor.resource_label.clone(),
@@ -888,6 +889,12 @@ impl App {
     ) -> runtime_collab::ExportedAction {
         runtime_collab::ExportedAction {
             resource: descriptor.address.resource.clone(),
+            semantic_identity: descriptor.semantic_identity.as_ref().map(|identity| {
+                runtime_collab::ExportedResourceSemanticIdentity {
+                    kind: identity.kind.clone(),
+                    key: identity.key.clone(),
+                }
+            }),
             action: descriptor.address.action.clone(),
             resource_kind: descriptor.resource_kind.clone(),
             resource_label: descriptor.resource_label.clone(),
@@ -4570,6 +4577,9 @@ pub(crate) fn directory_row_wire_bytes(row: &runtime_collab::ActionDirectoryRow)
         };
         STRUCT
             + text(&descriptor.resource)
+            + descriptor.semantic_identity.as_ref().map_or(0, |identity| {
+                STRUCT + text(&identity.kind) + text(&identity.key)
+            })
             + text(&descriptor.action)
             + text(&descriptor.resource_kind)
             + text(&descriptor.resource_label)

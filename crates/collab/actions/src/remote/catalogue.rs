@@ -282,6 +282,7 @@ mod tests {
                 presentation: None,
             },
             action: action.map(|action| ActionDescriptor {
+                semantic_identity: None,
                 address: ActionAddress::new(resource, action),
                 resource_kind: "notes.note".into(),
                 resource_label: resource.into(),

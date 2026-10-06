@@ -443,6 +443,41 @@ fn validate_view_action(
     }
 }
 
+/// Descriptive source-domain identity, independent of the live dispatch alias.
+/// This metadata grants no permission or authority.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ResourceSemanticIdentity {
+    pub kind: String,
+    pub key: String,
+}
+
+impl ResourceSemanticIdentity {
+    pub const MAX_KIND_BYTES: usize = 128;
+    pub const MAX_KEY_BYTES: usize = 4096;
+
+    #[must_use]
+    pub fn new(kind: impl Into<String>, key: impl Into<String>) -> Option<Self> {
+        let identity = Self {
+            kind: kind.into(),
+            key: key.into(),
+        };
+        identity.is_valid().then_some(identity)
+    }
+
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        !self.kind.is_empty()
+            && self.kind.len() <= Self::MAX_KIND_BYTES
+            && self
+                .kind
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+            && !self.key.is_empty()
+            && self.key.len() <= Self::MAX_KEY_BYTES
+            && !self.key.chars().any(char::is_control)
+    }
+}
+
 /// One open/presented resource and the actions it exports. Resources
 /// nest via [`children`](Resource::children).
 #[derive(Clone)]
@@ -456,6 +491,8 @@ pub struct Resource {
     /// Optional shell-rendered metadata used by system search and resource
     /// browsers. Invalid or oversized values are omitted at the boundary.
     pub presentation: Option<ResourcePresentation>,
+    /// Exact original typed identity retained before host namespacing.
+    pub semantic_identity: Option<ResourceSemanticIdentity>,
     pub children: Vec<Resource>,
     pub actions: Vec<ActionSpec>,
     /// Explicit presentations of this resource. Actions remain invocation
@@ -470,6 +507,7 @@ impl Resource {
             kind: kind.into(),
             label: label.into(),
             presentation: None,
+            semantic_identity: None,
             children: Vec::new(),
             actions: Vec::new(),
             views: Vec::new(),
