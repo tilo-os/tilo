@@ -121,11 +121,17 @@ release policy. Removing them would sacrifice field crash diagnosis. Wine's
 large runtime dependencies are real package requirements; they were not
 removed as presumed build-only clutter.
 
-A follow-up scan found another 419,257,061 unique content bytes in the image
-under `/sysroot/ostree/repo`, beyond the live-path inventory. Those objects
-require investigation of their bootc and update role before a removal proposal;
-they are not counted as recoverable savings. The physical system root repository
-used for deployment and upgrades must not be confused with embedded image data.
+A follow-up scan found 419,257,061 additional unique content bytes under the
+image's `/sysroot/ostree/repo`. The repository has no refs. A disposable derived
+image deleting only that embedded directory passed bootc lint and complete
+installation, calculating the same composefs root digest. However, its installed
+object store still contained 76,339 objects and 11,972,689,826 logical bytes:
+only about 13 MB below the previous level-3 install, despite removing 419 MB
+from the final image view. Physical root use was 7,386,718,208 bytes, 21.4 MB
+below that install, with a changed image/layer graph and no repeatability proof.
+An upper-layer deletion does not establish recovery of historical OCI payload.
+This cleanup is not shipped or counted as savings. The physical system root
+repository used for deployment and upgrades remains untouched.
 
 Native app startup, hardware input-to-present latency and active hardware
 frame cadence remain unmeasured. A shipping-release comparison needs its

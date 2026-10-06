@@ -900,5 +900,40 @@
     ]
   },
   "production_qcow_reduction_bytes": 106430464,
-  "production_boot_scope": "One cold boot per compression level, shared runner and uncontrolled cache; readiness validation, not evidence of a boot-speed improvement."
+  "production_boot_scope": "One cold boot per compression level, shared runner and uncontrolled cache; readiness validation, not evidence of a boot-speed improvement.",
+  "rejected_embedded_ostree_cleanup": {
+    "role": {
+      "ostree --repo=/sysroot/ostree/repo refs": {
+        "rc": 0,
+        "out": "",
+        "err": ""
+      },
+      "ostree --repo=/sysroot/ostree/repo summary -v": {
+        "rc": 1,
+        "out": "",
+        "err": "OT: using fuse: 0\nerror: openat(summary): No such file or directory\n"
+      },
+      "file /sysroot/ostree/repo/objects/2d/b0f0a2c539e9d173f0594f1f34b6bf73555b1ab2732248186c6139891ad14f.file /sysroot/ostree/repo/objects/fc/253623731922a329dcf016b924f236dab580dc87aeb033bb64e9bba04c0695.file": {
+        "rc": 0,
+        "out": "/sysroot/ostree/repo/objects/2d/b0f0a2c539e9d173f0594f1f34b6bf73555b1ab2732248186c6139891ad14f.file: ASCII cpio archive (SVR4 with no CRC)\n/sysroot/ostree/repo/objects/fc/253623731922a329dcf016b924f236dab580dc87aeb033bb64e9bba04c0695.file: SQLite 3.x database, last written using SQLite version 3051002, file counter 3, database pages 8209, cookie 0x31, schema 4, UTF-8, version-valid-for 3\n",
+        "err": ""
+      },
+      "refs_files": []
+    },
+    "derived_unsealed_image": "sha256:715806e78459b11544b99ecc5581cda490f88d7533cacea4ecd1f741b83dd52e",
+    "resealed_image": "sha256:4e7900cb3c8a09c7ed9237aded66a1ce05b203069fbedf9177beefbeaff6087d",
+    "bootc_lint_passed": true,
+    "complete_install_passed": true,
+    "installation_log_tail": "es/sector, 8 sectors/cluster\n\u001b[1;36m[tilo]\u001b[0m 2/4 mounted /dev/loop0p2 -> /tmp/tilo-os-perf-20261006/production-cleanup/.mnt, /dev/loop0p1 -> /tmp/tilo-os-perf-20261006/production-cleanup/.mnt/boot\n\u001b[1;36m[tilo]\u001b[0m 3/4 bootc install to-filesystem --generic-image --skip-fetch-check --target-imgref sha256:4e7900cb3c8a09c7ed9237aded66a1ce05b203069fbedf9177beefbeaff6087d --composefs-backend --source-imgref docker://localhost:5000/sha256:disk-install /run/tilo-install-target\nInstalling image: docker://sha256:4e7900cb3c8a09c7ed9237aded66a1ce05b203069fbedf9177beefbeaff6087d\nBootloader: systemd\nInstalling bootloader via systemd-boot\nTrimming root\n.: 15 GiB (16147427328 bytes) trimmed\nFinalizing filesystem root\nTrimming boot\nboot: 1.9 GiB (2024284160 bytes) trimmed\nFinalizing filesystem boot\nInstallation complete!\ncomposefs objects with fs-verity: 76339 of 76339\n\u001b[1;36m[tilo]\u001b[0m 4/4 leaving the raw image in place\n\u001b[1;36m[tilo]\u001b[0m DONE: /tmp/tilo-os-perf-20261006/production-cleanup/disk.raw\n",
+    "installed": {
+      "disk": "/tmp/tilo-os-perf-20261006/production-cleanup/disk.raw",
+      "filesystem_usage": "Overall:\n    Device size:\t\t       23621251072\n    Device allocated:\t\t       10225713152\n    Device unallocated:\t\t       13395537920\n    Device missing:\t\t                 0\n    Device slack:\t\t                 0\n    Used:\t\t\t        7386718208\n    Free (estimated):\t\t       15815725056\t(min: 9117956096)\n    Free (statfs, df):\t\t       15814631424\n    Data ratio:\t\t\t              1.00\n    Metadata ratio:\t\t              2.00\n    Global reserve:\t\t                 0\t(used: 0)\n    Multiple profiles:\t\t                no\n\nData,single: Size:8598323200, Used:6178136064 (71.85%)\n   /dev/loop0p2\t8598323200\n\nMetadata,DUP: Size:805306368, Used:604274688 (75.04%)\n   /dev/loop0p2\t1610612736\n\nSystem,DUP: Size:8388608, Used:16384 (0.20%)\n   /dev/loop0p2\t  16777216\n\nUnallocated:\n   /dev/loop0p2\t13395537920\n",
+      "physical_used_bytes": 7386718208,
+      "object_count": 76339,
+      "objects_logical_bytes": 11972689826,
+      "objects_verity_fingerprint_sha256": "1dfe2f91ab8d3588c9e8aebba31825fa34c52463e8939cd68c3eee722bac5321",
+      "every_object_verity_measured": true
+    },
+    "decision": "Not shipped: deleting 419 MB from the final image view did not remove that amount from the installed object store. Changed layer graph, no repeatability proof."
+  }
 }
