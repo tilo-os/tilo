@@ -55,9 +55,10 @@ journey still need manual validation before release.
 
 ## Remaining integration boundaries
 
-The runtime now ships authenticated existing-admission browser link routing (details
-below). Native Chat chips still need host-provided source route metadata and shared
-identity account-picker integration. `ResourceRef` alone conveys no access capability;
+The runtime includes existing-admission browser link resolution and navigation helpers
+(details below), tested with action-frame fixtures. The production room action service
+does not yet supply local-view metadata for other admitted collaborators. Native Chat chips still need host-provided source route metadata
+and shared identity account-picker integration. `ResourceRef` alone conveys no access capability;
 resource navigation links never grant admission.
 
 ## Compatibility research (2026-10-05)
@@ -122,8 +123,9 @@ is local and disappears when the source text changes. Other apps must declare th
 own supported range view; this change does not claim they all do.
 
 The certified peer's `resourceLink(page, reference, provider, action)` creates the
-versioned browser link only after fresh authorized lookup. Its fragment carries the
-HTTPS host origin, room, host device key, exact source provider, kind/id, optional
+versioned browser link only after fresh authorized lookup. This is exercised with
+frame fixtures; production host view discovery is an integration blocker below.
+Its fragment carries the HTTPS host origin, room, host device key, exact source provider, kind/id, optional
 span and declared view action. It carries no invitation, account key, bearer grant or
 caller-supplied label. `resource.html` opens the standalone resource after an explicit
 Open, using the recipient's existing browser identity profile and certificate. A
@@ -133,9 +135,9 @@ closes the app and releases the peer/device key. This is the runtime's shipped b
 entry point, not a newly deployed service.
 
 Remaining integration: native Chat's legacy `ResourceRef` still does not carry the
-source provider or host/room locator. Browser peers with the admitted source can mint
-and open actual links, but the native Chat resource chip's Copy/Open link path needs
-host-provided route metadata. The browser entry currently asks for the recipient's
+source provider or host/room locator. Browser peers supplied with admitted source
+view metadata can mint and open links in frame fixtures. The native Chat resource
+chip's Copy/Open link path needs host-provided route metadata. The browser entry currently asks for the recipient's
 existing public identity key; account-picker integration belongs to the shared identity
 flow. New admission continues through the existing governed invitation flow, never
 through this navigation address. Physical browser/native cross-device acceptance and
@@ -150,3 +152,53 @@ browser end-to-end harness (`tilo-web-desktop/scripts/collab-e2e.mjs`) currently
 macOS Accessibility permission and native macOS apps. It cannot establish the complete
 Linux cross-app rendered journey on the selected cloud builder. The routed shell and
 SDK fixtures should not be represented as that missing end-to-end acceptance.
+
+## Representative range views and integration blockers (2026-10-06)
+
+Chat messages and Notes blocks declare `ResourceViewRangeSpec`. Notes' existing block
+`open` view now declares `reveal-block-range`; it accepts Unicode scalar (`Chars`)
+or UTF-8 boundary (`Bytes`) offsets against the current block text. It validates
+before navigation and checks the same text again after binding the shared editor.
+A changed block discards the pending selection. Neither view rewrites document text.
+These are positional offsets, not CRDT anchors: an in-bounds historical offset alone
+cannot detect an earlier edit that shifted its intended meaning.
+
+Notes keeps blocks lazily addressable through its native action door rather than
+publishing every block into the bounded room catalogue. The browser reference resolver
+currently reads that catalogue; Notes block browser routing therefore remains
+unsupported until authorized exact-resource discovery is available. A native range
+contract does not establish a complete native-to-browser sharing journey. Word
+Processor's existing character navigation is not yet a declared block resource view;
+its search/caret operations must not be advertised as a browser range contract.
+Other apps without an explicit range binding refuse ranged browser navigation.
+
+The runtime page now shares a tested navigation lifecycle. Leave during connection
+or hydration disposes late results, does not close a replacement session, and still
+disposes the peer if app cleanup fails. Fixtures cover the page's production lifecycle
+and resolver refusal, but do not provide native host-route or account-picker APIs.
+
+Three existing ownership boundaries prevent finishing the essential sharing path:
+
+- The browser room action service (`agent-participant/src/room_actions.rs`) builds
+  its catalogue from `Replica::survey`, which intentionally exposes document
+  operations only. It accepts the host user's devices, not arbitrary admitted
+  collaborators (`RoomActions::authorized`). The browser resolver's local-view rows
+  are exercised by frame fixtures, not currently supplied by that production service.
+  Exact `CatalogueQuery::target` filters an existing snapshot; it does not synthesize
+  lazy resources or view metadata. A read-only, role-filtered resource/view discovery
+  endpoint is needed. Do not expand document invocation privileges to enable it.
+- The host's HTTPS origin is owned by `tilo-relay::web::WebHandle`; native app/broker
+  resource metadata currently has no host-issued browser locator carrying origin,
+  room, host device and source provider. A label, local path or caller-supplied URL
+  cannot supply this authority binding. Chat's native Copy/Open chip is incomplete.
+- Settings owns `accounts::person::PersonAccounts` (`tilo.accounts`). Contacts owns
+  recipient associations, which explicitly convey neither identity proof nor browser
+  admission. The browser entry has no read-only account enumeration/selection bridge
+  to that shared record; root-identity state is in-memory and device custody is keyed
+  by an already selected identity profile. The entry still asks for a public key.
+  An owner-provided account projection and identity-profile mapping are needed before
+  replacing this with a picker. No second account registry is introduced.
+
+The held PR must remain held until those contracts are integrated and a fixture proves
+native Copy/Open through the browser entry, including revocation and Leave. Existing
+browser and HTTPS admission fixtures are supporting checks, not that acceptance test.

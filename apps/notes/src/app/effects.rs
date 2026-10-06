@@ -50,6 +50,15 @@ impl NotesApp {
             NotesEffect::Open { page, block } => self
                 .open_block(&state, page, block)
                 .map(|()| Effected::done()),
+            NotesEffect::RevealBlockRange {
+                page,
+                block,
+                start,
+                end,
+                unit,
+            } => self
+                .open_block_range(&state, page, block, (start, end, &unit))
+                .map(|()| Effected::done()),
             NotesEffect::OpenTag { tag } => self.open_tag(&state, tag).map(|()| Effected::done()),
         }
     }
@@ -116,9 +125,44 @@ impl NotesApp {
             return Err("the block no longer exists".into());
         }
         self.open_note(page)?;
+        self.pending_block_range = None;
         if let Some(block) = block {
             self.pending_block_reveal = Some((page, block));
         }
+        Ok(())
+    }
+
+    /// Validate offsets before navigation; select only once the same text is bound.
+    pub(super) fn open_block_range(
+        &mut self,
+        state: &Workspace,
+        page: PageId,
+        block: String,
+        range: (usize, usize, &str),
+    ) -> Result<(), String> {
+        let (start, end, unit) = range;
+        let text = &state
+            .bodies
+            .get(&page)
+            .and_then(|blocks| blocks.iter().find(|stored| stored.id == block))
+            .ok_or("the block no longer exists")?
+            .text;
+        if start > end {
+            return Err("backwards block range".into());
+        }
+        let offset = |at| match unit {
+            "Bytes" => (at <= text.len() && text.is_char_boundary(at)).then_some(at),
+            "Chars" => text
+                .char_indices()
+                .map(|(byte, _)| byte)
+                .chain(std::iter::once(text.len()))
+                .nth(at),
+            _ => None,
+        };
+        let start = offset(start).ok_or("block range unit or start is invalid")?;
+        let end = offset(end).ok_or("block range unit or end is invalid")?;
+        self.open_block(state, page, Some(block.clone()))?;
+        self.pending_block_range = Some((page, block, text.clone(), start, end));
         Ok(())
     }
 
