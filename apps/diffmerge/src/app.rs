@@ -304,6 +304,10 @@ impl DiffMergeApp {
         self.invalidation.paint = true;
     }
 
+    pub(crate) fn attach_waker(&mut self, wake: ui::WakeHandle) {
+        self.diff.set_waker(wake);
+    }
+
     /// Submit edits and effects through `dispatcher`.
     pub(crate) fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Diffmerge>) {
         self.merge
@@ -730,6 +734,9 @@ impl Default for DiffMergeApp {
 
 impl Widget for DiffMergeApp {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        if self.diff.collect_highlights() {
+            self.invalidation.paint = true;
+        }
         self.drain_portal();
         self.drain_commands();
         self.publish_header();
@@ -929,6 +936,7 @@ impl Widget for DiffMergeApp {
         if self.mode == Mode::Diff && self.diff.model().rows.is_empty() {
             children.push(
                 AccessNode::new(Role::Paragraph)
+                    .with_key(ui::a11y::hash_key(&"diffmerge.empty"))
                     .with_name("No files loaded")
                     .with_description("Use Open files to start a local comparison."),
             );
@@ -936,12 +944,14 @@ impl Widget for DiffMergeApp {
         if let Some(error) = &self.load_error {
             children.push(
                 AccessNode::new(Role::Paragraph)
+                    .with_key(ui::a11y::hash_key(&"diffmerge.load-error"))
                     .with_name("File loading failed")
                     .with_description(error),
             );
         }
         children.push(
             AccessNode::new(Role::Paragraph)
+                .with_key(ui::a11y::hash_key(&"diffmerge.status"))
                 .with_name("Comparison status")
                 .with_description(self.status_text()),
         );
@@ -1564,26 +1574,51 @@ mod tests {
         );
     }
 
-    /// The compact source switcher is only useful when the surrounding chrome
-    /// is usable too. Keep the complete one-row phone toolbar on screen and
-    /// non-overlapping (both modes, file open/sample, and change navigation).
+    /// Modes and change navigation remain readable touch targets. The shared
+    /// More menu keeps the file commands reachable without squeezing those
+    /// labels to ellipses on a phone.
     fn phone_toolbar_keeps_every_control_visible_without_overlap() {
         let mut app = TestApp::<DiffmergeShell>::capture_at(Some("merge"), (390, 760)).unwrap();
         let controls = header_controls(&mut app);
-        assert_eq!(controls.len(), 6, "two modes and four actions");
+        assert_eq!(controls.len(), 6, "two modes and four canonical actions");
         let mut rects: Vec<_> = controls
             .iter()
-            .map(|control| control.bounds.expect("painted header target"))
+            .skip(2)
+            .take(2)
+            .chain(controls.iter().take(2))
+            .map(|control| control.bounds.expect("painted touch target"))
             .collect();
         rects.sort_by(|a, b| a.x0.total_cmp(&b.x0));
         assert!(
-            rects.iter().all(|rect| rect.x0 >= 0.0 && rect.x1 <= 390.0),
+            rects
+                .iter()
+                .all(|rect| rect.x0 >= 0.0 && rect.x1 <= 390.0 && rect.height() >= 40.0),
             "{rects:?}"
         );
         assert!(
             rects.windows(2).all(|pair| pair[0].x1 <= pair[1].x0),
             "{rects:?}"
         );
+        let more = app.harness().targets()["nav-shell-more-content"].center();
+        app.harness().click_at(more.x, more.y);
+        app.settle();
+        let nodes = app.harness().a11y_nodes();
+        for name in ["Sample", "Open files"] {
+            let node = nodes
+                .iter()
+                .find(|node| {
+                    node.1.label() == Some(name)
+                        && node.1.supports_action(ui::accesskit::Action::Click)
+                })
+                .expect("the real More menu offers the file command");
+            let rect = node.1.bounds().expect("menu command is painted");
+            assert!(
+                rect.x0 >= 0.0 && rect.x1 <= 390.0 && rect.y0 >= 0.0 && rect.y1 <= 760.0,
+                "{name}: {rect:?}"
+            );
+        }
+        let audit = app.harness().native_app_audit();
+        assert!(audit.is_certified(), "{audit:#?}");
     }
 
     /// Measured-text layout at 1x and 200%: toolbar controls, merge chips, merge

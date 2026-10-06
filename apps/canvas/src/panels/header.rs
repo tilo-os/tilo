@@ -18,7 +18,15 @@ use crate::tools::{Sheet, Tools, ViewRequest};
 
 /// The editable artwork title and its current zoom occupy an intrinsically
 /// measured header slot beside the individually measured commands.
-pub fn title(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+pub fn title(cx: &ViewCx<ArtworkResource>, tools: &Tools, compact: &LocalState<bool>) -> Element {
+    let zoom_tools = tools.clone();
+    let zoom = cx.switch(compact, move |_, compact| {
+        if *compact {
+            Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element
+        } else {
+            zoom_readout(&zoom_tools)
+        }
+    });
     // Finish editing the title as one resource action and undo step.
     let titled = cx.value(|art: &Artwork| art.title.clone());
     let title = cx.switch(&titled, |cx, title| {
@@ -47,7 +55,7 @@ pub fn title(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                     .no_wrap()
                     .with_align_items(ui::taffy::AlignItems::Center)
                     .push(title)
-                    .push(zoom_readout(tools)),
+                    .push(zoom),
             ))
             .push(notice(cx, tools)),
     )
@@ -55,17 +63,13 @@ pub fn title(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
 
 /// Individual shared controls let the shell move each command into More
 /// without laying a wider private row beneath its inspector and History.
-pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Vec<Element> {
+pub fn header(
+    cx: &ViewCx<ArtworkResource>,
+    tools: &Tools,
+    compact: &LocalState<bool>,
+) -> Vec<Element> {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let mut actions = vec![
-        title(cx, tools),
-        add_picture(tools),
-        Box::new(sheet_button(
-            tools,
-            "canvas-export-title",
-            Icon::Download,
-            Sheet::Export,
-        )),
         menu(cx, tools),
         Box::new(icon_button(
             cx,
@@ -80,14 +84,36 @@ pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Vec<Element> {
             ArtworkResource::REDO.invoke(),
         )),
     ];
-    actions.extend(zoom(tools));
+    // Files/export remain in the artwork menu on mobile; adding a picture
+    // moves beside the tools. Keep the title readable rather than compressing
+    // every desktop command into a phone's one header row.
+    for command in 0..5 {
+        let tools = tools.clone();
+        actions.push(cx.switch(compact, move |_, compact| {
+            if *compact {
+                return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
+            }
+            match command {
+                0 => add_picture(&tools, ControlSize::Small),
+                1 => Box::new(sheet_button(
+                    &tools,
+                    "canvas-export-title",
+                    Icon::Download,
+                    Sheet::Export,
+                )),
+                2 => view_button(&tools, "canvas-zoom-out", Icon::Minus, ViewRequest::ZoomOut),
+                3 => view_button(&tools, "canvas-zoom-in", Icon::Plus, ViewRequest::ZoomIn),
+                _ => view_button(&tools, "canvas-zoom-fit", Icon::Maximize2, ViewRequest::Fit),
+            }
+        }));
+    }
     actions
 }
 
 /// Choose a picture to add: on an empty sheet it becomes the artwork, the
 /// sheet taking its size; otherwise it is placed on the artwork. The
 /// canvas takes the answer when the chooser gives it.
-fn add_picture(tools: &Tools) -> Element {
+pub(crate) fn add_picture(tools: &Tools, size: ControlSize) -> Element {
     let picking = tools.picking.clone();
     let name = ui::i18n::I18nManager::lookup_plain("canvas-add-picture");
     let title = ui::i18n::I18nManager::lookup_plain("canvas-add-picture-title");
@@ -95,7 +121,7 @@ fn add_picture(tools: &Tools) -> Element {
     let kinds = ui::i18n::I18nManager::lookup_plain("canvas-pictures");
     Box::new(
         Button::icon_only("canvas-add-picture", Icon::Image, &name)
-            .control_size(ControlSize::Small)
+            .control_size(size)
             .on_view(move || {
                 let request = ui::portal::PickRequest::open(&title, &confirm)
                     .filter(
@@ -768,14 +794,6 @@ fn zoom_readout(tools: &Tools) -> Element {
         .with_role(TextRole::Caption)
         .numeric(),
     )
-}
-
-fn zoom(tools: &Tools) -> Vec<Element> {
-    vec![
-        view_button(tools, "canvas-zoom-out", Icon::Minus, ViewRequest::ZoomOut),
-        view_button(tools, "canvas-zoom-in", Icon::Plus, ViewRequest::ZoomIn),
-        view_button(tools, "canvas-zoom-fit", Icon::Maximize2, ViewRequest::Fit),
-    ]
 }
 
 /// A button asking the canvas for a change of view: a view action, so an

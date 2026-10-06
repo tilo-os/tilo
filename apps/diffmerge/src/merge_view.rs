@@ -1306,6 +1306,7 @@ impl Widget for MergeView {
                 AccessNode::new(Role::ToggleButton)
                     .with_name(format!("Show {} source", source.label()))
                     .with_description("Switch the visible merge source")
+                    .with_action_target(format!("{SOURCE_TARGET}{}", source.tag()))
                     .with_state(
                         AccessState::new()
                             .focusable(true)
