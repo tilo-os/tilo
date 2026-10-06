@@ -1,4 +1,4 @@
-"""The release worker crosses SDK jobs unchanged into the existing Chrome lane."""
+"""The release worker crosses SDK jobs unchanged into an independent Chrome lane."""
 
 from pathlib import Path
 import json
@@ -32,30 +32,37 @@ def python_handoff(source: str) -> str:
 
 
 class AppSdkComputeWorkflowTests(unittest.TestCase):
-    def test_same_run_release_job_feeds_existing_chrome_lane(self):
+    def test_same_run_release_job_feeds_independent_chrome_lane(self):
         source = WORKFLOW.read_text()
         web, release = job(source, "web"), job(source, "web-size")
-        self.assertIn("needs: [builder, web-size]", web)
+        qualify = job(source, "web-release")
+        self.assertIn("needs: [builder]", web)
+        self.assertNotIn("web-size", web)
+        self.assertIn("needs: [builder, web-size]", qualify)
         condition = "if: needs.builder.outputs.affected == 'true'"
         self.assertIn(condition, web)
         self.assertIn(condition, release)
+        self.assertIn(condition, qualify)
         self.assertEqual(source.count("--bundle desktop --release"), 1)
         self.assertNotIn("--bundle desktop --release", web)
         self.assertIn("--bundle desktop --release", release)
-        self.assertEqual(source.count("@puppeteer/browsers@2 install"), 1)
+        self.assertEqual(source.count("@puppeteer/browsers@2 install"), 2)
+        self.assertIn("@puppeteer/browsers@2 install", qualify)
+        self.assertNotIn("--bundle desktop", qualify)
+        self.assertNotIn("actions/download-artifact@", web)
         self.assertIn("@puppeteer/browsers@2 install", web)
         self.assertIn("name: app-sdk-release-compute", release)
         self.assertIn("if-no-files-found: error", release)
-        self.assertIn("actions/download-artifact@", web)
-        self.assertIn("name: app-sdk-release-compute", web)
-        self.assertIn("path: ${{ runner.temp }}/release-compute", web)
-        self.assertNotIn("continue-on-error", web)
-        self.assertIn('"$RUNNER_TEMP/release-compute" "$RUNNER_TEMP/compute-qualification" --no-sandbox', web)
+        self.assertIn("actions/download-artifact@", qualify)
+        self.assertIn("name: app-sdk-release-compute", qualify)
+        self.assertIn("path: ${{ runner.temp }}/release-compute", qualify)
+        self.assertNotIn("continue-on-error", qualify)
+        self.assertIn('"$RUNNER_TEMP/release-compute" "$RUNNER_TEMP/compute-qualification" --no-sandbox', qualify)
 
     def test_exact_layout_hash_binding_and_product_preservation(self):
         source = WORKFLOW.read_text()
         emit = python_handoff(job(source, "web-size"))
-        verify = python_handoff(job(source, "web"))
+        verify = python_handoff(job(source, "web-release"))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             bundle = root / "target/tilo-app/web/calculator/bundle"
