@@ -6365,7 +6365,7 @@ impl CapnpBrokerState {
                 })
         }
 
-        let targets = self
+        let mut targets = self
             .channels
             .lock()
             .map_err(|_| "native context subscriptions unavailable")?
@@ -6379,6 +6379,8 @@ impl CapnpBrokerState {
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
+        targets.sort();
+        targets.dedup();
         let retained = self
             .host_workers
             .lock()
@@ -6397,24 +6399,30 @@ impl CapnpBrokerState {
                 .channels
                 .lock()
                 .map_err(|_| "native context subscriptions unavailable")?;
-            if let Some(subscriber) = channels.get_mut(&channel).and_then(|subscribers| {
-                subscribers
-                    .context
-                    .iter_mut()
-                    .find(|subscriber| subscriber.peer_id == peer_id)
-            }) && subscriber
-                .native_roster
-                .as_deref()
-                .is_none_or(|current| !same_roster(current, &roster))
-                && subscriber
-                    .tx
-                    .send(ContextEnvelope::Snapshot {
-                        collaborators: roster.clone(),
-                        permissions: Vec::new(),
-                    })
-                    .is_ok()
-            {
-                subscriber.native_roster = Some(roster);
+            if let Some(subscribers) = channels.get_mut(&channel) {
+                subscribers.context.retain_mut(|subscriber| {
+                    if subscriber.peer_id != peer_id
+                        || subscriber.native_roster.is_none()
+                        || subscriber
+                            .native_roster
+                            .as_deref()
+                            .is_some_and(|current| same_roster(current, &roster))
+                    {
+                        return true;
+                    }
+                    if subscriber
+                        .tx
+                        .send(ContextEnvelope::Snapshot {
+                            collaborators: roster.clone(),
+                            permissions: Vec::new(),
+                        })
+                        .is_err()
+                    {
+                        return false;
+                    }
+                    subscriber.native_roster = Some(roster.clone());
+                    true
+                });
             }
         }
         Ok(())
@@ -13875,6 +13883,11 @@ pub mod tests {
 
         let channel = route.channel_key();
         state.host_workers.lock().unwrap().insert(46, admitted);
+        let mut parallel = state.subscribe_context(&channel, 46, Some(roster.clone()));
+        assert!(matches!(
+            parallel.try_recv(),
+            Ok(ContextEnvelope::Snapshot { .. })
+        ));
         let mut stream = state.subscribe_context(&channel, 46, Some(roster));
         let mut ordinary = state.subscribe_context(&channel, 47, None);
         assert!(matches!(
@@ -13901,6 +13914,10 @@ pub mod tests {
             stream.try_recv().is_err(),
             "app context must not replace an authenticated native roster"
         );
+        assert!(
+            parallel.try_recv().is_err(),
+            "app context must not replace a parallel authenticated native roster"
+        );
         let ContextEnvelope::Snapshot { collaborators, .. } = ordinary.try_recv().unwrap() else {
             panic!("ordinary context subscribers still receive app context");
         };
@@ -13926,6 +13943,14 @@ pub mod tests {
                 .iter()
                 .any(|row| row.id == person && row.is_self)
         );
+        let ContextEnvelope::Snapshot { collaborators, .. } = parallel.try_recv().unwrap() else {
+            panic!("every mounted root must receive membership removal");
+        };
+        assert!(
+            collaborators
+                .iter()
+                .all(|row| row.id != format!("agent:{person}"))
+        );
         membership.write().workspaces[0].grant_capability(CapOverride::membership(
             Subject::agent(reed),
             room,
@@ -13939,6 +13964,14 @@ pub mod tests {
             collaborators
                 .iter()
                 .any(|row| row.id == format!("agent:{reed}") && row.is_agent)
+        );
+        let ContextEnvelope::Snapshot { collaborators, .. } = parallel.try_recv().unwrap() else {
+            panic!("every mounted root must receive membership addition");
+        };
+        assert!(
+            collaborators
+                .iter()
+                .any(|row| row.id == "agent:reed" && row.is_agent)
         );
     }
 
