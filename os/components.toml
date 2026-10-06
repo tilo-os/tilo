@@ -293,6 +293,7 @@ layer = "desktop-binaries"
 files = [
   { from = "tilo-model-manager", to = "/usr/bin/tilo-model-manager", mode = "0755" },
   { from = "tilo-speech-worker", to = "/usr/bin/tilo-speech-worker", mode = "0755" },
+  { from = "@manifest/usr/share/licenses/tilo-speech-worker/LICENSE", to = "/usr/share/licenses/tilo-speech-worker/LICENSE", mode = "0644" },
 ]
 
 [[component]]

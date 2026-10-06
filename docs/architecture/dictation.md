@@ -243,11 +243,13 @@ sessions. Language IDs are bounded by the loaded model's own vocabulary.
 
 Remote public-fixture qualification passed partial/final decoding, automatic
 English detection, independent repeat decoding, silence, and language bounds
-under production confinement. The signed worker subprocess fixture is available
-with `--worker`, but positive execution is blocked by the remote container's
-root identity and inability to drop UID. Its typed ModelUnavailable refusal was
-observed; the worker's elevated override rejection remains intact. This is not
-proof of full worker cancellation, multilingual accuracy or any live mic flow.
+under production confinement. The `--worker-core` journey runs the actual production handler in a separate,
+uninstalled qualification child with an ephemeral signed fixture. It verifies
+Ready, PCM streaming, draft/final replies, busy cancellation, reaping and a new
+session after cancellation, with the same process limits and confinement. The
+installed CLI's elevated override rejection was observed separately and remains
+intact; `--worker` needs an unprivileged runtime for positive fixture execution.
+Neither journey proves multilingual accuracy or any live microphone flow.
 
 `dist/local-models/catalog-source-speech-candidate.json` and
 `tools/release/prepare_speech_catalog.py` prepare receipt-checked review inputs

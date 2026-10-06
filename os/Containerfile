@@ -2165,10 +2165,6 @@ COPY os/usr/lib/systemd/system/systemd-boot-random-seed.service.d/10-tilo-read-o
 # this is the only sanctioned way to materialise persistent dirs.
 COPY os/usr/lib/tmpfiles.d/tilo.conf /usr/lib/tmpfiles.d/tilo.conf
 # systemd-tmpfiles --user reads /usr/share/user-tmpfiles.d, not /usr/lib.
-
-# Static CPU speech engine: retain the vendored upstream MIT notice.
-COPY crates/agent/local-model-service/native/upstream/whisper.cpp/LICENSE /usr/share/licenses/tilo-speech-worker/LICENSE
-
 COPY os/usr/share/user-tmpfiles.d/tilo-model-manager.conf os/usr/share/user-tmpfiles.d/tilo-fs.conf /usr/share/user-tmpfiles.d/
 
 # The device-trust group, which must exist before tmpfiles-setup runs so
