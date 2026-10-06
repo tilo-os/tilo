@@ -12124,6 +12124,12 @@ impl ShellOverlayHost {
         self.layers.dictation.owns_key(key)
     }
 
+    /// Local microphone controls cannot be operated through a shared seat.
+    /// This does not withdraw the original editable field's local IME focus.
+    pub(crate) fn dictation_mutes_remote_input(&self) -> bool {
+        self.layers.dictation.is_open()
+    }
+
     pub(crate) fn dictation_pointer_at(&self, point: (f64, f64)) -> bool {
         let outputs = self.layer_outputs();
         self.layers.dictation.is_open()

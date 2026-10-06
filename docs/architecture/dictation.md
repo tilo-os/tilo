@@ -81,8 +81,11 @@ with actual Wayland client connections. They do not measure recognition quality,
 actual microphone access, native app CRDT history, or live visual status.
 The native-chrome journey in `tests/input_method_wire.rs` additionally exercises
 the existing `ShellTextInput` stand-in: corrected dictation becomes one native
-`WindowEvent::Ime(Commit)` after finalization. Reuse this bridge. It is not proof
-of an app's selection, CRDT undo or accessibility routing.
+`WindowEvent::Ime(Commit)` after finalization. That final event also drives a
+real Notes component through its shared rich-text field and owning action
+dispatcher: selected-range replacement preserves the surrounding text, one
+system undo restores the selection's prior text, and redo reapplies the result.
+This does not prove microphone capture or universal app/accessibility routing.
 The native host now supplies a layout-generation-bearing widget identity or
 the palette's keyboard ownership to that bridge. An owner change cancels the
 session immediately and resets its text-input enable cycle, including switches
@@ -102,7 +105,8 @@ forward the same contract rather than building another input. Terminal declares
 its editable IME purpose and invalidates deferred input on PTY input/output,
 including a write before echo or output with an unchanged caret.
 Record edit/inverse/retirement and selection/secret-field tests exercise these
-production guards; they do not yet prove a complete speech-to-CRDT undo journey.
+production guards. The Notes wire journey additionally proves final IME text
+through selected-range replacement and owned history, without live capture.
 Separate production-reader tests cover queue overflow, source EOF and owned-process teardown
 using synthetic PCM/blocked pipes; they neither capture audio nor run inference.
 
@@ -207,9 +211,10 @@ whisper-rs 0.16.0 `set_abort_callback_safe` erases its closure into a boxed trai
 object, but its trampoline casts that pointer back to the generic closure type
 and does not retain ownership. Do not use that helper. A raw C API adapter needs
 an explicit callback lifetime and process-isolation audit; native CPU build
-flags also need a portable baseline before adoption. Native keyboard-owner
-identity is supplied by the shell host; a native document edit generation still
-needs the shared host input contract before live microphone capture is enabled.
+flags also needed a portable baseline before adoption. The later CPU adapter
+below uses its own narrow C ABI and isolated worker, rather than that Rust
+callback helper. Native keyboard-owner identity and document edit/selection
+stamps now come from the shared host input contract described above.
 
 ## Remaining release and acceptance gates
 
@@ -232,8 +237,12 @@ needs the shared host input contract before live microphone capture is enabled.
    gesture, explicit language chooser, mic-source display and editable draft
    review remain product extensions. No opaque LLM rewrite is implemented.
 5. Confirm remote collaborators cannot activate local microphone consent through
-   the existing input firewall and action authority boundaries. Starting through
-   the action door only requests consent; stale decisions are session-bound.
+   the existing input firewall and action authority boundaries. The production
+   remote-input publisher now mutes shared-seat input while dictation controls
+   are visible, without withdrawing the original local field's IME owner.
+   A publisher regression covers opening and closing those controls. Starting
+   through the action door only requests consent; stale decisions are
+   session-bound. This is narrower than a live remote-collaborator journey.
 
 These gates do not justify adding clipboard/key injection, accepting an unsigned
 model, relaxing the worker sandbox, or letting readiness imply microphone consent.

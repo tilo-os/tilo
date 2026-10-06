@@ -779,6 +779,7 @@ fn dictation_reaches_native_chrome_as_one_corrected_ime_commit() {
         }
     }
     assert_eq!(commits, ["東京 👋"]);
+    assert_native_field_selection_and_undo(commits.first().unwrap());
     assert!(
         h.state
             .check_dictation(id, std::time::Instant::now())
@@ -789,6 +790,163 @@ fn dictation_reaches_native_chrome_as_one_corrected_ime_commit() {
     assert!(!proxy.holds_focus(&h.state));
     drop(proxy);
     drop(h);
+}
+
+/// Use the event produced by the actual Wayland bridge, then Notes' owned
+/// action dispatcher and system history, without a legacy direct-document edit.
+fn assert_native_field_selection_and_undo(transcript: &str) {
+    let mut fixture = NativeNotes::new();
+    fixture
+        .driver
+        .invoke_action(
+            &tilo_actions::ActionAddress::new("notes.notebook", "new-page"),
+            serde_json::json!({"value": "Dictation"})
+                .as_object()
+                .unwrap(),
+            false,
+            None,
+        )
+        .unwrap();
+    let page = fixture
+        .records
+        .read(&fixture.checkout.id, |doc| {
+            notes::doc::NotesDoc::list_pages(doc).first().unwrap().id
+        })
+        .unwrap();
+    fixture
+        .driver
+        .invoke_action(
+            &tilo_actions::ActionAddress::new(notes::actions::page_resource_id(page), "open"),
+            &serde_json::Map::new(),
+            false,
+            None,
+        )
+        .unwrap();
+    fixture
+        .driver
+        .perform_named("block_editor", &ui::a11y::Action::Focus)
+        .unwrap();
+    fixture.driver.commit_text("before old after ");
+    fixture
+        .driver
+        .perform_named(
+            "block_editor",
+            &ui::a11y::Action::SetSelection {
+                anchor: 7,
+                focus: 10,
+            },
+        )
+        .unwrap();
+    let before = fixture
+        .records
+        .read_history(&fixture.checkout.id, |_, history| history.revision())
+        .unwrap();
+    fixture.driver.commit_text(transcript);
+    let expected = format!("before {transcript} after ");
+    fixture.assert_body(page, &expected);
+    fixture.driver.set_modifiers(&["ctrl".into()]);
+    fixture.driver.key("z");
+    fixture.driver.set_modifiers(&[]);
+    fixture.assert_body(page, "before old after ");
+    fixture
+        .driver
+        .set_modifiers(&["ctrl".into(), "shift".into()]);
+    fixture.driver.key("z");
+    fixture.driver.set_modifiers(&[]);
+    fixture.assert_body(page, &expected);
+    assert!(
+        fixture
+            .records
+            .read_history(&fixture.checkout.id, |_, history| { history.revision() })
+            .unwrap()
+            > before,
+        "dictation must enter owned persistent history"
+    );
+    fixture.driver.close_components();
+    for report in fixture.driver.take_component_close_reports() {
+        assert!(report.record_error.is_none());
+        assert!(report.view_error.is_none());
+        assert!(report.teardown_error.is_none());
+    }
+}
+
+struct NativeNotes {
+    driver: ui::headless::Driver,
+    records: ui::record::RecordStore,
+    checkout: ui::record::RecordCheckout,
+    _owners: ui::record::RecordOwners,
+    _temp: tempfile::TempDir,
+}
+impl NativeNotes {
+    fn new() -> Self {
+        use std::{cell::RefCell, rc::Rc};
+        use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
+        use ui::permissions::{Actor, PermissionContext, Role, UserId};
+        let temp = tempfile::tempdir().unwrap();
+        let state_root = temp.path().join("state");
+        let mut owners = ui::record::RecordOwners::new(state_root.clone());
+        let records = owners.open("so.tilo.notes", "dictation-wire").unwrap();
+        let target = LaunchTarget::New;
+        let context = HostContext::prepare(
+            notes::definition(),
+            HostContextInputs {
+                records: records.clone(),
+                views: Rc::new(
+                    ui::application_view::InstanceViewStore::new(
+                        state_root,
+                        "fixture-device",
+                        "dictation-wire",
+                    )
+                    .unwrap(),
+                ),
+                device_id: "fixture-device".into(),
+                instance_id: 11,
+                permissions: Rc::new(RefCell::new(PermissionContext::from_capabilities(
+                    Actor::person(Some(Role::Owner), "dictation-wire-author"),
+                    vec![],
+                ))),
+                author: UserId("dictation-wire-author".into()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
+            &target,
+        )
+        .unwrap();
+        let component = notes::definition()
+            .instantiate(context, target, RestoreInput::None)
+            .unwrap();
+        let checkout = component.record().clone();
+        let fonts = ui::font_catalog::FontCatalog::controlled_fixture(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/ui-core/assets/fonts"),
+            "en-US",
+        );
+        let mut driver = ui::headless::Driver::from_component(
+            component,
+            (1000, 700),
+            ui::application::ComponentRunnerInputs {
+                theme: ui::Theme::dark(),
+                text_renderer: ui::TextRenderer::with_font_catalog(&fonts).unwrap(),
+            },
+        )
+        .unwrap();
+        driver.set_platform_conventions(ui::PlatformConventions::new(ui::Platform::Linux));
+        Self {
+            driver,
+            records,
+            checkout,
+            _owners: owners,
+            _temp: temp,
+        }
+    }
+    fn assert_body(&self, page: notes::PageId, expected: &str) {
+        self.records
+            .read(&self.checkout.id, |doc| {
+                notes::notebook::validate(doc).unwrap();
+                let blocks = notes::doc::NotesDoc::page_block_snapshots(doc, page);
+                assert_eq!(blocks.len(), 1);
+                assert_eq!(blocks.first().unwrap().1, expected);
+            })
+            .unwrap();
+    }
 }
 
 #[test]

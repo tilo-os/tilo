@@ -1350,7 +1350,7 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
             .client_input
             .keyboard_focus()
             .map(|surface| crate::compositor::foreign::store().sheet_root(surface)),
-        chrome_captures_input(fb),
+        chrome_captures_input(fb) || fb.host().dictation_mutes_remote_input(),
         fb.host().palette_visible(),
     )
     .locked(session_locked)
@@ -2515,6 +2515,37 @@ mod tests {
 
             publish_remote_input_view(&mut state, &fb, true);
             assert!(state.remote_input_firewall.view().session_locked());
+        }
+        // Local microphone decisions mute remote control without giving up
+        // the original local editable field's keyboard owner.
+        {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            let mut state = state_sharing(ORPHAN_SURFACE);
+            publish_remote_input_view(&mut state, &fb, false);
+            assert!(!state.remote_input_firewall.view().chrome_captures_input());
+
+            fb.host_mut()
+                .dictation_surface_mut()
+                .failure(crate::compositor::dictation::DictationError::NoEditableField);
+            assert!(
+                !chrome_captures_input(&fb),
+                "dictation controls must retain the local field's IME owner"
+            );
+            publish_remote_input_view(&mut state, &fb, false);
+            assert!(
+                state.remote_input_firewall.view().chrome_captures_input(),
+                "a peer cannot operate the local microphone controls"
+            );
+
+            fb.host_mut()
+                .dictation_surface_mut()
+                .status(crate::compositor::dictation::DictationStatus::Idle);
+            publish_remote_input_view(&mut state, &fb, false);
+            assert!(
+                !state.remote_input_firewall.view().chrome_captures_input(),
+                "closing dictation must restore normal shared-seat policy"
+            );
         }
     }
 
