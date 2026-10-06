@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createActions} from './actions.mjs';
-import {resolveResourceReference} from './resource-reference.mjs';
+import {resolveResourceReference, openResourceReference} from './resource-reference.mjs';
 
 const room = 'fixture-room', host = 'ab'.repeat(32), provider = 'record:so.tilo.chat:uuid:1';
 const reference = {id: 'chat.message:m1', kind: 'chat.message', label: 'untrusted label'};
 const resource = {...reference, label: 'Published message'};
-const view = {address: {resource: resource.id, action: 'show'}, kind: 'View'};
+const view = {address: {resource: resource.id, action: 'show'}, kind: 'View',
+  view: {id: 'resource', label: 'Resource', open_action: 'show', primary: true}};
 const row = {provider, app_id: 'so.tilo.chat', resource, action: view};
 
 // Two endpoints exchange the actual remote action frames. Authentication and
@@ -73,5 +74,87 @@ test('disconnect and replacement session fence replies; consent is never implici
     await assert.rejects(resolveResourceReference({reference, provider: 'workspace:other', actions,
       current: () => true}), /Invalid shared resource/);
     assert.equal(sent.length, 1);
+  } finally { actions.dispose(); }
+});
+
+
+test('explicit browser opening hydrates the exact record and invokes only its local view door', async () => {
+  const {actions, sent} = endpoints(() => ({revision: 'r1', rows: [row]}));
+  const steps = [];
+  const opened = {actions: id => { steps.push(['actions', id]); return [view]; },
+    invokeAction: (...args) => { steps.push(['view', ...args]); return {state: 'completed'}; },
+    cleanup: async () => steps.push(['cleanup'])};
+  try {
+    const result = await openResourceReference({reference, provider, action: 'show', actions,
+      current: () => true, waitRecord: async (...args) => steps.push(['hydrate', ...args]),
+      mount: async config => { steps.push(['mount', config]); return opened; }});
+    assert.equal(result, opened);
+    assert.deepEqual(steps, [['hydrate', 'so.tilo.chat', 'uuid:1'],
+      ['mount', {app: 'so.tilo.chat', record: 'uuid:1'}], ['actions', reference.id],
+      ['view', reference.id, 'show']]);
+    assert.equal(sent.length, 1, 'the host is browsed; navigation runs on this browser');
+  } finally { actions.dispose(); }
+});
+
+test('revoked, closed and disconnected views clean up without invoking or changing documents', async () => {
+  for (const interrupted of ['undeclared', 'missing', 'document', 'input', 'disconnected', 'refused']) {
+    const {actions} = endpoints(() => ({revision: 'r1', rows: [row]}));
+    let connected = true, cleaned = 0, invoked = 0;
+    const opened = {actions: () => interrupted === 'missing' ? [] : [{...view,
+      kind: interrupted === 'document' ? 'Document' : 'View',
+      view: interrupted === 'undeclared' ? null : view.view,
+      input: interrupted === 'input' ? 'Text' : 'None'}],
+      invokeAction: () => { invoked += 1; throw Error('permission revoked'); },
+      cleanup: async () => { cleaned += 1; }};
+    try {
+      await assert.rejects(openResourceReference({reference, provider, action: 'show', actions,
+        current: () => connected, waitRecord: async () => {},
+        mount: async () => { if (interrupted === 'disconnected') connected = false; return opened; }}),
+      /unavailable|connection changed|permission revoked/);
+      assert.equal(cleaned, 1);
+      assert.equal(invoked, interrupted === 'refused' ? 1 : 0);
+    } finally { actions.dispose(); }
+  }
+});
+
+
+test('package-primary resources mount the canonical existing record; ranges never silently degrade', async () => {
+  const source = 'record:so.tilo.chat:';
+  const {actions, sent} = endpoints(() => ({revision: 'r1', rows: [{...row, provider: source}]}));
+  const steps = [];
+  try {
+    await openResourceReference({reference, provider: source, action: 'show', actions,
+      current: () => true, waitRecord: async (...args) => steps.push(args),
+      mount: async config => { steps.push(config); return {actions: () => [view],
+        invokeAction: () => ({state: 'completed'}), cleanup: async () => {}}; }});
+    assert.deepEqual(steps, [['so.tilo.chat', ''], {app: 'so.tilo.chat', record: '@tilo:package-primary'}]);
+    await assert.rejects(openResourceReference({reference: {...reference, span: {start: 1, end: 2, unit: 'Chars'}},
+      provider: source, action: 'show', actions, current: () => true}), /range-aware/);
+    assert.equal(sent.length, 1);
+  } finally { actions.dispose(); }
+});
+
+
+test('cancelling a pending browser mount cleans it up before invoking the resource', async () => {
+  const {actions} = endpoints(() => ({revision: 'r1', rows: [row]}));
+  const controller = new AbortController();
+  let cleaned = 0;
+  try {
+    await assert.rejects(openResourceReference({reference, provider, action: 'show', actions,
+      signal: controller.signal, current: () => true, waitRecord: async () => {},
+      mount: async () => { controller.abort(); return {cleanup: async () => { cleaned += 1; },
+        actions: () => { throw Error('cancelled navigation must not read the mounted surface'); }}; }}),
+      error => error.name === 'AbortError');
+    assert.equal(cleaned, 1);
+  } finally { actions.dispose(); }
+});
+
+test('read queries without a declared navigation view cannot open a resource', async () => {
+  const {actions} = endpoints(() => ({revision: 'r1', rows: [{...row,
+    action: {...view, view: null}}]}));
+  try {
+    await assert.rejects(openResourceReference({reference, provider, action: 'show', actions,
+      current: () => true, waitRecord: () => assert.fail('must not hydrate'),
+      mount: () => assert.fail('must not mount')}), /view unavailable/);
   } finally { actions.dispose(); }
 });

@@ -80,11 +80,12 @@ made here; the implemented effect opens the service's browser channel.
 
 The shell now releases room app following during reconciliation when its live
 participant disappears, its named tab closes, established content focus is withdrawn,
-or its live session changes, before another paint/input pass.
+its live session changes, or local semantic navigation selects another window, before
+another paint/input pass.
 A reconnected session does not inherit the released relationship. Fixture coverage
 uses the real shell focus path and room follow dispatcher across two app subscribers,
 with a separate-room subscriber proving isolation, and moves Chat → Terminal before
-closing the target, withdrawing focus, replacing its session or retiring the remote
+closing the target, withdrawing focus, local semantic focus, replacing its session or retiring the remote
 session. This is a routed in-process fixture,
 not a physical two-device or encrypted-network end-to-end result.
 
@@ -97,15 +98,26 @@ descriptors come from the live publisher. Lookup creates no invitation, persiste
 grant, follow relationship or action invocation. Remote action frame fixtures cover
 revocation, mismatched records, disconnection and bounded-search failure.
 
+`openResource(target, reference, provider, action, {signal})` extends lookup into an
+existing-record standalone browser mount. It waits for the admitted room's record,
+passes its explicit existing id (including the canonical package-primary id), then
+rechecks the local app's current action catalogue and invokes the chosen declared
+resource view. It never invokes a document mutation or navigates the host's window.
+Only explicit `ResourceViewSpec` navigation declarations qualify: read queries with
+`OperationKind::View` alone do not. Chat declares workspace, text conversation and
+message views through its existing navigation effects; opening a voice channel is
+excluded because it would join a call. Cancellation, disconnect, changed connection,
+missing views and refused invocations clean up the provisional mount. Record waits
+are cancellable and reject when leaving the peer. Ranges are refused until a
+range-aware view exists, rather than silently opening the wrong position.
+
 Remaining precise blockers to clickable external resource links: Chat's legacy
-`ResourceRef` does not carry the source record provider or an authenticated host/room locator;
-there is no canonical authenticated browser link envelope to resolve those. Joining
-already uses `tilo-browser-peer::invite` with root/device certificates and governed
-room admission. After admission, `DesktopHandle::submit` in browser `desktop_host.rs`
-explicitly refuses an existing-record open on a peer-owned desktop. Complete opening
-there needs the topology owner's record-bound command and its resource view door,
-not a label-to-app guess, local-only command bypass or new URL authority. This increment
-implements authorized lookup but does not claim that missing navigation path works.
+`ResourceRef` does not carry the source record provider or an authenticated host/room
+locator; there is no canonical deployed browser link envelope/bootstrap that resolves
+those and calls this API. Joining already uses `tilo-browser-peer::invite` with
+root/device certificates and governed room admission. The new API reuses that authority
+and adds no persistent grant. Joined desktop topology has a separate existing-record
+restriction; this path uses the already-supported standalone browser mount.
 
 The existing browser-peer HTTPS fixture
 `the_owner_admits_and_removes_a_different_person_over_https` also passes on the remote

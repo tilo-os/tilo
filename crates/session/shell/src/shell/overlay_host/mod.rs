@@ -6754,22 +6754,24 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let room_changed = {
+        let context_changed = {
             let state = chrome.borrow();
-            state
-                .tree()
-                .desktop
-                .active_workspace()
-                .is_none_or(|workspace| {
-                    self.followed_room
-                        .as_ref()
-                        .is_some_and(|room| room != &workspace.room)
-                })
+            self.followed_tab
+                .is_some_and(|tab| state.active_tab_id() != Some(tab))
+                || state
+                    .tree()
+                    .desktop
+                    .active_workspace()
+                    .is_none_or(|workspace| {
+                        self.followed_room
+                            .as_ref()
+                            .is_some_and(|room| room != &workspace.room)
+                    })
         };
-        if room_changed {
-            // Follow is an attached local view, never a cross-workspace
-            // navigation command. Stop it before the next room receives any
-            // input, releasing the apps that were actually following.
+        if context_changed {
+            // A semantic focus command takes control just like a pointer or
+            // key. Release the original room before reconciliation can undo
+            // local navigation or attach its apps to a different workspace.
             self.set_followed_peer(None);
             return true;
         }
@@ -6846,13 +6848,14 @@ impl ShellOverlayHost {
                 let state = chrome.borrow();
                 let tree = state.tree();
                 let command = tree.desktop.active_workspace().map(|workspace| {
-                    let target = workspace
+                    let session = workspace
                         .collaborators
                         .iter()
                         .find(|participant| participant.id == id)
-                        .and_then(|participant| participant.session)
-                        .map_or_else(|| id.to_string(), |session| format!("peer@{session}"));
-                    (workspace.room, Some(target))
+                        .and_then(|participant| participant.session);
+                    let target =
+                        session.map_or_else(|| id.to_string(), |session| format!("peer@{session}"));
+                    (workspace.room, Some(target), session)
                 });
                 drop(tree);
                 drop(state);
@@ -6860,28 +6863,27 @@ impl ShellOverlayHost {
             }
             _ => None,
         };
-        if let Some((room, target)) = &active_command {
+        if let Some((room, _, session)) = &active_command {
             self.followed_room = Some(*room);
-            self.followed_session = target
-                .as_deref()
-                .and_then(|target| target.strip_prefix("peer@"))
-                .and_then(|session| session.parse().ok());
+            self.followed_session = *session;
         }
-        let command = active_command.or_else(|| {
-            previous_room.map(|room| (room, None)).or_else(|| {
-                self.chrome.as_ref().and_then(|chrome| {
-                    let state = chrome.borrow();
-                    let tree = state.tree();
-                    let command = tree
-                        .desktop
-                        .active_workspace()
-                        .map(|workspace| (workspace.room, None));
-                    drop(tree);
-                    drop(state);
-                    command
+        let command = active_command
+            .map(|(room, target, _)| (room, target))
+            .or_else(|| {
+                previous_room.map(|room| (room, None)).or_else(|| {
+                    self.chrome.as_ref().and_then(|chrome| {
+                        let state = chrome.borrow();
+                        let tree = state.tree();
+                        let command = tree
+                            .desktop
+                            .active_workspace()
+                            .map(|workspace| (workspace.room, None));
+                        drop(tree);
+                        drop(state);
+                        command
+                    })
                 })
-            })
-        });
+            });
         if let Some((room, target)) = command {
             if let Some(bridge) = self.follow_bridge.as_ref() {
                 bridge(room, target.clone());

@@ -344,7 +344,13 @@ fn following_a_peer_tracks_their_tab_binds_views_and_releases_on_local_intent() 
 
 #[test]
 fn following_cross_app_context_releases_all_apps_when_the_peer_or_window_leaves() {
-    for interruption in ["close", "disconnect", "focus-left", "session-replaced"] {
+    for interruption in [
+        "close",
+        "disconnect",
+        "focus-left",
+        "session-replaced",
+        "local-focus",
+    ] {
         let tree = cross_app_follow_tree();
         let strip = tree.desktop.workspaces[0].strips[0].id;
         let room = tree.desktop.workspaces[0].room;
@@ -400,6 +406,7 @@ fn following_cross_app_context_releases_all_apps_when_the_peer_or_window_leaves(
                 "session-replaced" => {
                     state.tree_mut().desktop.workspaces[0].collaborators[0].session = Some(88);
                 }
+                "local-focus" => state.focus_tab(tree.desktop.active, strip, 200, 201),
                 _ => state.tree_mut().desktop.workspaces[0].strips[0].window_groups[0]
                     .tabs
                     .clear(),
