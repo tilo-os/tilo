@@ -2769,6 +2769,45 @@ impl GroupRow {
 }
 
 impl FloatingSurfaceProvider for GroupRow {
+    fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
+        for group in &mut self.groups {
+            FloatingSurfaceProvider::on_floating_surface_focus_changed(group, id, focused);
+        }
+    }
+
+    fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
+        for group in &mut self.groups {
+            FloatingSurfaceProvider::on_floating_surface_event_source(group, id);
+        }
+    }
+
+    fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
+        self.groups
+            .iter()
+            .find_map(|group| FloatingSurfaceProvider::floating_surface_accessibility(group, id))
+    }
+
+    fn perform_floating_surface_accessibility_action(
+        &mut self,
+        id: &str,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> bool {
+        self.groups.iter_mut().any(|group| {
+            FloatingSurfaceProvider::perform_floating_surface_accessibility_action(
+                group, id, target, action, state, path,
+            )
+        })
+    }
+
+    fn floating_surface_ime(&self, id: &str) -> Option<(winit::window::ImePurpose, Rect)> {
+        self.groups
+            .iter()
+            .find_map(|group| FloatingSurfaceProvider::floating_surface_ime(group, id))
+    }
+
     fn take_floating_surface_request(
         &mut self,
     ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {

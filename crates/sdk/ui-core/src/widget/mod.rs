@@ -545,6 +545,37 @@ pub trait NativeViewLifecycle {
 
 /// Optional capture and detachable-surface capability.
 pub trait FloatingSurfaceProvider {
+    /// Route native keyboard focus to the exact presentation instance.
+    fn on_floating_surface_focus_changed(&mut self, _id: Option<&str>, _focused: bool) {}
+
+    /// Identify the native surface delivering the current input event. The
+    /// host resets this immediately after dispatch; it grants no authority.
+    fn on_floating_surface_event_source(&mut self, _id: Option<&str>) {}
+
+    /// The retained semantic subtree presented in one secondary window.
+    fn floating_surface_accessibility(&self, _id: &str) -> Option<crate::a11y::AccessNode> {
+        None
+    }
+
+    fn perform_floating_surface_accessibility_action(
+        &mut self,
+        _id: &str,
+        _target: &str,
+        _action: &crate::a11y::Action,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &automerge::ObjId,
+    ) -> bool {
+        false
+    }
+
+    /// IME purpose and desktop-logical caret rect for one secondary window.
+    fn floating_surface_ime(
+        &self,
+        _id: &str,
+    ) -> Option<(winit::window::ImePurpose, vello::kurbo::Rect)> {
+        None
+    }
+
     /// One-shot request to hand app content to the shared floating-surface
     /// host. Shell and in-app hosts consume the same description, so `PiP` does
     /// not require a second rendering/widget API.
@@ -2040,6 +2071,21 @@ pub trait Widget {
 /// This keeps host/container call sites concise while the core [`Widget`]
 /// contract contains only capability accessors.
 pub trait FloatingSurfaceWidgetExt {
+    fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool);
+    fn on_floating_surface_event_source(&mut self, id: Option<&str>);
+    fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode>;
+    fn perform_floating_surface_accessibility_action(
+        &mut self,
+        id: &str,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> bool;
+    fn floating_surface_ime(
+        &self,
+        id: &str,
+    ) -> Option<(winit::window::ImePurpose, vello::kurbo::Rect)>;
     fn take_floating_surface_request(
         &mut self,
     ) -> Option<crate::floating_surface::FloatingSurfaceRequest>;
@@ -2065,6 +2111,43 @@ pub trait FloatingSurfaceWidgetExt {
 }
 
 impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
+    fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
+        if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
+            provider.on_floating_surface_focus_changed(id, focused);
+        }
+    }
+
+    fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
+        if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
+            provider.on_floating_surface_event_source(id);
+        }
+    }
+
+    fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
+        capability::capability::<dyn FloatingSurfaceProvider>(self)?
+            .floating_surface_accessibility(id)
+    }
+
+    fn perform_floating_surface_accessibility_action(
+        &mut self,
+        id: &str,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> bool {
+        capability::capability_mut::<dyn FloatingSurfaceProvider>(self).is_some_and(|provider| {
+            provider.perform_floating_surface_accessibility_action(id, target, action, state, path)
+        })
+    }
+
+    fn floating_surface_ime(
+        &self,
+        id: &str,
+    ) -> Option<(winit::window::ImePurpose, vello::kurbo::Rect)> {
+        capability::capability::<dyn FloatingSurfaceProvider>(self)?.floating_surface_ime(id)
+    }
+
     fn take_floating_surface_request(
         &mut self,
     ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
