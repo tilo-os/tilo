@@ -1361,6 +1361,7 @@ mod spotify_tests {
         use crate::actions::MusicEffect;
         use ui::tilo_resource::Effect as _;
         for effect in [
+            MusicEffect::ConnectSpotifyLibrary,
             MusicEffect::ConnectSpotify,
             MusicEffect::BrowseSpotify,
             MusicEffect::BrowseYouTube,

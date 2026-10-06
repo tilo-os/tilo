@@ -101,8 +101,7 @@ impl ResourceApp for DiffmergeShell {
         Box::new(
             NavShell::new()
                 .content(cx.surface(comparison))
-                .content_header("", chrome.actions())
-                .content_header_leading(chrome.mode_switch()),
+                .content_header("", chrome.actions()),
         )
     }
 
@@ -129,6 +128,7 @@ impl ResourceSurface<Diffmerge, DiffmergeEffect> for DiffMergeApp {
 
     fn attach(&mut self, cx: SurfaceCx<Diffmerge>) {
         self.attach_dispatcher(cx.dispatcher());
+        self.attach_waker(cx.waker());
     }
 
     fn read_only_changed(&mut self, read_only: bool) {
@@ -151,6 +151,61 @@ impl ResourceSurface<Diffmerge, DiffmergeEffect> for DiffMergeApp {
 #[cfg(test)]
 mod header_tests {
     use super::*;
+    #[test]
+    fn twenty_megabyte_sources_open_through_the_actual_resource_and_stay_scrollable() {
+        use std::time::Instant;
+        let (left, right) = crate::diff_view::performance_tests::unique_sources();
+        let bytes = left.len();
+        let mut app = ui::framework::testing::HeadlessApp::<DiffmergeShell>::new().unwrap();
+        let open =
+            ui::tilo_resource::Invoke::<Diffmerge>::apply(&DiffmergeAction::OpenComparison {
+                left_label: "large-before.rs".into(),
+                left,
+                right_label: "large-after.rs".into(),
+                right,
+            })
+            .unwrap();
+        let started = Instant::now();
+        app.invoke(open.clone()).unwrap();
+        let opened = started.elapsed();
+        let state = app.state();
+        assert_eq!(state.comparison.as_ref().unwrap().left.len(), bytes);
+        let started = Instant::now();
+        app.effect(&DiffmergeEffect::NextChange).unwrap();
+        let jump = started.elapsed();
+        let started = Instant::now();
+        app.effect(&DiffmergeEffect::ShowMerge).unwrap();
+        app.effect(&DiffmergeEffect::ShowDiff).unwrap();
+        let switch = started.elapsed();
+        let started = Instant::now();
+        app.invoke(open).unwrap();
+        let reopened = started.elapsed();
+        app.harness().send(&winit::event::WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(480.0, 400.0),
+        });
+        let digests = crate::model::digest_passes();
+        let started = Instant::now();
+        for _ in 0..8 {
+            app.harness().scroll(0.0, -3.0);
+        }
+        let scroll = started.elapsed();
+        assert_eq!(
+            crate::model::digest_passes(),
+            digests,
+            "ordinary wheel frames do not hash the unchanged 40 MB comparison"
+        );
+        assert_eq!(app.state().comparison.as_ref().unwrap().left.len(), bytes);
+        let audit = app.harness().native_app_audit();
+        assert!(
+            audit.is_certified(),
+            "the real large comparison publishes its controls: {audit:#?}"
+        );
+        eprintln!(
+            "hosted large comparison bytes={bytes} canonical_open_and_frame={opened:?} next_change_and_frame={jump:?} mode_round_trip={switch:?} repeated_open={reopened:?} eight_wheel_frames={scroll:?}"
+        );
+    }
+
     /// The header's controls are the shared widgets, reached the way a person
     /// reaches them: the shell's header holds the mode switch, change
     /// navigation and file actions, and pressing the mode switch changes

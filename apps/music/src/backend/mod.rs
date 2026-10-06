@@ -404,6 +404,13 @@ pub trait MusicBackend: Send + Sync {
         Err(BackendError("Spotify is unavailable in this build".into()))
     }
 
+    /// Connect with profile and library read access only.
+    /// # Errors
+    /// Source unavailable, sign-in failed or account inaccessible.
+    fn connect_spotify_read_only(&self) -> Result<(), BackendError> {
+        Err(BackendError("Spotify is unavailable in this build".into()))
+    }
+
     /// Validate Premium entitlement and the separate native playback grant.
     /// # Errors
     /// Unavailable support, missing sign-in, Free account or rejected grant.

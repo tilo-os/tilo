@@ -43,8 +43,10 @@ fn focus_trap_cycles_only_within_members() {
 // `modal_dialog_{dark,light}.png` and `popover_{dark,light}.png`.
 // ---------------------------------------------------------------------------
 
-const CANVAS_W: u32 = 640;
-const CANVAS_H: u32 = 420;
+// Both axes must fit a desktop panel. Short landscape windows intentionally
+// present full-window sheets, which have no floating panel edge.
+const CANVAS_W: u32 = 960;
+const CANVAS_H: u32 = 720;
 
 fn luminance_of(px: (u8, u8, u8, u8)) -> f64 {
     tilo_ui::a11y::relative_luminance(Color::from_rgba8(px.0, px.1, px.2, px.3))

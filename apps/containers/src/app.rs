@@ -722,6 +722,7 @@ impl ContainersApp {
             {
                 if newc.logs.is_empty() {
                     newc.logs = old.logs;
+                    newc.logs_error = old.logs_error;
                 }
                 if newc.env.is_empty() {
                     newc.env = old.env;
@@ -745,7 +746,7 @@ impl ContainersApp {
             .containers
             .iter()
             .find(|c| c.id == sel)
-            .is_some_and(|c| c.logs.is_empty() && c.env.is_empty());
+            .is_some_and(|c| c.logs.is_empty() && c.logs_error.is_none() && c.env.is_empty());
         if !needs || !self.live {
             return;
         }
@@ -757,8 +758,14 @@ impl ContainersApp {
         let logs = podman::fetch_logs(&sel, 200);
         if let Some(c) = self.engine.containers.iter_mut().find(|c| c.id == sel) {
             podman::inspect_into(c);
-            if !logs.is_empty() {
-                c.logs = logs;
+            match logs {
+                Ok(logs) => {
+                    c.logs = logs;
+                    c.logs_error = None;
+                }
+                Err(error) => {
+                    c.logs_error = Some(error);
+                }
             }
             self.engine_changed();
         }
@@ -1867,6 +1874,7 @@ impl ContainersApp {
                 },
                 labels: Vec::new(),
                 stats: crate::model::Stats::default(),
+                logs_error: None,
                 logs: if hydrated {
                     vec!["controlled detail".into()]
                 } else {

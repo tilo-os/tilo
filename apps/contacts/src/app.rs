@@ -286,7 +286,14 @@ fn sort_control(shared: &Shared, sort_choice: &LocalState<String>) -> Element {
             .map(|(value, label, _)| ((*value).to_owned(), (*label).to_owned()))
             .collect(),
     );
-    Box::new(sort.control_size(ControlSize::Small))
+    Box::new(
+        ui::widget::Row::new()
+            .with_id("contacts.sort-row")
+            .with_padding_rhythm(None, Some(ui::tokens::Rhythm::Related))
+            .with_rhythm(ui::tokens::Rhythm::Related)
+            .with_align_items(taffy::AlignItems::Center)
+            .push(Box::new(sort.control_size(ControlSize::Regular))),
+    )
 }
 
 /// The first widget in `root`'s tree with `id`, depth first, to change.

@@ -267,6 +267,7 @@ impl<R: Resource> ResourceRoot<R> {
         content: Element,
     ) -> Self {
         let store = cx.content();
+        cx.dispatch.name_resource(&label);
         Self {
             title,
             icon,

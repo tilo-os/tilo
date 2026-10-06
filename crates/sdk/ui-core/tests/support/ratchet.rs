@@ -52,6 +52,7 @@ pub struct Pattern {
     pub message: &'static str,
     /// Whether a match counts. `None` counts every match.
     keep: Option<fn(&Captures<'_>) -> bool>,
+    keep_line: Option<fn(&str, &Captures<'_>) -> bool>,
 }
 
 impl Pattern {
@@ -62,6 +63,7 @@ impl Pattern {
                 .unwrap_or_else(|e| panic!("ratchet pattern `{key}` must compile: {e}")),
             message,
             keep: None,
+            keep_line: None,
         }
     }
 
@@ -73,12 +75,23 @@ impl Pattern {
         self
     }
 
+    /// Inspect surrounding source without consuming it from the regex scan.
+    /// This preserves multiple calls on one line when classifying arguments.
+    #[must_use]
+    pub fn keep_line(mut self, keep: fn(&str, &Captures<'_>) -> bool) -> Self {
+        self.keep_line = Some(keep);
+        self
+    }
+
     /// How many times this pattern counts on `line`.
     pub fn hits(&self, line: &str) -> usize {
-        match self.keep {
-            None => self.regex.find_iter(line).count(),
-            Some(keep) => self.regex.captures_iter(line).filter(|c| keep(c)).count(),
-        }
+        self.regex
+            .captures_iter(line)
+            .filter(|c| {
+                self.keep.is_none_or(|keep| keep(c))
+                    && self.keep_line.is_none_or(|keep| keep(line, c))
+            })
+            .count()
     }
 }
 

@@ -36,6 +36,7 @@ pub enum StreamRequest {
         operation: crate::backend::SpotifyOperation,
     },
     ConnectSpotifyPlayback,
+    ConnectSpotify,
     NativeSpotify {
         track_id: String,
         source_id: String,
@@ -332,7 +333,8 @@ fn validate_request(request: &StreamRequest) -> Result<(), String> {
         StreamRequest::Home
         | StreamRequest::Source { .. }
         | StreamRequest::DisconnectSpotify
-        | StreamRequest::ConnectSpotifyPlayback => {}
+        | StreamRequest::ConnectSpotifyPlayback
+        | StreamRequest::ConnectSpotify => {}
     }
     Ok(())
 }
@@ -418,6 +420,13 @@ fn handle_request(
         StreamRequest::DisconnectSpotify => {
             let result = backend
                 .disconnect_spotify()
+                .map(|()| (backend.name().to_string(), backend.is_live()))
+                .map_err(|error| error.to_string());
+            let _ = up_tx.send(StreamUpdate::SourceSelected { result });
+        }
+        StreamRequest::ConnectSpotify => {
+            let result = backend
+                .connect_spotify_read_only()
                 .map(|()| (backend.name().to_string(), backend.is_live()))
                 .map_err(|error| error.to_string());
             let _ = up_tx.send(StreamUpdate::SourceSelected { result });
