@@ -670,6 +670,13 @@ mod owner_commit_tests {
                 device: f.owner.peer().authority().device_public_key,
             },
         };
+        let actor = principal_id_for_root(f.owner.peer().authority().user_public_key);
+        let context = tilo_actions::ActionContext::for_resource(
+            "Publish",
+            "record:bounded",
+            "document",
+            "Receipt test",
+        );
         f.state
             .journal
             .lock()
@@ -678,7 +685,15 @@ mod owner_commit_tests {
             .unwrap()
             .as_mut()
             .unwrap()
-            .admit(key.clone(), serde_json::json!({"effect":"bounded-test"}), 1)
+            .admit(
+                key.clone(),
+                serde_json::json!({
+                    "operation_kind": tilo_actions::OperationKind::Effect,
+                    "actor": actor,
+                    "context": context,
+                }),
+                1,
+            )
             .unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         f.state.pending_invocations.lock().unwrap().insert(
@@ -696,19 +711,14 @@ mod owner_commit_tests {
                 update: tilo_actions::InvocationUpdate::Accepted { invocation },
                 prepared_effect: Arc::default(),
                 last_sequence: 0,
-                actor: principal_id_for_root(f.owner.peer().authority().user_public_key),
+                actor,
                 cancellable: false,
                 retryable_on_disconnect: false,
                 execution: tilo_actions::ExecutionMode::Immediate,
                 result: tilo_actions::ResultSpec::None,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 cluster_id: f.route.cluster_id.clone(),
-                context: tilo_actions::ActionContext::for_resource(
-                    "Publish",
-                    "record:bounded",
-                    "document",
-                    "Receipt test",
-                ),
+                context,
                 last_activity: std::time::Instant::now(),
                 cancellation_requested_at: None,
             },
@@ -734,8 +744,14 @@ mod owner_commit_tests {
                     request
                         .get()
                         .set_update_json(serde_json::to_string(&update).unwrap());
-                    let response = tokio::task::spawn_local(request.send().promise);
-                    let pending = f.mailbox.recv().await.unwrap();
+                    let mut response = tokio::task::spawn_local(request.send().promise);
+                    let pending = tokio::select! {
+                        pending = f.mailbox.recv() => pending.unwrap(),
+                        rejected = &mut response => {
+                            let rejected = rejected.map(|reply| reply.map(|_| ()));
+                            panic!("terminal update ended before owner receipt admission: {rejected:?}");
+                        }
+                    };
                     assert!(!response.is_finished());
                     assert!(result.try_recv().is_err());
                     assert!(matches!(
