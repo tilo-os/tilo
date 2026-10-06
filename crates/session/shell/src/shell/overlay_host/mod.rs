@@ -699,6 +699,8 @@ pub struct ShellOverlayHost {
     /// Terminal tabs waiting for the person's answer about the device's own
     /// shell.
     host_shell_allows: Vec<crate::shell::host_shell_allow::PendingHostShellAllow>,
+    terminal_device_shell:
+        Option<crate::shell::search::providers::terminal_device_shell::TerminalDeviceShellProvider>,
     /// Owns the portal file chooser's queue, modal state, rendering and
     /// exclusive input routing. Keeping those together prevents the host
     /// from growing another set of loosely-coupled modal fields.
@@ -2113,6 +2115,7 @@ impl ShellOverlayHost {
             permission_prompt: None,
             portal_prompts: None,
             host_shell_allows: Vec::new(),
+            terminal_device_shell: None,
             file_picker_overlay: FilePickerOverlay::default(),
             portal_dialogs: inputs.portal_dialogs,
             peer_sync_enabled: false,
@@ -3108,6 +3111,15 @@ impl ShellOverlayHost {
         let x0 = primary.scene.x0 + clearance;
         let x1 = next_left.unwrap_or(primary.scene.x1).min(primary.scene.x1);
         scene_damage_rect(Rect::new(x0, primary.scene.y0, x1, primary.scene.y1))
+    }
+
+    /// Keyboard overview navigation lands in the requested state before the
+    /// next input or animation-demand sample. Pointer transitions still use
+    /// `latch_overview_transition`; this reuses the reduced-motion settle path
+    /// without changing the user's motion preference.
+    fn settle_keyboard_overview(&mut self) {
+        let open = self.overlay_flags().overview;
+        let _ = self.tick_overview_transition(if open { 1.0 } else { 0.0 }, true);
     }
 
     /// Keep the compositor painting for the switch's duration. The
@@ -4262,6 +4274,39 @@ impl ShellOverlayHost {
     /// Drain app-owned requests for shell chrome after the app's event path
     /// has run. The request carries stable resource identity, so opening
     /// Activity does not depend on a file's current path or display label.
+    pub fn connect_native_terminal(
+        &mut self,
+        connection: u64,
+        writer: std::sync::mpsc::Sender<Vec<u8>>,
+    ) {
+        if self.terminal_device_shell.is_none() {
+            let provider = crate::shell::search::providers::terminal_device_shell::TerminalDeviceShellProvider::default();
+            self.search_registry
+                .register(std::rc::Rc::new(provider.clone()));
+            self.terminal_device_shell = Some(provider);
+        }
+        if let Some(provider) = &self.terminal_device_shell {
+            provider.connect(connection, writer);
+        }
+    }
+
+    pub fn complete_native_terminal(
+        &mut self,
+        connection: u64,
+        request: u64,
+        result: Result<serde_json::Value, String>,
+    ) {
+        if let Some(provider) = &self.terminal_device_shell {
+            provider.complete(connection, request, result);
+        }
+    }
+
+    pub fn disconnect_native_terminal(&mut self, connection: u64) {
+        if let Some(provider) = &self.terminal_device_shell {
+            provider.disconnect(connection);
+        }
+    }
+
     pub fn request_native_host_shell_allow(&mut self, writer: std::sync::mpsc::Sender<Vec<u8>>) {
         let Some(chrome) = self.chrome.clone() else {
             return;
@@ -11721,7 +11766,7 @@ impl ShellOverlayHost {
                 st.overlays.overview = !st.overlays.overview;
                 st.bump();
                 drop(st);
-                self.latch_overview_transition();
+                self.settle_keyboard_overview();
             }
             *handled = true;
             return true;
@@ -12201,6 +12246,7 @@ impl ShellOverlayHost {
                 };
                 let tab = window.address.tab;
                 self.activate_overview_window(tab);
+                self.settle_keyboard_overview();
                 true
             }
             Key::Named(NamedKey::ArrowRight) => {
@@ -12287,6 +12333,8 @@ impl ShellOverlayHost {
                 }
                 st.overlays.overview = false;
                 st.bump();
+                drop(st);
+                self.settle_keyboard_overview();
             }
         } else {
             let step: isize = if matches!(logical_key, Key::Named(NamedKey::ArrowDown)) {
@@ -12617,7 +12665,7 @@ impl ShellOverlayHost {
             st.overlays.overview = false;
             st.bump();
             drop(st);
-            self.latch_overview_transition();
+            self.settle_keyboard_overview();
             *handled = true;
             return true;
         }
@@ -18941,7 +18989,7 @@ fn capability_label(cap: &Capability) -> String {
 /// anyone given `Admin`). No recorded owner means no administrators
 /// (fail-closed) — [`crate::shell::state::WorkspaceTree::adopt_ownerless_workspaces`]
 /// keeps the local user's own workspaces out of that state.
-fn is_active_workspace_owner(state: &crate::shell::chrome_state::ChromeState) -> bool {
+pub(crate) fn is_active_workspace_owner(state: &crate::shell::chrome_state::ChromeState) -> bool {
     if let Some(forced) = state.test_only_owner_override {
         return forced;
     }

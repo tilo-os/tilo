@@ -377,3 +377,93 @@ fn both_overview_directions_stay_on_the_panel_clip() {
         "a mid-close frame still draws the panel"
     );
 }
+
+#[test]
+fn keyboard_overview_arrives_immediately_and_pointer_motion_can_resume() {
+    use crate::shell::chrome_state::ChromeState;
+    use crate::shell::state::WorkspaceTree;
+    use winit::event::Modifiers;
+    use winit::keyboard::ModifiersState;
+
+    let mut tree = WorkspaceTree::bootstrap_demo();
+    tree.append_empty_workspace("Second");
+    let chrome = ChromeState::new(tree);
+    let mut h = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+        .with_chrome(chrome.clone());
+    h.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
+        .expect("default shortcut bindings are valid");
+    let doc = AutoCommit::new();
+    let mut handled = false;
+    let super_key = Modifiers::from(ModifiersState::SUPER);
+    let tab = Key::Named(NamedKey::Tab);
+
+    assert!(h.handle_shell_keyboard_event(
+        &tab,
+        super_key,
+        false,
+        &doc,
+        &automerge::ROOT,
+        &mut handled,
+    ));
+    assert!(handled);
+    assert!(chrome.borrow().overlays.overview);
+    assert_eq!(h.overview_t, 1.0, "the first frame is fully arrived");
+    assert!(h.transition_started.is_none());
+    assert_eq!(h.overview_selection, h.overview_here_index());
+    assert!(!h.needs_animation_frame());
+
+    // A held toggle cannot close the panel or start decorative motion.
+    assert!(h.handle_shell_keyboard_event(
+        &tab,
+        super_key,
+        true,
+        &doc,
+        &automerge::ROOT,
+        &mut handled,
+    ));
+    assert!(chrome.borrow().overlays.overview);
+    assert_eq!(h.overview_t, 1.0);
+    assert!(h.transition_started.is_none());
+
+    // A second chord closes immediately, and the next one opens immediately.
+    for target in [0.0, 1.0] {
+        assert!(h.handle_shell_keyboard_event(
+            &tab,
+            super_key,
+            false,
+            &doc,
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert_eq!(h.overview_t, target);
+        assert!(h.transition_started.is_none());
+        assert!(!h.needs_animation_frame());
+    }
+
+    // Arrow + Enter activates another workspace and leaves no closing fade.
+    assert!(h.handle_overview_keyboard_nav(&Key::Named(NamedKey::ArrowDown), &mut handled));
+    let selected = h
+        .overview_selection
+        .expect("the next workspace is selected");
+    let destination = chrome.borrow().tree().desktop.workspaces[selected].id;
+    assert!(h.handle_overview_keyboard_nav(&Key::Named(NamedKey::Enter), &mut handled));
+    assert_eq!(chrome.borrow().tree().desktop.active, destination);
+    assert!(!chrome.borrow().overlays.overview);
+    assert_eq!(h.overview_t, 0.0);
+    assert!(h.transition_started.is_none());
+
+    // Pointer opening still animates. Escape cancels that flight immediately.
+    chrome.borrow_mut().overlays.overview = true;
+    h.latch_overview_transition();
+    assert!(h.transition_started.is_some());
+    assert!(h.handle_shell_escape_chord(&mut handled));
+    assert!(!chrome.borrow().overlays.overview);
+    assert_eq!(h.overview_t, 0.0);
+    assert!(h.transition_started.is_none());
+
+    // Settling a keyboard event never sets a persistent reduced-motion flag.
+    chrome.borrow_mut().overlays.overview = true;
+    h.latch_overview_transition();
+    assert!(h.transition_started.is_some());
+    assert_eq!(h.overview_target, 1.0);
+}

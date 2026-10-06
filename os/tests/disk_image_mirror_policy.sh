@@ -61,6 +61,7 @@ printf '%s\n' "\$@" >'$work/podman-argv'
 cp '$work/out/.source-policy.json' '$work/source-policy.json'
 exit 41
 EOF
+printf '#!/bin/sh\nexit 0\n' >"$work/bin/btrfs"
 chmod +x "$work/bin/"*
 python3 - "$work/bootc-helper" <<'PY'
 import platform

@@ -2452,6 +2452,7 @@ dependencies = [
  "tilo-app-package",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-contact-directory",
  "tilo-files",
  "tilo-vello",
  "tilo-winit",
@@ -15314,6 +15315,15 @@ dependencies = [
  "tilo-paths",
  "tilo-xdg-paths",
  "tracing",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-contact-directory"
+version = "0.1.0"
+dependencies = [
+ "tilo-resource",
+ "uuid",
  "workspace-hack",
 ]
 
