@@ -91,6 +91,34 @@ pub(crate) fn agent_header_widths(
     }
 }
 
+fn content_sized_plain_button_rect(
+    text: &mut TextRenderer,
+    theme: &Theme,
+    label: &str,
+    row: Rect,
+    max_width: f64,
+) -> Rect {
+    let width = ButtonFace::new(Rect::ZERO, label)
+        .role(ButtonRole::Plain)
+        .control_size(ControlSize::Small)
+        .intrinsic_width(text, theme)
+        .min(max_width.max(0.0));
+    Rect::new(row.x0, row.y0, row.x0 + width, row.y1)
+}
+
+fn paint_plain_agent_disclosure(paint: &mut PaintCtx<'_>, rect: Rect, label: &str, hovered: bool) {
+    Button::paint(
+        paint.scene,
+        paint.transform,
+        paint.text,
+        paint.theme,
+        &ButtonFace::new(rect, label)
+            .role(ButtonRole::Plain)
+            .control_size(ControlSize::Small)
+            .hovered(hovered),
+    );
+}
+
 /// How a mention of `user` is painted on `ground`: an optional filled band, and
 /// the ink for the run.
 ///
@@ -2758,22 +2786,21 @@ impl ChatApp {
         let ink = paint.theme.text_dim;
         let status = Rect::new(rect.x0, y, rect.x1, (y + row_h).min(rect.y1));
         let task_status = current.as_ref().map(|_| {
-            Rect::new(
-                status.x0,
-                status.y0,
-                (status.x1 - stop_w - gap).max(status.x0),
-                status.y1,
+            let available = (status.x1 - stop_w - gap - status.x0).max(0.0);
+            content_sized_plain_button_rect(
+                paint.text,
+                paint.theme,
+                &lines.primary,
+                status,
+                available,
             )
         });
         if let (Some(task), Some(task_status)) = (current.as_ref(), task_status) {
-            Button::paint(
-                paint.scene,
-                paint.transform,
-                paint.text,
-                paint.theme,
-                &ButtonFace::new(task_status, &lines.primary)
-                    .control_size(ControlSize::Small)
-                    .hovered(self.hovered(task_status)),
+            paint_plain_agent_disclosure(
+                &mut paint,
+                task_status,
+                &lines.primary,
+                self.hovered(task_status),
             );
             ChatApp::push_hit(
                 hits,
@@ -2811,16 +2838,14 @@ impl ChatApp {
             y = row.y1 + gap;
         }
         if let Some(line) = lines.queue {
-            let row = Rect::new(rect.x0, y, rect.x1, (y + row_h).min(rect.y1));
-            Button::paint(
-                paint.scene,
-                paint.transform,
+            let row = content_sized_plain_button_rect(
                 paint.text,
                 paint.theme,
-                &ButtonFace::new(row, &line)
-                    .control_size(ControlSize::Small)
-                    .hovered(self.hovered(row)),
+                &line,
+                Rect::new(rect.x0, y, rect.x1, (y + row_h).min(rect.y1)),
+                rect.width(),
             );
+            paint_plain_agent_disclosure(&mut paint, row, &line, self.hovered(row));
             ChatApp::push_hit(hits, row, Hit::AgentTaskCenter(None));
             y = row.y1 + gap;
         }

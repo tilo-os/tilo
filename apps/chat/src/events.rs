@@ -3083,19 +3083,7 @@ mod tests {
         assert_eq!(count_hits(&app, |hit| matches!(hit, Hit::AgentStop)), 1);
         let tasks = app.direct_agent_tasks().expect("owner-backed task context");
         assert_eq!(tasks.borrow().pending_tasks().len(), 1);
-        assert_eq!(
-            count_hits(&app, |hit| matches!(
-                hit,
-                Hit::AgentTaskCenter(Some(task)) if task == "task-current"
-            )),
-            1,
-            "the painted current-task status opens its exact Task Center row"
-        );
-        assert_eq!(
-            count_hits(&app, |hit| matches!(hit, Hit::AgentTaskCenter(None))),
-            1,
-            "the painted queued-count status opens the Task Center overview"
-        );
+        assert_agent_task_disclosures_are_content_sized(&app);
         let accessibility = ui::Widget::accessibility(&app).expect("Chat accessibility root");
         let task_center_names = accessibility
             .children
@@ -3156,6 +3144,28 @@ mod tests {
             })
                 if source == "agent:scribe"
         ));
+    }
+
+    fn assert_agent_task_disclosures_are_content_sized(app: &ChatApp) {
+        let current = app
+            .hits
+            .iter()
+            .find_map(|(rect, hit)| {
+                matches!(hit, Hit::AgentTaskCenter(Some(task)) if task == "task-current")
+                    .then_some(*rect)
+            })
+            .expect("the painted current-task status opens its exact Task Center row");
+        let queue = app
+            .hits
+            .iter()
+            .find_map(|(rect, hit)| matches!(hit, Hit::AgentTaskCenter(None)).then_some(*rect))
+            .expect("the painted queued count opens the Task Center overview");
+        assert!((current.x0 - queue.x0).abs() < 0.01);
+        assert!(
+            current.width() < (app.center_right() - app.center_left()) / 2.0
+                && queue.width() < current.width(),
+            "task disclosures stay left-aligned and content-sized: {current:?}, {queue:?}"
+        );
     }
 
     #[test]
@@ -3905,6 +3915,106 @@ mod tests {
         assert_eq!(app.composer_main.value(), "Private direction");
         assert_eq!(app.composer_main.selection(), (2, 9));
         assert!(ChatDoc::draft_text(&doc, &channel).is_empty());
+    }
+
+    #[test]
+    fn detached_agent_editor_routes_keyboard_selection_undo_ime_and_accessible_return() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.room_names
+            .insert("agent:scribe".into(), "Scribe".into());
+        app.reload(&doc);
+        render_frame(&mut app, 1200.0, 800.0);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        type_str(&mut app, &mut doc, "Original draft");
+        app.on_hit(Hit::AgentWindow, &mut ui::widget::Edits::lend(&mut doc));
+        let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
+            .expect("Float publishes the shared-host request");
+        let id = request.id;
+        let compact = vello::kurbo::Rect::new(80.0, 60.0, 600.0, 700.0);
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+            &mut app,
+            &ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
+                id: id.clone(),
+                token: "0123456789abcdef0123456789abcdef".into(),
+                rect: ui::floating_surface::protocol_rect_array(compact),
+                content_rect: ui::floating_surface::protocol_rect_array(compact),
+                transfer_covered: true,
+                coordinate_offset: [0.0, 0.0],
+            },
+        );
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+            &mut app,
+            &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+                id: id.clone(),
+                rect: ui::floating_surface::protocol_rect_array(compact),
+            },
+        );
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_focus_changed(
+            &mut app,
+            Some(&id),
+            true,
+        );
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(&mut app, Some(&id));
+        render_detached_surfaces(&mut app);
+
+        feed_root_mods(&mut app, &mut doc, &key_char("a"), mods(true, false));
+        let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
+        assert_eq!(
+            app.agent_surfaces[&channel].view.composer_main.selection(),
+            (0, "Original draft".len())
+        );
+        feed_root_mods(
+            &mut app,
+            &mut doc,
+            &WindowEvent::Ime(winit::event::Ime::Preedit("東".into(), Some((0, 3)))),
+            Modifiers::default(),
+        );
+        assert_eq!(
+            app.agent_surfaces[&channel].view.composer_main.value(),
+            "Original draft",
+            "preedit stays composition-only on the detached editor"
+        );
+        feed_root_mods(
+            &mut app,
+            &mut doc,
+            &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
+            Modifiers::default(),
+        );
+        feed_root_mods(&mut app, &mut doc, &key_char("!"), Modifiers::default());
+        feed_root_mods(&mut app, &mut doc, &key_char("z"), mods(true, false));
+        assert_eq!(
+            app.agent_surfaces[&channel].view.composer_main.value(),
+            "東京"
+        );
+        assert!(
+            ui::widget::FloatingSurfaceWidgetExt::floating_surface_ime(&app, &id).is_some(),
+            "the focused native child exports the shared editor's actual IME caret"
+        );
+
+        let return_target = format!("agent-surface:{id}|{}", Hit::AgentWindow.semantic_id());
+        assert!(
+            ui::widget::FloatingSurfaceWidgetExt::perform_floating_surface_accessibility_action(
+                &mut app,
+                &id,
+                &return_target,
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            ),
+            "the detached accessibility tree returns through the same retained control"
+        );
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+            &mut app,
+            &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id },
+        );
+        assert_eq!(app.direct_agent.as_deref(), Some("scribe"));
+        assert_eq!(app.composer_main.value(), "東京");
     }
 
     #[test]
@@ -5803,6 +5913,18 @@ mod tests {
         render_frame_with_theme(app, w, h, &ui::theme::Theme::dark());
     }
 
+    fn render_detached_surfaces(app: &mut ChatApp) {
+        let mut scene = vello::Scene::new();
+        ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
+            app,
+            &mut scene,
+            vello::kurbo::Affine::IDENTITY,
+            &mut ui::text_render::TextRenderer::new(),
+            &ui::theme::Theme::dark(),
+            &ui::presence::PresenceCtx::empty(),
+        );
+    }
+
     fn render_frame_with_theme(app: &mut ChatApp, w: f64, h: f64, theme: &ui::theme::Theme) {
         use ui::Widget;
         use ui::presence::PresenceCtx;
@@ -6320,6 +6442,30 @@ mod tests {
     fn feed_mods(app: &mut ChatApp, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) {
         let mut handled = false;
         app.dispatch_event(ev, 1.0, m, &mut ui::widget::Edits::lend(doc), &mut handled);
+    }
+
+    /// Route an event through the app root exactly as the native runner does.
+    /// The root resolves the secondary event-source ID before forwarding it.
+    fn feed_root_mods(app: &mut ChatApp, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) {
+        let mut taffy = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        let mut focus_target = None;
+        ui::Widget::handle_event(
+            app,
+            ev,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state: ui::widget::Edits::lend(doc),
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
+        );
+        assert!(handled, "the addressed floating surface handles {ev:?}");
     }
 
     // --- contextual channels + cross-workspace Inbox -------------------
