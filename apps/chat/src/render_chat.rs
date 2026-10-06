@@ -99,23 +99,50 @@ pub(crate) fn mention_colors(
     (Some(band), ink)
 }
 
-fn agent_task_status(
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct AgentTaskStatusLines {
+    pub(crate) primary: String,
+    pub(crate) receipt: Option<String>,
+    pub(crate) queue: Option<String>,
+}
+
+impl AgentTaskStatusLines {
+    pub(crate) fn count(&self) -> usize {
+        1 + usize::from(self.receipt.is_some()) + usize::from(self.queue.is_some())
+    }
+}
+
+pub(crate) fn agent_task_status_lines(
     tasks: &ui::agent_task_frontier::AgentTaskFrontiers,
     stopping: bool,
-) -> String {
-    use ui::agent_task_frontier::AgentTaskDiscovery;
+) -> AgentTaskStatusLines {
+    use ui::agent_task_frontier::{AgentTaskChoice, AgentTaskDiscovery};
 
     let context = tasks.context_task();
-    let mut status = context.as_ref().map_or_else(
+    let current = match tasks.choice() {
+        AgentTaskChoice::One(task) | AgentTaskChoice::Selected(task) => Some(task),
+        AgentTaskChoice::None | AgentTaskChoice::Choose(_) => None,
+    };
+    let last_known = || {
+        context.as_ref().map(|task| {
+            crate::i18n::t_args(
+                "chat-agent-task-last-known",
+                &[("title", task.title.clone().into())],
+            )
+        })
+    };
+    let primary = current.as_ref().map_or_else(
         || match tasks.discovery() {
             AgentTaskDiscovery::Loading => crate::i18n::t("chat-agent-task-loading"),
-            AgentTaskDiscovery::Ready => crate::i18n::t("chat-agent-task-none"),
+            AgentTaskDiscovery::Ready => {
+                last_known().unwrap_or_else(|| crate::i18n::t("chat-agent-task-none"))
+            }
             AgentTaskDiscovery::Incomplete { .. } | AgentTaskDiscovery::Unavailable => {
-                crate::i18n::t("chat-agent-task-unavailable")
+                last_known().unwrap_or_else(|| crate::i18n::t("chat-agent-task-unavailable"))
             }
         },
         |task| {
-            let state = agent_task_run_state(tasks.direction_state(), stopping);
+            let state = agent_task_run_state(tasks.direction_state(), stopping).0;
             crate::i18n::t_args(
                 "chat-agent-task-status",
                 &[
@@ -125,25 +152,29 @@ fn agent_task_status(
             )
         },
     );
-    if tasks.pending_tasks_complete() && !tasks.pending_tasks().is_empty() {
+    let receipt = context
+        .as_ref()
+        .and_then(|_| agent_task_run_state(tasks.direction_state(), stopping).1);
+    let queue = if tasks.pending_tasks_complete() && !tasks.pending_tasks().is_empty() {
         let count = tasks.pending_tasks().len();
-        let queued = crate::i18n::t_args(
+        Some(crate::i18n::t_args(
             "chat-agent-task-queued-count",
             &[("count", i64::try_from(count).unwrap_or(i64::MAX).into())],
-        );
-        status = if context.is_some() {
-            format!("{status} · {queued}")
-        } else {
-            queued
-        };
+        ))
+    } else {
+        None
+    };
+    AgentTaskStatusLines {
+        primary,
+        receipt,
+        queue,
     }
-    status
 }
 
 fn agent_task_run_state(
     direction: &ui::agent_task_frontier::AgentDirectionState,
     stopping: bool,
-) -> String {
+) -> (String, Option<String>) {
     use ui::agent_task_frontier::AgentDirectionState;
 
     let run = if stopping {
@@ -160,13 +191,7 @@ fn agent_task_run_state(
         | AgentDirectionState::Submitting
         | AgentDirectionState::NeedsRefresh(_) => None,
     };
-    match receipt {
-        Some(receipt) => crate::i18n::t_args(
-            "chat-agent-task-run-with-receipt",
-            &[("run", run.into()), ("receipt", receipt.into())],
-        ),
-        None => run,
-    }
+    (run, receipt)
 }
 
 impl ChatApp {
@@ -1365,6 +1390,16 @@ impl ChatApp {
             message: direct_message.as_deref(),
             ..EmptyStateContent::new(title)
         };
+        if self.direct_agent.is_some() {
+            let (_, title_height) = tr.measure_style(
+                title,
+                Some(ui::num::f32_of_f64(area.width().max(1.0))),
+                &theme.text(TextRole::Title),
+            );
+            if f64::from(title_height) > area.height() {
+                return;
+            }
+        }
         EmptyState::paint(
             &mut PaintCtx::new(scene, tf, tr, theme),
             area,
@@ -2454,7 +2489,7 @@ impl ChatApp {
         rect: Rect,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        use ui::agent_task_frontier::{AgentStopState, AgentTaskChoice};
+        use ui::agent_task_frontier::AgentTaskChoice;
 
         let Some(tasks) = self.direct_agent_tasks() else {
             return;
@@ -2497,37 +2532,69 @@ impl ChatApp {
             y = chooser.y1 + gap;
         }
 
-        let status = Rect::new(rect.x0, y, rect.x1, (y + row_h).min(rect.y1));
-        let context = tasks.context_task();
-        let stopping = context
+        y = self.draw_agent_task_status(
+            PaintCtx::new(scene, tf, tr, theme),
+            rect,
+            y,
+            row_h,
+            gap,
+            &tasks,
+            hits,
+        );
+
+        let mode = Rect::new(rect.x0, y, rect.x1, (y + row_h).min(rect.y1));
+        self.draw_agent_intent_picker(scene, tf, tr, theme, mode, &tasks, hits);
+    }
+
+    fn draw_agent_task_status(
+        &self,
+        mut paint: PaintCtx<'_>,
+        rect: Rect,
+        mut y: f64,
+        row_h: f64,
+        gap: f64,
+        tasks: &ui::agent_task_frontier::AgentTaskFrontiers,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) -> f64 {
+        use ui::agent_task_frontier::{AgentStopState, AgentTaskChoice};
+
+        let current = match tasks.choice() {
+            AgentTaskChoice::One(task) | AgentTaskChoice::Selected(task) => Some(task),
+            AgentTaskChoice::None | AgentTaskChoice::Choose(_) => None,
+        };
+        let stopping = current
             .as_ref()
             .is_some_and(|task| task.cancellation_requested)
             || matches!(tasks.stop_state(), AgentStopState::Stopping { .. });
-        let status_text = agent_task_status(&tasks, stopping);
+        let can_stop = current.is_some() && !stopping;
+        let lines = agent_task_status_lines(tasks, stopping);
         let stop_label = crate::i18n::t("chat-agent-stop");
-        let stop_w = if context.is_some() && !stopping {
-            let face = ButtonFace::new(Rect::ZERO, &stop_label).control_size(ControlSize::Small);
-            face.intrinsic_width(tr, theme)
+        let stop_w = if can_stop {
+            ButtonFace::new(Rect::ZERO, &stop_label)
+                .control_size(ControlSize::Small)
+                .intrinsic_width(paint.text, paint.theme)
         } else {
             0.0
         };
-        let mut paint = PaintCtx::new(scene, tf, tr, theme);
+        let caption = paint.theme.text(TextRole::Caption);
+        let ink = paint.theme.text_dim;
+        let status = Rect::new(rect.x0, y, rect.x1, (y + row_h).min(rect.y1));
         line_in(
             &mut paint,
-            &status_text,
-            &theme.text(TextRole::Caption),
-            theme.text_dim,
+            &lines.primary,
+            &caption,
+            ink,
             status.x0,
             status,
             (status.width() - stop_w - gap).max(0.0),
         );
-        if stop_w > 0.0 {
+        if can_stop {
             let stop = Rect::new(status.x1 - stop_w, status.y0, status.x1, status.y1);
             Button::paint(
-                scene,
-                tf,
-                tr,
-                theme,
+                paint.scene,
+                paint.transform,
+                paint.text,
+                paint.theme,
                 &ButtonFace::new(stop, &stop_label)
                     .control_size(ControlSize::Small)
                     .hovered(self.hovered(stop)),
@@ -2535,9 +2602,12 @@ impl ChatApp {
             ChatApp::push_hit(hits, stop, Hit::AgentStop);
         }
         y = status.y1 + gap;
-
-        let mode = Rect::new(rect.x0, y, rect.x1, (y + row_h).min(rect.y1));
-        self.draw_agent_intent_picker(scene, tf, tr, theme, mode, &tasks, hits);
+        for line in [lines.receipt, lines.queue].into_iter().flatten() {
+            let row = Rect::new(rect.x0, y, rect.x1, (y + row_h).min(rect.y1));
+            line_in(&mut paint, &line, &caption, ink, row.x0, row, row.width());
+            y = row.y1 + gap;
+        }
+        y
     }
 
     fn draw_agent_intent_picker(
@@ -3764,15 +3834,15 @@ mod tests {
         };
         assert_eq!(
             agent_task_run_state(&saved, false),
-            "Working. Direction saved"
+            ("Working".into(), Some("Direction saved".into()))
         );
         assert_eq!(
             agent_task_run_state(&applied, false),
-            "Working. Direction applied"
+            ("Working".into(), Some("Direction applied".into()))
         );
         assert_eq!(
             agent_task_run_state(&saved, true),
-            "Stopping. Direction saved"
+            ("Stopping".into(), Some("Direction saved".into()))
         );
     }
 

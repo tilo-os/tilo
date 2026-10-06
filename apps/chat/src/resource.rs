@@ -298,7 +298,9 @@ const SCENARIOS: &[&str] = &[
     "agent-direct",
     "agent-direct-compact",
     "agent-direction-saved",
+    "agent-direction-saved-closed",
     "agent-direction-saved-compact",
+    "agent-direction-saved-floating",
     "agent-stopping",
     "agent-stopping-compact",
     "agent-work",
@@ -367,7 +369,9 @@ impl ResourceApp for ChatShell {
     }
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
-        if scenario.is_some_and(|scenario| scenario.ends_with("-compact")) {
+        if scenario.is_some_and(|scenario| scenario.ends_with("-floating")) {
+            (560, 560)
+        } else if scenario.is_some_and(|scenario| scenario.ends_with("-compact")) {
             (800, 600)
         } else {
             (1280, 800)

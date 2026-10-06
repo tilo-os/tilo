@@ -1227,7 +1227,9 @@ impl ChatApp {
             "agent-direct"
                 | "agent-direct-compact"
                 | "agent-direction-saved"
+                | "agent-direction-saved-closed"
                 | "agent-direction-saved-compact"
+                | "agent-direction-saved-floating"
                 | "agent-stopping"
                 | "agent-stopping-compact"
         ) {
@@ -1377,13 +1379,19 @@ impl ChatApp {
             "agent-direct"
             | "agent-direct-compact"
             | "agent-direction-saved"
+            | "agent-direction-saved-closed"
             | "agent-direction-saved-compact"
+            | "agent-direction-saved-floating"
             | "agent-stopping"
             | "agent-stopping-compact" => {
                 self.thread_open = None;
                 self.right_flap.snap(false);
                 self.call = CallState::default();
-                self.left_flap.snap(!scenario.ends_with("-compact"));
+                self.left_flap.snap(
+                    !scenario.ends_with("-compact")
+                        && !scenario.ends_with("-closed")
+                        && !scenario.ends_with("-floating"),
+                );
             }
             "people" => {
                 self.thread_open = None;
@@ -3027,16 +3035,24 @@ impl ChatApp {
         if self.direct_agent.is_none() {
             return field;
         }
-        let rows = if self.direct_agent_tasks().is_some_and(|tasks| {
-            matches!(
-                tasks.borrow().choice(),
+        let rows = self.direct_agent_tasks().map_or(2.0, |tasks| {
+            let tasks = tasks.borrow();
+            let stopping = matches!(
+                tasks.choice(),
+                ui::agent_task_frontier::AgentTaskChoice::One(ref task)
+                    | ui::agent_task_frontier::AgentTaskChoice::Selected(ref task)
+                    if task.cancellation_requested
+            ) || matches!(
+                tasks.stop_state(),
+                ui::agent_task_frontier::AgentStopState::Stopping { .. }
+            );
+            let choice = usize::from(matches!(
+                tasks.choice(),
                 ui::agent_task_frontier::AgentTaskChoice::Choose(_)
-            )
-        }) {
-            3.0
-        } else {
-            2.0
-        };
+            ));
+            (choice + crate::render_chat::agent_task_status_lines(&tasks, stopping).count() + 1)
+                as f64
+        });
         field + rows * self.chrome.composer_min_h + rows * self.chrome.composer_pad
     }
     pub(crate) fn composer_rect(&self, tr: &mut TextRenderer) -> Rect {

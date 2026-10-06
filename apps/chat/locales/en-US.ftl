@@ -131,12 +131,12 @@ chat-agent-send-steer = Save direction
 chat-agent-task-loading = Loading current task…
 chat-agent-task-none = No current task
 chat-agent-task-unavailable = Current task unavailable
+chat-agent-task-last-known = Last known task: { $title }
 chat-agent-task-working = Working
 chat-agent-task-stopping = Stopping
 chat-agent-task-attention = Needs attention
 chat-agent-direction-saved = Direction saved
 chat-agent-direction-applied = Direction applied
-chat-agent-task-run-with-receipt = { $run }. { $receipt }
 chat-agent-task-status = { $state }: { $title }
 chat-agent-task-queued-count = { $count ->
     [one] 1 queued task

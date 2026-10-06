@@ -2006,6 +2006,7 @@ fn run_worker(name: &str, job: impl FnOnce() + Send + 'static, status: &mut Opti
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
     use super::*;
@@ -2021,11 +2022,16 @@ mod tests {
     #[derive(Default)]
     struct TaskControlHost {
         requests: Mutex<Vec<InvokeRequest>>,
+        current_unavailable: AtomicBool,
     }
 
     impl TaskControlHost {
         fn requests(&self) -> Vec<InvokeRequest> {
             self.requests.lock().unwrap().clone()
+        }
+
+        fn make_current_unavailable(&self) {
+            self.current_unavailable.store(true, Ordering::Release);
         }
     }
 
@@ -2048,6 +2054,13 @@ mod tests {
             request: InvokeRequest,
         ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
             self.requests.lock().unwrap().push(request.clone());
+            if request.target.address.action == "read-current-tasks"
+                && self.current_unavailable.load(Ordering::Acquire)
+            {
+                return Pending::ready(Err(ActionHostError::Unavailable {
+                    reason: "owner read unavailable".into(),
+                }));
+            }
             let task = request
                 .target
                 .address
@@ -2359,6 +2372,43 @@ mod tests {
             tasks.borrow().stop_state(),
             AgentStopState::Stopping { run_epoch: 7, .. }
         ));
+    }
+
+    #[test]
+    fn unavailable_owner_read_keeps_last_title_without_claiming_working() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.room_names
+            .insert("agent:scribe".into(), "Scribe".into());
+        let host = Arc::new(TaskControlHost::default());
+        app.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
+            Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
+            Caller::local_app("so.tilo.chat").in_room("ws_home"),
+        );
+        app.reload(&doc);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        app.poll_agent_tasks();
+        let tasks = app.direct_agent_tasks().expect("owner-backed task context");
+        assert!(tasks.borrow().can_steer());
+
+        host.make_current_unavailable();
+        tasks.borrow_mut().refresh();
+
+        let tasks = tasks.borrow();
+        assert!(!tasks.can_steer());
+        assert!(matches!(
+            tasks.discovery(),
+            ui::agent_task_frontier::AgentTaskDiscovery::Unavailable
+        ));
+        let status = crate::render_chat::agent_task_status_lines(&tasks, false);
+        assert_eq!(status.primary, "Last known task: Review the release");
+        assert!(status.receipt.is_none());
+        assert!(status.queue.is_none());
     }
 
     #[test]
