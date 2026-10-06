@@ -3147,6 +3147,19 @@ mod tests {
     }
 
     fn assert_agent_task_disclosures_are_content_sized(app: &ChatApp) {
+        assert_eq!(
+            count_hits(app, |hit| matches!(
+                hit,
+                Hit::AgentTaskCenter(Some(task)) if task == "task-current"
+            )),
+            1,
+            "the current task has one exact Task Center disclosure"
+        );
+        assert_eq!(
+            count_hits(app, |hit| matches!(hit, Hit::AgentTaskCenter(None))),
+            1,
+            "the queue has one Task Center overview disclosure"
+        );
         let current = app
             .hits
             .iter()

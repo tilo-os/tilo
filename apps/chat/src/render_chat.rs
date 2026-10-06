@@ -99,6 +99,7 @@ fn content_sized_plain_button_rect(
     max_width: f64,
 ) -> Rect {
     let width = ButtonFace::new(Rect::ZERO, label)
+        .icon(Icon::ChevronRight)
         .role(ButtonRole::Plain)
         .control_size(ControlSize::Small)
         .intrinsic_width(text, theme)
@@ -113,6 +114,7 @@ fn paint_plain_agent_disclosure(paint: &mut PaintCtx<'_>, rect: Rect, label: &st
         paint.text,
         paint.theme,
         &ButtonFace::new(rect, label)
+            .icon(Icon::ChevronRight)
             .role(ButtonRole::Plain)
             .control_size(ControlSize::Small)
             .hovered(hovered),
