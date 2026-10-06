@@ -347,14 +347,25 @@ class Fixture:
                 row = packaged.wait_for("Alice's actual shared voice channel reaches Bob", shared_call, session[1])
                 self.act(session, room, "join-call", resource=row["resource"])
 
+            observed_call = False
+
             def live():
+                nonlocal observed_call
                 value = self.act(session, room, "call-status")
                 if not isinstance(value, dict) or not isinstance(value.get("reported"), dict):
                     raise RuntimeError("native call state is unobservable")
                 snapshot = value["reported"]
                 if snapshot.get("state") == "ended":
+                    # call-status requests an asynchronous refresh and returns
+                    # the preceding snapshot. Before the first service reply,
+                    # the production default is ended with no channel/issue.
+                    # This is pending, never a successful join; the bounded
+                    # wait still fails if no current live reply arrives.
+                    if not observed_call and value.get("channel") is None and snapshot.get("issue") is None:
+                        return None
                     (self.output / f"{name}-voice-failure.json").write_text(json.dumps(value, indent=2))
                     raise RuntimeError(f"native call failed: {snapshot.get('issue')}")
+                observed_call = True
                 return snapshot if snapshot.get("state") == "live" else None
 
             snapshot = packaged.wait_for("native governed voice connected", live, session[1])
