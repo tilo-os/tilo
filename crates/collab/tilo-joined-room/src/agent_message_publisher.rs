@@ -197,14 +197,6 @@ impl NativeWorkspaceOwner {
             .verify_strict(&bytes, &signature)
             .map_err(|_| "Agent Message publisher registration signature mismatch")?;
         let _turn = self.0.mutation.lock();
-        let mut publishers = self.0.message_publishers.lock();
-        publishers.collect_retired();
-        if let Some(existing) = publishers.live.get(&digest) {
-            return Ok(AgentMessagePublisherLease(existing.clone()));
-        }
-        if publishers.retired.contains(&digest) {
-            return Err("Agent Message publisher registration was retired".into());
-        }
         self.with_current(registration.data.room, |view| {
             let pinned = view.host().unwrap_or_else(|| view.governor());
             if &registration.attestor != pinned
@@ -218,6 +210,17 @@ impl NativeWorkspaceOwner {
                 .permissions(registration.attestor.device_public_key, now)?;
             Ok(())
         })?;
+        let mut publishers = self.0.message_publishers.lock();
+        publishers.collect_retired();
+        if let Some(existing) = publishers.live.get(&digest) {
+            if existing.state.load(Ordering::Acquire) & RETIRED != 0 {
+                return Err("Agent Message publisher registration was retired".into());
+            }
+            return Ok(AgentMessagePublisherLease(existing.clone()));
+        }
+        if publishers.retired.contains(&digest) {
+            return Err("Agent Message publisher registration was retired".into());
+        }
         if publishers.live.len() >= MAX_PUBLISHERS {
             return Err("Agent Message publisher installation registry is full".into());
         }

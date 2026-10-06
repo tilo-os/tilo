@@ -84,6 +84,13 @@ fn actual_signed_registration_and_exact_guard_cannot_be_swapped_or_resurrected()
             .contains("another owner or installation")
     );
     original.retire();
+    assert!(
+        fixture
+            .owner
+            .register_agent_message_publisher(&publisher_registration(&fixture), fixture.now)
+            .is_err(),
+        "retired cached guard must refuse while an external holder retains it"
+    );
     drop(original);
     let mut fresh = registration;
     fresh.data.installation = uuid::Uuid::from_u128(906);
@@ -108,6 +115,37 @@ fn actual_signed_registration_and_exact_guard_cannot_be_swapped_or_resurrected()
             .owner
             .commit_agent_messages(request, &[proof], &other, fixture.now)
             .is_err()
+    );
+}
+
+#[test]
+fn cached_registration_revalidates_actual_owner_and_certificate_lifetime() {
+    let lifetime = std::time::Duration::from_secs(1000);
+    let fixture = crate::application_record::tests::fixture_with_expiry(Some(lifetime));
+    let registration = publisher_registration(&fixture);
+    let lease = fixture
+        .owner
+        .register_agent_message_publisher(&registration, fixture.now)
+        .unwrap();
+    assert_eq!(lease.0.state.load(Ordering::Acquire), 0);
+    let expired = fixture
+        .now
+        .checked_add(lifetime + std::time::Duration::from_secs(1))
+        .unwrap();
+    assert!(
+        fixture
+            .owner
+            .register_agent_message_publisher(&registration, expired)
+            .is_err(),
+        "cached lease must not bypass actual signed certificate expiry"
+    );
+    fixture.owner.fence_all();
+    assert!(
+        fixture
+            .owner
+            .register_agent_message_publisher(&registration, fixture.now)
+            .is_err(),
+        "cached lease must not escape retired native owner custody"
     );
 }
 

@@ -15,10 +15,20 @@ pub(crate) struct Fixture {
 }
 
 pub(crate) fn fixture() -> Fixture {
+    fixture_with_expiry(None)
+}
+
+pub(crate) fn fixture_with_expiry(lifetime: Option<std::time::Duration>) -> Fixture {
     let directory = tempfile::tempdir().unwrap();
     let owner = open_file(&directory.path().join("owner.json")).unwrap();
+    let now = SystemTime::now();
     let key = SigningKey::from_bytes(&[92; 32]);
-    let certificate = testing::certificate(&SigningKey::from_bytes(&[91; 32]), &key, "Governor");
+    let root = SigningKey::from_bytes(&[91; 32]);
+    let mut certificate = testing::certificate(&root, &key, "Governor");
+    if let Some(lifetime) = lifetime {
+        certificate.expires_at_ns = Some(testing::ns(now.checked_add(lifetime).unwrap()).unwrap());
+        tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+    }
     let mut governor = testing::governor::TestGovernor::empty_interactive(
         certificate.clone(),
         key.clone(),
@@ -32,7 +42,6 @@ pub(crate) fn fixture() -> Fixture {
         .unwrap(),
     );
     let hint = governor.hint(endpoint);
-    let now = SystemTime::now();
     let now_ns = testing::ns(now).unwrap();
     let invitation = governor.issue(
         vec![hint.clone()],
