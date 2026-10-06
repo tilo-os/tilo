@@ -3071,6 +3071,38 @@ impl MusicApp {
         y + f64::from(height)
     }
 
+    /// Use the same retained layout solver as the host, including theme metrics,
+    /// intrinsic label widths and the control owner's admission checks.
+    fn source_button_size(
+        button: &mut Button,
+        ctx: &mut PaintCtx<'_>,
+        width: f32,
+    ) -> Option<Size<f32>> {
+        let mut tree = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let root = button.build_layout(&mut tree, ctx.theme, &mut nodes);
+        let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+        // SAFETY: this freshly built tree contains only the exclusively borrowed
+        // button. Neither it nor its nodes move until both layout calls return;
+        // maps and raw pointers are dropped before the borrow is released.
+        unsafe {
+            bindings.rebuild(button, &tree, root, &nodes);
+            ui::widget::compute_widget_layout(
+                &mut tree,
+                root,
+                Size {
+                    width: taffy::AvailableSpace::Definite(width),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                &nodes,
+                &bindings,
+                ctx.text,
+            )
+            .ok()?;
+        }
+        tree.layout(root).ok().map(|layout| layout.size)
+    }
+
     fn position_source_buttons(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -3091,17 +3123,10 @@ impl MusicApp {
             .iter_mut()
             .chain(self.spotify_device_buttons.iter_mut())
         {
-            let size = button.measure(
-                Size {
-                    width: None,
-                    height: None,
-                },
-                Size {
-                    width: taffy::AvailableSpace::Definite(width),
-                    height: taffy::AvailableSpace::MaxContent,
-                },
-                ctx.text,
-            );
+            let Some(size) = Self::source_button_size(button, ctx, width) else {
+                button.apply_layout_external(Rect::ZERO);
+                continue;
+            };
             if x > left && x + f64::from(size.width) > right {
                 y += row_height + look.sibling;
                 x = left;
@@ -3151,17 +3176,10 @@ impl MusicApp {
             .find(|button| button.test_id() == Some("music-spotify-queue-refresh"))
         {
             let width = (body.width() - 2.0 * look.gutter).max(1.0) as f32;
-            let size = button.measure(
-                Size {
-                    width: None,
-                    height: None,
-                },
-                Size {
-                    width: taffy::AvailableSpace::Definite(width),
-                    height: taffy::AvailableSpace::MaxContent,
-                },
-                ctx.text,
-            );
+            let Some(size) = Self::source_button_size(button, ctx, width) else {
+                button.apply_layout_external(Rect::ZERO);
+                return y;
+            };
             button.apply_layout_external(Rect::from_origin_size(
                 (body.x0 + look.gutter, y),
                 (
