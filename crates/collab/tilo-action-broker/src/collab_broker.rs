@@ -307,7 +307,44 @@ pub struct AppActionBroker {
     state: Arc<CapnpBrokerState>,
 }
 
+/// Session-owned broker discovery, without retaining its mutex/journal/process graph.
+/// Pending desktop launch chrome upgrades only while performing an admitted request.
+#[derive(Clone)]
+pub struct WeakAppActionBroker(Arc<dyn BrokerDiscovery>);
+
+// Desktop discovery does not expose the server's mutex-bearing graph. The
+// session owns that graph; this concrete discovery implementation owns only Weak.
+trait BrokerDiscovery: Send + Sync {
+    fn current(&self) -> Result<AppActionBroker, String>;
+}
+struct WeakBrokerDiscovery(std::sync::Weak<CapnpBrokerState>);
+impl BrokerDiscovery for WeakBrokerDiscovery {
+    fn current(&self) -> Result<AppActionBroker, String> {
+        let state = self
+            .0
+            .upgrade()
+            .ok_or("native app opening broker retired")?;
+        state.while_live_fenced(|_| Ok(()))?;
+        Ok(AppActionBroker { state })
+    }
+}
+
+impl WeakAppActionBroker {
+    /// Acquire a temporary facade only while the owning session still accepts work.
+    ///
+    /// # Errors
+    /// The session has dropped or stopped its actual broker.
+    pub fn upgrade(&self) -> Result<AppActionBroker, String> {
+        self.0.current()
+    }
+}
+
 impl AppActionBroker {
+    /// Retain discovery without extending the owning session's lifetime.
+    #[must_use]
+    pub fn downgrade(&self) -> WeakAppActionBroker {
+        WeakAppActionBroker(Arc::new(WeakBrokerDiscovery(Arc::downgrade(&self.state))))
+    }
     /// Invoke one closed native workspace-membership command as the retained
     /// certified person. The owner still rechecks current Admin authority.
     ///
@@ -1025,4 +1062,23 @@ pub fn spawn_native_peer_with_services(
         Arc::new(Mutex::new(BrokerChannels::default())),
         Arc::new(FanoutState::new()),
     )
+}
+
+#[cfg(test)]
+mod weak_facade_tests {
+    use super::*;
+
+    #[test]
+    fn weak_native_discovery_does_not_retain_broker_or_accept_after_stop() {
+        let broker = CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let weak = broker.downgrade();
+        assert_eq!(Arc::strong_count(&broker.state), 1);
+        let temporary = weak.upgrade().unwrap();
+        assert_eq!(Arc::strong_count(&broker.state), 2);
+        drop(temporary);
+        broker.state.stop();
+        assert!(weak.upgrade().is_err());
+        drop(broker);
+        assert!(weak.upgrade().is_err());
+    }
 }

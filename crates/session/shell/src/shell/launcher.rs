@@ -2763,7 +2763,7 @@ pub fn queue_launch_target_in_workspace(
 
 /// The session's existing authenticated broker, attached by its owning host.
 #[derive(Clone)]
-pub(crate) struct NativeAppOpening(pub super::collab_broker::AppActionBroker);
+pub(crate) struct NativeAppOpening(pub tilo_action_broker::collab_broker::WeakAppActionBroker);
 
 impl std::fmt::Debug for NativeAppOpening {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2823,13 +2823,15 @@ pub(crate) fn queue_native_authoring_launch(
                     return Ok(workspace);
                 }
                 let broker = opening.ok_or("native app authorship broker unavailable")?;
-                let job = broker.0.change_workspace_membership(
+                let broker = broker.0.upgrade()?;
+                let job = broker.change_workspace_membership(
                     &room.to_string(),
                     &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
                         app: package,
                     },
                     &certificate,
                 )?;
+                drop(broker);
                 let completed = job
                     .completion
                     .recv_timeout(Duration::from_secs(30))
