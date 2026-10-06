@@ -231,10 +231,9 @@ impl Swatch {
             })
     }
 
-    /// A fixed sRGB triple for this swatch, used when **flattening** markup into
-    /// a saved PDF. On screen a swatch resolves through the live OS theme (see
-    /// `render::swatch_color`), but a written-to-disk `.pdf` must carry a
-    /// concrete, theme-independent colour so it looks the same in every viewer.
+    /// The swatch's sRGB colour. Markup is the document's own content, so
+    /// the same colour is painted on screen (`render::swatch_color`) and
+    /// written into a saved PDF, where it looks the same in every viewer.
     pub fn rgb(self) -> (u8, u8, u8) {
         match self {
             Swatch::Yellow => (250, 204, 21),
@@ -939,7 +938,9 @@ fn sample_page_abstract() -> Page {
             Block::Spacer(40.0),
             Block::Title("Tilo: A Collaborative Spatial Operating System".to_string()),
             Block::Spacer(6.0),
-            Block::Caption("Technical Overview  ·  Revision 7  ·  Daskju Systems".to_string()),
+            Block::Caption(
+                "Technical overview, revision 7. Daskju Systems, June 2026.".to_string(),
+            ),
             Block::Spacer(20.0),
             Block::H1("Abstract".to_string()),
             sample_body(

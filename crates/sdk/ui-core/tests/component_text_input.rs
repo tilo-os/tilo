@@ -150,7 +150,6 @@ fn create(
                     path: "title".into(),
                 },
                 role: UiTextRole::Title,
-                size: None,
             },
             UiNode::TextInput {
                 id: "title-input".into(),

@@ -28,7 +28,7 @@ pub(crate) fn draw_action_presence(
             &user,
             &label,
             bounds,
-            f64::from(paint.theme.tokens.radii.sm),
+            f64::from(paint.theme.tokens.radii.detail),
             viewport,
         );
         presence.draw_agent_action_marker(paint, &interaction, bounds, viewport, surface, now);

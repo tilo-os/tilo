@@ -12,12 +12,14 @@ use super::*;
 #[derive(Clone, Copy, Default)]
 pub(super) struct Regions {
     pub(super) topbar: Rect,
-    /// Hamburger toggle in the topbar. Zero-sized (and skipped) while the bin
-    /// is docked; present only in the narrow overlay layout.
+    /// The media bin's show/hide toggle, at the topbar's leading corner.
     pub(super) menu_btn: Rect,
-    /// Inspector toggle in the topbar. Zero-sized while the inspector is
-    /// docked; present only in the narrow overlay layout.
+    /// The inspector's show/hide toggle, at the topbar's trailing end
+    /// (before the window's History control when the row holds it).
     pub(super) inspector_btn: Rect,
+    /// The window's History control, in the header row's trailing corner;
+    /// zero-sized while the host offers none.
+    pub(super) history_btn: Rect,
     /// The project button: what is open, whether it is saved, and the menu
     /// that opens / saves one. Zero-sized when the topbar's leading area has
     /// no room for it — a control that overlaps Import is worse than one that
@@ -61,132 +63,85 @@ impl VideoEditorApp {
         let layout = self.bin_layout();
         let overlay = layout == SplitLayout::Overlay;
         let topbar = Rect::new(r.x0, r.y0, r.x1, r.y0 + self.topbar_height());
-        let topbar_target = self.topbar_target();
-        let topbar_y = r.y0 + (topbar.height() - topbar_target) / 2.0;
-        let topbar_edge = TOPBAR_EDGE * self.chrome_scale();
-        let topbar_gap = TOPBAR_GAP * self.chrome_scale();
-        let topbar_compact = self.topbar_is_compact();
-        let command_w = if topbar_compact {
-            topbar_target
+        let target = self.topbar_target();
+        let topbar_y = r.y0 + (topbar.height() - target) / 2.0;
+        let edge = TOPBAR_EDGE * self.chrome_scale();
+        let gap = TOPBAR_GAP * self.chrome_scale();
+        let compact = self.topbar_is_compact();
+        let widths = self.topbar_widths();
+        let slot = |x0: f64, w: f64| Rect::new(x0, topbar_y, x0 + w, topbar_y + target);
+        // The sidebar toggle at the top-leading corner and the inspector
+        // toggle at the trailing one, in every layout: one way to show or
+        // hide either panel, wherever the window's width puts them.
+        let menu_btn = slot(r.x0 + edge, target);
+        // The window's History control holds the trailing corner, where a
+        // shell's header row keeps it; the inspector toggle stands before it.
+        let history_btn = ui::chrome::HeaderRowFace::new(topbar, &self.chrome_theme)
+            .with_history_if(self.history.is_shown())
+            .history_rect();
+        let trailing_x1 = if history_btn.width() > 0.0 {
+            history_btn.x0 - gap
         } else {
-            TOPBAR_BTN_W
+            r.x1 - edge
         };
-        let export_btn = Rect::new(
-            r.x1 - topbar_edge - command_w,
-            topbar_y,
-            r.x1 - topbar_edge,
-            topbar_y + topbar_target,
-        );
-        // Directly beneath Export, in the same strip the project notice uses,
-        // so the two never share a pixel — see `project_notice_limit`.
-        let chip_w = EXPORT_CHIP_W.min((r.width() - 24.0).max(0.0));
-        // On the pane-heading band, so the chip centres on the same line as
-        // the "INSPECTOR" heading it sits beside (and the project notice
-        // plate, which shares the strip).
-        let export_chip = Rect::new(
-            export_btn.x1 - chip_w,
-            topbar.y1 + PANE_HEADING_Y0,
-            export_btn.x1,
-            topbar.y1 + PANE_HEADING_Y0 + PANE_HEADING_H,
-        );
-        let split_btn = if topbar_compact {
+        let inspector_btn = slot(trailing_x1 - target, target);
+        // The trailing group, right to left from the inspector toggle: the
+        // commands, each as wide as its label.
+        let export_w = if compact { target } else { widths.export };
+        let export_btn = slot(inspector_btn.x0 - gap - export_w, export_w);
+        let split_btn = if compact {
             Rect::ZERO
         } else {
-            Rect::new(
-                export_btn.x0 - topbar_gap - TOPBAR_BTN_W,
-                topbar_y,
-                export_btn.x0 - topbar_gap,
-                topbar_y + topbar_target,
-            )
+            slot(export_btn.x0 - gap - widths.split, widths.split)
         };
         let import_right = if split_btn.width() > 0.0 {
-            split_btn.x0 - topbar_gap
+            split_btn.x0 - gap
         } else {
-            export_btn.x0 - topbar_gap
+            export_btn.x0 - gap
         };
-        let import_btn = Rect::new(
-            import_right
-                - if topbar_compact {
-                    topbar_target
-                } else {
-                    TOPBAR_BTN_W
-                },
-            topbar_y,
-            import_right,
-            topbar_y + topbar_target,
-        );
-        // The hamburger replaces the static app glyph slot when the bin is an
-        // overlay, so the user can summon the collapsed bin.
-        let menu_btn = if overlay {
-            Rect::new(
-                r.x0 + topbar_edge,
-                topbar_y,
-                r.x0 + topbar_edge + topbar_target,
-                topbar_y + topbar_target,
-            )
-        } else {
-            Rect::ZERO
-        };
-        // Summons the collapsed inspector. It sits left of Import rather than
-        // on the right with the panel it opens, because the right of the
-        // topbar is already full at the widths where the panel collapses —
-        // and a toggle that does not fit is worse than one on the wrong side.
-        let inspector_btn = if self.inspector_split() == SplitLayout::Overlay {
-            Rect::new(
-                import_btn.x0 - topbar_gap - topbar_target,
-                topbar_y,
-                import_btn.x0 - topbar_gap,
-                topbar_y + topbar_target,
-            )
-        } else {
-            Rect::ZERO
-        };
-        // The project button occupies the topbar's leading area, after the
-        // hamburger when there is one. It is width-bounded and left-aligned
-        // rather than centred, because the centred project meta that used to
-        // live here collided with the right-hand buttons at 720px — the narrow
-        // capture width itself. Below the room it needs it is dropped
-        // entirely: a truncation so short it reads as a different project name
-        // would be worse than nothing, and the shortcuts still reach it.
-        let project_x0 = if overlay {
-            menu_btn.x1 + topbar_gap
-        } else {
-            r.x0 + topbar_edge
-        };
-        let leading_limit = if inspector_btn.width() > 0.0 {
-            inspector_btn.x0
-        } else {
-            import_btn.x0
-        } - topbar_gap;
-        let project_btn = {
-            // At a large text size a short, ellipsized title is less useful
-            // than a clear project-menu affordance.  Keep the film icon and
-            // its full accessible name, but give it the same compact target
-            // as the two pane toggles.
-            let want = if topbar_compact {
-                topbar_target
+        let import_w = if compact { target } else { widths.import };
+        let import_btn = slot(import_right - import_w, import_w);
+        // The project button occupies the leading area after the sidebar
+        // toggle. It is width-bounded and left-aligned rather than centred,
+        // and below the room it needs it is dropped entirely: a truncation so
+        // short it reads as a different project name would be worse than
+        // nothing, and the shortcuts still reach it.
+        let project_x0 = menu_btn.x1 + gap;
+        let leading_limit = import_btn.x0 - gap;
+        let mut project_btn = {
+            let want = if compact {
+                target
             } else {
-                PROJECT_BTN_W.min(leading_limit - project_x0)
+                widths.project.min(leading_limit - project_x0)
             };
-            if want >= PROJECT_BTN_MIN_W {
-                Rect::new(
-                    project_x0,
-                    topbar_y,
-                    project_x0 + want,
-                    topbar_y + topbar_target,
-                )
-            } else if topbar_compact && leading_limit >= project_x0 + topbar_target {
-                Rect::new(
-                    project_x0,
-                    topbar_y,
-                    project_x0 + topbar_target,
-                    topbar_y + topbar_target,
-                )
+            if want >= PROJECT_BTN_MIN_W.min(widths.project) {
+                slot(project_x0, want)
+            } else if compact && leading_limit >= project_x0 + target {
+                slot(project_x0, target)
             } else {
                 Rect::ZERO
             }
         };
-        let timeline_top = (r.y1 - self.timeline_height()).max(topbar.y1 + 80.0);
+        // The header row's middle: where the render reports itself, trailing
+        // against the commands, and where the project notice runs from the
+        // project button. The two never share a pixel — see
+        // `project_notice_limit`.
+        let middle_x0 = if project_btn.width() > 0.0 {
+            project_btn.x1
+        } else {
+            menu_btn.x1
+        } + gap;
+        let middle_x1 = import_btn.x0 - gap;
+        let chip_w = self
+            .export_chip_width()
+            .min((middle_x1 - middle_x0).max(0.0));
+        let chip_h = self.topbar_small_height();
+        let chip_y = topbar.center().y - chip_h / 2.0;
+        let export_chip = Rect::new(middle_x1 - chip_w, chip_y, middle_x1, chip_y + chip_h);
+        if project_btn.x1 > import_btn.x0 - gap {
+            project_btn = Rect::ZERO;
+        }
+        let timeline_top = self.timeline_top(topbar.y1, r.y1);
         let timeline = Rect::new(r.x0, timeline_top, r.x1, r.y1);
         let mid_top = topbar.y1;
         let mid_bot = timeline.y0;
@@ -199,11 +154,17 @@ impl VideoEditorApp {
         let inspector_overlay = self.inspector_split() == SplitLayout::Overlay;
         let inspector_w = self.inspector_width();
         let (inspector, preview_x1) = if inspector_overlay {
-            let slide = self.inspector_flap.slide();
-            let x1 = r.x1 + inspector_w * (1.0 - slide);
-            (Rect::new(x1 - inspector_w, mid_top, x1, r.y1), r.x1)
+            // Summoned, it floats a step inside the window on the floating
+            // material, and slides in by the eased reveal.
+            let reveal = self.inspector_flap.reveal();
+            let w = inspector_w.min((r.width() - 2.0 * S2).max(0.0));
+            let x1 = r.x1 - S2 + (w + S2) * (1.0 - reveal);
+            (Rect::new(x1 - w, mid_top + S2, x1, r.y1 - S2), r.x1)
         } else {
-            let i = Rect::new(r.x1 - inspector_w, mid_top, r.x1, mid_bot);
+            // Docked, it holds its column while shown and gives it back to
+            // the preview as it is hidden.
+            let w = inspector_w * self.inspector_flap.reveal();
+            let i = Rect::new(r.x1 - w, mid_top, r.x1, mid_bot);
             (i, i.x0)
         };
         // Docked: the bin occupies its column and the preview starts after it.
@@ -211,10 +172,12 @@ impl VideoEditorApp {
         // and the bin slides in from the left over a scrim by the eased
         // reveal — exactly the flap kernel's overlay geometry.
         let (bin, preview_x0, scrim) = if overlay {
-            let slide = self.bin_flap.slide();
-            let bin_w = self.bin_width();
-            let bin_x0 = r.x0 - bin_w * (1.0 - slide);
-            let bin = Rect::new(bin_x0, mid_top, bin_x0 + bin_w, r.y1);
+            // A drawer: the floating material a step inside the window,
+            // sliding in from the leading edge by the eased reveal.
+            let reveal = self.bin_flap.reveal();
+            let bin_w = self.bin_width().min((r.width() - 2.0 * S2).max(0.0));
+            let bin_x0 = r.x0 + S2 - (bin_w + S2) * (1.0 - reveal);
+            let bin = Rect::new(bin_x0, mid_top + S2, bin_x0 + bin_w, r.y1 - S2);
             let scrim = if self.bin_flap.reveal() > 0.001 {
                 Rect::new(r.x0, mid_top, r.x1, r.y1)
             } else {
@@ -222,7 +185,8 @@ impl VideoEditorApp {
             };
             (bin, r.x0, scrim)
         } else {
-            let bin = Rect::new(r.x0, mid_top, r.x0 + self.bin_width(), mid_bot);
+            let w = self.bin_width() * self.bin_flap.reveal();
+            let bin = Rect::new(r.x0, mid_top, r.x0 + w, mid_bot);
             (bin, bin.x1, Rect::ZERO)
         };
         let preview = Rect::new(preview_x0, mid_top, preview_x1, mid_bot);
@@ -265,6 +229,7 @@ impl VideoEditorApp {
             topbar,
             menu_btn,
             inspector_btn,
+            history_btn,
             project_btn,
             export_btn,
             export_chip,

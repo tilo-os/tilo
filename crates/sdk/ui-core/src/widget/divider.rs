@@ -254,7 +254,7 @@ mod tests {
                     "{name}: a divider on `raised` must register against it"
                 );
 
-                let explicit = theme.tokens.colors.accent[5];
+                let explicit = theme.tokens.colors.intent.inverted;
                 assert_eq!(
                     Divider::horizontal()
                         .on(raised)
