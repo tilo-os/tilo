@@ -272,10 +272,10 @@ impl Listener {
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn chat_semantic_call_commands_drive_consented_real_native_call_audio() {
-    if OpusEncoder::new().is_none() {
-        eprintln!("SKIP: GStreamer Opus unavailable");
-        return;
-    }
+    assert!(
+        OpusEncoder::new().is_some(),
+        "native call proof requires GStreamer opusenc"
+    );
     let relay = Arc::new(LoopbackRelay::start(Arc::new(Identities)).unwrap());
     let owner = LocalSessionAuthority::new();
     let lifecycle = owner.lifecycle();

@@ -303,6 +303,8 @@ tilo-search = { path = "../../sdk/search", features = ["disk"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# Private native-pair acceptance uses the governed host's real voice relay.
+tilo-relay = { path = "../../hosting/tilo-relay", features = ["web"] }
 # Signs the TPM quotes the disk-unlock auto-approval tests verify.
 p256 = { version = "0.14", features = ["ecdsa"] }
 tilo-copy-lint = { path = "../../dev/copy-lint" }
