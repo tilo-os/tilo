@@ -102,7 +102,7 @@ revocation, mismatched records, disconnection and bounded-search failure.
 `openResource(target, reference, provider, action, {signal})` extends lookup into an
 existing-record standalone browser mount. It waits for the admitted room's record,
 passes its explicit existing id (including the canonical package-primary id), then
-rechecks the local app's current action catalogue and invokes the chosen declared
+rechecks the host catalogue after hydration and the local app's current action catalogue, then invokes the chosen declared
 resource view. It never invokes a document mutation or navigates the host's window.
 Only explicit `ResourceViewSpec` navigation declarations qualify: read queries with
 `OperationKind::View` alone do not. Chat declares workspace, text conversation and

@@ -23,6 +23,7 @@ export async function resolveResourceReference({reference, provider, actions, cu
   // Labels and action contracts come from the authorized live publisher, never
   // from the untrusted message. Navigation still uses its own view door.
   return {provider, app, revision: page.revision, resource: rows[0].resource,
+    availableActions: rows.map(row => row.action).filter(Boolean),
     views: rows.filter(row => row.action?.kind === 'View' && row.action.view?.open_action === row.action.address?.action).map(row => row.action)};
 }
 
@@ -57,6 +58,17 @@ export async function openResourceReference({reference, provider, action, action
     if (!current()) throw Error('Shared resource connection changed');
     // The mounted app resolves the same exact address again with current
     // permissions. Read metadata does not authorize a later view invocation.
+    const fresh = await resolveResourceReference({reference: {id: resolved.resource.id,
+      kind: resolved.resource.kind}, provider, actions, current});
+    signal?.throwIfAborted();
+    const freshView = fresh.views.find(view => view.address?.resource === resolved.resource.id
+      && view.address.action === action);
+    if (fresh.app !== resolved.app || !freshView) throw Error('Shared resource view unavailable');
+    if (span && !fresh.availableActions.some(candidate => candidate.kind === 'View'
+      && candidate.address?.resource === resolved.resource.id
+      && candidate.address.action === freshView.view.range?.action)) {
+      throw Error('Shared resource range view unavailable');
+    }
     const local = opened.actions(resolved.resource.id);
     const view = local.find(view => view.address?.resource === resolved.resource.id
       && view.address.action === action && view.kind === 'View' && view.view?.open_action === action);
@@ -64,7 +76,8 @@ export async function openResourceReference({reference, provider, action, action
     let selected = view, args = {}, invoke = action;
     if (span) {
       const range = view.view.range;
-      if (!range || JSON.stringify(range) !== JSON.stringify(declared.view.range)) {
+      if (!range || ['action', 'start_param', 'end_param', 'unit_param'].some(key =>
+        range[key] !== declared.view.range?.[key] || range[key] !== freshView.view.range?.[key])) {
         throw Error('Shared resource range view changed');
       }
       const names = [range.start_param, range.end_param, range.unit_param];
