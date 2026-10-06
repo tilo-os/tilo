@@ -56,28 +56,21 @@ pub fn install(component: &Component, target_dir: &str, dest: &Path) -> CommandL
     command
 }
 
-/// `cargo` that builds the app packaging tools, then the `tilo-app` call
-/// that packages `apps/<dir>` as a self-signed `.tapp` at `out`.
-pub fn app_package(target_dir: &str, dir: &str, out: &Path) -> [CommandLine; 2] {
-    let tools = CommandLine::new(
-        &cargo_program(),
-        &[
-            "build",
-            "--locked",
-            "--release",
-            "-p",
-            "tilo-app-cli",
-            "-p",
-            "tilo-app-package-cli",
-        ],
-    );
-    let package = CommandLine::new(&format!("{target_dir}/release/tilo-app"), &["package"])
-        .arg(format!("apps/{dir}"))
-        .arg("--output")
+/// Build one app in the complete cohort graph and package its derived ABI.
+/// The normal installer still decides whether that exact SDK is installed.
+pub fn app_package(target_dir: &str, dir: &str, out: &Path) -> CommandLine {
+    CommandLine::new("python3", &["os/dev/assemble-app-runtime.py"])
+        .arg("--repo")
+        .arg(".")
+        .arg("--target-dir")
+        .arg(target_dir)
+        .arg("--profile")
+        .arg("thin-app")
+        .arg("--app")
+        .arg(dir)
+        .arg("--tapp-out")
         .arg(out.display().to_string())
-        .arg("--force")
-        .env("TILO_PKG", format!("{target_dir}/release/tilo-app-package"));
-    [tools, package]
+        .env("CARGO", cargo_program())
 }
 
 /// Apps this worktree offers: `apps/<dir>/tilo-app.toml`.
@@ -391,14 +384,10 @@ mod tests {
 
         // Phase: apps_package_with_their_own_tools.
         {
-            let [tools, package] = app_package("target", "notes", Path::new("/w/notes.tapp"));
-            assert_eq!(
-                as_cargo(&tools),
-                "cargo build --locked --release -p tilo-app-cli -p tilo-app-package-cli"
-            );
+            let package = app_package("target", "notes", Path::new("/w/notes.tapp"));
             assert_eq!(
                 package.display(),
-                "TILO_PKG=target/release/tilo-app-package target/release/tilo-app package apps/notes --output /w/notes.tapp --force"
+                "CARGO=cargo python3 os/dev/assemble-app-runtime.py --repo . --target-dir target --profile thin-app --app notes --tapp-out /w/notes.tapp"
             );
             let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
             assert!(apps_in(&repo).contains(&"notes".to_owned()));

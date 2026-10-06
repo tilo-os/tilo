@@ -4564,17 +4564,15 @@ impl App {
         let target = build::target_dir(&self.cargo_metadata());
         let staging = build::Staging::new(worktree)?;
         let tapp = staging.tree().with_extension("tapp");
-        let [tools, package] = build::app_package(&target, dir, &tapp);
+        let package = build::app_package(&target, dir, &tapp);
         let runner = &mut self.runner;
         let built = self.receipt.phase("build", || -> Result<(), CliError> {
-            for command in [&tools, &package] {
-                if !runner.interactive(command)? {
-                    return Err(CliError::CommandFailed {
-                        command: command.display(),
-                        status: "failed".into(),
-                        stderr: String::new(),
-                    });
-                }
+            if !runner.interactive(&package)? {
+                return Err(CliError::CommandFailed {
+                    command: package.display(),
+                    status: "failed".into(),
+                    stderr: String::new(),
+                });
             }
             Ok(())
         });

@@ -950,7 +950,16 @@ impl Apply for SystemdApply {
         Ok(())
     }
 
-    fn install_app(&mut self, user: &str, tapp: &Path) -> Result<String, DaemonError> {
+    fn install_app(&mut self, session: &Session, tapp: &Path) -> Result<String, DaemonError> {
+        // The installed runtime and publisher pins are part of the resolved
+        // slot's verified /usr view, not the daemon's global namespace.
+        let pid = self
+            .session_pid(session)
+            .ok_or_else(|| DaemonError::Apply {
+                step: "tilo-install".into(),
+                detail: "the slot has no live session mount namespace".into(),
+            })?;
+        let user = &session.user;
         let uid = uid_of(user).ok_or_else(|| DaemonError::Apply {
             step: "tilo-install".into(),
             detail: format!("no user {user}"),
@@ -967,18 +976,31 @@ impl Apply for SystemdApply {
                 make_readable(&dir, &staged)?;
                 run(
                     "tilo-install install --allow-self-signed --force",
-                    Command::new("runuser")
-                        .args(["-u", user, "--", "env"])
-                        .arg(format!("HOME={home}"))
-                        .arg(format!("USER={user}"))
-                        .arg(format!("XDG_RUNTIME_DIR=/run/user/{uid}"))
-                        .args(["tilo-install", "install", "--allow-self-signed", "--force"])
-                        .arg(&staged),
+                    &mut app_install_command(pid, user, uid, &home, &staged),
                 )
             });
         let _ = fs::remove_dir_all(&dir);
         result
     }
+}
+
+fn app_install_command(pid: u32, user: &str, uid: u32, home: &str, staged: &Path) -> Command {
+    crate::exec::in_session(
+        pid,
+        user,
+        &[
+            ("HOME".into(), home.into()),
+            ("USER".into(), user.into()),
+            ("XDG_RUNTIME_DIR".into(), format!("/run/user/{uid}")),
+        ],
+        &[
+            "/usr/bin/tilo-install".into(),
+            "install".into(),
+            "--allow-self-signed".into(),
+            "--force".into(),
+            staged.to_string_lossy().into_owned(),
+        ],
+    )
 }
 
 /// How long a login's compositor may take to exit after SIGTERM.
@@ -1192,6 +1214,65 @@ fn vkms_card(seat: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn app_install_uses_the_verified_slot_namespace_and_never_ignores_runtime() {
+        let command = super::app_install_command(
+            123,
+            "slot-user",
+            1002,
+            "/var/home/slot-user",
+            std::path::Path::new("/var/tmp/private/app.tapp"),
+        );
+        assert_eq!(command.get_program(), "nsenter");
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(&args[..2], ["--target=123", "--mount"]);
+        assert!(
+            args.windows(4)
+                .any(|args| args == ["runuser", "-u", "slot-user", "--"])
+        );
+        assert!(args.contains(&"HOME=/var/home/slot-user".into()));
+        assert!(args.contains(&"XDG_RUNTIME_DIR=/run/user/1002".into()));
+        assert_eq!(
+            &args[args.len() - 5..],
+            [
+                "/usr/bin/tilo-install",
+                "install",
+                "--allow-self-signed",
+                "--force",
+                "/var/tmp/private/app.tapp"
+            ]
+        );
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.contains("ignore-missing-runtime"))
+        );
+    }
+
+    #[test]
+    fn app_install_refuses_a_missing_session_without_host_fallback() {
+        let root = tempfile::tempdir().unwrap();
+        let session = super::Session {
+            slot: "missing".into(),
+            unit: "tilo-test-missing-install-session.service".into(),
+            user: "missing-user".into(),
+            units: vec![],
+            control_socket: root.path().join("control"),
+            stand_in: true,
+            login: None,
+        };
+        let mut apply = super::SystemdApply::new(root.path());
+        let error =
+            super::Apply::install_app(&mut apply, &session, &root.path().join("missing.tapp"))
+                .unwrap_err();
+        assert!(
+            matches!(error, super::DaemonError::Apply { step, detail } if step == "tilo-install" && detail == "the slot has no live session mount namespace")
+        );
+    }
+
     use super::*;
 
     #[test]

@@ -39,6 +39,19 @@ def applications(repo):
     return rows
 
 
+def selected_applications(repo, app):
+    rows = applications(repo)
+    if app is None:
+        return rows
+    if not re.fullmatch(r'[A-Za-z0-9_-]+', app):
+        raise ValueError('invalid selected application directory')
+    manifest = repo / 'apps' / app / 'tilo-app.toml'
+    if not manifest.is_file():
+        raise ValueError('selected app is outside the canonical runtime graph')
+    cargo = tomllib.loads(manifest.with_name('Cargo.toml').read_text())
+    return [row for row in rows if row[0] == cargo['package']['name']]
+
+
 def private_ancestors(path, outputs):
     """Copy directory structure only along outputs; host siblings stay readonly."""
     argv = ['--dir', str(path)]
@@ -54,7 +67,7 @@ def private_ancestors(path, outputs):
     return argv
 
 
-def namespace_command(repo, stage, tools, profile, *, packaging=False):
+def namespace_command(repo, stage, tools, profile, *, packaging=False, app=None):
     """Final-path binds preserve registry paths, with only owned outputs writable."""
     tree = stage / 'tree'
     runtime = tree / 'usr/lib/tilo-runtime'
@@ -96,6 +109,8 @@ def namespace_command(repo, stage, tools, profile, *, packaging=False):
              '--chdir', str(repo), 'python3', str(Path(__file__).resolve()),
              '--inside', '--repo', str(repo), '--target-dir', str(tools),
              '--profile', profile, '--stage', str(stage)]
+    if app is not None:
+        argv += ['--app', app]
     if packaging:
         argv += ['--packaging']
     return argv
@@ -107,7 +122,7 @@ def profile_directory(profile):
 
 def assemble_inside(args):
     repo, target, stage = args.repo, args.target_dir, args.stage
-    rows = applications(repo)
+    rows = selected_applications(repo, args.app)
     binaries = [target / profile_directory(args.profile) / row[1] for row in rows]
     if any(not binary.is_file() for binary in binaries):
         raise ValueError('a required cohort binary is absent; refusing a partial store')
@@ -153,7 +168,7 @@ def assemble_inside(args):
 
 def package_inside(args):
     repo, target, stage = args.repo, args.target_dir, args.stage
-    rows = applications(repo)
+    rows = selected_applications(repo, args.app)
     version = (stage / 'work/runtime-version').read_text().strip()
     bundle = target / 'release/tilo-runtime-bundle'
     env = dict(os.environ, REPO=str(repo), STORE='/usr/share/tilo-apps',
@@ -163,6 +178,9 @@ def package_inside(args):
                BUNDLE_BIN=str(bundle), SHIM_BIN=str(target / 'release/tilo-cli-shim'),
                PUBKEY_OUT=str(stage / 'tree/usr/share/tilo/app-publisher.hex'),
                RUNTIME_ID='tilo-runtime/' + version, REQUIRE_MIN=str(len(rows)))
+    if args.app is not None:
+        env.update(APP_DIR=args.app, TAPP_OUT=str(stage / 'work/selected.tapp'),
+                   STAGE=str(stage / 'work/selected-pack'))
     run(['bash', str(repo / 'os/scripts/pack-apps.sh')], env=env)
 
 
@@ -170,7 +188,7 @@ def package_inside(args):
 def assemble(args):
     repo, target = args.repo.resolve(), args.target_dir.resolve()
     rows = applications(repo)
-    if args.dest.exists() and any(args.dest.iterdir()):
+    if args.dest is not None and args.dest.exists() and any(args.dest.iterdir()):
         raise ValueError('component destination must be empty')
     cargo = os.environ.get('CARGO', 'cargo')
     tools_env = dict(os.environ, CARGO_PROFILE_RELEASE_LTO='off',
@@ -180,14 +198,21 @@ def assemble(args):
         env=tools_env)
     env = dict(os.environ, REPO=str(repo), TARGET_DIR=str(target),
                PROFILE=args.profile, APP_FEATURES=args.features)
+    for variable in ('EXCLUDE_PACKAGES', 'INCLUDE_PACKAGES', 'BUILD_PACKAGES', 'EXTRA_CARGO_ARGS'):
+        env.pop(variable, None)
+    if args.app is not None:
+        env['BUILD_PACKAGES'] = selected_applications(repo, args.app)[0][0]
     run(['bash', str(repo / 'os/scripts/build-thin-apps.sh')], env=env)
-    for _, binary, _ in rows:
+    for _, binary, _ in selected_applications(repo, args.app):
         if not (target / profile_directory(args.profile) / binary).is_file():
             raise ValueError('full cohort build did not produce all applications')
     with tempfile.TemporaryDirectory(prefix='app-runtime-', dir=target) as directory:
         stage = Path(directory)
-        run(namespace_command(repo, stage, target, args.profile))
-        run(namespace_command(repo, stage, target, args.profile, packaging=True))
+        run(namespace_command(repo, stage, target, args.profile, app=args.app))
+        run(namespace_command(repo, stage, target, args.profile, packaging=True, app=args.app))
+        if args.app is not None:
+            shutil.copyfile(stage / 'work/selected.tapp', args.tapp_out)
+            return
         for path in (stage / 'tree').rglob('*'):
             if path.is_dir() and not path.is_symlink():
                 path.chmod(0o755)
@@ -200,7 +225,9 @@ def main():
     parser.add_argument('--repo', type=Path, required=True)
     parser.add_argument('--target-dir', type=Path, required=True)
     parser.add_argument('--profile', required=True)
-    parser.add_argument('--features', default='')
+    parser.add_argument('--features')
+    parser.add_argument('--app')
+    parser.add_argument('--tapp-out', type=Path)
     parser.add_argument('--dest', type=Path)
     parser.add_argument('--inside', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--stage', type=Path, help=argparse.SUPPRESS)
@@ -208,6 +235,14 @@ def main():
     args = parser.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_-]+', args.profile):
         parser.error('invalid build profile')
+    if args.features is None:
+        components = tomllib.loads((args.repo / 'os/components.toml').read_text())['component']
+        cohort = next(row for row in components if row['name'] == 'apps+runtime')
+        if args.profile != cohort.get('profile'):
+            parser.error('selected app must use the canonical cohort profile')
+        args.features = ','.join(cohort.get('features', []))
+    if args.app is not None:
+        selected_applications(args.repo, args.app)
     if args.inside:
         if args.stage is None:
             parser.error('private assembly needs its owned stage')
@@ -216,8 +251,11 @@ def main():
         else:
             assemble_inside(args)
     else:
-        if args.dest is None:
-            parser.error('assembly needs a component destination')
+        if args.app is not None:
+            if args.tapp_out is None or args.dest is not None:
+                parser.error('selected app needs only --tapp-out')
+        elif args.dest is None or args.tapp_out is not None:
+            parser.error('assembly needs only a component destination')
         assemble(args)
 
 

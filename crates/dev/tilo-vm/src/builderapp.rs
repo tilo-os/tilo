@@ -105,8 +105,8 @@ fn inspect(path: &Path, dir: &str, source_digest: String) -> Result<PackedApp, C
         .to_owned();
     let isa = &tapp.meta.manifest.package.isa;
     let consistent = match architecture.as_str() {
-        "aarch64" => isa.aarch64.is_some() && isa.x86_64.is_none(),
-        "x86_64" => isa.x86_64.is_some() && isa.aarch64.is_none(),
+        "aarch64" => isa.is_empty() || isa.aarch64.is_some(),
+        "x86_64" => isa.is_empty() || isa.x86_64.is_some(),
         _ => false,
     };
     if !consistent || tapp.meta.manifest.target.is_some() {
@@ -152,15 +152,13 @@ pub fn pack(dir: &str, inventory: &Path) -> Result<(), CliError> {
     let target = build::target_dir(&metadata);
     let staging = tempfile::tempdir_in(&target).map_err(CliError::io("stage remote app"))?;
     let tapp = staging.path().join("app.tapp");
-    let [mut tools, package] = build::app_package(&target, dir, &tapp);
-    tools.program = cargo;
-    for line in [&tools, &package] {
-        run_to_stderr(
-            Command::new(&line.program)
-                .args(&line.args)
-                .envs(line.env.iter().map(|(k, v)| (k, v))),
-        )?;
-    }
+    let package = build::app_package(&target, dir, &tapp);
+    run_to_stderr(
+        Command::new(&package.program)
+            .args(&package.args)
+            .envs(package.env.iter().map(|(k, v)| (k, v)))
+            .env("CARGO", cargo),
+    )?;
     let packed = inspect(&tapp, dir, source_digest)?;
     if crate::source_inputs::verify(&root, inventory)? != packed.source_digest {
         return Err(CliError::InvalidInput(
