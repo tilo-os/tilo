@@ -129,6 +129,26 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
     ]
 }
 
+/// Deterministic catalogue data for capture scenarios and isolated owner review.
+pub(crate) fn capture_catalog(scenario: Option<&str>) -> Vec<StoreItem> {
+    let items = fixture_catalog();
+    if scenario != Some("paging") {
+        return items;
+    }
+    items
+        .iter()
+        .cycle()
+        .take(50)
+        .enumerate()
+        .map(|(index, original)| {
+            let mut item = original.clone();
+            item.id = format!("org.example.Capture{index}");
+            item.name = format!("Capture app {index:02}");
+            item
+        })
+        .collect()
+}
+
 /// A Store surface showing the fixture catalogue, outside any window: for
 /// tests of its layout.
 pub fn seeded_app() -> StoreApp {
