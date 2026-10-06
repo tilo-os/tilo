@@ -173,7 +173,8 @@ pub(crate) fn agent_task_status_lines(
             }
         },
         |task| {
-            let state = agent_task_run_state(tasks.direction_state(), stopping).0;
+            let state =
+                agent_task_run_state(tasks.direction_state(), stopping, task.execution.as_ref()).0;
             crate::i18n::t_args(
                 "chat-agent-task-status",
                 &[
@@ -183,9 +184,9 @@ pub(crate) fn agent_task_status_lines(
             )
         },
     );
-    let receipt = context
-        .as_ref()
-        .and_then(|_| agent_task_run_state(tasks.direction_state(), stopping).1);
+    let receipt = context.as_ref().and_then(|task| {
+        agent_task_run_state(tasks.direction_state(), stopping, task.execution.as_ref()).1
+    });
     let queue = if tasks.pending_tasks_complete() && !tasks.pending_tasks().is_empty() {
         let count = tasks.pending_tasks().len();
         Some(crate::i18n::t_args(
@@ -205,6 +206,7 @@ pub(crate) fn agent_task_status_lines(
 fn agent_task_run_state(
     direction: &ui::agent_task_frontier::AgentDirectionState,
     stopping: bool,
+    execution: Option<&ui::agent_task_frontier::WorkspaceTaskExecution>,
 ) -> (String, Option<String>) {
     use ui::agent_task_frontier::AgentDirectionState;
 
@@ -213,7 +215,13 @@ fn agent_task_run_state(
     } else if matches!(direction, AgentDirectionState::NeedsRefresh(_)) {
         crate::i18n::t("chat-agent-task-attention")
     } else {
-        crate::i18n::t("chat-agent-task-working")
+        use ui::agent_task_frontier::WorkspaceTaskExecutionPhase;
+        crate::i18n::t(match execution.map(|execution| execution.phase) {
+            None => "chat-agent-task-phase-unknown",
+            Some(WorkspaceTaskExecutionPhase::Accepted) => "chat-agent-task-accepted",
+            Some(WorkspaceTaskExecutionPhase::Planning) => "chat-agent-task-planning",
+            Some(WorkspaceTaskExecutionPhase::Executing) => "chat-agent-task-executing",
+        })
     };
     let receipt = match direction {
         AgentDirectionState::Saved { .. } => Some(crate::i18n::t("chat-agent-direction-saved")),
@@ -4038,17 +4046,49 @@ mod tests {
             revision: 3,
         };
         assert_eq!(
-            agent_task_run_state(&saved, false),
-            ("Working".into(), Some("Direction saved".into()))
+            agent_task_run_state(&saved, false, None),
+            ("Status unknown".into(), Some("Direction saved".into()))
         );
         assert_eq!(
-            agent_task_run_state(&applied, false),
-            ("Working".into(), Some("Direction applied".into()))
+            agent_task_run_state(&applied, false, None),
+            ("Status unknown".into(), Some("Direction applied".into()))
         );
         assert_eq!(
-            agent_task_run_state(&saved, true),
-            ("Stopping".into(), Some("Direction saved".into()))
+            agent_task_run_state(&saved, true, None),
+            ("Stop requested".into(), Some("Direction saved".into()))
         );
+    }
+
+    #[test]
+    fn public_execution_milestones_remain_separate_from_direction_receipts() {
+        use ui::agent_task_frontier::{
+            AgentDirectionState, WorkspaceTaskExecution, WorkspaceTaskExecutionPhase,
+        };
+        let applied = AgentDirectionState::Applied {
+            task_id: "task-1".into(),
+            run_epoch: 2,
+            revision: 3,
+        };
+        for (phase, sequence, label) in [
+            (WorkspaceTaskExecutionPhase::Accepted, 0, "Accepted"),
+            (WorkspaceTaskExecutionPhase::Planning, 1, "Planning"),
+            (WorkspaceTaskExecutionPhase::Executing, 2, "Executing"),
+        ] {
+            let execution = WorkspaceTaskExecution {
+                run_epoch: 2,
+                sequence,
+                phase,
+                updated_at: 12,
+            };
+            assert_eq!(
+                agent_task_run_state(&applied, false, Some(&execution)),
+                (label.into(), Some("Direction applied".into()))
+            );
+            assert_eq!(
+                agent_task_run_state(&applied, true, Some(&execution)),
+                ("Stop requested".into(), Some("Direction applied".into()))
+            );
+        }
     }
 
     #[test]

@@ -28,6 +28,8 @@ const TASK_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const ASYNC_CONTROL_POLL: Duration = Duration::from_millis(50);
 const CONTROL_RESPONSE_WINDOW: Duration = Duration::from_secs(5);
 
+pub use tilo_desktop_model::{WorkspaceTaskExecution, WorkspaceTaskExecutionPhase};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentTaskFrontier {
     pub task_id: String,
@@ -37,6 +39,9 @@ pub struct AgentTaskFrontier {
     pub applied_revision: u64,
     pub route: String,
     pub cancellation_requested: bool,
+    /// Owner-authenticated public milestone for this exact run. Absence is
+    /// unknown, never evidence that a created lease is executing.
+    pub execution: Option<tilo_desktop_model::WorkspaceTaskExecution>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -137,6 +142,8 @@ struct TaskRead {
     after_revision: u64,
     applied_revision: Option<u64>,
     cancellation_requested: bool,
+    #[serde(default)]
+    execution: Option<tilo_desktop_model::WorkspaceTaskExecution>,
 }
 
 #[derive(Deserialize)]
@@ -164,6 +171,8 @@ struct CurrentTaskRead {
     applied_revision: u64,
     route: String,
     cancellation_requested: bool,
+    #[serde(default)]
+    execution: Option<tilo_desktop_model::WorkspaceTaskExecution>,
 }
 
 #[derive(Deserialize)]
@@ -899,6 +908,7 @@ impl AgentTaskFrontiers {
                 || task.run_epoch == 0
                 || task.applied_revision > task.after_revision
                 || !valid_route(&task.route)
+                || !valid_execution(task.execution.as_ref(), task.run_epoch)
             {
                 self.invalidate_snapshot(AgentTaskDiscovery::Unavailable);
                 return;
@@ -911,6 +921,7 @@ impl AgentTaskFrontiers {
                 applied_revision: task.applied_revision,
                 route: task.route,
                 cancellation_requested: task.cancellation_requested,
+                execution: task.execution,
             });
         }
         let collection_order = (read.generation, self.current_issued);
@@ -1304,6 +1315,24 @@ fn valid_route(route: &str) -> bool {
     matches!(route, "manual" | "rules_only" | "model")
 }
 
+fn valid_execution(
+    execution: Option<&tilo_desktop_model::WorkspaceTaskExecution>,
+    run_epoch: u64,
+) -> bool {
+    use tilo_desktop_model::WorkspaceTaskExecutionPhase;
+    execution.is_none_or(|execution| {
+        execution.run_epoch == run_epoch
+            && match execution.phase {
+                // Zero is the initial acceptance transaction; later actual
+                // reports may confirm Accepted with a higher sequence.
+                WorkspaceTaskExecutionPhase::Accepted => true,
+                WorkspaceTaskExecutionPhase::Planning | WorkspaceTaskExecutionPhase::Executing => {
+                    execution.sequence > 0
+                }
+            }
+    })
+}
+
 enum TaskReadError {
     Pending,
     Invalid,
@@ -1359,6 +1388,9 @@ fn task_read(
     if run_epoch == 0 || applied_revision > read.after_revision {
         return Ok(None);
     }
+    if !valid_execution(read.execution.as_ref(), run_epoch) {
+        return Err(TaskReadError::Invalid);
+    }
     Ok(Some((
         read.generation,
         AgentTaskFrontier {
@@ -1369,6 +1401,7 @@ fn task_read(
             applied_revision,
             route: read.route,
             cancellation_requested: read.cancellation_requested,
+            execution: read.execution,
         },
     )))
 }
@@ -1702,6 +1735,101 @@ mod tests {
         applied_revision: u64,
     ) -> serde_json::Value {
         exact_task_at(1, task, title, agent, after_revision, applied_revision)
+    }
+
+    #[test]
+    fn current_tasks_retain_only_exact_authenticated_execution_phases() {
+        for (phase, sequence) in [
+            (WorkspaceTaskExecutionPhase::Accepted, 0),
+            (WorkspaceTaskExecutionPhase::Accepted, 3),
+            (WorkspaceTaskExecutionPhase::Planning, 1),
+            (WorkspaceTaskExecutionPhase::Executing, 2),
+        ] {
+            let execution = WorkspaceTaskExecution {
+                run_epoch: 7,
+                sequence,
+                phase,
+                updated_at: 12,
+            };
+            let mut task = current_task("one", "Current task", "agent-a", 4, 4);
+            task["execution"] = serde_json::to_value(&execution).unwrap();
+            let host = Arc::new(FrontierHost::new(vec![task], []));
+            let model = model(host, "room", "agent-a");
+            let AgentTaskChoice::One(frontier) = model.choice() else {
+                panic!("the owner returned one current task")
+            };
+            assert_eq!(frontier.execution, Some(execution));
+        }
+        let host = Arc::new(FrontierHost::new(
+            vec![current_task("one", "Current task", "agent-a", 4, 4)],
+            [],
+        ));
+        let model = model(host, "room", "agent-a");
+        let AgentTaskChoice::One(frontier) = model.choice() else {
+            panic!("legacy owner observation remains available")
+        };
+        assert_eq!(frontier.execution, None);
+    }
+
+    #[test]
+    fn foreign_epoch_or_malformed_execution_phase_invalidates_current_observation() {
+        for (epoch, sequence, phase) in [
+            (6, 0, "accepted"),
+            (7, 0, "planning"),
+            (7, 0, "executing"),
+            (7, 1, "working"),
+        ] {
+            let mut task = current_task("one", "Current task", "agent-a", 4, 4);
+            task["execution"] = serde_json::json!({
+                "run_epoch": epoch, "sequence": sequence, "phase": phase, "updated_at": 12,
+            });
+            let host = Arc::new(FrontierHost::new(vec![task], []));
+            let model = model(host, "room", "agent-a");
+            assert_eq!(model.discovery(), &AgentTaskDiscovery::Unavailable);
+            assert_eq!(model.choice(), AgentTaskChoice::None);
+            assert!(!model.can_steer());
+            assert!(!model.can_stop());
+        }
+    }
+
+    #[test]
+    fn exact_task_reads_preserve_phases_and_refuse_foreign_or_invalid_execution() {
+        for (epoch, sequence, phase, valid) in [
+            (7, 0, "accepted", true),
+            (7, 3, "accepted", true),
+            (7, 1, "planning", true),
+            (7, 2, "executing", true),
+            (6, 0, "accepted", false),
+            (7, 0, "planning", false),
+            (7, 0, "executing", false),
+            (7, 1, "working", false),
+        ] {
+            let mut value = exact_task("one", "Current task", "agent-a", 4, 4);
+            let execution = serde_json::json!({
+                "run_epoch": epoch, "sequence": sequence, "phase": phase, "updated_at": 12,
+            });
+            value["execution"] = execution.clone();
+            let update = RemoteCall::Done(InvocationUpdate::Succeeded {
+                invocation: InvocationId::new(),
+                output: ActionOutput {
+                    value: Some(value),
+                    resources: Vec::new(),
+                },
+            });
+            let result = task_read(&update, "agent-a", "one");
+            if valid {
+                let Ok(Some((generation, task))) = result else {
+                    panic!("an exact authenticated phase must survive the task read")
+                };
+                assert_eq!(generation, 1);
+                assert_eq!(
+                    serde_json::to_value(task.execution.unwrap()).unwrap(),
+                    execution
+                );
+            } else {
+                assert!(matches!(result, Err(TaskReadError::Invalid)));
+            }
+        }
     }
 
     fn exact_task_at(
@@ -2679,6 +2807,7 @@ mod tests {
             applied_revision: 4,
             route: "model".into(),
             cancellation_requested: false,
+            execution: None,
         };
         let direction_id = InvocationId(uuid::Uuid::from_bytes([0x71; 16]));
         let queue_id = InvocationId(uuid::Uuid::from_bytes([0x72; 16]));

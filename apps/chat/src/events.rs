@@ -3353,7 +3353,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(names.contains(&"Documentation and Accessibility Specialist, agent"));
         assert!(names.contains(
-            &"Working: Review the international release notes and verify every keyboard navigation path before publishing"
+            &"Status unknown: Review the international release notes and verify every keyboard navigation path before publishing"
         ));
         assert!(names.contains(&"2 queued tasks"));
         assert!(
@@ -3376,7 +3376,7 @@ mod tests {
             .iter()
             .filter_map(|node| node.name.as_deref())
             .collect::<Vec<_>>();
-        assert!(saved_names.contains(&"Working: Review the release"));
+        assert!(saved_names.contains(&"Status unknown: Review the release"));
         assert!(saved_names.contains(&"Direction saved"));
         assert!(saved_names.contains(&"2 queued tasks"));
     }
