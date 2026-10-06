@@ -124,7 +124,8 @@ own supported range view; this change does not claim they all do.
 
 The certified peer's `resourceLink(page, reference, provider, action)` creates the
 versioned browser link only after fresh authorized lookup. This is exercised with
-frame fixtures; production host view discovery is an integration blocker below.
+frame fixtures; governed host view discovery is verified below, while the paired
+account-picker and deployed browser-entry journey remains incomplete.
 Its fragment carries the HTTPS host origin, room, host device key, exact source provider, kind/id, optional
 span and declared view action. It carries no invitation, account key, bearer grant or
 caller-supplied label. `resource.html` opens the standalone resource after an explicit
@@ -137,9 +138,9 @@ entry point, not a newly deployed service.
 Remaining integration: native Chat's legacy `ResourceRef` still does not carry the
 source provider or host/room locator. Browser peers supplied with admitted source
 view metadata can mint and open links in frame fixtures. The native Chat resource
-chip's Copy/Open link path needs host-provided route metadata. The browser entry currently asks for the recipient's
-existing public identity key; account-picker integration belongs to the shared identity
-flow. New admission continues through the existing governed invitation flow, never
+chip's Copy/Open link path needs host-provided route metadata. The browser entry now offers an existing-account picker projected from Settings'
+personal accounts record. The normal identity sign-in flow still needs to publish
+that public account entry; the picker cannot infer or create one. New admission continues through the existing governed invitation flow, never
 through this navigation address. Physical browser/native cross-device acceptance and
 hosting distribution are unproven here. No access grant or deployment is added.
 
@@ -195,15 +196,14 @@ that destination; it cannot be inferred from the source label or API origin. Set
 also needs its normal identity sign-in flow to publish the public `tilo.identity`
 account entry. The picker must not invent an account or certify a device on link open.
 
-The governed HTTPS fixture currently reports an authenticated, encrypted, durable
-source publication, but the host's duplicate peer waits for MLS keys. It uses the
-same governor device identity with empty member state while the governor already
-holds its own steward state. A proposed exact-source read adapter reuses those
-existing keys and the shared signed-frame verifier, with certified Read before
-key access and after bounded replay. Automatic approval review rejected that
-security-sensitive production access change; it is pending explicit approval.
-A mocked catalogue, a duplicate certificate, or a plaintext downgrade would not
-prove the native-to-browser journey.
+The governed HTTPS fixture now passes using an exact-source reader of the
+host's already-owned steward keys. It no longer opens a duplicate governor peer
+with empty MLS state to discover views. Current certified Read is checked under
+the governed room lock before key or ciphertext access, after bounded replay, and
+again in the metadata worker before descriptors or a locator can be delivered.
+The fixture publishes a native-format Chat resource through a browser peer's
+HTTPS transport; it does not yet prove compositor-originated publication or a
+mounted account-picker-to-browser journey.
 
 ## Approved integration contract and authorization invariants
 
@@ -275,20 +275,26 @@ revoke while discovery/hydration is pending, switch accounts mid-operation, and
 leave before/after mounting. Fixtures alone use temporary governed identities;
 no external grants or hosting deployment are authorized by this work.
 
-### Pending host-reader adapter review
+### Existing-key host reader
 
-The failing fixture is
-`an_existing_native_chat_reference_discovers_local_views_over_the_governed_https_host`.
-Its sender has one durable operation, no failures, no outgoing work and no missing
-keys. The service's duplicate governor peer has one sealed operation waiting for
-keys. This is an MLS state ownership mismatch, not an absent caller grant.
+The fixture
+`an_existing_native_chat_reference_discovers_local_views_over_the_governed_https_host`
+verifies encrypted durable publication, exact local View metadata and the
+listener-issued locator. Wrong resource ID/kind returns no metadata or locator;
+the same primary-provider reference in a different governed room is refused.
+A production-worker fixture proves fresh Read succeeds and revocation between
+snapshot reading and delivery refuses before locator issuance.
 
-The proposed implementation is confined to these owners:
+The implementation is confined to these owners:
 
-- `rooms.rs`: authenticate the current caller and exact record Read again while
+- `rooms/views.rs`: authenticate the current caller and exact record Read again while
   holding the governed room lock, before accessing any key or retained payload.
   Filter the exact app/room/record, require encrypted signed frames, use the existing
   browser-peer `open_frame` and reassembly implementation, and replay at most 16 MiB.
+  Storage reads check their byte budget before allocation and cap scanned entries
+  at 8192. The existing committed basis and active retained selectors are read;
+  no generation, retention, proof or collection state is changed. A selected basis
+  spanning channels is conservatively charged to the same 16 MiB read budget.
   Refuse incomplete transfers and recheck certified Read before returning an internal
   snapshot and revision. No plaintext document is returned as a browser API response.
 - `rooms/stewardship.rs`: expose existing content keys for an already-open exact
@@ -301,11 +307,17 @@ The proposed implementation is confined to these owners:
   Default implementations refuse. The worker still surveys only inert declared
   views through the registered resource kind and checks fresh canonical capabilities.
 
-Automatic approval review rejected applying this production access adapter. The
-proposal is pending explicit approval; no part of the rejected command was executed.
-Before it is published, the governed HTTPS fixture must pass, with additional
-unauthorized/revoked-device and missing-source refusals. The ordinary document action
-service and its invocation authority must remain unchanged.
+The first implementation attempt was rejected by automatic approval review.
+The user subsequently explicitly authorized the corrected design with authorization
+under the room lock before key access. That one authorized retry executed; no
+new grants, keys, memberships, device certificates or deployment were introduced.
+The ordinary document action service and invocation authority are unchanged.
+
+The real governed-room test checks uncertified/wrong-root/local/agent/app callers
+are refused before existing-key access, wrong workspace is refused, and a reader
+polled while waiting for the room lock observes a signed device revocation
+committed before that lock is released. Bounded storage reads are tested against
+existing retained checkpoints/tails and must leave history unchanged.
 
 ### Read-only browser deployment discovery
 

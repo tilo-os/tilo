@@ -22,6 +22,8 @@ mod pages;
 mod stewardship;
 #[cfg(test)]
 mod tests;
+#[cfg(feature = "agents")]
+mod views;
 mod voice;
 
 use std::collections::BTreeMap;
@@ -583,59 +585,6 @@ impl Rooms {
         (decide_capability(&actor, &resource, Verb::Write, &caps, Some(seconds))
             == CapDecision::Allow)
             .then_some(role)
-    }
-
-    /// The exact record's current governed Read policy for an authenticated
-    /// person/device. No caller-provided role or account label supplies authority.
-    #[cfg(feature = "agents")]
-    pub(crate) async fn resource_view_policy(
-        &self,
-        workspace: u64,
-        caller: &tilo_actions::remote::Caller,
-        app: &str,
-        record: &str,
-    ) -> Option<tilo_agent_participant::room_actions::ViewReadPolicy> {
-        if !matches!(
-            caller.principal(),
-            tilo_actions::remote::CallerPrincipal::Person(_)
-        ) {
-            return None;
-        }
-        let device = *caller.device_public_key()?;
-        let user = caller.user_public_key()?;
-        let rooms = self
-            .inner
-            .rooms
-            .lock()
-            .await
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for governed in rooms {
-            let room = governed.lock().await;
-            if room.workspace_id() != workspace {
-                continue;
-            }
-            let now = SystemTime::now();
-            let peer = room.peer();
-            if !peer
-                .certificates()
-                .iter()
-                .any(|cert| cert.device_public_key == device && &cert.user_public_key == user)
-            {
-                return None;
-            }
-            peer.check_document_read(device, app, record, now).ok()?;
-            let (role, caps, person) = peer.permissions(device, now).ok()?;
-            return Some(tilo_agent_participant::room_actions::ViewReadPolicy {
-                room: room.room().to_owned(),
-                role,
-                caps,
-                person,
-                unix_time: now.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs(),
-            });
-        }
-        None
     }
 
     async fn room(&self, room: &str) -> Result<Arc<AsyncMutex<GovernedRoom>>, CollaborationError> {
