@@ -262,6 +262,8 @@ struct BridgeInner {
     incoming: Vec<IncomingNotification>,
     /// `CloseNotification(id)` → compositor toast pump.
     close_requests: Vec<u32>,
+    /// Ongoing notices end when their authenticated unique bus owner exits.
+    ongoing_owners: HashMap<u32, String>,
     /// Toast removed in the compositor → `NotificationClosed` signal.
     closed_events: Vec<(u32, CloseReason)>,
     /// Toast action activated in the compositor → `ActionInvoked` signal.
@@ -283,6 +285,7 @@ impl std::fmt::Debug for BridgeInner {
             .debug_struct("BridgeInner")
             .field("incoming", &self.incoming.len())
             .field("close_requests", &self.close_requests.len())
+            .field("ongoing_owners", &self.ongoing_owners.len())
             .field("closed_events", &self.closed_events.len())
             .field("action_events", &self.action_events.len())
             .field("action_taps", &self.action_taps.len())
@@ -352,11 +355,46 @@ impl NotificationBridge {
         }
     }
 
-    fn push_incoming_with_sharing(&self, n: IncomingNotification, sharing: NotificationSharing) {
+    fn push_incoming_with_sharing(
+        &self,
+        n: IncomingNotification,
+        sharing: NotificationSharing,
+        ongoing_owner: Option<String>,
+    ) {
         if let Ok(mut inner) = self.inner.lock() {
+            inner.ongoing_owners.remove(&n.dbus_id);
+            if let Some(owner) = ongoing_owner {
+                inner.ongoing_owners.insert(n.dbus_id, owner);
+            }
             inner.sharing.insert(n.dbus_id, sharing);
             inner.incoming.push(n);
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn close_ongoing_owner(&self, owner: &str) {
+        if let Ok(mut inner) = self.inner.lock() {
+            let ids: HashSet<_> = inner
+                .ongoing_owners
+                .iter()
+                .filter_map(|(&id, current)| (current == owner).then_some(id))
+                .collect();
+            inner.ongoing_owners.retain(|id, _| !ids.contains(id));
+            inner
+                .incoming
+                .retain(|notice| !ids.contains(&notice.dbus_id));
+            inner.close_requests.extend(ids);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn ongoing_update_allowed(&self, id: u32, sender: Option<&str>) -> bool {
+        self.inner.lock().is_ok_and(|inner| {
+            inner
+                .ongoing_owners
+                .get(&id)
+                .is_none_or(|owner| Some(owner.as_str()) == sender)
+        })
     }
 
     /// Consume the sender's privacy ceiling while handling its notification.
@@ -397,6 +435,7 @@ impl NotificationBridge {
     pub fn note_closed(&self, id: u32, reason: CloseReason) {
         if let Ok(mut g) = self.inner.lock() {
             g.closed_events.push((id, reason));
+            g.ongoing_owners.remove(&id);
             retire_continuity_route(&mut g, id);
             self.signal_wake.poke();
         }
@@ -1299,9 +1338,8 @@ impl Interface for NotificationService {
                 },
             ),
             "CloseNotification" => {
-                interface_dispatch::dispatch(connection, message, move |_hdr, id: u32| async move {
-                    self.close_notification(id);
-                    Ok(())
+                interface_dispatch::dispatch(connection, message, move |hdr, id: u32| async move {
+                    self.close_notification(id, hdr.sender().map(zbus::names::UniqueName::as_str))
                 })
             }
             "GetCapabilities" => interface_dispatch::answer(connection, message, async move {
@@ -1342,18 +1380,31 @@ impl NotificationService {
             hints,
             expire_timeout,
         } = request;
-        let id = if replaces_id != 0 {
+        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
+        let id = if replaces_id != 0
+            && self
+                .bridge
+                .ongoing_update_allowed(replaces_id, sender.as_ref().map(|name| name.as_str()))
+        {
             replaces_id
         } else {
             self.bridge.alloc_id()
         };
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
         let (caller, foreign_identity) = self.resolve_notification_caller(sender.as_ref()).await;
         tracing::debug!(
             "Notifications.Notify: app={app_name:?} id={id} caller_ws={:?}",
             caller.as_ref().map(|c| c.workspace_id)
         );
         let sharing = parse_notification_sharing(&hints);
+        let ongoing = caller.is_some()
+            && !foreign_identity
+            && hints
+                .get("category")
+                .and_then(|value| <&str>::try_from(value).ok())
+                == Some("x-tilo.android-ongoing");
+        let ongoing_owner = ongoing
+            .then(|| sender.as_ref().map(ToString::to_string))
+            .flatten();
         self.bridge.push_incoming_with_sharing(
             IncomingNotification {
                 dbus_id: id,
@@ -1361,7 +1412,11 @@ impl NotificationService {
                 summary,
                 body,
                 actions: pair_actions(&actions),
-                expire_timeout,
+                expire_timeout: if ongoing_owner.is_some() {
+                    0
+                } else {
+                    expire_timeout
+                },
                 urgency: parse_urgency(&hints),
                 caller,
                 // Per-app banner/sound rules may use a verified Flatpak identity,
@@ -1376,6 +1431,7 @@ impl NotificationService {
                 sound: parse_notification_sound(&hints),
             },
             sharing,
+            ongoing_owner,
         );
         id
     }
@@ -1411,8 +1467,14 @@ impl NotificationService {
 
     /// `CloseNotification` — ask the server to close a notification by id.
     /// The compositor pump removes the toast and the emitter fires `NotificationClosed(id, 3)`.
-    fn close_notification(&self, id: u32) {
+    fn close_notification(&self, id: u32, sender: Option<&str>) -> zbus::fdo::Result<()> {
+        if !self.bridge.ongoing_update_allowed(id, sender) {
+            return Err(zbus::fdo::Error::AccessDenied(
+                "ongoing notification belongs to another sender".into(),
+            ));
+        }
         self.bridge.request_close(id);
+        Ok(())
     }
 
     /// `GetCapabilities` — advertise the optional features we honour:
@@ -1493,6 +1555,25 @@ pub async fn serve_notifications(
     connection: zbus::Connection,
     service: NotificationService,
 ) -> Result<ServerHandle, zbus::Error> {
+    use futures_util::StreamExt;
+    // Subscribe before admitting ongoing notifications. A missing bus observer
+    // must fail registration rather than leave persistent orphaned notices.
+    let proxy = zbus::fdo::DBusProxy::new(&connection).await?;
+    let mut owners = proxy.receive_name_owner_changed().await?;
+    let bridge = service.bridge.clone();
+    tokio::spawn(async move {
+        while let Some(event) = owners.next().await {
+            let Ok(args) = event.args() else {
+                continue;
+            };
+            if args.name().as_str().starts_with(':')
+                && args.new_owner().as_ref().is_none()
+                && let Some(owner) = args.old_owner().as_ref()
+            {
+                bridge.close_ongoing_owner(owner.as_str());
+            }
+        }
+    });
     connection.object_server().at(OBJECT_PATH, service).await?;
     if let Err(e) = connection.request_name(BUS_NAME).await {
         tracing::debug!("notifications: request_name skipped/failed: {e}");

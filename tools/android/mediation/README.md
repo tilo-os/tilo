@@ -46,8 +46,13 @@ service instance, removes it once and invokes `onDestroy` on the main looper.
 `stopSelf` overloads use the same registry; a bound-only instance cannot self-stop
 as a started service. These changes use the existing APK process and private
 workspace storage, without an independent service supervisor or new capability.
-Bound-client lifetimes, sticky restarts, foreground services and process-loss
-recovery remain unqualified.
+Legacy foreground workers require the existing filtered notification provider;
+their ongoing notice is persistent and bound to the authenticated bus owner.
+Normal service stop and owner loss withdraw it. Other bus senders cannot close
+or replace the notice. Modern foreground permission remains denied; media and
+notification-detach variants explicitly report unsupported behavior. Sticky
+and redelivery process recovery are reported as unsupported. Bound-client
+lifetimes and independent background execution remain unqualified.
 
 ## Build and stage
 
@@ -97,6 +102,22 @@ the stale stop, exactly one main-looper service destruction, ordered activity
 pause/stop/destroy, preserved visit data across relaunch, and two isolated
 workspace histories. It requires presented frames and mandatory confinement,
 creates no grants, and keeps reports/screenshots in `target/` or outside source.
+
+Build `ForegroundActivity.java` and `ForegroundManifest.xml` by the same SDK
+process. Keep the signed APK unchanged between the baseline and changed runtime.
+Prepare it with `--notifications` and activity
+`org/tilo/android/foreground/ForegroundActivity`, then run
+`tools/android/run_foreground_journey.py --fixture-grants --help`.
+`--expect-incompatibility` requires the former missing-notification and live
+descriptor-revocation defects, rather than treating them as accepted execution.
+The positive path tests ongoing visibility beyond the ordinary toast lifetime,
+normal stop, untrusted bus close/replace/category attempts, accepted grant
+withdrawal interrupting an open-descriptor worker, no unauthorized sticky restart,
+and denied relaunch with preserved private visits. It grants only its own new
+source-read and output-write files, revokes them, and stops its owned bus/processes.
+Prepare the same APK without `--notifications` for
+`--expect-notification-denial`; it must render while refusing foreground admission
+and starting no scoped worker. This case adds no grants.
 
 For the successful path, prepare `IntegrationActivity` with `--notifications`,
 then use `tools/android/run_integration_journey.py --fixture-grants --help`.
