@@ -8,175 +8,63 @@ use automerge::AutoCommit;
 use std::collections::HashMap;
 
 use automerge::ObjId;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::TaffyTree;
+#[cfg(test)]
 use ui::a11y::AccessNode;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{ModalDialog, Widget};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Rect};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
 const TITLE: &str = "Embedded setup profile";
-const MAX_WIDTH: f64 = 640.0;
-const MAX_HEIGHT: f64 = 620.0;
 const WIDTH_FRACTION: f64 = 0.62;
 const COMPACT_WIDTH_FRACTION: f64 = 0.9;
-const HEIGHT_FRACTION: f64 = 0.8;
 
-struct ExportConfigBody {
-    text: String,
-    rect: Rect,
+fn profile_preview(text: &str) -> ui::widget::Text {
+    ui::widget::Text::new(text).with_role(ui::TextRole::Code)
 }
 
-impl ExportConfigBody {
-    fn new() -> Self {
-        Self {
-            text: String::new(),
-            rect: Rect::ZERO,
-        }
-    }
-
-    fn set_text(&mut self, text: String) {
-        self.text = text;
-    }
-
-    fn line_color(theme: &Theme, line: &str) -> vello::peniko::Color {
-        let colors = &theme.tokens.colors;
-        if line.starts_with('#') {
-            colors.neutral[6]
-        } else if line.starts_with('[') {
-            colors.accent[6]
-        } else {
-            colors.text_primary
-        }
-    }
-}
-
-impl Widget for ExportConfigBody {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        #[allow(
-            clippy::expect_used,
-            reason = "a fresh Taffy leaf cannot fail; Widget::build_layout cannot return a result"
-        )]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .expect("fresh export body leaf");
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-        let colors = &theme.tokens.colors;
-        // ModalDialog's body begins six pixels below the original subtitle
-        // baseline. Drawing upward preserves the established card rhythm.
-        let compact = self.rect.width() < 360.0;
-        let subtitle = if compact {
-            "Exact embedded profile; secrets are collected on the device."
-        } else {
-            "Embedded setup profile (JSON) — these choices are applied by the installer; secrets are collected on the device."
-        };
-        let text_width = (self.rect.width() - 8.0).max(0.0) as f32;
-        text_renderer.draw_text_weighted(
-            scene,
-            subtitle,
-            11.5,
-            colors.text_dim,
-            transform * Affine::translate((self.rect.x0 + 4.0, self.rect.y0 - 6.0)),
-            Some(text_width),
-            TextWeight::Regular,
-        );
-
-        let (_, subtitle_height) =
-            text_renderer.measure_weighted(subtitle, 11.5, Some(text_width), TextWeight::Regular);
-        let mut y = self.rect.y0 - 6.0 + f64::from(subtitle_height) + 10.0;
-        for line in self.text.lines() {
-            if y > self.rect.y1 {
-                break;
-            }
-            text_renderer.draw_text_weighted(
-                scene,
-                line,
-                12.0,
-                Self::line_color(theme, line),
-                transform * Affine::translate((self.rect.x0 + 4.0, y)),
-                Some(text_width),
-                TextWeight::Regular,
-            );
-            let (_, line_height) =
-                text_renderer.measure_weighted(line, 12.0, Some(text_width), TextWeight::Regular);
-            y += f64::from(line_height).max(17.0) + 3.0;
-        }
-        let hint = "click anywhere or press Esc to close";
-        let (hint_width, _) = text_renderer.measure(hint, 11.0, None);
-        text_renderer.draw_text_weighted(
-            scene,
-            hint,
-            11.0,
-            colors.neutral[6],
-            transform
-                * Affine::translate((
-                    self.rect.center().x - f64::from(hint_width) / 2.0,
-                    self.rect.y1 + 30.0,
-                )),
-            None,
-            TextWeight::Regular,
-        );
-    }
-
-    fn name(&self) -> &'static str {
-        "ExportConfigBody"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
+fn profile_body(text: &str) -> ui::widget::Column {
+    use ui::TextRole;
+    use ui::widget::Text;
+    ui::widget::Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .push(Box::new(
+            Text::new("Exact embedded profile; secrets are collected on the device.")
+                .with_role(TextRole::Caption)
+                .dimmed(),
+        ))
+        .push(Box::new(profile_preview(text)))
+        .push(Box::new(
+            Text::new("Press Escape to close")
+                .with_role(TextRole::Caption)
+                .dimmed(),
+        ))
 }
 
 /// Shared-modal host for the generated configuration preview.
 pub(crate) struct ExportDialog {
-    dialog: ModalDialog<ExportConfigBody>,
+    dialog: ModalDialog<ui::widget::Column>,
+    text: String,
 }
 
 impl ExportDialog {
     pub(crate) fn new() -> Self {
         Self {
-            dialog: ModalDialog::new(TITLE, ExportConfigBody::new())
-                .with_max_size(MAX_WIDTH, MAX_HEIGHT),
+            dialog: ModalDialog::new(TITLE, profile_body(""))
+                .with_max_width(f64::from(ui::tokens::Metrics::BASE.reading_measure)),
+            text: String::new(),
         }
     }
 
     pub(crate) fn show(&mut self, text: String) {
-        self.dialog.content_mut().set_text(text);
+        self.text = text;
+        *self.dialog.content_mut() = profile_body(&self.text);
+        self.dialog.invalidate_layout();
         self.dialog.set_open(true);
     }
 
@@ -184,11 +72,12 @@ impl ExportDialog {
         self.dialog.is_open()
     }
 
+    #[cfg(test)]
     pub(crate) fn accessibility(&self) -> Option<AccessNode> {
         self.is_open().then_some(())?;
         self.dialog
             .accessibility()
-            .map(|node| node.with_value(self.dialog.content().text.clone()))
+            .map(|node| node.with_value(self.text.clone()))
     }
 
     pub(crate) fn layout_in(
@@ -202,11 +91,26 @@ impl ExportDialog {
         } else {
             WIDTH_FRACTION
         };
-        self.dialog.set_max_size(
-            (viewport.width() * width_fraction).min(MAX_WIDTH),
-            (viewport.height() * HEIGHT_FRACTION).min(MAX_HEIGHT),
+        self.dialog.set_max_width(
+            (viewport.width() * width_fraction)
+                .min(f64::from(theme.tokens.metrics.reading_measure)),
         );
-        self.dialog.layout_in(viewport, theme, text_renderer);
+        let mut tree = TaffyTree::new();
+        let node = self
+            .dialog
+            .build_layout(&mut tree, theme, &mut HashMap::new());
+        let size = taffy::Size {
+            width: taffy::AvailableSpace::Definite(viewport.width() as f32),
+            height: taffy::AvailableSpace::Definite(viewport.height() as f32),
+        };
+        let _ = tree.compute_layout(node, size);
+        if self
+            .dialog
+            .adjust_layout_with_measure(&mut tree, node, text_renderer)
+        {
+            let _ = tree.compute_layout(node, size);
+        }
+        self.dialog.apply_layout(&tree, node, viewport.origin());
     }
 
     pub(crate) fn draw_detached(
@@ -218,7 +122,7 @@ impl ExportDialog {
         presence: &PresenceCtx,
     ) {
         self.dialog
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
     }
 
     pub(crate) fn handle_detached(
@@ -249,7 +153,7 @@ impl ExportDialog {
 
     #[cfg(test)]
     pub(crate) fn text(&self) -> &str {
-        &self.dialog.content().text
+        &self.text
     }
 }
 
@@ -325,7 +229,11 @@ mod tests {
             );
             let rect = dialog.dialog_rect();
             assert_eq!(rect.width(), 640.0);
-            assert_eq!(rect.height(), 620.0);
+            assert!(
+                rect.height() <= 620.0,
+                "short profile uses its intrinsic shared-modal height"
+            );
+            assert!(rect.height() > 0.0);
 
             dialog.layout_in(
                 Rect::new(0.0, 0.0, 800.0, 600.0),
@@ -334,7 +242,7 @@ mod tests {
             );
             let narrow = dialog.dialog_rect();
             assert_eq!(narrow.width(), 800.0 * WIDTH_FRACTION);
-            assert_eq!(narrow.height(), 600.0 * HEIGHT_FRACTION);
+            assert!(narrow.height() <= 600.0 * 0.8);
 
             dialog.layout_in(
                 Rect::new(0.0, 0.0, 320.0, 640.0),
@@ -342,8 +250,12 @@ mod tests {
                 &mut TextRenderer::new(),
             );
             let compact = dialog.dialog_rect();
-            assert_eq!(compact.width(), 320.0 * COMPACT_WIDTH_FRACTION);
-            assert_eq!(compact.height(), 640.0 * HEIGHT_FRACTION);
+            assert_eq!(
+                compact.width(),
+                (320.0 * COMPACT_WIDTH_FRACTION)
+                    .min(320.0 - 2.0 * f64::from(Theme::dark().tokens.spacing.rhythm.group),),
+            );
+            assert!(compact.height() <= 640.0 * 0.8);
         }
 
         // Phase `escape_and_any_left_click_are_captured_and_dismiss`.
@@ -384,19 +296,19 @@ mod tests {
 
         // Phase `syntax_roles_and_accessibility_preserve_the_read_only_document`.
         {
-            let theme = Theme::dark();
+            let preview = profile_preview("[install]\nhostname = tilo");
+            assert_eq!(preview.role(), ui::TextRole::Code);
+            let body = profile_body("[install]\nhostname = tilo");
+            let children = body.children();
             assert_eq!(
-                ExportConfigBody::line_color(&theme, "# heading"),
-                theme.tokens.colors.neutral[6]
+                children.len(),
+                3,
+                "explanation, exact profile and dismissal hint"
             );
-            assert_eq!(
-                ExportConfigBody::line_color(&theme, "[install]"),
-                theme.tokens.colors.accent[6]
-            );
-            assert_eq!(
-                ExportConfigBody::line_color(&theme, "hostname = tilo"),
-                theme.tokens.colors.text_primary
-            );
+            let code = children[1]
+                .accessibility()
+                .expect("the retained profile is readable");
+            assert_eq!(code.name.as_deref(), Some("[install]\nhostname = tilo"));
 
             let mut dialog = ExportDialog::new();
             dialog.show("[install]\nhostname = tilo".into());

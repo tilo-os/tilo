@@ -139,10 +139,10 @@ pub struct Candidate {
 }
 
 impl Candidate {
-    /// "Shelf · Speakers".
+    /// "Shelf (Speakers)".
     #[must_use]
     pub fn label(&self) -> String {
-        format!("{} · {}", self.device_label, self.output_label)
+        format!("{} ({})", self.device_label, self.output_label)
     }
 }
 
@@ -151,7 +151,7 @@ impl Candidate {
 pub struct Microphone {
     pub device: String,
     pub device_label: String,
-    /// "Phone · Microphone".
+    /// "Phone (Microphone)".
     pub label: String,
     pub local: bool,
     pub status: MicrophoneStatus,
@@ -180,7 +180,7 @@ impl Microphone {
             MicrophoneStatus::Unavailable => "speakers-microphone-unavailable",
         });
         if self.status.usable() {
-            format!("{role} · {status}")
+            format!("{role} ({status})")
         } else {
             status
         }
@@ -375,7 +375,7 @@ impl SpeakerSetup {
             .map(|microphone| Microphone {
                 device: microphone.device.clone(),
                 device_label: microphone.device_label.clone(),
-                label: format!("{} · {}", microphone.device_label, microphone.label),
+                label: format!("{} ({})", microphone.device_label, microphone.label),
                 local: microphone.local,
                 status: microphone.status,
                 member: known

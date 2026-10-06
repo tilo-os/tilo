@@ -127,14 +127,17 @@ impl<T, E: fmt::Display> Probe for Result<T, E> {
 /// Evaluate a capability probe; on success yield its value, otherwise skip
 /// the test (return) or, under `TILO_REQUIRE_<CAP>=1`, fail it.
 ///
+/// This example uses an available fixture adapter to demonstrate yielding
+/// the probed value.
+///
 /// ```
 /// use tilo_test_env::require_capability;
 ///
-/// fn adapter() -> Option<&'static str> { None }
+/// fn adapter() -> Option<&'static str> { Some("fixture adapter") }
 ///
 /// fn renders_a_frame() {
 ///     let adapter = require_capability!(Gpu, adapter(), "no wgpu adapter for offscreen render");
-///     assert!(!adapter.is_empty());
+///     assert_eq!(adapter, "fixture adapter");
 /// }
 /// # renders_a_frame();
 /// ```

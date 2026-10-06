@@ -126,6 +126,9 @@ impl CodeApp {
         command: Command,
         cx: &mut EffectCx<CodeEditor, Self>,
     ) -> EffectAnswer {
+        if command == Command::NextTheme {
+            return Err("Appearance is controlled by the operating system; choose it in Appearance settings".into());
+        }
         match command {
             Command::OpenFolder | Command::OpenFile | Command::SaveAs => {
                 self.ensure_no_file_effect()?;
@@ -205,7 +208,11 @@ impl CodeApp {
 
     /// What the file effects can do right now.
     pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
-        let mut statuses = Vec::new();
+        let mut statuses = vec![EffectStatus::unavailable(
+            CodeEditorEffect::NEXT_THEME,
+            "code_editor.os_appearance",
+            "Appearance is controlled by the OS; choose a theme in Theme Studio",
+        )];
         if self.file_reply.is_some() || self.portal.is_some() {
             const CODE: &str = "code_editor.busy";
             const REASON: &str = "Another file operation is still running";
@@ -354,8 +361,7 @@ impl CodeApp {
             }
             Some("selection") => self.shots_select_words(),
             Some("completion") => self.shots_completion_demo(doc),
-            Some("find") => self.shots_open_find("primes", true, false, doc),
-            Some("find-options") => self.shots_open_find("primes", true, true, doc),
+            Some("find" | "find-options") => self.shots_open_find("primes", doc),
             Some("search") => self.shots_project_search("fn main"),
             Some("conflict") => self.shots_conflict(),
             Some("indexing") => self.shots_indexing(),
@@ -439,6 +445,13 @@ impl CodeApp {
     }
 
     pub(crate) fn find_options_shown_for_test(&self) -> bool {
-        self.find.options_shown()
+        ui::widget::Widget::accessibility(&self.find).is_some_and(|node| {
+            node.children.iter().any(|child| {
+                child.action_target.as_deref() == Some("find-MatchCase")
+                    && child
+                        .bounds
+                        .is_some_and(|bounds| bounds.x1 > bounds.x0 && bounds.y1 > bounds.y0)
+            })
+        })
     }
 }

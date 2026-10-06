@@ -175,7 +175,7 @@ fn render_shot(browser: ChannelBrowser, out: &Path) {
         SHOT_VIEWPORT,
         theme.with_reduce_motion(true),
     );
-    harness.render_window_png(out);
+    harness.render_png(out);
     match harness.inspection_json() {
         Ok(json) => {
             let path = out.with_extension("inspection.json");
