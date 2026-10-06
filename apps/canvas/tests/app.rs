@@ -268,9 +268,14 @@ fn an_earlier_version_chosen_in_the_history_is_restored() {
         .expect("paint");
     assert_eq!(app.state().marks.len(), 2);
 
-    let dock = app.harness().targets()["canvas-dock"];
+    // The dock's second tab is the history.
     app.harness()
-        .click_at(dock.x0 + dock.width() * 0.75, dock.center().y);
+        .perform_semantic_named(
+            "canvas-dock",
+            Some("canvas-dock:segment:1"),
+            &ui::a11y::Action::Activate,
+        )
+        .expect("the history tab opens");
     let mut versions: Vec<(String, ui::vello::kurbo::Rect)> = app
         .harness()
         .targets()

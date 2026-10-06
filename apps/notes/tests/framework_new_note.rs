@@ -100,21 +100,9 @@ fn activating_new_note_as_assistive_technology_does_opens_a_document() {
 #[test]
 fn the_sidebar_plus_creates_a_root_note() {
     let mut app = fresh();
-    let tree = app.harness().targets()["page_tree"];
-    // The heading's "+" is the sidebar's own "New note" button; the empty
-    // state's button of the same name sits outside the sidebar.
-    let plus = app
-        .harness()
-        .a11y_nodes()
-        .into_iter()
-        .filter(|(_, node)| node.label() == Some("New note"))
-        .filter_map(|(_, node)| node.bounds())
-        .find(|bounds| tree.contains(ui::kurbo::Point::new(bounds.x0, bounds.y0)))
-        .expect("the sidebar shows a New note button");
-    let (x, y) = (
-        f64::midpoint(plus.x0, plus.x1),
-        f64::midpoint(plus.y0, plus.y1),
-    );
+    // The heading action is a retained control outside the page tree's body.
+    let plus = app.harness().targets()["new-note"];
+    let (x, y) = (plus.center().x, plus.center().y);
     app.harness().click_at(x, y);
     assert_eq!(page_count(&app), 1, "the sidebar's + creates a page");
     app.harness().click_at(x, y);

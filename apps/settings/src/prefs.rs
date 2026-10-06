@@ -481,25 +481,47 @@ impl Default for UpdatePrefs {
 )]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppearancePrefs {
-    /// Named theme preset — one of [`AppearancePrefs::THEMES`].
+    /// Legacy preset selector retained for imported settings and the published `SetTheme` action.
+    #[serde(default = "default_legacy_theme")]
     pub theme: String,
-    /// Force the high-contrast accessibility palette, overriding `theme`.
+    /// `"light"`, `"dark"` or `"automatic"` (light by day, dark by night).
+    #[serde(default = "default_mode")]
+    pub mode: String,
+    /// The theme dark mode shows: a preset id or `custom:<id>`.
+    #[serde(default = "default_dark_theme")]
+    pub dark_theme: String,
+    /// The theme light mode shows: a preset id or `custom:<id>`.
+    #[serde(default = "default_light_theme")]
+    pub light_theme: String,
+    /// The theme documents a `custom:<id>` names. Theme Studio writes them;
+    /// Settings keeps them intact and resolves them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custom_themes: Vec<serde_json::Value>,
+    /// Spacing density over whichever theme is shown: one of
+    /// [`ui::theme::ThemeDensity`]'s `COMPACT`, `REGULAR` and `ROOMY`.
+    #[serde(default = "default_density")]
+    pub density: f64,
+    /// Force the high-contrast accessibility palette, overriding the theme.
+    #[serde(default)]
     pub high_contrast: bool,
     /// Snap animations to their resting state instead of easing.
+    #[serde(default)]
     pub reduce_motion: bool,
+    /// Make menus, panels and sheets opaque instead of blurred.
+    #[serde(default)]
+    pub reduce_transparency: bool,
     /// UI text-size multiplier (`1.0` = default). Scales *type only*. Clamped
     /// on apply.
+    #[serde(default = "default_ui_scale")]
     pub text_scale: f64,
     /// Global UI-scale multiplier (`1.0` = default) — the "make everything
     /// bigger" knob. Scales the *whole* design system (spacing, radii, and the
     /// type scale) together via [`ui::Theme::with_ui_scale`]. Composes on top of
     /// the per-output fractional device scale the compositor reports, and text
-    /// additionally picks up `text_scale`. Clamped on apply. Defaults to `1.0`,
-    /// and a settings file written before this field existed loads as `1.0`
-    /// (serde `default`), so older configs keep their look.
+    /// additionally picks up `text_scale`. Clamped on apply.
     #[serde(default = "default_ui_scale")]
     pub ui_scale: f64,
-    /// When the day ends, for the "Automatic" theme and a scheduled night
+    /// When the day ends, for the "Automatic" mode and a scheduled night
     /// light: `"sun"` follows sunrise and sunset at the time zone's location,
     /// `"custom"` uses [`Self::sunrise`] and [`Self::sunset`]
     /// (`settings_store::day_schedule`).
@@ -518,19 +540,34 @@ pub struct AppearancePrefs {
     /// Where a newly chosen wallpaper shows: `background`, `lockscreen` or `both`.
     #[serde(default = "default_wallpaper_target")]
     pub wallpaper_target: String,
-    /// Palette, default accent and pins shipped with the OS image.
+    /// Palette and pins shipped with the OS image.
     /// Absent on a settings file written before the layer existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub distribution_defaults: Option<ui::theme::DistributionDefaults>,
-    /// Accent hint for one workspace. Accessibility can drop it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_tint: Option<ui::theme::WorkspaceTint>,
-    /// When false, [`ui::Theme::brand_accent`] refuses every app colour.
-    #[serde(default = "default_true")]
-    pub app_accents: bool,
     /// Force theme tokens onto content surfaces, with high contrast.
     #[serde(default)]
     pub forced_colors: bool,
+    /// "Always distinguish similar letters": I, l, 1 and 0, O set apart in
+    /// all text. `None` follows the theme's typeface (on with Hyperlegible);
+    /// [`Self::distinct_letters_effective`] is what the system shows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distinct_letters: Option<bool>,
+}
+
+fn default_mode() -> String {
+    "light".to_string()
+}
+
+fn default_dark_theme() -> String {
+    ui::theme::Preset::Dark.id().to_string()
+}
+
+fn default_light_theme() -> String {
+    ui::theme::Preset::Light.id().to_string()
+}
+
+fn default_density() -> f64 {
+    f64::from(ui::theme::ThemeDensity::REGULAR)
 }
 
 fn default_schedule() -> String {
@@ -557,19 +594,29 @@ fn default_wallpaper_target() -> String {
     "background".to_string()
 }
 
-/// Serde default for [`AppearancePrefs::ui_scale`] so a config written before
-/// the field existed deserialises to the neutral `1.0` rather than failing the
-/// whole section.
+/// Serde default for [`AppearancePrefs::ui_scale`] and
+/// [`AppearancePrefs::text_scale`] so a config written before the field
+/// existed deserialises to the neutral `1.0` rather than failing the whole
+/// section.
 fn default_ui_scale() -> f64 {
     1.0
 }
 
+fn default_legacy_theme() -> String {
+    "Light".into()
+}
 impl Default for AppearancePrefs {
     fn default() -> Self {
         Self {
-            theme: "Dark".to_string(),
+            theme: default_legacy_theme(),
+            mode: default_mode(),
+            dark_theme: default_dark_theme(),
+            light_theme: default_light_theme(),
+            custom_themes: Vec::new(),
+            density: default_density(),
             high_contrast: false,
             reduce_motion: false,
+            reduce_transparency: false,
             text_scale: 1.0,
             ui_scale: 1.0,
             schedule: default_schedule(),
@@ -578,64 +625,84 @@ impl Default for AppearancePrefs {
             wallpaper_scope: default_wallpaper_scope(),
             wallpaper_target: default_wallpaper_target(),
             distribution_defaults: None,
-            workspace_tint: None,
-            app_accents: true,
             forced_colors: false,
+            distinct_letters: None,
         }
     }
 }
 
-/// The person's look, read by the compositor and every app's toolkit.
-impl ui::storage::SettingsSchema for AppearancePrefs {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("appearance");
+/// The three appearance modes, as `(stored value, label key)`.
+pub const MODES: [(&str, &str); 3] = [
+    ("light", "settings-appearance-mode-light"),
+    ("dark", "settings-appearance-mode-dark"),
+    ("automatic", "settings-appearance-mode-automatic"),
+];
+
+/// One theme a mode can show: its stored reference and the name a person
+/// reads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThemeChoice {
+    /// A preset id or `custom:<id>`.
+    pub reference: String,
+    /// The theme's name.
+    pub name: String,
 }
 
 impl AppearancePrefs {
-    /// The named theme presets the Appearance pane offers, in display order.
-    /// Each maps to a real constructor on [`ui::Theme`] via [`theme_by_name`].
-    pub const THEMES: &'static [&'static str] = &[
-        settings_store::day_schedule::AUTOMATIC_THEME,
-        "Dark",
-        "Light",
-        "Tilo Blue",
-        "Catppuccin Mocha",
-        "Catppuccin Latte",
-        "Dracula",
-        "Nord",
-        "Gruvbox",
-        "Gruvbox Light",
-        "Solarized",
-        "OLED",
-        "Beige",
-    ];
-
-    /// Resolve these preferences into the concrete [`ui::Theme`] the OS would
-    /// apply: the named preset (or the high-contrast track when requested),
-    /// with the text scale and reduced-motion comforts folded in. This is the
-    /// real "apply" contract — a consumer that wants the user's look calls
-    /// this rather than hard-coding [`ui::Theme::dark`].
-    pub fn resolve_theme(&self) -> ui::Theme {
-        // The same function the compositor uses. UI scale grows the whole
-        // system first; text scale then layers extra type growth on top.
-        ui::theme::resolve_theme_layers(&ui::theme::ThemeLayerStack {
-            distribution_defaults: self.distribution_defaults.clone(),
-            user_theme: Some(self.base_theme()),
-            workspace_tint: self.workspace_tint.clone(),
-            accessibility: ui::theme::AccessibilityLayer {
-                high_contrast: self.high_contrast,
-                forced_colors: self.forced_colors,
-                text_scale: self.text_scale as f32,
-                ui_scale: self.ui_scale as f32,
-                reduce_motion: self.reduce_motion,
-                thick_caret: false,
-                ..ui::theme::AccessibilityLayer::default()
-            },
-            allow_app_accents: self.app_accents,
-        })
+    /// The settings document these preferences describe, in the shape the
+    /// theme layers read.
+    pub fn settings_value(&self) -> serde_json::Value {
+        let mut appearance = serde_json::to_value(self).unwrap_or_default();
+        if let Some(section) = appearance.as_object_mut() {
+            section.insert(
+                ui::theme::CUSTOM_THEMES_KEY.into(),
+                serde_json::Value::Array(self.custom_themes.clone()),
+            );
+        }
+        serde_json::json!({ "appearance": appearance })
     }
-}
 
-impl AppearancePrefs {
+    /// The themes `dark` (or light) mode can show: the presets of that
+    /// polarity and the person's own themes of it, in display order.
+    pub fn theme_choices(&self, dark: bool) -> Vec<ThemeChoice> {
+        let mut choices: Vec<ThemeChoice> = ui::theme::Preset::ALL
+            .iter()
+            .filter(|preset| {
+                !matches!(
+                    preset,
+                    ui::theme::Preset::HighContrast | ui::theme::Preset::HighContrastLight
+                ) && preset.document().is_dark() == dark
+            })
+            .map(|preset| ThemeChoice {
+                reference: preset.id().to_string(),
+                name: preset.name().to_string(),
+            })
+            .collect();
+        for value in &self.custom_themes {
+            let Ok(document) = serde_json::from_value::<ui::theme::ThemeDocument>(value.clone())
+            else {
+                continue;
+            };
+            if document.validate().is_ok() && document.is_dark() == dark {
+                choices.push(ThemeChoice {
+                    reference: format!("custom:{}", document.id),
+                    name: document.name,
+                });
+            }
+        }
+        choices
+    }
+
+    /// The name a stored theme reference shows as, or the reference itself
+    /// when this build does not know it.
+    pub fn theme_name(&self, reference: &str) -> String {
+        [true, false]
+            .into_iter()
+            .flat_map(|dark| self.theme_choices(dark))
+            .find(|choice| choice.reference == reference)
+            .map_or_else(|| reference.to_string(), |choice| choice.name)
+    }
+
     /// The day/night schedule these preferences describe, at the system time
     /// zone's location.
     pub fn schedule(&self) -> settings_store::day_schedule::Scheduled {
@@ -649,21 +716,113 @@ impl AppearancePrefs {
         }
     }
 
-    /// The chosen theme before the accessibility comforts: "Automatic" is
-    /// the light theme by day and the dark theme by night.
-    pub fn base_theme(&self) -> ui::Theme {
-        if settings_store::day_schedule::is_automatic(&self.theme) {
-            if self.schedule().is_night(ui::theme::local_moment()) {
-                ui::Theme::dark()
-            } else {
-                ui::Theme::light()
-            }
-        } else {
-            theme_by_name(&self.theme)
+    /// Whether the mode shows the dark theme right now: always for `dark`,
+    /// never for `light`, by the schedule for `automatic`.
+    pub fn is_dark_now(&self) -> bool {
+        match self.mode.as_str() {
+            "light" => false,
+            "automatic" => self.schedule().is_night(ui::theme::local_moment()),
+            _ => true,
         }
+    }
+
+    /// The theme document the current mode shows, with the density over it.
+    pub fn user_document(&self) -> Option<ui::theme::ThemeDocument> {
+        // Import the former preset field without discarding new paired-theme data.
+        // Typed SetTheme keeps both forms in agreement; older settings have only
+        // the preset and therefore still need this conversion when read.
+        let mut imported = self.clone();
+        if self.theme != default_legacy_theme() {
+            imported.choose_legacy_theme(self.theme.clone());
+        }
+        ui::theme::user_document(&imported.settings_value(), ui::theme::local_moment())
+    }
+
+    fn layers(&self, accessibility: ui::theme::AccessibilityLayer) -> ui::theme::ThemeLayerStack {
+        ui::theme::ThemeLayerStack {
+            distribution_defaults: self.distribution_defaults.clone(),
+            user_theme: self.user_document(),
+            window: ui::WindowAppearance::default(),
+            accessibility,
+        }
+    }
+
+    /// Resolve these preferences into the concrete [`ui::Theme`] the OS would
+    /// apply: the theme the mode shows, with the accessibility comforts
+    /// folded in. This is the real "apply" contract — a consumer that wants
+    /// the user's look calls this rather than hard-coding [`ui::Theme::dark`].
+    pub fn resolve_theme(&self) -> ui::Theme {
+        // The same function the compositor uses. UI scale grows the whole
+        // system first; text scale then layers extra type growth on top.
+        ui::theme::resolve_theme_layers(&self.layers(ui::theme::AccessibilityLayer {
+            high_contrast: self.high_contrast,
+            forced_colors: self.forced_colors,
+            text_scale: self.text_scale as f32,
+            ui_scale: self.ui_scale as f32,
+            reduce_motion: self.reduce_motion,
+            reduce_transparency: self.reduce_transparency,
+            distinct_letters: self.distinct_letters,
+            ..ui::theme::AccessibilityLayer::default()
+        }))
+    }
+
+    /// Whether similar letters are set apart everywhere: the person's
+    /// choice, else what the theme's typeface does.
+    pub fn distinct_letters_effective(&self) -> bool {
+        self.distinct_letters
+            .unwrap_or_else(|| self.distinct_letters_by_face())
+    }
+
+    /// What the theme the mode shows does with no choice made: on with
+    /// Hyperlegible, off otherwise.
+    pub fn distinct_letters_by_face(&self) -> bool {
+        let unset = Self {
+            distinct_letters: None,
+            ..self.clone()
+        };
+        unset.resolve_theme().tokens.typography.distinct_letters
+    }
+
+    /// Record `on` as the person's choice: no choice when it is what the
+    /// typeface does anyway, so a later Hyperlegible theme still turns it on.
+    pub fn choose_distinct_letters(&mut self, on: bool) {
+        self.distinct_letters = (on != self.distinct_letters_by_face()).then_some(on);
+    }
+
+    /// The chosen theme before the accessibility comforts.
+    pub fn base_theme(&self) -> ui::Theme {
+        ui::theme::resolve_theme_layers(&self.layers(ui::theme::AccessibilityLayer::default()))
     }
 }
 
+impl ui::storage::SettingsSchema for AppearancePrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("appearance");
+}
+
+impl AppearancePrefs {
+    pub const THEMES: &'static [&'static str] = &[
+        "Automatic",
+        "Dark",
+        "Light",
+        "Dark graphite",
+        "Dark cool",
+        "Dark soft",
+    ];
+    pub fn choose_legacy_theme(&mut self, name: String) {
+        if settings_store::day_schedule::is_automatic(&name.to_ascii_lowercase()) {
+            self.mode = "automatic".into();
+        } else if let Some(preset) = ui::theme::Preset::find(&name) {
+            let doc = preset.document();
+            self.mode = if doc.palette.dark { "dark" } else { "light" }.into();
+            if doc.palette.dark {
+                self.dark_theme = preset.id().into();
+            } else {
+                self.light_theme = preset.id().into();
+            }
+        }
+        self.theme = name;
+    }
+}
 /// Overwrite `known`'s fields in the `section` object, keeping any other key
 /// in it. A non-object section is replaced by an empty one first.
 fn merge_fields(section: &mut serde_json::Value, known: &serde_json::Value) {
@@ -1539,7 +1698,7 @@ mod tests {
     #[test]
     fn appearance_prefs_resolve_to_real_themes() {
         let p = AppearancePrefs::default();
-        assert_eq!(p.theme, "Dark");
+        assert_eq!(p.theme, "Light");
         assert!(!p.high_contrast);
         assert_eq!(p.text_scale, 1.0);
 
@@ -1554,19 +1713,25 @@ mod tests {
             };
         // (case, prefs, resolved name, text scale, reduced motion)
         let cases = [
-            ("default resolves to dark, unscaled", p, "Dark", 1.0, false),
+            (
+                "default resolves to light, unscaled",
+                p,
+                "Light",
+                1.0,
+                false,
+            ),
             (
                 "named preset with comforts",
-                prefs("Nord", false, true, 1.5, 1.0),
-                "Nord",
+                prefs("Dark cool", false, true, 1.5, 1.0),
+                "Dark cool",
                 1.5,
                 true,
             ),
             // high_contrast wins over the named preset.
             (
                 "high contrast overrides the preset",
-                prefs("Dracula", true, false, 1.0, 1.0),
-                "High Contrast",
+                prefs("Dark graphite", true, false, 1.0, 1.0),
+                "High contrast",
                 1.0,
                 false,
             ),
@@ -1582,7 +1747,7 @@ mod tests {
         // Every advertised preset maps to a distinct real constructor.
         for name in AppearancePrefs::THEMES
             .iter()
-            .filter(|name| !settings_store::day_schedule::is_automatic(name))
+            .filter(|name| !settings_store::day_schedule::is_automatic(&name.to_ascii_lowercase()))
         {
             let t = theme_by_name(name);
             assert_eq!(&t.name, name, "{name} must resolve to its own theme");
@@ -1591,29 +1756,37 @@ mod tests {
         // UI scale folds into the resolved theme and composes with text scale.
         let base = ui::Theme::dark();
         let base_gap = base.tokens.spacing.s3;
-        let base_type = base.tokens.typography.scale.base;
+        let base_type = base.tokens.typography.size(ui::tokens::TextRole::Body);
         let theme = prefs("Dark", false, false, 1.2, 1.25).resolve_theme();
         assert_eq!(theme.ui_scale, 1.25, "UI scale folds in");
         assert_eq!(theme.text_scale, 1.2, "text scale folds in");
         // Spacing grows by the UI factor only; type by UI × text.
         assert!((theme.tokens.spacing.s3 - base_gap * 1.25).abs() < 1e-2);
-        assert!((theme.tokens.typography.scale.base - base_type * 1.25 * 1.2).abs() < 1e-2);
+        assert!(
+            (theme.tokens.typography.size(ui::tokens::TextRole::Body) - base_type * 1.25 * 1.2)
+                .abs()
+                < 1e-2
+        );
 
-        // A pinned distribution accent wins over the named preset's accent
+        // A pinned distribution emphasis wins over the named preset's emphasis
         // only. The palette stays the one the pane shows.
         let mut pinned = prefs("Light", false, false, 1.0, 1.0);
         pinned.distribution_defaults = Some(ui::theme::DistributionDefaults {
-            accent: Some([0x0B, 0x3A, 0x82]),
+            document: Some(ui::theme::ThemeDocument {
+                emphasis: ui::tokens::Emphasis::Tinted { hue: 260.0 },
+                ..ui::theme::Preset::Dark.document()
+            }),
             policy: ui::theme::DistributionPolicy {
-                pins: vec![ui::theme::PIN_ACCENT.into()],
-                ..ui::theme::DistributionPolicy::default()
+                pins: vec![ui::theme::PIN_EMPHASIS.into()],
             },
             ..ui::theme::DistributionDefaults::default()
         });
         let pinned_theme = pinned.resolve_theme();
         assert_eq!(pinned_theme.name, "Light");
-        let accent = pinned_theme.accent_primary.to_rgba8();
-        assert_eq!([accent.r, accent.g, accent.b], [0x0B, 0x3A, 0x82]);
+        assert_eq!(
+            pinned_theme.tokens.colors.emphasis,
+            ui::tokens::Emphasis::Tinted { hue: 260.0 }
+        );
     }
 
     /// Writing one section never clobbers the region store's locale, a theme

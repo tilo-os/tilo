@@ -1,12 +1,13 @@
-//! The strip over the canvas: the artwork's title, set like the label
-//! beside a picture on a wall, taking back and bringing back steps, how
-//! near the artwork is, and the sidebar shown or put away.
+//! The header over the canvas: the artwork's title, set like the label
+//! beside a picture on a wall, taking back and bringing back steps and how
+//! near the artwork is; and the strip of what to do with a selection.
 
 use ui::LocalState;
 use ui::icons::Icon;
 use ui::prelude::*;
 use ui::text_render::FontChoice;
 use ui::widget::EditableLabel;
+use ui::widget::{ButtonRole, ControlSize};
 
 use super::icon_button;
 use crate::actions::{Align, CanvasAction};
@@ -15,16 +16,11 @@ use crate::resource::ArtworkResource;
 use crate::selection::{Combine, Select, UseSelection};
 use crate::tools::{Sheet, Tools, ViewRequest};
 
-/// The least room the title keeps, so it reads as a title, not a field.
-const TITLE: f32 = 96.0; // about ten letters of the title face: a text width, not spacing
-/// The zoom readout's width, so the buttons beside it hold still as it
-/// changes.
-const READOUT: f32 = 52.0; // "6400%" in the caption face: a text width, not spacing
-
-/// The header.
-pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
-    // The title reads as a title until it is clicked; the edit lands as
-    // one step when Enter or a click away ends it, not one per letter.
+/// The content column's header: the artwork's title, then adding a
+/// picture, exporting, undo and redo, and the zoom. The window shell owns
+/// the row, the inspector's toggle and History.
+pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Vec<Element> {
+    // Finish editing the title as one resource action and undo step.
     let titled = cx.value(|art: &Artwork| art.title.clone());
     let title = cx.switch(&titled, |cx, title| {
         Box::new(
@@ -33,69 +29,63 @@ pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                     .edits_on_click()
                     .with_placeholder(ui::i18n::I18nManager::lookup_plain("canvas-untitled"))
                     .with_font_family(FontChoice::Serif)
-                    .with_font_size(17.0)
+                    .with_text_role(TextRole::Heading)
                     .with_id("canvas-title")
                     .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
                         "canvas-artwork-title",
-                    ))
-                    .filling(),
+                    )),
                 ArtworkResource::SET_TITLE,
             ),
         ) as Element
     });
     let lookup = ui::i18n::I18nManager::lookup_plain;
-    Box::new(
-        Row::new()
-            .no_wrap()
-            .with_padding(10.0, 6.0)
-            .with_gap(2.0)
-            .with_align_items(ui::taffy::AlignItems::Center)
-            // The title takes the room the controls leave, and holds them
-            // at the far end.
-            .push(Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_flex_grow()
-                    .with_min_width(TITLE)
-                    .with_child(Box::new(
-                        Column::new()
-                            .with_no_padding()
-                            .with_intrinsic_height()
-                            .with_gap(0.0)
-                            .push(title)
-                            .push(notice(cx, tools)),
-                    )),
-            ))
-            .push(add_picture(tools))
-            .push(Box::new(Spacer::fixed(6.0)))
-            .push(Box::new(icon_button(
-                cx,
-                Icon::Undo2,
-                &lookup("canvas-undo"),
-                ArtworkResource::UNDO.invoke(),
-            )))
-            .push(Box::new(icon_button(
-                cx,
-                Icon::Redo2,
-                &lookup("canvas-redo"),
-                ArtworkResource::REDO.invoke(),
-            )))
-            .push(Box::new(Spacer::fixed(10.0)))
-            .push(zoom(tools))
-            .push(Box::new(Spacer::fixed(10.0)))
-            .push(Box::new(toggle(
-                &tools.sidebar,
-                "canvas-sidebar",
-                Icon::PanelRight,
-            )))
-            .push(Box::new(sheet_button(
-                tools,
-                "canvas-export-open",
-                Icon::Download,
-                Sheet::Export,
-            )))
-            .push(menu(cx, tools)),
-    )
+    let row = Row::new()
+        .no_wrap()
+        .with_align_items(ui::taffy::AlignItems::Center)
+        // The title takes the room the controls leave, and holds them at
+        // the far end.
+        .push(Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_flex_grow()
+                .with_child(Box::new(
+                    Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .push(title)
+                        .push(notice(cx, tools)),
+                )),
+        ))
+        .push(add_picture(tools))
+        .push(Box::new(sheet_button(
+            tools,
+            "canvas-export-title",
+            Icon::Download,
+            Sheet::Export,
+        )))
+        .push(menu(cx, tools))
+        .push(Box::new(icon_button(
+            cx,
+            Icon::Undo2,
+            &lookup("canvas-undo"),
+            ArtworkResource::UNDO.invoke(),
+        )))
+        .push(Box::new(icon_button(
+            cx,
+            Icon::Redo2,
+            &lookup("canvas-redo"),
+            ArtworkResource::REDO.invoke(),
+        )))
+        .push(zoom(tools));
+    // One group: each control is one of the artwork's actions (or a view
+    // of it) an agent already has, so none is offered again on its own.
+    vec![Box::new(super::pane::Group::new(Box::new(
+        Container::new()
+            .with_no_padding()
+            .with_flex_grow()
+            .with_min_width(0.0)
+            .with_child(Box::new(row)),
+    )))]
 }
 
 /// Choose a picture to add: on an empty sheet it becomes the artwork, the
@@ -108,12 +98,8 @@ fn add_picture(tools: &Tools) -> Element {
     let confirm = ui::i18n::I18nManager::lookup_plain("canvas-add-picture-confirm");
     let kinds = ui::i18n::I18nManager::lookup_plain("canvas-pictures");
     Box::new(
-        Button::new("canvas-add-picture", "")
-            .with_icon(Icon::Image)
-            .ghost()
-            .with_accessible_name(&name)
-            .tooltip(name.clone())
-            .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
+        Button::icon_only("canvas-add-picture", Icon::Image, &name)
+            .control_size(ControlSize::Small)
             .on_view(move || {
                 let request = ui::portal::PickRequest::open(&title, &confirm)
                     .filter(
@@ -173,7 +159,7 @@ pub fn context_bar(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                     .find(|(mask, _, _)| mask == layer)
                     .map(|(_, owner, name)| (owner.clone(), name.clone()));
                 if !facts.area && !align && masked.is_none() {
-                    return Box::new(Spacer::fixed(0.0)) as Element;
+                    return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
                 }
                 let area = facts.area;
                 let tools = tools.clone();
@@ -264,15 +250,10 @@ impl Command {
         let button = if labelled {
             Button::new(&self.id, &label)
                 .with_icon(self.icon)
-                .ghost()
-                .fit_content(super::ICON_BUTTON)
+                .role(ButtonRole::Plain)
+                .control_size(ControlSize::Small)
         } else {
-            Button::new(&self.id, "")
-                .with_icon(self.icon)
-                .ghost()
-                .with_accessible_name(&label)
-                .tooltip(label.clone())
-                .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
+            Button::icon_only(&self.id, self.icon, &label).control_size(ControlSize::Small)
         };
         (self.bind)(button, cx)
     }
@@ -296,9 +277,6 @@ fn text_room(text: &str, per_letter: f32) -> f32 {
     letters * per_letter
 }
 
-/// A button's room in the strip, with the gap after it.
-const SLOT: f32 = super::ICON_BUTTON + 2.0;
-
 /// The strip's one row, as wide as `room` lets it be: labels are given in
 /// the commands' order while they fit, every command keeps its icon while
 /// that fits, and the last ones go into a menu when it does not.
@@ -308,11 +286,17 @@ fn strip(
     (area, combine, masked): (bool, bool, Option<&(String, String)>),
     room: u32,
 ) -> Element {
+    let spacing = ui::tokens::Spacing::BASE;
+    // A button's room in the strip: an icon button is a pointer target
+    // square, and the strip lays its buttons edge to edge. The strip is
+    // laid out before a theme is known, so it reads the stock metrics.
+    let slot = ui::tokens::Metrics::BASE.min_pointer_target;
+    // Less the bar's inset from the canvas and the row's own.
     #[allow(
         clippy::cast_precision_loss,
         reason = "a width in pixels, far below f32's exact range"
     )]
-    let room = room as f32 - 24.0; // the row's insets
+    let room = room as f32 - 2.0 * (spacing.s2 + spacing.s3);
     let mut groups: Vec<Vec<Command>> = Vec::new();
     if area {
         groups.push(area_commands(tools));
@@ -325,21 +309,21 @@ fn strip(
     }
     let count: usize = groups.iter().map(Vec::len).sum();
     #[allow(clippy::cast_precision_loss, reason = "a handful of buttons")]
-    let rules = groups.len().saturating_sub(1) as f32 * 9.0;
+    let rules = groups.len().saturating_sub(1) as f32 * (2.0 * spacing.s1 + 1.0);
     #[allow(clippy::cast_precision_loss, reason = "a handful of buttons")]
-    let icons = count as f32 * SLOT + rules;
+    let icons = count as f32 * slot + rules;
     // Painting a mask is said where the painting happens, with the way
     // back to the layer's own paint, said in full when there is room.
     let lead = masked.map(|(owner, name)| {
         let full =
             ui::i18n::I18nManager::format("canvas-painting-mask", &[("name", name.clone().into())]);
         let short = ui::i18n::I18nManager::lookup_plain("canvas-medium-mask");
-        let said = if text_room(&full, 7.0) + 30.0 + SLOT + 10.0 + icons <= room {
+        let said = if text_room(&full, 7.0) + 30.0 + slot + spacing.s2 + icons <= room {
             full
         } else {
             short
         };
-        let width = text_room(&said, 7.0) + 30.0 + SLOT + 10.0;
+        let width = text_room(&said, 7.0) + 30.0 + slot + spacing.s2;
         (said, owner.clone(), width)
     });
     let mut spare = room - icons - lead.as_ref().map_or(0.0, |(_, _, width)| *width);
@@ -357,33 +341,32 @@ fn strip(
             break;
         };
         let command = group.remove(at);
-        spare += SLOT;
+        spare += slot;
         if menu.is_empty() {
-            spare -= SLOT;
+            spare -= slot;
         }
         menu.insert(0, command);
     }
     groups.retain(|group| !group.is_empty());
     let mut row = Row::new()
         .no_wrap()
-        .with_padding(10.0, 4.0)
-        .with_gap(2.0)
+        .with_padding(spacing.s3, spacing.s1)
+        .with_gap(spacing.s0)
         .with_align_items(ui::taffy::AlignItems::Center);
     if let Some((said, owner, _)) = lead {
         row = row
-            .push(Box::new(ui::widget::Badge::semantic_pill(
-                said,
-                ui::widget::BadgeTone::Accent,
-            )))
+            .push(Box::new(
+                ui::widget::Badge::text(said).style(ui::widget::ChipStyle::Neutral),
+            ))
             .push(mask_back(tools, owner))
-            .push(Box::new(Spacer::fixed(8.0)));
+            .push(Box::new(Spacer::token(ui::tokens::SpacingStep::S2)));
     }
     for (index, group) in groups.into_iter().enumerate() {
         if index > 0 {
             row = row
-                .push(Box::new(Spacer::fixed(3.0)))
+                .push(Box::new(Spacer::token(ui::tokens::SpacingStep::S1)))
                 .push(Box::new(ui::widget::Divider::vertical()))
-                .push(Box::new(Spacer::fixed(3.0)));
+                .push(Box::new(Spacer::token(ui::tokens::SpacingStep::S1)));
         }
         for command in group {
             if command.iconic {
@@ -405,10 +388,12 @@ fn strip(
     if !menu.is_empty() {
         row = row.push(overflow(cx, menu));
     }
-    Box::new(super::pane::Pane::new(
-        Box::new(row),
-        super::pane::Edge::Bottom,
-    ))
+    // Floating a step in from the canvas's edges.
+    Box::new(
+        Container::new()
+            .with_padding(spacing.s2)
+            .with_child(Box::new(super::pane::Band::new(Box::new(row)))),
+    )
 }
 
 /// The commands that did not fit, in a menu that makes each one's edit
@@ -450,12 +435,8 @@ fn mask_back(tools: &Tools, owner: String) -> Element {
     let chosen = tools.layer.clone();
     let label = ui::i18n::I18nManager::lookup_plain("canvas-paint-layer");
     Box::new(
-        Button::new("canvas-paint-layer", "")
-            .with_icon(Icon::Brush)
-            .ghost()
-            .with_accessible_name(&label)
-            .tooltip(label.clone())
-            .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
+        Button::icon_only("canvas-paint-layer", Icon::Brush, &label)
+            .control_size(ControlSize::Small)
             .on_view(move || chosen.set(owner.clone())),
     )
 }
@@ -532,13 +513,13 @@ fn area_commands(tools: &Tools) -> Vec<Command> {
     ]
 }
 
-/// How far, in screen pixels, a click grows or shrinks the selection.
-const GROW: f64 = 4.0; // a step a person sees at the zoom they work at, not spacing
 /// How far, in screen pixels, a click fits the selection's edge to the
 /// picture.
-const EDGE: f64 = 8.0; // a reach a person sees at the zoom they work at, not spacing
+use crate::content_geometry::EDGE;
 /// How wide, in screen pixels, a click softens the selection's edge.
-const FEATHER: f64 = 8.0; // a step a person sees at the zoom they work at, not spacing
+use crate::content_geometry::FEATHER;
+/// How far, in screen pixels, a click grows or shrinks the selection.
+use crate::content_geometry::GROW;
 
 /// A change of the selection's edge, in screen pixels.
 #[derive(Clone, Copy)]
@@ -682,7 +663,7 @@ fn align_commands(tools: &Tools) -> Vec<Command> {
 fn notice(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     cx.switch(&tools.notice, |_, notice| {
         let Some(said) = notice else {
-            return Box::new(Spacer::fixed(0.0)) as Element;
+            return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
         };
         let shown = if said.chars().count() > NOTICE_LETTERS {
             let cut: String = said.chars().take(NOTICE_LETTERS - 1).collect();
@@ -708,10 +689,10 @@ fn sheet_button(tools: &Tools, id: &str, icon: Icon, which: Sheet) -> Button {
     let name = ui::i18n::I18nManager::lookup_plain(id);
     Button::new(id, "")
         .with_icon(icon)
-        .ghost()
+        .role(ui::widget::ButtonRole::Plain)
         .with_accessible_name(&name)
         .tooltip(name.clone())
-        .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
+        .control_size(ui::widget::ControlSize::Small)
         .on_view(move || sheet.set(Some(which)))
 }
 
@@ -789,7 +770,7 @@ fn zoom(tools: &Tools) -> Element {
             }
         })
         .with_role(TextRole::Caption)
-        .with_font_feature(ui::text_render::OpenTypeTag(*b"tnum"), 1)
+        .numeric()
     };
     Box::new(
         Row::new()
@@ -805,7 +786,9 @@ fn zoom(tools: &Tools) -> Element {
             .push(Box::new(
                 Container::new()
                     .with_no_padding()
-                    .with_width(READOUT)
+                    // Room for "6400%", so the buttons beside the readout
+                    // hold still as it changes: two pointer targets.
+                    .with_width(2.0 * ui::tokens::Metrics::BASE.min_pointer_target)
                     .with_child(Box::new(
                         Row::new()
                             .no_wrap()
@@ -834,25 +817,8 @@ fn view_button(tools: &Tools, id: &str, icon: Icon, request: ViewRequest) -> Ele
     let view = tools.view.clone();
     let name = ui::i18n::I18nManager::lookup_plain(id);
     Box::new(
-        Button::new(id, "")
-            .with_icon(icon)
-            .ghost()
-            .with_accessible_name(&name)
-            .tooltip(name.clone())
-            .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
+        Button::icon_only(id, icon, &name)
+            .control_size(ControlSize::Small)
             .on_view(move || view.set(Some(request))),
     )
-}
-
-/// An icon button that shows or hides what `state` says, as a view action.
-fn toggle(state: &LocalState<bool>, id: &str, icon: Icon) -> Button {
-    let flip = state.clone();
-    let name = ui::i18n::I18nManager::lookup_plain(id);
-    Button::new(id, "")
-        .with_icon(icon)
-        .ghost()
-        .with_accessible_name(&name)
-        .tooltip(name.clone())
-        .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
-        .on_view(move || flip.set(!flip.with(|on| *on)))
 }
