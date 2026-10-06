@@ -39,8 +39,8 @@ The disposable environment needs PipeWire utilities, WirePlumber, GStreamer
 starts its own socket and session manager per peer; it never connects to the
 operator's audio server. SDK package assembly is sequential and uses four jobs.
 The output directory must be new. When running remotely, retrieve only
-`journey.json` and screenshots from the owned task directory.
-Never transfer `bootstrap.json` or private identity directories into evidence.
+`journey.json`, screenshots and the bounded `*-capture-observation.json`
+from the owned task directory. Never transfer `bootstrap.json` or private identity directories into evidence.
 Each throwaway profile uses the existing sealed headless secret store at its
 own private `TILO_SECRETS_DIR`. MLS remains mandatory; there is no plaintext
 fallback when a headless environment has no Secret Service session.
@@ -83,6 +83,29 @@ current admitted read authority and the authenticated publisher's session handle
 instead. The relay stamps co-edit presence attribution from the authenticated
 device connection before forwarding; a caller-supplied author is never used as
 native authentication evidence.
+
+On candidate `b3ff06c7b6`, Alice's actual tab arrival reaches Bob after this
+repair, but the roster still classifies her as invited: its arrival set counts
+desktop pointers and legacy document participation, not room-scoped app
+lifecycle presence. The governed host also has no handler for the existing
+`ClaimNamespace` desktop command; its namespace request reports `Offline`,
+and Alice's tab is absent from Bob's admitted topology. Both boundaries must
+be completed before shell follow can qualify. No roster flag or missing-tab
+assertion is bypassed by this reproducer.
+
+`--voice-proof` runs the same certified desktops, normal packages and private
+audio graphs through voice, Leave, fresh rejoin consent and removal without
+running context follow. Its receipt is explicitly `mode: native-voice-proof`
+and remains `qualified: false`, even when all voice steps succeed. It provides
+independent evidence and cannot qualify the combined pair.
+
+The independent voice run reaches the same `c_lounge` call on both desktops
+with `muted: true` and `capture_active: false`. Alice then receives the visible
+one-shot microphone prompt and chooses Allow once. The prompt clears, but her
+native session ends with `permission_denied` before active capture is observed.
+The bounded capture observation and failure still are retained separately from
+private profile material. Opposite-frequency audio, Leave, fresh rejoin consent
+and removal have not executed in that run.
 
 `journey.json` remains `qualified: false` until every step completes: presented
 native Chat on both peers; opt-in context navigation; Stop and explicit follow
