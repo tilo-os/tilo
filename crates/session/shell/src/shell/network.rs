@@ -6437,6 +6437,33 @@ impl ShellNetwork {
             }
             return;
         }
+        if self.native_topic_required(ws)
+            && let NeighbourMsg::AppPresenceV2 {
+                peer: publisher,
+                app_id,
+                cluster_id,
+                presence,
+                colour,
+            } = &msg
+        {
+            // An admitted native member need not also send a legacy hello.
+            // Presence still binds the publisher to the authenticated endpoint
+            // and checks this exact room's current signed read authority.
+            if *publisher == crate::network::behaviour::peer_liveness_handle(&peer)
+                && self.governed_presence_allows(ws, peer, app_id, cluster_id)
+            {
+                self.dispatch_app_presence_v2(
+                    *publisher,
+                    app_id.clone(),
+                    cluster_id.clone(),
+                    presence.clone(),
+                    colour.as_deref(),
+                );
+            } else {
+                tracing::warn!(%peer, ws, "native app presence lacks current room admission");
+            }
+            return;
+        }
         // A member of an enrolled room that announced nothing to this device
         // (a browser) is known from the room's governance, which also says it
         // may take part in the room: its actions are answered as its own.
