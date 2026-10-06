@@ -40,15 +40,32 @@ impl BlockingClient {
     ///
     /// Returns an error when the runtime or launcher-issued service cannot be opened.
     pub fn from_service() -> Result<Self, String> {
+        Self::connect(|| {
+            runtime_portal::try_open_service::<app_host::Client>("app-host")
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    /// Open an explicitly owned connected capability in a test host.
+    ///
+    /// # Errors
+    /// Returns why the runtime or supplied connection could not be opened.
+    #[cfg(all(unix, feature = "test-support"))]
+    pub fn from_connected_fd(fd: std::os::fd::OwnedFd) -> Result<Self, String> {
+        use std::os::fd::IntoRawFd as _;
+        Self::connect(move || {
+            runtime_portal::open_service_on_fd::<app_host::Client>(fd.into_raw_fd())
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn connect(open: impl FnOnce() -> Result<app_host::Client, String>) -> Result<Self, String> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| format!("create app-host runtime: {e}"))?;
         let local = tokio::task::LocalSet::new();
-        let client = local.block_on(&runtime, async {
-            runtime_portal::try_open_service::<app_host::Client>("app-host")
-                .map_err(|e| e.to_string())
-        })?;
+        let client = local.block_on(&runtime, async { open() })?;
         Ok(Self {
             runtime,
             local,

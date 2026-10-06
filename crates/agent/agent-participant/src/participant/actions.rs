@@ -173,6 +173,7 @@ impl AgentParticipant {
                         presentation: None,
                     },
                     action: Some(tilo_actions::door::ActionDescriptor {
+                        semantic_identity: None,
                         address: target.address,
                         resource_kind: "applications.app".into(),
                         resource_label: app.to_owned(),

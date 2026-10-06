@@ -560,6 +560,10 @@ impl BoundPublication {
         binding: &CallbackBinding,
         mut resource: tilo_actions::Resource,
     ) -> Result<tilo_actions::Resource, BoundActionError> {
+        resource.semantic_identity = tilo_actions::ResourceSemanticIdentity::new(
+            resource.kind.clone(),
+            resource.id.as_str(),
+        );
         resource.id = tilo_actions::ResourceId::new(self.alias(binding, resource.id.as_str())?);
         resource.children = resource
             .children

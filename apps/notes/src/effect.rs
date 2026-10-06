@@ -83,6 +83,22 @@ pub enum NotesEffect {
         #[param("The block to reveal")]
         block: Option<String>,
     },
+    /// Reveal block range
+    ///
+    /// Select an exact range in a note block without changing its text.
+    #[effect(view, row, idempotent)]
+    RevealBlockRange {
+        #[param("The note")]
+        page: Uuid,
+        #[param("The block to reveal")]
+        block: String,
+        #[param("Start offset")]
+        start: usize,
+        #[param("End offset")]
+        end: usize,
+        #[param("Offset unit", choices = ["Chars", "Bytes"])]
+        unit: String,
+    },
     /// Browse tagged notes
     ///
     /// Show the notes carrying a tag.

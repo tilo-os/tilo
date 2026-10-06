@@ -270,7 +270,11 @@ pub enum Answers {
     /// content-collecting operation takes.
     Content,
     /// Later: a job that reports progress, then its result.
-    Later { cancellable: bool },
+    Later {
+        cancellable: bool,
+        /// The completed job returns a JSON value, independently of its job id.
+        returns: bool,
+    },
 }
 
 impl EffectDecl {
@@ -334,12 +338,12 @@ impl EffectDecl {
                 ConfirmationPolicy::None
             },
             execution: match self.answers {
-                Answers::Later { cancellable } => ExecutionMode::Background { cancellable },
+                Answers::Later { cancellable, .. } => ExecutionMode::Background { cancellable },
                 Answers::Nothing | Answers::Value | Answers::Content => ExecutionMode::Immediate,
             },
             result: match self.answers {
-                Answers::Later { .. } => ResultSpec::Job,
-                Answers::Value => ResultSpec::Json {
+                Answers::Later { returns: false, .. } => ResultSpec::Job,
+                Answers::Value | Answers::Later { returns: true, .. } => ResultSpec::Json {
                     schema: serde_json::json!({}),
                 },
                 Answers::Content => ResultSpec::Resource {

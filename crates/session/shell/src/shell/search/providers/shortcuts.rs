@@ -342,6 +342,8 @@ mod tests {
         let doc = AutoCommit::new();
         let state = chrome.borrow();
         provider.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle: "",
             wanted: &[ResourceKind::Action],
             chrome: &state,

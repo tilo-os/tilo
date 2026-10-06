@@ -25,6 +25,19 @@ public final class DocumentActivity extends Activity {
     private TextView status;
     private static final String SOURCE = "Tilo Android document metadata\n";
 
+    private String expectedName() throws Exception {
+        File configuration = new File(getFilesDir(), "expected-document-name.txt");
+        if (!configuration.exists()) return "android-π-📄.txt";
+        byte[] bytes = new byte[128];
+        try (FileInputStream input = new FileInputStream(configuration)) {
+            int count = input.read(bytes);
+            require(count > 0 && input.read() == -1, "unbounded expected filename");
+            String name = new String(bytes, 0, count, StandardCharsets.UTF_8);
+            require(name.matches("Shared-[0-9a-f]{12}"), "invalid exact-record fixture name");
+            return name;
+        }
+    }
+
     private void record(String line) {
         try (FileOutputStream out = new FileOutputStream(new File(getFilesDir(), "documents.txt"), true)) {
             out.write((line + "\n").getBytes(StandardCharsets.UTF_8));
@@ -60,8 +73,8 @@ public final class DocumentActivity extends Activity {
         ContentResolver resolver = getContentResolver();
         try (Cursor cursor = resolver.query(source, null, null, null, null)) {
             require(cursor != null && cursor.getCount() == 1 && cursor.moveToFirst(), "missing metadata");
-            require("android-π-📄.txt".equals(cursor.getString(cursor.getColumnIndexOrThrow("_display_name"))),
-                    "Unicode document name changed");
+            require(expectedName().equals(cursor.getString(cursor.getColumnIndexOrThrow("_display_name"))),
+                    "expected document name changed");
             require(cursor.getLong(cursor.getColumnIndexOrThrow("_size")) == SOURCE.getBytes(StandardCharsets.UTF_8).length,
                     "incorrect byte size");
         }
@@ -85,7 +98,8 @@ public final class DocumentActivity extends Activity {
         } catch (IllegalArgumentException expected) {}
         require(resolver.query(Uri.parse(source.toString() + "%00ignored"), null, null, null, null) == null,
                 "embedded NUL path accepted");
-        record("metadata=unicode-name,byte-size,projection,cancellation,bounds");
+        record("metadata=" + (expectedName().startsWith("Shared-") ? "exact-record-name" : "unicode-name")
+                + ",byte-size,projection,cancellation,bounds");
     }
 
     @Override public void onCreate(Bundle state) {

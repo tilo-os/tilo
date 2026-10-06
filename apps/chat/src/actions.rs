@@ -50,7 +50,7 @@ use tilo_clock::unix_now_i64;
 
 use tilo_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource,
+    OperationKind, Resource, ResourceViewRangeSpec, ResourceViewSpec,
 };
 use tilo_document::RichTextAction;
 use ui::tilo_resource::Effect as _;
@@ -103,6 +103,9 @@ pub enum ChatAction {
         /// references still decodes.
         #[serde(default)]
         reference: Option<tilo_reference::ResourceRef>,
+        /// Existing record provider; an address only, never authority or a URL.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_provider: Option<String>,
         /// The body as written (paragraphs, marks, mentions marked); `text`
         /// is its plain text. Empty for a plain message, and in a frame from
         /// a release that predates rich bodies.
@@ -259,6 +262,14 @@ pub enum ChatAction {
         initials: String,
         color_idx: usize,
     },
+    /// Structural initialization for the native host's creation workspace.
+    SeedWorkspace {
+        workspace: String,
+        workspace_name: String,
+        creator_name: String,
+        creator_initials: String,
+        color_idx: usize,
+    },
 }
 
 /// Longest agent display name recorded beside an agent-authored message.
@@ -335,6 +346,7 @@ pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
         }
         ChatAction::EnsureUser { .. }
         | ChatAction::SeedStarter { .. }
+        | ChatAction::SeedWorkspace { .. }
         | ChatAction::SeedDemo {} => {
             return context;
         }
@@ -390,6 +402,38 @@ fn apply_ensure_rich_draft(doc: &mut Doc, key: &str) -> Result<(), ActionError> 
     Ok(())
 }
 
+fn apply_seed_workspace(
+    doc: &mut Doc,
+    workspace: &str,
+    workspace_name: &str,
+    creator_name: &str,
+    creator_initials: &str,
+    color_idx: usize,
+) -> Result<(), ActionError> {
+    let creator = signed_by()?;
+    if uuid::Uuid::parse_str(workspace).is_err()
+        || workspace_name.trim().is_empty()
+        || workspace_name.len() > 256
+        || creator_name.trim().is_empty()
+        || creator_name.len() > 128
+        || creator_initials.len() > 8
+    {
+        return Err(ActionError::Refused(
+            "workspace initialization is invalid".into(),
+        ));
+    }
+    ChatDoc::seed_workspace(
+        doc,
+        workspace,
+        workspace_name,
+        &creator,
+        creator_name,
+        creator_initials,
+        color_idx,
+    )
+    .map_err(ActionError::Refused)
+}
+
 impl Action for ChatAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         if let ChatAction::EnsureUser {
@@ -438,6 +482,23 @@ impl Action for ChatAction {
             ChatDoc::seed_demo(doc, &author().unwrap_or_else(|| crate::model::ME.into()));
             return Ok(());
         }
+        if let ChatAction::SeedWorkspace {
+            workspace,
+            workspace_name,
+            creator_name,
+            creator_initials,
+            color_idx,
+        } = self
+        {
+            return apply_seed_workspace(
+                doc,
+                workspace,
+                workspace_name,
+                creator_name,
+                creator_initials,
+                *color_idx,
+            );
+        }
         self.apply_message(doc)?;
         self.apply_channel(doc)?;
         Ok(())
@@ -456,6 +517,7 @@ impl Action for ChatAction {
         match self {
             ChatAction::MarkRead { .. } => tilo_actions::ChangeKind::Housekeeping,
             ChatAction::SeedStarter { .. }
+            | ChatAction::SeedWorkspace { .. }
             | ChatAction::SeedDemo {}
             | ChatAction::EnsureUser { .. }
             | ChatAction::NameAgent { .. } => tilo_actions::ChangeKind::External,
@@ -477,9 +539,26 @@ impl ChatAction {
                 attachment,
                 mentions,
                 reference,
+                source_provider,
                 body,
             } => {
                 let author = signed_by()?;
+                if source_provider
+                    .as_deref()
+                    .is_some_and(|provider| reference.is_none() || !valid_source_provider(provider))
+                {
+                    return Err(ActionError::Refused(
+                        "Invalid shared resource provider".into(),
+                    ));
+                }
+                if reference
+                    .as_ref()
+                    .is_some_and(|reference| !valid_reference(reference))
+                {
+                    return Err(ActionError::Refused(
+                        "Invalid shared resource address".into(),
+                    ));
+                }
                 if !ChatDoc::accepts_message_action(
                     doc,
                     channel,
@@ -502,6 +581,7 @@ impl ChatAction {
                         attachment: attachment.clone(),
                         mentions: mentions.clone(),
                         reference: reference.clone(),
+                        source_provider: source_provider.clone(),
                         body: body.clone(),
                         ..Default::default()
                     },
@@ -674,6 +754,7 @@ pub fn send_message_action(
         attachment,
         mentions,
         reference: None,
+        source_provider: None,
         body: Vec::new(),
     }
 }
@@ -862,6 +943,9 @@ pub struct MessageResource {
     /// rather than an unsearchable bit of its paint. There can be only one in
     /// the current message schema, so its stable address is keyed by message.
     pub attachment: Option<AttachmentResource>,
+    /// Live resource address; sharing it does not grant access to its target.
+    pub reference: Option<tilo_reference::ResourceRef>,
+    pub source_provider: Option<String>,
     /// Reactions are shared rows keyed by their canonical emoji value. Keeping
     /// them as children makes a reaction discoverable and actionable without
     /// forcing callers to parse the message body or inspect a rendered chip.
@@ -964,6 +1048,7 @@ fn publish_workspace(id: &str, name: &str) -> Resource {
         }
         .bound(),
     )
+    .with_view(ResourceViewSpec::new("workspace", "Workspace", "open-workspace").with_primary(true))
     .with_action(new_channel_action_spec(id))
     .with_action(new_category_action_spec(id))
 }
@@ -993,6 +1078,11 @@ fn publish_channel(
     // the composer. `@Name` of a member becomes a structured mention, the
     // same as typing it in the composer.
     if ch.kind != ChannelKind::Voice {
+        channel = channel.with_view(
+            ResourceViewSpec::new("conversation", "Conversation", "open-channel")
+                .with_primary(true),
+        );
+        channel = channel.with_action(share_resource_spec(&ch.id));
         channel = channel.with_action(ActionSpec::prompted(
             "post",
             "Post message",
@@ -1069,6 +1159,121 @@ fn publish_channel(
     channel
 }
 
+/// A portable address, never copied content, a local path or an access grant.
+fn valid_reference(reference: &tilo_reference::ResourceRef) -> bool {
+    let field = |value: &str, max: usize| {
+        !value.trim().is_empty() && value.len() <= max && !value.chars().any(char::is_control)
+    };
+    field(&reference.kind, 128)
+        && reference
+            .kind
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        && field(&reference.id, 2048)
+        && !reference.id.starts_with(['/', '\\'])
+        && !reference.id.contains("://")
+        && field(&reference.label, 512)
+        && reference.span.is_none_or(|span| span.start <= span.end)
+}
+
+/// An existing typed record provider. The host resolves and authorizes it;
+/// storing this address neither admits a collaborator nor grants Read.
+pub(crate) fn valid_source_provider(provider: &str) -> bool {
+    let Some(rest) = provider.strip_prefix("record:") else {
+        return false;
+    };
+    let Some((app, _record)) = rest.split_once(':') else {
+        return false;
+    };
+    provider.len() <= 2048
+        && !app.is_empty()
+        && !provider.chars().any(char::is_control)
+        && !provider.contains("://")
+        && !provider.contains('/')
+        && !provider.contains('\\')
+}
+
+fn share_resource_spec(channel: &str) -> ActionSpec {
+    use tilo_actions::{ActionParam, ParamType};
+    let channel = channel.to_owned();
+    ActionSpec::typed(
+        "share-resource",
+        "Share live resource",
+        "Share an address; existing resource permissions still apply",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required(
+                "reference",
+                ParamType::Object,
+                "Tilo resource: kind, id, label, span?",
+            )
+            .with_schema(serde_json::json!({
+                "type": "object", "additionalProperties": false,
+                "required": ["kind", "id", "label"],
+                "properties": {
+                    "kind": {"type": "string", "maxLength": 128},
+                    "id": {"type": "string", "maxLength": 2048},
+                    "label": {"type": "string", "maxLength": 512},
+                    "span": {"type": ["object", "null"], "additionalProperties": false,
+                        "required": ["start", "end", "unit"],
+                        "properties": {"start": {"type": "integer", "minimum": 0},
+                            "end": {"type": "integer", "minimum": 0},
+                            "unit": {"type": "string", "enum": ["Chars", "Bytes"]}}}
+                }
+            })),
+            ActionParam::optional("text", ParamType::Text, "Words accompanying the resource"),
+            ActionParam::optional(
+                "sourceProvider",
+                ParamType::Text,
+                "Existing record provider; required to open or copy a browser link",
+            ),
+        ],
+        move |args| {
+            let reference = args.get("reference").and_then(|value| {
+                serde_json::from_value::<tilo_reference::ResourceRef>(value.to_json()).ok()
+            });
+            let Some(reference) = reference.filter(valid_reference) else {
+                return EncodedAction {
+                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                    payload: b"A bounded Tilo resource address is required".to_vec(),
+                };
+            };
+            let source_provider = args.text("sourceProvider").map(str::to_owned);
+            if source_provider
+                .as_deref()
+                .is_some_and(|value| !valid_source_provider(value))
+            {
+                return EncodedAction {
+                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                    payload: b"An existing record provider is required".to_vec(),
+                };
+            }
+            let text = args
+                .text("text")
+                .filter(|text| !text.trim().is_empty())
+                .unwrap_or(&reference.label);
+            if text.len() > crate::doc::MAX_MESSAGE_TEXT_BYTES {
+                return EncodedAction {
+                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                    payload: b"Shared resource message is too long".to_vec(),
+                };
+            }
+            encode(&ChatAction::SendMessage {
+                channel: channel.clone(),
+                id: format!("m_{}", uuid::Uuid::new_v4().simple()),
+                ts: unix_now_i64(),
+                text: text.to_owned(),
+                parent: None,
+                attachment: None,
+                mentions: Vec::new(),
+                reference: Some(reference),
+                source_provider,
+                body: Vec::new(),
+            })
+        },
+    )
+}
+
 /// A voice channel's call: the shell's voice service, controlled from this
 /// device. Nothing about it is written to the document.
 fn publish_call(ch: &ChannelResource) -> Resource {
@@ -1089,6 +1294,25 @@ fn publish_call(ch: &ChannelResource) -> Resource {
 /// A message: reveal and read it, edit, react, pin or unpin, delete; an
 /// agent's record of its work on its own message; its attachment and
 /// reactions.
+fn with_resource_navigation(mut message: Resource, m: &MessageResource) -> Resource {
+    if m.reference.is_some() && m.source_provider.is_some() {
+        message = message
+            .with_action(
+                ChatEffect::CopyResourceLink {
+                    message: m.id.clone(),
+                }
+                .bound(),
+            )
+            .with_action(
+                ChatEffect::OpenResourceLink {
+                    message: m.id.clone(),
+                }
+                .bound(),
+            );
+    }
+    message
+}
+
 fn publish_message(m: &MessageResource) -> Resource {
     let reveal = || {
         ChatEffect::RevealMessage {
@@ -1102,12 +1326,27 @@ fn publish_message(m: &MessageResource) -> Resource {
         m.label.clone(),
     )
     .with_action(reveal())
+    .with_view(
+        ResourceViewSpec::new("message", "Message", "reveal-message")
+            .with_primary(true)
+            .with_range(ResourceViewRangeSpec::new("reveal-message-range")),
+    )
+    .with_action(
+        ChatEffect::RevealMessageRange {
+            message: m.id.clone(),
+            start: 0,
+            end: 0,
+            unit: "Chars".into(),
+        }
+        .bound_asking(&["start", "end", "unit"]),
+    )
     .with_action(
         ChatEffect::ReadMessage {
             message: m.id.clone(),
         }
         .bound(),
     );
+    message = with_resource_navigation(message, m);
     message = message.with_action(ActionSpec::prompted(
         "edit",
         "Edit message",
@@ -1441,12 +1680,14 @@ pub fn message_read_schema() -> &'static serde_json::Value {
     static SCHEMA: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
     SCHEMA.get_or_init(|| {
         serde_json::json!({"type":"object",
-            "required":["id","channel","parent","author","authorName","agent","mine","ts","edited","text","work"],
+            "required":["id","channel","parent","author","authorName","agent","mine","ts","edited","text","work","reference","sourceProvider"],
             "properties":{
                 "id":{"type":"string"},"channel":{"type":"string"},"parent":{"type":["string","null"]},
                 "author":{"type":"string"},"authorName":{"type":"string"},"agent":{"type":"boolean"},
                 "mine":{"type":"boolean"},"ts":{"type":"integer"},"edited":{"type":"boolean"},
-                "text":{"type":"string"},"work":{"type":["object","null"]}
+                "text":{"type":"string"},"work":{"type":["object","null"]},
+                "reference":{"type":["object","null"]},
+                "sourceProvider":{"type":["string","null"]}
             }})
     })
 }
@@ -1716,6 +1957,78 @@ mod tests {
         doc
     }
 
+    #[test]
+    fn workspace_receipt_seed_is_empty_creator_bound_and_durable() {
+        use automerge::{ReadDoc as _, transaction::Transactable as _};
+
+        let room = "7585df07-168d-4eff-a975-8c86fca6acaf";
+        let action = ChatAction::SeedWorkspace {
+            workspace: room.into(),
+            workspace_name: "Design".into(),
+            creator_name: "Ada".into(),
+            creator_initials: "A".into(),
+            color_idx: 2,
+        };
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, "future_field", "preserved")
+            .unwrap();
+        apply_as(&mut doc, "person:ada", &action).unwrap();
+        assert_eq!(ChatDoc::list_workspaces(&doc)[0].id, room);
+        assert_eq!(ChatDoc::list_users(&doc)[0].id, "person:ada");
+        assert!(ChatDoc::list_channels(&doc).is_empty());
+        assert!(ChatDoc::list_categories(&doc).is_empty());
+        assert_eq!(
+            doc.get(automerge::ROOT, "future_field")
+                .unwrap()
+                .unwrap()
+                .0
+                .as_str(),
+            Some("preserved")
+        );
+        let mut restored = AutoCommit::load(&doc.save()).unwrap();
+        let heads = restored.get_heads();
+        action
+            .apply(&mut AutoCommit::new())
+            .expect_err("no signed creator");
+        let mut invalid = action.clone();
+        if let ChatAction::SeedWorkspace { workspace, .. } = &mut invalid {
+            *workspace = "not-a-room".into();
+        }
+        apply_as(&mut restored, "person:ada", &invalid).expect_err("room is a UUID");
+        assert_eq!(restored.get_heads(), heads);
+        if let ChatAction::SeedWorkspace { workspace, .. } = &mut invalid {
+            *workspace = "65f79c6a-aa2c-46b5-99ab-46fe3df52d92".into();
+        }
+        apply_as(&mut restored, "person:ada", &invalid).expect_err("no room rebinding");
+        assert_eq!(restored.get_heads(), heads);
+        apply_as(&mut restored, "person:another", &action).unwrap();
+        assert_eq!(ChatDoc::list_users(&restored).len(), 1);
+        assert_eq!(ChatDoc::list_users(&restored)[0].id, "person:ada");
+        assert_eq!(ChatDoc::list_workspaces(&restored).len(), 1);
+        assert!(ChatDoc::list_channels(&restored).is_empty());
+    }
+
+    #[test]
+    fn workspace_receipt_seed_accepts_the_hosts_full_name_limit() {
+        let mut action = ChatAction::SeedWorkspace {
+            workspace: "7585df07-168d-4eff-a975-8c86fca6acaf".into(),
+            workspace_name: "x".repeat(257),
+            creator_name: "Ada".into(),
+            creator_initials: "A".into(),
+            color_idx: 2,
+        };
+        let mut doc = AutoCommit::new();
+        let before = doc.get_heads();
+        apply_as(&mut doc, "person:ada", &action).expect_err("host rejects 257 bytes");
+        assert_eq!(doc.get_heads(), before);
+        if let ChatAction::SeedWorkspace { workspace_name, .. } = &mut action {
+            *workspace_name = "x".repeat(256);
+        }
+        apply_as(&mut doc, "person:ada", &action).unwrap();
+        assert_eq!(ChatDoc::list_workspaces(&doc)[0].name.len(), 256);
+        assert!(ChatDoc::list_channels(&doc).is_empty());
+    }
+
     fn state(doc: &AutoCommit) -> ChatState {
         Chat::read(doc).unwrap()
     }
@@ -1750,6 +2063,65 @@ mod tests {
             panic!("post is a prompted action");
         };
         serde_json::from_slice(&build(text).payload).unwrap()
+    }
+
+    #[test]
+    fn shared_space_replayed_resource_shares_converge_without_copying_content() {
+        use tilo_automerge::ApplyIncoming as _;
+        let mut first = seeded();
+        let mut second = first.fork();
+        let reference = tilo_reference::ResourceRef::ranged(
+            "word_processor.block",
+            "paragraph-7",
+            "Proposal",
+            tilo_reference::Span::chars(2, 9),
+        );
+        let action = ChatAction::SendMessage {
+            channel: "c_general".into(),
+            id: "m_shared_resource".into(),
+            ts: 100,
+            text: "Discuss this paragraph".into(),
+            parent: None,
+            attachment: None,
+            mentions: Vec::new(),
+            reference: Some(reference.clone()),
+            source_provider: Some("record:so.tilo.word-processor:proposal".into()),
+            body: Vec::new(),
+        };
+        apply_as(&mut first, "u_aria", &action).unwrap();
+        // Peers receive the originating CRDT change, rather than inventing a
+        // second list insertion by independently executing the same action.
+        second.merge_incoming(&mut first).unwrap();
+        apply_as(&mut second, "u_aria", &action).unwrap();
+        first.merge_incoming(&mut second).unwrap();
+        let messages = ChatDoc::list_messages(&first, "c_general");
+        let shared: Vec<_> = messages
+            .iter()
+            .filter(|m| m.id == "m_shared_resource")
+            .collect();
+        assert_eq!(shared.len(), 1);
+        assert_eq!(shared[0].reference, Some(reference));
+        assert_eq!(shared[0].author, "u_aria");
+        assert_eq!(
+            shared[0].source_provider.as_deref(),
+            Some("record:so.tilo.word-processor:proposal")
+        );
+        assert!(
+            shared[0].attachment.is_none(),
+            "no serialized document or media bytes"
+        );
+        let mut bad = action;
+        if let ChatAction::SendMessage { reference, .. } = &mut bad {
+            reference.as_mut().unwrap().span = Some(tilo_reference::Span {
+                start: 9,
+                end: 2,
+                unit: tilo_reference::SpanUnit::Chars,
+            });
+        }
+        assert!(
+            apply_as(&mut first, "u_aria", &bad).is_err(),
+            "wire replay validates too"
+        );
     }
 
     #[test]
@@ -1799,12 +2171,29 @@ mod tests {
         ] {
             assert!(ids(concept).contains(&id), "{id}: {:?}", ids(concept));
         }
+        assert_eq!(workspace.views[0].open_action, "open-workspace");
+        assert_eq!(crit.views[0].open_action, "open-channel");
+        assert_eq!(concept.views[0].open_action, "reveal-message");
+        for resource in [workspace, crit, concept] {
+            assert!(resource.views[0].validate(resource).is_empty());
+        }
         let read = concept
             .actions
             .iter()
             .find(|a| a.id == "read-message")
             .unwrap();
         assert_eq!(read.kind, OperationKind::View);
+        assert!(
+            tilo_actions::ResourceViewDescriptor::declared_for(concept, "read-message").is_none(),
+            "a read query does not navigate"
+        );
+        assert!(
+            find(&root.children, "chat.channel:c_huddle")
+                .unwrap()
+                .views
+                .is_empty(),
+            "opening a voice channel must remain explicit call consent"
+        );
         assert!(
             find(&concept.children, "chat.attachment:m_concept").is_some(),
             "the attachment is a child of its message"

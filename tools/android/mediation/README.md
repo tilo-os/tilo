@@ -25,7 +25,8 @@ content to guess MIME type. UTF-16/UTF-8 conversion preserves supplementary-plan
 filenames and rejects embedded NUL. Projection and path sizes are bounded.
 Precancelled queries fail before access. The two-argument `openOutputStream`
 delegates to ATL's existing descriptor mode parsing and confinement.
-This does not add `content://` providers, grant authority or cold-hydration proof.
+This does not add `content://` providers or grant authority. Cold restoration
+requires the separate real-FUSE journey below; a metadata API result alone is not proof.
 
 Notification APIs check Tilo's existing provider over the already registered
 GApplication filtered bus. Explicit fixture preparation with `--notifications`
@@ -100,6 +101,30 @@ denial. Source writes and ungranted sibling metadata/reads must fail. After gran
 are revoked, relaunch must deny former metadata, reads and writes. Both runs use
 the actual production launcher, compositor, ART and external accessibility client.
 
+For a cold recipient, build `fs` and the `android_hydration_fixture` example
+remotely, then add `--cold-hydration` to the document journey. Use a short private
+runtime parent: the filesystem's authority sockets must fit Linux's Unix socket
+path limit. The existing test container must already support actual FUSE mounts;
+do not expand device access or substitute a mocked filesystem.
+
+The runner creates fresh synthetic owner/recipient identities and an exact-record
+View share. The host seeds only the disposable document. The recipient starts
+with no manifest or chunk blobs, verified through the production persistent store
+while its filesystem process is stopped. Immediately before the real picker
+selection, the file must still be projected. Only the actual APK read may restore
+it. After the APK closes, the runner verifies stored bytes, restarts the recipient,
+uses the existing safe eviction control, waits for durable completion, verifies actual backend absence, and
+restarts again. The same APK must then repeat its successful reads, metadata and
+output modes. Revocation tests run with the source restored and resident.
+
+Exact-record mounts use `Shared-<record>` names rather than the host's filename.
+The fixture's optional private `expected-document-name.txt` is authored before
+launch and independently asserts that name. Without that input, the original
+Unicode-name assertion remains mandatory. The cold exact-record namespace has no
+sibling file; its denial does not replace the ordinary journey's existing-sibling
+isolation test. Keep both journeys. All mounts, grants and processes are owned
+fixtures and cleaned up; generated JSON/PNGs remain outside committed source.
+
 ## Acceptance checklist
 
 - [x] Actual unchanged Arity APK calculation, persistence and separate room state.
@@ -115,7 +140,9 @@ the actual production launcher, compositor, ART and external accessibility clien
 - [x] Same signed APK reproduces old metadata/mode failures and passes the changed runtime.
 - [x] Unicode metadata, byte size, projections, cancellation and editor modes retain file isolation.
 - [x] Relaunch denies metadata as well as reads/writes after fixture grants are revoked.
-- [ ] Cold P2P hydration, persisted URI authority and already-open FD revocation.
+- [x] Actual APK cold FUSE read, verified backend eviction, recipient restart and APK restoration.
+- [x] Cold journey denies revoked metadata/reads/writes with the restored source still resident.
+- [ ] Persisted URI authority, already-open FD revocation and native Btrfs projection.
 - [ ] Full notification identity/tags, actions and background persistence.
 - [ ] Compositor loss, room stop, background services and updates.
 - [ ] Real-device GPU/DRM, ARM64, touch/IME and complete Android accessibility/resources.

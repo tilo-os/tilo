@@ -698,9 +698,36 @@ impl Workspace {
     /// room-scoped capabilities only — someone with a capability on one
     /// file and nothing else is **not** here. See [`Self::shares_of_at`].
     pub fn roster_at(&self, now: u64) -> Vec<(UserId, CapRole)> {
+        self.roster_from_capabilities_at(&self.capabilities, now)
+    }
+
+    /// Owner-backed people in this exact durable room, excluding grants for
+    /// other rooms while retaining the historical broad reader above.
+    pub fn roster_in_room_at(&self, room: &str, now: u64) -> Vec<(UserId, CapRole)> {
+        if room != self.room.to_string() {
+            return Vec::new();
+        }
+        let capabilities = self
+            .capabilities
+            .iter()
+            .filter(|capability| match &capability.scope {
+                Scope::Workspace => true,
+                Scope::Room(scope) => scope == room,
+                _ => false,
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        self.roster_from_capabilities_at(&capabilities, now)
+    }
+
+    fn roster_from_capabilities_at(
+        &self,
+        capabilities: &[CapOverride],
+        now: u64,
+    ) -> Vec<(UserId, CapRole)> {
         let live_at = Some(now);
         let mut seen: Vec<UserId> = Vec::new();
-        for c in &self.capabilities {
+        for c in capabilities {
             if !c.is_live_at(live_at) || c.effect != Effect::Grant {
                 continue;
             }
@@ -720,13 +747,25 @@ impl Workspace {
             seen.insert(0, owner.clone());
         }
         seen.into_iter()
-            .filter_map(|u| self.role_of_at(&u, now).map(|r| (u, r)))
+            .filter_map(|u| {
+                Self::role_for_membership_at(self.owner.as_deref(), capabilities, &u, now)
+                    .map(|r| (u, r))
+            })
             .collect()
     }
 
     /// The role an *agent* holds — same derivation as [`Self::role_of_at`]
     /// minus the owner short-circuit, since an agent is never the owner.
     pub fn role_of_agent_at(&self, agent: &str, now: u64) -> Option<CapRole> {
+        self.role_of_agent_for_room_at(agent, None, now)
+    }
+
+    fn role_of_agent_for_room_at(
+        &self,
+        agent: &str,
+        room: Option<&str>,
+        now: u64,
+    ) -> Option<CapRole> {
         let live_at = Some(now);
         let mut best: Option<Verb> = None;
         let mut blocked = false;
@@ -738,7 +777,11 @@ impl Workspace {
             if !subject_matches || !c.is_live_at(live_at) {
                 continue;
             }
-            let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
+            let covers_room = match &c.scope {
+                Scope::Workspace => true,
+                Scope::Room(scope) => room.is_none_or(|room| room == scope),
+                _ => false,
+            };
             if !covers_room {
                 continue;
             }
@@ -768,13 +811,30 @@ impl Workspace {
     /// from [`Self::roster_at`], since an agent is not a person and
     /// rendering them undifferentiated would misrepresent who's present.
     pub fn agent_members_at(&self, now: u64) -> Vec<(String, CapRole)> {
+        self.agent_members_for_room_at(None, now)
+    }
+
+    /// Agents whose membership capability names this exact durable room.
+    ///
+    /// This is for an authenticated cross-machine projection. The legacy
+    /// [`Self::agent_members_at`] reader still accepts a peer's historical
+    /// local workspace spelling while old replicated records are migrated.
+    pub fn agent_members_in_room_at(&self, room: &str, now: u64) -> Vec<(String, CapRole)> {
+        self.agent_members_for_room_at(Some(room), now)
+    }
+
+    fn agent_members_for_room_at(&self, room: Option<&str>, now: u64) -> Vec<(String, CapRole)> {
         let live_at = Some(now);
         let mut seen: Vec<String> = Vec::new();
         for c in &self.capabilities {
             if !c.is_live_at(live_at) || c.effect != Effect::Grant {
                 continue;
             }
-            let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
+            let covers_room = match &c.scope {
+                Scope::Workspace => true,
+                Scope::Room(scope) => room.is_none_or(|room| room == scope),
+                _ => false,
+            };
             if !covers_room {
                 continue;
             }
@@ -785,7 +845,10 @@ impl Workspace {
             }
         }
         seen.into_iter()
-            .filter_map(|a| self.role_of_agent_at(&a, now).map(|r| (a, r)))
+            .filter_map(|agent| {
+                self.role_of_agent_for_room_at(&agent, room, now)
+                    .map(|role| (agent, role))
+            })
             .collect()
     }
 

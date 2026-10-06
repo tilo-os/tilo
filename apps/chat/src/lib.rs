@@ -59,10 +59,12 @@ pub mod continuity;
 pub mod doc;
 pub mod effects;
 pub mod events;
+mod external;
 pub mod geometry;
 pub mod i18n;
 pub mod identity;
 pub mod images;
+mod live_context;
 mod local_voice;
 pub mod mention;
 pub mod model;
@@ -74,6 +76,7 @@ pub mod render_call;
 pub mod render_chat;
 pub mod resource;
 pub mod semantic_read;
+mod shared_resources;
 
 pub use app::ChatApp;
 

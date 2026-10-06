@@ -876,7 +876,7 @@ fn copy_page_host(sdk_root: &Path, bundle: &Path) -> Result<()> {
         let entry = entry?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if runtime_module(name) || name == "index.html" {
+        if runtime_module(name) || resource_entry_asset(name) || name == "index.html" {
             link_or_copy(&entry.path(), &bundle.join(name))?;
         }
     }
@@ -929,6 +929,10 @@ fn runtime_module(name: &str) -> bool {
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("mjs"))
         && !name.ends_with(".test.mjs")
+}
+
+fn resource_entry_asset(name: &str) -> bool {
+    matches!(name, "resource.html" | "resource.css")
 }
 
 /// The product fonts and `fonts.json`, as `build.sh` writes them. Fonts are
@@ -1052,7 +1056,11 @@ pub(super) fn packaged_files(bundle: &Path) -> Result<Vec<VersionFile>> {
                 bail!("{name} in {} must be a directory", bundle.display());
             }
             collect_tree(&path, &format!("{name}/"), &mut files)?;
-        } else if runtime_module(&name) || name == "fonts.json" || name == "apps.json" {
+        } else if runtime_module(&name)
+            || resource_entry_asset(&name)
+            || name == "fonts.json"
+            || name == "apps.json"
+        {
             files.push(version_file(&path, name)?);
         }
     }
@@ -1359,6 +1367,9 @@ mod tests {
             "host.test.mjs",
             "apps.json",
             "index.html",
+            "resource.html",
+            "resource.css",
+            "untrusted.html",
             "build.json",
         ] {
             let path = root.join(path);
@@ -1378,7 +1389,9 @@ mod tests {
                 "fonts/LICENSES/a.txt",
                 "fonts.json",
                 "host.mjs",
-                "pkg/tilo_browser_runtime.js"
+                "pkg/tilo_browser_runtime.js",
+                "resource.css",
+                "resource.html"
             ]
         );
     }

@@ -117,7 +117,6 @@ impl Capture {
     pub(super) fn acknowledges(&self, token: [u8; 16]) -> bool {
         self.token == token
     }
-    #[cfg(test)]
     pub(super) fn finished(&self) -> bool {
         self.next == self.body.bytes().len()
     }

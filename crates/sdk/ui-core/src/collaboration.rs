@@ -77,6 +77,12 @@ mod portable_committed {
         never: std::convert::Infallible,
     }
     impl CommittedDocument {
+        pub(crate) fn creation_workspace(
+            &self,
+        ) -> Option<&runtime_collab::committed_document::CreationWorkspace> {
+            match self.never {}
+        }
+
         pub(crate) fn with_mutation<T>(
             &self,
             _apply: impl FnOnce(&collab_types::DocumentMutation) -> T,
@@ -496,6 +502,7 @@ pub enum ExportedInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportedAction {
     pub resource: String,
+    pub semantic_identity: Option<tilo_actions::ResourceSemanticIdentity>,
     pub action: String,
     pub resource_kind: String,
     pub resource_label: String,
@@ -521,6 +528,8 @@ pub struct BrokerActionSurface {
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 pub struct BrokerActionDescriptor {
     pub resource: String,
+    #[serde(default)]
+    pub semantic_identity: Option<tilo_actions::ResourceSemanticIdentity>,
     pub action: String,
     pub resource_kind: String,
     pub resource_label: String,
