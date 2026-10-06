@@ -45,12 +45,18 @@ platforms = [
 # builds have no desktop development packages. Media stays optional
 # everywhere: hermetic builds, `--shots` and CI must not need gstreamer-1.0.
 third-party = [
+    # Wayland system linkage belongs to platform-selected clients/servers.
+    # A global feature union would make portable metadata and cross builds
+    # require the Linux client library even when native transport is disabled.
+    { name = "wayland-backend", path = "vendor/wayland-backend" },
+    { name = "wayland-client" },
+    { name = "wayland-sys" },
     { name = "gstreamer" },
     { name = "gstreamer-app" },
     { name = "gstreamer-base" },
     { name = "gstreamer-video" },
     # Its build script requires xkbcommon from pkg-config. zstd-sys builds its
-    # bundled sources and wayland-sys is dlopen-only, so both may stay.
+    # bundled sources, so it may stay.
     { name = "smithay-client-toolkit" },
     # The peer transport belongs to the hosts: tilo-desktop is managed and
     # must never reach iroh (tools/policy/check_desktop_model_dependencies.py).

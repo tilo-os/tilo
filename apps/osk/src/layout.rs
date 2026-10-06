@@ -499,6 +499,8 @@ pub enum InputPurpose {
     /// Free-form text — the standard letter keyboard.
     #[default]
     Text,
+    /// Source code or terminal input; retain literal symbols and indentation.
+    Terminal,
     /// A number with no decimal point or sign expectation beyond `-`.
     Number,
     /// A number where a decimal point is expected.
@@ -537,7 +539,7 @@ impl KeyboardLayout {
             InputPurpose::Email => "email",
             InputPurpose::Url => "url",
             // Passwords need every character, so they use the full keyboard.
-            InputPurpose::Password | InputPurpose::Text => "qwerty",
+            InputPurpose::Password | InputPurpose::Text | InputPurpose::Terminal => "qwerty",
         }
     }
 
