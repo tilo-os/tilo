@@ -1485,6 +1485,47 @@ pub trait Widget {
         None
     }
 
+    /// Opaque local invalidation of deferred input, including selection edits
+    /// that leave the caret rectangle unchanged. The host supplies an ephemeral
+    /// secret key; no text or selection is retained in the resulting digest.
+    /// The default shares the accessibility door and excludes protected or
+    /// read-only controls. Text controls can override it to avoid cloning text.
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        let caret = self.ime_cursor_rect()?;
+        let mut index = 0_usize;
+        let mut selected = None;
+        let mut ambiguous = false;
+        self.for_each_child(&mut |child| {
+            if child.ime_cursor_rect() == Some(caret) && child.ime_purpose().is_some() {
+                if selected.is_some() {
+                    ambiguous = true;
+                }
+                selected =
+                    Some(child.ime_edit_fingerprint(key).map(|stamp| {
+                        crate::ime::scoped_fingerprint(&index.to_le_bytes(), stamp, key)
+                    }));
+            }
+            index = index.saturating_add(1);
+        });
+        if ambiguous {
+            return None;
+        }
+        if let Some(selected) = selected {
+            return selected;
+        }
+        let node = self.accessibility()?;
+        if node.state.protected || node.state.read_only {
+            return None;
+        }
+        let selection = node.text_selection?;
+        Some(crate::ime::edit_fingerprint(
+            &node.value?,
+            selection.anchor,
+            selection.focus,
+            key,
+        ))
+    }
+
     /// Default `true`; the exception is a widget standing in for a process
     /// that has started but not drawn. Must **latch**: once `true`, never
     /// `false` again for the same content, or an un-presenting widget would

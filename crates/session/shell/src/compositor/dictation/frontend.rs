@@ -1,0 +1,543 @@
+//! Assemble field preparation, local one-session consent and the private actor.
+use super::{DictationStatus, SESSION_WINDOW};
+use crate::compositor::state::State;
+use crate::shell::overlay_host::dictation_layer::{DictationSurface, Request};
+use std::time::Instant;
+
+pub(crate) fn service(
+    state: &mut State,
+    surface: &mut DictationSurface,
+    now: Instant,
+    locked: bool,
+) {
+    state.expire_dictation_recovery(now);
+    if locked {
+        state.discard_dictation_recovery();
+        surface.status(DictationStatus::Idle);
+        let _ = surface.take_request();
+        // Revoke the target before consuming a queued final result, while
+        // still servicing termination of the canceled actor.
+        state.pump_dictation_worker(now);
+        return;
+    }
+    if let Some(request) = surface.take_request() {
+        let result = match request {
+            Request::Toggle => {
+                if let Some(id) = surface.session() {
+                    if surface.is_recovery() {
+                        Ok(())
+                    } else if state.dictation_status() == DictationStatus::Listening {
+                        state.finish_recording(id)
+                    } else {
+                        state.discard_dictation_recovery();
+                        state.text_commit.dictation.last_failure = None;
+                        surface.status(state.dictation_status());
+                        Ok(())
+                    }
+                } else {
+                    state.prepare_dictation(now).map(|id| surface.prepare(id))
+                }
+            }
+            Request::Consent(id) if surface.session() == Some(id) && surface.is_consent() => {
+                state.start_authorized_dictation(id, "auto", now).map(|()| {
+                    if let Some(session) = state.text_commit.dictation.session.as_mut() {
+                        session.deadline = now.checked_add(SESSION_WINDOW).unwrap_or(now);
+                    }
+                    surface.status(DictationStatus::Loading);
+                })
+            }
+            Request::Finish(id) if surface.session() == Some(id) && !surface.is_recovery() => {
+                state.finish_recording(id)
+            }
+            Request::Copy(id) if surface.session() == Some(id) && surface.is_recovery() => {
+                state.copy_dictation_recovery(id, now)
+            }
+            Request::Cancel(id) if surface.session() == id => {
+                state.discard_dictation_recovery();
+                state.text_commit.dictation.last_failure = None;
+                surface.status(state.dictation_status());
+                Ok(())
+            }
+            _ => return, // A retired prompt cannot cancel or grant its successor.
+        };
+        if let Err(error) = result {
+            // A failed request never leaves capture or a prepared target alive.
+            state.cancel_active_dictation();
+            surface.failure(error);
+        }
+    }
+    // Explicit cancellation wins over a result arriving in the same turn.
+    state.pump_dictation_worker(now);
+    if state
+        .text_commit
+        .dictation
+        .recovery
+        .as_ref()
+        .is_some_and(|recovery| Some(recovery.id) == surface.session())
+    {
+        surface.status(state.dictation_status());
+        return;
+    }
+    if let Some(id) = surface.session() {
+        if surface.preparing() {
+            match state.advance_dictation_preparation(id, now) {
+                Ok(true) => surface.consent(),
+                Ok(false) => {}
+                Err(error) => {
+                    state.cancel_active_dictation();
+                    surface.failure(error);
+                }
+            }
+        } else if surface.is_consent() {
+            if let Err(error) = state.check_dictation(id, now) {
+                state.cancel_active_dictation();
+                surface.failure(error);
+            }
+        } else {
+            surface.status(state.dictation_status());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compositor::shell_text_input::{
+        FieldRequest, NativeEditStamp, NativeFieldId, ShellTextInput,
+    };
+    use automerge::transaction::Transactable as _;
+    use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
+    use smithay::wayland::text_input::TextInputSeat as _;
+
+    struct Fixture {
+        state: State,
+        display: Display<State>,
+        proxy: ShellTextInput,
+        surface: DictationSurface,
+        field: FieldRequest,
+        _event_loop: EventLoop<'static, State>,
+    }
+    impl Fixture {
+        fn new() -> Self {
+            let event_loop = EventLoop::try_new().unwrap();
+            let display = Display::new().unwrap();
+            let mut state = State::new(event_loop.handle(), display.handle());
+            let proxy = ShellTextInput::connect(&mut state).unwrap();
+            let mut fixture = Self {
+                state,
+                display,
+                proxy,
+                surface: DictationSurface::default(),
+                field: FieldRequest {
+                    purpose: winit::window::ImePurpose::Normal,
+                    x: 420,
+                    y: 100,
+                    width: 1,
+                    height: 24,
+                },
+                _event_loop: event_loop,
+            };
+            let deadline = tilo_test_env::hang_deadline();
+            while !fixture.proxy.holds_focus(&fixture.state) {
+                assert!(
+                    Instant::now() < deadline,
+                    "native editable field must activate"
+                );
+                fixture.pump();
+            }
+            fixture
+        }
+        fn pump(&mut self) {
+            self.display.dispatch_clients(&mut self.state).unwrap();
+            self.display.flush_clients().unwrap();
+            self.proxy.sync_for_field(
+                &mut self.state,
+                Some(self.field),
+                Some(NativeFieldId::Widget(42)),
+            );
+            service(&mut self.state, &mut self.surface, Instant::now(), false);
+        }
+        fn consent(&mut self) -> super::super::SessionId {
+            self.surface.request_toggle();
+            let deadline = tilo_test_env::hang_deadline();
+            while !self.surface.is_consent() {
+                assert!(
+                    Instant::now() < deadline,
+                    "consent must appear after field activation"
+                );
+                self.pump();
+            }
+            assert!(
+                self.proxy.holds_focus(&self.state),
+                "consent preserves the original keyboard owner"
+            );
+            assert!(
+                self.state.text_commit.dictation.recognition.is_none(),
+                "requesting consent cannot start a worker or microphone"
+            );
+            self.surface.session().unwrap()
+        }
+    }
+
+    #[test]
+    fn dictation_frontend_denial_and_retired_consent_cannot_start_a_successor() {
+        let mut fixture = Fixture::new();
+        let old = fixture.consent();
+        assert!(fixture.surface.owns_key(&winit::keyboard::Key::Named(
+            winit::keyboard::NamedKey::Enter
+        )));
+        assert!(fixture.surface.owns_key(&winit::keyboard::Key::Named(
+            winit::keyboard::NamedKey::Escape
+        )));
+        assert!(
+            !fixture
+                .surface
+                .owns_key(&winit::keyboard::Key::Character("x".into())),
+            "consent controls must not capture ordinary field typing"
+        );
+        fixture.surface.request_cancel();
+        fixture.pump();
+        assert!(fixture.state.dictation_target_id().is_none());
+        assert!(
+            !fixture.surface.owns_key(&winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::Enter
+            )),
+            "dismissed consent must release control keys"
+        );
+        let next = fixture.consent();
+        assert_ne!(old, next);
+        fixture.surface.enqueue(Request::Consent(old));
+        fixture.pump();
+        assert_eq!(fixture.state.dictation_target_id(), Some(next));
+        assert!(fixture.surface.is_consent());
+        assert!(fixture.state.text_commit.dictation.recognition.is_none());
+        service(
+            &mut fixture.state,
+            &mut fixture.surface,
+            Instant::now(),
+            true,
+        );
+        assert!(
+            fixture.state.dictation_target_id().is_none(),
+            "lock cancels a prepared request"
+        );
+        assert!(fixture.surface.session().is_none());
+    }
+
+    #[test]
+    fn dictation_frontend_same_field_stamp_is_bound_to_each_session_and_edits_cancel() {
+        let mut fixture = Fixture::new();
+        let mut document = automerge::AutoCommit::new();
+        let stamp = |document: &automerge::AutoCommit| NativeEditStamp {
+            document: ui::bound_dispatch::DocumentEditStamp::for_document(document),
+            fingerprint: [5; 32],
+        };
+        let old = fixture.consent();
+        fixture
+            .proxy
+            .observe_edit_stamp(&mut fixture.state, Some(stamp(&document)));
+        fixture.surface.request_cancel();
+        fixture.pump();
+        document
+            .put(automerge::ROOT, "text", "edited between sessions")
+            .unwrap();
+        let next = fixture.consent();
+        assert_ne!(old, next);
+        fixture
+            .proxy
+            .observe_edit_stamp(&mut fixture.state, Some(stamp(&document)));
+        assert!(
+            fixture.state.check_dictation(next, Instant::now()).is_ok(),
+            "an edit between sessions must not cancel a newly pinned target"
+        );
+        document
+            .put(automerge::ROOT, "text", "during consent")
+            .unwrap();
+        fixture
+            .proxy
+            .observe_edit_stamp(&mut fixture.state, Some(stamp(&document)));
+        assert!(fixture.state.check_dictation(next, Instant::now()).is_err());
+        fixture.pump();
+        assert!(!fixture.surface.is_consent());
+        assert!(fixture.state.text_commit.dictation.recognition.is_none());
+    }
+
+    #[test]
+    fn dictation_oversized_final_inserts_nothing_and_keeps_the_bridge_alive() {
+        let mut fixture = Fixture::new();
+        let id = fixture.consent();
+        fixture.state.shell_field_active = true;
+        fixture
+            .state
+            .update_dictation(
+                id,
+                "x".repeat(super::super::MAX_DRAFT_BYTES),
+                Instant::now(),
+            )
+            .unwrap();
+        assert_eq!(fixture.state.finish_dictation(id, Instant::now()), Ok(()));
+        assert!(!fixture.state.take_native_dictation_commit());
+        fixture.display.flush_clients().unwrap();
+        assert!(fixture.proxy.drain_dictation_commit().is_none());
+        fixture.pump();
+        assert!(fixture.proxy.holds_focus(&fixture.state));
+    }
+
+    fn retain_multilingual(fixture: &mut Fixture) -> (super::super::SessionId, String) {
+        let id = fixture.consent();
+        let text = "東京 café مرحبا 👩🏽‍💻 ".repeat(200);
+        assert!(text.len() > super::super::MAX_COMMIT_BYTES);
+        assert!(text.len() <= super::super::MAX_DRAFT_BYTES);
+        fixture
+            .state
+            .update_dictation(id, text.clone(), Instant::now())
+            .unwrap();
+        fixture.state.finish_dictation(id, Instant::now()).unwrap();
+        fixture.pump();
+        assert!(fixture.surface.is_recovery());
+        assert_eq!(
+            fixture
+                .state
+                .text_commit
+                .dictation
+                .recovery
+                .as_ref()
+                .unwrap()
+                .text
+                .as_str(),
+            text
+        );
+        assert!(fixture.state.text_commit.dictation.session.is_none());
+        assert_eq!(
+            fixture.state.dictation_service_deadline(Instant::now()),
+            Some(
+                fixture
+                    .state
+                    .text_commit
+                    .dictation
+                    .recovery
+                    .as_ref()
+                    .unwrap()
+                    .deadline
+            ),
+            "idle recovery must schedule only expiry, without polling"
+        );
+        (id, text)
+    }
+
+    #[test]
+    fn dictation_long_multilingual_recovery_requires_explicit_export_after_focus_change() {
+        use crate::shell::overlay_host::layers::{LayerIntent, ShellLayer};
+        let mut fixture = Fixture::new();
+        let selection = fixture.state.selection_store();
+        let services = crate::compositor::selection::host_services(selection.clone());
+        let _host = ui::host::enter(&services);
+        let (id, text) = retain_multilingual(&mut fixture);
+        assert!(
+            crate::compositor::selection::mirror_text(
+                &selection,
+                crate::compositor::selection::Target::Clipboard
+            )
+            .is_none(),
+            "no automatic clipboard fallback"
+        );
+        fixture.surface.request_toggle();
+        service(
+            &mut fixture.state,
+            &mut fixture.surface,
+            Instant::now(),
+            false,
+        );
+        fixture.surface.enqueue(Request::Finish(id));
+        service(
+            &mut fixture.state,
+            &mut fixture.surface,
+            Instant::now(),
+            false,
+        );
+        assert!(
+            fixture.surface.is_recovery(),
+            "start/finish cannot silently discard recovery"
+        );
+        assert_eq!(
+            fixture.state.prepare_dictation(Instant::now()),
+            Err(super::super::DictationError::Busy)
+        );
+        fixture.state.seat.text_input().leave();
+        fixture.state.seat.text_input().set_focus(None);
+        fixture.state.cancel_active_dictation();
+        service(
+            &mut fixture.state,
+            &mut fixture.surface,
+            Instant::now(),
+            false,
+        );
+        let node = fixture
+            .surface
+            .accessibility(crate::shell::overlay_host::layers::LayerGeometry {
+                viewport: vello::kurbo::Rect::new(0.0, 0.0, 1000.0, 800.0),
+                outputs: &[],
+                focused_output: None,
+            })
+            .unwrap();
+        let target = node.children[0].action_target.as_deref().unwrap();
+        let Some(LayerIntent::Dictation(request)) = fixture.surface.semantic_intent(target) else {
+            panic!("recovery copy is an accessible action")
+        };
+        assert_eq!(request, Request::Copy(id));
+        fixture.surface.enqueue(request);
+        service(
+            &mut fixture.state,
+            &mut fixture.surface,
+            Instant::now(),
+            false,
+        );
+        assert_eq!(
+            crate::compositor::selection::mirror_text(
+                &selection,
+                crate::compositor::selection::Target::Clipboard
+            )
+            .as_deref(),
+            Some(text.as_str()),
+            "the real compositor clipboard must accept the complete UTF-8 transcript"
+        );
+        assert!(matches!(
+            fixture.state.dictation_status(),
+            DictationStatus::Recovery {
+                copied: true,
+                copy_failed: false
+            }
+        ));
+        fixture.display.flush_clients().unwrap();
+        assert!(
+            fixture.proxy.drain_dictation_commit().is_none(),
+            "export never inserts into another field"
+        );
+    }
+
+    #[test]
+    fn dictation_recovery_copy_failure_cancel_and_retired_actions_preserve_ownership() {
+        let services = ui::host::HostServices::null();
+        let _host = ui::host::enter(&services);
+        let mut fixture = Fixture::new();
+        let (id, text) = retain_multilingual(&mut fixture);
+        fixture.surface.enqueue(Request::Copy(id));
+        service(
+            &mut fixture.state,
+            &mut fixture.surface,
+            Instant::now(),
+            false,
+        );
+        assert!(matches!(
+            fixture.state.dictation_status(),
+            DictationStatus::Recovery {
+                copy_failed: true,
+                ..
+            }
+        ));
+        assert_eq!(
+            fixture
+                .state
+                .text_commit
+                .dictation
+                .recovery
+                .as_ref()
+                .unwrap()
+                .text
+                .as_str(),
+            text
+        );
+        fixture.surface.enqueue(Request::Cancel(Some(id)));
+        service(
+            &mut fixture.state,
+            &mut fixture.surface,
+            Instant::now(),
+            false,
+        );
+        assert!(fixture.state.text_commit.dictation.recovery.is_none());
+        assert!(
+            fixture
+                .state
+                .copy_dictation_recovery(id, Instant::now())
+                .is_err()
+        );
+        let next = fixture.consent();
+        assert_ne!(id, next);
+        fixture.surface.enqueue(Request::Copy(id));
+        service(
+            &mut fixture.state,
+            &mut fixture.surface,
+            Instant::now(),
+            false,
+        );
+        assert!(fixture.surface.is_consent());
+        assert!(fixture.state.check_dictation(next, Instant::now()).is_ok());
+    }
+
+    #[test]
+    fn dictation_recovery_lock_and_expiry_discard_private_text() {
+        let mut fixture = Fixture::new();
+        let (id, _) = retain_multilingual(&mut fixture);
+        service(
+            &mut fixture.state,
+            &mut fixture.surface,
+            Instant::now(),
+            true,
+        );
+        assert!(fixture.state.text_commit.dictation.recovery.is_none());
+        assert!(
+            fixture
+                .state
+                .copy_dictation_recovery(id, Instant::now())
+                .is_err()
+        );
+        let (next, _) = retain_multilingual(&mut fixture);
+        let expired = Instant::now() + super::super::RECOVERY_WINDOW;
+        service(&mut fixture.state, &mut fixture.surface, expired, false);
+        assert!(fixture.state.text_commit.dictation.recovery.is_none());
+        assert!(
+            fixture
+                .state
+                .copy_dictation_recovery(next, expired)
+                .is_err()
+        );
+        assert!(matches!(
+            fixture.state.dictation_status(),
+            DictationStatus::Unavailable(super::super::runtime::RuntimeError::TimedOut)
+        ));
+    }
+
+    #[test]
+    fn dictation_native_final_drains_the_largest_frame_before_another_input_turn() {
+        let mut fixture = Fixture::new();
+        let id = fixture.consent();
+        fixture.state.shell_field_active = true;
+        let text = "東".repeat(super::super::MAX_COMMIT_BYTES / 3) + "x";
+        fixture
+            .state
+            .update_dictation(id, text.clone(), Instant::now())
+            .unwrap();
+        fixture.state.finish_dictation(id, Instant::now()).unwrap();
+        assert_eq!(
+            fixture.state.prepare_dictation(Instant::now()),
+            Err(super::super::DictationError::Busy),
+            "a successor cannot start before the native final is consumed"
+        );
+        assert!(fixture.state.take_native_dictation_commit());
+        assert!(!fixture.state.take_native_dictation_commit());
+        fixture.display.flush_clients().unwrap();
+        let events = fixture.proxy.drain_dictation_commit().unwrap();
+        let commits = events
+            .iter()
+            .filter_map(|event| match event {
+                winit::event::WindowEvent::Ime(winit::event::Ime::Commit(text)) => Some(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(commits, [&text]);
+        assert!(
+            fixture.proxy.drain_dictation_commit().is_none(),
+            "the final must not be delivered twice"
+        );
+    }
+}

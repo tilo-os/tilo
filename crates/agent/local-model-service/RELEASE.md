@@ -45,6 +45,16 @@ models uses an empty `runtimes` array and `"recommendation": ""`; publishing an
 image model does not require publishing a chat runtime. Catalogs containing
 runtime-served models still require a runtime-served recommendation.
 
+`"whisper_ggml"` is an explicit whisper.cpp speech graph. Like `onnx_file`, it
+runs in-process, names no runtime and has a zero context window. Its signed
+format declares the `speech_recognition` capability; it cannot claim
+segmentation, chat, vision or face recognition. Installation still verifies
+the exact object receipt and license acceptance, and never opens a microphone
+or starts a process. The native consumer must check the graph's actual language
+capabilities and recheck its receipt before inference. This format support
+alone installs no speech release or recognizer, and does not change the
+existing protected publisher's U²-Net-only guard.
+
 The catalog signature covers:
 
 ```text

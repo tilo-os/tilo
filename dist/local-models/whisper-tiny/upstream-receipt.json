@@ -1,0 +1,19 @@
+{
+  "license_url": "https://raw.githubusercontent.com/openai/whisper/31243bad24cc746f07d4c8bfdd2d974872cb1803/LICENSE",
+  "license_sha256": "b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d",
+  "license_size_bytes": 1063,
+  "repository": "ggerganov/whisper.cpp",
+  "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+  "file": "ggml-tiny.bin",
+  "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.bin",
+  "sha256": "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+  "size_bytes": 77691713,
+  "artifact_format": "whisper_ggml",
+  "license_id": "MIT",
+  "model_card_url": "https://huggingface.co/ggerganov/whisper.cpp/blob/5359861c739e955e79d9a303bcbc70fb988958b1/README.md",
+  "speech_recognition": true,
+  "multilingual": true,
+  "sample_rate_hz": 16000,
+  "channels": 1,
+  "translate": false
+}

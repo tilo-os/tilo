@@ -35,6 +35,8 @@ pub mod dev_env;
 pub mod dev_test_identity;
 #[cfg(target_os = "linux")]
 pub mod device_rotation;
+#[cfg(target_os = "linux")]
+pub mod dictation;
 pub mod drag_feedback;
 #[cfg(target_os = "linux")]
 pub mod floating_service;
