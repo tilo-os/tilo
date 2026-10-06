@@ -1978,6 +1978,24 @@ impl ForeignFrameStore {
         self.activate_dmabuf_capture_token(id, token)
     }
 
+    /// Activate a completed owned GPU copy through the ordinary capture-token path.
+    #[cfg(test)]
+    pub(crate) fn publish_gpu_for_test(
+        &self,
+        id: SurfaceId,
+        frame: Arc<crate::shell::gpu_frames::GpuFrame>,
+    ) -> Option<CaptureOutcome> {
+        let token = self
+            .next_capture
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        self.with_entry(id, |entry| entry.capture_tokens.push_back(token));
+        if !self.stage_gpu_capture(id, token, frame) {
+            return None;
+        }
+        self.activate_dmabuf_capture_token(id, token)
+    }
+
     /// Publish an RGBA frame directly — used by callers that already hold decoded pixels (tests, future non-`wl_buffer` capture routes).
     pub fn publish_rgba(&self, id: SurfaceId, rgba: &[u8], width: u32, height: u32) {
         self.publish_frame(id, rgba, width, height, None);
@@ -2976,6 +2994,14 @@ impl ForeignSurfaceWidget {
         }
     }
 
+    fn record_foreign_damage(&self, image: &ImageData, transform: Affine, dst: Rect) {
+        super::foreign_damage::record(
+            self.surface_id,
+            image,
+            transform.transform_rect_bbox(self.rect.union(dst)),
+        );
+    }
+
     /// Register the frame's full-precision plane, when it has one, for the
     /// image about to be drawn at `brush_transform` into `dst`.
     fn record_hdr_layer(
@@ -3203,6 +3229,7 @@ impl Widget for ForeignSurfaceWidget {
             let sx = dst.width() / f64::from(image.width);
             let sy = dst.height() / f64::from(image.height);
             let brush_transform = translated_and_scaled(transform, dst.x0, dst.y0, sx, sy);
+            self.record_foreign_damage(&image, transform, dst);
             let brush = ImageBrush::new(image.clone()).with_extend(Extend::Pad);
             self.record_hdr_layer(&image, brush_transform, transform, dst);
             if self.preserve_transparency {
