@@ -26,6 +26,31 @@ source, base digest and prebuilt developer-image digest were checked before
 booting a private writable child. That developer guest includes compilers and
 test applications, so its installed size is separate from the production layout.
 
+## Current-main refresh after artifact publication
+
+After the matched experiment, [OS build 72677](https://code.tilo.so/tilo/tilo/actions/runs/72677)
+published source `12f4dfb2d535f0ea9c64278b66a9bef435d2e4b3`. The exact image is
+`registry.tilo.so/tilo/tilo-ci@sha256:7a733a3f1a9fc79ca96f61a667f1b813c91251e822d93a999a5a9c240984cbce`.
+Its raw manifest/config digests and source revision were independently verified.
+It declares LTO off. [Signed release 72696](https://code.tilo.so/tilo/tilo/actions/runs/72696)
+is `release-apps.yml`, not a signed optimized OS image release.
+
+A fresh complete installation at main's level-1 assembly compression used
+**7,536,689,152 root bytes**, with fs-verity verified on all 76,338 objects.
+Its losslessly checked zstd qcow2 is **5,976,621,056 bytes**; the uncompressed
+qcow2 is separately recorded at 8,053,063,680 bytes. These are different disk
+encodings, not different installed roots. Compressed OCI layers total
+5,045,428,358 bytes.
+
+A fresh private child reached an input-ready greeter in **81.671 s** with the
+same four-vCPU, 4096-MiB TCG fixture. The greeter reported the exact expected
+`e1a2f7a…711a7745d` composefs digest. A previous final probe used the unsupported
+`state-dump` subcommand; its boot/wait results and failed probe are retained,
+and a fresh child rerun completed with the real client's `state` command.
+Both guests are stopped, mounts detached and the redundant raw disk removed.
+No account was provisioned. This source refresh is an absolute baseline,
+not a matched comparison against the earlier source or a hardware-speed claim.
+
 ## Complete installed comparison
 
 The production-layout image's placeholder UKI digest was refused by bootc.
@@ -42,7 +67,7 @@ read-only, no-log-replay loop mounts, before any guest boot. It includes root
 data, duplicated metadata and fs-verity overhead; the EFI partition is separate.
 Reserved block groups and virtual disk capacity are not counted as used data.
 
-The losslessly converted qcow2 artifacts are 5,948,375,040 and 5,841,944,576
+The losslessly converted, opt-in zstd-compressed qcow2 artifacts are 5,948,375,040 and 5,841,944,576
 bytes, a **106,430,464-byte (1.79%)** reduction. `qemu-img check` passed on
 both; `qemu-img compare -f raw -F qcow2` verified that each conversion preserves
 its entire raw disk. This is a complete disk-artifact measurement, distinct
@@ -161,8 +186,10 @@ unmounting. Measure each composefs object's fs-verity identity with
 differing SplitStream wrappers using the referenced upstream format. Do not
 infer equality from a sampled binary or silently exclude differing objects.
 
-Convert each full disk using the existing qcow2 path, run `qemu-img check`,
-then compare it to its raw input with `qemu-img compare -f raw -F qcow2`.
+Convert each full disk using the existing opt-in zstd qcow2 path
+(`TILO_QCOW2_COMPRESS=1`, equivalent to `qemu-img convert -f raw -O qcow2
+-c -o compression_type=zstd`), run `qemu-img check`, then compare it to its
+raw input with `qemu-img compare -f raw -F qcow2`.
 For readiness, run the existing `vm.sh boot` and `vm.sh wait` with the fixture
 settings in the JSON, start a monotonic host timer immediately before boot,
 and retain the console `state-dump`. Stop each guest before starting the next.
