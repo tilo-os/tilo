@@ -24,15 +24,6 @@ impl Engine {
         }
     }
 
-    /// Short glyph shown on the connection chip in the sidebar.
-    pub fn glyph(self) -> &'static str {
-        match self {
-            Engine::Sqlite => "lite",
-            Engine::Postgres => "pg",
-            Engine::MySql => "sql",
-        }
-    }
-
     pub fn default_port(self) -> u16 {
         match self {
             Engine::Sqlite => 0,
@@ -101,7 +92,7 @@ impl ConnectionProfile {
     pub fn sqlite_sample() -> Self {
         Self {
             id: Uuid::new_v4(),
-            name: "Sample · chinook".to_string(),
+            name: "Chinook sample".to_string(),
             engine: Engine::Sqlite,
             host: String::new(),
             port: 0,
@@ -147,6 +138,22 @@ impl ConnectionProfile {
         }
     }
 
+    /// Where the connection goes, as the sidebar's second line: `host:port`
+    /// for a network engine, the file's name for `SQLite`, nothing for the
+    /// bundled sample.
+    pub fn address(&self) -> String {
+        match self.engine {
+            Engine::Sqlite if self.is_sample || self.file_path == ":memory:" => String::new(),
+            Engine::Sqlite => std::path::Path::new(&self.file_path)
+                .file_name()
+                .map_or_else(
+                    || self.file_path.clone(),
+                    |name| name.to_string_lossy().into_owned(),
+                ),
+            Engine::Postgres | Engine::MySql => format!("{}:{}", self.host, self.port),
+        }
+    }
+
     /// Network engines need a sandbox grant before a live handle can open.
     pub fn is_remote(&self) -> bool {
         !matches!(self.engine, Engine::Sqlite)
@@ -188,20 +195,6 @@ impl TypeClass {
             TypeClass::Numeric
         } else {
             TypeClass::Unknown
-        }
-    }
-
-    /// One-letter type icon glyph rendered in a coloured chip.
-    pub fn icon(self) -> &'static str {
-        match self {
-            TypeClass::Integer => "#",
-            TypeClass::Real => "~",
-            TypeClass::Numeric => "$",
-            TypeClass::Text => "T",
-            TypeClass::Blob => "B",
-            TypeClass::Boolean => "?",
-            TypeClass::DateTime => "@",
-            TypeClass::Unknown => "•",
         }
     }
 
@@ -368,7 +361,7 @@ impl Cell {
             Cell::Integer(i) => i.to_string(),
             Cell::Real(r) => format_real(*r),
             Cell::Text(s) => s.clone(),
-            Cell::Blob(n) => format!("«{n} bytes»"),
+            Cell::Blob(n) => format!("Binary, {n} bytes"),
         }
     }
 
@@ -419,14 +412,14 @@ impl QueryResult {
     pub fn message(&self) -> String {
         if self.is_select {
             format!(
-                "{} rows{} · {:.1} ms",
+                "{} rows{} in {:.1} ms",
                 self.rows.len(),
                 if self.truncated { "+" } else { "" },
                 self.elapsed_ms
             )
         } else {
             let n = self.rows_affected.unwrap_or(0);
-            format!("{n} rows affected · {:.1} ms", self.elapsed_ms)
+            format!("{n} rows affected in {:.1} ms", self.elapsed_ms)
         }
     }
 }

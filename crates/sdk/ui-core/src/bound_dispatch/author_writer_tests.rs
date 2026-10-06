@@ -8,7 +8,7 @@ const APP: &str = "so.tilo.test";
 
 /// A mount of `checkout` for `author`, as `HostContext::callback_binding`
 /// makes one.
-fn mount(
+pub(super) fn mount(
     records: &RecordStore,
     checkout: &RecordCheckout,
     author: &str,
@@ -24,6 +24,7 @@ fn mount(
         lifetime_id: uuid::Uuid::new_v4(),
         control_domain: crate::control_custody::WeakControlDomain::default(),
         queued_controls: Rc::new(RefCell::new(std::collections::VecDeque::new())),
+        search_requests: Rc::default(),
         instance_id: instance,
         app_id: APP.into(),
         records: records.clone(),

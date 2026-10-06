@@ -53,86 +53,94 @@ impl ui::storage::SettingsSchema for DisplayPrefs {
 #[effect(operation = "settings.effect")]
 pub enum DisplayEffect {
     /// The built-in panel's brightness, from 0 to 1.
-    #[effect(idempotent)]
+    #[effect(returns, idempotent)]
     SetBrightness { brightness: f64 },
     /// Follow the ambient light.
-    #[effect(idempotent)]
+    #[effect(returns, idempotent)]
     SetAutomaticBrightness { on: bool },
     /// Warm the screen's colours.
-    #[effect(idempotent)]
+    #[effect(returns, idempotent)]
     SetNightLight { on: bool },
     /// Warm the colours from sunset to sunrise.
-    #[effect(idempotent)]
+    #[effect(returns, idempotent)]
     SetNightLightSchedule { on: bool },
     /// How warm Night Light makes the screen.
-    #[effect(idempotent)]
+    #[effect(returns, idempotent)]
     SetNightLightWarmth {
         #[param("The warmth, as the list names it")]
         warmth: String,
     },
     /// The scale apps prefer for their interface.
-    #[effect(idempotent)]
+    #[effect(returns, idempotent)]
     SetDisplayScale {
         #[param("100%, 125%, 150%, 175% or 200%")]
         scale: String,
     },
     /// An external monitor's brightness, from 0 to 1.
-    #[effect(row, idempotent)]
+    #[effect(returns, row, idempotent)]
     SetMonitorBrightness { display: String, brightness: f64 },
     /// Use a display, or turn it off. Staged until applied.
-    #[effect(row, idempotent)]
+    #[effect(returns, row, idempotent)]
     UseDisplay { display: String, on: bool },
     /// Make a display the one panels and new windows open on.
-    #[effect(row, idempotent, label = "Make primary")]
+    #[effect(returns, row, idempotent, label = "Make primary")]
     SetPrimaryDisplay { display: String },
     /// A display's scale. Staged until applied.
-    #[effect(row, idempotent)]
+    #[effect(returns, row, idempotent)]
     SetOutputScale { display: String, scale: String },
     /// Place a display beside another: `Right of …`, `Left of …`, `Above …`,
     /// `Below …`. Staged until applied.
-    #[effect(row)]
+    #[effect(returns, row)]
     PlaceDisplay { display: String, position: String },
     /// Put a display's top-left corner at a point of the desktop, as
     /// dragging it does. Staged until applied.
-    #[effect(row)]
+    #[effect(returns, row)]
     MoveDisplay { display: String, x: i32, y: i32 },
     /// Show another display's picture, or extend the workspace. Staged
     /// until applied.
-    #[effect(row)]
+    #[effect(returns, row)]
     MirrorDisplay { display: String, mirror: String },
     /// A display's resolution and refresh rate. Staged until applied.
-    #[effect(row, idempotent)]
+    #[effect(returns, row, idempotent)]
     SetDisplayMode { display: String, mode: String },
     /// A display's rotation. Staged until applied.
-    #[effect(row, idempotent)]
+    #[effect(returns, row, idempotent)]
     RotateDisplay { display: String, rotation: String },
     /// High dynamic range on a display that offers it. Staged until applied.
-    #[effect(row, idempotent)]
+    #[effect(returns, row, idempotent)]
     SetHdr { display: String, on: bool },
     /// How bright SDR content is while a display runs in HDR, from 0 to 1.
-    #[effect(row, idempotent)]
+    #[effect(returns, row, idempotent)]
     SetSdrBrightness { display: String, brightness: f64 },
     /// Variable refresh rate on a display that offers it. Staged until
     /// applied.
-    #[effect(row, idempotent)]
+    #[effect(returns, row, idempotent)]
     SetVrr { display: String, on: bool },
     /// A display's colour profile, or `System default`. Staged until applied.
-    #[effect(row, idempotent)]
+    #[effect(returns, row, idempotent)]
     SetColorProfile { display: String, profile: String },
+    /// Read the compositor observations, staged configuration and preview transaction.
+    #[effect(
+        view,
+        returns,
+        permission = "read",
+        label = "Inspect display configuration"
+    )]
+    InspectDisplayConfiguration,
     /// Show each display's number and name on it for a few seconds.
-    #[effect(label = "Identify displays")]
+    #[effect(returns, label = "Identify displays")]
     IdentifyDisplays,
     /// Preview the staged arrangement; it is kept only when confirmed.
-    #[effect(label = "Apply display changes")]
+    #[effect(returns, label = "Apply display changes")]
     ApplyDisplayChanges,
     /// Keep the arrangement being previewed.
-    #[effect(label = "Keep display changes")]
+    #[effect(returns, label = "Keep display changes")]
     KeepDisplayChanges,
     /// Go back to the arrangement before the preview.
-    #[effect(label = "Revert display changes")]
+    #[effect(returns, label = "Revert display changes")]
     RevertDisplayChanges,
     /// Ask again before keeping display changes from a layout tool.
-    #[effect(row, label = "Ask again")]
+    #[effect(returns, row, label = "Ask again")]
     ForgetDisplayTool {
         #[param("The tool's executable")]
         tool: String,
@@ -149,6 +157,11 @@ pub(crate) fn answer(
     effect: DisplayEffect,
     _cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
+    if effect == DisplayEffect::InspectDisplayConfiguration {
+        return Ok(Effected::value(
+            app.displays().model().borrow().inspection(),
+        ));
+    }
     app.displays()
         .model()
         .borrow_mut()
@@ -157,15 +170,15 @@ pub(crate) fn answer(
 }
 
 const NIGHT_LIGHT_TEMPERATURES: &[(&str, u32)] = &[
-    ("Subtle · 4500 K", 4_500),
-    ("Warm · 3700 K", 3_700),
-    ("Very warm · 2800 K", 2_800),
+    ("Subtle, 4500 K", 4_500),
+    ("Warm, 3700 K", 3_700),
+    ("Very warm, 2800 K", 2_800),
 ];
 
 fn temperature_ftl(english: &str) -> &'static str {
     match english {
-        "Subtle · 4500 K" => "display-night-light-temp-subtle",
-        "Very warm · 2800 K" => "display-night-light-temp-very-warm",
+        "Subtle, 4500 K" => "display-night-light-temp-subtle",
+        "Very warm, 2800 K" => "display-night-light-temp-very-warm",
         _ => "display-night-light-temp-warm",
     }
 }
@@ -178,7 +191,7 @@ fn temperature_label(kelvin: u32) -> String {
     let english = NIGHT_LIGHT_TEMPERATURES
         .iter()
         .min_by_key(|(_, value)| value.abs_diff(kelvin))
-        .map_or("Warm · 3700 K", |(label, _)| *label);
+        .map_or("Warm, 3700 K", |(label, _)| *label);
     temperature_shown(english)
 }
 
@@ -473,7 +486,7 @@ fn is_virtual_connector(conn: &str) -> bool {
 
 /// Present one compositor descriptor without leaking a persistence collision
 /// into the UI. A unique connector remains the familiar `HDMI-A-1`; two
-/// cards with that label become e.g. `HDMI-A-1 · pci:0000:01:00.0` so every
+/// cards with that label become e.g. `HDMI-A-1 on pci:0000:01:00.0` so every
 /// control, mirror target and saved key refers to exactly one display.
 fn snapshot_label(descriptor: &OutputDescriptor, builtin: bool) -> String {
     let monitor_name = descriptor
@@ -484,12 +497,12 @@ fn snapshot_label(descriptor: &OutputDescriptor, builtin: bool) -> String {
     let base = match (builtin, monitor_name) {
         (true, _) => "Built-in display".to_string(),
         // The port stays visible: two identical monitors differ only there.
-        (false, Some(name)) => format!("{name} · {}", descriptor.label()),
+        (false, Some(name)) => format!("{name} on {}", descriptor.label()),
         (false, None) => descriptor.label().to_string(),
     };
     descriptor
         .card_qualifier()
-        .map_or_else(|| base.clone(), |card| format!("{base} · {card}"))
+        .map_or_else(|| base.clone(), |card| format!("{base} on {card}"))
 }
 
 /// Enumerate real DRM connectors from `/sys/class/drm`. Best-effort: returns
@@ -635,31 +648,10 @@ impl DisplayArea {
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();
         let offer = |effect: DisplayEffect| SettingsEffect::from(effect).bound();
-        let config = model.staged();
         let mut rows: Vec<LiveRow> = model
             .connected_outputs()
             .into_iter()
-            .map(|output| {
-                let display = output.connector.clone();
-                let resolved = config
-                    .outputs
-                    .get(&display)
-                    .cloned()
-                    .unwrap_or_else(|| output.unconfigured());
-                let mut row = LiveRow::new(
-                    format!("settings.display-output:{display}"),
-                    "settings.display-output",
-                    output_title(output),
-                )
-                .operation(offer(DisplayEffect::UseDisplay {
-                    display: display.clone(),
-                    on: !resolved.enabled,
-                }));
-                if !resolved.primary {
-                    row = row.operation(offer(DisplayEffect::SetPrimaryDisplay { display }));
-                }
-                row
-            })
+            .map(|output| model.output_row(output))
             .collect();
         if model.of_device {
             for tool in &settings_store::display_tools::TrustedDisplayTools::load().tools {
@@ -852,6 +844,237 @@ impl DisplayModel {
             .unwrap_or(&self.output_config)
     }
 
+    /// Observed output timing stays separate from a requested candidate.
+    fn inspection(&self) -> serde_json::Value {
+        serde_json::json!({
+            "observed_outputs": self.connected_outputs().into_iter().map(|output| {
+                serde_json::json!({
+                    "display": output.connector,
+                    "label": output_title(output),
+                    "current_mode": output.current_mode,
+                    "supported_modes": output.modes,
+                    "scale": output.scale,
+                    "hdr_available": output.hdr,
+                    "vrr_available": output.vrr,
+                })
+            }).collect::<Vec<_>>(),
+            "saved_configuration": self.output_config,
+            "staged_configuration": self.staged(),
+            "has_staged_changes": self.pending_candidate.is_some(),
+            "transaction": self.of_device.then(DisplayTransaction::load).flatten(),
+            "notice": self.notice,
+        })
+    }
+
+    /// Each control and the semantic catalogue use this same fixed-output
+    /// resource. The caller supplies a value, never another output identity.
+    fn output_row(&self, output: &DisplayOutput) -> LiveRow {
+        let display = &output.connector;
+        let mut row = LiveRow::new(
+            format!("settings.display-output:{display}"),
+            "settings.display-output",
+            output_title(output),
+        );
+        let target = || display.clone();
+        let operations = [
+            (
+                DisplayEffect::UseDisplay {
+                    display: target(),
+                    on: false,
+                },
+                vec!["on"],
+            ),
+            (
+                DisplayEffect::SetPrimaryDisplay { display: target() },
+                vec![],
+            ),
+            (
+                DisplayEffect::SetOutputScale {
+                    display: target(),
+                    scale: String::new(),
+                },
+                vec!["scale"],
+            ),
+            (
+                DisplayEffect::PlaceDisplay {
+                    display: target(),
+                    position: String::new(),
+                },
+                vec!["position"],
+            ),
+            (
+                DisplayEffect::MoveDisplay {
+                    display: target(),
+                    x: 0,
+                    y: 0,
+                },
+                vec!["x", "y"],
+            ),
+            (
+                DisplayEffect::MirrorDisplay {
+                    display: target(),
+                    mirror: String::new(),
+                },
+                vec!["mirror"],
+            ),
+            (
+                DisplayEffect::RotateDisplay {
+                    display: target(),
+                    rotation: String::new(),
+                },
+                vec!["rotation"],
+            ),
+        ];
+        for (effect, asking) in operations {
+            row = row.operation(self.output_operation(output, effect, &asking));
+        }
+        if !output.modes.is_empty() {
+            row = row.operation(self.output_operation(
+                output,
+                DisplayEffect::SetDisplayMode {
+                    display: target(),
+                    mode: String::new(),
+                },
+                &["mode"],
+            ));
+        }
+        self.output_capability_row(output, row)
+    }
+
+    fn output_operation(
+        &self,
+        output: &DisplayOutput,
+        effect: DisplayEffect,
+        asking: &[&str],
+    ) -> ui::tilo_actions::ActionSpec {
+        let choices = match &effect {
+            DisplayEffect::SetDisplayMode { .. } => output
+                .modes
+                .iter()
+                .copied()
+                .map(OutputMode::label)
+                .collect(),
+            DisplayEffect::SetOutputScale { .. } => DISPLAY_SCALES
+                .iter()
+                .map(|(label, _)| (*label).to_owned())
+                .collect(),
+            DisplayEffect::RotateDisplay { .. } => transform_options(),
+            DisplayEffect::PlaceDisplay { .. } => self.relative_choices(output, false),
+            DisplayEffect::MirrorDisplay { .. } => self.relative_choices(output, true),
+            _ => Vec::new(),
+        };
+        let effect = SettingsEffect::from(effect);
+        let mut params = effect.bound_asking(asking).params().to_vec();
+        if let Some(param) = params.first_mut() {
+            param.choices = choices.into_iter().map(Into::into).collect();
+        }
+        effect.bound_asking_params(params)
+    }
+
+    fn relative_choices(&self, output: &DisplayOutput, mirror: bool) -> Vec<String> {
+        let mut choices = vec![
+            if mirror {
+                "Extend workspace"
+            } else {
+                "Automatic"
+            }
+            .to_owned(),
+        ];
+        for target in self
+            .connected_outputs()
+            .into_iter()
+            .filter(|target| target.connector != output.connector)
+        {
+            if mirror {
+                choices.push(format!("Mirror {}", target.label));
+            } else {
+                choices.extend(
+                    ["Left", "Right", "Above", "Below"]
+                        .map(|side| format!("{side} of {}", target.label)),
+                );
+            }
+        }
+        choices
+    }
+
+    fn output_capability_row(&self, output: &DisplayOutput, mut row: LiveRow) -> LiveRow {
+        let display = &output.connector;
+        let target = || display.clone();
+        let offer = |effect: DisplayEffect, asking: &[&str]| {
+            SettingsEffect::from(effect).bound_asking(asking)
+        };
+        if self.output_brightness.contains_key(display) {
+            row = row.operation(offer(
+                DisplayEffect::SetMonitorBrightness {
+                    display: target(),
+                    brightness: 0.0,
+                },
+                &["brightness"],
+            ));
+        }
+        if output.hdr {
+            row = row
+                .operation(offer(
+                    DisplayEffect::SetHdr {
+                        display: target(),
+                        on: false,
+                    },
+                    &["on"],
+                ))
+                .operation(offer(
+                    DisplayEffect::SetSdrBrightness {
+                        display: target(),
+                        brightness: 0.0,
+                    },
+                    &["brightness"],
+                ));
+        }
+        if output.vrr {
+            row = row.operation(offer(
+                DisplayEffect::SetVrr {
+                    display: target(),
+                    on: false,
+                },
+                &["on"],
+            ));
+        }
+        if !output.color_profiles.is_empty() {
+            row = row.operation(offer(
+                DisplayEffect::SetColorProfile {
+                    display: target(),
+                    profile: String::new(),
+                },
+                &["profile"],
+            ));
+        }
+        row
+    }
+
+    fn output_binding<I: 'static>(
+        &self,
+        display: &str,
+        effect: impl ui::tilo_resource::Binds<SettingsEffect, I>,
+    ) -> Option<ui::tilo_actions::ActionBinding<I>> {
+        let output = self
+            .connected_outputs()
+            .into_iter()
+            .find(|output| output.connector == display)?;
+        self.cx
+            .row_binding(&self.output_row(output).into_resource(), effect)
+    }
+
+    fn bind_output<I: 'static, C: ui::framework::ActionControl<I>>(
+        &self,
+        display: &str,
+        control: C,
+        effect: impl ui::tilo_resource::Binds<SettingsEffect, I>,
+    ) -> C {
+        match self.output_binding(display, effect) {
+            Some(binding) => control.bind_action(binding),
+            None => control.unavailable(),
+        }
+    }
+
     /// `control`'s widget id for `field` of `display`.
     fn id(display: &str, field: &str) -> String {
         output_key(display, field)
@@ -865,10 +1088,11 @@ impl DisplayModel {
         on: bool,
         set: ActionRef<SettingsEffect, (String, bool)>,
     ) -> Toggle {
-        let display = display.to_owned();
-        self.cx.bind(
-            Toggle::from_state(&LocalState::new(on)).with_id(&Self::id(&display, field)),
-            set.map(move |on: bool| (display.clone(), on)),
+        let target = display.to_owned();
+        self.bind_output(
+            display,
+            Toggle::from_state(&LocalState::new(on)).with_id(&Self::id(display, field)),
+            set.map(move |on: bool| (target.clone(), on)),
         )
     }
 
@@ -880,10 +1104,11 @@ impl DisplayModel {
         value: f64,
         set: ActionRef<SettingsEffect, (String, f64)>,
     ) -> Slider {
-        let display = display.to_owned();
-        self.cx.bind(
-            Slider::from_state(&LocalState::new(value)).with_id(&Self::id(&display, field)),
-            set.map(move |value: f64| (display.clone(), value)),
+        let target = display.to_owned();
+        self.bind_output(
+            display,
+            Slider::from_state(&LocalState::new(value)).with_id(&Self::id(display, field)),
+            set.map(move |value: f64| (target.clone(), value)),
         )
     }
 
@@ -896,12 +1121,13 @@ impl DisplayModel {
         current: &str,
         set: ActionRef<SettingsEffect, (String, String)>,
     ) -> Dropdown {
-        let display = display.to_owned();
-        self.cx.bind(
+        let target = display.to_owned();
+        self.bind_output(
+            display,
             Dropdown::from_state(choices, &LocalState::new(current.to_owned()))
-                .with_id(&Self::id(&display, field))
+                .with_id(&Self::id(display, field))
                 .with_placeholder(current),
-            set.map(move |choice: String| (display.clone(), choice)),
+            set.map(move |choice: String| (target.clone(), choice)),
         )
     }
 
@@ -911,8 +1137,14 @@ impl DisplayModel {
         reason = "one arm per effect; the staged ones share `stage`"
     )]
     fn apply(&mut self, effect: &DisplayEffect) -> Result<String, String> {
+        if effect == &DisplayEffect::InspectDisplayConfiguration {
+            return Err("Display inspection is read-only.".into());
+        }
         self.changed = true;
         let reported = match effect {
+            DisplayEffect::InspectDisplayConfiguration => {
+                Err("Display inspection is read-only.".into())
+            }
             DisplayEffect::SetBrightness { brightness } => self.set_brightness(*brightness),
             DisplayEffect::SetAutomaticBrightness { on } => {
                 if *on && !self.ambient_sensor_available {
@@ -1072,7 +1304,7 @@ impl DisplayModel {
                                 .color_profile_labels
                                 .iter()
                                 .find_map(|(id, label)| {
-                                    (*profile == format!("{label} · {id}") || profile == id)
+                                    (*profile == format!("{label} ({id})") || profile == id)
                                         .then(|| id.clone())
                                 })
                                 .ok_or_else(|| format!("`{profile}` is not a colour profile"))?,
@@ -1349,12 +1581,12 @@ impl DisplayModel {
             .filter(|display| display.movable)
             .filter_map(|display| {
                 let connector = display.connector.clone();
-                self.cx
-                    .binding(
-                        effect(DisplayEffect::MOVE_DISPLAY)
-                            .map(move |(x, y): (i32, i32)| (connector.clone(), x, y)),
-                    )
-                    .map(|binding| (display.connector.clone(), binding))
+                self.output_binding(
+                    &display.connector,
+                    effect(DisplayEffect::MOVE_DISPLAY)
+                        .map(move |(x, y): (i32, i32)| (connector.clone(), x, y)),
+                )
+                .map(|binding| (display.connector.clone(), binding))
             })
             .collect();
         let mut out_rows: Vec<El> = vec![
@@ -1366,16 +1598,13 @@ impl DisplayModel {
             caption(&crate::i18n::t("display-arrangement-hint")),
             setting_row(
                 &crate::i18n::t("display-identify-row"),
-                Box::new(
-                    self.cx.bind_invocation(
-                        Button::new(
-                            "settings.display.identify",
-                            &crate::i18n::t("display-identify"),
-                        )
-                        .content_sized(),
-                        DisplayEffect::IdentifyDisplays,
+                Box::new(self.cx.bind_invocation(
+                    Button::new(
+                        "settings.display.identify",
+                        &crate::i18n::t("display-identify"),
                     ),
-                ),
+                    DisplayEffect::IdentifyDisplays,
+                )),
             ),
         ];
         // One honest line about the idle ports rather than a row each.
@@ -1596,25 +1825,8 @@ impl DisplayModel {
             .iter()
             .map(|(label, _)| (*label).into())
             .collect();
-        let position_choices: Vec<String> = std::iter::once("Automatic".into())
-            .chain(
-                connected
-                    .iter()
-                    .filter(|candidate| candidate.connector != output.connector)
-                    .flat_map(|candidate| {
-                        ["Left", "Right", "Above", "Below"]
-                            .map(|side| format!("{side} of {}", candidate.label))
-                    }),
-            )
-            .collect();
-        let mirror_choices: Vec<String> = std::iter::once("Extend workspace".into())
-            .chain(
-                connected
-                    .iter()
-                    .filter(|candidate| candidate.connector != output.connector)
-                    .map(|candidate| format!("Mirror {}", candidate.label)),
-            )
-            .collect();
+        let position_choices = self.relative_choices(output, false);
+        let mirror_choices = self.relative_choices(output, true);
         let mirror_placeholder = config
             .mirror_of
             .as_ref()
@@ -1642,7 +1854,8 @@ impl DisplayModel {
                 &t("display-primary"),
                 Box::new({
                     let display = output.connector.clone();
-                    self.cx.bind(
+                    self.bind_output(
+                        &output.connector,
                         Toggle::from_state(&LocalState::new(config.primary))
                             .with_id(&Self::id(&output.connector, "primary")),
                         effect(DisplayEffect::SET_PRIMARY_DISPLAY)
@@ -1801,7 +2014,7 @@ impl DisplayModel {
                 output
                     .color_profile_labels
                     .get(id)
-                    .map(|label| format!("{label} · {id}"))
+                    .map(|label| format!("{label} ({id})"))
             }));
             let placeholder = config
                 .color_profile
@@ -1810,7 +2023,7 @@ impl DisplayModel {
                     output
                         .color_profile_labels
                         .get(id)
-                        .map(|label| format!("{label} · {id}"))
+                        .map(|label| format!("{label} ({id})"))
                 })
                 .unwrap_or_else(|| "System default".into());
             out_rows.push(choice_row(
@@ -1851,14 +2064,14 @@ impl DisplayModel {
                         setting_row(
                             &t("display-keep-ok"),
                             Box::new(self.cx.bind_invocation(
-                                Button::new("settings.display.keep", &keep).content_sized(),
+                                Button::new("settings.display.keep", &keep),
                                 DisplayEffect::KeepDisplayChanges,
                             )),
                         ),
                         setting_row(
                             &t("display-keep-wrong"),
                             Box::new(self.cx.bind_invocation(
-                                Button::new("settings.display.revert", &revert).content_sized(),
+                                Button::new("settings.display.revert", &revert),
                                 DisplayEffect::RevertDisplayChanges,
                             )),
                         ),
@@ -1887,7 +2100,7 @@ impl DisplayModel {
                     content.push(setting_row(
                         &t("display-retry"),
                         Box::new(self.cx.bind_invocation(
-                            Button::new("settings.display.apply", &try_again).content_sized(),
+                            Button::new("settings.display.apply", &try_again),
                             DisplayEffect::ApplyDisplayChanges,
                         )),
                     ));
@@ -1903,7 +2116,7 @@ impl DisplayModel {
                         setting_row(
                             &t("display-apply-row"),
                             Box::new(self.cx.bind_invocation(
-                                Button::new("settings.display.apply", &apply).content_sized(),
+                                Button::new("settings.display.apply", &apply),
                                 DisplayEffect::ApplyDisplayChanges,
                             )),
                         ),
@@ -2103,6 +2316,155 @@ mod tests {
     use super::*;
     use crate::dispatcher::testing::RecordingDispatcher;
 
+    /// The compositor's exact output is the shared control and automation target.
+    #[test]
+    fn connected_display_controls_publish_their_parameter_actions() {
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new()
+            .expect("settings opens headlessly");
+        app.settle();
+        let open = crate::effects::open_pane_address(crate::categories::Category::Displays);
+        app.call_on(&open.resource, &open.action, serde_json::json!({}))
+            .expect("Displays opens through its declared operation");
+        app.settle();
+        let surface = app.agent_surface();
+        let rows = surface.as_array().expect("published actions");
+        for (action, field) in [
+            ("set-display-mode", "mode"),
+            ("set-output-scale", "scale"),
+            ("rotate-display", "transform"),
+            ("use-display", "enabled"),
+            ("set-primary-display", "primary"),
+            ("place-display", "position"),
+            ("mirror-display", "mirror"),
+        ] {
+            assert!(
+                rows.iter()
+                    .any(|row| row["resource"] == "settings.display-output:eDP-1"
+                        && row["action"] == action),
+                "{action} is published on the connected display: {surface}"
+            );
+            let bindings = app
+                .surface::<SettingsApp, _>(|settings| {
+                    ui::widget::controls::control_action_bindings(&*settings)
+                })
+                .expect("mounted Settings");
+            assert!(bindings.iter().any(|binding| matches!(&binding.kind,
+                ui::widget::ControlBindingKind::Action(address)
+                    if address.resource.as_str() == "settings.display-output:eDP-1" && address.action == action)
+                && binding.control_id == format!("display.output.eDP-1.{field}")),
+                "{field} shares the published display operation: {bindings:#?}");
+        }
+        assert!(app.harness().component_contract_violations().is_empty());
+    }
+
+    /// Only the asked value is caller-controlled; the row owns the output identity.
+    #[test]
+    fn display_inspection_and_staging_share_the_production_door() {
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new()
+            .expect("settings opens headlessly");
+        app.settle();
+        let before = app
+            .call("inspect-display-configuration", serde_json::json!({}))
+            .expect("display observation is declared")
+            .expect("observation returned");
+        assert_eq!(before["has_staged_changes"], false);
+        let mode = before["observed_outputs"][0]["supported_modes"][0].clone();
+        // Read the declared choices instead of inventing a refresh-rate spelling.
+        let surface = app.agent_surface();
+        let row = surface
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| {
+                row["resource"] == "settings.display-output:eDP-1"
+                    && row["action"] == "set-display-mode"
+            })
+            .expect("the connected output publishes mode selection");
+        let choice = row["params"][0]["choices"][0]
+            .as_str()
+            .expect("actual mode choice");
+        app.call_on(
+            "settings.display-output:eDP-1",
+            "set-display-mode",
+            serde_json::json!({"mode":choice}),
+        )
+        .expect("the bound row stages its own output");
+        app.call_on(
+            "settings.display-output:eDP-1",
+            "set-output-scale",
+            serde_json::json!({"scale":"200%"}),
+        )
+        .expect("a real scale change stages through the same output resource");
+        app.settle();
+        let staged = app
+            .call("inspect-display-configuration", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(staged["has_staged_changes"], true);
+        assert_eq!(
+            staged["staged_configuration"]["outputs"]["eDP-1"]["scale"],
+            2.0
+        );
+        assert_eq!(
+            staged["staged_configuration"]["outputs"]["eDP-1"]["mode"],
+            mode
+        );
+        assert_eq!(staged["observed_outputs"], before["observed_outputs"]);
+        assert_eq!(staged["saved_configuration"], before["saved_configuration"]);
+        assert!(
+            app.call_on(
+                "settings.display-output:eDP-1",
+                "set-display-mode",
+                serde_json::json!({"mode":choice,"display":"another-output"})
+            )
+            .is_err(),
+            "a caller cannot replace the row's output identity"
+        );
+        assert!(
+            app.call_on(
+                "settings.display-output:eDP-1",
+                "set-display-mode",
+                serde_json::json!({"mode":"unsupported refresh rate"})
+            )
+            .is_err(),
+            "unsupported modes are rejected by the published contract"
+        );
+        let after = app
+            .call("inspect-display-configuration", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after, staged,
+            "inspection and refused invocations cannot edit display state"
+        );
+    }
+
+    #[test]
+    fn display_observation_is_available_to_viewers_without_staging_rights() {
+        let mut app =
+            ui::framework::testing::TestApp::<crate::SettingsShell>::with_role(ui::Role::Viewer)
+                .expect("read-only Settings opens");
+        app.settle();
+        let before = app
+            .call("inspect-display-configuration", serde_json::json!({}))
+            .expect("read-only observer is available")
+            .expect("observation returned");
+        assert!(
+            app.call_on(
+                "settings.display-output:eDP-1",
+                "set-output-scale",
+                serde_json::json!({"scale":"200%"})
+            )
+            .is_err(),
+            "inspection does not grant device configuration rights"
+        );
+        let after = app
+            .call("inspect-display-configuration", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(before, after);
+    }
+
     fn model(outputs: Vec<DisplayOutput>) -> DisplayModel {
         let profile = tempfile::tempdir().unwrap().keep();
         DisplayModel::detached(PaneCx::in_file(profile.join("settings.json"))).with_outputs(outputs)
@@ -2282,7 +2644,10 @@ mod tests {
                 color_profiles: vec![],
                 monitor: None,
             };
-            assert_eq!(snapshot_label(&first, false), "HDMI-A-1 · pci:0000:01:00.0");
+            assert_eq!(
+                snapshot_label(&first, false),
+                "HDMI-A-1 on pci:0000:01:00.0"
+            );
             let named = OutputDescriptor {
                 monitor: Some(MonitorIdentity {
                     make: "Dell".into(),
@@ -2293,12 +2658,12 @@ mod tests {
             };
             assert_eq!(
                 snapshot_label(&named, false),
-                "Dell U2720Q · HDMI-A-1 · pci:0000:01:00.0",
+                "Dell U2720Q on HDMI-A-1 on pci:0000:01:00.0",
                 "a monitor is named by its EDID and still told apart by port"
             );
             assert_eq!(
                 snapshot_label(&second, false),
-                "HDMI-A-1 · pci:0000:03:00.0"
+                "HDMI-A-1 on pci:0000:03:00.0"
             );
 
             let display = DisplayOutput {
@@ -2321,12 +2686,12 @@ mod tests {
             let second = "pci:0000:03:00.0/HDMI-A-1";
             let mut pane = model(vec![
                 DisplayOutput {
-                    label: "HDMI-A-1 · pci:0000:01:00.0".into(),
+                    label: "HDMI-A-1 on pci:0000:01:00.0".into(),
                     connector: first.into(),
                     ..classify_connector("card0-HDMI-A-1", "connected")
                 },
                 DisplayOutput {
-                    label: "HDMI-A-1 · pci:0000:03:00.0".into(),
+                    label: "HDMI-A-1 on pci:0000:03:00.0".into(),
                     connector: second.into(),
                     ..classify_connector("card1-HDMI-A-1", "connected")
                 },
@@ -2377,8 +2742,8 @@ mod tests {
         };
         let (mut pane, rec) = recording(vec![
             display_with_modes("eDP-1", "Built-in display", true, Vec::new()),
-            display_with_modes("DP-2", "Dell U2720Q · DP-2", false, Vec::new()),
-            display_with_modes("DP-3", "LG 27GL850 · DP-3", false, Vec::new()),
+            display_with_modes("DP-2", "Dell U2720Q on DP-2", false, Vec::new()),
+            display_with_modes("DP-3", "LG 27GL850 on DP-3", false, Vec::new()),
         ]);
         pane.output_brightness =
             output_brightness_from(&pane.outputs, &[level("eDP-1", 0.5), level("DP-2", 0.3)]);

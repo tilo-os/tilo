@@ -45,8 +45,20 @@ impl ChangeKind {
             ChangeKind::Modified => "M",
             ChangeKind::Deleted => "D",
             ChangeKind::Renamed => "R",
-            ChangeKind::Untracked => "?",
-            ChangeKind::Conflicted => "!",
+            ChangeKind::Untracked => "U",
+            ChangeKind::Conflicted => "C",
+        }
+    }
+
+    /// What the badge stands for, in words (for assistive technology).
+    pub fn label(self) -> &'static str {
+        match self {
+            ChangeKind::Added => "added",
+            ChangeKind::Modified => "modified",
+            ChangeKind::Deleted => "deleted",
+            ChangeKind::Renamed => "renamed",
+            ChangeKind::Untracked => "untracked",
+            ChangeKind::Conflicted => "conflicted",
         }
     }
 }

@@ -48,6 +48,7 @@ pub mod main_panel;
 pub mod markdown;
 pub mod metadata;
 pub mod model;
+pub mod note_header;
 pub mod notebook;
 pub mod resource;
 pub use ui::num;
@@ -76,3 +77,5 @@ pub mod local_view;
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::framework::definition::<NotesShell>()
 }
+
+mod columns;

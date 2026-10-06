@@ -59,7 +59,13 @@ impl ChatPermissions {
     /// can read the room can hydrate the room's verified shared bytes.
     pub fn can_embed(&self, blob: &str) -> bool {
         let valid_hash = blob.len() == 64 && blob.bytes().all(|byte| byte.is_ascii_hexdigit());
-        let valid_demo = matches!(blob, "tilo-demo://call-grid" | "tilo-demo://shared-shot");
+        let valid_demo = matches!(
+            blob,
+            crate::images::DEMO_CALL_GRID
+                | crate::images::DEMO_SHARED_SHOT
+                | crate::images::DEMO_NOTES
+                | crate::images::DEMO_CLIP
+        );
         (valid_hash || valid_demo) && self.ctx.check(&PermissionScope::workspace(Verb::Read))
     }
 
@@ -135,5 +141,16 @@ mod tests {
         let view_ok = p.ctx.check(&PermissionScope::workspace(Verb::Read));
         assert!(view_ok, "a member can read the workspace");
         assert!(!p.can_participate(), "but cannot write to it");
+    }
+
+    #[test]
+    fn the_no_access_shot_is_a_reader_the_workspace_granted_no_files() {
+        let ctx = crate::app::ChatApp::shot_permission("no-access").expect("staged context");
+        let p = ChatPermissions::from_context(ctx);
+        assert!(
+            !p.can_embed(crate::images::DEMO_CLIP),
+            "attachments stay closed"
+        );
+        assert!(crate::app::ChatApp::shot_permission("call").is_none());
     }
 }

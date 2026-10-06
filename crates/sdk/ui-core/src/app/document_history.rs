@@ -2,10 +2,9 @@
 
 use super::App;
 use crate::history_source::HistoryComparison;
+use crate::search::request::SEARCH_OPERATION;
 use crate::standalone_history::{HistoryError, HistoryReadContext, HistoryTarget};
-use crate::standalone_history_host::{
-    HISTORY_OPERATION, HistoryCommand, SEARCH_OPERATION, StandaloneHistoryHost,
-};
+use crate::standalone_history_host::{HISTORY_OPERATION, HistoryCommand, StandaloneHistoryHost};
 use crate::widget::{HistoryEntry, HistoryEntryId, Widget};
 
 #[derive(Clone, Debug)]
@@ -184,8 +183,13 @@ impl App {
         history_handled
     }
 
-    pub(super) fn refresh_history_controls(&mut self) {
-        let allowed = self
+    /// Refresh the window's own History controls against the History door,
+    /// returning the door's addresses: a History control in the app's tree
+    /// (its header row) is bound to the same door.
+    pub(super) fn refresh_history_controls(
+        &mut self,
+    ) -> std::collections::HashSet<tilo_actions::ActionAddress> {
+        let allowed: std::collections::HashSet<_> = self
             .history_local_resources()
             .into_iter()
             .flat_map(|resource| {
@@ -200,6 +204,10 @@ impl App {
         if let Some(pane) = self.document_history.pane_mut() {
             crate::widget::controls::refresh_control_action_availability(pane, &allowed);
         }
+        allowed
+            .into_iter()
+            .filter(|address| address.resource == crate::standalone_history_host::HISTORY_RESOURCE)
+            .collect()
     }
 
     pub(super) fn history_local_resources(&mut self) -> Vec<tilo_actions::Resource> {
@@ -207,7 +215,7 @@ impl App {
             let mut resources = self.close_admission.resources();
             resources.extend(self.framework_history_resource());
             if self.document_history.has_search() {
-                resources.push(crate::standalone_history_host::search_resource());
+                resources.push(crate::search::search_resource());
             }
             return resources;
         }
@@ -269,9 +277,9 @@ impl App {
             if !self.document_history.has_search() {
                 return Err("Search host is unavailable".into());
             }
-            serde_json::from_slice::<()>(&encoded.payload)
+            let request = crate::search::SearchRequest::decode(&encoded.payload)
                 .map_err(|_| "Invalid Search operation")?;
-            self.open_action_palette();
+            self.open_search(request);
             return Ok(());
         }
         if encoded.type_id == HISTORY_OPERATION && !self.history_chrome_enabled {
@@ -520,6 +528,10 @@ impl App {
                 );
             }
             return;
+        }
+        if self.history_chrome_enabled {
+            self.document_history
+                .place_in_app_header(self.root_widget.as_mut());
         }
         let app = self.root_widget.build_layout(
             &mut self.layout.taffy,
@@ -883,26 +895,17 @@ impl App {
     /// A registered framework History serves the same History door as the
     /// standalone one, without selecting a change: it has no session rows.
     fn framework_history_resource(&self) -> Option<tilo_actions::Resource> {
-        let history = self.history.as_ref()?;
-        Some(crate::standalone_history_host::history_resource(
-            true,
-            history.is_open(),
-        ))
+        Some(self.history.as_ref()?.door_resource())
     }
 
     fn invoke_framework_history(
         &mut self,
         encoded: &tilo_actions::EncodedAction,
     ) -> Result<(), String> {
-        let history = self.history.as_mut().ok_or("History is unavailable")?;
-        match serde_json::from_slice(&encoded.payload) {
-            Ok(HistoryCommand::Open) if history.request_open() => {}
-            Ok(HistoryCommand::OpenAt { entry })
-                if crate::standalone_history_host::decode_entry(&entry)
-                    .is_ok_and(|entry| history.request_open_at(entry)) => {}
-            Ok(HistoryCommand::Hide) => history.request_close(),
-            _ => return Err("Unsupported History operation".into()),
-        }
+        self.history
+            .as_mut()
+            .ok_or("History is unavailable")?
+            .invoke_door(encoded)?;
         self.needs_sync = true;
         self.layout.layout_dirty = true;
         Ok(())
