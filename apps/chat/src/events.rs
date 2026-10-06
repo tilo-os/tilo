@@ -3036,8 +3036,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn agent_task_status_opens_task_center_by_keyboard_pointer_and_accessibility() {
+    fn agent_task_control_app() -> (ChatApp, AutoCommit) {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
@@ -3055,6 +3054,12 @@ mod tests {
             &mut ui::widget::Edits::lend(&mut doc),
         );
         app.poll_agent_tasks();
+        (app, doc)
+    }
+
+    #[test]
+    fn agent_task_status_opens_task_center_by_keyboard_pointer_and_accessibility() {
+        let (mut app, mut doc) = agent_task_control_app();
         app.perms = crate::permissions::ChatPermissions::from_context(
             ui::permissions::PermissionContext::from_capabilities(
                 ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), model::ME),
