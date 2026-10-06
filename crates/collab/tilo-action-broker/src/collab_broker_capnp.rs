@@ -6270,7 +6270,10 @@ impl CapnpBrokerState {
             .ok_or("native context workspace is unavailable")?;
         let mut agents = workspace.agent_members_at(now);
         agents.sort_by(|left, right| left.0.cmp(&right.0));
-        let mut collaborators = Vec::with_capacity(agents.len().saturating_add(1));
+        let mut people = workspace.roster_at(now);
+        people.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut collaborators =
+            Vec::with_capacity(agents.len().saturating_add(people.len()).saturating_add(1));
         if admitted.agent_id.is_none() {
             collaborators.push(ui::collaboration::Collaborator {
                 id: Self::participant_id(admitted),
@@ -6281,6 +6284,25 @@ impl CapnpBrokerState {
                 colour: None,
                 is_agent: false,
                 is_self: true,
+            });
+        }
+        for (person, _) in people {
+            if admitted.agent_id.is_none() && person == admitted.principal_id {
+                continue;
+            }
+            // Presence may supply a label, but only owner-backed membership
+            // supplies the identity. An offline member remains a member.
+            let name = workspace
+                .collaborators
+                .iter()
+                .find(|row| row.id == person)
+                .map_or_else(|| person.clone(), |row| row.name.clone());
+            collaborators.push(ui::collaboration::Collaborator {
+                id: person,
+                name,
+                colour: None,
+                is_agent: false,
+                is_self: false,
             });
         }
         for (agent, _) in agents {
@@ -13793,6 +13815,12 @@ pub mod tests {
             crate::test_support::Workspace::new(crate::test_support::WorkspaceId(46), "Roster");
         workspace.owner = Some(person.clone());
         let room = workspace.room.to_string();
+        let other_person = "other-person";
+        let person_membership = workspace.grant_capability(CapOverride::membership(
+            Subject::person(other_person),
+            room.clone(),
+            Verb::Read,
+        ));
         let collision = workspace.grant_capability(CapOverride::membership(
             Subject::agent(&person),
             room.clone(),
@@ -13821,6 +13849,11 @@ pub mod tests {
         let roster = state.native_membership_roster(&route, &admitted).unwrap();
         assert_eq!(roster.iter().filter(|row| row.is_self).count(), 1);
         assert!(roster.iter().any(|row| row.id == person && !row.is_agent));
+        assert!(
+            roster
+                .iter()
+                .any(|row| { row.id == other_person && !row.is_agent && !row.is_self })
+        );
         assert!(
             roster
                 .iter()
@@ -13877,6 +13910,7 @@ pub mod tests {
         assert!(collaborators[0].is_agent);
         assert!(!collaborators[0].is_self);
         assert!(membership.write().workspaces[0].revoke_capability(&collision));
+        assert!(membership.write().workspaces[0].revoke_capability(&person_membership));
         state.refresh_workspace_context_services().unwrap();
         let ContextEnvelope::Snapshot { collaborators, .. } = stream.try_recv().unwrap() else {
             panic!("membership refresh must be a complete snapshot");
@@ -13886,6 +13920,7 @@ pub mod tests {
                 .iter()
                 .all(|row| row.id != format!("agent:{person}"))
         );
+        assert!(collaborators.iter().all(|row| row.id != other_person));
         assert!(
             collaborators
                 .iter()
