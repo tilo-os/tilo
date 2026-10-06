@@ -109,6 +109,9 @@ pub fn poll_offer(
     resolve_deadline: Instant,
     pages_remaining: u16,
 ) -> AgentMessageOfferPoll {
+    if crate::time::now() >= resolve_deadline || pages_remaining == 0 {
+        return AgentMessageOfferPoll::Failed;
+    }
     if let AgentMessageSubmission::Confirm {
         target,
         revision,
@@ -120,11 +123,7 @@ pub fn poll_offer(
             RemoteCall::Refused(_) => return AgentMessageOfferPoll::Failed,
             RemoteCall::Done(page) => page,
         };
-        if page.stale_cursor
-            || page.budget_exhausted
-            || page.revision != *revision
-            || unique_target(&page, agent).as_ref() != Some(target)
-        {
+        if !is_exact_confirmation(&page, agent, target, revision) {
             return AgentMessageOfferPoll::Failed;
         }
         return AgentMessageOfferPoll::Available(AgentMessageOffer {
@@ -162,7 +161,7 @@ pub fn begin_from_offer(
     AgentMessageSubmission::Confirm {
         target: offer.target.clone(),
         revision: offer.revision.clone(),
-        call: actions.catalogue(CatalogueQuery::resolve(
+        call: actions.catalogue_page(CatalogueQuery::resolve(
             &offer.target,
             offer.revision.clone(),
         )),
@@ -573,7 +572,7 @@ fn confirm_unique(
     let Some((target, revision)) = state.matches.pop() else {
         return AgentMessagePoll::Failed;
     };
-    let call = actions.catalogue(CatalogueQuery::resolve(&target, revision.clone()));
+    let call = actions.catalogue_page(CatalogueQuery::resolve(&target, revision.clone()));
     AgentMessagePoll::Advance {
         submission: AgentMessageSubmission::Confirm {
             target,
@@ -598,11 +597,7 @@ fn poll_confirmation(
         RemoteCall::Refused(_) => return AgentMessagePoll::Failed,
         RemoteCall::Done(page) => page,
     };
-    if page.stale_cursor
-        || page.budget_exhausted
-        || page.revision != revision
-        || unique_target(&page, agent).as_ref() != Some(target)
-    {
+    if !is_exact_confirmation(&page, agent, target, revision) {
         return AgentMessagePoll::Failed;
     }
     AgentMessagePoll::Advance {
@@ -635,11 +630,32 @@ fn unique_target(page: &CataloguePage, agent: &str) -> Option<RemoteActionTarget
     matching.next().is_none().then_some(target)
 }
 
+fn is_exact_confirmation(
+    page: &CataloguePage,
+    agent: &str,
+    target: &RemoteActionTarget,
+    revision: &str,
+) -> bool {
+    !revision.is_empty()
+        && page.revision == revision
+        && page.exhausted
+        && page.next_cursor.is_empty()
+        && !page.stale_cursor
+        && !page.budget_exhausted
+        && page.rows.len() == 1
+        && unique_target(page, agent).as_ref() == Some(target)
+}
+
 fn is_message_row(row: &tilo_actions::remote::CatalogueRow, agent: &str) -> bool {
     let key = format!("chat.person:{agent}");
     row.app_id == "so.tilo.chat"
+        && row.resource.id == key
+        && row.resource.kind == "chat.agent"
         && row.action.as_ref().is_some_and(|action| {
-            action.address.action == "message"
+            action.address.resource == key
+                && action.address.action == "message"
+                && action.resource_kind == "chat.agent"
+                && action.kind == tilo_actions::OperationKind::Document
                 && action
                     .semantic_identity
                     .as_ref()
@@ -648,12 +664,27 @@ fn is_message_row(row: &tilo_actions::remote::CatalogueRow, agent: &str) -> bool
 }
 
 fn ingest_page(state: &mut AgentMessageRows, page: CataloguePage, agent: &str) -> Result<(), ()> {
-    if page.stale_cursor
+    let Some(provider) = state.provider.as_deref() else {
+        return Err(());
+    };
+    let Some(parent) = state.parent.as_deref() else {
+        return Err(());
+    };
+    if page.revision.is_empty()
+        || page.stale_cursor
         || page.budget_exhausted
+        || (page.next_cursor.is_empty() != page.exhausted)
         || state
             .revision
             .as_ref()
             .is_some_and(|expected| expected != &page.revision)
+    {
+        return Err(());
+    }
+    if page
+        .rows
+        .iter()
+        .any(|row| row.provider != provider || row.parent_resource != parent)
     {
         return Err(());
     }
@@ -725,6 +756,31 @@ mod tests {
             has_children: false,
             visibility: None,
         }
+    }
+
+    fn confirmed_page(agent: &str, revision: &str) -> CataloguePage {
+        CataloguePage {
+            revision: revision.into(),
+            rows: vec![message_row(agent)],
+            exhausted: true,
+            ..CataloguePage::default()
+        }
+    }
+
+    fn offer_from_page(page: CataloguePage, target: RemoteActionTarget) -> AgentMessageOfferPoll {
+        let revision = page.revision.clone();
+        poll_offer(
+            &RemoteActions::session(),
+            "room-a",
+            "scribe",
+            &AgentMessageSubmission::Confirm {
+                target,
+                revision,
+                call: LocalState::new(RemoteCall::Done(page)),
+            },
+            Instant::now().checked_add(RESOLVE_WINDOW).unwrap(),
+            MAX_PAGES,
+        )
     }
 
     #[test]
@@ -843,5 +899,94 @@ mod tests {
             ),
             AgentMessageOfferPoll::Failed
         ));
+    }
+
+    #[test]
+    fn offer_confirmation_fails_closed_on_partial_or_mismatched_catalogue_truth() {
+        let valid = confirmed_page("scribe", "chat-r9");
+        let target = valid.rows[0].target().expect("message target");
+
+        let mut cases = Vec::new();
+        let mut page = valid.clone();
+        page.revision.clear();
+        cases.push(page);
+        let mut page = valid.clone();
+        page.exhausted = false;
+        cases.push(page);
+        let mut page = valid.clone();
+        page.next_cursor = vec![1];
+        cases.push(page);
+        let mut page = valid.clone();
+        page.stale_cursor = true;
+        cases.push(page);
+        let mut page = valid.clone();
+        page.budget_exhausted = true;
+        cases.push(page);
+        let mut page = valid.clone();
+        page.rows[0].provider = "other-provider".into();
+        cases.push(page);
+        let mut page = valid.clone();
+        page.rows[0].resource.id = "chat.person:other".into();
+        cases.push(page);
+        let mut page = valid.clone();
+        page.rows[0]
+            .action
+            .as_mut()
+            .expect("message action")
+            .address
+            .resource = "chat.person:other".into();
+        cases.push(page);
+        let mut page = valid.clone();
+        page.rows[0].action.as_mut().expect("message action").kind = OperationKind::View;
+        cases.push(page);
+
+        for page in cases {
+            assert!(matches!(
+                offer_from_page(page, target.clone()),
+                AgentMessageOfferPoll::Failed
+            ));
+        }
+    }
+
+    #[test]
+    fn pending_offer_expires_instead_of_remaining_a_writable_ghost() {
+        assert!(matches!(
+            poll_offer(
+                &RemoteActions::session(),
+                "room-a",
+                "scribe",
+                &AgentMessageSubmission::Confirm {
+                    target: message_row("scribe").target().expect("message target"),
+                    revision: "chat-r10".into(),
+                    call: LocalState::new(RemoteCall::Pending),
+                },
+                Instant::now(),
+                MAX_PAGES,
+            ),
+            AgentMessageOfferPoll::Failed
+        ));
+    }
+
+    #[test]
+    fn discovery_page_rejects_rows_from_an_unrequested_provider_or_parent() {
+        let state = AgentMessageRows {
+            providers: VecDeque::new(),
+            provider: Some("chat-provider".into()),
+            parents: VecDeque::new(),
+            parent: Some(String::new()),
+            revision: None,
+            cursor: Vec::new(),
+            call: None,
+            matches: Vec::new(),
+            seen_requests: HashSet::new(),
+            seen_resources: HashSet::new(),
+        };
+        let mut wrong_provider = confirmed_page("scribe", "chat-r11");
+        wrong_provider.rows[0].provider = "other-provider".into();
+        assert!(ingest_page(&mut state.clone(), wrong_provider, "scribe").is_err());
+
+        let mut wrong_parent = confirmed_page("scribe", "chat-r11");
+        wrong_parent.rows[0].parent_resource = "chat.channel:other".into();
+        assert!(ingest_page(&mut state.clone(), wrong_parent, "scribe").is_err());
     }
 }
