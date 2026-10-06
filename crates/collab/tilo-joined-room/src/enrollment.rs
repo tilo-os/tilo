@@ -404,6 +404,8 @@ impl NativeWorkspaceOwner {
             publication: Some(publication::StoredPublication::default()),
             agent_sessions: std::collections::BTreeMap::new(),
             agent_session_history_root: None,
+            agent_messages: std::collections::BTreeMap::new(),
+            agent_message_history_root: None,
             workspace_memberships: std::collections::BTreeMap::new(),
             effect_receipts: std::collections::BTreeMap::new(),
             effect_history_root: None,

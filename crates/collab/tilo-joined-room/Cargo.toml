@@ -9,6 +9,8 @@ description = "A device's enrolled replicas of rooms governed by a remote durabl
 [features]
 # Fixtures and internals the desktop session's own owner tests assert on.
 test-support = ["dep:iroh-base"]
+# Explicit real Linux process qualification, never enabled in shipped builds.
+managed-message-test = ["launcher/managed-tree-test"]
 
 [dependencies]
 # Writes the file-backed store: owner-only, crash-safe replacement.
@@ -47,6 +49,10 @@ tracing.workspace = true
 iroh-base = { workspace = true, features = ["key"], optional = true }
 uuid.workspace = true
 workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Closed live kernel/channel proof; never a browser/WASM installation surface.
+launcher = { path = "../../packaging/launcher" }
 
 [dev-dependencies]
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
