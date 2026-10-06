@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use tilo_search::{Document, Matching, Page, SearchIndex};
 use ui::search::FieldWeight;
 
+use crate::shell::certified_action_session::ActionSessionSource;
 use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::i18n::{t, t_args};
 use crate::shell::search::ActionReceipt;
@@ -24,11 +25,9 @@ use crate::shell::search::{
 use crate::shell::collab_broker_capnp::{
     ActionDirectoryRoot, PublishedAction, PublishedInput, PublishedSurface, launchable_provider,
 };
-use crate::shell::remote_actions::BrokerActionHost;
 use tilo_actions::remote::{
-    ActionHost as _, ActionHostError, Caller, CatalogueLimits, CataloguePage, CatalogueQuery,
-    CatalogueRow, Confirmation, InvocationReceipt, InvokeArgument, InvokeRequest, Pending,
-    PendingPoll, RemoteActionTarget,
+    ActionHostError, CatalogueLimits, CataloguePage, CatalogueQuery, CatalogueRow, Confirmation,
+    InvocationReceipt, InvokeArgument, InvokeRequest, Pending, PendingPoll, RemoteActionTarget,
 };
 
 pub const PROVIDER_ID: &str = "app-actions";
@@ -247,9 +246,7 @@ pub fn job_cancel_id(id: u64) -> String {
 
 pub struct LiveAppActionsProvider {
     broker: AppActionBroker,
-    /// Directory browsing and starts go through the session's action host,
-    /// like every other caller's.
-    host: BrokerActionHost,
+    action_sessions: ActionSessionSource,
     directory_pages: RefCell<HashMap<DirectoryCacheKey, CataloguePage>>,
     directory_pending: RefCell<HashMap<DirectoryCacheKey, PendingDirectoryPage>>,
     /// The palette owns at most one needle's directory projection.
@@ -357,11 +354,11 @@ struct AuxiliaryResume {
 /// retained from a closed app names the host's launchable provider, and the
 /// host launches the app before delivering it.
 struct LocalStart {
-    host: BrokerActionHost,
+    action_sessions: ActionSessionSource,
     provider: String,
     room: String,
     address: tilo_actions::ActionAddress,
-    actor: String,
+    expected_person: String,
     confirmation: tilo_actions::ConfirmationPolicy,
     typed_arguments: bool,
     wants_content: bool,
@@ -396,21 +393,25 @@ impl LocalStart {
                 .text("confirmation_phrase")
                 .map(|phrase| Confirmation::Phrase(phrase.to_owned())),
         };
-        self.host.invoke_job(
-            &Caller::local_person(&self.actor).in_room(&self.room),
-            InvokeRequest {
-                on_behalf_of: None,
-                invocation: tilo_actions::InvocationId::new(),
-                target: RemoteActionTarget {
-                    provider: self.provider.clone(),
-                    address: self.address.clone(),
-                },
-                argument,
-                context: None,
-                confirmation,
-                revision: None,
+        let session = match self
+            .action_sessions
+            .open(&self.room, Some(&self.expected_person))
+        {
+            Ok(session) => session,
+            Err(error) => return Pending::ready(Err(ActionHostError::Refused { reason: error })),
+        };
+        session.invoke_job(InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: self.provider.clone(),
+                address: self.address.clone(),
             },
-        )
+            argument,
+            context: None,
+            confirmation,
+            revision: None,
+        })
     }
 }
 
@@ -459,10 +460,9 @@ impl LiveAppActionsProvider {
     }
 
     pub fn new(broker: AppActionBroker) -> Self {
-        let host = BrokerActionHost::new(broker.clone());
         Self {
+            action_sessions: ActionSessionSource::new(broker.clone()),
             broker,
-            host,
             directory_pages: RefCell::new(HashMap::new()),
             directory_pending: RefCell::new(HashMap::new()),
             directory_query: RefCell::new(None),
@@ -482,6 +482,58 @@ impl LiveAppActionsProvider {
             #[cfg(test)]
             directory_query_probe: RefCell::new(None),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_fixture_identity(broker: AppActionBroker) -> Self {
+        let mut provider = Self::new(broker.clone());
+        provider.action_sessions = ActionSessionSource::fixture(broker);
+        provider
+    }
+
+    fn local_start(
+        &self,
+        surface: &PublishedSurface,
+        action: &PublishedAction,
+        expected_person: String,
+    ) -> LocalStart {
+        LocalStart {
+            action_sessions: self.action_sessions.clone(),
+            provider: if surface.live {
+                surface.peer_id.to_string()
+            } else {
+                launchable_provider(surface)
+            },
+            room: surface.route.cluster_id.clone(),
+            address: tilo_actions::ActionAddress::new(&action.resource, &action.action),
+            expected_person,
+            confirmation: action.contract.advertised_confirmation(),
+            typed_arguments: !action.params.is_empty(),
+            wants_content: matches!(
+                action.input,
+                PublishedInput::Text {
+                    wants_content: true,
+                    ..
+                }
+            ),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn begin_published_for_test(
+        &self,
+        surface: &PublishedSurface,
+        action: &PublishedAction,
+        expected_person: String,
+        supplied: &serde_json::Map<String, serde_json::Value>,
+    ) -> Pending<Result<(u64, InvocationReceipt), ActionHostError>> {
+        let args = crate::shell::search::action_api::ActionArgs::bind_json(
+            &Self::action_params(action),
+            supplied,
+        )
+        .expect("published test arguments match the action descriptor");
+        self.local_start(surface, action, expected_person)
+            .begin(&args)
     }
 
     fn surface_scope(ctx: &SearchContext<'_>) -> String {
@@ -1305,11 +1357,13 @@ impl LiveAppActionsProvider {
         };
         #[cfg(test)]
         self.directory_query_probe.replace(Some(query.clone()));
-        let caller = Caller::local_person(actor).in_room(cluster_id);
+        let Ok(session) = self.action_sessions.open(cluster_id, Some(actor)) else {
+            return;
+        };
         self.directory_pending.borrow_mut().insert(
             key,
             PendingDirectoryPage {
-                receiver: self.host.query(&caller, query),
+                receiver: session.query(query),
                 deadline: deadline_after(DIRECTORY_PAGE_REPLY_TIMEOUT),
                 initial_page: cursor.is_empty(),
             },
@@ -1339,15 +1393,14 @@ impl LiveAppActionsProvider {
             .collect::<Vec<_>>();
         for workspace_room in workspace_rooms {
             let room = workspace_room.to_string();
-            let caller = Caller::local_person(chrome.local_user_for_room(&workspace_room))
-                .in_room(room.clone());
-            let mut providers = self.host.query(
-                &caller,
-                CatalogueQuery {
-                    max_results: 0,
-                    ..CatalogueQuery::default()
-                },
-            );
+            let expected = chrome.local_user_for_room(&workspace_room);
+            let Ok(session) = self.action_sessions.open(&room, Some(&expected)) else {
+                continue;
+            };
+            let mut providers = session.query(CatalogueQuery {
+                max_results: 0,
+                ..CatalogueQuery::default()
+            });
             // Listing publishers is answered from memory, never an app.
             let PendingPoll::Ready(Ok(page)) = providers.poll_ready() else {
                 continue;
@@ -1531,7 +1584,7 @@ impl LiveAppActionsProvider {
         let contract = descriptor.contract.clone();
         let mut params = descriptor.params.clone();
         push_confirmation_params(&mut params, &contract.advertised_confirmation());
-        let host = self.host.clone();
+        let action_sessions = self.action_sessions.clone();
         let peer_id = root.peer_id;
         let cluster_id = root.cluster_id.clone();
         let revision = revision.to_string();
@@ -1580,9 +1633,10 @@ impl LiveAppActionsProvider {
                 // The same non-blocking door, confirmation check and
                 // idempotent ledger every other caller uses; the owner
                 // re-resolves the row at `revision` before anything starts.
-                let admission = host.invoke_job(
-                    &Caller::local_person(&actor).in_room(&cluster_id),
-                    InvokeRequest {
+                let admission = action_sessions
+                    .open(&cluster_id, Some(&actor))
+                    .map_err(ActionError::Refused)?
+                    .invoke_job(InvokeRequest {
                         on_behalf_of: None,
                         invocation: tilo_actions::InvocationId::new(),
                         target: RemoteActionTarget {
@@ -1593,8 +1647,7 @@ impl LiveAppActionsProvider {
                         context: None,
                         confirmation,
                         revision: Some(revision.clone()),
-                    },
-                );
+                    });
                 let ticket = directory_start_ticket(
                     admission,
                     Rc::clone(&invalidations),
@@ -1970,6 +2023,17 @@ impl SearchProvider for LiveAppActionsProvider {
                 self.local_action_candidates(&ctx, SearchBudget::PALETTE.max_results)
             {
                 let action = &owned_action;
+                let expected_person = ctx
+                    .chrome
+                    .tree()
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.room.to_string() == surface.route.cluster_id)
+                    .map(|workspace| ctx.chrome.local_user_for_room(&workspace.room));
+                let Some(expected_person) = expected_person else {
+                    continue;
+                };
                 let unavailable_reason = match &action.contract.availability {
                     tilo_actions::Availability::Available => None,
                     tilo_actions::Availability::Unavailable { reason, .. } => Some(reason.clone()),
@@ -1977,26 +2041,7 @@ impl SearchProvider for LiveAppActionsProvider {
                 let score = crate::shell::search::provider_score(rank);
                 let params = Self::action_params(action);
                 let surface_live = surface.live;
-                let start = Rc::new(LocalStart {
-                    host: self.host.clone(),
-                    provider: if surface_live {
-                        surface.peer_id.to_string()
-                    } else {
-                        launchable_provider(&surface)
-                    },
-                    room: surface.route.cluster_id.clone(),
-                    address: tilo_actions::ActionAddress::new(&action.resource, &action.action),
-                    actor: actor.clone(),
-                    confirmation: action.contract.advertised_confirmation(),
-                    typed_arguments: !action.params.is_empty(),
-                    wants_content: matches!(
-                        action.input,
-                        PublishedInput::Text {
-                            wants_content: true,
-                            ..
-                        }
-                    ),
-                });
+                let start = Rc::new(self.local_start(&surface, action, expected_person));
                 // Availability on a retained launchable descriptor is only a
                 // last-known hint. The host launches the app first and lets
                 // the freshly published surface decide; otherwise an app
@@ -2543,7 +2588,7 @@ pub(crate) fn fixture_with_directory_page(
     actor: String,
     page: CataloguePage,
 ) -> Rc<dyn SearchProvider> {
-    let provider = Rc::new(LiveAppActionsProvider::new(broker));
+    let provider = Rc::new(LiveAppActionsProvider::new_with_fixture_identity(broker));
     provider
         .directory_pages
         .borrow_mut()
@@ -2637,7 +2682,7 @@ mod tests {
         let chrome = chrome();
         let broker =
             crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
-        let provider = LiveAppActionsProvider::new(broker.clone());
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
         let doc = AutoCommit::new();
         let actor = chrome.borrow().active_local_user();
         let wanted = provider.resource_kinds().to_vec();
@@ -2694,7 +2739,9 @@ mod tests {
         broker.record_completion_for_test(17, &actor, succeeded(17));
         broker.record_completion_for_test(18, "someone-else", succeeded(18));
         let mut registry = SearchRegistry::new();
-        registry.register(Rc::new(LiveAppActionsProvider::new(broker)));
+        registry.register(Rc::new(LiveAppActionsProvider::new_with_fixture_identity(
+            broker,
+        )));
         let mut doc = AutoCommit::new();
         for (id, visible) in [(17, true), (18, false), (19, false)] {
             let resource = ResourceRef::new(PROVIDER_ID, super::job_status_id(id));
@@ -3033,7 +3080,7 @@ mod tests {
     fn remote_action_pages_never_repeat_and_cursors_are_self_contained() {
         // Phase `remote_actions_page_without_repeats_under_tiny_budgets`.
         {
-            let provider = LiveAppActionsProvider::new(
+            let provider = LiveAppActionsProvider::new_with_fixture_identity(
                 crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
             );
             let chrome = chrome();
@@ -3126,7 +3173,7 @@ mod tests {
         {
             let chrome = chrome();
             let broker = broker_for(&chrome);
-            let provider = LiveAppActionsProvider::new(broker.clone());
+            let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
             let chrome = chrome.borrow();
             let cluster_id = chrome.tree().desktop.workspaces[0].room.to_string();
             let actor = chrome.local_user_for_room(&chrome.tree().desktop.workspaces[0].room);
@@ -3232,7 +3279,7 @@ mod tests {
     fn programmatic_directory_actions_resolve_without_entering_palette_search() {
         let chrome = chrome();
         let broker = broker_for(&chrome);
-        let provider = LiveAppActionsProvider::new(broker.clone());
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
         let state = chrome.borrow();
         let workspace_room = state.tree().desktop.workspaces[0].room;
         let actor = state.local_user_for_room(&workspace_room);
@@ -3643,7 +3690,7 @@ mod tests {
 
     #[test]
     fn a_100001_action_snapshot_reaches_a_unique_tail_without_scanning_the_corpus() {
-        let provider = LiveAppActionsProvider::new(
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(
             crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
         );
         let chrome = chrome();
@@ -3653,7 +3700,10 @@ mod tests {
         let surface = PublishedSurface {
             peer_id: 1,
             app_id: "so.tilo.fixture".into(),
-            route: CrdtRoute::app("so.tilo.fixture", "room"),
+            route: CrdtRoute::app(
+                "so.tilo.fixture",
+                chrome.tree().desktop.workspaces[0].room.to_string(),
+            ),
             actions: Vec::new(),
             live: true,
         };
@@ -3698,11 +3748,15 @@ mod tests {
 
     #[test]
     fn source_backed_cold_query_does_no_action_index_work_before_refresh() {
+        let chrome = chrome();
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
         let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
         broker.replace_published_surfaces_for_test(vec![PublishedSurface {
             peer_id: 1,
             app_id: "so.tilo.fixture".into(),
-            route: CrdtRoute::app("so.tilo.fixture", "room"),
+            route: CrdtRoute::app("so.tilo.fixture", room),
             actions: (0..=4_000)
                 .map(|index| {
                     local_action(
@@ -3717,8 +3771,7 @@ mod tests {
                 .collect(),
             live: true,
         }]);
-        let provider = LiveAppActionsProvider::new(broker);
-        let chrome = chrome();
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker);
         chrome.borrow_mut().search_scope = crate::shell::chrome_state::SearchScope::All;
         let chrome = chrome.borrow();
         let doc = AutoCommit::new();
@@ -3957,7 +4010,7 @@ mod tests {
         {
             let chrome = chrome();
             let broker = broker_for(&chrome);
-            let provider = LiveAppActionsProvider::new(broker.clone());
+            let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
             let cluster_id = chrome.borrow().tree().desktop.workspaces[0]
                 .room
                 .to_string();

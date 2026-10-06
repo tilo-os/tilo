@@ -262,6 +262,14 @@ pub enum ChatAction {
         initials: String,
         color_idx: usize,
     },
+    /// Structural initialization for the native host's creation workspace.
+    SeedWorkspace {
+        workspace: String,
+        workspace_name: String,
+        creator_name: String,
+        creator_initials: String,
+        color_idx: usize,
+    },
 }
 
 /// Longest agent display name recorded beside an agent-authored message.
@@ -338,6 +346,7 @@ pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
         }
         ChatAction::EnsureUser { .. }
         | ChatAction::SeedStarter { .. }
+        | ChatAction::SeedWorkspace { .. }
         | ChatAction::SeedDemo {} => {
             return context;
         }
@@ -393,6 +402,38 @@ fn apply_ensure_rich_draft(doc: &mut Doc, key: &str) -> Result<(), ActionError> 
     Ok(())
 }
 
+fn apply_seed_workspace(
+    doc: &mut Doc,
+    workspace: &str,
+    workspace_name: &str,
+    creator_name: &str,
+    creator_initials: &str,
+    color_idx: usize,
+) -> Result<(), ActionError> {
+    let creator = signed_by()?;
+    if uuid::Uuid::parse_str(workspace).is_err()
+        || workspace_name.trim().is_empty()
+        || workspace_name.len() > 256
+        || creator_name.trim().is_empty()
+        || creator_name.len() > 128
+        || creator_initials.len() > 8
+    {
+        return Err(ActionError::Refused(
+            "workspace initialization is invalid".into(),
+        ));
+    }
+    ChatDoc::seed_workspace(
+        doc,
+        workspace,
+        workspace_name,
+        &creator,
+        creator_name,
+        creator_initials,
+        color_idx,
+    )
+    .map_err(ActionError::Refused)
+}
+
 impl Action for ChatAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         if let ChatAction::EnsureUser {
@@ -441,6 +482,23 @@ impl Action for ChatAction {
             ChatDoc::seed_demo(doc, &author().unwrap_or_else(|| crate::model::ME.into()));
             return Ok(());
         }
+        if let ChatAction::SeedWorkspace {
+            workspace,
+            workspace_name,
+            creator_name,
+            creator_initials,
+            color_idx,
+        } = self
+        {
+            return apply_seed_workspace(
+                doc,
+                workspace,
+                workspace_name,
+                creator_name,
+                creator_initials,
+                *color_idx,
+            );
+        }
         self.apply_message(doc)?;
         self.apply_channel(doc)?;
         Ok(())
@@ -459,6 +517,7 @@ impl Action for ChatAction {
         match self {
             ChatAction::MarkRead { .. } => tilo_actions::ChangeKind::Housekeeping,
             ChatAction::SeedStarter { .. }
+            | ChatAction::SeedWorkspace { .. }
             | ChatAction::SeedDemo {}
             | ChatAction::EnsureUser { .. }
             | ChatAction::NameAgent { .. } => tilo_actions::ChangeKind::External,
@@ -1896,6 +1955,78 @@ mod tests {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_if_empty(&mut doc);
         doc
+    }
+
+    #[test]
+    fn workspace_receipt_seed_is_empty_creator_bound_and_durable() {
+        use automerge::{ReadDoc as _, transaction::Transactable as _};
+
+        let room = "7585df07-168d-4eff-a975-8c86fca6acaf";
+        let action = ChatAction::SeedWorkspace {
+            workspace: room.into(),
+            workspace_name: "Design".into(),
+            creator_name: "Ada".into(),
+            creator_initials: "A".into(),
+            color_idx: 2,
+        };
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, "future_field", "preserved")
+            .unwrap();
+        apply_as(&mut doc, "person:ada", &action).unwrap();
+        assert_eq!(ChatDoc::list_workspaces(&doc)[0].id, room);
+        assert_eq!(ChatDoc::list_users(&doc)[0].id, "person:ada");
+        assert!(ChatDoc::list_channels(&doc).is_empty());
+        assert!(ChatDoc::list_categories(&doc).is_empty());
+        assert_eq!(
+            doc.get(automerge::ROOT, "future_field")
+                .unwrap()
+                .unwrap()
+                .0
+                .as_str(),
+            Some("preserved")
+        );
+        let mut restored = AutoCommit::load(&doc.save()).unwrap();
+        let heads = restored.get_heads();
+        action
+            .apply(&mut AutoCommit::new())
+            .expect_err("no signed creator");
+        let mut invalid = action.clone();
+        if let ChatAction::SeedWorkspace { workspace, .. } = &mut invalid {
+            *workspace = "not-a-room".into();
+        }
+        apply_as(&mut restored, "person:ada", &invalid).expect_err("room is a UUID");
+        assert_eq!(restored.get_heads(), heads);
+        if let ChatAction::SeedWorkspace { workspace, .. } = &mut invalid {
+            *workspace = "65f79c6a-aa2c-46b5-99ab-46fe3df52d92".into();
+        }
+        apply_as(&mut restored, "person:ada", &invalid).expect_err("no room rebinding");
+        assert_eq!(restored.get_heads(), heads);
+        apply_as(&mut restored, "person:another", &action).unwrap();
+        assert_eq!(ChatDoc::list_users(&restored).len(), 1);
+        assert_eq!(ChatDoc::list_users(&restored)[0].id, "person:ada");
+        assert_eq!(ChatDoc::list_workspaces(&restored).len(), 1);
+        assert!(ChatDoc::list_channels(&restored).is_empty());
+    }
+
+    #[test]
+    fn workspace_receipt_seed_accepts_the_hosts_full_name_limit() {
+        let mut action = ChatAction::SeedWorkspace {
+            workspace: "7585df07-168d-4eff-a975-8c86fca6acaf".into(),
+            workspace_name: "x".repeat(257),
+            creator_name: "Ada".into(),
+            creator_initials: "A".into(),
+            color_idx: 2,
+        };
+        let mut doc = AutoCommit::new();
+        let before = doc.get_heads();
+        apply_as(&mut doc, "person:ada", &action).expect_err("host rejects 257 bytes");
+        assert_eq!(doc.get_heads(), before);
+        if let ChatAction::SeedWorkspace { workspace_name, .. } = &mut action {
+            *workspace_name = "x".repeat(256);
+        }
+        apply_as(&mut doc, "person:ada", &action).unwrap();
+        assert_eq!(ChatDoc::list_workspaces(&doc)[0].name.len(), 256);
+        assert!(ChatDoc::list_channels(&doc).is_empty());
     }
 
     fn state(doc: &AutoCommit) -> ChatState {

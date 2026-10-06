@@ -26,9 +26,14 @@ mod durable_local_invocation;
 #[path = "invocation_journal.rs"]
 mod invocation_journal;
 mod invoker;
+#[cfg(test)]
+#[path = "collab_broker_capnp/native_effect_recovery_tests.rs"]
+mod native_effect_recovery_tests;
 mod native_media;
 mod published_invocation;
 mod resolved_invocation;
+#[path = "workspace_memberships.rs"]
+mod workspace_memberships;
 pub use crate::services::LaunchScope;
 pub use committed_document::{
     DocumentBytes, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
@@ -1308,6 +1313,7 @@ struct PendingInvocation {
     peer_id: u64,
     tx: std::sync::mpsc::Sender<InvocationCompletion>,
     update: tilo_actions::InvocationUpdate,
+    prepared_effect: Arc<Mutex<Option<PreparedEffectCommit>>>,
     last_sequence: u64,
     actor: String,
     cancellable: bool,
@@ -1322,6 +1328,11 @@ struct PendingInvocation {
     last_activity: std::time::Instant,
     /// Starts the shorter acknowledgement deadline for cooperative cancel.
     cancellation_requested_at: Option<std::time::Instant>,
+}
+
+struct PreparedEffectCommit {
+    update: tilo_actions::InvocationUpdate,
+    request: tilo_peer_state::owner_commit::OwnerCommitRequest,
 }
 
 /// An opaque certified person admission. Its root/device are never accepted
@@ -1698,6 +1709,15 @@ impl CapnpBrokerState {
         record: &DurableInvocation,
     ) -> Result<(), String> {
         let current = self.current_action_caller(caller)?;
+        if record.prepared_effect.is_some()
+            && record
+                .intent
+                .get("actor")
+                .and_then(serde_json::Value::as_str)
+                != Some(current.broker_actor().id.as_str())
+        {
+            return Err("prepared invocation actor differs from current caller".into());
+        }
         let now = self.checked_policy_time(caller.policy_time.as_ref())?.1 / 1_000_000_000;
         let contract: tilo_actions::ActionContract =
             serde_json::from_value(record.intent.get("contract").cloned().unwrap_or_default())
@@ -1806,6 +1826,7 @@ impl CapnpBrokerState {
             request.peer_id,
             offered,
             InvocationInputs {
+                requested: None,
                 caller: None,
                 execution: None,
                 argument: request.argument.as_deref(),
@@ -2705,6 +2726,8 @@ struct PendingWorker {
 /// as, the one-use confirmation token it presents and its ambient context.
 /// Admission checks every field; none of them grants authority by itself.
 struct InvocationInputs<'a> {
+    /// The caller's lifecycle identity, independent of execution authority.
+    requested: Option<tilo_actions::InvocationId>,
     /// Who the invocation is admitted for, when the door knows them as a
     /// caller: kept with the running invocation, so an edit its effect
     /// submits is admitted for them too.
@@ -2801,6 +2824,8 @@ pub struct CapnpBrokerState {
     stable_invocation_subscribers: Mutex<std::collections::HashSet<u64>>,
     /// The broker's own desktop command surface (not an app connection).
     desktop_command_peer: Mutex<Option<u64>>,
+    /// Broker-owned governed membership surface per native room.
+    workspace_membership_peers: Mutex<HashMap<String, u64>>,
     completed_invocations: Mutex<HashMap<u64, (InvocationOwner, tilo_actions::InvocationUpdate)>>,
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
@@ -2994,6 +3019,7 @@ impl CapnpBrokerState {
         clear!(self.action_catalogue_subscribers);
         clear!(self.pending_invocations);
         clear!(self.stable_invocation_subscribers);
+        clear!(self.workspace_membership_peers);
         clear!(self.confirmation_grants);
         clear!(self.cancellation_requests);
         clear!(self.task_subscribers);
@@ -3342,24 +3368,83 @@ impl CapnpBrokerState {
         }
         let status = tilo_actions::EffectReceiptStatus::from_terminal(update)
             .ok_or_else(|| capnp::Error::failed("nonterminal effect receipt".into()))?;
-        let receipt = crate::policy::redacted_effect_receipt(
-            update.invocation(),
-            &pending.actor,
-            pending.context.clone(),
-            status,
-        );
-        self.commit_owner_request(
-            tilo_peer_state::owner_commit::OwnerCommitRequest {
-                room: pending.cluster_id.clone(),
-                operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
-                    invocation: update.invocation().0,
-                    redacted: serde_json::to_vec(&receipt)
-                        .map_err(|e| capnp::Error::failed(e.to_string()))?,
-                },
-            },
-            None,
-        )
-        .await
+        let request = {
+            let mut prepared = pending.prepared_effect.lock().map_err(|_| {
+                capnp::Error::failed("effect receipt preparation unavailable".into())
+            })?;
+            if let Some(previous) = prepared.as_ref() {
+                if previous.update != *update {
+                    return Err(capnp::Error::failed(
+                        "effect terminal outcome changed".into(),
+                    ));
+                }
+                previous.request.clone()
+            } else {
+                let receipt = crate::policy::redacted_effect_receipt(
+                    update.invocation(),
+                    &pending.actor,
+                    pending.context.clone(),
+                    status,
+                );
+                let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+                    room: pending.cluster_id.clone(),
+                    operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+                        invocation: update.invocation().0,
+                        redacted: serde_json::to_vec(&receipt)
+                            .map_err(|error| capnp::Error::failed(error.to_string()))?,
+                    },
+                };
+                *prepared = Some(PreparedEffectCommit {
+                    update: update.clone(),
+                    request: request.clone(),
+                });
+                request
+            }
+        };
+        if let Some(key) = &pending.journal_key {
+            self.journal
+                .lock()
+                .map_err(|_| capnp::Error::failed("invocation journal unavailable".into()))?
+                .as_mut()
+                .map_err(|error| capnp::Error::failed(error.clone()))?
+                .as_mut()
+                .ok_or_else(|| capnp::Error::failed("durable admission unavailable".into()))?
+                .prepare_effect(key, update.clone(), &request)
+                .map_err(capnp::Error::failed)?;
+        }
+        self.commit_owner_request(request, None).await
+    }
+
+    /// Reconcile an inert saved receipt, never dispatch or reconstruct action authority.
+    async fn reconcile_prepared_effect(
+        &self,
+        record: DurableInvocation,
+        authorize: impl Fn() -> Result<(), String>,
+    ) -> Result<DurableInvocation, String> {
+        authorize()?;
+        let Some(prepared) = record.prepared_effect.as_ref() else {
+            return Ok(record);
+        };
+        if !record.uncertain || record.update.is_terminal() {
+            return Ok(record);
+        }
+        self.owner_health()?;
+        // The normal service supplies actual current governor custody and exact owner retry.
+        // A saved request grants no authority, and no unavailable service fallback is allowed.
+        if let Err(error) = self.publisher.commit_owner(prepared.request(), None).await {
+            tracing::warn!(%error, "prepared effect remains uncertain");
+            authorize()?;
+            return Ok(record);
+        }
+        authorize()?;
+        self.journal
+            .lock()
+            .map_err(|_| "invocation journal unavailable")?
+            .as_mut()
+            .map_err(|error| error.clone())?
+            .as_mut()
+            .ok_or("durable admission unavailable")?
+            .finish_effect(&record.key, prepared)
     }
 
     fn record_effect_receipt(
@@ -3503,6 +3588,7 @@ impl CapnpBrokerState {
                 journal: Mutex::new(journal),
                 stable_invocation_subscribers: Mutex::new(std::collections::HashSet::new()),
                 desktop_command_peer: Mutex::new(None),
+                workspace_membership_peers: Mutex::new(HashMap::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
                 confirmation_grants: Mutex::new(HashMap::new()),
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
@@ -4129,6 +4215,7 @@ impl CapnpBrokerState {
                 peer_id,
                 (surface, published),
                 InvocationInputs {
+                    requested: None,
                     caller: None,
                     execution: None,
                     argument,
@@ -4427,6 +4514,12 @@ impl CapnpBrokerState {
         .map_err(|error| error.to_string())
     }
 
+    /// Invalidate retained discovery only after a real service-surface mutation.
+    fn publish_changed_action_catalogue(&self) {
+        self.surface_generation.fetch_add(1, Ordering::Relaxed);
+        self.publish_action_catalogue();
+    }
+
     fn publish_action_catalogue(&self) {
         let subscribers = self
             .action_catalogue_subscribers
@@ -4587,6 +4680,7 @@ impl CapnpBrokerState {
             resource,
             action,
             InvocationInputs {
+                requested: None,
                 caller: None,
                 execution: None,
                 argument,
@@ -4718,6 +4812,7 @@ impl CapnpBrokerState {
         provenance: AdmissionProvenance<'_>,
     ) -> Result<InvocationJob, String> {
         let InvocationInputs {
+            requested,
             caller,
             execution,
             argument,
@@ -4877,12 +4972,19 @@ impl CapnpBrokerState {
             .invocation_id
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .map_err(|_| "invocation handle space exhausted")?;
+        let authoritative = durable
+            .map(DurableContext::invocation)
+            .or_else(|| execution.as_ref().map(ExecutionScope::invocation));
+        if requested.is_some_and(|requested| {
+            requested.0.is_nil() || authoritative.is_some_and(|held| held != requested)
+        }) {
+            return Err("requested invocation does not match admitted custody".into());
+        }
         let invocation = match durable {
             Some(context) => context.invocation(),
-            None => execution.as_ref().map_or_else(
-                || tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
-                ExecutionScope::invocation,
-            ),
+            None => requested.or(authoritative).unwrap_or_else(|| {
+                tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)))
+            }),
         };
         let (tx, rx) = std::sync::mpsc::channel();
         let mut receipt_context = tilo_actions::ActionContext::for_resource(
@@ -4911,7 +5013,7 @@ impl CapnpBrokerState {
             };
             let intent = serde_json::json!({ "request": request,
                 "contract": offered.1.contract, "operation_kind": offered.1.operation_kind,
-                "context": receipt_context, "app_id": offered.0.app_id,
+                "context": receipt_context, "actor": actor.id, "app_id": offered.0.app_id,
                 "action": offered.1.action, "revision": revision });
             if let Some(context) = durable {
                 context.before_admission(self, journal.host(), peer_id, &offered, &sender)?;
@@ -4962,6 +5064,7 @@ impl CapnpBrokerState {
                 peer_id,
                 tx,
                 update: tilo_actions::InvocationUpdate::Accepted { invocation },
+                prepared_effect: Arc::default(),
                 last_sequence: 0,
                 actor: actor.id.clone(),
                 cancellable: matches!(
@@ -5492,6 +5595,7 @@ impl CapnpBrokerState {
             resource,
             action,
             InvocationInputs {
+                requested: None,
                 caller: None,
                 execution: None,
                 argument,
@@ -8606,6 +8710,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            requested: None,
                             caller: None,
                             execution: None,
                             argument: argument.as_deref(),
@@ -8643,6 +8748,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            requested: None,
                             caller: None,
                             execution: None,
                             argument: argument.as_deref(),
@@ -8672,6 +8778,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            requested: None,
                             caller: None,
                             execution: None,
                             argument: argument.as_deref(),
@@ -8841,20 +8948,13 @@ impl channel_handle::Server for CapnpChannelHandle {
             Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
         let author = observed_launch::launch_author(&actor, &workspace, now);
-        let started = self
-            .state
-            .services
-            .launcher
-            .as_ref()
-            .ok_or_else(|| "application launch unsupported".to_string())
-            .and_then(|service| {
-                service.begin_launch(
-                    &app_id,
-                    package_root.as_deref(),
-                    &workspace,
-                    author.as_deref(),
-                )
-            });
+        let started = self.begin_original_launch(
+            &app_id,
+            package_root.as_deref(),
+            &workspace,
+            author.as_deref(),
+            parent,
+        );
         let actor = actor.id().to_owned();
         Promise::from_future(async move {
             let outcome = observed_launch::wait_for_startup(started).await;
@@ -10896,7 +10996,16 @@ async fn serve_broker_thread(
             return;
         }
     };
+    let mut next_membership_refresh = std::time::Instant::now();
     loop {
+        if std::time::Instant::now() >= next_membership_refresh {
+            if let Err(error) = state.refresh_workspace_membership_services() {
+                tracing::debug!(%error, "native membership surface could not be refreshed");
+            }
+            next_membership_refresh = std::time::Instant::now()
+                .checked_add(Duration::from_secs(1))
+                .unwrap_or_else(std::time::Instant::now);
+        }
         #[cfg(test)]
         {
             let callbacks = match state.thread_callbacks.lock() {
@@ -11175,11 +11284,26 @@ async fn authenticate_launcher_handoff(
         if services.launcher.as_ref().is_some_and(|service| {
             service.attest_process(pid, &handoff.app_id, &handoff.workspace_id)
         }) {
+            let creation = services
+                .launcher
+                .as_ref()
+                .ok_or_else(|| LaunchRefusal {
+                    error: capnp::Error::failed("launcher custody ended".into()),
+                    peer: peer.clone(),
+                    answerable: true,
+                })?
+                .application_creation_evidence(pid, &handoff.app_id, &handoff.workspace_id)
+                .map_err(|error| LaunchRefusal {
+                    error: capnp::Error::failed(error),
+                    peer: peer.clone(),
+                    answerable: true,
+                })?;
             return Ok(media_process.and_then(|process| {
                 native_media::LocalAppConnection::attested(
                     handoff.app_id,
                     handoff.workspace_id,
                     process,
+                    creation,
                 )
             }));
         }
@@ -13018,6 +13142,61 @@ pub mod tests {
         let snapshot: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(snapshot["records"].as_array().unwrap().len(), 1);
         assert_eq!(snapshot["records"][0]["wire_id"], job.id);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_person_requested_uuid_survives_actual_delivery_and_completion() {
+        use tilo_actions::remote::{
+            Caller, InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
+        };
+        tokio::task::LocalSet::new().run_until(async {
+            let root = tempfile::tempdir().unwrap();
+            let base = local_directory_fixture();
+            let membership = base.membership.as_ref().unwrap().clone();
+            membership.write().persist_path = Some(root.path().join("state.json"));
+            drop(base);
+            let mut fixture = local_directory_fixture_with_membership(membership);
+            let offered = PublishedSurface {
+                peer_id: fixture.peer_id,
+                app_id: fixture.route.app_id.clone(),
+                route: fixture.route.clone(),
+                actions: vec![published_directory_action(&fixture.directory_state.borrow().row()).unwrap()],
+                live: true,
+            };
+            fixture.state.surfaces.lock().unwrap().insert(fixture.peer_id, offered);
+            let caller = Caller::local_person("fixture-owner").in_room(fixture.cluster_id.clone());
+            assert!(caller.execution_id().is_none(), "no fabricated execution lease");
+            let request = InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider: fixture.peer_id.to_string(),
+                    address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+                },
+                argument: InvokeArgument::None, context: None, confirmation: None,
+                revision: None, on_behalf_of: None,
+            };
+            let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
+            let PendingPoll::Ready(Ok(receipt)) = pending.poll_ready() else {
+                panic!("published ordinary action must be admitted");
+            };
+            assert_eq!(receipt.invocation, request.invocation);
+            let (job, delivered) = fixture.take_invocation_identity().unwrap();
+            assert_eq!(delivered, request.invocation);
+            assert_ne!(delivered.0, uuid::Uuid::from_u128(u128::from(job)));
+            assert!(matches!(fixture.state.invocation_status(job),
+                Some(tilo_actions::InvocationUpdate::Accepted { invocation }) if invocation == request.invocation));
+            let path = root.path().join("state.json.invocations/records.json");
+            let snapshot: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(snapshot["records"][0]["key"]["invocation"], request.invocation.0.to_string());
+            fixture.complete_invocation(job, &tilo_actions::InvocationUpdate::Succeeded {
+                invocation: delivered, output: tilo_actions::ActionOutput::default(),
+            }).await.unwrap();
+            assert!(matches!(fixture.state.invocation_status(job),
+                Some(tilo_actions::InvocationUpdate::Succeeded { invocation, .. }) if invocation == request.invocation));
+            let snapshot: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            assert_eq!(snapshot["records"][0]["key"]["invocation"], request.invocation.0.to_string());
+            assert!(fixture.take_invocation_identity().is_none());
+        }).await;
     }
 
     #[cfg(test)]
@@ -14875,6 +15054,7 @@ pub mod tests {
             peer_id: 7,
             tx,
             update: tilo_actions::InvocationUpdate::Accepted { invocation },
+            prepared_effect: Arc::default(),
             last_sequence: 0,
             actor: "agent:Scribe".into(),
             cancellable: false,
