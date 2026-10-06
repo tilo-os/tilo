@@ -2079,7 +2079,9 @@ impl App {
             argument,
             broker_admitted,
             confirmation_evidence,
+            invocation,
             ambient_context,
+            scope,
             ..
         } = *invocation;
         if spec.deferred_invocation_type().is_some()
@@ -2093,6 +2095,12 @@ impl App {
                 confirmation_evidence,
             );
         }
+        let source_invocation = broker_admitted.then_some(invocation).flatten();
+        debug_assert!(
+            !broker_admitted || source_invocation.is_some(),
+            "admitted document request lost its invocation before dispatch: {invocation:?}"
+        );
+        let operation_invocation = invocation.unwrap_or_else(tilo_actions::InvocationId::new);
         let encoded = Self::encode_resource_action(resources, address, typed_arguments, argument)?;
         let action = self
             .actions
@@ -2133,9 +2141,10 @@ impl App {
                         actor,
                         local_author: &self.collaboration.local_author.0,
                         broker_admitted,
-                        invocation: tilo_actions::InvocationId::new(),
+                        invocation: operation_invocation,
+                        source_invocation,
                         ambient: ambient_context,
-                        scope: None,
+                        scope,
                     },
                 )
             })?;
@@ -2297,6 +2306,7 @@ impl App {
                 confirmed,
                 broker_admitted,
                 invocation: id,
+                source_invocation: broker_admitted.then_some(invocation).flatten(),
                 ambient,
                 scope,
             },
@@ -2568,9 +2578,12 @@ impl App {
         if kind == tilo_actions::OperationKind::Document {
             let request = ResourceInvocation::new(address, actor)
                 .argument(argument)
+                .confirmed(confirmation_satisfied)
                 .broker_admitted(broker_admitted)
                 .evidence(confirmation_evidence)
-                .ambient_context(ambient_context);
+                .invocation(invocation)
+                .ambient_context(ambient_context)
+                .scope(scope);
             return self.invoke_document_resource_action(
                 &request,
                 &resources,
@@ -2805,6 +2818,7 @@ impl App {
                         local_author: &self.collaboration.local_author.0,
                         broker_admitted,
                         invocation: operation_invocation,
+                        source_invocation: broker_admitted.then_some(operation_invocation),
                         ambient: ambient_context,
                         scope: None,
                     },
