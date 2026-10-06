@@ -1,10 +1,10 @@
 {
   "schema": 1,
   "execution": "headless production Tilo compositor, x86_64 software graphics",
-  "completed_at_utc": "2026-10-06T01:01:04.959035+00:00",
+  "completed_at_utc": "2026-10-06T01:17:31.040308+00:00",
   "production_binaries": {
-    "shell": "e23048a332d02ebd09d5b054d17835ddc4634822db3292fa7425d267de37dac0",
-    "tilo-launcher": "99f971f5538b2f234aa53587289948b3dde6681f21d7e962e0be8e3f0f35b66b"
+    "shell": "90b0127096189ccdaf9f30d359d124f4581a85725867d5552481c551a6543de4",
+    "tilo-launcher": "adc3e6d3bedf3412e4a5fdf80cace09e68d53f6830564b6d959b1d2f38d8fb46"
   },
   "apk_sha256": "1928e65ced8cbe78be2ff3cb4c321e9e75d138e8e30ea1368fbb772a86827d1d",
   "runtime_receipt_sha256": "804b2c280485ee16b8051a45b43c4a3389260d90ebed78188b9f0dc0b34908ea",
@@ -13,12 +13,12 @@
       "step": "calculation",
       "expression": "123+456",
       "answer": "579",
-      "png_sha256": "063c4e155f04c70e128729f54bc743af1d89d3562ffcfcd396e05eef1648bc2d",
+      "png_sha256": "cf99257475d88561371ec9eb96d2ffe72afbf4b997ac69defdb48cc633196227",
       "frame": {
-        "surface_id": 4294967332,
+        "surface_id": 4294967333,
         "app_id": "so.tilo.android.qualify.h1928e65ced8cbe78be2ff3cb4c321e9e75d138e8e30ea1368fbb772a86827d1d",
         "sheets": [],
-        "frame_seq": 26,
+        "frame_seq": 32,
         "last_error": null,
         "rect": {
           "x": 265.99998474121094,
@@ -33,15 +33,15 @@
         "presented": true,
         "opening": false
       },
-      "room": "bfca49be-c557-4cc9-977e-f3ba0019016f"
+      "room": "a89df760-b2b3-4ef9-8c3c-280920911f1e"
     },
     {
       "step": "reopened",
       "expression": "123+456",
       "answer": "579",
-      "png_sha256": "d5867d49760ba8056665d5f6332d9ca59cdff9cc18ae4f54ebc5c91e575e6ed0",
+      "png_sha256": "4942adfae53bdbc00deaaace3ff6f8a39cae67bc5022dea39e8c04d1a95ca6ec",
       "frame": {
-        "surface_id": 8589934628,
+        "surface_id": 8589934629,
         "app_id": "so.tilo.android.qualify.h1928e65ced8cbe78be2ff3cb4c321e9e75d138e8e30ea1368fbb772a86827d1d",
         "sheets": [],
         "frame_seq": 3,
@@ -59,18 +59,18 @@
         "presented": true,
         "opening": false
       },
-      "room": "bfca49be-c557-4cc9-977e-f3ba0019016f"
+      "room": "a89df760-b2b3-4ef9-8c3c-280920911f1e"
     },
     {
       "step": "second-workspace-calculation",
       "expression": "234+567",
       "answer": "801",
-      "png_sha256": "4c8929c9c6bb28d43b6262fbbc3409d64af635216d11d6e144f6ecf9b33e5e09",
+      "png_sha256": "3920f2ca4c7ba424ae04b7bfa216424e40fcb28909f36747bed305a748d0b27f",
       "frame": {
-        "surface_id": 12884901924,
+        "surface_id": 12884901925,
         "app_id": "so.tilo.android.qualify.h1928e65ced8cbe78be2ff3cb4c321e9e75d138e8e30ea1368fbb772a86827d1d",
         "sheets": [],
-        "frame_seq": 6,
+        "frame_seq": 12,
         "last_error": null,
         "rect": {
           "x": 265.99998474121094,
@@ -85,15 +85,15 @@
         "presented": true,
         "opening": false
       },
-      "room": "e21171e4-6ee3-4a46-88b3-95bf1094a2b5"
+      "room": "5aa01319-f5a1-49bb-87d1-e07b464c8ad0"
     },
     {
       "step": "first-workspace-restored",
       "expression": "123+456",
       "answer": "579",
-      "png_sha256": "e459a0027f718547f313506ff2341b138fbc959f4314c2271c48db2a3b4e90ec",
+      "png_sha256": "3b5354745bbd3d00396d870879073bd02afd9b26c4f70eea2abf6693583838cf",
       "frame": {
-        "surface_id": 17179869220,
+        "surface_id": 17179869221,
         "app_id": "so.tilo.android.qualify.h1928e65ced8cbe78be2ff3cb4c321e9e75d138e8e30ea1368fbb772a86827d1d",
         "sheets": [],
         "frame_seq": 3,
@@ -111,11 +111,11 @@
         "presented": true,
         "opening": false
       },
-      "room": "bfca49be-c557-4cc9-977e-f3ba0019016f"
+      "room": "a89df760-b2b3-4ef9-8c3c-280920911f1e"
     }
   ],
-  "first_room": "bfca49be-c557-4cc9-977e-f3ba0019016f",
-  "second_room": "e21171e4-6ee3-4a46-88b3-95bf1094a2b5",
+  "first_room": "a89df760-b2b3-4ef9-8c3c-280920911f1e",
+  "second_room": "5aa01319-f5a1-49bb-87d1-e07b464c8ad0",
   "confinement": {
     "file_read": "denied",
     "file_write": "denied",
