@@ -8,7 +8,7 @@
 //! interaction; they never differ in this.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Shape};
 use vello::peniko::{BlendMode, Color, Fill};
 
 use crate::theme::Theme;
@@ -37,13 +37,16 @@ pub fn single_row_radius(theme: &Theme) -> f64 {
 /// [`paint`] with an explicit corner `radius` (a single-row menu's
 /// [`single_row_radius`]).
 pub fn paint_rounded(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, theme: &Theme) {
-    crate::surface::shadow(
-        scene,
-        transform,
-        rect,
-        radius,
-        &theme.tokens.elevation.floating,
-    );
+    // A blurred filled shape also covers its interior. Keep that shadow
+    // outside the panel: the material below records this scene for blur,
+    // and must not sample its own shadow as a dimmed foreground.
+    let elevation = &theme.tokens.elevation.floating;
+    let reach = f64::from(elevation.blur) * 2.0 + f64::from(elevation.offset_y).abs();
+    let mut exterior = rect.inflate(reach, reach).to_path(0.1);
+    exterior.extend(RoundedRect::from_rect(rect, radius).path_elements(0.1));
+    scene.push_clip_layer(Fill::EvenOdd, transform, &exterior);
+    crate::surface::shadow(scene, transform, rect, radius, elevation);
+    scene.pop_layer();
     crate::surface::panel(scene, transform, rect, radius, theme);
 }
 

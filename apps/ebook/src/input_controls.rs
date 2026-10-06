@@ -981,22 +981,26 @@ impl SchemeColorSheet {
         let Some((_, picker)) = self.open.as_mut() else {
             return;
         };
-        ui::overlay::scrim::modal(scene, transform, viewport, 1.0, theme);
         let pad = f64::from(theme.tokens.spacing.s6);
-        // A utility panel's width: a roomy saturation/value field and every
-        // swatch on one row.
-        let w = f64::from(theme.tokens.metrics.panel_width_utility)
+        let max_width = f64::from(theme.tokens.metrics.panel_width_utility)
             .max(picker.preferred_size().0)
-            .min(viewport.width() - 2.0 * pad)
-            .max(0.0);
-        let h = picker.preferred_height(w);
-        let width = (w + 2.0 * pad).min(viewport.width());
-        let height = (h + 2.0 * pad).min(viewport.height());
-        let x = viewport.x0 + (viewport.width() - width) / 2.0;
-        let y = viewport.y0 + (viewport.height() - height) / 2.0;
-        self.panel = Rect::new(x, y, x + width, y + height);
-        ui::widget::floating_surface::paint(scene, transform, self.panel, theme);
-        picker.apply_layout_external(Rect::new(x + pad, y + pad, x + pad + w, y + pad + h));
+            + 2.0 * pad;
+        let spec = ui::widget::modal_dialog::ModalSpec::new("")
+            .closable(false)
+            .max_width(max_width / f64::from(theme.text_scale));
+        let width = ui::widget::modal_dialog::body_width(viewport, spec.max_width, theme);
+        let spec = spec.body_height(picker.preferred_height(width));
+        let layout = ui::widget::modal_dialog::layout(viewport, &spec, text_renderer, theme);
+        self.panel = layout.card;
+        ui::widget::modal_dialog::paint_backdrop(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &layout,
+            &spec,
+        );
+        picker.apply_layout_external(layout.body);
         picker.draw(
             scene,
             transform,

@@ -852,12 +852,12 @@ fn sections_set_before_layout_stand_at_the_nav_metrics() {
 }
 
 #[test]
-fn sections_changed_after_layout_animate_and_then_stand_still() {
+fn sections_changed_after_layout_immediately_share_paint_and_hit_geometry() {
     let mut h = harness(NavList::new(mailboxes()), Theme::dark());
     let mut next = mailboxes();
     next[0].items.insert(1, NavItem::new("drafts", "Drafts"));
     h.root_mut::<NavList>().set_sections(next);
-    assert!(h.root::<NavList>().tree().transitions_active());
+    assert!(!h.root::<NavList>().tree().transitions_active());
     h.relayout_at((280, 360)).expect("layout");
     let theme = Theme::dark();
     let row = crate::chrome::nav_row_height(&theme);
@@ -1018,4 +1018,148 @@ fn bound_navigation_inventory_follows_the_visible_semantic_window() {
             );
         }
     }
+}
+
+fn api_sections(populated: bool) -> Vec<NavSection> {
+    ["Auth", "Webhooks", "History"]
+        .into_iter()
+        .map(|name| {
+            let items = if populated {
+                vec![
+                    NavItem::new(format!("{name}:first"), format!("{name} first request")),
+                    NavItem::new(format!("{name}:second"), format!("{name} second request")),
+                ]
+            } else {
+                Vec::new()
+            };
+            NavSection::new(name, name, items).empty_caption("No requests yet")
+        })
+        .collect()
+}
+
+fn assert_navigation_matches_its_unanimated_paint(
+    frame: &FrameHarness,
+    sections: Vec<NavSection>,
+    theme: &Theme,
+) {
+    let reference = FrameHarness::for_root(
+        State::new(),
+        NavList::new(sections).selected("Auth:first"),
+        (320, 1200),
+        theme.clone(),
+    );
+    let actual = frame.render_rgba();
+    let expected = reference.render_rgba();
+    assert_eq!(actual.len(), expected.len());
+    assert!(
+        actual
+            .iter()
+            .zip(&expected)
+            .all(|(a, b)| a.abs_diff(*b) <= 2),
+        "immediate live navigation paint must equal the non-overlapping final layout"
+    );
+    assert!(!frame.root::<NavList>().tree().transitions_active());
+    let tree = frame.root::<NavList>().tree();
+    let mut previous = None;
+    for index in 0..tree.visible_len() {
+        let (id, label, _) = tree.visible_row(index).expect("visible navigation row");
+        let rect = tree.row_rect(id).expect("actual row target");
+        assert!(rect.x0 >= 0.0 && rect.x1 <= 320.0 && rect.y1 <= 1200.0);
+        if let Some(bottom) = previous {
+            assert!(
+                rect.y0 >= bottom,
+                "{label} overlaps the preceding navigation row"
+            );
+        }
+        previous = Some(rect.y1);
+    }
+}
+
+#[test]
+fn populated_inserted_removed_and_reordered_navigation_paints_without_live_overlap() {
+    for scale in [1.0, 2.0] {
+        for theme in [Theme::dark(), Theme::light()] {
+            let theme = theme.with_text_scale(scale);
+            let mut frame = FrameHarness::for_root(
+                State::new(),
+                NavList::new(api_sections(false)),
+                (320, 1200),
+                theme.clone(),
+            );
+            let mut sections = api_sections(true);
+            frame.root_mut::<NavList>().set_sections(sections.clone());
+            frame.root_mut::<NavList>().set_selected(Some("Auth:first"));
+            frame
+                .relayout_at((320, 1200))
+                .expect("populate real navigation");
+            assert_navigation_matches_its_unanimated_paint(&frame, sections.clone(), &theme);
+            sections[0]
+                .items
+                .insert(1, NavItem::new("Auth:new", "New request"));
+            frame.root_mut::<NavList>().set_sections(sections.clone());
+            frame
+                .relayout_at((320, 1200))
+                .expect("insert real navigation row");
+            assert_navigation_matches_its_unanimated_paint(&frame, sections.clone(), &theme);
+            sections[0].items.remove(1);
+            frame.root_mut::<NavList>().set_sections(sections.clone());
+            frame
+                .relayout_at((320, 1200))
+                .expect("remove real navigation row");
+            assert_navigation_matches_its_unanimated_paint(&frame, sections.clone(), &theme);
+            sections.swap(1, 2);
+            frame.root_mut::<NavList>().set_sections(sections.clone());
+            frame
+                .relayout_at((320, 1200))
+                .expect("reorder real navigation sections");
+            assert_navigation_matches_its_unanimated_paint(&frame, sections, &theme);
+            assert_eq!(
+                frame.root::<NavList>().selected_id().as_deref(),
+                Some("Auth:first")
+            );
+        }
+    }
+}
+
+#[test]
+fn focused_navigation_target_stays_at_its_painted_row_after_population() {
+    fn is_focused(node: &crate::a11y::AccessNode, label: &str) -> bool {
+        (node.name.as_deref() == Some(label) && node.state.focused)
+            || node.children.iter().any(|child| is_focused(child, label))
+    }
+    let mut frame = FrameHarness::for_root(
+        State::new(),
+        NavList::new(api_sections(true)),
+        (320, 1200),
+        Theme::dark().with_text_scale(2.0),
+    );
+    let target = frame
+        .a11y_node_named("Auth first request")
+        .expect("published row");
+    frame
+        .perform_a11y_action(target, &crate::a11y::Action::Focus)
+        .expect("focus real row");
+    let mut sections = api_sections(true);
+    sections[0]
+        .items
+        .insert(1, NavItem::new("Auth:new", "New request"));
+    frame.root_mut::<NavList>().set_sections(sections);
+    frame
+        .relayout_at((320, 1200))
+        .expect("update live navigation");
+    let list = frame.root::<NavList>();
+    assert!(is_focused(
+        &list.accessibility().expect("navigation tree"),
+        "Auth first request"
+    ));
+    assert!(
+        !list.tree().transitions_active(),
+        "focused semantics and paint use one geometry"
+    );
+    let rect = list.row_rect("Auth:first").expect("focused row geometry");
+    frame.click_at(rect.center().x, rect.center().y);
+    assert_eq!(
+        frame.root::<NavList>().selected_id().as_deref(),
+        Some("Auth:first")
+    );
 }
