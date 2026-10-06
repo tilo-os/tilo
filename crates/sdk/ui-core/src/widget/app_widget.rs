@@ -262,6 +262,23 @@ pub trait AppWidget: Widget {
     /// Framework-owned durability, delivered only after the record loan ends.
     fn record_save_status(&mut self, _status: crate::record::RecordSaveStatus) {}
 
+    /// Answer a device-owner operation from the authenticated hosting shell.
+    /// This is not an app action and never grants access to a host shell.
+    ///
+    /// # Errors
+    /// Refuses unsupported or unavailable device-shell operations.
+    fn device_shell_operation(
+        &mut self,
+        _operation: &crate::floating_surface::DeviceShellOperation,
+    ) -> Result<serde_json::Value, String> {
+        Err("This application has no device shell".into())
+    }
+
+    /// Handle the trusted shell owner selecting the device shell, without granting it.
+    fn request_device_shell(&mut self) -> bool {
+        false
+    }
+
     /// Whether the person asked to try a failed record save again
     /// ([`crate::SaveAction::Retry`] on the [`crate::SaveStatusSurface`]),
     /// once. The host that owns the record submits its changes again before
@@ -2090,6 +2107,30 @@ mod component_adapter {
         // Legacy direct callbacks are deliberately not exported by this adapter.
         fn commands(&self) -> Vec<AppCommand> {
             vec![]
+        }
+        fn device_shell_operation(
+            &mut self,
+            operation: &crate::floating_surface::DeviceShellOperation,
+        ) -> Result<serde_json::Value, String> {
+            let binding = self.component.callback_binding();
+            let _entry = binding
+                .enter()
+                .map_err(|_| "Terminal is not available".to_string())?;
+            self.component
+                .root
+                .as_deref_mut()
+                .ok_or("Terminal is not available")?
+                .device_shell_operation(operation)
+        }
+        fn request_device_shell(&mut self) -> bool {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return false;
+            };
+            self.component
+                .root
+                .as_deref_mut()
+                .is_some_and(AppWidget::request_device_shell)
         }
         fn take_host_intent(&mut self) -> Option<AppHostIntent> {
             let binding = self.component.callback_binding();
