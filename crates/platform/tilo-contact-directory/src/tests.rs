@@ -21,6 +21,76 @@ fn fixture() -> Result<Replica<ContactDirectory>, Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn email_hints_preserve_ambiguity_case_and_aliases_without_identity_links() {
+    let mut record = fixture().expect("fixture succeeds");
+    for person in [first(), second()] {
+        record
+            .apply(
+                ContactDirectory::PROJECT_EMAILS.with((person, vec!["Alice@EXAMPLE.test".into()])),
+            )
+            .expect("hints project");
+    }
+    let state = record.state().expect("state loads");
+    assert_eq!(
+        state.email_candidates("Alice@example.test"),
+        vec![first(), second()]
+    );
+    assert!(state.email_candidates("alice@example.test").is_empty());
+    assert!(state.email_candidates("Alice+work@example.test").is_empty());
+    assert!(
+        state
+            .email_candidates("Alice <Alice@example.test>")
+            .is_empty()
+    );
+    assert!(
+        state
+            .people
+            .iter()
+            .all(|(_, person)| person.endpoints.is_empty())
+    );
+    assert!(state.resolve("email", "Alice@example.test").is_err());
+    record
+        .apply(ContactDirectory::REMOVE_CONTACT.with(first()))
+        .expect("removal succeeds");
+    assert!(
+        record
+            .apply(
+                ContactDirectory::PROJECT_EMAILS
+                    .with((first(), vec!["replacement@example.test".into()]))
+            )
+            .is_err()
+    );
+    assert_eq!(
+        record
+            .state()
+            .expect("state loads")
+            .email_candidates("Alice@example.test"),
+        vec![second()]
+    );
+}
+
+#[test]
+fn email_hint_keys_reject_header_injection_and_do_not_guess_unsupported_mailboxes() {
+    use super::canonical_email_hint;
+    assert_eq!(
+        canonical_email_hint(" Alice+work@EXAMPLE.TEST "),
+        Some("Alice+work@example.test".into())
+    );
+    for value in [
+        "a..b@example.test",
+        ".a@example.test",
+        "a@example..test",
+        "a@-example.test",
+        "a@example.test,b@example.test",
+        "a@example.test\r\nBcc: b@example.test",
+        "\"a b\"@example.test",
+        "ál@example.test",
+    ] {
+        assert!(canonical_email_hint(value).is_none(), "{value:?}");
+    }
+}
+
+#[test]
 fn duplicate_names_and_cross_service_recipients_keep_distinct_people() {
     let mut record = fixture().expect("fixture operation succeeds");
     record
@@ -516,4 +586,30 @@ fn reviewed_revision_replacement_is_atomic_and_keeps_old_attribution() {
         .expect("old association remains");
     assert!(historical.removed);
     assert_eq!(historical.revision, "key-1");
+}
+
+#[test]
+fn legacy_person_records_load_without_email_hints_or_identity_changes() {
+    use tilo_resource::{Collection, Doc, Fields, Json, Model};
+    #[derive(Model, Default)]
+    struct LegacyPerson {
+        label: String,
+        removed: bool,
+        phones: Json<Vec<String>>,
+        endpoints: Collection<super::Endpoint>,
+    }
+    let mut doc = Doc::new();
+    let old = LegacyPerson {
+        label: "Alex".into(),
+        phones: Json(vec!["+12025550123".into()]),
+        ..LegacyPerson::default()
+    };
+    old.write_fields(&mut doc, &tilo_resource::__private::ROOT)
+        .expect("legacy record writes");
+    let person = super::Person::read_fields(&doc, &tilo_resource::__private::ROOT)
+        .expect("additive schema reads legacy record");
+    assert_eq!(person.label, old.label);
+    assert_eq!(person.phones, old.phones);
+    assert!(person.emails.0.is_empty());
+    assert!(person.endpoints.is_empty());
 }
