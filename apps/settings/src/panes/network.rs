@@ -2954,6 +2954,154 @@ impl NetworkModel {
 mod tests {
     use super::*;
 
+    fn find<'a>(root: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
+        if root.test_id() == Some(id) {
+            return Some(root);
+        }
+        root.children()
+            .into_iter()
+            .find_map(|child| find(child, id))
+    }
+
+    #[test]
+    fn network_pane_relabels_retained_controls_when_locale_changes() -> Result<(), String> {
+        use crate::panes::model::ModelPane;
+        use std::cell::RefCell;
+        use ui::headless::{Framed, viewport};
+        use ui::i18n::I18nManager;
+
+        let fake = Arc::new(FakeNetwork::default());
+        let network = model(&fake);
+        let _ = t("net-refresh");
+        I18nManager::set_locale("en-US");
+        let root = ModelPane::new(Rc::new(RefCell::new(network)));
+        let mut app = Framed::new(
+            ui::State::new(),
+            root,
+            viewport((1200.0, 1800.0)),
+            ui::Theme::dark(),
+        );
+        let host = Framed::harness_mut(&mut app);
+        for (locale, expected) in [
+            ("en-US", "Refresh"),
+            ("de-DE", "Aktualisieren"),
+            ("en-US", "Refresh"),
+        ] {
+            I18nManager::set_locale(locale);
+            host.relayout_themed(viewport((1000.0, 1800.0)), ui::Theme::dark())
+                .map_err(|error| error.to_string())?;
+            let name = find(host.root_widget(), "settings.network.refresh")
+                .and_then(Widget::accessibility)
+                .and_then(|node| node.name);
+            if name.as_deref() != Some(expected) {
+                return Err(format!(
+                    "the actual network refresh control must follow {locale}: {name:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn network_editor_retains_caret_through_window_resize() -> Result<(), String> {
+        use crate::panes::model::ModelPane;
+        use std::cell::RefCell;
+        use ui::headless::{Framed, viewport};
+
+        let fake = Arc::new(FakeNetwork::default());
+        let mut network = model(&fake);
+        network.enterprise_open = true;
+        let profile = network.enterprise.profile.clone();
+        let root = ModelPane::new(Rc::new(RefCell::new(network)));
+        let mut app = Framed::new(
+            ui::State::new(),
+            root,
+            viewport((1200.0, 1800.0)),
+            ui::Theme::dark(),
+        );
+        let host = Framed::harness_mut(&mut app);
+        host.click_named("network.enterprise.profile")?;
+        host.type_text("abcd");
+        if profile.get() != "abcd" {
+            return Err("the real network profile editor must accept typing".into());
+        }
+        host.key("Left");
+        host.key("Left");
+        host.relayout_themed(viewport((1000.0, 1800.0)), ui::Theme::dark())
+            .map_err(|error| error.to_string())?;
+        host.type_text("X");
+        if profile.get() != "abXcd" {
+            return Err("resizing must retain the network editor's actual caret and focus".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn network_pane_adopts_model_changes_after_layout_reuse() -> Result<(), String> {
+        use crate::panes::model::ModelPane;
+        use std::cell::RefCell;
+        use ui::headless::{Framed, viewport};
+
+        let fake = Arc::new(FakeNetwork::default());
+        let network = Rc::new(RefCell::new(model(&fake)));
+        let root = ModelPane::new(Rc::clone(&network));
+        let mut app = Framed::new(
+            ui::State::new(),
+            root,
+            viewport((1200.0, 1800.0)),
+            ui::Theme::dark(),
+        );
+        let host = Framed::harness_mut(&mut app);
+        host.relayout_themed(viewport((1000.0, 1800.0)), ui::Theme::dark())
+            .map_err(|error| error.to_string())?;
+        {
+            let mut model = network.borrow_mut();
+            model.enterprise_open = true;
+            model.changed = true;
+        }
+        host.relayout_themed(viewport((1000.0, 1800.0)), ui::Theme::dark())
+            .map_err(|error| error.to_string())?;
+        host.click_named("network.enterprise.profile")?;
+        host.type_text("New profile");
+        if network.borrow().enterprise.profile.get() != "New profile" {
+            return Err("a changed model must expose its newly composed controls".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn network_picker_remains_open_through_window_resize() -> Result<(), String> {
+        use crate::panes::model::ModelPane;
+        use std::cell::RefCell;
+        use ui::headless::{Framed, viewport};
+
+        fn expanded(host: &ui::headless::FrameHarness) -> Result<bool, String> {
+            find(host.root_widget(), "network.hotspot.band")
+                .and_then(Widget::accessibility)
+                .and_then(|node| node.state.expanded)
+                .ok_or_else(|| "the actual band picker must expose its expanded state".into())
+        }
+        let fake = Arc::new(FakeNetwork::default());
+        let root = ModelPane::new(Rc::new(RefCell::new(model(&fake))));
+        let mut app = Framed::new(
+            ui::State::new(),
+            root,
+            viewport((1200.0, 1800.0)),
+            ui::Theme::dark(),
+        );
+        let host = Framed::harness_mut(&mut app);
+        host.click_named("network.hotspot.band")?;
+        if !expanded(host)? {
+            return Err("the real network band picker must open".into());
+        }
+        host.relayout_themed(viewport((1000.0, 1800.0)), ui::Theme::dark())
+            .map_err(|error| error.to_string())?;
+        if !expanded(host)? {
+            return Err("resizing must retain the open network picker".into());
+        }
+        Ok(())
+    }
+
     /// A device whose `NetworkManager` answers from what the test sets,
     /// recording each change.
     #[derive(Default)]
