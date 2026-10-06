@@ -2377,3 +2377,14 @@ a11y-speaker-listener = { $group } kann mit diesem Mikrofon kalibrieren
 a11y-speaker-listener-description = Die Lautsprecherkalibrierung darf mit diesem Mikrofon hören; aktivieren, um das zu beenden
 speaker-calibration-listening-refused = { $microphone } durfte nicht zuhören, daher kann an deinem Platz nichts gemessen werden
 speaker-error-listening-unavailable = wähle ein Mikrofon, das an deinem Platz zuhören kann
+search-provider-device-shell = Shell dieses Geräts
+terminal-request-device-shell = Eigene Shell dieses Geräts anfordern
+terminal-device-shell-owner-required = Nur der Gerätebesitzer darf die eigene Shell dieses Geräts anfordern
+
+terminal-inspect-device-shell = Shell-Sitzung dieses Geräts prüfen
+terminal-run-device-shell = Befehl in der Shell dieses Geräts ausführen
+terminal-read-device-shell = Ausgabe der Shell dieses Geräts lesen
+
+terminal-device-shell-session-param = Genaue lokale Sitzungs-UUID aus der Sitzungsprüfung
+terminal-device-shell-command-param = Ein geprüfter Befehl in der Shell dieses Geräts
+terminal-device-shell-confirm-param = Diesen geprüften Vorgang in der Geräte-Shell bestätigen

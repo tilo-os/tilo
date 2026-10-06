@@ -428,6 +428,61 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
+    fn authenticated_terminal_receives_owner_selection_on_its_existing_lifecycle_connection() {
+        let runtime = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
+        let service = FloatingSurfaceService::start().unwrap();
+        let declared = BTreeMap::from([(
+            launcher::services::SHELL_UI_SERVICE.to_owned(),
+            "required@1".to_owned(),
+        )]);
+        let resolved = launcher::services::resolve_service_binds(&declared, false).unwrap();
+        launcher::services::authenticate_shell_ui_bind(
+            &resolved,
+            crate::shell::host_shell_allow::TERMINAL_APP_ID,
+        )
+        .unwrap();
+        let FloatingServiceEvent::Connected { connection, app_id } =
+            service.events.recv_timeout(Duration::from_secs(2)).unwrap()
+        else {
+            panic!("expected authenticated Terminal connection");
+        };
+        assert_eq!(app_id, crate::shell::host_shell_allow::TERMINAL_APP_ID);
+        // SAFETY: resolved owns the descriptor throughout this temporary clone.
+        let borrowed = unsafe { BorrowedFd::borrow_raw(resolved[0].host_fd()) };
+        let child = UnixStream::from(borrowed.try_clone_to_owned().unwrap());
+        child
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        service.send(
+            connection,
+            &FloatingSurfaceHostMessage::DeviceShellOperation {
+                request: 1,
+                operation: ui::floating_surface::DeviceShellOperation::Select,
+            },
+        );
+        let mut reader = BufReader::new(child);
+        let frame = read_frame(&mut reader)
+            .unwrap()
+            .expect("actual host wire frame");
+        assert_eq!(
+            serde_json::from_slice::<FloatingSurfaceHostMessage>(&frame).unwrap(),
+            FloatingSurfaceHostMessage::DeviceShellOperation {
+                request: 1,
+                operation: ui::floating_surface::DeviceShellOperation::Select
+            }
+        );
+        drop(reader);
+        drop(resolved);
+        assert!(
+            matches!(service.events.recv_timeout(Duration::from_secs(2)), Ok(FloatingServiceEvent::Disconnected { connection: ended, .. }) if ended == connection)
+        );
+        assert!(service.reply_writer(connection).is_none());
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
     fn launcher_authentication_accepts_current_floating_payload() {
         let runtime = tempfile::tempdir().expect("temporary runtime");
         let mut env = tilo_test_env::ScopedEnv::new();

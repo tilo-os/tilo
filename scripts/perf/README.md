@@ -5,6 +5,18 @@ executable stand-alone; the higher-level flow is described below.
 
 ## Measure
 
+- `shm_swizzle_bench` — a Cargo example calling the production SHM pixel
+  conversion on reused storage, with pixel/capacity checks and raw timing
+  samples. Run it in the benchmark environment with `cargo run --locked
+  -p shell --release --example shm_swizzle_bench`. The
+  [paired comparison](../../docs/shm-conversion-benchmark.md) records its scope,
+  results and remaining system measurements.
+
+- `shm_pipeline_bench` — a CPU fixture calling production conversion,
+  frame-store publication and snapshot paths, with byte/capacity/sequence
+  checks. The [frame-copy investigation](../../docs/shm-pipeline-benchmark.md)
+  records the next measured target and its boundary with renderer work.
+
 - `frame-loop-bench.py` — run the real compositor loop with cadence and
   input-to-present instrumentation. Its `--gate` mode is the quick desktop
   acceptance test: use `--refresh-hz 144 --input-hz 30 --launch-app
@@ -49,6 +61,40 @@ executable stand-alone; the higher-level flow is described below.
    `-C profile-use`. Output lands at `target/pgo-release/`.
 4. (optional) `bolt-optimize.sh` — post-link `llvm-bolt` on the PGO'd
    binaries using the same profile signal. Output at `target/bolted/`.
+
+## Physical device Notes latency
+
+Use the ordinary `tilo-vm` device and slot after applying a qualified release
+component with `tilo-vm swap shell --slot device --builder remote`. Update Notes
+through its signed release channel:
+
+```sh
+TILO_VM=yoga tilo-vm slot exec --slot device --timeout 180 -- app update so.tilo.notes
+python3 scripts/perf/device_notes_latency.py --device yoga --slot device \
+  --samples 100 --out target/yoga-notes-after-update
+```
+
+Open the updated Notes app through its normal application action before capture.
+The device session must be unlocked, with one Notes window. Enable the greeter's
+normal `configure-session-diagnostics@greeter` presentation flag before sign-in
+for physical input and presentation evidence. For GPU diagnosis also enable
+`gpu_stages`, `gpu_timestamps` and `gpu_dispatch_timestamps`; stage logging alone
+does not enable GPU timestamp queries. See `docs/agent-action-api.md` for the
+semantic configuration and normal sign-in actions.
+
+The capture creates and opens a fresh scratch note. Before every kernel key it
+checks the actual selected/bound page, adopted canonical and rendered hashes,
+caret, editor focus and compositor keyboard routing. Existing notes receive no
+benchmark input. The scratch note remains available for inspection afterward.
+
+The output contains private raw logs, the exact input/frame/presentation timeline,
+editor observations, scratch identity and `report.json`. Missing, discarded or
+coalesced exact frames fail the capture; a partial run never produces a passing
+latency summary. A small sample count is useful for diagnosis, but does not
+establish a stable p99. Record the deployed component receipt, Notes release and
+device/image identity with comparative runs. The clock starts at the original
+kernel/libinput event and ends at hardware presentation; it excludes peripheral
+scan time and panel pixel response.
 
 ## What's blocked
 
