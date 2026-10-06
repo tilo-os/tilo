@@ -1962,6 +1962,10 @@ mod tests {
 
         let cache = thumbnail::ThumbCache::open(dir.path().join("cache")).unwrap();
         let service = Arc::new(thumbnail::ThumbnailService::new(cache, 2, 128));
+        let (settled_tx, settled) = std::sync::mpsc::channel();
+        service.set_wake(move || {
+            settled_tx.send(std::thread::current().id()).unwrap();
+        });
         let ctx = ThumbCtx {
             service: service.clone(),
             imgs: Rc::new(RefCell::new(HashMap::new())),
@@ -1991,21 +1995,30 @@ mod tests {
             FileView::request_thumb(&ctx, &[], &entry, key, thumbnail::FileCategory::Image),
             ThumbState::Loading
         ));
-        assert_eq!(
-            service.pending(),
-            1,
-            "decode is off-loaded to the shared service"
+        let worker = settled.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+        assert_ne!(
+            worker,
+            std::thread::current().id(),
+            "decode is off-loaded to a shared-service worker"
         );
 
-        // Returns as soon as generation settles; the bound only catches a
-        // service that never does, so a loaded runner cannot fail it.
+        // The wake follows settlement; an instantaneous pending count cannot
+        // prove off-loading because a fast worker may already have finished.
         service.block_until_idle(tilo_test_env::hang_bound());
+        assert_eq!(service.pending(), 0, "generation settled within the bound");
         assert!(
-            matches!(
-                FileView::request_thumb(&ctx, &[], &entry, key, thumbnail::FileCategory::Image),
-                ThumbState::Ready(_)
-            ),
+            service.cache().contains(&key),
+            "the shared service cached the preview"
+        );
+        let shared = service.peek(&key).unwrap();
+        let cell = FileView::request_thumb(&ctx, &[], &entry, key, thumbnail::FileCategory::Image);
+        assert!(
+            matches!(cell, ThumbState::Ready(_)),
             "the service produced a real preview the cell reads back"
+        );
+        assert!(
+            Arc::ptr_eq(shared.ready().unwrap(), cell.ready().unwrap()),
+            "the cell reads the service-owned preview rather than decoding its own"
         );
     }
 
