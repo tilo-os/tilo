@@ -25,6 +25,14 @@ fn event(code: KeyCode, logical: &str, state: ElementState) -> WindowEvent {
     }
 }
 fn main() -> Result<(), String> {
+    let mut arguments = std::env::args_os().skip(1);
+    let output = arguments.next().map_or_else(
+        || std::path::PathBuf::from("target/keyboard-maps"),
+        std::path::PathBuf::from,
+    );
+    if arguments.next().is_some() {
+        return Err("usage: keyboard-map-evidence [output directory]".into());
+    }
     for (theme_name, theme) in [
         ("dark", Theme::dark()),
         ("light", Theme::light()),
@@ -53,9 +61,7 @@ fn main() -> Result<(), String> {
                         return Err("the retained physical key did not highlight".into());
                     }
                 }
-                let path = std::path::PathBuf::from(format!(
-                    "target/keyboard-maps/{source}-{model}-{theme_name}-{width}.png"
-                ));
+                let path = output.join(format!("{source}-{model}-{theme_name}-{width}.png"));
                 frame.render_png(&path);
                 if !path.is_file() {
                     return Err("offscreen renderer produced no artifact".into());
