@@ -1244,6 +1244,10 @@ mod tests {
         let (mut doc, task) = task_with_applied_direction();
         assert!(snapshot(&doc).unwrap().controls[&task].execution.is_none());
         let command = phase_command(&task, 1, 0, WorkspaceTaskExecutionPhase::Accepted);
+        let encoded = postcard::to_allocvec(&command).unwrap();
+        assert_eq!(encoded[0], 8, "the existing phase wire index remains fixed");
+        let decoded = postcard::from_bytes::<WorkspaceTaskCommand>(&encoded).unwrap();
+        assert_eq!(postcard::to_allocvec(&decoded).unwrap(), encoded);
         let accepted = run(&mut doc, 5, 5, &agent(), &command).unwrap();
         assert!(accepted.changed);
         let mut reopened = AutoCommit::load(&doc.save()).unwrap();
@@ -1536,7 +1540,9 @@ mod tests {
             route: WorkspaceTaskRoute::Model,
             resource: None,
         };
-        assert_eq!(postcard::to_allocvec(&command).unwrap()[0], 8);
+        // ExecutionPhase already occupies index 8; this newer command is
+        // appended rather than changing any previously encoded variant.
+        assert_eq!(postcard::to_allocvec(&command).unwrap()[0], 9);
         let mut doc = AutoCommit::new();
         let queued = run(&mut doc, 21, 21, &person(), &command).unwrap();
         let WorkspaceTaskMutationResult::Queued { task_id } = queued.result else {
@@ -1694,7 +1700,7 @@ mod tests {
             run_epoch: 1,
             after_revision: 0,
         };
-        assert_eq!(postcard::to_allocvec(&request).unwrap()[0], 9);
+        assert_eq!(postcard::to_allocvec(&request).unwrap()[0], 10);
         let result = run(&mut doc, 43, 43, &person(), &request).unwrap();
         assert_eq!(
             result.result,
