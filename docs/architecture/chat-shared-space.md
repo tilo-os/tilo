@@ -125,9 +125,9 @@ is local and disappears when the source text changes. Other apps must declare th
 own supported range view; this change does not claim they all do.
 
 The certified peer's `resourceLink(page, reference, provider, action)` creates the
-versioned browser link only after fresh authorized lookup. This is exercised with
-frame fixtures; governed host view discovery is verified below, while the paired
-account-picker and deployed browser-entry journey remains incomplete.
+versioned browser link only after fresh authorized lookup. The isolated mounted acceptance journey below exercises this against a real
+governed host, compiled app and existing fixture browser account. Production
+deployment and physical devices remain separate acceptance work.
 Its fragment carries the HTTPS host origin, room, host device key, exact source provider, kind/id, optional
 span and declared view action. It carries no invitation, account key, bearer grant or
 caller-supplied label. `resource.html` opens the standalone resource after an explicit
@@ -192,21 +192,21 @@ existing remote-action transport to request that metadata, checking source Read 
 current selected host/device before and after the request. A locator is navigation
 metadata, never admission or an invitation.
 
-The native Copy/Open chip and fully paired browser journey remain incomplete. The
-relay's HTTPS API does not serve the browser bundle, and no deployed browser-entry
-URL is configured in this repository. The host/browser deployment owner must supply
-that destination; it cannot be inferred from the source label or API origin. Settings
-also needs its normal identity sign-in flow to publish the public `tilo.identity`
-account entry. The picker must not invent an account or certify a device on link open.
+The isolated mounted journey now proves native Copy/Open and the browser account
+picker against a configured temporary entry. A production host still needs the
+operator-configured browser entry; the relay API does not serve that bundle.
+Settings' normal sign-in flow still needs to publish its public `tilo.identity`
+account entry. Link opening neither invents an account nor certifies a device.
 
 The governed HTTPS fixture now passes using an exact-source reader of the
 host's already-owned steward keys. It no longer opens a duplicate governor peer
 with empty MLS state to discover views. Current certified Read is checked under
 the governed room lock before key or ciphertext access, after bounded replay, and
 again in the metadata worker before descriptors or a locator can be delivered.
-The fixture publishes a native-format Chat resource through a browser peer's
-HTTPS transport; it does not yet prove compositor-originated publication or a
-mounted account-picker-to-browser journey.
+That discovery fixture publishes a native-format Chat resource through HTTPS.
+The separate mounted acceptance example now starts with the production native
+peer publisher and opens its replicated Chat message in Chromium. Neither fixture
+drives a physical compositor session.
 
 ## Approved integration contract and authorization invariants
 
@@ -402,3 +402,59 @@ result passes the browser resolver's exact hydration, range view, Leave and
 post-hydration revocation fixture. No Cloud deployment, actual compiled desktop
 bundle validation, physical microphone test or deployed native-to-browser journey
 has run in this continuation.
+
+## Mounted acceptance and rollout audit (2026-10-06)
+
+Run the compiled desktop against the isolated governed fixture:
+
+```sh
+rcargo --on-builder run --locked -p tilo-agent-participant --example mounted-resource -- target/tilo-app/web/calculator/bundle
+```
+
+The example uses a native Chat replica and production native publisher, an owner
+issued Viewer invitation, the real HTTPS relay, existing Settings account records
+and fixture certificates, and Chromium on a disposable profile. It mounts the
+compiled Chat at a Unicode character range, discovers and invokes its public
+consent/Stop sharing actions, verifies no video capture, and exercises native
+Copy into the actual browser clipboard and Open to the exact resource destination.
+The production resource page refuses an unadmitted account without enrollment,
+opens the selected admitted account, releases the mount and custody on Leave,
+reopens the picker after navigation, and refuses reopening after owner revocation.
+Its screenshot and stage report are written under `target/mounted-resource/`.
+The existing app SDK web lane runs this journey; absence of the compiled bundle
+or browser fails rather than skips. All identities and clipboard permission
+exist only inside this fixture. No live account, desktop or microphone is used.
+
+The mounted run exposed two real gaps: the CLI omitted `resource.html` and
+`resource.css` from its browser release closure, and standalone Chat mounting
+rejected the canonical package-primary existing record. Both are corrected.
+Native catalogue requests now use the page's existing certified actions peer,
+with late replies fenced by mount lifetime and connection identity. Native Copy
+reports the browser's actual synchronous clipboard result; no clipboard fallback
+pretends a denied write succeeded.
+
+Cloud PRs 56 and 57 are merged and their main checks passed. The current Cloud
+workflow tests/builds and uploads a hosted-console artifact; it does not deploy
+a runtime. Public reads of `https://tilo.coffee/` and `/config.json` succeeded.
+The runtime peer alias points to immutable release
+`5f9d0febb520f2b5be678662fb5011ce3431d2c9f20229d35a4f6b59b177f89e`.
+Both `/qos-runtime/resource.html` and that release's `resource.html` returned
+HTTP 403. This proves the entry was unavailable at audit time, not whether the
+object is missing or blocked by access policy. The public CSP permits the
+existing AWS API/auth hosts, `*.node.tilo.coffee`, and the configured public Iroh
+relay; no CSP change was made. The read-only CloudFormation lookup could not
+verify exact stack outputs or publication provenance because AWS reported an
+expired login. Credentials were not renewed and no deployment was attempted.
+
+Rollout requires an authorized operator to restore their AWS login for read-only
+stack verification, then explicitly authorize publication through the existing
+Cloud deployment path. Verify the immutable release closure and public resource
+entry before configuring the native host's `resource_browser_page` to that URL.
+The host origin must fit the existing CSP. Publish the account's existing public
+Settings identity entry through its normal action before real-account acceptance.
+Physical microphone consent and two real devices remain untested.
+
+The original isolated native voice-session CI failure closed before the expected
+call-state event. Three bounded exact repeats passed; no race was demonstrated.
+The assertion is preserved and now names its expected stage on closure. No
+blind reconnect or test retry was added.

@@ -79,6 +79,8 @@ tracing.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+accounts = { path = "../../system/accounts", features = ["person"] }
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-automerge-isolate = { path = "../../doc/tilo-automerge-isolate" }
 tempfile.workspace = true
 tilo-document = { path = "../../doc/tilo-document" }
