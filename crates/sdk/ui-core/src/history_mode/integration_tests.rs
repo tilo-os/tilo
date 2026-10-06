@@ -344,7 +344,8 @@ fn managed_review_dialog_drains_and_returns_to_retained_preview() {
     );
     assert!(
         !driver.frame_output().needs_redraw,
-        "review dialog stayed dirty after draw"
+        "review dialog stayed dirty after draw: {:?}",
+        driver.frame_requesters()
     );
     assert!(!driver.poll_frame().unwrap());
 
