@@ -212,6 +212,14 @@ class Journey:
         return first, second
 
 
+def checked_output(path):
+    """Keep run receipts and private profiles outside tracked source."""
+    output = path.resolve()
+    if output.is_relative_to(REPO) and not output.is_relative_to(REPO / "target"):
+        raise ValueError("Android run output must be under target/ or outside the checkout")
+    return output
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--payload", type=Path, required=True)
@@ -220,6 +228,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--runtime-parent", type=Path, required=True)
     args = parser.parse_args()
+    output = checked_output(args.output)
     payload = args.payload.resolve(strict=True)
     pinned(payload / "app.apk", APK_SHA)
     report = json.loads((payload / "qualification.json").read_text())
@@ -238,7 +247,6 @@ def main():
     parent = args.runtime_parent.resolve(strict=True)
     if parent.stat().st_uid != os.geteuid() or parent.stat().st_mode & 0o077:
         raise RuntimeError("runtime parent must be owned by this user and private")
-    output = args.output.absolute()
     output.mkdir(mode=0o700)
     profile = output / "profile"
     catalogue = profile / "data/tilo-apps"

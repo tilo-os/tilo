@@ -696,7 +696,9 @@ impl TabBar {
         } = pill;
         let text_primary = theme.tokens.colors.text_primary;
         let text_dim = theme.tokens.colors.text_dim;
-        let text_color = if is_active || is_hover {
+        // The cursor-following copy suppresses hover, but carries the primary
+        // label ink so an inactive source stays readable in motion.
+        let text_color = if is_active || is_hover || pill.suppress_hover {
             text_primary
         } else {
             text_dim
@@ -1811,6 +1813,17 @@ impl TabBar {
     pub fn take_drag(&mut self) -> Option<DragPayload> {
         self.pending_drag.take()
     }
+    /// Abandon a pending or lifted tab without turning its release into a drop.
+    pub fn cancel_drag(&mut self) -> bool {
+        if self.press_origin.is_none() && self.pending_drag.is_none() {
+            return false;
+        }
+        self.pending_drag = None;
+        let mut handled = false;
+        self.finish_drag_release(&mut handled);
+        true
+    }
+
     pub fn drag_in_flight(&self) -> bool {
         self.pending_drag.is_some()
     }
@@ -2044,11 +2057,19 @@ impl TabBar {
         let is_active = self.tabs.get(idx).is_some_and(|t| t.id == self.active_id);
         let is_hover = !suppress_hover && Some(idx) == self.hover_idx;
         let is_pressed = !suppress_hover && self.press_origin.is_some_and(|(j, _)| j == idx);
-        let mut look = pill_appearance(theme, is_active, is_hover, is_pressed);
+        let is_carried = suppress_hover
+            && matches!(
+                &self.pending_drag,
+                Some(DragPayload::Tab { tab, .. })
+                    if self.tabs.get(idx).is_some_and(|item| item.id == *tab)
+            );
+        // The carried object needs its own readable surface even when its
+        // source tab is inactive. This changes paint, not tab selection.
+        let mut look = pill_appearance(theme, is_active || is_carried, is_hover, is_pressed);
         // Inactive body rides the reveal curve instead of switching on/off with
         // the pointer, fading (fill + edge together, so the hairline can't flicker
         // off a frame late) over the same frames its chips slide back in.
-        if !is_active && !is_pressed {
+        if !is_active && !is_pressed && !is_carried {
             let fade = if suppress_hover {
                 0.0
             } else {
@@ -2643,6 +2664,14 @@ impl Widget for TabBar {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let WindowEvent::KeyboardInput { event, .. } = event
+            && event.state == ElementState::Pressed
+            && event.logical_key == Key::Named(NamedKey::Escape)
+            && self.cancel_drag()
+        {
+            *ctx.handled = true;
+            return;
+        }
         if let WindowEvent::KeyboardInput { event, .. } = event
             && event.state == ElementState::Pressed
             && self.handle_keyboard_navigation(&event.logical_key)
@@ -3334,7 +3363,11 @@ impl TabBar {
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
-            Self::GHOST_PILL_ALPHA,
+            if theme.colors_are_forced() {
+                1.0
+            } else {
+                Self::GHOST_PILL_ALPHA
+            },
             transform,
             &clip,
         );
