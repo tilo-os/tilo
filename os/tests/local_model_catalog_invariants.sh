@@ -7,6 +7,7 @@ source_json="$repo/crates/agent/local-model-service/tests/fixtures/catalog-sourc
 runtime="$repo/crates/agent/local-model-service/tests/fixtures/example-runtime.bin"
 model="$repo/crates/agent/local-model-service/tests/fixtures/example-model.bin"
 tool="$repo/crates/agent/local-model-service/src/bin/tilo-model-catalog.rs"
+catalog="$repo/crates/agent/local-model-service/src/catalog.rs"
 fail=0
 
 ok() { printf 'ok    %s\n' "$*"; }
@@ -38,8 +39,14 @@ jq -e --arg hash "$model_hash" --argjson size "$model_size" \
     '.models[0].artifact.sha256 == $hash and .models[0].artifact.size_bytes == $size' \
     "$source_json" >/dev/null || bad 'model fixture receipt drifted'
 
-grep -Fq 'tilo.local-model.catalog.v1' "$tool" \
+grep -Fq 'pub const CATALOG_SIGNATURE_DOMAIN: &str = "tilo.local-model.catalog.v1";' "$catalog" \
     || bad 'catalog signature domain is not pinned in release tooling'
+grep -Fq 'CATALOG_SIGNATURE_DOMAIN.as_bytes().to_vec()' "$catalog" \
+    || bad 'canonical signing bytes do not use the pinned domain'
+grep -Fq 'let payload_bytes = catalog_signing_bytes(&payload)?;' "$tool" \
+    || bad 'release tooling does not sign the canonical domain-separated payload'
+grep -Fq 'let payload = catalog_signing_bytes(&signed.payload)?;' "$catalog" \
+    || bad 'catalog verification does not use the same domain-separated payload'
 grep -Fq 'signing_key.verifying_key()' "$tool" \
     || bad 'release tooling does not derive public image trust from the signer'
 if grep -R -Eiq 'private[_ -]?key|signing[_ -]?key|secret[_ -]?key' \
