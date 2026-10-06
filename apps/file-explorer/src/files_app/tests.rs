@@ -2270,6 +2270,148 @@ mod command_path_tests {
         (w, cfg)
     }
 
+    #[test]
+    #[cfg(unix)]
+    fn airdrop_file_action_requires_host_availability_and_cannot_submit_trust() {
+        use ui::collaboration::{
+            CollabEvent, CollabRequest, NearbyTransferCommand, NearbyTransferReply,
+        };
+        let (mut widget, config) = hermetic();
+        let source = config.path().join("report.txt");
+        std::fs::write(&source, b"approved source").unwrap();
+        widget.navigate(config.path().to_path_buf());
+        let mut document = automerge::AutoCommit::new();
+        let address = ui::tilo_actions::ActionAddress::new(
+            crate::search_provider::entry_resource_id(&source),
+            "send-airdrop",
+        );
+        let resources = crate::files_app::published::tree(&widget, &document);
+        assert!(ui::tilo_actions::door::resolve(&resources, &address).is_none());
+        widget.nearby_send.poll_if_due(ui::time::now());
+        let request_id = widget
+            .nearby_send
+            .take_requests()
+            .iter()
+            .find_map(|request| match request {
+                CollabRequest::NearbyTransferCommand {
+                    request_id,
+                    command: NearbyTransferCommand::AirDropAvailability,
+                    ..
+                } => Some(*request_id),
+                _ => None,
+            })
+            .unwrap();
+        widget
+            .nearby_send
+            .handle_event(&CollabEvent::NearbyTransferCommandResult {
+                request_id,
+                result: Ok(NearbyTransferReply::AirDropAvailability { available: true }),
+            });
+        let resources = crate::files_app::published::tree(&widget, &document);
+        let action = ui::tilo_actions::door::resolve(&resources, &address)
+            .expect("lab host publishes file action");
+        assert_eq!(
+            action
+                .params()
+                .iter()
+                .map(|param| &*param.name)
+                .collect::<Vec<_>>(),
+            ["address", "port"]
+        );
+        let mut args = serde_json::Map::new();
+        args.insert("address".into(), "127.0.0.1".into());
+        args.insert("port".into(), 443.into());
+        let encoded = action.build_json(&args).unwrap();
+        crate::files_app::published::start(
+            &mut widget,
+            action.kind,
+            &encoded.type_id,
+            &encoded.payload,
+            &mut document,
+            &automerge::ROOT,
+        )
+        .unwrap();
+        let requests = widget.nearby_send.take_requests();
+        assert!(
+            matches!(requests.as_slice(), [CollabRequest::NearbyTransferCommand {
+            command: NearbyTransferCommand::SendAirDrop { source_path, address, port: 443 }, ..
+        }] if source_path == source.as_os_str().as_encoded_bytes() && address == "127.0.0.1")
+        );
+        // Retaining an encoded action does not retain its source capability.
+        std::fs::remove_file(&source).unwrap();
+        widget.refresh();
+        assert!(
+            crate::files_app::published::start(
+                &mut widget,
+                action.kind,
+                &encoded.type_id,
+                &encoded.payload,
+                &mut document,
+                &automerge::ROOT
+            )
+            .is_err()
+        );
+        assert!(widget.nearby_send.take_requests().is_empty());
+    }
+
+    #[test]
+    fn nearby_recovered_receive_decline_is_available_without_a_destination() {
+        use ui::collaboration::{
+            CollabRequest, NearbyTransferCommand, NearbyTransferDirection, NearbyTransferHandle,
+            NearbyTransferPhase, NearbyTransferSnapshot, NearbyTransferStatus,
+        };
+        use ui::tilo_actions::ActionInput;
+
+        let transfer = NearbyTransferHandle::from_issued_bytes([0x61; 16]);
+        let (mut widget, _config) = hermetic();
+        widget
+            .nearby_send
+            .install_snapshot_for_test(NearbyTransferSnapshot {
+                transfers: vec![NearbyTransferStatus {
+                    handle: transfer,
+                    name: "Interrupted report".into(),
+                    device_label: "Offline laptop".into(),
+                    direction: NearbyTransferDirection::Receiving,
+                    phase: NearbyTransferPhase::AwaitingDestination,
+                    transferred_bytes: 8,
+                    total_bytes: 16,
+                }],
+                ..Default::default()
+            });
+        let rows = crate::files_app::published::tree(&widget, &automerge::AutoCommit::new());
+        let resource = rows[0]
+            .children
+            .iter()
+            .find(|resource| resource.kind == "files.nearby-transfer")
+            .expect("recoverable receive remains a semantic resource");
+        let decline = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "decline")
+            .expect("decline needs no destination grant");
+        assert_eq!(decline.contract.confirmation, ConfirmationPolicy::Confirm);
+        let ActionInput::Immediate(encoded) = &decline.input else {
+            panic!("decline must use the existing opaque action payload")
+        };
+        let mut document = automerge::AutoCommit::new();
+        crate::files_app::published::start(
+            &mut widget,
+            OperationKind::Effect,
+            &encoded.type_id,
+            &encoded.payload,
+            &mut document,
+            &automerge::ROOT,
+        )
+        .expect("execute recovered receive decline");
+        assert!(matches!(widget.nearby_send.take_requests().as_slice(), [
+            CollabRequest::NearbyTransferCommand {
+                command: NearbyTransferCommand::Decide {
+                    handle, accept: false, destination: None, remember_for_session: false,
+                }, ..
+            }
+        ] if *handle == transfer));
+    }
+
     fn nearby_receiver_actions_are_opaque_confirmed_and_current() {
         use ui::collaboration::{
             NearbyDestinationHandle, NearbyTransferDestination, NearbyTransferDirection,

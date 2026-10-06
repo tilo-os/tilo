@@ -9,6 +9,7 @@ use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
+mod guide;
 mod json_stdout;
 mod publishing;
 
@@ -18,6 +19,7 @@ mod publishing;
     version,
     about = "Create and work on Tilo apps",
     long_about = "The short path from an app idea to a running Tilo window.\n\n\
+                  Start with `tilo-app guide` for short offline workflows.\n\n\
                   Run `tilo-app new` for an interactive setup, or provide a name \
                   and flags for a reproducible, non-interactive scaffold. Then \
                   use `add`, `locale`, `check`, `scenario`, `dev`, `test`, `run`, `build`, `shot`, `inspect`, and `package` from anywhere inside the app; `--target linux|macos|web` picks the platform. Use `ui` to construct validated serialized screens."
@@ -34,6 +36,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Read one short offline workflow, or list the available topics.
+    Guide {
+        #[arg(value_enum)]
+        topic: Option<guide::Topic>,
+    },
     /// Create a buildable app with packaging and headless-test defaults.
     New(NewArgs),
     /// List the example apps `tilo-app new --from-example` starts from.
@@ -1090,6 +1097,7 @@ fn main() -> ExitCode {
     let interactive = json.is_none();
     let name = cli.command.name();
     let result = match cli.command {
+        Command::Guide { topic } => Ok(guide::run(topic, interactive)),
         Command::New(args) => run_new(args, interactive),
         Command::Examples => Ok(list_examples()),
         Command::Add(args) => run_add(args, interactive),
@@ -1194,6 +1202,7 @@ fn failed(message: impl Into<String>, report: Value) -> anyhow::Error {
 impl Command {
     fn name(&self) -> &'static str {
         match self {
+            Self::Guide { .. } => "guide",
             Self::New(_) => "new",
             Self::Examples => "examples",
             Self::Add(_) => "add",
@@ -1456,6 +1465,9 @@ fn run_add_ci(forge: ForgeArg, runs_on: Option<&str>, options: &AddOptions) -> R
         "Would create"
     };
     println!("{verb} {}", outcome.path.display());
+    if let Some(path) = &outcome.reusable_path {
+        println!("{verb} {} (reusable GitHub workflow)", path.display());
+    }
     println!(
         "Next: add the TILO_PUBLISHER_KEY secret (what `tilo-app keys export` prints), then push a v* tag to publish"
     );

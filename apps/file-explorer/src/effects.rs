@@ -228,6 +228,18 @@ pub enum FilesEffect {
         #[param("The nearby device")]
         target: NearbyTargetHandle,
     },
+    /// Send a file to an independently verified `AirDrop` lab receiver.
+    /// The compositor, rather than this application's parameters, collects
+    /// the receiver fingerprint and approves exactly one staged file.
+    #[effect(row, job, privileged, permission = "read")]
+    SendAirDrop {
+        #[param("The entry's row id")]
+        entry: String,
+        #[param("The receiver's literal IP address")]
+        address: String,
+        #[param("The receiver's TLS port")]
+        port: u16,
+    },
     /// Create one-time share link.
     #[effect(row, job)]
     ShareLink {
@@ -242,8 +254,8 @@ pub enum FilesEffect {
         #[param("Where to save it")]
         destination: NearbyDestinationHandle,
     },
-    /// Decline an incoming transfer.
-    #[effect(row)]
+    /// Decline an incoming transfer and discard its retained partial bytes.
+    #[effect(row, destructive)]
     DeclineNearby {
         #[param("The incoming transfer")]
         transfer: NearbyTransferHandle,

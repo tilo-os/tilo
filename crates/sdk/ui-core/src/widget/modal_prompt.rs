@@ -56,6 +56,7 @@ pub struct PromptBody {
     field_rect: Rect,
     /// The caption's height at the body's width, from the last measure.
     caption_h: f64,
+    label_height: f64,
     theme: Theme,
 }
 
@@ -74,6 +75,7 @@ impl PromptBody {
             rect: Rect::ZERO,
             field_rect: Rect::ZERO,
             caption_h: 0.0,
+            label_height: 0.0,
             theme: Theme::dark(),
         }
     }
@@ -171,7 +173,7 @@ impl PromptBody {
             h += self.caption_h + gap * 2.0;
         }
         if !self.label.is_empty() {
-            h += Self::label_h(theme) + gap;
+            h += self.label_height.max(Self::label_h(theme)) + gap;
         }
         h
     }
@@ -184,7 +186,7 @@ impl PromptBody {
             y += self.caption_h + gap * 2.0;
         }
         if !self.label.is_empty() {
-            y += Self::label_h(theme) + gap;
+            y += self.label_height.max(Self::label_h(theme)) + gap;
         }
         let field_h = self.field_h(theme);
         let bottom = if self.multiline {
@@ -242,6 +244,15 @@ impl Widget for PromptBody {
                     .1,
             )
         };
+        self.label_height = f64::from(
+            text_renderer
+                .measure_style(
+                    &self.label,
+                    (width > 0.0).then_some(width),
+                    &theme.text(TextRole::Label),
+                )
+                .1,
+        );
         taffy::Size {
             width,
             height: crate::num::f32_of_f64(self.height(&theme).ceil()),
@@ -270,6 +281,16 @@ impl Widget for PromptBody {
         let c = &theme.tokens.colors;
         let width = crate::num::f32_of_f64(self.rect.width().max(1.0));
         let gap = Self::gap(theme);
+        self.theme = theme.clone();
+        self.caption_h = f64::from(
+            tr.measure_style(&self.caption, Some(width), &theme.text(TextRole::Body))
+                .1,
+        );
+        self.label_height = f64::from(
+            tr.measure_style(&self.label, Some(width), &theme.text(TextRole::Label))
+                .1,
+        );
+        self.place_field();
         let mut y = self.rect.y0;
         if !self.caption.is_empty() {
             tr.draw_style(
@@ -288,7 +309,7 @@ impl Widget for PromptBody {
                 &self.label,
                 c.text_primary,
                 transform.pre_translate(Vec2::new(self.rect.x0, y)),
-                None,
+                Some(width),
                 &theme.text(TextRole::Label),
             );
         }
@@ -453,6 +474,41 @@ mod tests {
                 taffy: &taffy,
             },
         );
+    }
+
+    #[test]
+    fn wrapped_prompt_help_leaves_the_editable_field_below_all_lines() {
+        for scale in [1.0, 2.0] {
+            let mut body = PromptBody::new(
+                "Only the playlist owner can rename it. Saving does not grant editing access. Ask the owner for permission before editing this shared playlist.",
+                "Name",
+            )
+            .with_caption("This change is sent to the provider after confirmation.");
+            body.rect = Rect::new(0.0, 0.0, 240.0, 700.0);
+            let mut text = TextRenderer::new();
+            text.set_text_scale(scale);
+            let theme = Theme::high_contrast().with_text_scale(scale);
+            body.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            let (_, caption) =
+                text.measure_style(&body.caption, Some(240.0), &theme.text(TextRole::Body));
+            let (_, label) =
+                text.measure_style(&body.label, Some(240.0), &theme.text(TextRole::Label));
+            assert!(
+                label > theme.text(TextRole::Label).line_height_px() * 2.0,
+                "the long label occupies multiple lines"
+            );
+            assert!(
+                body.field_rect.y0 >= f64::from(caption + label) + PromptBody::gap(&theme) * 3.0,
+                "text and editable field do not overlap"
+            );
+            assert!(body.field_rect.y1 <= body.rect.y1);
+        }
     }
 
     #[test]

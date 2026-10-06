@@ -438,11 +438,10 @@ mod tests {
         }
         // Phase `read_capability_plans_a_read_only_path_only`.
         {
-            let caps = vec![fs_grant(
-                "so.tilo.books",
-                "/var/workspace/books",
-                Verb::Read,
-            )];
+            let caps = vec![
+                CapOverride::grant(Subject::app("so.tilo.books"), Scope::Workspace, Verb::Write),
+                fs_grant("so.tilo.books", "/var/workspace/books", Verb::Read),
+            ];
             let plan =
                 CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(1000), fake_device_paths);
             assert_eq!(plan.ro_paths, vec![PathBuf::from("/var/workspace/books")]);

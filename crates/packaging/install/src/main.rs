@@ -679,7 +679,7 @@ impl Checked {
     }
     /// `tilo-runtime/<v>`, when the manifest pins one.
     fn runtime_ref(&self) -> Option<&str> {
-        self.manifest.package.runtime.as_deref()
+        tilo_app_package::desktop::runtime_dependency(&self.manifest)
     }
     fn cli_commands(&self) -> Vec<String> {
         self.manifest
@@ -709,17 +709,15 @@ fn check(candidate: &Candidate, trust: &TrustFlags) -> Result<Checked, Error> {
     let (manifest, publisher_key_hex, attested_by) = verify_and_gate(&meta, trust)?;
 
     let len = candidate.len()?;
-    if !tilo_app_package::tapp_size_allowed(manifest.package.kind, len) {
+    tilo_app_package::desktop::validate_native_host(&manifest)
+        .map_err(|e| Error::Policy(e.to_string()))?;
+    if let Some(limit) = tilo_app_package::app_size_limit(&manifest)
+        && len > limit
+    {
         return Err(Error::Policy(format!(
-            "application .tapp is {len} bytes; the {}-byte limit keeps apps instant and moves shared dependencies into runtime bundles",
-            tilo_app_package::MAX_APP_TAPP_BYTES
+            "application .tapp is {len} bytes; this target's signed package contract permits at most {limit} bytes"
         )));
     }
-
-    // A signature says who wrote the manifest, not that its contents are
-    // reasonable — a package naming its own filesystem paths is refused
-    // here regardless of signature.
-    tilo_app_package::validate_manifest(&manifest).map_err(|e| Error::Policy(e.to_string()))?;
 
     Ok(Checked {
         meta,
