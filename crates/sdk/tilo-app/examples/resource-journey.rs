@@ -282,6 +282,16 @@ mod tests {
         use tilo_app::headless::SemanticExpectation;
 
         let mut app = TestApp::<ChecklistApp>::new().expect("open");
+        let add_address = app
+            .actions()
+            .expect("discover the production action catalogue")
+            .into_iter()
+            .find(|entry| entry.address.action == "add")
+            .expect("the checklist publishes Add")
+            .address;
+        let add_binding = tilo_app::widget::ControlBindingKind::Action(add_address);
+        let bindings =
+            tilo_app::widget::controls::control_action_bindings(app.harness().root_widget());
         let controls = [
             ("add", "Add task"),
             ("add-icon", "Add task"),
@@ -289,6 +299,15 @@ mod tests {
             ("add-component", "Add task"),
         ];
         for (id, name) in controls {
+            assert_eq!(
+                bindings
+                    .iter()
+                    .filter(|binding| binding.control_id == id)
+                    .map(|binding| binding.kind.clone())
+                    .collect::<Vec<_>>(),
+                vec![add_binding.clone()],
+                "every presentation binds exactly the discovered Add address"
+            );
             app.harness()
                 .expect(
                     &SemanticExpectation::named(id)
@@ -304,7 +323,15 @@ mod tests {
             app.harness()
                 .expect(&SemanticExpectation::named(id).focused(true))
                 .expect("customization preserves focus");
+            let before = app.state().tasks.len();
             app.harness().key("Enter");
+            let state = app.state();
+            assert_eq!(state.tasks.len(), before.saturating_add(1));
+            assert_eq!(
+                state.tasks.values().filter(|task| task.title == id).count(),
+                1
+            );
+            assert!(state.draft.is_empty());
         }
         assert_eq!(app.state().tasks.len(), controls.len());
         assert!(app.undo(), "the last button activation is an undo step");
@@ -313,9 +340,14 @@ mod tests {
             .expect("draft");
         let before = app.state();
         app.set_role(Role::Viewer);
-        for (id, _) in controls {
+        for (id, name) in controls {
             app.harness()
-                .expect(&SemanticExpectation::named(id).enabled(false))
+                .expect(
+                    &SemanticExpectation::named(id)
+                        .role(AccessibleRole::Button)
+                        .name(name)
+                        .enabled(false),
+                )
                 .expect("customized controls inherit the live role change");
         }
         assert!(matches!(
@@ -323,6 +355,18 @@ mod tests {
             Err(DoorError::Unknown(_))
         ));
         assert_eq!(app.state(), before);
+        let versions = app.versions();
+        // Revocation between focus and Enter must stop every presentation.
+        for (id, _) in controls {
+            app.set_role(Role::Owner);
+            app.harness()
+                .perform_named(id, &Action::Focus)
+                .expect("focus while authorized");
+            app.set_role(Role::Viewer);
+            app.harness().key("Enter");
+            assert_eq!(app.state(), before);
+            assert_eq!(app.versions(), versions);
+        }
     }
 
     #[test]
