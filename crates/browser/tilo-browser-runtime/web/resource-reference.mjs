@@ -23,7 +23,7 @@ export async function resolveResourceReference({reference, provider, actions, cu
   // Labels and action contracts come from the authorized live publisher, never
   // from the untrusted message. Navigation still uses its own view door.
   return {provider, app, revision: page.revision, resource: rows[0].resource,
-    views: rows.filter(row => row.action?.kind === 'View' && row.action.view?.open_action === row.action.address?.action && !row.action.view.mount).map(row => row.action)};
+    views: rows.filter(row => row.action?.kind === 'View' && row.action.view?.open_action === row.action.address?.action).map(row => row.action)};
 }
 
 /** Explicitly open a reference in a standalone native-rendered browser app.
@@ -53,7 +53,7 @@ export async function openResourceReference({reference, provider, action, action
     // permissions. Read metadata does not authorize a later view invocation.
     const view = opened.actions(resolved.resource.id).find(view =>
       view.address?.resource === resolved.resource.id && view.address.action === action && view.kind === 'View'
-      && view.view?.open_action === action && !view.view.mount);
+      && view.view?.open_action === action);
     if (!view || (view.input && view.input !== 'None')
       || view.params?.some(param => param.required)
       || (view.contract?.confirmation?.mode && view.contract.confirmation.mode !== 'none')) {
