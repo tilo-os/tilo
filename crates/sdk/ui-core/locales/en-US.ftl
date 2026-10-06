@@ -470,6 +470,7 @@ dictation-cancel = Cancel
 
 music-home-heading = Your music
 music-connect-spotify = Connect Spotify
+music-connect-spotify-library = Enable full library and device controls
 music-spotify-playback = Authorize playback
 music-spotify-playback-authorized = Spotify • Playback grant authorized; Premium checked before audio
 music-spotify-devices = Spotify devices
