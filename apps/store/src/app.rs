@@ -3696,6 +3696,10 @@ impl StoreApp {
     }
 
     fn apply_worker_snapshot(&mut self, snap: crate::worker::Snapshot) {
+        let current_query = snap
+            .query
+            .as_deref()
+            .is_none_or(|query| query == self.query());
         let current_detail = snap.detail.as_ref().is_none_or(|update| match update {
             crate::worker::DetailUpdate::OpenedReference(_) => true,
             crate::worker::DetailUpdate::Requested { id, .. } => {
@@ -3703,7 +3707,7 @@ impl StoreApp {
             }
         });
         let applies_items = match snap.query.as_deref() {
-            Some(query) => query == self.query(),
+            Some(_) => current_query,
             None => snap.detail.is_none(),
         };
         if applies_items {
@@ -3715,7 +3719,7 @@ impl StoreApp {
         self.set_flatpak_available(snap.flatpak_available);
         self.flatpak_error = snap.flatpak_error;
         self.set_remotes(snap.remotes);
-        if current_detail {
+        if current_detail && current_query {
             self.set_status_line(snap.status_line);
             self.set_operation_error(snap.operation_error);
         }
@@ -4825,6 +4829,51 @@ mod tests {
             "an explicitly opened reference still navigates to its app"
         );
         assert!(app.operation_error.is_none());
+    }
+
+    #[test]
+    fn late_search_feedback_preserves_the_current_declared_query() {
+        let mut app = seeded_app();
+        app.admit(StoreEffect::SetSearch {
+            query: "notes".into(),
+        })
+        .unwrap();
+        app.admit(StoreEffect::SetSearch {
+            query: "chess".into(),
+        })
+        .unwrap();
+        let retained_status = app.status_line.clone();
+        let retained_count = app.items.len();
+        let snapshot = |query: &str, items, error: Option<&str>| crate::worker::Snapshot {
+            items,
+            status_line: "Received search results".into(),
+            query: Some(query.into()),
+            detail: None,
+            remotes: Vec::new(),
+            flatpak_available: true,
+            flatpak_error: None,
+            operation_error: error.map(str::to_owned),
+        };
+        app.apply_worker_snapshot(snapshot("notes", Vec::new(), Some("Earlier search failed")));
+        assert_eq!(
+            app.status_line, retained_status,
+            "stale results cannot replace the current query feedback"
+        );
+        assert!(
+            app.operation_error.is_none(),
+            "stale errors cannot report failure for the current query"
+        );
+        assert_eq!(app.items.len(), retained_count);
+        let current = app
+            .items
+            .iter()
+            .find(|item| item.id == "id.chess")
+            .unwrap()
+            .clone();
+        app.apply_worker_snapshot(snapshot("chess", vec![current], None));
+        assert_eq!(app.status_line, "Received search results");
+        assert_eq!(app.items.len(), 1);
+        assert_eq!(app.items[0].id, "id.chess");
     }
 
     fn inspected_store() -> (
