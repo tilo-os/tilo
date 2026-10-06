@@ -147,6 +147,24 @@ impl RectSprings {
 }
 
 impl WindowGroup {
+    /// Move this group and the chrome laid out inside it. Used while a
+    /// retained strip is drawn, so the encoded scene stays in canvas
+    /// coordinates and a pan does not rewrite it. The caller puts the
+    /// rects back before hit testing.
+    pub(crate) fn offset_layout(&mut self, dx: f64) {
+        if dx == 0.0 {
+            return;
+        }
+        let shift = vello::kurbo::Vec2::new(dx, 0.0);
+        self.rect = self.rect + shift;
+        self.restore_rect = self.restore_rect + shift;
+        self.close_rect = self.close_rect + shift;
+        self.bar.offset_layout(dx);
+        for (_, host) in &mut self.hosts {
+            host.offset_layout(dx);
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn drawn_rect(&self) -> Rect {
         self.rect_spring
