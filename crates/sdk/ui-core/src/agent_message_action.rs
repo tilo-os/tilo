@@ -649,10 +649,12 @@ fn is_exact_confirmation(
 fn is_message_row(row: &tilo_actions::remote::CatalogueRow, agent: &str) -> bool {
     let key = format!("chat.person:{agent}");
     row.app_id == "so.tilo.chat"
-        && row.resource.id == key
         && row.resource.kind == "chat.agent"
         && row.action.as_ref().is_some_and(|action| {
-            action.address.resource == key
+            // Runtime resource addresses can be opaque. The semantic key
+            // identifies the Agent; the row and descriptor must agree on
+            // the separate concrete resource that will actually be invoked.
+            action.address.resource == row.resource.id
                 && action.address.action == "message"
                 && action.resource_kind == "chat.agent"
                 && action.kind == tilo_actions::OperationKind::Document
@@ -871,6 +873,51 @@ mod tests {
             begin_from_offer(&RemoteActions::session(), &offer),
             AgentMessageSubmission::Confirm { .. }
         ));
+    }
+
+    #[test]
+    fn confirmed_semantic_agent_offer_invokes_its_exact_opaque_runtime_resource() {
+        use crate::collaboration::CollabRequest;
+        use crate::widget::Collaborative;
+        use tilo_actions::remote::RemoteActionMessage;
+
+        let mut page = confirmed_page("scribe", "chat-r9");
+        page.rows[0].resource.id = "opaque-agent-row".into();
+        page.rows[0]
+            .action
+            .as_mut()
+            .expect("message descriptor")
+            .address
+            .resource = "opaque-agent-row".into();
+        let target = page.rows[0].target().expect("opaque message target");
+        assert!(matches!(
+            offer_from_page(page.clone(), target.clone()),
+            AgentMessageOfferPoll::Available(_)
+        ));
+        let mut actions = RemoteActions::session();
+        let result = poll(
+            &actions,
+            "room-a",
+            "scribe",
+            "hello",
+            &AgentMessageSubmission::Confirm {
+                target: target.clone(),
+                revision: "chat-r9".into(),
+                call: LocalState::new(RemoteCall::Done(page)),
+            },
+            crate::time::now().checked_add(RESOLVE_WINDOW).unwrap(),
+            MAX_PAGES,
+        );
+        assert!(matches!(
+            result,
+            AgentMessagePoll::Advance {
+                submission: AgentMessageSubmission::Invoke(_),
+                ..
+            }
+        ));
+        assert!(matches!(actions.take_collab_requests().as_slice(),
+            [CollabRequest::RemoteAction { message: RemoteActionMessage::Invoke(request) }]
+                if request.target == target && request.argument == InvokeArgument::Text("hello".into())));
     }
 
     #[test]
