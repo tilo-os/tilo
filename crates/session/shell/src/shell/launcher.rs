@@ -13,6 +13,7 @@
 //! through [`drain_events`], drained once per frame.
 
 use crate::shell::state::WorkspaceAuthority as _;
+pub(crate) mod action_authority;
 use std::collections::VecDeque;
 #[cfg(any(test, target_os = "linux"))]
 use std::process::Command;
@@ -140,7 +141,7 @@ static WINDOWS_COMPAT_ENTRY_GENERATION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
 #[cfg(target_os = "linux")]
-fn proc_stat(pid: u32) -> Option<(u32, u64)> {
+pub(super) fn proc_stat(pid: u32) -> Option<(u32, u64)> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // comm is parenthesised and may contain spaces/parentheses; the final ')'
     // is the only safe place from which to index the remaining fields.
@@ -153,7 +154,7 @@ fn proc_stat(pid: u32) -> Option<(u32, u64)> {
 // Linux process ancestry is the authority for sandbox launch attribution.
 // Other hosts must not infer equivalent authority from numeric PIDs.
 #[cfg(not(target_os = "linux"))]
-fn proc_stat(_pid: u32) -> Option<(u32, u64)> {
+pub(super) fn proc_stat(_pid: u32) -> Option<(u32, u64)> {
     None
 }
 
@@ -1020,6 +1021,7 @@ pub(crate) struct LaunchSession(std::sync::Arc<SessionLaunches>);
 
 pub(crate) struct SessionLaunches {
     events: Mutex<Vec<LaunchEvent>>,
+    pub(super) startup: super::launch_readiness::StartupObservations,
     /// `package_id` -> where its next window should land; claimed (not
     /// consumed) by [`placement_for_toplevel`] since the compositor tracks
     /// each toplevel in two trees and consuming here would desync them.
@@ -1067,6 +1069,7 @@ impl Default for SessionLaunches {
     fn default() -> Self {
         Self {
             events: Mutex::default(),
+            startup: super::launch_readiness::StartupObservations::default(),
             pending: Mutex::default(),
             launched: Mutex::default(),
             surfaces: Mutex::default(),
@@ -2314,7 +2317,7 @@ fn execute_workspace_agent(
         identity_path.as_deref(),
         agent_id,
     );
-    if let Err(detail) = spawn_detached(app.clone(), command) {
+    if let Err(detail) = spawn_detached(app.clone(), command, None) {
         return Err(LaunchError::AgentLaunchWorkerUnavailable { detail });
     }
     Ok(app)
@@ -2703,9 +2706,11 @@ fn execute_installed_inner(
             app.package_id
         );
     }
+    let authority_lease = action_authority::attach_optional(&app, room, &mut command);
     tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "governance projection staged");
     remember_launch(&app);
-    let _ = spawn_detached(app.clone(), command);
+    spawn_detached(app.clone(), command, authority_lease)
+        .map_err(|detail| LaunchError::AgentLaunchWorkerUnavailable { detail })?;
     tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "launch worker queued");
     Ok(app)
 }
@@ -2991,6 +2996,32 @@ pub fn launch_document_in_workspace(
     launch_with_document(package_id, workspace.room, document)
 }
 
+/// Execute an already resolved installed package under the workspace's
+/// ordinary capability, identity and continuity authority.
+///
+/// # Errors
+/// Refuses packages without a GUI or the normal launcher preflight errors.
+pub(crate) fn launch_resolved_in_workspace(
+    app: InstalledApp,
+    workspace: &Workspace,
+) -> Result<(), LaunchError> {
+    if !app.has_gui {
+        return Err(LaunchError::NotAGuiApp {
+            package_id: app.package_id,
+        });
+    }
+    execute_installed(
+        app,
+        workspace.room,
+        None,
+        None,
+        None,
+        None,
+        Some(workspace.capabilities.clone()),
+    )
+    .map(|_| ())
+}
+
 /// [`launch_uri_in_workspace`] taking the room and capabilities directly
 /// rather than a borrowed [`Workspace`], so a caller reading them out of a
 /// lock guard can drop it before the launch's file I/O and process spawn
@@ -3032,8 +3063,20 @@ pub fn launch_uri_in_workspace(
 
 /// Run `command` on a worker thread and report the outcome through
 /// [`LaunchSession`]; the thread lives as long as the app does.
-fn spawn_detached(app: InstalledApp, command: LaunchCommand) -> Result<(), String> {
-    spawn_launch(app.package_id, app.display_name, command)
+fn spawn_detached(
+    app: InstalledApp,
+    command: LaunchCommand,
+    authority: Option<action_authority::Lease>,
+) -> Result<(), String> {
+    #[cfg(any(test, target_os = "linux"))]
+    {
+        spawn_launch_with_authority(app.package_id, app.display_name, command, authority)
+    }
+    #[cfg(not(any(test, target_os = "linux")))]
+    {
+        drop(authority);
+        spawn_launch(app.package_id, app.display_name, command)
+    }
 }
 
 /// Put a [`LaunchCommand`]'s environment on the `tilo-launcher` process.
@@ -3068,6 +3111,7 @@ fn apply_launch_env_with(
 #[cfg(any(test, target_os = "linux"))]
 #[derive(Debug)]
 struct HeldLaunch {
+    authority: Option<action_authority::Lease>,
     package_id: String,
     display_name: String,
     command: LaunchCommand,
@@ -3098,7 +3142,13 @@ pub fn release_held_launches() {
     let session = LaunchSession::current();
     release_from(&session.gate, |held| {
         // A failure to start is reported through the session by `start_launch`.
-        let _ = start_launch(held.package_id, held.display_name, held.command, &session);
+        let _ = start_launch(
+            held.package_id,
+            held.display_name,
+            held.command,
+            &session,
+            held.authority,
+        );
     });
 }
 
@@ -3107,7 +3157,13 @@ pub fn release_held_launches() {
 #[cfg(any(test, target_os = "linux"))]
 pub fn fail_held_launches(reason: &str) {
     let session = LaunchSession::current();
-    fail_from(&session.gate, reason, |event| session.push(event));
+    release_from(&session.gate, |launch| {
+        session.startup.fail(
+            super::launch_readiness::command_token(&launch.command),
+            reason.to_owned(),
+        );
+        session.push(held_launch_failure(launch, reason));
+    });
 }
 
 #[cfg(any(test, target_os = "linux"))]
@@ -3119,7 +3175,7 @@ fn release_from(gate: &Mutex<Gate>, mut start: impl FnMut(HeldLaunch)) {
     }
 }
 
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(test)]
 fn fail_from(gate: &Mutex<Gate>, reason: &str, mut report: impl FnMut(LaunchEvent)) {
     let held = lock(gate).open();
     for launch in held {
@@ -3153,10 +3209,17 @@ fn admit_launch(
 ) -> Result<(), String> {
     use crate::shell::launch_gate::Admission;
 
+    let mut key_args = launch.command.args.clone();
+    if let Some(token) = super::launch_readiness::command_token(&launch.command) {
+        // Ordinary repeated palette launches remain deduplicated. A broker
+        // invocation owns one distinct startup attempt and cannot borrow
+        // another invocation's queued worker or adopted window.
+        key_args.push(format!("startup-observation:{token}"));
+    }
     let key = (
         launch.package_id.clone(),
         launch.command.program.clone(),
-        launch.command.args.clone(),
+        key_args,
     );
     let admission = lock(gate).admit(key, launch);
     match admission {
@@ -3184,15 +3247,35 @@ pub fn spawn_launch(
     display_name: String,
     command: LaunchCommand,
 ) -> Result<(), String> {
+    spawn_launch_with_authority(package_id, display_name, command, None)
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn spawn_launch_with_authority(
+    package_id: String,
+    display_name: String,
+    mut command: LaunchCommand,
+    authority: Option<action_authority::Lease>,
+) -> Result<(), String> {
+    super::launch_readiness::attach(&mut command);
     let session = LaunchSession::current();
     admit_launch(
         &session.gate,
         HeldLaunch {
+            authority,
             package_id,
             display_name,
             command,
         },
-        |held| start_launch(held.package_id, held.display_name, held.command, &session),
+        |held| {
+            start_launch(
+                held.package_id,
+                held.display_name,
+                held.command,
+                &session,
+                held.authority,
+            )
+        },
         |event| session.push(event),
     )
 }
@@ -3215,6 +3298,7 @@ fn start_launch(
     display_name: String,
     command: LaunchCommand,
     events: &LaunchSession,
+    authority: Option<action_authority::Lease>,
 ) -> Result<(), String> {
     #[cfg(all(test, not(target_os = "linux")))]
     if !TEST_EXECUTION_PROGRAM.with(|slot| slot.borrow().as_ref() == Some(&command.program)) {
@@ -3238,7 +3322,9 @@ fn start_launch(
         app.managed_workspace_id.clone(),
     );
     let worker_events = events.clone();
+    let startup_token = super::launch_readiness::command_token(&command);
     let spawn_result = builder.spawn(move || {
+        let _authority_lease = authority;
         let events = worker_events;
         events.clone().adopt();
         let mut cmd = Command::new(&command.program);
@@ -3253,6 +3339,7 @@ fn start_launch(
         let mut launch_gate = match install_launch_registration_gate(&mut cmd) {
             Ok(gate) => gate,
             Err(error) => {
+                events.startup.fail(startup_token, error.to_string());
                 events.push(LaunchEvent {
                     package_id: app.package_id.clone(),
                     display_name: app.display_name.clone(),
@@ -3269,6 +3356,7 @@ fn start_launch(
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
+                events.startup.fail(startup_token, e.to_string());
                 events.push(LaunchEvent {
                     package_id: app.package_id.clone(),
                     display_name: app.display_name.clone(),
@@ -3296,6 +3384,7 @@ fn start_launch(
             command.service_identity.is_some(),
         );
         mark_launch_spawned(&app.package_id, child.id());
+        events.startup.started(startup_token, child.id());
         // Recorded before the gate opens, so the session learns of the start
         // before the app can do anything a start explains.
         events.push(LaunchEvent {
@@ -3376,6 +3465,18 @@ fn start_launch(
                 detail: e.to_string(),
             },
         };
+        match &kind {
+            LaunchEventKind::Failed { stderr_tail, code } => events.startup.fail(
+                startup_token,
+                format!("the application launcher exited ({code:?}): {stderr_tail}"),
+            ),
+            LaunchEventKind::SpawnFailed { detail } => {
+                events.startup.fail(startup_token, detail.clone());
+            }
+            LaunchEventKind::Started { .. }
+            | LaunchEventKind::Exited
+            | LaunchEventKind::WindowLost { .. } => {}
+        }
         events.push(LaunchEvent {
             package_id: app.package_id.clone(),
             display_name: app.display_name.clone(),
@@ -3625,6 +3726,12 @@ pub(crate) fn record_host_window_open(surface_id: u64, app_id: &str) {
     }
     attribute_unresolved_host_window(surface_id, app_id);
     note_launch_presented(&crate::shell::persist::durable_app_id(surface_id, app_id));
+}
+
+/// An accepted toplevel's kernel peer, after ordinary workspace admission.
+/// A client-announced application id cannot produce a startup receipt.
+pub(crate) fn record_startup_window(pid: u32) {
+    LaunchSession::current().startup.adopted(pid);
 }
 
 /// Live unconfined launches a close of an unmatched toolkit window may stop.
@@ -4066,7 +4173,8 @@ fn expire_pending_placements_at(now: Instant) -> Vec<String> {
 /// A normal desktop application should announce its first surface promptly.
 /// Keep enough headroom for cold Electron startup and VM software rendering,
 /// while still turning a dead launch into actionable feedback.
-const PENDING_PRESENTATION_TIMEOUT: Duration = Duration::from_secs(15);
+const PENDING_PRESENTATION_TIMEOUT: Duration =
+    tilo_action_broker::services::APPLICATION_STARTUP_TIMEOUT;
 
 /// Long enough for a daemonising desktop entry to hand off to its GUI child,
 /// while keeping a genuinely windowless launch from steering a later app.
@@ -4147,6 +4255,7 @@ mod tests {
 
     fn held(package_id: &str, args: &[&str]) -> HeldLaunch {
         HeldLaunch {
+            authority: None,
             package_id: package_id.into(),
             display_name: package_id.into(),
             command: LaunchCommand {

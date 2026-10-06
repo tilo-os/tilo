@@ -135,6 +135,19 @@ impl OriginalInvocationData {
         self.current_person_certificate(state)
     }
 
+    pub(super) fn permits_launch_in(&self, room: &str) -> bool {
+        self.route.cluster_id == room
+            && self
+                .spec
+                .contract
+                .permission
+                .covers(tilo_actions::PermissionRequirement::Write)
+            && self
+                .execution
+                .as_ref()
+                .is_none_or(tilo_actions::remote::ExecutionLease::is_live)
+    }
+
     pub(super) fn capture(
         request: PublishedInvocationRequest,
         route: CrdtRoute,
