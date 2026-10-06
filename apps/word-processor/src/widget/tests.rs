@@ -1864,6 +1864,45 @@ fn compact_styles_is_a_full_window_page_with_real_controls_and_no_typing_leak() 
     }
 }
 
+#[test]
+fn compact_styles_blocks_document_shortcuts_after_real_document_typing() {
+    let mut app =
+        ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
+    app.harness().resize((390, 844)).unwrap();
+    app.settle();
+    let body = app
+        .with_surface::<WordProcessorWidget, _>(|widget| widget.zoom_viewport.center())
+        .unwrap();
+    app.harness().click_at(body.x, body.y);
+    app.harness().type_text("protected document words");
+    app.settle();
+    let text = app
+        .with_surface::<WordProcessorWidget, _>(|widget| widget.blocks[0].text.clone())
+        .unwrap();
+    assert_eq!(text, "protected document words");
+    app.effect(&WordProcessorEffect::Styles).unwrap();
+    app.settle();
+    let heads = app.peer_document().get_heads();
+    for modifier in ["ctrl", "super"] {
+        app.harness().set_modifiers(&[modifier.into()]);
+        for key in ["Backspace", "b", "v", "Enter", "a", "Delete"] {
+            app.harness().key(key);
+            app.settle();
+            assert_eq!(
+                app.peer_document().get_heads(),
+                heads,
+                "{modifier}+{key} must not edit the displaced document"
+            );
+        }
+        app.harness().set_modifiers(&[]);
+    }
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.blocks[0].text.clone())
+            .unwrap(),
+        text
+    );
+}
+
 fn assert_styles_page_scrolls_to_its_last_real_action(
     app: &mut ui::framework::testing::TestApp<crate::framework::WordProcessorApp>,
 ) {
