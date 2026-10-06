@@ -830,6 +830,12 @@ settings-about-uptime = Laufzeit
 settings-about-hardware-card = Hardware
 settings-about-processor = Prozessor
 settings-about-memory = Speicher
+accounts-browser-identity-title = Tilo-Identitäten im Browser
+accounts-browser-identity-about = Öffentliche Kontoauswahl für bestehende Browser-Anmeldungen. Das Ausblenden oder Entfernen einer Auswahl widerruft weder die Anmeldung noch Ressourcenberechtigungen.
+accounts-browser-identity-hide = Aus Browser-Kontoauswahl ausblenden
+accounts-browser-identity-show = In Browser-Kontoauswahl anzeigen
+accounts-browser-identity-remove = Aus Browser-Kontoauswahl entfernen
+
 accounts-vault-local = Es ist kein Schlüsselbund verfügbar, deshalb liegen Passwörter in einer privaten Datei auf diesem Gerät. Entsperre oder installiere einen Schlüsselbund für besseren Schutz.
 accounts-empty-sample = Sie haben noch keine Konten. Die Einträge unten sind Beispiele — mit „Hinzufügen“ legen Sie ein echtes an.
 accounts-empty = Sie haben noch keine Konten. Mit „Hinzufügen“ verbinden Sie das erste.
@@ -1765,3 +1771,4 @@ shortcut-name-dictation-toggle = Diktat starten oder beenden
 shortcut-name-dictation-finish = Diktat beenden
 shortcut-name-dictation-cancel = Diktat abbrechen
 shortcut-name-tab-menu = Tab-Menü öffnen
+

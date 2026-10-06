@@ -471,7 +471,23 @@ fn pump_with_modifiers(
 fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
     fn first_local_key_releases_follow_without_also_running_a_shell_chord() {
         let mut h = build_harness();
+        // Follow now requires a live participant. Exercise the key handoff
+        // against an admitted roster entry, not an already-disconnected id.
+        {
+            let state = h.chrome.borrow();
+            let mut tree = state.tree_mut();
+            let workspace = &mut tree.desktop.workspaces[0];
+            let tab = workspace.strips[0].window_groups[0].active_tab;
+            workspace.collaborators.push(
+                crate::shell::state::Collaborator::with_active_tab("ada", "Ada", tab)
+                    .with_session(77),
+            );
+        }
         h.host.set_followed_peer(Some("ada".into()));
+        assert!(
+            h.host.followed_peer.is_some(),
+            "fixture is following a live peer"
+        );
         let before = h.chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0]
             .tabs
             .len();
