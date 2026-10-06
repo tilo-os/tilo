@@ -284,6 +284,7 @@ impl ResourceSurface<Imager, ImagerEffect> for ImagerApp {
     }
 
     fn attach(&mut self, cx: SurfaceCx<Imager>) {
+        self.attach_control_actions(cx.actions());
         self.attach_framework(cx.dispatcher(), cx.jobs(), cx.mode());
     }
 
@@ -352,21 +353,14 @@ mod tests {
     #[test]
     fn assistive_profile_edits_reach_the_document() {
         use ui::a11y::Action as AccessAction;
-        use ui::widget::Widget as _;
 
         let mut app = customizing();
         let perform =
             |app: &mut ui::framework::testing::TestApp<SampleImager>, target: &str, value: &str| {
+                let id = target.replace(':', ".");
                 app.harness()
-                    .with_widget_mut(|wizard: &mut ImagerApp| {
-                        wizard.perform_semantic_action(
-                            target,
-                            &AccessAction::SetValue(value.into()),
-                            &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new()),
-                            &automerge::ROOT,
-                        )
-                    })
-                    .expect("the hosted wizard")
+                    .perform_named(&id, &AccessAction::SetValue(value.into()))
+                    .is_ok()
             };
         assert!(perform(
             &mut app,
@@ -388,11 +382,14 @@ mod tests {
             };
             assert_eq!(actual, expected);
         }
-        assert!(perform(
-            &mut app,
-            "imager:profile:timezone",
-            "Europe/Not_A_Real_Zone"
-        ));
+        assert!(
+            !perform(
+                &mut app,
+                "imager:profile:timezone",
+                "Europe/Not_A_Real_Zone"
+            ),
+            "the shared chooser refuses a value outside its canonical catalog"
+        );
         assert_eq!(app.state().profile.timezone, "Europe/Berlin");
     }
 
@@ -407,10 +404,8 @@ mod tests {
         )
         .unwrap();
         app.harness()
-            .with_widget_mut(|wizard: &mut ImagerApp| {
-                wizard.focus_profile_field_for_test(crate::customize::CzField::Hostname);
-            })
-            .expect("the hosted wizard");
+            .perform_named("imager.profile.hostname", &ui::a11y::Action::Focus)
+            .unwrap();
         app.harness().type_text("lab01");
         assert_eq!(app.state().profile.hostname, "lab01");
         assert!(app.undo());
@@ -419,16 +414,33 @@ mod tests {
             "",
             "the keystrokes of one field are one step"
         );
+        assert!(app.redo(), "the grouped field edit can be redone");
+        assert_eq!(app.state().profile.hostname, "lab01");
+
+        let previous_name = app.state().profile.user.full_name;
+        app.invoke(
+            ui::tilo_resource::Invoke::apply(&ImagerAction::SetFullName {
+                value: "Second field".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(app.state().profile.user.full_name, "Second field");
+        assert!(app.undo(), "a different field is a separate step");
+        assert_eq!(app.state().profile.user.full_name, previous_name);
+        assert_eq!(
+            app.state().profile.hostname,
+            "lab01",
+            "undoing another field keeps the prior typed word"
+        );
     }
 
     #[test]
     fn the_keyboard_chooser_commits_through_the_real_event_path() {
         let mut app = customizing();
         app.harness()
-            .with_widget_mut(|wizard: &mut ImagerApp| {
-                wizard.focus_profile_field_for_test(crate::customize::CzField::Keyboard);
-            })
-            .expect("the hosted wizard");
+            .perform_named("imager.profile.keyboard", &ui::a11y::Action::Focus)
+            .unwrap();
         app.harness().key("Enter");
         app.harness().type_text("german");
         app.harness().key("Enter");
@@ -653,7 +665,7 @@ mod tests {
         for (scenario, shown) in [
             (
                 "confirm",
-                ["Tilo 1.0", "Wi-Fi network", "Enroll this machine"],
+                ["Tilo 1.0", "Wi-Fi network", "Enroll as a new device"],
             ),
             (
                 "customize",

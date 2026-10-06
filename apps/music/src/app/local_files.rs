@@ -1,6 +1,7 @@
 use super::{MusicApp, Track};
 #[cfg(all(test, feature = "audio"))]
 use ui::widget::Continuable as _;
+use ui::widget::toast::ToastKind;
 
 impl MusicApp {
     pub(super) fn make_open_file_button() -> ui::widget::Button {
@@ -14,9 +15,12 @@ impl MusicApp {
         )]
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "open-file")
             .expect("canonical Music picker binding");
-        ui::widget::Button::new("music-open-file", "music-open-audio-file")
-            .content_sized()
-            .on_action(binding)
+        ui::widget::Button::icon_only(
+            "music-open-file",
+            ui::icons::Icon::FolderOpen,
+            &ui::i18n!("music-open-audio-file"),
+        )
+        .on_action(binding)
     }
 
     pub(super) fn is_local_file(&self, id: &str) -> bool {
@@ -141,7 +145,7 @@ impl MusicApp {
             }
             ui::portal::PortalOutcome::Failed(error) => error,
         };
-        self.toast = Some((error.clone(), ui::time::now()));
+        self.notify(ToastKind::Error, error.clone());
         self.resource_stream_results
             .push(tilo_actions::InvocationUpdate::Failed {
                 invocation,
@@ -237,6 +241,7 @@ impl MusicApp {
         Some(crate::actions::CatalogTrackResource {
             id: file.track.id.clone(),
             label: file.track.title.clone(),
+            artist: String::new(),
             album_id: String::new(),
             artist_id: String::new(),
             offline: false,
@@ -295,14 +300,10 @@ mod tests {
                     &theme,
                 );
                 let rect = app.open_file_button.get_rect();
-                assert!(rect.width() >= 100.0 && rect.height() >= 40.0);
+                let side = ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, &theme);
+                assert!(rect.width() >= side - 0.5 && rect.height() >= side - 0.5);
                 assert!(app.rect.contains(rect.center()));
-                let (_, text_height) = text.measure(
-                    &ui::i18n!("music-open-audio-file"),
-                    14.0,
-                    Some((rect.width() as f32 - 2.0 * theme.padding_standard).max(0.0)),
-                );
-                assert!(rect.height() >= f64::from(text_height + theme.padding_standard));
+                assert!(rect.y1 <= app.body_rect.y0, "the action sits in the header");
                 assert_eq!(tree.children(node).unwrap().len(), app.children().len());
                 let device_id = unsafe { std::mem::zeroed() };
                 let events = [
@@ -353,13 +354,17 @@ mod tests {
             }
         }
 
-        // Phase `home_picker_is_in_host_focus_order_only_while_visible`.
+        // Phase `header_actions_are_in_host_focus_order_on_every_destination`.
         {
             let (services, recorder) = ui::host::HostServices::recording();
             let _host = ui::host::enter(&services);
             recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
             let mut app = ui::framework::testing::TestApp::<crate::MusicShell>::new().unwrap();
-            let on_home = app.harness().focus_order().len();
+            let home_focus = app.harness().focus_order();
+            assert!(
+                app.harness().targets().contains_key("music-open-file"),
+                "Home exposes its file picker"
+            );
             app.call_on(
                 &crate::actions::view_resource_id("songs"),
                 "open",
@@ -367,10 +372,18 @@ mod tests {
             )
             .unwrap();
             app.settle();
+            assert!(
+                !app.harness().targets().contains_key("music-open-file"),
+                "leaving Home removes the picker"
+            );
             assert_eq!(
-                app.harness().focus_order().len() + 1,
-                on_home,
-                "the picker leaves the focus order with Home"
+                app.harness().focus_order().len(),
+                home_focus.len(),
+                "the shared page Back control replaces the Home picker in focus order"
+            );
+            assert!(
+                app.harness().a11y_node_named("Back").is_some(),
+                "the page offers Back"
             );
             app.call_on(
                 &crate::actions::view_resource_id("home"),
@@ -379,7 +392,13 @@ mod tests {
             )
             .unwrap();
             app.settle();
-            assert_eq!(app.harness().focus_order().len(), on_home);
+            assert_eq!(
+                app.harness().focus_order().len(),
+                home_focus.len() + 1,
+                "returning Home restores the picker and keeps Back to the prior page"
+            );
+            assert!(app.harness().a11y_node_named("Back").is_some());
+            assert!(app.harness().targets().contains_key("music-open-file"));
             #[cfg(feature = "audio")]
             {
                 app.call("open-file", serde_json::json!({})).unwrap();

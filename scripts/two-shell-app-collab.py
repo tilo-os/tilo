@@ -356,7 +356,7 @@ class Session:
 
     def open_palette(self, machine_wide: bool = True) -> None:
         self.modifiers(logo=machine_wide, ctrl=not machine_wide)
-        self.key("k")
+        self.key("Space" if machine_wide else "k")
         self.modifiers()
         self.settle(0.4)
 

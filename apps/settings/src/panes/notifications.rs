@@ -768,7 +768,7 @@ impl NotificationsPane {
         let status_row: El = Box::new(
             ui::widget::Row::new()
                 .push(Box::new(
-                    ui::widget::Text::new(&t("notif-delivery")).with_size(13.0),
+                    ui::widget::Text::new(&t("notif-delivery")).with_role(ui::TextRole::Body),
                 ))
                 .push(Box::new(ui::widget::Spacer::new()))
                 .push(semantic_status_pill(&status_label, status_tone)),
