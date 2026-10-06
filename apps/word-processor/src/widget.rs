@@ -9864,31 +9864,6 @@ impl Widget for WordProcessorWidget {
         }))
     }
 
-    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        let mut handlers = self.tool_bar.resource_operation_handlers();
-        handlers.extend(
-            self.semantic_readers()
-                .iter()
-                .map(|reader| reader.operation_type().to_string()),
-        );
-        for child in self.children() {
-            handlers.extend(child.resource_operation_handlers());
-        }
-        handlers
-    }
-
-    fn start_operation(
-        &mut self,
-        operation: &ui::widget::ResourceOperation<'_>,
-        edits: &mut ui::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(started) = self.tool_bar.start_operation(operation, edits, path)? {
-            return Ok(Some(started));
-        }
-        ui::widget::start_in_children(self, operation, edits, path)
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "the editor binds, rebases and reconciles in one sync pass"
@@ -9986,23 +9961,28 @@ impl Widget for WordProcessorWidget {
         node
     }
 
-    /// The window's History button is the one retained child: the host
-    /// finds, focuses and announces it like the same control in a
-    /// `NavShell` header. The editor places, paints and routes it itself.
+    /// Authored chrome keeps its retained toolkit children available to the
+    /// host's normal resource, custody and invocation traversal.
     fn children(&self) -> Vec<&dyn Widget> {
-        self.window_history
-            .button()
-            .map(|button| button as &dyn Widget)
-            .into_iter()
-            .collect()
+        let mut children: Vec<&dyn Widget> = vec![&self.tool_bar];
+        if let Some(button) = self.window_history.button() {
+            children.push(button);
+        }
+        children
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.window_history
-            .button_mut()
-            .map(|button| button as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
+        let mut children: Vec<&mut (dyn Widget + '_)> = vec![&mut self.tool_bar];
+        if let Some(button) = self.window_history.button_mut() {
+            children.push(button);
+        }
+        children
+    }
+
+    fn accessibility_represents_child(&self, child_index: usize) -> bool {
+        // The formatting toolbar is already authored into the document's
+        // synthetic semantics; History remains its own retained control.
+        child_index == 0
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -10473,10 +10453,6 @@ impl ui::presence::capability::PublishesPresence for WordProcessorWidget {
 }
 
 impl ui::resources::PublishesResources for WordProcessorWidget {
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        ui::resources::resources(&self.tool_bar, doc)
-    }
-
     // The document is the framework's publication; the editor adds only
     // what an edit answers its caller with.
     fn document_action_result(
@@ -10507,23 +10483,17 @@ impl ui::widget::controls::ActionControls for WordProcessorWidget {
         domain: &ui::ControlDomain,
         attachment: ui::control_custody::CustodyAttachment,
     ) {
-        ui::widget::controls::install_control_custody(&mut self.tool_bar, domain, attachment);
         for child in self.children_mut() {
             ui::widget::controls::install_control_custody(child, domain, attachment);
         }
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        ui::widget::controls::take_control_invocation(&mut self.tool_bar).or_else(|| {
-            self.children_mut()
-                .into_iter()
-                .find_map(ui::widget::controls::take_control_invocation)
-        })
+        self.children_mut()
+            .into_iter()
+            .find_map(ui::widget::controls::take_control_invocation)
     }
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
-        bindings.extend(ui::widget::controls::control_action_bindings(
-            &self.tool_bar,
-        ));
         self.for_each_child(&mut |child| {
             bindings.extend(ui::widget::controls::control_action_bindings(child));
         });
@@ -10533,7 +10503,6 @@ impl ui::widget::controls::ActionControls for WordProcessorWidget {
         &mut self,
         allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
-        ui::widget::controls::refresh_control_action_availability(&mut self.tool_bar, allowed);
         for child in self.children_mut() {
             ui::widget::controls::refresh_control_action_availability(child, allowed);
         }
