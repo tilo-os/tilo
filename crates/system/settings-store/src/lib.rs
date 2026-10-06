@@ -75,8 +75,8 @@ pub mod watch;
 
 pub use session::{SessionPaths, SessionSettings};
 pub use source::{
-    ChangeSignal, ConditionalUpdate, HostDocument, Listener, SettingsSource, install_source,
-    installed_source, merge_section,
+    ChangeSignal, ConditionalUpdate, DisplayUpdate, HostDocument, Listener, SettingsSource,
+    install_source, installed_source, merge_section,
 };
 
 /// The file name under the Tilo config root.
@@ -314,6 +314,33 @@ pub fn compare_update_section_at(
     }
     merge_section(&mut doc, name, values);
     write_atomic(path, &Value::Object(doc))?;
+    Ok(ConditionalUpdate::Stored)
+}
+
+/// Persist only display transaction/profile sections under their canonical
+/// file lock. This is the file-backed equivalent of the device-record receipt.
+///
+/// # Errors
+/// Storage cannot create, lock or atomically replace the settings file.
+pub fn compare_display_update_at(
+    path: &Path,
+    update: DisplayUpdate,
+) -> std::io::Result<ConditionalUpdate> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let _lock = advisory_lock::FileLock::open(
+        &session::lock_path(path),
+        advisory_lock::LockMode::Exclusive,
+    )?;
+    let mut document = load_at(path);
+    if !update.matches(&document) {
+        return Ok(ConditionalUpdate::Superseded);
+    }
+    for (section, values) in update.sections() {
+        merge_section(&mut document, section, values);
+    }
+    write_atomic(path, &Value::Object(document))?;
     Ok(ConditionalUpdate::Stored)
 }
 
