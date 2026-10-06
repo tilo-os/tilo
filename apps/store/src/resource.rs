@@ -811,6 +811,106 @@ mod tests {
         assert_eq!(app.state().reports[0].note, "");
     }
 
+    #[test]
+    fn declared_open_job_waits_for_its_original_channel_startup_receipt() {
+        use ui::collaboration::{CollabEvent, CollabRequest};
+        use ui::widget::Collaborative;
+        let _offline = offline();
+        let mut app = TestApp::<StoreShell>::new().unwrap();
+        tilo_test_env::wait_until("the ordinary catalogue worker settles", || {
+            app.settle();
+            app.with_surface::<StoreApp, _>(|surface| {
+                surface.inspect_catalogue(None).unwrap()["worker_busy"] == false
+            })
+            .unwrap()
+        });
+        let selected = crate::fixture::fixture_catalog()
+            .into_iter()
+            .find(|item| {
+                matches!(item.source, crate::model::StoreSource::Flathub)
+                    && item.allows_action(ActionKind::FlatpakOpen, true)
+            })
+            .unwrap();
+        let id = selected.id.clone();
+        app.with_surface::<StoreApp, _>(|surface| {
+            surface.set_flatpak_available(true);
+            surface.set_items(vec![selected]);
+        })
+        .unwrap();
+        let invocation = app
+            .start_effect(&StoreEffect::FlatpakOpen { app: id.clone() })
+            .unwrap();
+        let mut request = None;
+        tilo_test_env::wait_until("the original channel carries the admitted launch", || {
+            app.settle();
+            request = app
+                .with_surface::<StoreApp, _>(|surface| {
+                    surface.take_collab_requests().into_iter().next()
+                })
+                .flatten();
+            request.is_some()
+        });
+        let Some(CollabRequest::LaunchInstalledApplication {
+            request_id,
+            app_id,
+            package_root,
+            on_behalf_of,
+        }) = request
+        else {
+            panic!("the original channel must carry startup");
+        };
+        assert_eq!(app_id, format!("host:{id}.desktop"));
+        assert!(package_root.is_none());
+        assert!(
+            on_behalf_of.is_none(),
+            "a local UI job does not invent a broker parent"
+        );
+        assert!(
+            !app.harness()
+                .job_updates(invocation)
+                .iter()
+                .any(ui::tilo_actions::InvocationUpdate::is_terminal)
+        );
+        let update = ui::tilo_actions::InvocationUpdate::Succeeded {
+            invocation,
+            output: ui::tilo_actions::ActionOutput::default(),
+        };
+        app.with_surface::<StoreApp, _>(|surface| {
+            surface.handle_collab_event(&CollabEvent::PublishedInvocationResult {
+                request_id,
+                result: Ok((7, update.clone())),
+            });
+            surface.set_worker_busy(false);
+            assert!(
+                surface
+                    .package_operation(&id, ActionKind::FlatpakOpen)
+                    .is_err()
+            );
+        })
+        .unwrap();
+        assert!(
+            !app.harness()
+                .job_updates(invocation)
+                .iter()
+                .any(ui::tilo_actions::InvocationUpdate::is_terminal)
+        );
+        app.with_surface::<StoreApp, _>(|surface| {
+            surface.handle_collab_event(&CollabEvent::InstalledApplicationLaunchResult {
+                request_id,
+                result: Ok((7, update)),
+            });
+        })
+        .unwrap();
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(5), |harness| {
+                    harness.job_updates(invocation).iter().any(|update| {
+                        matches!(update, ui::tilo_actions::InvocationUpdate::Succeeded { .. })
+                    })
+                })
+        );
+    }
+
     /// Opening a `.flatpakref` shows its app ready to install — and
     /// installs nothing.
     #[test]
