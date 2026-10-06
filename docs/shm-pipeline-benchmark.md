@@ -97,3 +97,10 @@ redesign's frame-store and UI changes; Contacts, Messages and the ongoing UI
 crate split remain outside this change's ownership. Integration checks establish
 API and pixel correctness on that base, not a new performance comparison. The
 timings above remain tied to their recorded source and binary identities.
+
+SDK browser qualification on this integration exposed the same Calendar and
+Shortcuts `no default font found` panic as exact redesign-base run #71835.
+The branch also incorporates main's existing browser font-publication fix
+`6b30d9bb4a` and subsequent qualification fixes through `88a53d1979`, rather
+than duplicating those changes. No benchmark timings were refreshed by these
+integration merges.
