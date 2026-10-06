@@ -271,6 +271,19 @@ a private JSON object on standard input, rather than placing a credential
 in the command line. An accepted invocation means the attempt started;
 `state-dump` reports authentication progress and the mapped result.
 
+For a bounded timing measurement, `configure-session-diagnostics@greeter`
+configures this greeter's next ordinary sign-in with four required booleans:
+`presentation`, `gpu_stages`, `gpu_timestamps`, `gpu_dispatch_timestamps`.
+Dispatch timestamps require GPU timestamps. The selection is transient and
+inspectable as `session_diagnostics`; a fresh greeter starts without a selection,
+and normal diagnostic flags are off unless explicitly configured by the host.
+Set all four false to disable them for this sign-in. Authentication in progress
+refuses changes. These are fixed content-free timing switches, never arbitrary
+environment, session argv, output paths or input gates. Invoke normal `sign-in`
+through private stdin afterward; PAM and the installed session remain authoritative.
+No measurement qualifies without the matching actual input, body revision and
+hardware presentation proof; GPU-feature support must be observed separately.
+
 If PAM requires another answer, the current challenge has a unique ID and
 a `secret` or `visible` response kind, and its bounded normal PAM question
 with literal echoes of private answers removed. `respond-challenge@greeter` takes that
@@ -350,3 +363,27 @@ refuses it again at run time.
 | MCP shim | `scripts/tilo-mcp-server.py` |
 | Console apps (installer, greeter) | `crates/session/console-control` |
 | Socket framing, other ops | `docs/headless-testing.md` |
+
+## This device's shell
+
+A live launcher-authenticated Terminal exposes owner operations through the
+Shell's `terminal-device-shell` provider. List `device shell` to obtain the
+exact per-connection addresses. Invoke `request@<connection>` with
+`confirm: true` to select the ordinary Host target. This does not grant it:
+answer its existing permission request using `permission-prompts`, then use
+`inspect@<connection>` to obtain the current local session UUID.
+
+`run@<connection>` requires that exact `session`, a single reviewed `command`
+(up to 8 KiB), and `confirm: true`. Its acknowledgement says `submitted` only
+after the existing PTY accepted the bytes; it does not claim an exit status.
+`read@<connection>` requires the same session UUID and returns at most 32 KiB
+of visible output, including retained output after the process exits. Read
+and inspect expose no clipboard, credential or arbitrary host-file API.
+
+Only a person administrator/owner may use this provider. App, agent and token
+principals remain refused even with an Admin override. Generic app-broker
+Terminal operations cannot open Host or send input to an existing Host PTY;
+Default environments retain their normal app actions. Closed connections,
+changed sessions, missing acknowledgement and unavailable PTYs fail visibly.
+The matched Shell, SDK runtime and Terminal versions are required for this
+owner lifecycle operation; unsupported workers do not report success.

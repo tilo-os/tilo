@@ -527,19 +527,21 @@ impl App {
         if any {
             self.invalidate_widget_resource_cache();
         }
-        let published_snapshot_was_evicted = self.collaboration.manager.is_connected()
-            && self.actions.last_published_actions.is_some()
-            && self.actions.action_directory_snapshot.is_none();
+        let action_surface_needs_publication = self.collaboration.manager.is_connected()
+            && (self.actions.last_published_actions.is_none()
+                || self.actions.action_directory_snapshot.is_none());
         // The broker refused the last surface: republish it now, not on the
         // next unrelated change.
         let refused_surface = self.collaboration.manager.take_action_surface_failed();
         if refused_surface {
             self.actions.last_published_actions = None;
         }
-        if action_surface_may_have_changed || published_snapshot_was_evicted || refused_surface {
+        if action_surface_may_have_changed || action_surface_needs_publication || refused_surface {
             // The normal idle pump also repairs invalidation from a later
             // model sync or a presence-only batch. Neither necessarily brings
             // another action event after a terminal operation was published.
+            // An already-ready transport also needs its first publication;
+            // it will not produce a new connection-state transition.
             // Query/resolve remain bounded reads; this refresh runs even with
             // no directory requests or inbound events, and skips stable idle.
             self.publish_action_surface();

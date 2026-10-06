@@ -2400,3 +2400,23 @@ dictation-action-start-detail = Einmalige Mikrofonfreigabe für das aktive Feld 
 dictation-action-finish-detail = Mikrofon anhalten und den korrigierten Text ins ursprüngliche Feld einfügen.
 dictation-action-cancel-detail = Diktat anhalten und den privaten Entwurf verwerfen.
 dictation-stopping-microphone = Mikrofon wird angehalten…
+
+search-action-axis-enable = Experimentelle Achsennavigation aktivieren
+search-action-axis-enable-subtitle = In dieser Sitzung zwischen Gruppen wechseln und den Fokus sichtbar machen
+search-action-axis-disable = Experimentelle Achsennavigation deaktivieren
+search-action-axis-disable-subtitle = Die normale Fensternavigation für diese Sitzung wiederherstellen
+search-action-axis-gather = Fokussiertes Fenster sichtbar machen
+search-action-axis-gather-subtitle = Experimentelle Achsennavigation: Fokus ohne Animation anzeigen
+axis-navigation-disabled = Die experimentelle Achsennavigation ist deaktiviert
+
+search-provider-device-shell = Shell dieses Geräts
+terminal-request-device-shell = Eigene Shell dieses Geräts anfordern
+terminal-device-shell-owner-required = Nur der Gerätebesitzer darf die eigene Shell dieses Geräts anfordern
+
+terminal-inspect-device-shell = Shell-Sitzung dieses Geräts prüfen
+terminal-run-device-shell = Befehl in der Shell dieses Geräts ausführen
+terminal-read-device-shell = Ausgabe der Shell dieses Geräts lesen
+
+terminal-device-shell-session-param = Genaue lokale Sitzungs-UUID aus der Sitzungsprüfung
+terminal-device-shell-command-param = Ein geprüfter Befehl in der Shell dieses Geräts
+terminal-device-shell-confirm-param = Diesen geprüften Vorgang in der Geräte-Shell bestätigen

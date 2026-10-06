@@ -309,6 +309,17 @@ class FakeShell:
         raise AssertionError(method)
 
 
+class AccessiblePathTraversalTests(unittest.TestCase):
+    def test_production_walk_visits_numeric_accesskit_and_app_namespaced_gtk_children(self):
+        shell = FakeShell()
+        gtk = "/so/tilo/android/qualify/fixture/a11y/f511c531_6ad3_465c_88d1_41a767adc1df"
+        shell.nodes[shell.ROOT][2].append(gtk)
+        shell.nodes[gtk] = ("frame", "Approved Android document status", [])
+        tree = CLIENT.AtspiClient.tree(shell)
+        self.assertEqual(set(tree), set(shell.nodes))
+        self.assertEqual(CLIENT.AtspiClient.named(tree, "Approved Android document status"), [gtk])
+
+
 class FakeSettings(CLIENT.AtspiClient):
     """Settings on the shared shell: wide, the category list sits beside the
     pane; narrow, it opens on the Network pane with a Back arrow to the list.
