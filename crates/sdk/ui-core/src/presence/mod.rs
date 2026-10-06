@@ -970,6 +970,18 @@ impl PresenceCtx {
         }
     }
 
+    /// Test-support seam for a complete broker-authenticated roster frame.
+    /// Production callers receive this through Collaboration's retained
+    /// context; keeping the seam feature-gated prevents apps from promoting
+    /// their own descriptive roster rows into Agent authority.
+    #[cfg(feature = "test-support")]
+    pub fn apply_test_collaboration_snapshot(
+        &mut self,
+        collaborators: &[crate::collaboration::Collaborator],
+    ) {
+        self.apply_collaboration_snapshot(collaborators);
+    }
+
     pub fn participant_kind(&self, user: &UserId) -> ParticipantKind {
         self.participant_kinds
             .get(user)

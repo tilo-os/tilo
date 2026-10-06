@@ -2485,3 +2485,5 @@ agent-quick-guide-saved = Anweisung gespeichert; der Agent hat sie noch nicht an
 agent-quick-guide-applied = Agent hat die Anweisung angewendet
 agent-quick-work-refused = Diese Aktion ist nicht verfügbar. Dein Entwurf bleibt erhalten.
 agent-quick-shots-draft = Prüfe Änderungen und markiere offene Entscheidungen.
+agent-marker-a11y-name = Agentenaktion: { $agent }
+agent-marker-a11y-description = { $action } für { $resource }

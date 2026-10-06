@@ -33,7 +33,7 @@ mod agent_marker_gesture_tests {
     use crate::theme::Theme;
     use crate::widget::Text;
     use tilo_actions::{
-        ActionResource, INTERACTION_VERSION, InteractionAction, InteractionActor,
+        ActionApp, ActionResource, INTERACTION_VERSION, InteractionAction, InteractionActor,
         InteractionActorKind, InteractionAnchor, InteractionPhase, InvocationId,
         SemanticInteraction,
     };
@@ -90,7 +90,10 @@ mod agent_marker_gesture_tests {
             action: InteractionAction {
                 id: "edit".into(),
                 label: "Edit".into(),
-                app: None,
+                app: Some(ActionApp {
+                    id: "so.tilo.notes".into(),
+                    label: "Notes".into(),
+                }),
             },
             resource: ActionResource {
                 id: "note:draft".into(),
@@ -140,6 +143,9 @@ mod agent_marker_gesture_tests {
             .expect("same-room release queues the canonical navigation once");
         assert_eq!(request.room, "room-a");
         assert_eq!(request.targets.len(), 1);
+        assert_eq!(request.targets[0].interaction.action.id, "edit");
+        assert_eq!(request.targets[0].interaction.resource.id, "note:draft");
+        assert_eq!(request.targets[0].locus, [200.0, 100.0, 260.0, 140.0]);
         assert!(app.handle_agent_marker_gesture(&button(ElementState::Released), 1.0));
         assert!(app.window.pending_agent_navigation.is_none());
 
@@ -845,6 +851,10 @@ impl App {
                         left.actor == right.actor
                             && left.agent_id == right.agent_id
                             && left.invocation == right.invocation
+                            && left.interaction.action == right.interaction.action
+                            && left.interaction.resource == right.interaction.resource
+                            && left.interaction.anchor == right.interaction.anchor
+                            && left.locus == right.locus
                     })
                 {
                     return true;
@@ -867,6 +877,13 @@ impl App {
                                     agent: target.agent_id,
                                     actor: target.actor,
                                     invocation: target.invocation,
+                                    interaction: target.interaction,
+                                    locus: [
+                                        target.locus.x0,
+                                        target.locus.y0,
+                                        target.locus.x1,
+                                        target.locus.y1,
+                                    ],
                                 }
                             })
                             .collect(),

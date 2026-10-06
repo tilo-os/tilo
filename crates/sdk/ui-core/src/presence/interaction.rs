@@ -77,7 +77,8 @@ pub struct AgentActionMarker {
 
 #[derive(Debug, Clone)]
 pub(super) struct PaintedAgentMarker {
-    invocation: InvocationId,
+    interaction: SemanticInteraction,
+    locus: Rect,
     viewport: Rect,
     bounds: Rect,
 }
@@ -90,6 +91,13 @@ pub struct AgentMarkerTarget {
     pub actor: UserId,
     pub agent_id: String,
     pub invocation: InvocationId,
+    /// Broker-normalized action/resource/anchor identity that resolved to the
+    /// painted control. Hosts compare this complete binding before exposing a
+    /// compositor-owned accessibility action.
+    pub interaction: SemanticInteraction,
+    /// Exact current semantic control locus, separate from the moving cursor
+    /// marker bounds.
+    pub locus: Rect,
     pub bounds: Rect,
 }
 
@@ -134,11 +142,13 @@ impl PresenceCtx {
                 let agent = self.authenticated_agent_id(actor)?;
                 (self
                     .newest_agent_entry(&actor.0, now)
-                    .is_some_and(|entry| entry.interaction.invocation == marker.invocation))
+                    .is_some_and(|entry| entry.interaction == marker.interaction))
                 .then(|| AgentMarkerTarget {
                     actor: actor.clone(),
                     agent_id: agent.into(),
-                    invocation: marker.invocation,
+                    invocation: marker.interaction.invocation,
+                    interaction: marker.interaction.clone(),
+                    locus: marker.locus,
                     bounds: marker.bounds,
                 })
             })
@@ -161,6 +171,21 @@ impl PresenceCtx {
             && self
                 .newest_agent_entry(&actor.0, now)
                 .is_some_and(|entry| entry.interaction.invocation == invocation)
+    }
+
+    /// The complete current broker-normalized interaction for an exact Agent
+    /// actor/invocation pair. Callers compare resource, action, anchor, and
+    /// source app rather than treating a public invocation UUID as custody.
+    pub fn current_agent_interaction(
+        &self,
+        actor: &UserId,
+        invocation: InvocationId,
+        now: Instant,
+    ) -> Option<&SemanticInteraction> {
+        self.authenticated_agent_id(actor)?;
+        self.newest_agent_entry(&actor.0, now)
+            .map(|entry| &entry.interaction)
+            .filter(|interaction| interaction.invocation == invocation)
     }
 
     /// Retire a surface's previous hit regions before drawing its next frame,
@@ -203,14 +228,16 @@ impl PresenceCtx {
             if marker.viewport != viewport
                 || self
                     .newest_agent_entry(&actor.0, now)
-                    .is_none_or(|entry| entry.interaction.invocation != marker.invocation)
+                    .is_none_or(|entry| entry.interaction != marker.interaction)
             {
                 continue;
             }
             targets.push(AgentMarkerTarget {
                 actor: actor.clone(),
                 agent_id: agent.into(),
-                invocation: marker.invocation,
+                invocation: marker.interaction.invocation,
+                interaction: marker.interaction.clone(),
+                locus: marker.locus,
                 bounds: marker.bounds,
             });
         }
@@ -528,7 +555,8 @@ impl PresenceCtx {
             .insert(
                 user.clone(),
                 PaintedAgentMarker {
-                    invocation: interaction.invocation,
+                    interaction: interaction.clone(),
+                    locus,
                     viewport,
                     bounds: agent_marker_bounds(marker.tip, viewport),
                 },
@@ -1223,6 +1251,8 @@ mod tests {
                 actor: UserId("agent:quill".into()),
                 agent_id: "quill".into(),
                 invocation: action.invocation,
+                interaction: action.clone(),
+                locus,
                 bounds,
             }])
         );

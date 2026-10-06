@@ -1448,6 +1448,35 @@ pub(crate) fn test_broker_with_membership(
     )
 }
 
+#[cfg(test)]
+pub(crate) fn test_broker_client_with_membership(
+    membership: WorkspaceTreeHandle,
+    trusted_devices: Vec<[u8; 32]>,
+) -> (
+    tilo_action_broker::collab_broker::AppActionBroker,
+    Arc<tilo_action_broker::collab_broker::FanoutState>,
+    runtime_collab::CollabClient,
+) {
+    let authority = Arc::new(NativeWorkspaceAuthority(membership.clone()));
+    let services = HostServices {
+        legacy_workspace: Some(authority.clone()),
+        launcher: Some(Arc::new(NativeLauncher(Some(membership.clone()), None))),
+        workspace_governance: Some(Arc::new(NativeWorkspaceGovernance(
+            membership.clone(),
+            None,
+        ))),
+        shortcut_library: Some(Arc::new(NativeShortcutLibrary(membership.clone()))),
+        keyboard_shortcuts: Some(Arc::new(NativeKeyboardShortcuts)),
+        app_action_grants: Some(Arc::new(NativeAppActionGrants(membership))),
+        ..Default::default()
+    };
+    tilo_action_broker::collab_broker_capnp::tests::broker_client_with_authority(
+        authority,
+        services,
+        Arc::new(trusted_devices),
+    )
+}
+
 use capnp::capability::Promise;
 use runtime_collab::raw::workspace_control_handle;
 use std::rc::Rc;

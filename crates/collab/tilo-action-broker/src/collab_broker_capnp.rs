@@ -11820,6 +11820,51 @@ pub mod tests {
         std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
     }
 
+    /// Build an in-process client over the production Cap'n Proto service and
+    /// retain its room fanout for an integration test. The client still has to
+    /// present a certified identity and pass ordinary join admission.
+    pub fn broker_client_with_authority(
+        membership: crate::services::WorkspaceAuthorityHandle,
+        services: HostServices,
+        trusted_devices: Arc<Vec<[u8; 32]>>,
+    ) -> (
+        crate::collab_broker::AppActionBroker,
+        Arc<FanoutState>,
+        runtime_collab::CollabClient,
+    ) {
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge_rx) = CapnpBrokerState::new_configured(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(membership),
+            Some(trusted_devices),
+            None,
+            services,
+        );
+        let (_, directory_rx) = std::sync::mpsc::channel();
+        let directories = Rc::new(LocalActionDirectoryRegistry::new(directory_rx));
+        let peer_id = fanout.next_peer_id();
+        let lease = Rc::new(ConnectionLease {
+            local_media: None,
+            state: Arc::clone(&state),
+            directories: Rc::clone(&directories),
+            peer_id,
+        });
+        let raw: collab_service::Client = capnp_rpc::new_client(CapnpCollabService {
+            worker: None,
+            state: Arc::clone(&state),
+            directories,
+            peer_id,
+            lease,
+        });
+        (
+            crate::collab_broker::AppActionBroker::from_state_for_test(state),
+            fanout,
+            runtime_collab::CollabClient::from_raw(raw),
+        )
+    }
+
     #[cfg(test)]
     fn lifecycle_socket(directory: &tempfile::TempDir, name: &str) -> PathBuf {
         secure_socket_parent(directory.path()).expect("secure temporary broker directory");

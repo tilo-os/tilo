@@ -530,6 +530,39 @@ struct AgentNavigationChooser {
     agents: Vec<String>,
 }
 
+const ACCESSIBLE_AGENT_MARKER_AGE: Duration = Duration::from_secs(15);
+const ACCESSIBLE_AGENT_MARKER_TARGET: &str = "agent-marker:";
+
+/// A compositor-validated projection of one marker actually painted by a
+/// unique live app surface. It is descriptive until an AT activates the
+/// shell-owned node, at which point Frame revalidates every binding again.
+#[derive(Clone)]
+pub(crate) struct AccessibleAgentMarker {
+    pub connection: u64,
+    pub surface: u64,
+    pub app_id: String,
+    pub room: String,
+    pub target: ui::floating_surface::AgentConversationNavigationTarget,
+    pub marker: Rect,
+    pub locus: Rect,
+    pub label: String,
+    pub description: String,
+    pub published_at: Instant,
+}
+
+impl AccessibleAgentMarker {
+    fn action_target(&self) -> String {
+        format!(
+            "{ACCESSIBLE_AGENT_MARKER_TARGET}{}:{}:{}:{}",
+            self.connection, self.surface, self.target.actor.0, self.target.invocation.0
+        )
+    }
+
+    fn is_fresh(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.published_at) <= ACCESSIBLE_AGENT_MARKER_AGE
+    }
+}
+
 fn valid_agent_navigation_id(agent: &str) -> bool {
     tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::RemoveAgent {
         agent: agent.to_owned(),
@@ -633,6 +666,9 @@ pub struct ShellOverlayHost {
     pending_launchpad_actions: Vec<PendingLaunchpadAction>,
     pending_agent_navigations: Vec<PendingAgentNavigation>,
     agent_navigation_chooser: Option<AgentNavigationChooser>,
+    accessible_agent_markers: Vec<AccessibleAgentMarker>,
+    accessible_agent_marker_focus: Option<String>,
+    accessible_agent_marker_activation: Option<AccessibleAgentMarker>,
     /// `palette.query()` after the last fan-out; refresh is
     /// short-circuited when this still matches.
     last_search_query: String,
@@ -2195,6 +2231,9 @@ impl ShellOverlayHost {
             pending_launchpad_actions: Vec::new(),
             pending_agent_navigations: Vec::new(),
             agent_navigation_chooser: None,
+            accessible_agent_markers: Vec::new(),
+            accessible_agent_marker_focus: None,
+            accessible_agent_marker_activation: None,
             last_search_query: String::new(),
             last_search_revision: String::new(),
             active_kind_filter: Vec::new(),
@@ -7779,6 +7818,46 @@ impl ShellOverlayHost {
             viewport,
         );
         true
+    }
+
+    /// Replace one authenticated shell-ui connection's compositor-validated
+    /// marker nodes. Replacement, including an empty set, retires stale frame
+    /// geometry atomically.
+    pub(crate) fn publish_accessible_agent_markers(
+        &mut self,
+        connection: u64,
+        markers: Vec<AccessibleAgentMarker>,
+    ) {
+        self.accessible_agent_markers
+            .retain(|marker| marker.connection != connection);
+        self.accessible_agent_markers.extend(
+            markers
+                .into_iter()
+                .filter(|marker| marker.connection == connection)
+                .take(16),
+        );
+        if self
+            .accessible_agent_marker_focus
+            .as_ref()
+            .is_some_and(|focused| {
+                !self
+                    .accessible_agent_markers
+                    .iter()
+                    .any(|marker| marker.action_target() == *focused)
+            })
+        {
+            self.accessible_agent_marker_focus = None;
+        }
+    }
+
+    pub(crate) fn retire_accessible_agent_markers(&mut self, connection: u64) {
+        self.publish_accessible_agent_markers(connection, Vec::new());
+    }
+
+    pub(crate) fn take_accessible_agent_marker_activation(
+        &mut self,
+    ) -> Option<AccessibleAgentMarker> {
+        self.accessible_agent_marker_activation.take()
     }
 
     /// Shots-only state fixture: real composer layout and paint, deliberately
@@ -17512,6 +17591,53 @@ impl Widget for ShellOverlayHost {
         self.harvest_floating_surface_source_updates();
         self.harvest_capture_studio_requests();
         let palette_dirty = self.palette.update(doc, path);
+        let marker_count = self.accessible_agent_markers.len();
+        let now = Instant::now();
+        let (active_room, live_sources) = self.chrome.as_ref().map_or_else(
+            || (None, HashSet::new()),
+            |chrome| {
+                let state = chrome.borrow();
+                let tree = state.tree();
+                let active = tree
+                    .desktop
+                    .active_workspace()
+                    .map(|workspace| workspace.room.to_string());
+                let sources = tree
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| {
+                        workspace.strips.iter().flat_map(move |strip| {
+                            strip.window_groups.iter().flat_map(move |group| {
+                                group.tabs.iter().filter_map(move |tab| match &tab.tile {
+                                    crate::shell::state::TileContent::Foreign {
+                                        app_id,
+                                        surface_id,
+                                    } => Some((
+                                        *surface_id,
+                                        app_id.clone(),
+                                        workspace.room.to_string(),
+                                    )),
+                                    _ => None,
+                                })
+                            })
+                        })
+                    })
+                    .collect();
+                drop(tree);
+                (active, sources)
+            },
+        );
+        self.accessible_agent_markers.retain(|marker| {
+            marker.is_fresh(now)
+                && active_room.as_deref() == Some(marker.room.as_str())
+                && live_sources.contains(&(
+                    marker.surface,
+                    marker.app_id.clone(),
+                    marker.room.clone(),
+                ))
+        });
+        let marker_dirty = marker_count != self.accessible_agent_markers.len();
         let agent_quick_dirty = self.agent_quick_composer.update(doc, path);
         if self.agent_quick_composer.take_conversation_request()
             && let Some((room, agent)) = self
@@ -17613,6 +17739,7 @@ impl Widget for ShellOverlayHost {
             || pairing_dirty
             || close_dirty
             || palette_dirty
+            || marker_dirty
             || agent_quick_dirty
             || sidebar_dirty
             || notifications_dropped
@@ -18753,6 +18880,12 @@ impl Widget for ShellOverlayHost {
         "ShellOverlayHost"
     }
 
+    fn set_focus(&mut self, focused: bool) {
+        if !focused {
+            self.accessible_agent_marker_focus = None;
+        }
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "The accessibility tree is kept as one ordered overlay projection so assistive focus order matches retained visual overlay order."
@@ -19632,6 +19765,26 @@ impl Widget for ShellOverlayHost {
         }
         self.append_modal_sheet_accessibility(&mut root);
         root.children.extend(self.live_status_accessibility());
+        let now = Instant::now();
+        root.children.extend(
+            self.accessible_agent_markers
+                .iter()
+                .filter(|marker| marker.is_fresh(now))
+                .map(|marker| {
+                    let target = marker.action_target();
+                    AccessNode::new(Role::Button)
+                        .with_name(t_args(
+                            "agent-marker-a11y-name",
+                            &[("agent", marker.label.as_str().into())],
+                        ))
+                        .with_description(marker.description.clone())
+                        .with_action_target(target.clone())
+                        .with_bounds(marker.marker)
+                        .with_state(AccessState::new().focusable(true).focused(
+                            self.accessible_agent_marker_focus.as_deref() == Some(target.as_str()),
+                        ))
+                }),
+        );
         Some(root)
     }
 
@@ -19645,6 +19798,31 @@ impl Widget for ShellOverlayHost {
         state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
+        if target.starts_with(ACCESSIBLE_AGENT_MARKER_TARGET) {
+            let now = Instant::now();
+            let Some(index) = self
+                .accessible_agent_markers
+                .iter()
+                .position(|marker| marker.is_fresh(now) && marker.action_target() == target)
+            else {
+                // A stale synthetic node must never fall through to a pointer
+                // click against whatever now occupies its old bounds.
+                return true;
+            };
+            return match action {
+                ui::a11y::Action::Focus => {
+                    self.accessible_agent_marker_focus = Some(target.to_owned());
+                    true
+                }
+                ui::a11y::Action::Activate => {
+                    self.accessible_agent_marker_focus = None;
+                    self.accessible_agent_marker_activation =
+                        Some(self.accessible_agent_markers.remove(index));
+                    true
+                }
+                _ => false,
+            };
+        }
         // The palette is published inside this host's tree (see
         // `accessibility_represents_child`), so its query's semantic target
         // arrives here, not at the palette widget. Setting it is typing it:

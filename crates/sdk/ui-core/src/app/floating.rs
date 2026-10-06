@@ -58,6 +58,9 @@ pub(super) struct FloatingRuntime {
     pub paint_capable_sent: bool,
     /// Outside a Tilo session, "close this tab" closes this window.
     pub close_window_requested: bool,
+    /// Exact painted primary-marker projection last sent to the compositor.
+    /// An empty replacement retires every prior accessible marker.
+    agent_marker_publication: Vec<crate::floating_surface::AgentConversationNavigation>,
 }
 
 impl FloatingRuntime {
@@ -82,6 +85,7 @@ impl FloatingRuntime {
             auxiliary_capture_frames: HashMap::new(),
             paint_capable_sent: false,
             close_window_requested: false,
+            agent_marker_publication: Vec::new(),
         }
     }
 }
@@ -273,6 +277,7 @@ impl App {
         let mut changed = false;
         // A local gesture is never replayed into a shell connected later.
         changed |= self.window.pending_agent_navigation.take().is_some();
+        self.floating.agent_marker_publication.clear();
         if let Some(reply) = self
             .take_native_host_shell_allow()
             .and_then(|reply| reply.upgrade())
@@ -309,6 +314,16 @@ impl App {
         client: &mut FloatingSurfaceServiceClient,
         changed: &mut bool,
     ) -> Result<(), String> {
+        let markers = self.current_agent_marker_publication();
+        if markers != self.floating.agent_marker_publication {
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::PublishAgentQuickComposerTargets {
+                    markers: markers.clone(),
+                },
+            )?;
+            self.floating.agent_marker_publication = markers;
+            *changed = true;
+        }
         if let Some(request) = self.window.pending_agent_navigation.take() {
             client.send(
                 &crate::floating_surface::FloatingSurfaceClientMessage::OpenAgentQuickComposer {
@@ -395,6 +410,64 @@ impl App {
             )?;
         }
         Ok(())
+    }
+
+    #[cfg(feature = "native")]
+    fn current_agent_marker_publication(
+        &self,
+    ) -> Vec<crate::floating_surface::AgentConversationNavigation> {
+        let (Some(surface), Some(_viewport), Some(room)) = (
+            self.window.agent_marker_surface.as_deref(),
+            self.window.agent_marker_viewport,
+            self.presence_broadcast_scope()
+                .and_then(|scope| match scope {
+                    crate::presence::PresenceKey::Workspace { id } => Some(id.clone()),
+                    _ => None,
+                }),
+        ) else {
+            return Vec::new();
+        };
+        self.presence_ctx
+            .agent_marker_targets(surface, crate::time::now())
+            .into_iter()
+            .map(
+                |target| crate::floating_surface::AgentConversationNavigation {
+                    room: room.clone(),
+                    anchor: [
+                        target.bounds.x0,
+                        target.bounds.y0,
+                        target.bounds.x1,
+                        target.bounds.y1,
+                    ],
+                    targets: vec![crate::floating_surface::AgentConversationNavigationTarget {
+                        agent: target.agent_id,
+                        actor: target.actor,
+                        invocation: target.invocation,
+                        interaction: target.interaction,
+                        locus: [
+                            target.locus.x0,
+                            target.locus.y0,
+                            target.locus.x1,
+                            target.locus.y1,
+                        ],
+                    }],
+                },
+            )
+            .collect()
+    }
+
+    /// Exercise the production painted-marker publication projection without
+    /// opening a native socket. Available only to cross-crate integration
+    /// tests; app code cannot use it to promote descriptive metadata.
+    #[cfg(all(feature = "native", feature = "test-support"))]
+    pub fn painted_agent_marker_publication_for_test(
+        &mut self,
+        surface: &str,
+        viewport: vello::kurbo::Rect,
+    ) -> Vec<crate::floating_surface::AgentConversationNavigation> {
+        self.window.agent_marker_surface = Some(surface.to_owned());
+        self.window.agent_marker_viewport = Some(viewport);
+        self.current_agent_marker_publication()
     }
 
     #[cfg(feature = "native")]

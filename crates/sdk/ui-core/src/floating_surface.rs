@@ -93,6 +93,10 @@ pub fn paint_material(
 /// carry the same messages.
 pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 5;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
+/// Painted Agent markers have a fixed 22.25 by 20.25 logical-pixel hit box.
+/// One logical pixel of tolerance covers edge clipping and serialization
+/// without coupling validation to output scale or text scaling.
+pub const MAX_AGENT_MARKER_LOGICAL_EXTENT: f64 = 23.25;
 pub const FLOATING_SURFACE_APP_ID_PREFIX: &str = "so.tilo.shell-float.";
 #[cfg(unix)]
 const MAX_PROTOCOL_FRAME_BYTES: usize = 1024 * 1024;
@@ -178,6 +182,13 @@ pub enum FloatingSurfaceClientMessage {
     /// non-mutating Chat View. It conveys no app grant or caller authority.
     OpenAgentQuickComposer {
         request: AgentConversationNavigation,
+    },
+    /// Replace the accessibility projection of markers actually painted on
+    /// this app's primary surface. The payload is descriptive and grants no
+    /// activation; the compositor independently binds it to a unique live
+    /// source surface and broker-normalized interactions.
+    PublishAgentQuickComposerTargets {
+        markers: Vec<AgentConversationNavigation>,
     },
     /// Ask the trusted session shell to show its ordinary user-confirmed
     /// chooser. This shares the same authenticated channel as floating
@@ -290,6 +301,13 @@ pub struct AgentConversationNavigationTarget {
     pub agent: String,
     pub actor: crate::UserId,
     pub invocation: tilo_actions::InvocationId,
+    /// Complete broker-normalized binding that the SDK resolved to this
+    /// marker's current semantic control locus.
+    pub interaction: tilo_actions::SemanticInteraction,
+    /// Source-local logical bounds of that resolved action control. This is
+    /// not authority; the compositor checks it against the exact interaction
+    /// and source surface before publishing accessibility.
+    pub locus: [f64; 4],
 }
 
 /// Owner-only operations on Terminal's existing device-shell PTY.

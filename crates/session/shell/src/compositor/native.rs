@@ -1139,14 +1139,140 @@ fn app_local_to_desktop(rect: Rect, app_rect: Rect) -> Rect {
 fn valid_agent_navigation_request(
     request: &ui::floating_surface::AgentConversationNavigation,
 ) -> bool {
+    let valid_rect = |rect: [f64; 4]| {
+        rect.iter().all(|value| value.is_finite()) && rect[2] > rect[0] && rect[3] > rect[1]
+    };
     crate::shell::state::RoomId::parse(&request.room).is_some()
         && !request.targets.is_empty()
         && request.targets.len() <= 8
-        && request.anchor.iter().all(|value| value.is_finite())
-        && request.anchor[2] > request.anchor[0]
-        && request.anchor[3] > request.anchor[1]
-        && request.anchor[2] - request.anchor[0] <= 32.0
-        && request.anchor[3] - request.anchor[1] <= 32.0
+        && valid_rect(request.anchor)
+        && request.anchor[2] - request.anchor[0]
+            <= ui::floating_surface::MAX_AGENT_MARKER_LOGICAL_EXTENT
+        && request.anchor[3] - request.anchor[1]
+            <= ui::floating_surface::MAX_AGENT_MARKER_LOGICAL_EXTENT
+        && request.targets.iter().all(|target| {
+            target.interaction.validate().is_ok()
+                && target.interaction.invocation == target.invocation
+                && target.interaction.actor.kind == tilo_actions::InteractionActorKind::Agent
+                && target.interaction.actor.id == target.actor.0
+                && valid_rect(target.locus)
+        })
+}
+
+fn agent_marker_description(
+    frame_builder: &FrameBuilder,
+    target: &ui::floating_surface::AgentConversationNavigationTarget,
+) -> String {
+    frame_builder
+        .presence()
+        .interaction_announcement(&target.interaction)
+        .unwrap_or_else(|| {
+            crate::shell::i18n::t_args(
+                "agent-marker-a11y-description",
+                &[
+                    ("action", target.interaction.action.label.as_str().into()),
+                    (
+                        "resource",
+                        target.interaction.resource.label.as_str().into(),
+                    ),
+                ],
+            )
+        })
+}
+
+pub(crate) fn publish_agent_quick_composer_targets(
+    frame_builder: &mut FrameBuilder,
+    connection: u64,
+    app_id: &str,
+    markers: &[ui::floating_surface::AgentConversationNavigation],
+) -> bool {
+    let room = markers.first().map(|marker| marker.room.clone());
+    let structurally_valid = markers.len() <= 16
+        && markers.iter().all(|marker| {
+            marker.targets.len() == 1
+                && valid_agent_navigation_request(marker)
+                && room.as_deref() == Some(marker.room.as_str())
+        });
+    let source = if structurally_valid {
+        room.as_deref()
+            .and_then(|room| frame_builder.unique_foreign_surface_for_app_room(app_id, room))
+    } else {
+        None
+    };
+    let now = ui::time::now();
+    let validated = source.map(|(surface, app_rect)| {
+        markers
+            .iter()
+            .filter_map(|request| {
+                let target = request.targets.first()?;
+                let marker = app_local_to_desktop(
+                    Rect::new(
+                        request.anchor[0],
+                        request.anchor[1],
+                        request.anchor[2],
+                        request.anchor[3],
+                    ),
+                    app_rect,
+                );
+                let locus = app_local_to_desktop(
+                    Rect::new(
+                        target.locus[0],
+                        target.locus[1],
+                        target.locus[2],
+                        target.locus[3],
+                    ),
+                    app_rect,
+                );
+                let inside = app_rect.contains(marker.origin())
+                    && app_rect.contains(vello::kurbo::Point::new(marker.x1, marker.y1))
+                    && app_rect.contains(locus.origin())
+                    && app_rect.contains(vello::kurbo::Point::new(locus.x1, locus.y1));
+                let exact = target
+                    .interaction
+                    .action
+                    .app
+                    .as_ref()
+                    .is_some_and(|source| source.id == app_id)
+                    && frame_builder
+                        .presence()
+                        .authenticated_agent_id(&target.actor)
+                        == Some(target.agent.as_str())
+                    && frame_builder.presence().current_agent_interaction(
+                        &target.actor,
+                        target.invocation,
+                        now,
+                    ) == Some(&target.interaction);
+                (inside && exact).then(|| {
+                    let label = frame_builder.presence().display_name(&target.actor);
+                    let description = agent_marker_description(frame_builder, target);
+                    crate::shell::overlay_host::AccessibleAgentMarker {
+                        connection,
+                        surface,
+                        app_id: app_id.to_owned(),
+                        room: request.room.clone(),
+                        target: target.clone(),
+                        marker,
+                        locus,
+                        label,
+                        description,
+                        published_at: std::time::Instant::now(),
+                    }
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+    let accepted = validated
+        .as_ref()
+        .is_some_and(|validated| validated.len() == markers.len());
+    frame_builder.host_mut().publish_accessible_agent_markers(
+        connection,
+        if accepted {
+            validated.unwrap_or_default()
+        } else {
+            Vec::new()
+        },
+    );
+    accepted
 }
 
 /// Serve the authenticated, workspace-scoped chooser connection alongside
@@ -1340,14 +1466,36 @@ fn pump_floating_surface_service(
                                 .presence()
                                 .authenticated_agent_id(&target.actor)
                                 == Some(target.agent.as_str())
-                                && frame_builder.presence().is_current_agent_interaction(
+                                && frame_builder.presence().current_agent_interaction(
                                     &target.actor,
                                     target.invocation,
                                     now,
-                                )
+                                ) == Some(&target.interaction)
+                                && target
+                                    .interaction
+                                    .action
+                                    .app
+                                    .as_ref()
+                                    .is_some_and(|source| source.id == app_id)
                         });
+                    let loci_inside_source = source.as_ref().is_some_and(|(_, app_rect, _)| {
+                        request.targets.iter().all(|target| {
+                            let locus = app_local_to_desktop(
+                                Rect::new(
+                                    target.locus[0],
+                                    target.locus[1],
+                                    target.locus[2],
+                                    target.locus[3],
+                                ),
+                                *app_rect,
+                            );
+                            app_rect.contains(locus.origin())
+                                && app_rect.contains(vello::kurbo::Point::new(locus.x1, locus.y1))
+                        })
+                    });
                     if activated
                         && current
+                        && loci_inside_source
                         && let Some((_, _, room)) = source
                         && let Some(marker) = marker
                         && request.room == room
@@ -1368,6 +1516,17 @@ fn pump_floating_surface_service(
                     } else {
                         tracing::info!(%app_id, "refused stale or malformed Agent navigation");
                     }
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::PublishAgentQuickComposerTargets {
+                    markers,
+                } => {
+                    publish_agent_quick_composer_targets(
+                        frame_builder,
+                        connection,
+                        &app_id,
+                        &markers,
+                    );
+                    changed = true;
                 }
                 ui::floating_surface::FloatingSurfaceClientMessage::OpenCaptureStudio { mode } => {
                     let mode = match mode {
@@ -1724,6 +1883,9 @@ fn pump_floating_surface_service(
                 frame_builder
                     .host_mut()
                     .disconnect_native_terminal(connection);
+                frame_builder
+                    .host_mut()
+                    .retire_accessible_agent_markers(connection);
                 appearance.disconnected(connection);
                 // Closing the control socket does not destroy the last Wayland
                 // buffer. Preserve its protection until the toplevel dies.
@@ -16867,12 +17029,40 @@ mod external_floating_security_tests {
     }
 
     fn agent_navigation(anchor: [f64; 4]) -> ui::floating_surface::AgentConversationNavigation {
+        let invocation = tilo_actions::InvocationId::new();
+        let interaction = tilo_actions::SemanticInteraction {
+            version: tilo_actions::INTERACTION_VERSION,
+            invocation,
+            sequence: 1,
+            actor: tilo_actions::InteractionActor {
+                id: "agent:scribe".into(),
+                kind: tilo_actions::InteractionActorKind::Agent,
+            },
+            phase: tilo_actions::InteractionPhase::Applying,
+            action: tilo_actions::InteractionAction {
+                id: "edit".into(),
+                label: "Edit".into(),
+                app: Some(tilo_actions::ActionApp {
+                    id: "so.tilo.notes".into(),
+                    label: "Notes".into(),
+                }),
+            },
+            resource: tilo_actions::ActionResource {
+                id: "note:draft".into(),
+                kind: "note".into(),
+                label: "Draft".into(),
+            },
+            anchor: tilo_actions::InteractionAnchor::Resource,
+            group: None,
+        };
         ui::floating_surface::AgentConversationNavigation {
             room: "00000000-0000-4000-8000-000000000001".into(),
             targets: vec![ui::floating_surface::AgentConversationNavigationTarget {
                 agent: "scribe".into(),
                 actor: ui::UserId("agent:scribe".into()),
-                invocation: tilo_actions::InvocationId::new(),
+                invocation,
+                interaction,
+                locus: [80.0, 80.0, 240.0, 140.0],
             }],
             anchor,
         }
@@ -16881,20 +17071,42 @@ mod external_floating_security_tests {
     #[test]
     fn agent_navigation_wire_geometry_is_tiny_finite_and_closed() {
         assert!(valid_agent_navigation_request(&agent_navigation([
-            100.0, 100.0, 124.0, 124.0,
+            100.0, 100.0, 122.0, 120.0,
         ])));
         for malformed in [
             [100.0, 100.0, 100.0, 124.0],
-            [100.0, 100.0, 133.0, 124.0],
+            [100.0, 100.0, 124.0, 124.0],
             [f64::NAN, 100.0, 124.0, 124.0],
         ] {
             assert!(!valid_agent_navigation_request(&agent_navigation(
                 malformed
             )));
         }
-        let mut empty = agent_navigation([100.0, 100.0, 124.0, 124.0]);
+        let valid_anchor = [100.0, 100.0, 122.0, 120.0];
+        let mut empty = agent_navigation(valid_anchor);
         empty.targets.clear();
         assert!(!valid_agent_navigation_request(&empty));
+
+        let mut mismatched_invocation = agent_navigation(valid_anchor);
+        mismatched_invocation.targets[0].invocation = tilo_actions::InvocationId::new();
+        assert!(!valid_agent_navigation_request(&mismatched_invocation));
+
+        let mut mismatched_actor = agent_navigation(valid_anchor);
+        mismatched_actor.targets[0].interaction.actor.id = "agent:other".into();
+        assert!(!valid_agent_navigation_request(&mismatched_actor));
+
+        let mut non_agent = agent_navigation(valid_anchor);
+        non_agent.targets[0].interaction.actor.kind = tilo_actions::InteractionActorKind::Person;
+        assert!(!valid_agent_navigation_request(&non_agent));
+
+        for malformed_locus in [
+            [80.0, 80.0, 80.0, 140.0],
+            [80.0, 80.0, f64::INFINITY, 140.0],
+        ] {
+            let mut malformed = agent_navigation(valid_anchor);
+            malformed.targets[0].locus = malformed_locus;
+            assert!(!valid_agent_navigation_request(&malformed));
+        }
     }
 
     #[test]

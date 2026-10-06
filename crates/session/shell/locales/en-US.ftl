@@ -2483,3 +2483,5 @@ agent-quick-guide-saved = Direction saved; waiting for the agent to apply it
 agent-quick-guide-applied = Agent applied the direction
 agent-quick-work-refused = This action is unavailable. Your draft is still here.
 agent-quick-shots-draft = Review changes and flag open decisions.
+agent-marker-a11y-name = Agent action: { $agent }
+agent-marker-a11y-description = { $action } on { $resource }

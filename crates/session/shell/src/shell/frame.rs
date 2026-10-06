@@ -3110,6 +3110,42 @@ impl FrameBuilder {
         None
     }
 
+    /// Resolve marker publication only when one currently presented foreign
+    /// surface has this exact authenticated app and room. A same-app sibling
+    /// is ambiguity, never a reason to guess which pixels the metadata names.
+    pub fn unique_foreign_surface_for_app_room(
+        &mut self,
+        app_id: &str,
+        room: &str,
+    ) -> Option<(u64, vello::kurbo::Rect)> {
+        let candidates = {
+            let tree = self.chrome.borrow();
+            tree.tree()
+                .desktop
+                .workspaces
+                .iter()
+                .filter(|workspace| workspace.room.to_string() == room)
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .filter_map(|tab| match &tab.tile {
+                    crate::shell::state::TileContent::Foreign {
+                        app_id: candidate,
+                        surface_id,
+                    } if candidate == app_id => Some(*surface_id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut visible = candidates.into_iter().filter_map(|surface| {
+            self.host
+                .foreign_surface_rect(surface)
+                .map(|rect| (surface, rect))
+        });
+        let source = visible.next()?;
+        visible.next().is_none().then_some(source)
+    }
+
     /// Resolve one exact activated surface, refusing a same-app sibling in a
     /// different room. This is the deferred navigation counterpart to the
     /// compositor's one-shot input custody.
@@ -3140,6 +3176,73 @@ impl FrameBuilder {
         self.host
             .foreign_surface_rect(activated_surface)
             .map(|rect| (activated_surface, rect, room))
+    }
+
+    fn open_accessible_agent_marker_activation(&mut self) -> bool {
+        let Some(marker) = self.host.take_accessible_agent_marker_activation() else {
+            return false;
+        };
+        let source_is_current = {
+            let tree = self.chrome.borrow();
+            let active_room = tree
+                .tree()
+                .desktop
+                .active_workspace()
+                .map(|workspace| workspace.room.to_string());
+            active_room.as_deref() == Some(marker.room.as_str())
+                && tree.tree().desktop.workspaces.iter().any(|workspace| {
+                    workspace.room.to_string() == marker.room
+                        && workspace
+                            .strips
+                            .iter()
+                            .flat_map(|strip| &strip.window_groups)
+                            .flat_map(|group| &group.tabs)
+                            .any(|tab| {
+                                matches!(
+                                    &tab.tile,
+                                    crate::shell::state::TileContent::Foreign {
+                                        app_id,
+                                        surface_id,
+                                    } if app_id == &marker.app_id && *surface_id == marker.surface
+                                )
+                            })
+                })
+        };
+        let Some(source_rect) = source_is_current
+            .then(|| self.host.foreign_surface_rect(marker.surface))
+            .flatten()
+        else {
+            return false;
+        };
+        let geometry_is_current = source_rect.contains(marker.marker.origin())
+            && source_rect.contains(vello::kurbo::Point::new(marker.marker.x1, marker.marker.y1))
+            && source_rect.contains(marker.locus.origin())
+            && source_rect.contains(vello::kurbo::Point::new(marker.locus.x1, marker.locus.y1));
+        let now = ui::time::now();
+        let binding_is_current = marker.target.interaction.invocation == marker.target.invocation
+            && marker.target.interaction.actor.id == marker.target.actor.0
+            && marker
+                .target
+                .interaction
+                .action
+                .app
+                .as_ref()
+                .is_some_and(|app| app.id == marker.app_id)
+            && self.presence.authenticated_agent_id(&marker.target.actor)
+                == Some(marker.target.agent.as_str())
+            && self.presence.current_agent_interaction(
+                &marker.target.actor,
+                marker.target.invocation,
+                now,
+            ) == Some(&marker.target.interaction);
+        if !geometry_is_current || !binding_is_current {
+            return false;
+        }
+        self.host.open_agent_quick_composer_from_user_navigation(
+            &marker.room,
+            &[(marker.target.agent, marker.label)],
+            marker.marker,
+        )
     }
 
     /// Install/remove the trusted keyboard mirror and anchor it to the output
@@ -3624,6 +3727,7 @@ impl FrameBuilder {
             if activated_tab_bar && self.chrome().axis_navigation_enabled() {
                 self.chrome.borrow_mut().request_axis_gather();
             }
+            self.open_accessible_agent_marker_activation();
             self.honor_focus_reset(focus);
             return true;
         }
@@ -7189,6 +7293,307 @@ mod tests {
             1,
             "dismissal leaves only the restored desktop node focused"
         );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn compositor_accessibility_marker_focuses_and_opens_once_on_exact_live_binding() {
+        use crate::shell::state::{Tab, TileContent};
+        use crate::shell::tab_binding::{self, Placement};
+        use ed25519_dalek::{Signer as _, SigningKey};
+        use tilo_actions::{
+            ActionApp, ActionResource, INTERACTION_VERSION, InteractionAction, InteractionActor,
+            InteractionActorKind, InteractionAnchor, InteractionPhase, InvocationId,
+            SemanticInteraction,
+        };
+        use ui::collaboration::{CollabEvent, Collaborator, PresencePayload};
+        use ui::presence::PresenceKey;
+
+        const SURFACE: u64 = 0xa11c_0a11;
+        const APP: &str = "so.tilo.notes";
+        crate::shell::foreign::store().forget(SURFACE);
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let room = tree.desktop.workspaces[0].room;
+        let root = SigningKey::from_bytes(&[91; 32]);
+        let device = SigningKey::from_bytes(&[92; 32]);
+        let principal = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+            root.verifying_key().to_bytes(),
+        );
+        tree.desktop.workspaces[0].set_owner(principal);
+        tree.desktop.workspaces[0].grant_capability(collab_types::CapOverride::membership(
+            collab_types::Subject::agent("scribe"),
+            room.to_string(),
+            collab_types::Verb::Comment,
+        ));
+        let tab = tab_binding::place_tab(
+            &mut tree,
+            Tab {
+                id: crate::shell::state::next_id(),
+                title: "Notes".into(),
+                tile: TileContent::LocalApp {
+                    app_id: APP.into(),
+                    label: "Notes".into(),
+                    note: crate::shell::peer_windows::OPENING.into(),
+                },
+            },
+            Placement::NewGroup,
+        );
+        let (broker, fanout, client) =
+            crate::shell::broker_services::test_broker_client_with_membership(
+                tree.clone().shared(),
+                vec![device.verifying_key().to_bytes()],
+            );
+        let mut frame = FrameBuilder::with_tree(tree, (1280, 800));
+        frame.host_mut().attach_app_action_broker(broker);
+        crate::shell::launcher::set_pending_placement(APP, Placement::IntoTab(tab));
+        {
+            let chrome = frame.chrome();
+            assert_eq!(
+                tab_binding::adopt_toplevel_in_room(
+                    &mut chrome.tree_mut(),
+                    SURFACE,
+                    Some(APP.into()),
+                    room,
+                ),
+                Some(tab),
+            );
+        }
+        crate::shell::foreign::store().note_adopted(SURFACE);
+        let mut document = AutoCommit::new();
+        frame.pump_apps(&mut document, &automerge::ROOT);
+        frame.relayout();
+        let source = frame
+            .foreign_surface_rect(SURFACE)
+            .expect("adopted source has current desktop geometry");
+
+        let actor = ui::UserId("agent:scribe".into());
+        frame.presence.apply_test_collaboration_snapshot(&[
+            Collaborator {
+                id: "person:viewer".into(),
+                name: "Viewer".into(),
+                colour: None,
+                is_agent: false,
+                is_self: true,
+            },
+            Collaborator {
+                id: actor.0.clone(),
+                name: "Scribe".into(),
+                colour: None,
+                is_agent: true,
+                is_self: false,
+            },
+        ]);
+        let invocation = InvocationId::new();
+        let submitted_interaction = SemanticInteraction {
+            version: INTERACTION_VERSION,
+            invocation,
+            sequence: 99,
+            actor: InteractionActor {
+                id: "person:forged-by-publisher".into(),
+                kind: InteractionActorKind::Person,
+            },
+            phase: InteractionPhase::Applying,
+            action: InteractionAction {
+                id: "edit".into(),
+                label: "Edit".into(),
+                app: Some(ActionApp {
+                    id: APP.into(),
+                    label: "Notes".into(),
+                }),
+            },
+            resource: ActionResource {
+                id: "note:draft".into(),
+                kind: "note".into(),
+                label: "Draft".into(),
+            },
+            anchor: InteractionAnchor::Resource,
+            group: None,
+        };
+        let (delivered_tx, delivered_rx) = std::sync::mpsc::sync_channel(1);
+        let _subscription = fanout.subscribe_rooms(
+            vec![room.to_string()],
+            Box::new(move |event, _route| {
+                let _ = delivered_tx.try_send(event.clone());
+            }),
+        );
+        let mut certificate = tilo_user_identity::DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Agent marker integration".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::primary(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut certificate, &root)
+            .expect("root signs the device certificate");
+        let presentation = runtime_collab::CertifiedJoinIdentity {
+            workspace_id: room.to_string(),
+            device_certificate: serde_json::to_vec(&certificate).expect("certificate JSON"),
+            proof: device
+                .sign(&runtime_identity::collaboration_join_signing_bytes(
+                    &room.to_string(),
+                ))
+                .to_bytes()
+                .to_vec(),
+        }
+        .encode()
+        .expect("certified join presentation");
+        let resource_key = PresenceKey::Resource {
+            app: APP.into(),
+            id: submitted_interaction.resource.id.clone(),
+            kind: submitted_interaction.resource.kind.clone(),
+        };
+        let key_bytes = postcard::to_stdvec(&resource_key).expect("resource presence key");
+        let interaction_json =
+            serde_json::to_string(&submitted_interaction).expect("interaction JSON");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        tokio::task::LocalSet::new().block_on(&runtime, async {
+            let channel = client
+                .join_channel_as_kind(
+                    &tilo_action_broker::route::CrdtRoute::record(
+                        APP,
+                        room.to_string(),
+                        "note:draft",
+                    )
+                    .channel_key(),
+                    &presentation,
+                    "scribe",
+                    "agent",
+                    "note",
+                )
+                .await
+                .expect("certified agent joins the app resource");
+            channel
+                .presence()
+                .await
+                .expect("presence handle")
+                .publish_interaction(&key_bytes, &interaction_json)
+                .await
+                .expect("broker admits the semantic interaction");
+        });
+        let CollabEvent::RemotePresenceUpdate {
+            user_id,
+            key,
+            payload: PresencePayload::Interaction(interaction),
+        } = delivered_rx
+            .try_recv()
+            .expect("room fanout delivers the admitted interaction")
+        else {
+            panic!("broker delivered a different collaboration event");
+        };
+        let interaction = *interaction;
+        assert_eq!(user_id, actor.0);
+        assert_eq!(key, resource_key);
+        assert_eq!(interaction.actor.id, actor.0);
+        assert_eq!(interaction.actor.kind, InteractionActorKind::Agent);
+        assert_eq!(interaction.sequence, 1);
+        frame
+            .presence
+            .apply_interaction(interaction.clone())
+            .expect("shell receives the broker-admitted interaction");
+        let mut app = ui::App::new(ui::State::new(), Box::new(ui::widget::Text::new("Notes")));
+        app.set_presence_broadcast_scope(Some(ui::presence::PresenceKey::Workspace {
+            id: room.to_string(),
+        }));
+        app.presence_ctx_mut().apply_test_collaboration_snapshot(&[
+            Collaborator {
+                id: "person:viewer".into(),
+                name: "Viewer".into(),
+                colour: None,
+                is_agent: false,
+                is_self: true,
+            },
+            Collaborator {
+                id: actor.0,
+                name: "Scribe".into(),
+                colour: None,
+                is_agent: true,
+                is_self: false,
+            },
+        ]);
+        app.presence_ctx_mut()
+            .apply_interaction(interaction.clone())
+            .expect("app receives the same broker-admitted interaction");
+        let viewport = Rect::new(0.0, 0.0, source.width(), source.height());
+        let locus = Rect::new(80.0, 80.0, 240.0, 140.0);
+        let mut scene = vello::Scene::new();
+        let mut text = ui::text_render::TextRenderer::new();
+        let mut theme = ui::Theme::light();
+        theme.reduce_motion = true;
+        app.presence_ctx_mut()
+            .draw_agent_action_marker(
+                &mut ui::paint::PaintCtx::new(
+                    &mut scene,
+                    vello::kurbo::Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                ),
+                &interaction,
+                locus,
+                viewport,
+                "retained-primary",
+                ui::time::now(),
+            )
+            .expect("the app paints the authenticated action marker");
+        let publication =
+            app.painted_agent_marker_publication_for_test("retained-primary", viewport);
+        assert_eq!(publication.len(), 1);
+        assert_eq!(publication[0].targets[0].interaction, interaction);
+        assert!(
+            crate::compositor::native::publish_agent_quick_composer_targets(
+                &mut frame,
+                7,
+                APP,
+                &publication,
+            )
+        );
+
+        let mut focus = None;
+        frame.reconcile_native_focus(&mut focus);
+        let update = frame.build_a11y_tree_update(focus, 1.0);
+        let marker_name = "Agent action: Scribe · Agent";
+        let (marker_node, _) = exported_node_named(&update, marker_name)
+            .expect("compositor publishes the app-painted current marker node");
+        assert!(frame.dispatch_a11y_action(
+            marker_node,
+            &ui::a11y::Action::Focus,
+            &mut ui::widget::Edits::lend(&mut document),
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        let focused = frame.build_a11y_tree_update(focus, 1.0);
+        assert_eq!(
+            focused.focus, marker_node,
+            "the app-painted marker alone owns AT focus"
+        );
+
+        assert!(frame.dispatch_a11y_action(
+            marker_node,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut document),
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        let opened = frame.build_a11y_tree_update(focus, 1.0);
+        assert!(exported_node_named(&opened, "Agent quick composer").is_some());
+        assert!(exported_node_named(&opened, marker_name).is_none());
+        assert!(
+            !frame.dispatch_a11y_action(
+                marker_node,
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits::lend(&mut document),
+                &automerge::ROOT,
+                &mut focus,
+            ),
+            "the retired compositor node cannot be replayed"
+        );
+        crate::shell::foreign::store().forget(SURFACE);
+        crate::shell::launcher::clear_pending_placements();
     }
 
     #[test]
