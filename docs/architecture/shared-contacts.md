@@ -86,7 +86,9 @@ account selection behavior.
 
 Contacts exposes account editing in the redesigned `NavShell` inspector using
 shared controls. A contact resource's `OpenAccounts` action opens that inspector;
-the shell supplies its header, toggle and responsive placement.
+the shell supplies its header, toggle and responsive placement. The inspector is
+attached on that first request so an unused account toggle does not displace the
+compact browsing header's commands.
 Additions, edits and removals stage a review before mutating the directory.
 Pending reviews are `contacts.account-review` resources with a row-scoped,
 confirmation-required action. Changing contact, closing, or cancelling invalidates
