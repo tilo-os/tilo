@@ -530,7 +530,7 @@ fn layout_preview(
             nodes.get(&node).map_or(taffy::Size::ZERO, |&widget| {
                 // SAFETY: both nodes point into this exclusively borrowed
                 // Container; no widget moves or receives events during layout.
-                unsafe { (&mut *widget).measure(known, available, text) }
+                unsafe { Widget::measure(&mut *widget, known, available, text) }
             })
         },
     )?;

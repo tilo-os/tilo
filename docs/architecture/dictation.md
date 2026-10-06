@@ -28,6 +28,10 @@ using server-assigned source identity. It drops chunks when its bounded queue
 fills. The new dictation mode instead fails on queue overflow and requests 16 kHz
 mono S16LE directly from PipeWire, which performs conversion and resampling.
 Reader EOF or failure is an interruption even before the process reports exit.
+The dictation stream sets `node.dont-reconnect`, `node.dont-fallback` and
+`node.dont-move`: consent is pinned to the probed server-assigned source, rather
+than a replacement microphone. These are the documented
+[WirePlumber linking properties](https://pipewire.pages.freedesktop.org/wireplumber/policies/linking.html).
 The recorder subprocess has a distinct dictation node identity. Drop terminates
 and reaps only its owned process group and joins the reader; failed reader startup
 also reaps the child. Dictation executes the immutable `/usr/bin/pw-record`
@@ -126,6 +130,14 @@ production guards. The Notes wire journey additionally proves final IME text
 through selected-range replacement and owned history, without live capture.
 Separate production-reader tests cover queue overflow, source EOF and owned-process teardown
 using synthetic PCM/blocked pipes; they neither capture audio nor run inference.
+An additional isolated test ran the immutable image's actual `pw-record` against
+a private PipeWire/WirePlumber graph with hardware discovery disabled, as UID/GID
+65534 in a read-only, network-free container without host devices or runtime
+mounts. A public synthetic 440 Hz tone produced 94,208 PCM bytes. Removing the
+virtual source originally left the recorder alive with no EOF; with the pinned
+stream properties it exited with status 1 and EOF. This verifies the actual
+source-loss boundary without using a personal microphone; physical-device
+removal and older-device latency still need separate validation.
 
 ## Candidate research (2026-10-05)
 
@@ -240,18 +252,23 @@ stamps now come from the shared host input contract described above.
 1. Produce and review the exact speech model, licence receipt and signed catalog
    through the existing protected publisher. Candidate-review tooling is implemented;
    no protected signing, publication, trust change or model installation has run.
-   A positive installed-worker CLI journey needs a non-root image session;
-   the remote builder's root-only development override is deliberately refused.
+   Non-root worker CLI journeys passed with ephemeral review keys and stores in
+   an isolated image container; these do not install a model or grant trust to
+   the shipping image. The root-only development override remains refused.
 2. Validate live microphone permission denial, device removal, cancellation and
    model failure on the image, followed by representative native text, rich
    document, Terminal and browser journeys with selected-range replacement and
    system undo. Current actor, worker-core and Wayland tests prove separate
    production boundaries, not a complete assembled microphone journey.
+   Browser address fields use the shared input contract, but Chromium page DOM
+   fields currently fail closed as `NoEditableField`. They need a backend bridge
+   that atomically validates the original document, element, selection and value
+   before insertion; asynchronous unguarded IME or simulated paste would violate
+   the focus and sensitive-field boundary.
 3. Extend the public six-language read-speech qualification below to noisy
    natural conversation, and measure an older CPU and Arm device. Three short
    probes per language and artificial long splices remain narrow evidence.
-4. Inspect the complete local consent/status surface in light, dark, high
-   contrast and enlarged text, and verify touch/switch access and screen-reader
+4. Complete live touch/switch access and screen-reader
    announcements. Toggle/finish/cancel work through shared controls; a hold
    gesture, current mic-source display and editable draft review remain product
    extensions. The shared language chooser and private live caption are implemented.
