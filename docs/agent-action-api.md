@@ -51,6 +51,19 @@ by a token:
 - **Every invocation passes the same capability gate** as the palette, as the
   person at this session.
 
+Permission requests use that same authenticated session surface. When a portal
+or Terminal is waiting for consent, query `actions list permission-prompts` and
+use the returned exact UUID-scoped decision: `allow-once@<id>`,
+`allow-session@<id>`, `allow-always@<id>` or `deny@<id>` from provider
+`permission-prompts`, with `{"confirm": true}`. Only the current queue head is
+offered; listing and invoking require the current workspace owner. The action
+rechecks ownership and request identity before releasing the waiting request.
+It cannot create a grant without a prompt, answer a replaced request or reopen a
+Host session as a person on an agent's behalf. The portal/ush supervisor still
+owns private persistence and Host's existing person/device-owner checks.
+A successful decision receipt confirms the answer, not a running PTY: inspect
+Terminal's local session afterward to observe its actual startup outcome.
+
 Reading is an action too. A framework resource that sets
 `Resource::READABLE` and answers `Resource::read_content` is published with
 the framework's `read` view: no arguments answers the resource itself, `item`
@@ -89,6 +102,22 @@ back through `tilo-control windows`. It then creates a note through Notes' `new-
    "title":"New terminal window","subtitle":null,"score":0}
 ]}}
 ```
+
+Machine-oriented operations can be included explicitly through the same door:
+
+```sh
+tilo-control actions list so.tilo.browser --programmatic --json
+```
+
+```json
+{"op":"actions_enumerate","query":"so.tilo.browser","include_programmatic":true}
+```
+
+This adds programmatic descriptors to bounded enumeration. It keeps the same
+workspace, membership and capability checks and does not alter the human palette.
+Use the returned provider, ID, contract and parameter schema with `actions invoke`.
+A programmatic page read may carry Write authority; the generic `read` convenience
+command is limited to declared read-only operations.
 
 The providers on a stock build are `actions` (the shell's own chrome),
 `applications`, `host-applications`, `notes`, `files`, `records` and `editor`.

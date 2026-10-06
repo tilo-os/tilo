@@ -24,9 +24,17 @@ const CLOCK_ACTIVITY_REFRESH: Duration = Duration::from_millis(250);
 
 /// The bar's chrome source for the compositor's `chrome`.
 pub fn native_source(chrome: chrome_state::Chrome) -> Chrome {
+    // Owned fixtures paint at an owned clock value. Reading wall time here
+    // would change an otherwise identical scene at a minute boundary.
+    let fixture_clock = chrome
+        .borrow()
+        .hosted_inputs
+        .is_fixture()
+        .then(ClockSnapshot::default);
     Rc::new(NativeChrome {
         chrome,
         clock: RefCell::new(ClockPoll::default()),
+        fixture_clock,
         widgets: RefCell::new(stored_widgets(TopBarWidgetsConfig::load())),
     })
 }
@@ -181,6 +189,7 @@ fn system_status(status: &crate::shell::status::SystemStatus) -> SystemStatus {
 struct NativeChrome {
     chrome: chrome_state::Chrome,
     clock: RefCell<ClockPoll>,
+    fixture_clock: Option<ClockSnapshot>,
     widgets: RefCell<TopBarWidgets>,
 }
 
@@ -195,7 +204,7 @@ impl DesktopChromeSource for NativeChrome {
         DesktopChromeSnapshot {
             revision: state.revision,
             status: system_status(&state.status),
-            clock: clock_snapshot(),
+            clock: self.fixture_clock.clone().unwrap_or_else(clock_snapshot),
             telemetry: TelemetrySnapshot::default(),
             overlays: ChromeOverlays {
                 overview: state.overlays.overview,
@@ -341,6 +350,24 @@ impl DesktopChromeSource for NativeChrome {
 mod native_source_tests {
     use super::*;
     use crate::shell::state::WorkspaceTree;
+
+    #[test]
+    fn fixture_clock_is_owned_without_freezing_the_live_source() {
+        let parent = tempfile::tempdir().unwrap();
+        let inputs =
+            crate::shell::hosted_inputs::HostedTileInputs::fixture_in(parent.path()).unwrap();
+        let chrome = chrome_state::ChromeState::new_with_fixture_handle(
+            WorkspaceTree::bootstrap_default().shared(),
+            inputs,
+        );
+        let source = native_source(chrome);
+        assert_eq!(source.snapshot().clock, ClockSnapshot::default());
+
+        let live = native_source(chrome_state::ChromeState::new(
+            WorkspaceTree::bootstrap_default(),
+        ));
+        assert!(live.snapshot().clock.unix_seconds > 0);
+    }
 
     #[test]
     fn intents_take_the_compositors_own_mutation_paths() {

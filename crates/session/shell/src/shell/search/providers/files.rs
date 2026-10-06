@@ -1804,6 +1804,8 @@ mod tests {
         doc: &'a automerge::AutoCommit,
     ) -> SearchContext<'a> {
         SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle,
             wanted,
             chrome,

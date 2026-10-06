@@ -1929,6 +1929,15 @@ pub trait Widget {
         pending
     }
 
+    /// Temporary feedback currently presented, such as a save acknowledgement.
+    /// Captures may intentionally include it; scene-invariance checks can wait
+    /// for it to disappear separately from unfinished placeholder work.
+    fn has_transient_feedback(&self) -> bool {
+        self.children()
+            .into_iter()
+            .any(Widget::has_transient_feedback)
+    }
+
     /// Default `true` (dirty every frame). Opt into incremental redraw by
     /// tracking a `dirty: bool`, setting it in `handle_event`/`sync`, and
     /// clearing it in `mark_drawn()`. Containers MUST forward: dirty iff any

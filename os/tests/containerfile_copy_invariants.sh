@@ -115,7 +115,10 @@ containerfile="$repo/os/Containerfile"
 # The public /usr/bin/ush symlink deliberately exposes the same confined
 # runtime already installed at /usr/libexec/tilo-ush.
 # The confined speech worker and its full MIT notice are deliberate additions.
-expected_contract=77b63523d930dac813189a4c1f1173351798e25b385e9ce342c089a7015b26bb
+# Cisco requires the complete OpenH264 binary license notice in a licensing
+# information location. Only that text is added to extension-files; Cisco
+# binaries remain separately downloaded by opted-in devices.
+expected_contract=37864ff82a6627989e4520842138fb72a55530846ceb93c93021f05b048d00f4
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

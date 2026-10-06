@@ -540,6 +540,8 @@ fn palette_confirmations_cannot_forge_identity_or_admin_and_wait_for_the_overlay
             let state = chrome.borrow();
             crate::shell::search::providers::ActionsProvider::new()
                 .query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "use identity",
                     wanted: &[ResourceKind::Action],
                     chrome: &state,
@@ -595,6 +597,8 @@ fn palette_confirmations_cannot_forge_identity_or_admin_and_wait_for_the_overlay
             let state = chrome.borrow();
             crate::shell::search::providers::ActionsProvider::new()
                 .query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "invite collaborator",
                     wanted: &[ResourceKind::Action],
                     chrome: &state,

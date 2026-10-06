@@ -2009,6 +2009,7 @@ mod tests {
         tags: Vec<String>,
     ) -> BrokerActionDescriptor {
         BrokerActionDescriptor {
+            semantic_identity: None,
             resource: DOC.into(),
             action: action.into(),
             resource_kind: "word_processor.document".into(),
@@ -2167,6 +2168,7 @@ mod tests {
                     record_id: String::new(),
                     live: true,
                     actions: vec![BrokerActionDescriptor {
+                        semantic_identity: None,
                         resource: "chat.channel:general".into(),
                         resource_kind: "chat.channel".into(),
                         resource_label: "# general".into(),
@@ -2186,6 +2188,7 @@ mod tests {
                     surfaces.remove(0);
                 }
                 let open = |app: &str, title: &str| BrokerActionDescriptor {
+                    semantic_identity: None,
                     resource: format!("{}{app}", tools::LAUNCHER_OPEN_PREFIX),
                     resource_kind: "desktop.application".into(),
                     resource_label: title.into(),

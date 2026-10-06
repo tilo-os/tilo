@@ -183,6 +183,8 @@ automerge.workspace = true
 tilo-automerge.workspace = true
 taffy.workspace = true
 vello.workspace = true
+# Compare replacement image patches while retaining every other scene command.
+vello_encoding.workspace = true
 parking_lot.workspace = true
 
 libc.workspace = true
@@ -324,7 +326,6 @@ tilo-cpu-raster = { path = "../../sdk/tilo-cpu-raster" }
 rand_chacha.workspace = true
 pollster.workspace = true
 wgpu.workspace = true
-vello_encoding.workspace = true
 # Serializes tests that share process-wide state (environment variables,
 # static registries).
 serial_test.workspace = true

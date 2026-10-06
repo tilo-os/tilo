@@ -53,6 +53,18 @@ mod signin_tests;
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum AccountsEffect {
+    /// Show or hide public metadata in the browser identity picker.
+    #[effect(row, device_only, idempotent)]
+    SetBrowserIdentityEnabled { account: String, enabled: bool },
+    /// Remove browser picker metadata; this does not revoke sign-in or access.
+    #[effect(row, device_only, destructive)]
+    RemoveBrowserIdentity { account: String },
+    /// Publish the signed-in Tilo identity's public browser connection metadata.
+    #[effect(device_only, idempotent)]
+    PublishBrowserIdentity {
+        #[param("Canonical HTTPS origin of the existing Tilo host")]
+        origin: String,
+    },
     /// Add an account: mail, caldav, webdav, nextcloud, google-drive,
     /// onedrive, dropbox or icloud-drive.
     #[effect(view)]
@@ -85,7 +97,7 @@ pub enum AccountsEffect {
     #[effect(view)]
     CancelNewPassword,
     /// Check that an account's server accepts its saved sign-in.
-    #[effect(job, row, idempotent, label = "Check connection")]
+    #[effect(job, returns, row, idempotent, label = "Check connection")]
     TestAccount {
         #[param("The account's id")]
         account: String,
@@ -105,9 +117,29 @@ pub(crate) fn answer(
     effect: AccountsEffect,
     cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
+    match effect {
+        AccountsEffect::PublishBrowserIdentity { origin } => {
+            app.publish_browser_identity(origin)?;
+            return Ok(Effected::done());
+        }
+        AccountsEffect::SetBrowserIdentityEnabled { account, enabled } => {
+            app.set_browser_identity_enabled(account, enabled)?;
+            return Ok(Effected::done());
+        }
+        AccountsEffect::RemoveBrowserIdentity { account } => {
+            app.remove_browser_identity(account)?;
+            return Ok(Effected::done());
+        }
+        _ => {}
+    }
     let shared = app.accounts().model();
     let mut model = shared.borrow_mut();
     match effect {
+        AccountsEffect::PublishBrowserIdentity { .. }
+        | AccountsEffect::SetBrowserIdentityEnabled { .. }
+        | AccountsEffect::RemoveBrowserIdentity { .. } => {
+            return Err("Identity publication was not handled".into());
+        }
         AccountsEffect::AddAccount { kind } => {
             let kind =
                 AccountKind::from_slug(&kind).ok_or_else(|| "unknown account kind".to_string())?;
@@ -132,7 +164,7 @@ pub(crate) fn answer(
             return Ok(cx.thread(
                 move |_| check(),
                 |_: &mut SettingsApp, outcome: Result<String, String>, _| {
-                    outcome.map(Effected::value)
+                    complete_account_check(outcome)
                 },
             ));
         }
@@ -140,11 +172,16 @@ pub(crate) fn answer(
     Ok(Effected::done())
 }
 
+fn complete_account_check(outcome: Result<String, String>) -> EffectAnswer {
+    outcome.map(Effected::value)
+}
+
 /// What the External Accounts area keeps for the window: the model, read
 /// when first needed.
 pub struct AccountsArea {
     cx: PaneCx,
     model: std::cell::OnceCell<Shared<AccountsPane>>,
+    account_root: Option<AccountRoot>,
 }
 
 impl AccountsArea {
@@ -152,7 +189,13 @@ impl AccountsArea {
         Self {
             cx: cx.clone(),
             model: std::cell::OnceCell::new(),
+            account_root: None,
         }
+    }
+
+    pub(crate) fn with_account_root(mut self, root: AccountRoot) -> Self {
+        self.account_root = Some(root);
+        self
     }
 
     /// The model over the person's accounts; a screenshot shows the sample
@@ -162,7 +205,10 @@ impl AccountsArea {
             let scene = self.cx.scene();
             let root = scene
                 .and_then(|scene| scene.account_root.clone())
-                .map_or_else(AccountRoot::live, AccountRoot::at);
+                .map_or_else(
+                    || self.account_root.clone().unwrap_or_else(AccountRoot::live),
+                    AccountRoot::at,
+                );
             let mut model = if scene.is_some() {
                 AccountsPane::from_dir_in(root, crate::accounts::sample_directory(), false)
             } else {
@@ -189,7 +235,7 @@ impl AccountsArea {
             return Vec::new();
         }
         let offer = |effect: AccountsEffect| SettingsEffect::from(effect).bound();
-        AccountKind::ALL
+        let mut published: Vec<LiveRow> = AccountKind::ALL
             .into_iter()
             .flat_map(|kind| model.dir.views_of(kind))
             .map(|view| {
@@ -212,7 +258,27 @@ impl AccountsArea {
                 }))
                 .operation(offer(AccountsEffect::RemoveAccount { account: id }))
             })
-            .collect()
+            .collect();
+        for account in model
+            .account_root
+            .store()
+            .list(&accounts::person::TILO_IDENTITY_TYPE.into())
+        {
+            let id = account.id.as_str().to_owned();
+            published.push(
+                LiveRow::new(
+                    format!("settings.browser-identity:{id}"),
+                    "settings.browser-identity",
+                    account.display_name.clone(),
+                )
+                .operation(offer(AccountsEffect::SetBrowserIdentityEnabled {
+                    account: id.clone(),
+                    enabled: !account.enabled,
+                }))
+                .operation(offer(AccountsEffect::RemoveBrowserIdentity { account: id })),
+            );
+        }
+        published
     }
 }
 
@@ -858,6 +924,7 @@ impl AccountsPane {
         if let Some(id) = &self.reauth_id {
             panel.push(self.reauth_form(id));
         }
+        panel.push(self.browser_identity_card());
         panel.push(self.mail_card());
         panel.push(self.kind_card(AccountKind::CalDav));
         panel.push(self.kind_card(AccountKind::WebDav));
@@ -872,6 +939,47 @@ impl AccountsPane {
         }
 
         crate::widgets::cards(panel)
+    }
+
+    fn browser_identity_card(&self) -> El {
+        let store = self.account_root.store();
+        let mut body = vec![caption(&t("accounts-browser-identity-about"))];
+        for account in store.list(&accounts::person::TILO_IDENTITY_TYPE.into()) {
+            let id = account.id.as_str().to_owned();
+            let toggle = if account.enabled {
+                "accounts-browser-identity-hide"
+            } else {
+                "accounts-browser-identity-show"
+            };
+            body.push(setting_row(
+                &account.display_name,
+                Box::new(self.bound(
+                    Button::new(
+                        &format!("settings.browser-identity.toggle:{id}"),
+                        &t(toggle),
+                    ),
+                    AccountsEffect::SetBrowserIdentityEnabled {
+                        account: id.clone(),
+                        enabled: !account.enabled,
+                    },
+                )),
+            ));
+            if let Some(origin) = account
+                .config
+                .get("origin")
+                .and_then(serde_json::Value::as_str)
+            {
+                body.push(caption(origin));
+            }
+            body.push(Box::new(self.bound(
+                Button::new(
+                    &format!("settings.browser-identity.remove:{id}"),
+                    &t("accounts-browser-identity-remove"),
+                ),
+                AccountsEffect::RemoveBrowserIdentity { account: id },
+            )));
+        }
+        card(&t("accounts-browser-identity-title"), rows(body))
     }
 
     fn mail_card(&self) -> El {
@@ -1915,6 +2023,62 @@ mod tests {
     use ui::Theme;
 
     struct RejectCandidate;
+
+    struct AcceptSavedCredential;
+
+    impl crate::account_probe::AccountTester for AcceptSavedCredential {
+        fn test(
+            &self,
+            account: &accounts::Account,
+            secret: &accounts::Secret,
+        ) -> Result<String, String> {
+            if account.id.as_str() != "connection@example.test"
+                || secret.password != "test-only-password"
+            {
+                return Err("the probe did not receive the saved account credential".into());
+            }
+            Ok("The server accepted the saved sign-in".into())
+        }
+    }
+
+    #[test]
+    fn account_check_returns_its_saved_credential_probe_result() -> Result<(), String> {
+        let (_dir, root) = scratch_root();
+        let id = accounts::AccountId::from("connection@example.test");
+        let account = accounts::Account::new(id.clone(), "email");
+        let mut store = accounts::AccountStore::new();
+        store.upsert(account);
+        root.save_store(&store).map_err(|error| error.to_string())?;
+        let mut vault = root.vault();
+        vault.put(&id, &accounts::Secret::password("test-only-password"));
+        vault.try_save()?;
+        let pane = AccountsPane::in_root(root.clone())
+            .with_account_tester(std::sync::Arc::new(AcceptSavedCredential));
+        let check = pane.connection_check(id.as_str())?;
+        let Effected::Done(output) = complete_account_check(check())? else {
+            return Err("the finished account check remained pending".into());
+        };
+        let effect = AccountsEffect::TestAccount {
+            account: id.as_str().into(),
+        };
+        let spec = effect.bound();
+        spec.contract.result.validate(&output)?;
+        if output.value != Some(serde_json::json!("The server accepted the saved sign-in"))
+            || !output.resources.is_empty()
+        {
+            return Err("the account check must return its exact status without resources".into());
+        }
+        if root.vault().get(&id) != vault.get(&id) {
+            return Err("checking the account must preserve its saved credential".into());
+        }
+        let rejecting =
+            AccountsPane::in_root(root).with_account_tester(std::sync::Arc::new(RejectCandidate));
+        let check = rejecting.connection_check(id.as_str())?;
+        if complete_account_check(check()) != Err("server rejected candidate".into()) {
+            return Err("the account check must propagate the probe's rejection".into());
+        }
+        Ok(())
+    }
 
     impl crate::account_probe::AccountTester for RejectCandidate {
         fn test(

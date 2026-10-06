@@ -43,6 +43,8 @@ pub mod dev_env;
 pub mod fetch;
 pub mod install;
 pub mod service;
+#[cfg(all(unix, feature = "test-support"))]
+pub mod testing;
 pub mod transport;
 
 /// Generated Cap'n Proto bindings for `schema/app-host.capnp`. The

@@ -1582,19 +1582,17 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
             review_id,
         } => {
             let pending = require_reviewed_pending(&moderation, &package_id, review_id.as_deref())?;
-            let reviewed = fetch_for_decision(storage, &pending, allow_insecure_local)?;
-            let allowlist = storage.load_allowlist()?;
-            let record = moderation.approve(&pending, reviewer, reason, unix_now(), &allowlist)?;
-            // Serve the reviewed bytes as blobs and thin packages, so clients
-            // fetch only what they lack.
-            // An approved upload becomes the artifact its version's URL names.
-            for (_inspection, bytes) in &reviewed {
-                storage.save_payload_blobs(bytes)?;
-                let digest = blake3::hash(bytes).to_hex().to_string();
-                if storage.load_upload(&digest)?.is_some() {
-                    storage.import_artifact(bytes)?;
-                }
-            }
+            let record = registry_server::submission_review::approve(
+                storage,
+                &pending,
+                &reviewer,
+                &reason,
+                unix_now(),
+                InspectionPolicy {
+                    allow_insecure_local,
+                    ..InspectionPolicy::default()
+                },
+            )?;
             println!("{}", serde_json::to_string_pretty(&record)?);
         }
         ReviewCommand::Reject {
@@ -1662,14 +1660,11 @@ fn fetch_for_decision(
     pending: &registry_server::PendingSubmission,
     allow_insecure_local: bool,
 ) -> anyhow::Result<Vec<(registry_server::InspectedVersion, Vec<u8>)>> {
-    if pending.change.action == EntryAction::Delete {
-        return Ok(Vec::new());
-    }
     let policy = InspectionPolicy {
         allow_insecure_local,
         ..InspectionPolicy::default()
     };
-    registry_server::review_entry_bytes(storage, &pending.change.entry, policy).map_err(Into::into)
+    registry_server::submission_review::inspect(storage, pending, policy)
 }
 
 fn cmd_import_artifact(storage: &Storage, file: &std::path::Path) -> anyhow::Result<()> {

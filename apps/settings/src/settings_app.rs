@@ -176,7 +176,8 @@ impl SettingsApp {
             agent_models: panes::agent_models::AgentModelsArea::new(&cx),
             device_mesh: panes::device_mesh::DeviceMeshArea::new(&cx),
             audio: panes::audio::AudioArea::new(&cx),
-            accounts: panes::accounts::AccountsArea::new(&cx),
+            accounts: panes::accounts::AccountsArea::new(&cx)
+                .with_account_root(account_root.clone()),
             displays: panes::display::DisplayArea::new(&cx),
             network: panes::network::NetworkArea::new(&cx),
             selected: Category::DEFAULT,
@@ -337,6 +338,36 @@ impl SettingsApp {
         Box::new(Container::new().filling().with_child(Box::new(scroll)))
     }
 
+    pub(crate) fn set_browser_identity_enabled(
+        &self,
+        account: String,
+        enabled: bool,
+    ) -> Result<(), String> {
+        self.account_root
+            .set_browser_identity_enabled(account, enabled)
+    }
+
+    pub(crate) fn remove_browser_identity(&self, account: String) -> Result<(), String> {
+        self.account_root.remove_browser_identity(account)
+    }
+
+    /// Record this process's already-bound public identity for browser choices.
+    /// The caller supplies only an HTTPS origin; the identity is never guessed.
+    pub(crate) fn publish_browser_identity(&self, origin: String) -> Result<(), String> {
+        let identity =
+            ui::local_identity::bound().ok_or("Sign in before publishing this identity")?;
+        let root = identity
+            .group_public_key
+            .iter()
+            .fold(String::new(), |mut text, byte| {
+                use std::fmt::Write as _;
+                let _ = write!(text, "{byte:02x}");
+                text
+            });
+        self.account_root
+            .publish_browser_identity(root, origin, identity.display_name)
+    }
+
     /// Hand the panes their host: panes built from now on bind their
     /// controls to its door.
     pub(crate) fn attach_host(
@@ -374,7 +405,8 @@ impl SettingsApp {
         self.agent_models = panes::agent_models::AgentModelsArea::new(&cx);
         self.device_mesh = panes::device_mesh::DeviceMeshArea::new(&cx);
         self.audio = panes::audio::AudioArea::new(&cx);
-        self.accounts = panes::accounts::AccountsArea::new(&cx);
+        self.accounts =
+            panes::accounts::AccountsArea::new(&cx).with_account_root(self.account_root.clone());
         self.displays = panes::display::DisplayArea::new(&cx);
         self.network = panes::network::NetworkArea::new(&cx);
         self.software = panes::accessibility::Software::for_host(&cx);

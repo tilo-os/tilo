@@ -626,6 +626,10 @@ pub trait Decorator {
         self.inner().has_pending_visual_work()
     }
 
+    fn has_transient_feedback(&self) -> bool {
+        self.inner().has_transient_feedback()
+    }
+
     fn needs_redraw(&self) -> bool {
         self.inner().needs_redraw()
     }
@@ -1237,6 +1241,10 @@ impl<T: Decorator + 'static> Widget for T {
 
     fn has_pending_visual_work(&self) -> bool {
         Decorator::has_pending_visual_work(self)
+    }
+
+    fn has_transient_feedback(&self) -> bool {
+        Decorator::has_transient_feedback(self)
     }
 
     fn needs_redraw(&self) -> bool {

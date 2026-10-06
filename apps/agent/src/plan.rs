@@ -600,6 +600,7 @@ mod tests {
             app: app.to_string(),
             broker_peer_id: None,
             descriptor: tilo_actions::door::ActionDescriptor {
+                semantic_identity: None,
                 address: tilo_actions::door::ActionAddress::new(resource, action),
                 resource_kind: format!("{app}.thing"),
                 resource_label: resource.rsplit(':').next().unwrap_or(resource).to_string(),
