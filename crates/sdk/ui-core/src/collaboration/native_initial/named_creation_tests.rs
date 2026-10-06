@@ -110,6 +110,15 @@ async fn named_original_creation_admits_exact_graph_but_not_ready_identity() {
         store.route(&fixture.checkout).is_err(),
         "not Ready before Initialize"
     );
+    let admitted = store.admission_route(&fixture.checkout).unwrap();
+    assert_eq!(admitted.app_id, "so.tilo.store");
+    assert_eq!(
+        admitted.record.as_deref(),
+        Some(fixture.checkout.id.as_str())
+    );
+    let wrong_kind =
+        RecordCheckout::new(fixture.checkout.id.clone(), RecordKind::new("wrong.kind"));
+    assert!(store.admission_route(&wrong_kind).is_err());
     store
         .read(&fixture.checkout.id, |doc| {
             assert_eq!(
@@ -128,6 +137,7 @@ async fn named_original_creation_admits_exact_graph_but_not_ready_identity() {
             .is_some()
     );
     fixture.read.initialized();
+    assert!(store.admission_route(&fixture.checkout).is_err());
     assert!(
         store.try_open_record(&fixture.checkout).is_err(),
         "consumed receipt cannot reopen an unfinished graph"
@@ -143,6 +153,7 @@ async fn named_identityless_restore_and_wrong_room_refuse_without_cache_install(
         let store = owners.open("so.tilo.store", &fixture.room).unwrap();
         assert!(store.try_open_record(&fixture.checkout).is_err());
         assert!(store.open_records().is_empty());
+        assert!(store.admission_route(&fixture.checkout).is_err());
     }
 }
 
@@ -160,6 +171,7 @@ async fn named_creation_does_not_adopt_modified_or_foreign_local_cache() {
         })
         .unwrap();
     assert!(store.try_open_record(&fixture.checkout).is_err());
+    assert!(store.admission_route(&fixture.checkout).is_err());
     let other_directory = tempfile::tempdir().unwrap();
     let mut other_owners = RecordOwners::new(other_directory.path().to_owned());
     let foreign = other_owners
@@ -175,4 +187,5 @@ async fn named_creation_does_not_adopt_modified_or_foreign_local_cache() {
     let restored = restored.open("so.tilo.store", &fixture.room).unwrap();
     assert!(restored.try_open_record(&fixture.checkout).is_err());
     assert!(restored.open_records().is_empty());
+    assert!(restored.admission_route(&fixture.checkout).is_err());
 }
