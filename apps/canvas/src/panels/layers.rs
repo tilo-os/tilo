@@ -141,15 +141,17 @@ pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
 /// than suggesting a different composite order. The shared tree owns collapse,
 /// keyboard navigation, virtualisation and accessibility.
 fn layer_tree(rows: &[LayerRow], tools: &Tools) -> Element {
-    use ui::widget::{TreeNode, TreeView};
+    use ui::widget::{TreeNode, TreeRowDecoration, TreeView};
     let mut children: Vec<TreeNode<()>> = Vec::new();
     let mut targets = std::collections::HashMap::new();
+    let mut media = std::collections::HashMap::new();
     let mut next = u64::try_from(rows.len()).unwrap_or(0).saturating_add(1);
     let mut previous = "";
     let mut folder = None;
     for (index, row) in rows.iter().enumerate() {
         let id = u64::try_from(index).unwrap_or(0).saturating_add(1);
-        let leaf = TreeNode::leaf(id, format!("{} · {}", row.name, row.medium), ());
+        let leaf = TreeNode::leaf(id, &row.name, ());
+        media.insert(id, row.medium.clone());
         targets.insert(id, row.id.clone());
         if row.group != previous {
             previous = &row.group;
@@ -181,6 +183,15 @@ fn layer_tree(rows: &[LayerRow], tools: &Tools) -> Element {
         TreeView::new(TreeNode::branch(0, "", (), children))
             .hide_root()
             .with_id("canvas-layer-tree")
+            .with_row_decoration(move |_, row, _| {
+                media
+                    .get(&row.id)
+                    .map_or_else(TreeRowDecoration::new, |medium| {
+                        TreeRowDecoration::new()
+                            .trailing(medium)
+                            .description(medium)
+                    })
+            })
             .with_selected(selected)
             .with_expanded(expanded)
             .with_viewport(LIST, ui::tokens::Metrics::BASE.panel_row_height)

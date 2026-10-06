@@ -154,9 +154,8 @@ fn checkpoint_controls(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     Box::new(
         Column::new()
             .with_intrinsic_height()
-            .with_gap(4.0)
-            .with_horizontal_padding(12.0, 12.0)
-            .with_vertical_padding(6.0)
+            .with_rhythm(ui::tokens::Rhythm::Tight)
+            .with_padding_rhythm(ui::tokens::Rhythm::Sibling, ui::tokens::Rhythm::Tight)
             .push(Box::new(
                 TextInput::from_state(&name)
                     .with_id("canvas-checkpoint-label")

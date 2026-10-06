@@ -478,7 +478,7 @@ fn workspace_controls(tools: &tools::Tools) -> Element {
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(4.0)
+            .with_rhythm(ui::tokens::Rhythm::Tight)
             .push(Box::new(
                 Text::new("canvas-workspace").with_role(TextRole::Label),
             ))
@@ -580,7 +580,7 @@ fn dock_tabs(
     let action = cx.switch(dock, move |cx, dock| match dock {
         Dock::Layers => panels::layers::add_menu(cx, &tools),
         Dock::History => panels::history::checkpoint_button(cx),
-        Dock::Objects => Box::new(Spacer::fixed(0.0)),
+        Dock::Objects => ui::widget::optional(None),
     });
     Box::new(
         Row::new()
