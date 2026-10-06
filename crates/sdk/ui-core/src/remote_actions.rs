@@ -130,8 +130,13 @@ struct CatalogueWalk {
 struct Running {
     answer: LocalStateWriter<InvocationCall>,
     cancellation: Option<LocalState<CancellationCall>>,
+    /// At least one non-terminal receipt proved the host dispatched the work.
+    admitted: bool,
     /// When to observe it next, while the host is still running it.
     observe_at: Option<Instant>,
+    /// The host no longer has an answer for work it previously admitted.
+    /// This is unresolved outcome, not proof that nothing ran.
+    outcome_uncertain: bool,
 }
 
 struct Inner {
@@ -309,7 +314,9 @@ impl RemoteActions {
             Running {
                 answer: answer.writer(),
                 cancellation: None,
+                admitted: false,
                 observe_at: None,
+                outcome_uncertain: false,
             },
         );
         self.send(RemoteActionMessage::Invoke(request));
@@ -321,6 +328,17 @@ impl RemoteActions {
     pub fn is_busy(&self) -> bool {
         let inner = self.lock();
         !inner.catalogue.is_empty() || !inner.invocations.is_empty()
+    }
+
+    /// Whether the host lost its retained view of work this client already
+    /// observed as admitted. The invocation stays owned and is never retried
+    /// automatically; callers should present the outcome as unresolved.
+    #[must_use]
+    pub fn invocation_outcome_uncertain(&self, invocation: InvocationId) -> bool {
+        self.lock()
+            .invocations
+            .get(&invocation)
+            .is_some_and(|running| running.outcome_uncertain)
     }
 
     /// Ask the host to cancel an invocation this client is still observing.
@@ -530,11 +548,25 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         RemoteActionMessage::Update { invocation, state } => {
             match state {
                 Some(state) => settle(inner, invocation, state.update),
+                // Once a non-terminal receipt proved dispatch, losing the
+                // host's retained lookup is uncertainty, not a refusal proving
+                // that nothing ran. Keep the last admitted state and do not
+                // retry either the invocation or observation. Before admission,
+                // the same answer still definitively means nothing ran.
                 None => {
-                    if let Some(running) = inner.invocations.remove(&invocation) {
-                        running
-                            .answer
-                            .set(RemoteCall::Refused(ActionHostError::UnknownInvocation));
+                    if inner
+                        .invocations
+                        .get(&invocation)
+                        .is_some_and(|running| !running.admitted)
+                    {
+                        if let Some(running) = inner.invocations.remove(&invocation) {
+                            running
+                                .answer
+                                .set(RemoteCall::Refused(ActionHostError::UnknownInvocation));
+                        }
+                    } else if let Some(running) = inner.invocations.get_mut(&invocation) {
+                        running.outcome_uncertain = true;
+                        running.observe_at = None;
                     }
                 }
             }
@@ -570,6 +602,8 @@ fn settle(inner: &mut Inner, invocation: InvocationId, update: InvocationUpdate)
     let Some(running) = inner.invocations.get_mut(&invocation) else {
         return;
     };
+    running.admitted = true;
+    running.outcome_uncertain = false;
     running.answer.set(RemoteCall::Done(update));
     let background = crate::background::Background::current();
     running.observe_at = Some(background.now() + OBSERVE_INTERVAL);

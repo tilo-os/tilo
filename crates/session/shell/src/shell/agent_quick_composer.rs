@@ -34,6 +34,7 @@ struct PendingMessage {
     pages_remaining: u16,
     text: String,
     draft_revision: u64,
+    outcome_uncertain: bool,
 }
 
 struct PendingMessageOffer {
@@ -358,6 +359,7 @@ impl AgentQuickComposer {
                     pages_remaining: ui::agent_message_action::MAX_PAGES,
                     text,
                     draft_revision: revision,
+                    outcome_uncertain: false,
                 });
             }
             ComposerIntent::Queue => {
@@ -389,6 +391,8 @@ impl AgentQuickComposer {
 
     fn poll_submission(&mut self) {
         if let (Some(actions), Some(pending)) = (&self.actions, self.pending_message.as_mut()) {
+            pending.outcome_uncertain =
+                ui::agent_message_action::outcome_uncertain(actions, &pending.state);
             match ui::agent_message_action::poll(
                 actions,
                 &self.room,
@@ -521,7 +525,15 @@ impl AgentQuickComposer {
 
     fn refresh_status(&self) {
         if self.pending_message.is_some() {
-            let pending = t("agent-quick-message-submitting");
+            let pending = if self
+                .pending_message
+                .as_ref()
+                .is_some_and(|pending| pending.outcome_uncertain)
+            {
+                t("agent-quick-message-outcome-unknown")
+            } else {
+                t("agent-quick-message-submitting")
+            };
             if self.status.get() != pending {
                 self.status.set(pending);
             }
@@ -752,6 +764,11 @@ impl Widget for AgentQuickComposer {
 mod tests {
     use super::*;
     use taffy::{AvailableSpace, Size};
+    use tilo_actions::remote::{
+        InvocationReceipt, InvokeArgument, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
+    };
+    use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
+    use ui::remote_actions::RemoteCall;
     use vello::{Scene, kurbo::Affine};
 
     fn layout_panel(
@@ -838,6 +855,98 @@ mod tests {
         let current = composer.draft.revision();
         composer.clear_if_unchanged(current);
         assert_eq!(composer.draft(), "");
+    }
+
+    #[test]
+    fn an_old_receipt_cannot_clear_a_draft_edited_away_and_back() {
+        let mut composer = AgentQuickComposer {
+            room: "room-a".into(),
+            agent: "scribe".into(),
+            ..AgentQuickComposer::default()
+        };
+        composer.set_draft("submitted");
+        let submitted = composer.draft.revision();
+        composer.set_draft("different");
+        composer.set_draft("submitted");
+
+        composer.clear_if_unchanged(submitted);
+
+        assert_eq!(composer.draft(), "submitted");
+        assert_ne!(composer.draft.revision(), submitted);
+    }
+
+    #[test]
+    fn an_unknown_admitted_message_keeps_its_draft_and_reports_unresolved_outcome() {
+        use ui::collaboration::{CollabEvent, CollabRequest};
+        use ui::widget::Collaborative;
+
+        let invocation = InvocationId(uuid::Uuid::from_bytes([0x3c; 16]));
+        let mut actions = ui::remote_actions::RemoteActions::session();
+        let call = actions.invoke_with_id(
+            invocation,
+            RemoteActionTarget {
+                provider: "chat-provider".into(),
+                address: ActionAddress::new("chat.person:scribe", "message"),
+            },
+            InvokeArgument::Text("Review the release notes".into()),
+            None,
+        );
+        let dispatched = actions.take_collab_requests();
+        let [
+            CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Invoke(request),
+            },
+        ] = dispatched.as_slice()
+        else {
+            panic!("one message invocation is dispatched")
+        };
+        assert_eq!(request.invocation, invocation);
+        actions.handle_collab_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation,
+                status: ReceiptStatus::Accepted,
+            }),
+        });
+        actions.handle_collab_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::Update {
+                invocation,
+                state: None,
+            },
+        });
+        let mut composer = AgentQuickComposer {
+            room: "room-a".into(),
+            agent: "scribe".into(),
+            actions: Some(actions.clone()),
+            pending_message: Some(PendingMessage {
+                state: AgentMessageSubmission::Invoke(call),
+                deadline: std::time::Instant::now(),
+                pages_remaining: 0,
+                text: "Review the release notes".into(),
+                draft_revision: 1,
+                outcome_uncertain: false,
+            }),
+            ..AgentQuickComposer::default()
+        };
+        composer.set_draft("Review the release notes");
+
+        composer.poll_submission();
+        composer.refresh_status();
+
+        assert_eq!(composer.draft(), "Review the release notes");
+        assert!(composer.pending_message.is_some());
+        assert_eq!(
+            composer.status.get(),
+            "Sent. Waiting for Chat to confirm the outcome…"
+        );
+        assert!(actions.take_collab_requests().is_empty());
+        assert!(matches!(
+            composer
+                .pending_message
+                .as_ref()
+                .map(|pending| pending.state.clone()),
+            Some(AgentMessageSubmission::Invoke(call))
+                if matches!(call.get(), RemoteCall::Done(InvocationUpdate::Accepted { .. }))
+        ));
     }
 
     #[test]

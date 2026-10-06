@@ -168,6 +168,22 @@ pub fn begin_from_offer(
     }
 }
 
+/// Whether an invocation in this submission was admitted but its host can no
+/// longer confirm a terminal outcome. This must not be presented as failure or
+/// retried under a new invocation identity.
+#[must_use]
+pub fn outcome_uncertain(actions: &RemoteActions, submission: &AgentMessageSubmission) -> bool {
+    let (AgentMessageSubmission::Invoke(call) | AgentMessageSubmission::LaunchInvoke(call)) =
+        submission
+    else {
+        return false;
+    };
+    let RemoteCall::Done(update) = call.get() else {
+        return false;
+    };
+    !update.is_terminal() && actions.invocation_outcome_uncertain(update.invocation())
+}
+
 #[must_use]
 pub fn poll(
     actions: &RemoteActions,

@@ -466,6 +466,77 @@ fn a_running_invocation_is_followed_until_it_ends() {
 }
 
 #[test]
+fn an_unknown_observation_never_turns_admitted_work_into_a_refusal_or_retry() {
+    let clock = crate::background::Pumped::new();
+    let _entered = clock.background().enter();
+    let invocation = InvocationId(uuid::Uuid::from_bytes([0x5d; 16]));
+    let mut actions = RemoteActions::session();
+    let running = actions.invoke_with_id(invocation, target("slow"), InvokeArgument::None, None);
+    let requests = actions.take_collab_requests();
+    assert!(matches!(
+        requests.as_slice(),
+        [CollabRequest::RemoteAction {
+            message: RemoteActionMessage::Invoke(request),
+        }] if request.invocation == invocation
+    ));
+    actions.handle_collab_event(&CollabEvent::RemoteAction {
+        message: RemoteActionMessage::Receipt(InvocationReceipt {
+            invocation,
+            status: ReceiptStatus::Accepted,
+        }),
+    });
+    assert!(matches!(
+        running.get(),
+        RemoteCall::Done(InvocationUpdate::Accepted { .. })
+    ));
+
+    actions.handle_collab_event(&CollabEvent::RemoteAction {
+        message: RemoteActionMessage::Update {
+            invocation,
+            state: None,
+        },
+    });
+
+    assert!(actions.invocation_outcome_uncertain(invocation));
+    assert!(matches!(
+        running.get(),
+        RemoteCall::Done(InvocationUpdate::Accepted { .. })
+    ));
+    assert!(
+        actions.is_busy(),
+        "the uncertain admitted invocation stays owned"
+    );
+    clock.advance(OBSERVE_INTERVAL * 2);
+    actions.poll();
+    assert!(
+        actions.take_collab_requests().is_empty(),
+        "unknown observation neither retries the effect nor polls in a loop"
+    );
+}
+
+#[test]
+fn an_unknown_invocation_before_admission_is_a_definitive_refusal() {
+    let invocation = InvocationId(uuid::Uuid::from_bytes([0x5e; 16]));
+    let mut actions = RemoteActions::session();
+    let call = actions.invoke_with_id(invocation, target("slow"), InvokeArgument::None, None);
+    let _invoke = actions.take_collab_requests();
+
+    actions.handle_collab_event(&CollabEvent::RemoteAction {
+        message: RemoteActionMessage::Update {
+            invocation,
+            state: None,
+        },
+    });
+
+    assert_eq!(
+        call.get(),
+        RemoteCall::Refused(ActionHostError::UnknownInvocation)
+    );
+    assert!(!actions.invocation_outcome_uncertain(invocation));
+    assert!(!actions.is_busy());
+}
+
+#[test]
 fn the_session_transport_carries_requests_out_and_answers_back() {
     let mut actions = RemoteActions::session();
     let answer = actions.catalogue(CatalogueQuery::default());

@@ -2472,6 +2472,7 @@ agent-quick-editor-name = Nachricht oder Anweisung
 agent-quick-send = Senden
 agent-quick-open-conversation = Unterhaltung öffnen
 agent-quick-message-submitting = Nachricht wird von Chat angenommen…
+agent-quick-message-outcome-unknown = Gesendet. Auf Bestätigung von Chat wird gewartet…
 agent-quick-message-sent = Chat hat die Nachricht angenommen
 agent-quick-message-refused = Nachricht nicht verfügbar. Dein Entwurf bleibt erhalten.
 agent-quick-queue-help = Separate Arbeit nach der aktuellen Aufgabe einreihen

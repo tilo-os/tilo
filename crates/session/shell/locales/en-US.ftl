@@ -2470,6 +2470,7 @@ agent-quick-editor-name = Message or instruction
 agent-quick-send = Send
 agent-quick-open-conversation = Open conversation
 agent-quick-message-submitting = Sending for Chat to accept…
+agent-quick-message-outcome-unknown = Sent. Waiting for Chat to confirm the outcome…
 agent-quick-message-sent = Chat accepted the message
 agent-quick-message-refused = Message unavailable. Your draft is still here.
 agent-quick-queue-help = Add separate work after this agent’s current task
