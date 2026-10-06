@@ -91,7 +91,8 @@ def namespace_command(repo, stage, tools, profile, *, packaging=False):
     for variable in ('HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME',
                      'XDG_CACHE_HOME', 'XDG_RUNTIME_DIR'):
         argv += ['--setenv', variable, str(stage / 'home')]
-    argv += ['--unsetenv', 'LD_PRELOAD', '--unsetenv', 'LD_LIBRARY_PATH',
+    argv += ['--setenv', 'TMPDIR', '/tmp',
+             '--unsetenv', 'LD_PRELOAD', '--unsetenv', 'LD_LIBRARY_PATH',
              '--chdir', str(repo), 'python3', str(Path(__file__).resolve()),
              '--inside', '--repo', str(repo), '--target-dir', str(tools),
              '--profile', profile, '--stage', str(stage)]

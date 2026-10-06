@@ -14,6 +14,20 @@ SPEC.loader.exec_module(ASSEMBLER)
 
 
 class AssemblyNamespaces(unittest.TestCase):
+    def test_builder_temporary_directory_cannot_escape_private_stage(self):
+        with tempfile.TemporaryDirectory(prefix='assembly-test-') as directory:
+            stage = Path(directory)
+            # Generate the inputs normally before entering the packaging stage.
+            ASSEMBLER.namespace_command(SOURCE.parents[2], stage, stage, 'thin-app')
+            argv = ASSEMBLER.namespace_command(SOURCE.parents[2], stage,
+                                               stage, 'thin-app', packaging=True)
+            inside = argv.index('python3')
+            result = subprocess.run(argv[:inside] + ['mktemp', '-d'],
+                                    env=dict(os.environ, TMPDIR='/usr/bin'),
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(result.stdout.strip().startswith('/tmp/'), result.stdout)
+
     def test_generated_pin_stage_becomes_readonly_for_the_normal_installer(self):
         with tempfile.TemporaryDirectory(prefix='assembly-test-') as directory:
             stage = Path(directory)
