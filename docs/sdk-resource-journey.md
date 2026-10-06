@@ -7,11 +7,11 @@ stable id and the host-provided author. Each task publishes completion and
 confirmed removal actions. It uses shared controls and Fluent strings, with no
 custom window chrome, storage, permission service or identity provider.
 
-Run it through the existing remote builder:
+Run it with Cargo or any Cargo drop-in:
 
 ```sh
-rcargo run --locked -p tilo-app --example resource-journey
-rcargo test --locked -p tilo-app --no-default-features --example resource-journey -j 2
+cargo run --locked -p tilo-app --example resource-journey
+cargo test --locked -p tilo-app --no-default-features --example resource-journey -j 2
 ```
 
 `TestApp` mounts the actual component runtime on a temporary profile. The example

@@ -1,8 +1,8 @@
 //! A checklist whose controls and semantic callers use the same actions.
 //!
-//! Run with `rcargo run -p tilo-app --example resource-journey`.
+//! Run with `cargo run -p tilo-app --example resource-journey`.
 //! Prove its platform journey without a display with
-//! `rcargo test --locked -p tilo-app --example resource-journey`.
+//! `cargo test --locked -p tilo-app --example resource-journey`.
 
 use tilo_app::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
