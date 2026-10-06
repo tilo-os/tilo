@@ -138,6 +138,7 @@ fn edit(
                         local_author: &binding.author.0,
                         broker_admitted: false,
                         invocation: tilo_actions::InvocationId::new(),
+                        source_invocation: None,
                         ambient: None,
                         scope: None,
                     },
