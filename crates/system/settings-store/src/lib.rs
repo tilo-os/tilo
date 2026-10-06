@@ -74,8 +74,8 @@ pub mod watch;
 
 pub use session::{SessionPaths, SessionSettings};
 pub use source::{
-    ChangeSignal, HostDocument, Listener, SettingsSource, install_source, installed_source,
-    merge_section,
+    ChangeSignal, ConditionalUpdate, HostDocument, Listener, SettingsSource, install_source,
+    installed_source, merge_section,
 };
 
 /// The file name under the Tilo config root.
