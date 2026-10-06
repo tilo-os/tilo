@@ -185,6 +185,34 @@ if __name__ == "__main__":
 /// The sample project's folder name.
 pub const NAME: &str = "ferris-cli";
 
+/// RTL file opened by the hardware capture, never seeded into a live project.
+pub const HARDWARE_FILE: &str = "rtl/signed_mac.sv";
+
+const SIGNED_MAC_SV: &str = r"// Illustrative RTL fixture, not an accelerator implementation.
+// Signed INT8 operands accumulate into a 32-bit register.
+module signed_mac (
+    input  logic               clk,
+    input  logic               reset_n,
+    input  logic               clear,
+    input  logic               valid,
+    input  logic signed [7:0]  activation,
+    input  logic signed [7:0]  weight,
+    output logic signed [31:0] accumulator
+);
+    logic signed [15:0] product;
+    assign product = activation * weight;
+
+    /* Extend the signed product before accumulation.
+       Overflow wraps; saturation would require a separate contract. */
+    always_ff @(posedge clk) begin
+        if (!reset_n || clear)
+            accumulator <= '0;
+        else if (valid)
+            accumulator <= accumulator + {{16{product[15]}}, product};
+    end
+endmodule
+";
+
 /// Write the sample project's files into a new folder at `root`.
 ///
 /// # Errors
@@ -223,6 +251,9 @@ pub fn build() -> Project {
     let scripts = p.add_folder(root, "scripts");
     p.add_file(scripts, "build.sh", BUILD_SH);
     p.add_file(scripts, "app.py", APP_PY);
+
+    let rtl = p.add_folder(root, "rtl");
+    p.add_file(rtl, "signed_mac.sv", SIGNED_MAC_SV);
 
     p.add_file(root, "Cargo.toml", CARGO_TOML);
     p.add_file(root, "README.md", README_MD);
