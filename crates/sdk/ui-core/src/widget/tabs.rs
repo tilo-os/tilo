@@ -696,7 +696,9 @@ impl TabBar {
         } = pill;
         let text_primary = theme.tokens.colors.text_primary;
         let text_dim = theme.tokens.colors.text_dim;
-        let text_color = if is_active || is_hover {
+        // The cursor-following copy suppresses hover, but carries the primary
+        // label ink so an inactive source stays readable in motion.
+        let text_color = if is_active || is_hover || pill.suppress_hover {
             text_primary
         } else {
             text_dim
