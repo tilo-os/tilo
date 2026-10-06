@@ -425,6 +425,74 @@ pub struct NotesApp {
 }
 
 impl NotesApp {
+    /// Content-free observation of the actual editor and canonical body.
+    /// Both explicit semantic inspection and native input evidence use this.
+    fn editor_observation(&self, doc: &AutoCommit) -> serde_json::Value {
+        let page = self.main.page_id();
+        // Explicit read-only inspection and opt-in input diagnostics observe
+        // both canonical text and the editor cache used to draw that frame,
+        // without placing a person's note content in the diagnostic log.
+        let body = page
+            .filter(|id| NotesDoc::page_body(doc, *id).is_some())
+            .map(|id| {
+                NotesDoc::page_block_snapshots(doc, id)
+                    .into_iter()
+                    .map(|(_, text)| text)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            });
+        let editor = self.main.editor();
+        let rendered = editor
+            .blocks()
+            .iter()
+            .map(|block| block.line.value())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let caret = editor.focused_index().and_then(|index| {
+            editor.blocks().get(index).map(|block| {
+                serde_json::json!({
+                    "block_id": block.id,
+                    "block_index": index,
+                    "byte_offset": block.line.cursor_pos(),
+                })
+            })
+        });
+        let canonical_sync_key = self.canonical_synced.as_ref().map(|key| {
+            let mut heads = blake3::Hasher::new();
+            for head in &key.0 {
+                heads.update(&head.0);
+            }
+            serde_json::json!({
+                "heads_hash": heads.finalize().to_hex().to_string(),
+                "heads_count": key.0.len(),
+                "pending_operations": key.1,
+                "selected_page": key.2,
+                "active_tag": key.3,
+            })
+        });
+        let rect = editor.get_rect();
+        serde_json::json!({
+            "app": "so.tilo.notes",
+            "editor_id": "block_editor",
+            "selected_page": self.workspace.selected(),
+            "bound_page": page,
+            "main_page": page,
+            "editor_binding_page": self.bound_page,
+            "pending_page_events": self.pending_events.len(),
+            "adopted": self.projection_adopted,
+            "canonical_sync_key": canonical_sync_key,
+            "hash_algorithm": "blake3",
+            "body_hash": body.as_ref().map(|body| blake3::hash(body.as_bytes()).to_hex().to_string()),
+            "body_chars": body.as_ref().map(|body| body.chars().count()),
+            "body_bytes": body.as_ref().map(String::len),
+            "rendered_body_hash": blake3::hash(rendered.as_bytes()).to_hex().to_string(),
+            "rendered_body_chars": rendered.chars().count(),
+            "editor_focused": editor.is_focused(),
+            "caret": caret,
+            "editor_rect": [rect.x0, rect.y0, rect.x1, rect.y1],
+        })
+    }
+
     /// Construct the real notebook presentation from an existing canonical document.
     /// This does not initialize schema, read Markdown, or own persistence workers.
     ///
@@ -2105,69 +2173,7 @@ impl Widget for NotesApp {
         path: &ModelPath,
     ) -> Option<serde_json::Value> {
         let (doc, _) = ui::doc::document_ref(state, path);
-        let page = self.main.page_id();
-        // The native observer runs only for opt-in diagnostic input. Observe
-        // both canonical text and the editor cache used to draw that frame,
-        // without placing a person's note content in the diagnostic log.
-        let body = page
-            .filter(|id| NotesDoc::page_body(doc, *id).is_some())
-            .map(|id| {
-                NotesDoc::page_block_snapshots(doc, id)
-                    .into_iter()
-                    .map(|(_, text)| text)
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            });
-        let editor = self.main.editor();
-        let rendered = editor
-            .blocks()
-            .iter()
-            .map(|block| block.line.value())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let caret = editor.focused_index().and_then(|index| {
-            editor.blocks().get(index).map(|block| {
-                serde_json::json!({
-                    "block_id": block.id,
-                    "block_index": index,
-                    "byte_offset": block.line.cursor_pos(),
-                })
-            })
-        });
-        let canonical_sync_key = self.canonical_synced.as_ref().map(|key| {
-            let mut heads = blake3::Hasher::new();
-            for head in &key.0 {
-                heads.update(&head.0);
-            }
-            serde_json::json!({
-                "heads_hash": heads.finalize().to_hex().to_string(),
-                "heads_count": key.0.len(),
-                "pending_operations": key.1,
-                "selected_page": key.2,
-                "active_tag": key.3,
-            })
-        });
-        let rect = editor.get_rect();
-        Some(serde_json::json!({
-            "app": "so.tilo.notes",
-            "editor_id": "block_editor",
-            "selected_page": self.workspace.selected(),
-            "bound_page": page,
-            "main_page": page,
-            "editor_binding_page": self.bound_page,
-            "pending_page_events": self.pending_events.len(),
-            "adopted": self.projection_adopted,
-            "canonical_sync_key": canonical_sync_key,
-            "hash_algorithm": "blake3",
-            "body_hash": body.as_ref().map(|body| blake3::hash(body.as_bytes()).to_hex().to_string()),
-            "body_chars": body.as_ref().map(|body| body.chars().count()),
-            "body_bytes": body.as_ref().map(String::len),
-            "rendered_body_hash": blake3::hash(rendered.as_bytes()).to_hex().to_string(),
-            "rendered_body_chars": rendered.chars().count(),
-            "editor_focused": editor.is_focused(),
-            "caret": caret,
-            "editor_rect": [rect.x0, rect.y0, rect.x1, rect.y1],
-        }))
+        Some(self.editor_observation(doc))
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
