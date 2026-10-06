@@ -5688,6 +5688,12 @@ impl CapnpBrokerState {
             runtime_collab::TaskRunUpdate::Accepted => {
                 ("Agent accepted run".to_string(), None, false)
             }
+            runtime_collab::TaskRunUpdate::Planning {} => {
+                ("Agent entered planning".to_string(), None, false)
+            }
+            runtime_collab::TaskRunUpdate::Executing {} => {
+                ("Agent entered execution".to_string(), None, false)
+            }
             runtime_collab::TaskRunUpdate::Progress { message } => (
                 format!("Agent progress · {}", bounded_task_message(&message)?),
                 None,

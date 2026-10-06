@@ -1061,6 +1061,7 @@ impl Session {
         arguments: &serde_json::Map<String, serde_json::Value>,
         stepped: &mut bool,
     ) -> Result<Result<Handoff, TaskActionStop>> {
+        self.publish_task_phase(run, runtime_collab::TaskRunUpdate::Executing {})?;
         let step = if *stepped {
             Some(u32::try_from(step_index).context("task plan exceeds the step range")?)
         } else {
@@ -1176,6 +1177,31 @@ impl Session {
         self.link.send(&CollabRequest::ReportTaskRun {
             run_id: run.run_id,
             lease: run.lease.clone(),
+            update,
+        })
+    }
+
+    /// Publish a typed execution milestone without making Stop wait for its
+    /// owner acknowledgement. The enrolled broker serializes report sequence
+    /// at the owner boundary; a later correlated report waits through any
+    /// earlier milestone before it can become durable.
+    fn publish_task_phase(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        update: runtime_collab::TaskRunUpdate,
+    ) -> Result<()> {
+        let Some(acceptance) = self.enrolled_active.clone() else {
+            return self.report_task(run, update);
+        };
+        self.enrolled_sequence = self
+            .enrolled_sequence
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("enrolled sequence exhausted"))?;
+        let request_id = self.next_enrolled_request()?;
+        self.link.send(&CollabRequest::ReportEnrolledTask {
+            request_id,
+            acceptance,
+            sequence: self.enrolled_sequence,
             update,
         })
     }

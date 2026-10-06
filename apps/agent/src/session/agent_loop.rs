@@ -874,6 +874,7 @@ impl Session {
         let turn_began = ui::time::now();
         let rx = self.chooser.start_turn(body, timeout, turn);
         self.turn = Some(ActiveTurn::new(rx, crate::live::PlanStream::new(targets)));
+        self.publish_task_phase(run, runtime_collab::TaskRunUpdate::Planning {})?;
         if self.live.is_active() {
             self.live
                 .set_state(crate::live::LiveState::Thinking, "Thinking", None);
@@ -2076,6 +2077,9 @@ mod tests {
         /// Cancel after this many successful status surveys (zero disables).
         cancel_after_checks: usize,
         cancellation_checks: usize,
+        /// Hold typed phase acknowledgements to prove Stop is not coupled to
+        /// optional owner milestone observation.
+        delay_phase_ack: bool,
     }
 
     impl World {
@@ -2408,13 +2412,32 @@ mod tests {
                     });
                 }
                 CollabRequest::TaskRunCancellation { request_id, .. } => {
+                    let mut world = self.world.borrow_mut();
+                    world.cancellation_checks += 1;
+                    let cancelled = world.cancel_after_checks != 0
+                        && world.cancellation_checks > world.cancel_after_checks;
                     self.events.push(CollabEvent::TaskRunCancellation {
                         request_id: *request_id,
-                        result: Ok(false),
+                        result: Ok(cancelled),
                     });
                 }
-                CollabRequest::ReportEnrolledTask { request_id, .. }
-                | CollabRequest::AcceptEnrolledTask { request_id, .. } => {
+                CollabRequest::ReportEnrolledTask {
+                    request_id, update, ..
+                } => {
+                    if !self.world.borrow().delay_phase_ack
+                        || !matches!(
+                            update,
+                            runtime_collab::TaskRunUpdate::Planning {}
+                                | runtime_collab::TaskRunUpdate::Executing {}
+                        )
+                    {
+                        self.events.push(CollabEvent::EnrolledTaskReply {
+                            request_id: *request_id,
+                            result: Ok(()),
+                        });
+                    }
+                }
+                CollabRequest::AcceptEnrolledTask { request_id, .. } => {
                     self.events.push(CollabEvent::EnrolledTaskReply {
                         request_id: *request_id,
                         result: Ok(()),
@@ -2576,19 +2599,55 @@ mod tests {
         )
     }
 
+    fn is_terminal(update: &runtime_collab::TaskRunUpdate) -> bool {
+        matches!(
+            update,
+            runtime_collab::TaskRunUpdate::Succeeded { .. }
+                | runtime_collab::TaskRunUpdate::Failed { .. }
+                | runtime_collab::TaskRunUpdate::Cancelled { .. }
+        )
+    }
+
     /// The terminal task report.
     fn terminal(sent: &[CollabRequest]) -> runtime_collab::TaskRunUpdate {
         sent.iter()
             .rev()
             .find_map(|request| match request {
-                CollabRequest::ReportEnrolledTask { update, .. }
-                    if !matches!(update, runtime_collab::TaskRunUpdate::Progress { .. }) =>
-                {
+                CollabRequest::ReportEnrolledTask { update, .. } if is_terminal(update) => {
                     Some(update.clone())
                 }
                 _ => None,
             })
             .expect("a terminal report")
+    }
+
+    fn typed_phases(sent: &[CollabRequest]) -> Vec<runtime_collab::TaskRunUpdate> {
+        sent.iter()
+            .filter_map(|request| match request {
+                CollabRequest::ReportEnrolledTask { update, .. }
+                    if matches!(
+                        update,
+                        runtime_collab::TaskRunUpdate::Planning {}
+                            | runtime_collab::TaskRunUpdate::Executing {}
+                    ) =>
+                {
+                    Some(update.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn assert_planning_then_executing(sent: &[CollabRequest], turns: usize) {
+        let phases = typed_phases(sent);
+        assert_eq!(phases.len(), turns * 2);
+        assert!(phases.chunks_exact(2).all(|pair| matches!(
+            pair,
+            [
+                runtime_collab::TaskRunUpdate::Planning {},
+                runtime_collab::TaskRunUpdate::Executing {}
+            ]
+        )));
     }
 
     fn live_updates(sent: &[CollabRequest]) -> Vec<crate::live::AgentLiveUpdate> {
@@ -2664,6 +2723,7 @@ mod tests {
             })
             .collect();
         assert_eq!(steps, [Some(0), Some(1), Some(2)], "one durable step each");
+        assert_planning_then_executing(&sent, 3);
         assert_eq!(
             terminal(&sent),
             runtime_collab::TaskRunUpdate::Succeeded {
@@ -2722,6 +2782,7 @@ mod tests {
             "write a paragraph",
             World {
                 cancel_after_checks: 2,
+                delay_phase_ack: true,
                 ..World::default()
             },
             vec![turn(
@@ -3169,9 +3230,7 @@ mod tests {
             .borrow()
             .iter()
             .filter_map(|request| match request {
-                CollabRequest::ReportEnrolledTask { update, .. }
-                    if !matches!(update, runtime_collab::TaskRunUpdate::Progress { .. }) =>
-                {
+                CollabRequest::ReportEnrolledTask { update, .. } if is_terminal(update) => {
                     Some(update.clone())
                 }
                 _ => None,

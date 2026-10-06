@@ -49,6 +49,27 @@ fn is_terminal_update(update: &runtime_collab::TaskRunUpdate) -> bool {
     )
 }
 
+fn reported_execution_phase(
+    update: &runtime_collab::TaskRunUpdate,
+) -> Option<tilo_desktop_model::WorkspaceTaskExecutionPhase> {
+    match update {
+        runtime_collab::TaskRunUpdate::Accepted => {
+            Some(tilo_desktop_model::WorkspaceTaskExecutionPhase::Accepted)
+        }
+        runtime_collab::TaskRunUpdate::Planning {} => {
+            Some(tilo_desktop_model::WorkspaceTaskExecutionPhase::Planning)
+        }
+        runtime_collab::TaskRunUpdate::Executing {} => {
+            Some(tilo_desktop_model::WorkspaceTaskExecutionPhase::Executing)
+        }
+        runtime_collab::TaskRunUpdate::Progress { .. }
+        | runtime_collab::TaskRunUpdate::Succeeded { .. }
+        | runtime_collab::TaskRunUpdate::Failed { .. }
+        | runtime_collab::TaskRunUpdate::Cancelled { .. }
+        | runtime_collab::TaskRunUpdate::DirectionApplied { .. } => None,
+    }
+}
+
 impl CapnpBrokerState {
     pub(crate) fn managed_agent_session_is_ready(
         &self,
@@ -878,13 +899,9 @@ impl CapnpBrokerState {
             .cloned()
             .filter(|run| run.peer_id == peer && run.task_epoch == Some(epoch))
             .ok_or("accepted enrolled task run disappeared")?;
-        if update == runtime_collab::TaskRunUpdate::Accepted {
-            self.record_owner_task_execution_phase(
-                &pending,
-                sequence,
-                tilo_desktop_model::WorkspaceTaskExecutionPhase::Accepted,
-            )
-            .await?;
+        if let Some(phase) = reported_execution_phase(&update) {
+            self.record_owner_task_execution_phase(&pending, sequence, phase)
+                .await?;
         }
         self.record_owner_task_run_update(envelope.task.run_id, &pending, update.clone())
             .await?;
@@ -1321,6 +1338,8 @@ fn owner_update_command(
     };
     match update {
         runtime_collab::TaskRunUpdate::Accepted
+        | runtime_collab::TaskRunUpdate::Planning {}
+        | runtime_collab::TaskRunUpdate::Executing {}
         | runtime_collab::TaskRunUpdate::Progress { .. } => Ok(None),
         runtime_collab::TaskRunUpdate::DirectionApplied { revision } => {
             Ok(Some(WorkspaceTaskCommand::AppliedAck {
@@ -2673,6 +2692,37 @@ mod tests {
         assert_eq!(
             reported.phase,
             tilo_desktop_model::WorkspaceTaskExecutionPhase::Accepted
+        );
+        state
+            .record_owner_task_execution_phase(
+                &run,
+                2,
+                reported_execution_phase(&runtime_collab::TaskRunUpdate::Planning {}).unwrap(),
+            )
+            .await
+            .unwrap();
+        state
+            .record_owner_task_execution_phase(
+                &run,
+                3,
+                reported_execution_phase(&runtime_collab::TaskRunUpdate::Executing {}).unwrap(),
+            )
+            .await
+            .unwrap();
+        let executing = service.snapshot(room).unwrap().controls[&task_id]
+            .execution
+            .clone()
+            .unwrap();
+        assert_eq!(executing.sequence, 3);
+        assert_eq!(
+            executing.phase,
+            tilo_desktop_model::WorkspaceTaskExecutionPhase::Executing
+        );
+        assert!(
+            reported_execution_phase(&runtime_collab::TaskRunUpdate::Progress {
+                message: "untyped progress".into()
+            })
+            .is_none()
         );
     }
 

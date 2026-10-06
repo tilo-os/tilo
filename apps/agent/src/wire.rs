@@ -280,6 +280,23 @@ impl Link {
                     request_id: received,
                     result,
                 }) if received == request_id => break result.map_err(anyhow::Error::msg),
+                Some(CollabEvent::EnrolledTaskReply {
+                    request_id: received,
+                    result: Ok(()),
+                }) if received < request_id => {
+                    // Typed phase milestones do not block the model or Stop.
+                    // Their ordered acknowledgements are consumed by the
+                    // next correlated owner report instead of becoming an
+                    // unbounded deferred-event backlog.
+                }
+                Some(CollabEvent::EnrolledTaskReply {
+                    request_id: received,
+                    result: Err(error),
+                }) if received < request_id => {
+                    break Err(anyhow::anyhow!(
+                        "an earlier enrolled report was refused: {error}"
+                    ));
+                }
                 Some(CollabEvent::EnrolledTaskDisconnected { detail }) => {
                     break Err(anyhow::anyhow!(detail));
                 }
@@ -324,6 +341,20 @@ mod tests {
         }
     }
 
+    struct EnrolledReplies(Vec<CollabEvent>);
+
+    impl ui::collaboration::PeerTransport for EnrolledReplies {
+        fn is_connected(&self) -> bool {
+            true
+        }
+        fn send(&mut self, _: CollabRequest) -> std::result::Result<(), String> {
+            Ok(())
+        }
+        fn poll(&mut self) -> Vec<CollabEvent> {
+            std::mem::take(&mut self.0)
+        }
+    }
+
     fn peer_link() -> Link {
         Link {
             manager: CollaborationManager::with_peer_transport(AcceptedPeer),
@@ -347,6 +378,23 @@ mod tests {
         );
         assert!(link.complete_publications(None).is_err());
         assert!(link.complete_publications(None).is_err());
+    }
+
+    #[test]
+    fn correlated_enrolled_wait_consumes_earlier_phase_acknowledgements() {
+        let replies = vec![
+            CollabEvent::EnrolledTaskReply {
+                request_id: 4,
+                result: Ok(()),
+            },
+            CollabEvent::EnrolledTaskReply {
+                request_id: 5,
+                result: Ok(()),
+            },
+        ];
+        let mut link = test_link(EnrolledReplies(replies));
+        link.wait_enrolled_reply(5).unwrap();
+        assert!(link.pending.is_empty());
     }
 
     #[test]
