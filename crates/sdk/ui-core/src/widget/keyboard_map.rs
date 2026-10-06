@@ -108,6 +108,7 @@ impl KeyboardMap {
     }
 
     /// Keep the owning page's private press state across retained recomposition.
+    #[must_use]
     pub fn with_input(mut self, input: KeyboardMapInput) -> Self {
         self.input = input;
         self
@@ -115,6 +116,7 @@ impl KeyboardMap {
 
     /// Show levels 5–8 when the selected XKB layout supplies them.
     /// Layouts with fewer levels retain their first bank.
+    #[must_use]
     pub fn with_extra_levels(mut self, extra: bool) -> Self {
         self.extra_levels = extra && self.level_count() > 4;
         self
