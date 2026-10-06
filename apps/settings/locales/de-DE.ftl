@@ -1760,3 +1760,7 @@ settings-printers-read-error = Drucker können nicht aufgelistet werden: { $erro
 settings-printers-jobs-read-error = Druckaufträge können nicht aufgelistet werden: { $error }
 settings-printers-scanners-read-error = Scanner können nicht aufgelistet werden: { $error }
 agent-key-read-error = Ob ein Schlüssel gespeichert ist, kann nicht festgestellt werden: { $error }
+
+shortcut-name-dictation-toggle = Diktat starten oder beenden
+shortcut-name-dictation-finish = Diktat beenden
+shortcut-name-dictation-cancel = Diktat abbrechen

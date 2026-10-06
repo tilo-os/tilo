@@ -21,6 +21,8 @@ use super::input_method::TrustedInputMethod;
 use super::state::State;
 use super::text_commit::{DELIVERY_WINDOW, LentInputMethod, Progress};
 
+pub(crate) mod frontend;
+pub mod runtime;
 mod speech;
 pub use speech::{PhononTranscript, SpeechError, SpeechUpdate};
 
@@ -71,6 +73,27 @@ pub enum DictationError {
     DraftTooLarge,
     ControlCharacter,
     SessionIdsExhausted,
+    RecognizerUnavailable,
+}
+
+/// Status exposes no recording or draft to a remote collaborator.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DictationStatus {
+    #[default]
+    Idle,
+    Preparing,
+    Loading,
+    Listening,
+    StoppingRecording,
+    Finishing,
+    Stopping,
+    Unavailable(runtime::RuntimeError),
+}
+
+struct Recognition {
+    id: SessionId,
+    actor: runtime::Runtime,
+    phase: DictationStatus,
 }
 
 #[derive(PartialEq, Eq)]
@@ -100,6 +123,8 @@ pub(crate) struct Dictation {
     next: u64,
     session: Option<Session>,
     preparation: Option<Preparation>,
+    recognition: Option<Recognition>,
+    last_failure: Option<runtime::RuntimeError>,
 }
 
 impl Dictation {
@@ -124,6 +149,7 @@ impl State {
     pub fn prepare_dictation(&mut self, now: Instant) -> Result<SessionId, DictationError> {
         if self.text_commit.dictation.session.is_some()
             || self.text_commit.dictation.preparation.is_some()
+            || self.text_commit.dictation.recognition.is_some()
         {
             return Err(DictationError::Busy);
         }
@@ -228,6 +254,7 @@ impl State {
     pub fn begin_dictation(&mut self, now: Instant) -> Result<SessionId, DictationError> {
         if self.text_commit.dictation.session.is_some()
             || self.text_commit.dictation.preparation.is_some()
+            || self.text_commit.dictation.recognition.is_some()
         {
             return Err(DictationError::Busy);
         }
@@ -336,6 +363,185 @@ impl State {
     pub(crate) fn cancel_active_dictation(&mut self) {
         self.text_commit.dictation.session = None;
         self.text_commit.dictation.preparation = None;
+        if let Some(recognition) = self.text_commit.dictation.recognition.as_mut() {
+            recognition.actor.cancel();
+            recognition.phase = DictationStatus::Stopping;
+        }
+    }
+
+    /// Begin local recognition only after the trusted desktop has obtained
+    /// explicit microphone consent and prepared this original edit target.
+    /// Neither model readiness nor an untrusted action request is consent.
+    /// # Errors
+    /// Fails closed on a changed field, another actor or unavailable worker.
+    pub fn start_authorized_dictation(
+        &mut self,
+        id: SessionId,
+        language: &str,
+        now: Instant,
+    ) -> Result<(), DictationError> {
+        self.validate_dictation(id, now)?;
+        if self.text_commit.dictation.recognition.is_some() {
+            return Err(DictationError::Busy);
+        }
+        let actor =
+            runtime::Runtime::start(language).map_err(|_| DictationError::RecognizerUnavailable)?;
+        self.text_commit.dictation.last_failure = None;
+        self.text_commit.dictation.recognition = Some(Recognition {
+            id,
+            actor,
+            phase: DictationStatus::Loading,
+        });
+        Ok(())
+    }
+
+    /// Stop the microphone and request one final complete corrected result.
+    /// # Errors
+    /// Rejects a stale or unready session without starting another recording.
+    pub fn finish_recording(&mut self, id: SessionId) -> Result<(), DictationError> {
+        let recognition = self
+            .text_commit
+            .dictation
+            .recognition
+            .as_mut()
+            .filter(|recognition| recognition.id == id)
+            .ok_or(DictationError::StaleSession)?;
+        if recognition.phase != DictationStatus::Listening {
+            return Err(DictationError::Busy);
+        }
+        recognition
+            .actor
+            .finish()
+            .map_err(|_| DictationError::RecognizerUnavailable)?;
+        recognition.phase = DictationStatus::StoppingRecording;
+        Ok(())
+    }
+
+    pub fn dictation_status(&self) -> DictationStatus {
+        if let Some(recognition) = &self.text_commit.dictation.recognition {
+            return recognition.phase;
+        }
+        if self.text_commit.dictation.preparation.is_some() {
+            return DictationStatus::Preparing;
+        }
+        self.text_commit
+            .dictation
+            .last_failure
+            .map_or(DictationStatus::Idle, DictationStatus::Unavailable)
+    }
+
+    pub(crate) fn has_dictation_target(&self) -> bool {
+        self.dictation_target_id().is_some()
+    }
+
+    pub(crate) fn dictation_target_id(&self) -> Option<SessionId> {
+        self.text_commit
+            .dictation
+            .session
+            .as_ref()
+            .map(|session| session.id)
+            .or_else(|| {
+                self.text_commit
+                    .dictation
+                    .preparation
+                    .as_ref()
+                    .map(|preparation| preparation.id)
+            })
+    }
+
+    /// Wake an otherwise idle compositor while a private actor or target lives.
+    /// No periodic work is scheduled while dictation is inactive.
+    pub(crate) fn dictation_service_deadline(&self, now: Instant) -> Option<Instant> {
+        (self.has_dictation_target() || self.text_commit.dictation.recognition.is_some())
+            .then(|| now.checked_add(Duration::from_millis(50)))
+            .flatten()
+    }
+
+    /// Poll on every native service tick, even without paint/input events.
+    /// A canceled actor occupies its slot until actual capture/worker cleanup.
+    pub(crate) fn pump_dictation_worker(&mut self, now: Instant) {
+        let Some(mut recognition) = self.text_commit.dictation.recognition.take() else {
+            return;
+        };
+        if self.validate_dictation(recognition.id, now).is_err() {
+            recognition.actor.cancel();
+            recognition.phase = DictationStatus::Stopping;
+        }
+        while let Some(event) = recognition.actor.poll() {
+            let result = match event {
+                runtime::RuntimeEvent::Ready if recognition.phase == DictationStatus::Loading => {
+                    self.validate_dictation(recognition.id, now).and_then(|()| {
+                        recognition
+                            .actor
+                            .capture()
+                            .map_err(|_| DictationError::RecognizerUnavailable)
+                    })
+                }
+                runtime::RuntimeEvent::Listening
+                    if recognition.phase == DictationStatus::Loading =>
+                {
+                    recognition.phase = DictationStatus::Listening;
+                    Ok(())
+                }
+                runtime::RuntimeEvent::Finishing
+                    if matches!(
+                        recognition.phase,
+                        DictationStatus::Listening | DictationStatus::StoppingRecording
+                    ) =>
+                {
+                    recognition.phase = DictationStatus::Finishing;
+                    Ok(())
+                }
+                runtime::RuntimeEvent::Draft(text)
+                    if matches!(
+                        recognition.phase,
+                        DictationStatus::Listening
+                            | DictationStatus::StoppingRecording
+                            | DictationStatus::Finishing
+                    ) =>
+                {
+                    self.update_dictation(recognition.id, text, now)
+                }
+                runtime::RuntimeEvent::Done(text)
+                    if matches!(
+                        recognition.phase,
+                        DictationStatus::Listening
+                            | DictationStatus::StoppingRecording
+                            | DictationStatus::Finishing
+                    ) =>
+                {
+                    let result = self
+                        .update_dictation(recognition.id, text, now)
+                        .and_then(|()| self.finish_dictation(recognition.id, now));
+                    recognition.phase = DictationStatus::Stopping;
+                    result
+                }
+                runtime::RuntimeEvent::Stopped(error) => {
+                    if error != runtime::RuntimeError::Canceled {
+                        self.text_commit.dictation.last_failure = Some(error);
+                    }
+                    self.cancel_active_dictation();
+                    recognition.phase = DictationStatus::Stopping;
+                    Ok(())
+                }
+                _ => Err(DictationError::StaleSession),
+            };
+            if result.is_err() {
+                recognition.actor.cancel();
+                recognition.phase = DictationStatus::Stopping;
+                self.cancel_active_dictation();
+            }
+        }
+        if !recognition.actor.is_stopped() {
+            self.text_commit.dictation.recognition = Some(recognition);
+        } else if self.text_commit.dictation.session.is_some() {
+            // No terminal reply (including a full/disconnected result queue)
+            // is never success. Do not retain a draft or leave a session live.
+            self.text_commit.dictation.last_failure = Some(runtime::RuntimeError::Worker(
+                agent_provider_config::speech::SpeechError::WorkerStopped,
+            ));
+            self.cancel_active_dictation();
+        }
     }
 
     fn validate_dictation(&mut self, id: SessionId, now: Instant) -> Result<(), DictationError> {

@@ -328,6 +328,7 @@ dependencies = [
  "settings-store",
  "tempfile",
  "uuid",
+ "wire-frame",
  "workspace-hack",
 ]
 
@@ -13287,6 +13288,7 @@ name = "shell"
 version = "0.1.0"
 dependencies = [
  "accesskit_unix",
+ "agent-provider-config",
  "base64",
  "blake3",
  "bounded-command",

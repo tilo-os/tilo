@@ -10,7 +10,6 @@ use std::path::Path;
 use std::ptr::NonNull;
 
 use agent_provider_config::local::ModelArtifactFormat;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
@@ -19,55 +18,11 @@ use crate::{InProcessCapability, installed_in_process_model};
 
 pub mod worker;
 
-pub const SAMPLE_RATE: usize = 16_000;
-pub const MAX_SAMPLES: usize = SAMPLE_RATE * 120;
-pub const MAX_TEXT_BYTES: usize = 16 * 1024;
-pub const FRAME: wire_frame::Framing =
-    wire_frame::Framing::little_endian(64 * 1024 + 9).reject_empty();
+pub use agent_provider_config::speech::{
+    FRAME, MAX_SAMPLES, MAX_TEXT_BYTES, RequestKind, SAMPLE_RATE, SpeechConfig, SpeechError,
+    SpeechReply, request,
+};
 const MAX_MODEL_BYTES: u64 = 256 * 1024 * 1024;
-
-/// Status contains no audio, transcript, path or model-controlled message.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SpeechError {
-    ModelUnavailable,
-    ModelReceipt,
-    UnsupportedLanguage,
-    Protocol,
-    AudioTooLong,
-    TextTooLong,
-    Recognition,
-    WorkerStopped,
-}
-
-/// A reply to one monotonic request sequence on one private worker pipe.
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum SpeechReply {
-    Ready {
-        sequence: u64,
-        model: String,
-        revision: String,
-    },
-    Draft {
-        sequence: u64,
-        text: String,
-    },
-    Done {
-        sequence: u64,
-        text: String,
-    },
-    Error {
-        sequence: u64,
-        error: SpeechError,
-    },
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SpeechConfig {
-    pub language: String,
-}
 
 /// Recheck a selected installed object against the actual trusted catalogue
 /// and license record. Size and digest are checked on the same open file whose
@@ -266,24 +221,6 @@ impl Drop for SpeechEngine {
         // SAFETY: exactly this owner releases this live context exactly once.
         unsafe { tilo_speech_free(self.0.as_ptr()) };
     }
-}
-
-/// Requests are ordered on a private byte pipe. Audio frames contain S16LE;
-/// control frames never accept model paths, commands, URLs or arbitrary prompts.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum RequestKind {
-    Configure = 0,
-    Audio = 1,
-    Draft = 2,
-    Finish = 3,
-}
-
-pub fn request(kind: RequestKind, sequence: u64, payload: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(payload.len().saturating_add(9));
-    bytes.push(kind as u8);
-    bytes.extend(sequence.to_le_bytes());
-    bytes.extend(payload);
-    bytes
 }
 
 pub struct SpeechInput {

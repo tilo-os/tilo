@@ -1718,6 +1718,9 @@ pub enum ShortcutAction {
     NextInputSource,
     /// Open the emoji picker over the focused text field.
     EmojiPicker,
+    DictationToggle,
+    DictationFinish,
+    DictationCancel,
 }
 
 impl ShortcutAction {
@@ -2325,6 +2328,9 @@ impl Default for ShortcutConfig {
             (ShortcutAction::NextInputSource, super_alt_chord("space")),
             // Windows' emoji panel key; GNOME uses Super+. for the same.
             (ShortcutAction::EmojiPicker, super_chord(".")),
+            (ShortcutAction::DictationToggle, super_shift_chord("d")),
+            (ShortcutAction::DictationFinish, super_shift_chord("enter")),
+            (ShortcutAction::DictationCancel, super_shift_chord("escape")),
         ]
         .into_iter()
         .collect();
@@ -3053,7 +3059,7 @@ mod tests {
         // Phase `desktop_navigation_defaults_are_complete_and_conflict_free`.
         {
             let cfg = ShortcutConfig::default();
-            assert_eq!(cfg.bindings.len(), 46);
+            assert_eq!(cfg.bindings.len(), 49);
             let unique: BTreeSet<_> = cfg.bindings.values().collect();
             assert_eq!(unique.len(), cfg.bindings.len());
             assert_eq!(

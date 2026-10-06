@@ -1,11 +1,12 @@
 # System dictation
 
-Status: dictation components are implemented, but not assembled into a live
-feature. There is no live shortcut or compositor-to-recognizer connection. The native
-model installation lifecycle and private CPU worker are implemented, while
-the approved image catalogue still contains no speech model.
-The microphone capture API is implemented but has not opened a real microphone.
-Do not advertise “works in any field” or enable microphone capture based on this change.
+Status: the local shortcut, one-session microphone prompt, finish/cancel controls,
+compositor worker controller, native model lifecycle and private CPU worker are
+assembled. The approved image catalogue still contains no speech model, so this
+branch cannot provide a live dictation journey on the shipped image yet.
+The microphone capture API has not opened a real microphone during qualification.
+Do not advertise “works in any field” until the approved model and representative
+live journeys are validated. No microphone permission has been granted by this work.
 
 ## Existing boundaries
 
@@ -60,8 +61,9 @@ is for the trusted local speech service; it is not an unprivileged socket operat
   strings are retained.
 - Any keyboard-focus change immediately drops the draft, even away and back
   before the next recognition result. Changing input-method ownership does too.
-- Callers must check liveness on each service tick and stop recording/inference
-  on any failure. The insertion API does not own a microphone process.
+- The native service tick checks liveness and drives the owned worker actor.
+  Any invalidated target stops recording/inference; callers of the low-level
+  insertion API remain responsible for their own capture lifecycle.
 - A request is bounded to 120 seconds and 16 KiB of draft UTF-8. Control characters,
   including line breaks, are rejected in this first boundary. Spoken paragraph
   commands require a field-aware extension; they must never submit a terminal.
@@ -86,15 +88,46 @@ the palette's keyboard ownership to that bridge. An owner change cancels the
 session immediately and resets its text-input enable cycle, including switches
 between two fields with identical caret geometry. A wire journey proves that
 late results from the old session cannot reach the successor and that a fresh
-session can commit there. This does not yet supply a native document edit
-generation when the same field changes without moving its caret.
+session can commit there. While a dictation target exists, the native service tick
+also checks the admitted record owner, its generation and read-only CRDT frontier
+and pending-operation count. A keyed, ephemeral edit fingerprint covers text and
+selection, including selection changes with an unchanged caret. The key is local
+to the host; neither the fingerprint nor surrounding text is exposed in status.
+Secret fields and fields with another active preedit fail closed. Shared query,
+name and compound input controls forward the same guard; rich document targets
+include paragraph/cell identity and cross-block selection. Stamps belong
+to a dictation session, so an edit between sessions cannot invalidate a fresh one.
+The shared TextInput implementation borrows its text for hashing; wrappers
+forward the same contract rather than building another input. Terminal declares
+its editable IME purpose and invalidates deferred input on PTY input/output,
+including a write before echo or output with an unchanged caret.
+Record edit/inverse/retirement and selection/secret-field tests exercise these
+production guards; they do not yet prove a complete speech-to-CRDT undo journey.
 Separate production-reader tests cover queue overflow, source EOF and owned-process teardown
 using synthetic PCM/blocked pipes; they neither capture audio nor run inference.
 
 ## Candidate research (2026-10-05)
 
+### Wispr Flow comparison (official sources checked 2026-10-06)
+
+[Wispr's feature catalogue](https://wisprflow.ai/features) advertises dictation
+across applications, over 100 languages, spoken corrections, filler removal,
+punctuation, dictionaries and context-dependent styles. Those are qualification
+targets, not capabilities established by this branch. This implementation has
+bounded partial recognition, final IME insertion, configurable toggle/finish/cancel
+shortcuts and one-session local consent. A spoken correction interpreter,
+dictionary, language/source chooser and hold-to-talk interaction remain unbuilt.
+
+[Wispr's terminal guidance](https://docs.wisprflow.ai/articles/6478598909-using-flow-with-linux-wsl-and-terminal-applications)
+describes clipboard recovery and cautions that contextual formatting can change
+commands. Tilo keeps insertion on the original trusted IME connection, excludes
+control characters and rejects a changed terminal epoch. Command safety and
+recognition accuracy still require representative live qualification.
+
 The user's exact bookmark URLs were not available. These are public candidates,
-not confirmed bookmark identities. No upstream code or weights are imported.
+not confirmed bookmark identities. That initial review imported no code or
+weights; the later CPU-worker qualification below records the exact vendored
+runtime and the public test model used on the builder.
 
 [0xDAEF0F/whistle](https://github.com/0xDAEF0F/whistle) describes a Tauri app with
 transcription, shortcuts, clipboard integration and DeepSeek text polishing; its
@@ -178,40 +211,32 @@ flags also need a portable baseline before adoption. Native keyboard-owner
 identity is supplied by the shell host; a native document edit generation still
 needs the shared host input contract before live microphone capture is enabled.
 
-## Remaining implementation and acceptance gates
+## Remaining release and acceptance gates
 
-1. Add exact speech runtime and model artifacts to the existing signed extension
-   catalogue, including digest, revision, license/attribution, architecture and
-   CPU/memory constraints. Do not auto-install packages from a mutable pip tag.
-2. Assemble the trusted speech connection, with safe input-method arbitration
-   alongside OSK and composing IMEs. Idle-seat field activation is implemented.
-   Do not disconnect CJK composition or expose trusted globals to ordinary apps.
-3. Integrate the implemented loss-detecting, bounded PipeWire microphone capture
-   with the recognizer worker. Stop and reap only owned processes on cancel, lock, focus loss,
-   device removal, timeout and backend failure. No persistent mic grant, audio
-   file or transcript history by default. Permission denial stays a visible
-   failure; retry requires another explicit start.
-4. Add configurable hold and toggle gestures through the existing shortcut
-   registry, plus semantic `dictation.start/stop/cancel/status` actions with
-   local-seat authorization. Remote collaborators must not activate this mic.
-5. Use shared themed controls for a non-focus-taking status surface: clear
-   Listening / Finishing / Unavailable text, mic source, draft and Cancel action.
-   Provide screen-reader announcements, touch/switch-access toggle operation,
-   reduced motion and light/dark/high-contrast checks. Never depend on color,
-   sound, or holding a physical key alone. Preserve the desktop's visual language.
-6. Bind each recognizer result to its session ID and monotonic result sequence;
-   reject unsupported language choices, stop on stream gaps, bound finalization,
-   and unload idle models to leave desktop memory/CPU headroom. Corrections are
-   explicit draft edits, not opaque LLM rewriting of the focused document.
-7. Validate real journeys in text input, rich text, terminal and Chromium fields:
-   selection replacement, a single undo unit, non-Latin text, focus changes within
-   one window, cancellation/restart, IME/OSK coexistence, model crash, permission
-   denial, unplugged mic and offline operation. Report unsupported clients
-   honestly; XWayland and fields without text-input-v3 are still unproven.
+1. Approve the exact speech model, licence receipt and signed catalogue release
+   through the existing protected publisher. The review inputs are prepared;
+   no protected signing, publication, trust change or model installation has run.
+   A positive installed-worker CLI journey needs a non-root image session;
+   the remote builder's root-only development override is deliberately refused.
+2. Validate live microphone permission denial, device removal, cancellation and
+   model failure on the image, followed by representative native text, rich
+   document, Terminal and browser journeys with selected-range replacement and
+   system undo. Current actor, worker-core and Wayland tests prove separate
+   production boundaries, not a complete assembled microphone journey.
+3. Qualify recognition on public noisy and non-English recordings, and measure
+   an older CPU and Arm device. The current public JFK fixture and two-thread
+   CPU measurements are narrower evidence, not multilingual accuracy claims.
+4. Inspect the complete local consent/status surface in light, dark, high
+   contrast and enlarged text, and verify touch/switch access and screen-reader
+   announcements. Toggle/finish/cancel work through shared controls; a hold
+   gesture, explicit language chooser, mic-source display and editable draft
+   review remain product extensions. No opaque LLM rewrite is implemented.
+5. Confirm remote collaborators cannot activate local microphone consent through
+   the existing input firewall and action authority boundaries. Starting through
+   the action door only requests consent; stale decisions are session-bound.
 
-No microphone was opened, permission granted, account connected, model installed,
-device rebooted, or service deployed while developing this foundation.
-
+These gates do not justify adding clipboard/key injection, accepting an unsigned
+model, relaxing the worker sandbox, or letting readiness imply microphone consent.
 
 ## CPU worker and qualification
 
@@ -259,3 +284,40 @@ Neither journey proves multilingual accuracy or any live microphone flow.
 and the complete OpenAI MIT notice without signing, publishing, changing a trust
 key or activating the image catalogue. The protected publisher remains unchanged.
 Publication and normal image delivery require their separate approval.
+
+## Compositor worker controller
+
+The shell shares only bounded worker wire types through `agent-provider-config`;
+it does not link the decoder or its native build. An owned actor performs source
+probing, recording, pipe I/O and child cleanup away from the render thread. It
+executes only `/usr/bin/tilo-speech-worker`, uses private pipes and ordered framed
+messages, bounds pending audio to 256 KiB and replaces private hypotheses at most
+once per second. Model readiness alone never starts recording: an explicit
+capture command follows the caller's local microphone decision and target check.
+Cancellation is checked before and after the bounded source probe. The compositor
+retains the busy actor until its capture and worker have actually been reaped;
+a successor cannot overlap them. Recording reserves 15 seconds for finalization
+inside the 120-second session budget. Lost audio, malformed/replayed replies,
+timeouts and failed queues cancel insertion and return typed status only.
+
+Real private-pipe actor tests prove normal/canceled-busy/normal sessions, replay
+rejection, control-character rejection and child reaping. These peers do not
+recognize speech and do not capture a microphone. The separately documented
+production-worker qualification uses public prerecorded JFK audio under the
+actual sandbox. The controller is reached through the shell's existing shortcut and overlay stack.
+`Super+Shift+D` toggles the request/finish operation; the rebindable finish and
+cancel defaults are `Super+Shift+Enter` and `Super+Shift+Escape`. Escape cancels an
+open dictation surface. The action provider registers `dictation.toggle`,
+`dictation.finish` and `dictation.cancel` through the same configured action path.
+A toggle never grants microphone access: it prepares the non-secret editable
+field and opens a local one-session decision on the shared PermissionPrompt.
+Session/persistent grants are absent, and pointer activation preserves the
+original native or foreign field's keyboard owner. Accessibility decisions carry
+the exact prompt session ID; a retired decision cannot start or cancel a successor.
+Controls intercept their own pointer region and decision keys, rather than
+withdrawing the client's seat focus. Lock and competing trusted prompts cancel
+the request. The service wakes only while a target/actor exists, and UI phase
+changes invalidate the retained frame. “Microphone off” appears only after the
+actor drops and reaps capture. Language autodetection uses the loaded model's
+supported vocabulary; no network recognizer, paid API or automatic licence
+acceptance is introduced.

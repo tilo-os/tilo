@@ -10266,6 +10266,11 @@ pub fn run() {
             if !typed.is_empty() {
                 injected_redraw_pending = true;
             }
+            if state.has_dictation_target() && shell_field.is_some() {
+                let stamp = frame_builder
+                    .focused_ime_edit_stamp(test_control_ctx.focus, &test_control_ctx.doc);
+                proxy.observe_edit_stamp(&mut state, stamp);
+            }
         }
         frame_builder.set_osk_surface(
             state.osk_surface,
@@ -10273,6 +10278,21 @@ pub fn run() {
             state.shell_field_active.then_some(shell_field).flatten(),
             state.text_input_active() && input_methods.osk_shown(),
         );
+        let dictation_blocked =
+            session.is_locked() || !frame_builder.host().dictation_input_available();
+        let dictation_changed = {
+            let surface = frame_builder.host_mut().dictation_surface_mut();
+            crate::compositor::dictation::frontend::service(
+                &mut state,
+                surface,
+                Instant::now(),
+                dictation_blocked,
+            );
+            surface.take_changed()
+        };
+        if dictation_changed {
+            frame_builder.with_chrome(crate::shell::chrome_state::ChromeState::bump);
+        }
         frame_builder.set_osk_commits(state.osk_commits);
         pump_checkpoint!("session-focus-and-surfaces");
         let floating_surfaces = state
@@ -12031,6 +12051,10 @@ pub fn run() {
                     wayland_client_service_deadline(wayland_client_wake, park_now),
                 ),
                 ("text-commit", state.text_commit_deadline()),
+                (
+                    "dictation-service",
+                    state.dictation_service_deadline(park_now),
+                ),
                 (
                     "presentation-feedback",
                     state.presentation_feedback.next_deadline(),

@@ -46,12 +46,19 @@ use super::state::{ClientState, State};
 pub type FieldRequest = ui::ime::ImeWindowState;
 
 /// A native keyboard owner, independent of its caret geometry. Widget ids
-/// include the layout arena generation; the palette owns keyboard input even
+/// identify the current layout node; the palette owns keyboard input even
 /// when the host's ordinary focused node has not changed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeFieldId {
     Widget(u64),
     Palette,
+}
+
+/// Private opaque edit metadata, never surrounding text or a persisted hash.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct NativeEditStamp {
+    pub document: ui::bound_dispatch::DocumentEditStamp,
+    pub fingerprint: [u8; 32],
 }
 
 /// Client-side protocol state.
@@ -87,6 +94,8 @@ pub struct ShellTextInput {
     /// The field the compositor wants served, if any.
     wanted: Option<FieldRequest>,
     native_field: Option<NativeFieldId>,
+    edit_stamp: Option<NativeEditStamp>,
+    edit_stamp_session: Option<super::dictation::SessionId>,
 }
 
 impl ShellTextInput {
@@ -135,6 +144,8 @@ impl ShellTextInput {
             enabled: None,
             wanted: None,
             native_field: None,
+            edit_stamp: None,
+            edit_stamp_session: None,
         })
     }
 
@@ -192,6 +203,8 @@ impl ShellTextInput {
             self.state.pending_commit = None;
             self.state.events.clear();
             self.native_field = identity;
+            self.edit_stamp = None;
+            self.edit_stamp_session = None;
         }
         self.wanted = field;
         self.pump();
@@ -216,6 +229,23 @@ impl ShellTextInput {
         self.update_enable();
         let events = std::mem::take(&mut self.state.events);
         if changed { Vec::new() } else { events }
+    }
+
+    /// Call before processing speech replies. A same-field edit/selection or
+    /// changed record owner cancels deferred insertion even with equal caret
+    /// geometry. An unavailable active-field stamp fails closed.
+    pub(crate) fn observe_edit_stamp(&mut self, state: &mut State, stamp: Option<NativeEditStamp>) {
+        let session = state.dictation_target_id();
+        if self.edit_stamp_session != session {
+            self.edit_stamp = None;
+            self.edit_stamp_session = session;
+        }
+        if session.is_some()
+            && (stamp.is_none() || (self.edit_stamp.is_some() && self.edit_stamp != stamp))
+        {
+            state.cancel_active_dictation();
+        }
+        self.edit_stamp = stamp;
     }
 
     fn update_enable(&mut self) {
