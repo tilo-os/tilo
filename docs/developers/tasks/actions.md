@@ -27,6 +27,10 @@ history, undo and CRDT synchronization; an app does not add its own action bus
 or sync implementation. Use typed effects for external work rather than
 pretending a network request or file write is an undoable resource edit.
 
+Effect ids share the root resource's action surface. `InspectPackage` becomes
+`inspect-package`; keep names distinct across effect enums and root actions.
+The effect's `operation` names its vocabulary, not an id prefix.
+
 Test the action through the generated `TestApp` harness. Enumerate the
 permission-filtered action descriptors and invoke their stable identities;
 display labels and pointer coordinates do not identify an operation. Confirmed

@@ -37,7 +37,8 @@ use uuid::Uuid;
 
 use tilo_actions::{
     Action, ActionAddress, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, ParamType, Resource, ResourcePresentation, ResourceViewSpec,
+    EncodedAction, ExecutionLocus, ParamType, Resource, ResourcePresentation,
+    ResourceViewRangeSpec, ResourceViewSpec,
 };
 
 use crate::continuation::{self, BuilderDomain};
@@ -1714,7 +1715,18 @@ fn block_resource_in_page(
         original: original.clone(),
     };
     let mut resource = Resource::new(resource_id, "notes.block", label)
+        .with_view(page_editor_view().with_range(ResourceViewRangeSpec::new("reveal-block-range")))
         .with_action(open)
+        .with_action(
+            NotesEffect::RevealBlockRange {
+                page,
+                block: block.id.clone(),
+                start: 0,
+                end: 0,
+                unit: "Chars".into(),
+            }
+            .bound_asking(&["start", "end", "unit"]),
+        )
         // Agents and the action palette get a truthful, replayable edit
         // affordance too. The expected old text is encoded as a bounded
         // splice; if a collaborator changed it first, apply refuses and

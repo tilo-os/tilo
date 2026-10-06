@@ -22,6 +22,13 @@ pub struct NativeDocumentReadContext {
 #[path = "committed_document/initialization_tests.rs"]
 mod initialization_tests;
 impl NativeDocumentReadContext {
+    /// Bind a read to a source record while retaining the original channel's
+    /// launcher custody and live admission check. Only the broker can do so.
+    pub(super) fn for_source(mut self, app: &str, record: &str) -> Self {
+        app.clone_into(&mut self.route.app_id);
+        record.clone_into(&mut self.route.record_id);
+        self
+    }
     pub fn route(&self) -> &CrdtRoute {
         &self.route
     }
@@ -224,7 +231,7 @@ impl CapnpChannelHandle {
             }
         });
     }
-    fn document_read_context(&self) -> Result<NativeDocumentReadContext, String> {
+    pub(super) fn document_read_context(&self) -> Result<NativeDocumentReadContext, String> {
         let route = self.route();
         let admitted = self.verified_identity.clone();
         let certificate = admitted
@@ -391,5 +398,48 @@ impl CapnpChannelHandle {
                 Ok(reply)
             }
         }
+    }
+}
+
+impl CapnpChannelHandle {
+    pub(super) fn resource_view_query(
+        self: Rc<Self>,
+        correlation: u64,
+        query: tilo_actions::remote::CatalogueQuery,
+        mut results: super::channel_handle::RemoteActionResults,
+    ) -> capnp::capability::Promise<(), capnp::Error> {
+        use capnp::capability::Promise;
+        use tilo_actions::remote::RemoteActionFrame;
+        let context = query
+            .provider
+            .as_deref()
+            .and_then(|provider| provider.strip_prefix("record:"))
+            .and_then(|provider| provider.split_once(':'))
+            .ok_or_else(|| "view discovery requires an exact record provider".to_owned())
+            .and_then(|(app, record)| {
+                self.document_read_context()
+                    .map(|context| context.for_source(app, record))
+            });
+        let service = self.state.services.resource_views.clone();
+        Promise::from_future(async move {
+            let result = match (context, service) {
+                (Ok(context), Some(service)) => service.query(context, query).await,
+                (Err(reason), _) => {
+                    Err(tilo_actions::remote::ActionHostError::Unavailable { reason })
+                }
+                (_, None) => Err(tilo_actions::remote::ActionHostError::Unavailable {
+                    reason: "the native host cannot discover shared resource views".into(),
+                }),
+            };
+            let answer = tilo_actions::remote::RemoteActionMessage::CatalogueResponse {
+                correlation,
+                result,
+            };
+            let bytes = RemoteActionFrame::new(answer)
+                .encode()
+                .map_err(|error| capnp::Error::failed(error.to_string()))?;
+            results.get().set_frame(&bytes);
+            Ok(())
+        })
     }
 }

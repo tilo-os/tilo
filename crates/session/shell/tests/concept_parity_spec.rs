@@ -455,8 +455,44 @@ fn build_settled_workspace_settings_host(
 ) -> (shell::shell::overlay_host::ShellOverlayHost, Chrome) {
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(tree);
     host.set_motion_reduced(true);
-    let _ = render_host_to_scene(&mut host);
+    // Initial fixture record writes can finish asynchronously and show a Saved
+    // bubble. Reduced motion removes its fade, not its finite lifetime. Wait
+    // for the production hosts to report rest before comparing settled panes.
+    let deadline = ui::time::now()
+        .checked_add(ui::time::Duration::from_secs(10))
+        .expect("fixture deadline fits the monotonic clock");
+    let mut document = automerge::AutoCommit::new();
+    loop {
+        host.update(&document, &automerge::ROOT);
+        host.sync(&document, &automerge::ROOT);
+        host.settle(
+            &mut ui::widget::Edits::lend(&mut document),
+            &automerge::ROOT,
+        );
+        host.set_motion_reduced(true);
+        let _ = render_host_to_scene(&mut host);
+        if !host.has_pending_visual_work() && !host.has_transient_feedback() {
+            break;
+        }
+        assert!(
+            ui::time::now() < deadline,
+            "workspace settings fixture did not settle: {:?}",
+            pending_visual_names(&host)
+        );
+        std::thread::sleep(ui::time::Duration::from_millis(16));
+    }
     (host, chrome)
+}
+
+fn pending_visual_names(widget: &dyn Widget) -> Vec<String> {
+    if !widget.has_pending_visual_work() && !widget.has_transient_feedback() {
+        return Vec::new();
+    }
+    let mut names = vec![format!("{}:{:?}", widget.name(), widget.test_id())];
+    for child in widget.children() {
+        names.extend(pending_visual_names(child));
+    }
+    names
 }
 
 /// Layout + draw an already-configured `ShellOverlayHost`, sharing plumbing

@@ -9,6 +9,7 @@ mod committed_document;
 #[path = "broker_services/native_effect_tests.rs"]
 mod native_effect_tests;
 mod nearby_transfer;
+mod resource_views;
 pub use nearby_transfer::NativeNearbyTransfer;
 use std::sync::Arc;
 use tilo_action_broker::services::{
@@ -1347,6 +1348,18 @@ pub fn native_services(
         Arc::new(NativeOwnerCommitService::new(tree.clone(), network.clone()))
             as Arc<dyn tilo_action_broker::services::WorkspaceMemberships>
     });
+    let resource_views = membership
+        .as_ref()
+        .zip(network.as_ref())
+        .map(|(tree, network)| {
+            Arc::new(resource_views::NativeResourceViews {
+                owner: Arc::new(NativeOwnerCommitService::new(
+                    tree.clone(),
+                    Some(network.clone()),
+                )),
+                network: network.clone(),
+            }) as Arc<dyn tilo_action_broker::services::NativeResourceViews>
+        });
     let governance = membership.as_ref().map(|tree| {
         Arc::new(NativeWorkspaceGovernance(tree.clone(), network.clone()))
             as Arc<dyn WorkspaceGovernanceServices>
@@ -1371,6 +1384,7 @@ pub fn native_services(
         app_action_grants,
         committed_documents,
         workspace_memberships,
+        resource_views,
         desktop_commands: None,
         native_certificates: Some(Arc::new(NativeCertificates::default())),
         legacy_workspace: membership.map(|tree| {

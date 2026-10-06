@@ -2111,6 +2111,18 @@ pub struct PendingSubmission {
     pub change: EntryChangeRequest,
 }
 
+impl PendingSubmission {
+    /// Identify the exact queued request an operator inspected, including
+    /// both signatures and the receipt timestamp. This is a snapshot id,
+    /// not an authorization token. Localized maps serialize in sorted order.
+    ///
+    /// # Errors
+    /// Returns an error if the stored request cannot be serialized.
+    pub fn review_id(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_vec(self).map(|bytes| blake3::hash(&bytes).to_hex().to_string())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StagedArtifact {
     pub submission_id: String,
