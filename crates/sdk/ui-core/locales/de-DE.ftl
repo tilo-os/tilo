@@ -465,3 +465,5 @@ dictation-cancel = Abbrechen
 
 dictation-copy-transcript = Transkript kopieren
 dictation-discard-transcript = Transkript verwerfen
+
+dropdown-no-matches = Keine passende Auswahl
