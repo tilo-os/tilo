@@ -75,3 +75,44 @@ user accounts. Bots are separate identities, not transparent user clients. Its
 [voice protocol](https://docs.discord.com/developers/topics/voice-connections) has its
 own gateway, transport and DAVE encryption. No self-bot or native Discord voice claim is
 made here; the implemented effect opens the service's browser channel.
+
+## Interrupted following and authenticated lookup
+
+The shell now releases room app following during reconciliation when its live
+participant disappears, its named tab closes, established content focus is withdrawn,
+or its live session changes, before another paint/input pass.
+A reconnected session does not inherit the released relationship. Fixture coverage
+uses the real shell focus path and room follow dispatcher across two app subscribers,
+with a separate-room subscriber proving isolation, and moves Chat → Terminal before
+closing the target, withdrawing focus, replacing its session or retiring the remote
+session. This is a routed in-process fixture,
+not a physical two-device or encrypted-network end-to-end result.
+
+The browser's certified peer now offers `resolveResource(reference, provider)`.
+`provider` must be the host-issued source record token; kind/id alone cannot distinguish
+two records. Lookup uses the existing authenticated room action catalogue with its
+permission filtering, exact kind/id matching and a 256-row budget. It rejects a
+connection replacement or disconnect before accepting the answer. Labels and view
+descriptors come from the live publisher. Lookup creates no invitation, persistent
+grant, follow relationship or action invocation. Remote action frame fixtures cover
+revocation, mismatched records, disconnection and bounded-search failure.
+
+Remaining precise blockers to clickable external resource links: Chat's legacy
+`ResourceRef` does not carry the source record provider or an authenticated host/room locator;
+there is no canonical authenticated browser link envelope to resolve those. Joining
+already uses `tilo-browser-peer::invite` with root/device certificates and governed
+room admission. After admission, `DesktopHandle::submit` in browser `desktop_host.rs`
+explicitly refuses an existing-record open on a peer-owned desktop. Complete opening
+there needs the topology owner's record-bound command and its resource view door,
+not a label-to-app guess, local-only command bypass or new URL authority. This increment
+implements authorized lookup but does not claim that missing navigation path works.
+
+The existing browser-peer HTTPS fixture
+`the_owner_admits_and_removes_a_different_person_over_https` also passes on the remote
+builder, exercising actual owner-governed admission and removal with fixture identities.
+Browser action-frame/resolver tests run as lightweight Node tests; no physical devices,
+new persistent credentials or access grants are involved. The repository's mixed native /
+browser end-to-end harness (`tilo-web-desktop/scripts/collab-e2e.mjs`) currently requires
+macOS Accessibility permission and native macOS apps. It cannot establish the complete
+Linux cross-app rendered journey on the selected cloud builder. The routed shell and
+SDK fixtures should not be represented as that missing end-to-end acceptance.

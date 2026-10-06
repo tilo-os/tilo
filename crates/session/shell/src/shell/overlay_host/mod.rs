@@ -815,6 +815,8 @@ pub struct ShellOverlayHost {
     /// Peer whose live tab focus this session mirrors. Local-only and
     /// ephemeral: follow is a viewing mode, never shared workspace state.
     followed_peer: Option<String>,
+    followed_tab: Option<u64>,
+    followed_session: Option<u64>,
     /// Room the active Follow command was sent to. Keeping this separate
     /// from the live workspace prevents a later workspace switch from
     /// releasing the wrong set of local app views.
@@ -2147,6 +2149,8 @@ impl ShellOverlayHost {
             text_caret: None,
             pairing: crate::bluetooth_prompt::PairingOverlay::default(),
             followed_peer: None,
+            followed_tab: None,
+            followed_session: None,
             followed_room: None,
             follow_transition: ui::Transition::closed(),
             follow_visual: None,
@@ -6741,8 +6745,8 @@ impl ShellOverlayHost {
     }
 
     /// Keep local focus attached to the followed participant's current tab.
-    /// Missing location is not guessed: the existing view stays put until a
-    /// fresh live target arrives.
+    /// A missing participant or closed target releases every app in the room.
+    /// Until a first live location arrives, the existing view stays in place.
     fn reconcile_followed_peer(&mut self) -> bool {
         let Some(peer_id) = self.followed_peer.as_deref() else {
             return false;
@@ -6769,7 +6773,7 @@ impl ShellOverlayHost {
             self.set_followed_peer(None);
             return true;
         }
-        let target = {
+        let (target, unavailable) = {
             let state = chrome.borrow();
             let tree = state.tree();
             let roster: &[crate::shell::state::Collaborator] = match tree.desktop.active_workspace()
@@ -6777,10 +6781,10 @@ impl ShellOverlayHost {
                 Some(workspace) if !workspace.collaborators.is_empty() => &workspace.collaborators,
                 _ => &tree.desktop.collaborators,
             };
-            let tab = roster
+            let participant = roster
                 .iter()
-                .find(|participant| participant.id == peer_id && !participant.invited)
-                .and_then(|participant| participant.active_tab);
+                .find(|participant| participant.id == peer_id && !participant.invited);
+            let tab = participant.and_then(|participant| participant.active_tab);
             let target = tab.and_then(|tab| {
                 tree.desktop
                     .active_workspace()?
@@ -6796,13 +6800,24 @@ impl ShellOverlayHost {
                         })
                     })
             });
+            let unavailable = participant.is_none()
+                || (tab.is_some() && target.is_none())
+                || (self.followed_tab.is_some() && tab.is_none())
+                || self.followed_session.is_some_and(|session| {
+                    participant.is_none_or(|participant| participant.session != Some(session))
+                });
             drop(tree);
             drop(state);
-            target
+            (target, unavailable)
         };
+        if unavailable {
+            self.set_followed_peer(None);
+            return true;
+        }
         let Some((strip, group, tab)) = target else {
             return false;
         };
+        self.followed_tab = Some(tab);
         self.focus_window_on_strip(strip, group, tab)
     }
 
@@ -6816,6 +6831,8 @@ impl ShellOverlayHost {
         }
         let previous_room = self.followed_room.take();
         self.followed_peer = peer_id;
+        self.followed_tab = None;
+        self.followed_session = None;
         if self.followed_peer.is_some() {
             self.follow_visual = self.followed_roster_row();
             self.follow_transition
@@ -6843,8 +6860,12 @@ impl ShellOverlayHost {
             }
             _ => None,
         };
-        if let Some((room, _)) = &active_command {
+        if let Some((room, target)) = &active_command {
             self.followed_room = Some(*room);
+            self.followed_session = target
+                .as_deref()
+                .and_then(|target| target.strip_prefix("peer@"))
+                .and_then(|session| session.parse().ok());
         }
         let command = active_command.or_else(|| {
             previous_room.map(|room| (room, None)).or_else(|| {
