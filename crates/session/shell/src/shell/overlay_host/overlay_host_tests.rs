@@ -5,6 +5,234 @@ use crate::shell::chrome_state::{ChromeState, WsTab};
 use crate::shell::state::WorkspaceTree;
 use automerge::{ReadDoc as _, ScalarValue};
 
+fn agent_navigation_fixture(
+    actions: Vec<crate::shell::collab_broker_capnp::PublishedAction>,
+) -> (
+    PendingAgentNavigation,
+    tokio::sync::mpsc::UnboundedReceiver<crate::shell::collab_broker_capnp::InvocationEnvelope>,
+) {
+    use crate::shell::collab_broker::CrdtRoute;
+    use crate::shell::collab_broker_capnp::PublishedSurface;
+    use crate::shell::state::{Workspace, WorkspaceId};
+    use tilo_actions::remote::CatalogueQuery;
+
+    let owner = "a1".repeat(32);
+    let mut workspace = Workspace::new(WorkspaceId(41), "Agent room");
+    workspace.set_owner(owner.clone());
+    let room = workspace.room.to_string();
+    let route = CrdtRoute::app("so.tilo.chat", room.clone());
+    let mut tree = WorkspaceTree::default();
+    tree.desktop.workspaces.push(workspace);
+    let broker = crate::shell::broker_services::test_broker_with_membership(tree.shared());
+    broker.replace_published_surfaces_for_test(vec![PublishedSurface {
+        peer_id: 7,
+        app_id: "so.tilo.chat".into(),
+        route,
+        actions,
+        live: true,
+    }]);
+    let invocations = broker.capture_invocations_for_test(7);
+    let session = crate::shell::certified_action_session::ActionSessionSource::fixture(broker)
+        .open(&room, Some(&owner))
+        .expect("fixture certified action session");
+    let providers = session.query(CatalogueQuery {
+        max_results: 0,
+        ..CatalogueQuery::default()
+    });
+    (
+        PendingAgentNavigation {
+            room,
+            agent: "scribe".into(),
+            title: "Open Scribe".into(),
+            session,
+            lookup: AgentNavigationLookup::Providers(providers),
+            give_up_at: agent_navigation_deadline(),
+            pages_remaining: AGENT_NAVIGATION_MAX_PAGES,
+        },
+        invocations,
+    )
+}
+
+fn published_agent_open(
+    resource: &str,
+    identity: Option<tilo_actions::ResourceSemanticIdentity>,
+) -> crate::shell::collab_broker_capnp::PublishedAction {
+    use crate::shell::collab_broker_capnp::{PublishedAction, PublishedInput};
+
+    PublishedAction {
+        semantic_identity: identity,
+        resource: resource.into(),
+        action: "open-agent-conversation".into(),
+        resource_kind: "chat.agent".into(),
+        resource_label: "Misleading label".into(),
+        action_label: "Open".into(),
+        description: None,
+        operation_kind: tilo_actions::OperationKind::View,
+        params: Vec::new(),
+        contract: tilo_actions::ActionContract::default(),
+        input: PublishedInput::None,
+        view: None,
+    }
+}
+
+#[test]
+fn marker_navigation_invokes_only_the_unique_published_semantic_chat_target() {
+    let identity = tilo_actions::ResourceSemanticIdentity::new("chat.agent", "chat.person:scribe")
+        .expect("valid identity");
+    let (mut pending, mut invocations) = agent_navigation_fixture(vec![published_agent_open(
+        "opaque-not-the-semantic-key",
+        Some(identity),
+    )]);
+
+    assert!(matches!(
+        ShellOverlayHost::poll_agent_navigation(&mut pending),
+        AgentNavigationPoll::Invoke(_)
+    ));
+    let invocation = invocations
+        .try_recv()
+        .expect("opaque published action invoked");
+    assert_ne!(
+        invocation.resource, "chat.person:scribe",
+        "navigation uses the bound opaque target, never a synthesized logical id"
+    );
+}
+
+#[test]
+fn marker_navigation_refuses_missing_or_ambiguous_semantic_chat_targets() {
+    let identity = tilo_actions::ResourceSemanticIdentity::new("chat.agent", "chat.person:scribe")
+        .expect("valid identity");
+    for actions in [
+        vec![published_agent_open("chat.person:scribe", None)],
+        vec![
+            published_agent_open("first", Some(identity.clone())),
+            published_agent_open("second", Some(identity)),
+        ],
+    ] {
+        let (mut pending, mut invocations) = agent_navigation_fixture(actions);
+        assert!(matches!(
+            ShellOverlayHost::poll_agent_navigation(&mut pending),
+            AgentNavigationPoll::Refused(_)
+        ));
+        assert!(
+            invocations.try_recv().is_err(),
+            "a descriptive id or conflicting claim never starts an action"
+        );
+    }
+}
+
+#[test]
+fn marker_navigation_refuses_a_target_from_a_superseded_catalogue_revision() {
+    use tilo_actions::remote::{CataloguePage, Pending, RemoteActionTarget};
+
+    let identity = tilo_actions::ResourceSemanticIdentity::new("chat.agent", "chat.person:scribe")
+        .expect("valid identity");
+    let (mut pending, mut invocations) =
+        agent_navigation_fixture(vec![published_agent_open("opaque-row", Some(identity))]);
+    pending.lookup = AgentNavigationLookup::Resolve {
+        target: RemoteActionTarget {
+            provider: "7".into(),
+            address: tilo_actions::ActionAddress::new("opaque-row", "open-agent-conversation"),
+        },
+        revision: "observed-revision".into(),
+        reply: Pending::ready(Ok(CataloguePage {
+            revision: "newer-revision".into(),
+            stale_cursor: true,
+            ..CataloguePage::default()
+        })),
+    };
+
+    assert!(matches!(
+        ShellOverlayHost::poll_agent_navigation(&mut pending),
+        AgentNavigationPoll::Refused(_)
+    ));
+    assert!(
+        invocations.try_recv().is_err(),
+        "a row observed before a catalogue change never starts an action"
+    );
+}
+
+#[test]
+fn marker_navigation_expires_without_invoking() {
+    let identity = tilo_actions::ResourceSemanticIdentity::new("chat.agent", "chat.person:scribe")
+        .expect("valid identity");
+    let (mut pending, mut invocations) =
+        agent_navigation_fixture(vec![published_agent_open("opaque-row", Some(identity))]);
+    pending.give_up_at = Instant::now();
+
+    assert!(matches!(
+        ShellOverlayHost::poll_agent_navigation(&mut pending),
+        AgentNavigationPoll::Refused(_)
+    ));
+    assert!(invocations.try_recv().is_err());
+}
+
+#[test]
+fn marker_navigation_refuses_a_publisher_that_repeats_a_page_cursor() {
+    use tilo_actions::remote::{CataloguePage, Pending};
+
+    let identity = tilo_actions::ResourceSemanticIdentity::new("chat.agent", "chat.person:scribe")
+        .expect("valid identity");
+    let (mut pending, mut invocations) =
+        agent_navigation_fixture(vec![published_agent_open("opaque-row", Some(identity))]);
+    let cursor = vec![9, 4, 2];
+    pending.lookup = AgentNavigationLookup::Rows {
+        providers: VecDeque::new(),
+        provider: Some("7".into()),
+        revision: Some("same-revision".into()),
+        cursor: cursor.clone(),
+        reply: Some(Pending::ready(Ok(CataloguePage {
+            revision: "same-revision".into(),
+            next_cursor: cursor.clone(),
+            ..CataloguePage::default()
+        }))),
+        matches: Vec::new(),
+        seen_cursors: HashSet::from([("7".into(), cursor)]),
+    };
+
+    assert!(matches!(
+        ShellOverlayHost::poll_agent_navigation(&mut pending),
+        AgentNavigationPoll::Refused(_)
+    ));
+    assert!(invocations.try_recv().is_err());
+}
+
+#[test]
+fn agent_navigation_never_mutates_global_window_placement() {
+    use tilo_actions::remote::{ActionHostError, InvocationReceipt, Pending, ReceiptStatus};
+
+    let mut host = ShellOverlayHost::new(Box::new(StubContent::new()));
+    let chrome = ChromeState::new(WorkspaceTree::default());
+    chrome.borrow_mut().open_target = crate::shell::chrome_state::OpenTarget::Here(91);
+    host.chrome = Some(chrome.clone());
+    host.pending_launchpad_actions.push(PendingLaunchpadAction {
+        title: "Open Scribe".into(),
+        admission: Pending::ready(Err(ActionHostError::UnknownAction)),
+    });
+    host.poll_pending_launchpad_actions();
+    assert_eq!(
+        chrome.borrow().open_target,
+        crate::shell::chrome_state::OpenTarget::Here(91),
+        "a refused lookup cannot redirect a later unrelated window"
+    );
+
+    host.pending_launchpad_actions.push(PendingLaunchpadAction {
+        title: "Open Scribe".into(),
+        admission: Pending::ready(Ok((
+            7,
+            InvocationReceipt {
+                invocation: tilo_actions::InvocationId::new(),
+                status: ReceiptStatus::Accepted,
+            },
+        ))),
+    });
+    host.poll_pending_launchpad_actions();
+    assert_eq!(
+        chrome.borrow().open_target,
+        crate::shell::chrome_state::OpenTarget::Here(91),
+        "an existing Chat view cannot leak a launch placement into an unrelated future window"
+    );
+}
+
 #[test]
 fn overlapping_agent_marker_opens_only_the_exact_room_bound_choices() {
     let mut host = ShellOverlayHost::new(Box::new(StubContent::new()));

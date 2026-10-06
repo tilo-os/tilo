@@ -517,6 +517,7 @@ agent-conversation-search = Agent conversation
 agent-conversation-opening = Chat with { $agent }
 agent-conversation-choose = Choose an agent conversation
 agent-conversation-choice = Open the conversation with { $agent }
+agent-conversation-unavailable = This agent conversation is not available anymore.
 host-search-placeholder = Search…
 host-search-in = Search in { $scope }…
 host-search-in-resource-fallback = resource

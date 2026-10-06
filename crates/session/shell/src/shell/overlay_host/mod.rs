@@ -14,7 +14,10 @@ mod axis_navigation;
 
 use crate::shell::state::WorkspaceAuthority as _;
 use std::time::{Duration, Instant};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    sync::Arc,
+};
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -412,6 +415,71 @@ struct PendingLaunchpadAction {
     >,
 }
 
+type CatalogueReply = tilo_actions::remote::Pending<
+    Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionHostError>,
+>;
+
+enum AgentNavigationLookup {
+    Providers(CatalogueReply),
+    Rows {
+        providers: VecDeque<String>,
+        provider: Option<String>,
+        revision: Option<String>,
+        cursor: Vec<u8>,
+        reply: Option<CatalogueReply>,
+        matches: Vec<(tilo_actions::remote::RemoteActionTarget, String)>,
+        seen_cursors: HashSet<(String, Vec<u8>)>,
+    },
+    Resolve {
+        target: tilo_actions::remote::RemoteActionTarget,
+        revision: String,
+        reply: CatalogueReply,
+    },
+}
+
+/// A certified, room-bound Chat lookup started by one compositor-owned user
+/// gesture. Semantic identity selects a row; only the provider's opaque,
+/// freshly re-resolved target is ever invoked.
+struct PendingAgentNavigation {
+    room: String,
+    agent: String,
+    title: String,
+    session: crate::shell::certified_action_session::DesktopActionSession,
+    lookup: AgentNavigationLookup,
+    give_up_at: Instant,
+    pages_remaining: u16,
+}
+
+enum AgentNavigationPoll {
+    Waiting,
+    Invoke(PendingLaunchpadAction),
+    Refused(String),
+}
+
+const AGENT_NAVIGATION_RESOLVE_WINDOW: Duration = Duration::from_secs(5);
+const AGENT_NAVIGATION_MAX_PAGES: u16 = 64;
+
+fn agent_navigation_unavailable() -> String {
+    crate::shell::i18n::t("agent-conversation-unavailable")
+}
+
+fn agent_navigation_deadline() -> Instant {
+    Instant::now()
+        .checked_add(AGENT_NAVIGATION_RESOLVE_WINDOW)
+        .unwrap_or_else(Instant::now)
+}
+
+fn is_agent_chat_open_row(row: &tilo_actions::remote::CatalogueRow, agent: &str) -> bool {
+    let Some(action) = row.action.as_ref() else {
+        return false;
+    };
+    row.app_id == "so.tilo.chat"
+        && action.address.action == "open-agent-conversation"
+        && action.semantic_identity.as_ref().is_some_and(|identity| {
+            identity.kind == "chat.agent" && identity.key == format!("chat.person:{agent}")
+        })
+}
+
 /// Exact Agent choices captured from one authenticated marker hit. The rows
 /// are shell-owned and room-bound; normal provider search never broadens this
 /// list while the chooser is visible.
@@ -521,6 +589,7 @@ pub struct ShellOverlayHost {
     /// Launchpad cards' app actions awaiting admission; see
     /// [`Self::poll_pending_launchpad_actions`].
     pending_launchpad_actions: Vec<PendingLaunchpadAction>,
+    pending_agent_navigations: Vec<PendingAgentNavigation>,
     agent_navigation_chooser: Option<AgentNavigationChooser>,
     /// `palette.query()` after the last fan-out; refresh is
     /// short-circuited when this still matches.
@@ -2080,6 +2149,7 @@ impl ShellOverlayHost {
             pending_action_admissions: Vec::new(),
             pending_launchpad_app: None,
             pending_launchpad_actions: Vec::new(),
+            pending_agent_navigations: Vec::new(),
             agent_navigation_chooser: None,
             last_search_query: String::new(),
             last_search_revision: String::new(),
@@ -7510,15 +7580,15 @@ impl ShellOverlayHost {
 
     /// Open one room's canonical Chat conversation after the compositor
     /// consumed its own one-shot pointer activation. The source app
-    /// contributes no caller or grant: this door reconstructs the selected
-    /// Person from shell custody and lets the broker freshly resolve the
-    /// currently published, non-mutating Chat View action.
+    /// contributes no caller or grant: this door retains the genuine
+    /// certified caller from shell custody and lets the broker freshly
+    /// resolve the currently published, non-mutating Chat View action.
     pub(crate) fn open_agent_conversation_from_user_navigation(
         &mut self,
         room: &str,
         agents: &[(String, String)],
     ) -> bool {
-        use tilo_actions::remote::{InvokeArgument, InvokeRequest, application_action_target};
+        use tilo_actions::remote::CatalogueQuery;
 
         if agents.is_empty() {
             return false;
@@ -7576,15 +7646,18 @@ impl ShellOverlayHost {
         let Some(broker) = self.shortcut_triggers.broker() else {
             return false;
         };
-        let expected_person = {
+        let selected_room = {
             let state = chrome.borrow();
             let tree = state.tree();
             tree.desktop
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.room.to_string() == room)
-                .map(|workspace| state.local_user_for_room(&workspace.room))
+                .map(|workspace| workspace.room)
         };
+        let expected_person = selected_room
+            .as_ref()
+            .map(|selected_room| chrome.borrow().local_user_for_room(selected_room));
         let Some(expected_person) = expected_person else {
             return false;
         };
@@ -7593,29 +7666,248 @@ impl ShellOverlayHost {
         else {
             return false;
         };
-        chrome.borrow_mut().open_target = crate::shell::chrome_state::OpenTarget::Beside;
-        let admission = session.invoke_job(InvokeRequest {
-            on_behalf_of: None,
-            invocation: tilo_actions::InvocationId::new(),
-            target: application_action_target(
-                room,
-                "so.tilo.chat",
-                format!("chat.person:{agent}"),
-                "open-agent-conversation",
-            ),
-            argument: InvokeArgument::None,
-            context: None,
-            confirmation: None,
-            revision: None,
+        let providers = session.query(CatalogueQuery {
+            max_results: 0,
+            ..CatalogueQuery::default()
         });
-        self.pending_launchpad_actions.push(PendingLaunchpadAction {
+        self.pending_agent_navigations.push(PendingAgentNavigation {
+            room: room.to_owned(),
+            agent: agent.clone(),
             title: crate::shell::i18n::t_args(
                 "agent-conversation-opening",
                 &[("agent", agent.as_str().into())],
             ),
-            admission,
+            session,
+            lookup: AgentNavigationLookup::Providers(providers),
+            give_up_at: agent_navigation_deadline(),
+            pages_remaining: AGENT_NAVIGATION_MAX_PAGES,
         });
+        self.poll_pending_agent_navigations();
         true
+    }
+
+    fn poll_agent_navigation(pending: &mut PendingAgentNavigation) -> AgentNavigationPoll {
+        // Ready in-process catalogue replies may advance several stages in
+        // one frame. Bound the loop so even a hostile publisher cannot turn
+        // input dispatch into an unbounded catalogue walk.
+        for _ in 0..8 {
+            if Instant::now() >= pending.give_up_at || pending.pages_remaining == 0 {
+                return AgentNavigationPoll::Refused(agent_navigation_unavailable());
+            }
+            let outcome = match &pending.lookup {
+                AgentNavigationLookup::Providers(_) => {
+                    Self::poll_agent_navigation_providers(pending)
+                }
+                AgentNavigationLookup::Rows { .. } => Self::poll_agent_navigation_rows(pending),
+                AgentNavigationLookup::Resolve { .. } => {
+                    Some(Self::poll_agent_navigation_resolve(pending))
+                }
+            };
+            if let Some(outcome) = outcome {
+                return outcome;
+            }
+        }
+        AgentNavigationPoll::Waiting
+    }
+
+    fn poll_agent_navigation_providers(
+        pending: &mut PendingAgentNavigation,
+    ) -> Option<AgentNavigationPoll> {
+        use tilo_actions::remote::PendingPoll;
+        let AgentNavigationLookup::Providers(reply) = &mut pending.lookup else {
+            return Some(AgentNavigationPoll::Refused(agent_navigation_unavailable()));
+        };
+        let page = match reply.poll_ready() {
+            PendingPoll::Waiting => return Some(AgentNavigationPoll::Waiting),
+            PendingPoll::Abandoned => {
+                return Some(AgentNavigationPoll::Refused(agent_navigation_unavailable()));
+            }
+            PendingPoll::Ready(Err(error)) => {
+                return Some(AgentNavigationPoll::Refused(error.to_string()));
+            }
+            PendingPoll::Ready(Ok(page)) => page,
+        };
+        pending.pages_remaining = pending.pages_remaining.saturating_sub(1);
+        if page.stale_cursor || page.budget_exhausted {
+            return Some(AgentNavigationPoll::Refused(agent_navigation_unavailable()));
+        }
+        let mut providers = page
+            .providers
+            .into_iter()
+            .filter(|provider| provider.app_id == "so.tilo.chat" && provider.room == pending.room)
+            .map(|provider| provider.provider)
+            .collect::<Vec<_>>();
+        providers.sort();
+        providers.dedup();
+        pending.lookup = AgentNavigationLookup::Rows {
+            providers: providers.into(),
+            provider: None,
+            revision: None,
+            cursor: Vec::new(),
+            reply: None,
+            matches: Vec::new(),
+            seen_cursors: HashSet::new(),
+        };
+        None
+    }
+
+    fn poll_agent_navigation_rows(
+        pending: &mut PendingAgentNavigation,
+    ) -> Option<AgentNavigationPoll> {
+        use tilo_actions::remote::{CatalogueQuery, MAX_CATALOGUE_PAGE, PendingPoll};
+        let AgentNavigationLookup::Rows {
+            providers,
+            provider,
+            revision,
+            cursor,
+            reply,
+            matches,
+            seen_cursors,
+        } = &mut pending.lookup
+        else {
+            return Some(AgentNavigationPoll::Refused(agent_navigation_unavailable()));
+        };
+        if let Some(answer) = reply.as_mut() {
+            let page = match answer.poll_ready() {
+                PendingPoll::Waiting => return Some(AgentNavigationPoll::Waiting),
+                PendingPoll::Abandoned => {
+                    return Some(AgentNavigationPoll::Refused(agent_navigation_unavailable()));
+                }
+                PendingPoll::Ready(Err(error)) => {
+                    return Some(AgentNavigationPoll::Refused(error.to_string()));
+                }
+                PendingPoll::Ready(Ok(page)) => page,
+            };
+            *reply = None;
+            pending.pages_remaining = pending.pages_remaining.saturating_sub(1);
+            if page.stale_cursor || page.budget_exhausted {
+                return Some(AgentNavigationPoll::Refused(agent_navigation_unavailable()));
+            }
+            for row in &page.rows {
+                if is_agent_chat_open_row(row, &pending.agent)
+                    && let Some(target) = row.target()
+                {
+                    matches.push((target, page.revision.clone()));
+                    if matches.len() > 1 {
+                        return Some(AgentNavigationPoll::Refused(agent_navigation_unavailable()));
+                    }
+                }
+            }
+            if page.next_cursor.is_empty() {
+                *provider = None;
+                *revision = None;
+                cursor.clear();
+            } else {
+                *revision = Some(page.revision);
+                *cursor = page.next_cursor;
+            }
+            return None;
+        }
+        if provider.is_none() {
+            *provider = providers.pop_front();
+            revision.take();
+            cursor.clear();
+        }
+        let Some(active_provider) = provider.clone() else {
+            let Some((target, found_revision)) = matches.pop() else {
+                return Some(AgentNavigationPoll::Refused(agent_navigation_unavailable()));
+            };
+            let answer = pending
+                .session
+                .query(CatalogueQuery::resolve(&target, found_revision.clone()));
+            pending.lookup = AgentNavigationLookup::Resolve {
+                target,
+                revision: found_revision,
+                reply: answer,
+            };
+            return None;
+        };
+        if !seen_cursors.insert((active_provider.clone(), cursor.clone())) {
+            return Some(AgentNavigationPoll::Refused(agent_navigation_unavailable()));
+        }
+        *reply = Some(pending.session.query(CatalogueQuery {
+            provider: Some(active_provider),
+            revision: revision.clone(),
+            cursor: cursor.clone(),
+            max_results: MAX_CATALOGUE_PAGE,
+            ..CatalogueQuery::default()
+        }));
+        None
+    }
+
+    fn poll_agent_navigation_resolve(pending: &mut PendingAgentNavigation) -> AgentNavigationPoll {
+        use tilo_actions::remote::{InvokeArgument, InvokeRequest, PendingPoll};
+        let AgentNavigationLookup::Resolve {
+            target,
+            revision,
+            reply,
+        } = &mut pending.lookup
+        else {
+            return AgentNavigationPoll::Refused(agent_navigation_unavailable());
+        };
+        let page = match reply.poll_ready() {
+            PendingPoll::Waiting => return AgentNavigationPoll::Waiting,
+            PendingPoll::Abandoned => {
+                return AgentNavigationPoll::Refused(agent_navigation_unavailable());
+            }
+            PendingPoll::Ready(Err(error)) => {
+                return AgentNavigationPoll::Refused(error.to_string());
+            }
+            PendingPoll::Ready(Ok(page)) => page,
+        };
+        pending.pages_remaining = pending.pages_remaining.saturating_sub(1);
+        let resolved_row = (page.rows.len() == 1).then(|| page.rows.first()).flatten();
+        if page.stale_cursor
+            || page.budget_exhausted
+            || page.revision != *revision
+            || !resolved_row.is_some_and(|row| {
+                is_agent_chat_open_row(row, &pending.agent) && row.target().as_ref() == Some(target)
+            })
+        {
+            return AgentNavigationPoll::Refused(agent_navigation_unavailable());
+        }
+        let admission = pending.session.invoke_job(InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: target.clone(),
+            argument: InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: Some(revision.clone()),
+        });
+        AgentNavigationPoll::Invoke(PendingLaunchpadAction {
+            title: pending.title.clone(),
+            admission,
+        })
+    }
+
+    fn poll_pending_agent_navigations(&mut self) {
+        let pending_navigations = std::mem::take(&mut self.pending_agent_navigations);
+        for mut pending in pending_navigations {
+            match Self::poll_agent_navigation(&mut pending) {
+                AgentNavigationPoll::Waiting => self.pending_agent_navigations.push(pending),
+                AgentNavigationPoll::Invoke(action) => self.pending_launchpad_actions.push(action),
+                AgentNavigationPoll::Refused(reason) => {
+                    tracing::warn!(
+                        target: "tilo::app_launch",
+                        room = %pending.room,
+                        agent = %pending.agent,
+                        %reason,
+                        "Agent conversation navigation was refused"
+                    );
+                    if let Some(chrome) = self.chrome.as_ref() {
+                        chrome.borrow_mut().push_warning_notification(
+                            crate::shell::i18n::t_args(
+                                "host-action-cannot-run",
+                                &[("title", pending.title.as_str().into())],
+                            ),
+                            reason,
+                        );
+                    }
+                }
+            }
+        }
+        self.poll_pending_launchpad_actions();
     }
 
     /// Settle launchpad card actions whose admission arrived. One that was
@@ -16746,7 +17038,7 @@ impl Widget for ShellOverlayHost {
                         doc_root: path,
                     });
         }
-        self.poll_pending_launchpad_actions();
+        self.poll_pending_agent_navigations();
         // Before the resync, so what an action moved is spliced this frame.
         self.run_requested_shortcut_actions();
         self.latch_overview_transition();
