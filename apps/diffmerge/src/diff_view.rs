@@ -471,7 +471,17 @@ impl Widget for DiffView {
         self.collect_highlights();
         // One metric snapshot per frame: rows, gutter, header and scroll clamp
         // all follow the renderer's actual line height.
-        let measured = Metrics::measure(tr, theme);
+        let mut measured = Metrics::measure(tr, theme);
+        if self.rect.width() < measured.breakpoint {
+            // Source choices and file metadata occupy separate rows.
+            let caption_h = f64::from(
+                tr.measure_style("Ag", None, &theme.text(TextRole::Caption))
+                    .1,
+            );
+            measured.code.header_h = SegmentedFace::height(ControlSize::Small, theme)
+                + caption_h
+                + 3.0 * f64::from(theme.tokens.spacing.s2);
+        }
         if measured != self.metrics {
             self.metrics = measured;
             self.scroll_y = self.scroll_y.min(self.max_scroll());
@@ -780,7 +790,7 @@ impl DiffView {
         let content_right = r.x1 - m.strip_w;
         let inset = f64::from(theme.tokens.spacing.s3);
         let strip_h = SegmentedFace::height(ControlSize::Small, theme);
-        let strip_y = r.y0 + (m.code.header_h - strip_h) / 2.0;
+        let strip_y = r.y0 + f64::from(theme.tokens.spacing.s2);
         let (x0, x1) = (r.x0 + inset, content_right - inset);
         let mid = x0.midpoint(x1);
         self.compact_source_hits = [
@@ -796,14 +806,7 @@ impl DiffView {
         };
         let left = file(&self.left_label, "source-left");
         let right = file(&self.right_label, "source-right");
-        let labels = if left == right {
-            [
-                format!("{} · {left}", t("source-left")),
-                format!("{} · {right}", t("source-right")),
-            ]
-        } else {
-            [left, right]
-        };
+        let labels = [t("source-left"), t("source-right")];
         let labels = [labels[0].as_str(), labels[1].as_str()];
         ToggleGroup::paint(
             ctx.scene,
@@ -823,6 +826,24 @@ impl DiffView {
                     .position(|rect| rect.contains(self.cursor)),
             ),
         );
+        let metadata_top = strip_y + strip_h + f64::from(theme.tokens.spacing.s2);
+        for (segment, file) in self.compact_source_hits.iter().zip([left, right]) {
+            let band = Rect::new(segment.x0, metadata_top, segment.x1, r.y0 + m.code.header_h);
+            let caption = theme.text(TextRole::Caption);
+            let shown = ctx.text.elide_to_width_style(
+                &file,
+                pane::to_f32((band.width() - 2.0 * inset).max(0.0)),
+                &caption,
+            );
+            ctx.text_role_in_band(
+                &shown,
+                TextRole::Caption,
+                theme.text_dim,
+                band.x0 + inset,
+                band,
+                None,
+            );
+        }
         let body_top = r.y0 + m.code.header_h;
         ui::surface::separator(
             ctx.scene,
