@@ -217,11 +217,18 @@ fn answer(
             if !(context.presence)() {
                 return Reply::Nobody { id };
             }
-            let Some(scope) = scope_for(
-                context.grants.granted_paths(caller),
-                context.save_directory.as_deref(),
-                mode,
-            ) else {
+            let verb = if mode == PickMode::Save {
+                Verb::Write
+            } else {
+                Verb::Read
+            };
+            let granted = context
+                .grants
+                .granted_paths(caller)
+                .into_iter()
+                .filter(|path| context.grants.filesystem_path_allows(caller, path, verb))
+                .collect();
+            let Some(scope) = scope_for(granted, context.save_directory.as_deref(), mode) else {
                 return Reply::Failed {
                     id,
                     reason: t("portal-chooser-nothing-granted"),
@@ -419,7 +426,7 @@ mod tests {
 
     /// A room whose Sheets may read `in/` and write `out/`, and a folder
     /// beside them it was given nothing in.
-    fn session() -> Session {
+    fn session_with_save_hint(hint: bool) -> Session {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().canonicalize().unwrap();
         let (inbox, outbox, elsewhere) = (base.join("in"), base.join("out"), base.join("home"));
@@ -455,7 +462,7 @@ mod tests {
                 grants,
                 pickers: Arc::new(pickers.clone()),
                 presence,
-                save_directory: Some(outbox.clone()),
+                save_directory: hint.then(|| outbox.clone()),
                 wake: Arc::new(|| {}),
             },
         )
@@ -574,8 +581,42 @@ mod tests {
     }
 
     #[test]
+    fn save_without_a_directory_hint_uses_only_write_authorized_roots() {
+        let session = session_with_save_hint(false);
+        let mut app = App::launch(&session, APP, &session.room);
+        app.send(&pick(1, PickMode::Save));
+        let request = shown(&session);
+        let scope = request.scope.as_ref().unwrap();
+        assert_eq!(scope.initial_dir, session.outbox);
+        assert_eq!(scope.roots, vec![session.outbox.clone()]);
+        request
+            .reply
+            .send(Some(vec![session.outbox.join("copy.xlsx")]))
+            .unwrap();
+        assert_eq!(
+            app.reply(),
+            Some(Reply::Picked {
+                id: 1,
+                paths: vec![session.outbox.join("copy.xlsx")],
+            })
+        );
+        // Final authorization remains authoritative, even if a picker were
+        // to return a source path outside the write-scoped roots.
+        app.send(&pick(2, PickMode::Save));
+        shown(&session)
+            .reply
+            .send(Some(vec![session.inbox.join("x.xlsx")]))
+            .unwrap();
+        assert!(matches!(app.reply(), Some(Reply::Failed { id: 2, .. })));
+        assert_eq!(
+            std::fs::read(session.inbox.join("x.xlsx")).unwrap(),
+            b"sheet"
+        );
+    }
+
+    #[test]
     fn a_chooser_shows_only_granted_files_and_returns_only_granted_files() {
-        let session = session();
+        let session = session_with_save_hint(true);
         let mut app = App::launch(&session, APP, &session.room);
 
         // Phase `open_starts_in_the_grants_and_returns_the_chosen_file`.
@@ -658,7 +699,7 @@ mod tests {
 
     #[test]
     fn an_app_given_nothing_gets_no_chooser() {
-        let session = session();
+        let session = session_with_save_hint(true);
         let mut app = App::launch(&session, "so.tilo.notes", &session.room);
         app.send(&pick(1, PickMode::Open));
         assert!(matches!(app.reply(), Some(Reply::Failed { id: 1, .. })));
@@ -667,7 +708,7 @@ mod tests {
 
     #[test]
     fn opening_a_granted_file_reaches_the_compositor_and_nothing_else_does() {
-        let session = session();
+        let session = session_with_save_hint(true);
         let mut app = App::launch(&session, APP, &session.room);
 
         app.send(&Request::Open {
@@ -707,7 +748,7 @@ mod tests {
 
     #[test]
     fn a_launch_into_a_room_this_session_lacks_is_hung_up_on() {
-        let session = session();
+        let session = session_with_save_hint(true);
         let mut app = App::launch(&session, APP, "not-a-room");
         app.send(&pick(1, PickMode::Open));
         assert_eq!(app.reply(), None);
