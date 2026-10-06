@@ -2511,6 +2511,36 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
+            name: "tab_drag_cancel",
+            description: "Cancel a lifted tab with Escape before releasing the pointer.",
+            actions: vec![
+                Action::Snapshot("01-desktop"),
+                Action::MoveCursorNamed("tab:Files"),
+                Action::MousePress,
+                Action::MoveCursor(Point::new(600.0, 300.0)),
+                Action::Snapshot("02-tab-dragging"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Snapshot("03-tab-cancelled"),
+                Action::MouseRelease,
+                Action::Snapshot("04-pointer-released"),
+            ],
+        },
+        Scenario {
+            name: "tab_menu_keyboard",
+            description: "Open the focused tab menu with Super+F10, navigate and cancel.",
+            actions: vec![
+                Action::Snapshot("01-desktop"),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Named(NamedKey::F10)),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Snapshot("02-tab-menu-focused"),
+                Action::Key(Key::Named(NamedKey::ArrowDown)),
+                Action::Snapshot("03-tab-menu-next"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Snapshot("04-tab-menu-cancelled"),
+            ],
+        },
+        Scenario {
             name: "palette_typing",
             description: "Open the command palette, type 'h', then close with Esc.",
             actions: vec![

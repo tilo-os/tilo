@@ -14,7 +14,7 @@ use super::{
     Fill, HashMap, HomeItem, HomeItemKind, HomeSection, Instant, MusicApp, NodeId, ObjId,
     PermissionContext, PlaylistPage, Point, PresenceCtx, Rect, RepeatMode, Scene, Size, Style,
     TaffyTree, TextRenderer, TextStyle, Theme, View, Widget, elide, is_live_album_id, is_live_id,
-    is_live_playlist_id, lyrics,
+    is_live_playlist_id, live_track_id, lyrics,
 };
 use ui::widget::{AppModel, ModelPath};
 
@@ -748,7 +748,11 @@ impl Widget for MusicApp {
     fn take_structure_dirty(&mut self) -> bool {
         // Reported once: an app that is not rebuilt right away (a tab behind
         // another) must not ask again on every frame.
-        let visible = Some((matches!(self.view, View::Home), !self.nav_back.is_empty()));
+        let visible = Some((
+            matches!(self.view, View::Home),
+            !self.nav_back.is_empty(),
+            self.source_widget_mode(),
+        ));
         let file_changed =
             std::mem::replace(&mut self.open_file_layout_visible, visible) != visible;
         self.history.take_rebuilt() || file_changed
@@ -768,10 +772,34 @@ impl Widget for MusicApp {
                 .iter()
                 .filter_map(|slot| slot.table.visible_widget()),
         );
+        let mode = self.source_widget_mode();
+        match mode {
+            2 | 3 => children.extend(
+                self.source_buttons
+                    .iter()
+                    .filter(|button| {
+                        button.test_id()
+                            == Some(if mode == 3 {
+                                "music-spotify-create-playlist"
+                            } else {
+                                "music-sources"
+                            })
+                    })
+                    .map(|button| button as &dyn Widget),
+            ),
+            1 => children.extend(
+                self.source_buttons
+                    .iter()
+                    .filter(|button| button.test_id() == Some("music-spotify-queue-refresh"))
+                    .map(|button| button as &dyn Widget),
+            ),
+            _ => {}
+        }
         children
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        let mode = self.source_widget_mode();
         let mut children: Vec<&mut (dyn Widget + '_)> = vec![&mut self.search_button];
         if self.view == View::Home {
             children.push(&mut self.open_file_button);
@@ -789,6 +817,28 @@ impl Widget for MusicApp {
                 .iter_mut()
                 .filter_map(|slot| slot.table.visible_widget_mut()),
         );
+        match mode {
+            2 | 3 => children.extend(
+                self.source_buttons
+                    .iter_mut()
+                    .filter(|button| {
+                        button.test_id()
+                            == Some(if mode == 3 {
+                                "music-spotify-create-playlist"
+                            } else {
+                                "music-sources"
+                            })
+                    })
+                    .map(|button| button as &mut (dyn Widget + '_)),
+            ),
+            1 => children.extend(
+                self.source_buttons
+                    .iter_mut()
+                    .filter(|button| button.test_id() == Some("music-spotify-queue-refresh"))
+                    .map(|button| button as &mut (dyn Widget + '_)),
+            ),
+            _ => {}
+        }
         children
     }
 
@@ -867,12 +917,36 @@ impl Widget for MusicApp {
         // `new_leaf` failure (which a freshly-created tree with one valid
         // leaf style cannot produce) has no propagation path here.
         self.drawer.scale_for(theme);
+        self.refresh_spotify_control_flags();
         let mut children = vec![self.search_button.build_layout(taffy, theme, node_map)];
         if self.view == View::Home {
             children.push(self.open_file_button.build_layout(taffy, theme, node_map));
         }
         if !self.nav_back.is_empty() {
             children.push(self.back_button.build_layout(taffy, theme, node_map));
+        }
+        let mode = self.source_widget_mode();
+        match mode {
+            2 | 3 => children.extend(
+                self.source_buttons
+                    .iter_mut()
+                    .filter(|button| {
+                        button.test_id()
+                            == Some(if mode == 3 {
+                                "music-spotify-create-playlist"
+                            } else {
+                                "music-sources"
+                            })
+                    })
+                    .map(|button| button.build_layout(taffy, theme, node_map)),
+            ),
+            1 => children.extend(
+                self.source_buttons
+                    .iter_mut()
+                    .filter(|button| button.test_id() == Some("music-spotify-queue-refresh"))
+                    .map(|button| button.build_layout(taffy, theme, node_map)),
+            ),
+            _ => {}
         }
         #[allow(
             clippy::expect_used,
@@ -958,6 +1032,11 @@ impl Widget for MusicApp {
                 &mut ctx.state,
                 ctx.handled,
             );
+            return;
+        }
+
+        self.route_source_widgets(event, ctx);
+        if *ctx.handled {
             return;
         }
 
@@ -1153,6 +1232,19 @@ impl Widget for MusicApp {
             .with_action_target("music.open-search");
 
         let mut page_content = Vec::new();
+        if self.source_widget_mode() > 0 {
+            page_content.push(
+                AccessNode::new(Role::Group)
+                    .with_hashed_key("music-source-status")
+                    .with_name(self.source_status())
+                    .with_description(self.source_error.clone().unwrap_or_default())
+                    .with_state(
+                        AccessState::new().busy(
+                            self.source_invocation.is_some() || !self.spotify_jobs.is_empty(),
+                        ),
+                    ),
+            );
+        }
         // The custom-painted empty-state button is page content, not a
         // transport control. Give it a separate semantic group and route it to
         // the same reducer as the visible button.
@@ -1161,6 +1253,10 @@ impl Widget for MusicApp {
             && self.lib.playlists.is_empty()
             && self.lib.albums.is_empty()
             && self.lib.tracks.is_empty()
+            && self
+                .home
+                .as_ref()
+                .is_none_or(crate::backend::HomeContent::is_empty)
         {
             page_content.push(
                 AccessNode::new(Role::Group)
@@ -1185,14 +1281,26 @@ impl Widget for MusicApp {
             View::Browse => "Browse".to_string(),
             View::Queue => "Queue".to_string(),
             View::Lyrics => "Lyrics".to_string(),
-            View::Album(id) => self.lib.album_title(id).to_string(),
-            View::Artist(id) => self.lib.artist_name(id).to_string(),
+            View::Album(id) => self.album_pages.get(id).map_or_else(
+                || self.lib.album_title(id).to_string(),
+                |page| page.title.clone(),
+            ),
+            View::Artist(id) => self.artist_pages.get(id).map_or_else(
+                || self.lib.artist_name(id).to_string(),
+                |page| page.name.clone(),
+            ),
             View::Playlist(id) => self
-                .lib
-                .playlists
-                .iter()
-                .find(|playlist| playlist.id == *id)
-                .map_or_else(|| "Playlist".to_string(), |playlist| playlist.name.clone()),
+                .playlist_pages
+                .get(id)
+                .map(|page| page.title.clone())
+                .or_else(|| {
+                    self.lib
+                        .playlists
+                        .iter()
+                        .find(|playlist| playlist.id == *id)
+                        .map(|playlist| playlist.name.clone())
+                })
+                .unwrap_or_else(|| "Playlist".to_string()),
         };
 
         let mut list_items = Vec::new();
@@ -1639,6 +1747,8 @@ impl Widget for MusicApp {
             || self.local_file_pick.is_some()
             || self.toast.is_some()
             || self.live_search_pending.is_some()
+            || self.source_invocation.is_some()
+            || !self.spotify_jobs.is_empty()
             || self.pending_catalogue_query.is_some()
             || self.resolve_in_flight > 0
             || self.images_pending()
@@ -1686,6 +1796,79 @@ impl Widget for MusicApp {
 }
 
 impl MusicApp {
+    fn route_source_widgets(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let Ok(nodes) = ctx.taffy.children(ctx.node_id) else {
+            return;
+        };
+        let mode = self.source_widget_mode();
+        let count = match mode {
+            1..=3 => 1,
+            _ => return,
+        };
+        let nodes = nodes.iter().skip(nodes.len().saturating_sub(count));
+        if matches!(mode, 2 | 3) {
+            for (button, node) in self
+                .source_buttons
+                .iter_mut()
+                .filter(|button| {
+                    button.test_id()
+                        == Some(if mode == 3 {
+                            "music-spotify-create-playlist"
+                        } else {
+                            "music-sources"
+                        })
+                })
+                .zip(nodes)
+            {
+                if !*ctx.handled {
+                    button.handle_event(event, &mut ctx.reborrow(ctx.path, *node));
+                }
+            }
+        } else if let Some(node) = nodes.last()
+            && let Some(button) = self
+                .source_buttons
+                .iter_mut()
+                .find(|button| button.test_id() == Some("music-spotify-queue-refresh"))
+            && !*ctx.handled
+        {
+            button.handle_event(event, &mut ctx.reborrow(ctx.path, *node));
+        }
+    }
+
+    fn begin_source_effect(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        effect: &crate::actions::MusicEffect,
+    ) -> Result<ui::framework::Effected, String> {
+        use crate::actions::MusicEffect;
+        if !self.allow_network {
+            return Err("Network access is unavailable in this session".into());
+        }
+        if self.source_invocation.is_some() || !self.spotify_jobs.is_empty() {
+            return Err("A music source request is already running".into());
+        }
+        self.ensure_worker();
+        let request = if matches!(effect, MusicEffect::DisconnectSpotify) {
+            crate::stream::StreamRequest::DisconnectSpotify
+        } else if matches!(effect, MusicEffect::ConnectSpotifyPlayback) {
+            crate::stream::StreamRequest::ConnectSpotifyPlayback
+        } else {
+            crate::stream::StreamRequest::Source {
+                spotify: !matches!(effect, MusicEffect::BrowseYouTube),
+                sign_in: matches!(effect, MusicEffect::ConnectSpotify),
+            }
+        };
+        self.worker
+            .as_ref()
+            .ok_or("Music worker unavailable")?
+            .request(request)?;
+        self.source_error = None;
+        self.source_invocation = Some(invocation);
+        self.source_disconnect_pending = matches!(effect, MusicEffect::DisconnectSpotify);
+        self.dirty = true;
+        Ok(ui::framework::Effected::Pending)
+    }
+
     /// Start `effect`, invoked as `invocation`. A view, a queue edit or a
     /// transport change that needs no new source answers at once; starting
     /// a stream, a download or the file picker answers once that work
@@ -1696,6 +1879,49 @@ impl MusicApp {
     /// now: a target gone from the library, a stale queue occurrence, a
     /// stream start already in flight.
     pub(crate) fn begin_effect(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        effect: crate::actions::MusicEffect,
+    ) -> Result<ui::framework::Effected, String> {
+        use crate::actions::MusicEffect;
+        match effect {
+            MusicEffect::Sources => {
+                self.open_sources_menu();
+                Ok(ui::framework::Effected::done())
+            }
+            MusicEffect::ConnectSpotify
+            | MusicEffect::ConnectSpotifyPlayback
+            | MusicEffect::DisconnectSpotify
+            | MusicEffect::BrowseSpotify
+            | MusicEffect::BrowseYouTube => self.begin_source_effect(invocation, &effect),
+            MusicEffect::SpotifyDevices
+            | MusicEffect::SpotifyQueue
+            | MusicEffect::SpotifyLibraryMore
+            | MusicEffect::SpotifyCreatePlaylist { .. }
+            | MusicEffect::SpotifyTransfer { .. }
+            | MusicEffect::SpotifyRemotePlay { .. }
+            | MusicEffect::SpotifyRemotePause { .. }
+            | MusicEffect::SpotifySave { .. }
+            | MusicEffect::SpotifyUnsave { .. }
+            | MusicEffect::SpotifyRenamePlaylist { .. }
+            | MusicEffect::SpotifyPlaylistAdd { .. }
+            | MusicEffect::SpotifyPlaylistRemove { .. } => {
+                self.begin_spotify_operation(invocation, &effect)
+            }
+            MusicEffect::NewSpotifyPlaylist => {
+                if !self.spotify_catalogue {
+                    return Err(ui::i18n!("music-spotify-select-first"));
+                }
+                self.on_begin_new_playlist(None);
+                self.name_prompt = Some(super::NamePrompt::NewSpotifyPlaylist);
+                self.dirty = true;
+                Ok(ui::framework::Effected::done())
+            }
+            other => self.begin_player_effect(invocation, other),
+        }
+    }
+
+    fn begin_player_effect(
         &mut self,
         invocation: tilo_actions::InvocationId,
         effect: crate::actions::MusicEffect,
@@ -1857,10 +2083,7 @@ impl MusicApp {
             }
             Place::Album(id) => {
                 if !self.lib.albums.contains_key(&id)
-                    && !self
-                        .live_bundle
-                        .as_ref()
-                        .is_some_and(|(_, bundle)| bundle.albums.iter().any(|album| album.id == id))
+                    && !self.known_catalogue_entity(&crate::actions::album_resource_id(&id))
                 {
                     return Err("album is no longer in the library".into());
                 }
@@ -1868,9 +2091,7 @@ impl MusicApp {
             }
             Place::Artist(id) => {
                 if !self.lib.artists.contains_key(&id)
-                    && !self.live_bundle.as_ref().is_some_and(|(_, bundle)| {
-                        bundle.artists.iter().any(|artist| artist.id == id)
-                    })
+                    && !self.known_catalogue_entity(&crate::actions::artist_resource_id(&id))
                 {
                     return Err("artist is no longer in the library".into());
                 }
@@ -1878,9 +2099,7 @@ impl MusicApp {
             }
             Place::Playlist(id) => {
                 if self.lib.playlist(&id).is_none()
-                    && !self.live_bundle.as_ref().is_some_and(|(_, bundle)| {
-                        bundle.playlists.iter().any(|playlist| playlist.id == id)
-                    })
+                    && !self.known_catalogue_entity(&crate::actions::playlist_resource_id(&id))
                 {
                     return Err("playlist is no longer in the library".into());
                 }
@@ -2873,12 +3092,172 @@ impl MusicApp {
 
     // ---- home -------------------------------------------------------------
 
+    fn provider_note(ctx: &mut PaintCtx<'_>, look: &Look, body: Rect, y: f64, text: &str) -> f64 {
+        let style = ctx.theme.text(TextRole::Body);
+        let width = ((body.width() - 2.0 * look.gutter).max(1.0)) as f32;
+        let height = ctx.text.measure_style(text, Some(width), &style).1;
+        ctx.text(
+            text,
+            &style,
+            look.dim,
+            Point::new(body.x0 + look.gutter, y),
+            Some(width),
+        );
+        y + f64::from(height)
+    }
+
+    /// This page positions retained controls manually. Use the toolkit's
+    /// shared button face metrics; geometry does not acquire widget authority.
+    fn source_control_size(button: &Button, ctx: &mut PaintCtx<'_>) -> Size<f32> {
+        let label = button.test_id().unwrap_or_default();
+        let face = ButtonFace::new(Rect::ZERO, label);
+        Size {
+            width: face.intrinsic_width(ctx.text, ctx.theme) as f32,
+            height: ButtonFace::height(ControlSize::Regular, ctx.theme) as f32,
+        }
+    }
+
+    fn position_source_buttons(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        look: &Look,
+        body: Rect,
+        mut y: f64,
+    ) -> f64 {
+        let left = body.x0 + look.gutter;
+        let right = body.x1 - look.gutter;
+        let width = (right - left).max(1.0) as f32;
+        let mut x = left;
+        let mut row_height: f64 = 0.0;
+        let mode = self.source_widget_mode();
+        for button in self.source_buttons.iter_mut().filter(|button| {
+            button.test_id()
+                == Some(if mode == 3 {
+                    "music-spotify-create-playlist"
+                } else {
+                    "music-sources"
+                })
+        }) {
+            let size = Self::source_control_size(button, ctx);
+            if x > left && x + f64::from(size.width) > right {
+                y += row_height + look.sibling;
+                x = left;
+                row_height = 0.0;
+            }
+            let rect = Rect::from_origin_size(
+                (x, y),
+                (
+                    f64::from(size.width).min(f64::from(width)),
+                    f64::from(size.height),
+                ),
+            );
+            button.apply_layout_external(if rect.intersect(body).area() > 0.0 {
+                rect
+            } else {
+                Rect::ZERO
+            });
+            if button.get_rect().area() > 0.0 {
+                button.draw(
+                    ctx.scene,
+                    ctx.transform,
+                    ctx.text,
+                    ctx.theme,
+                    &PresenceCtx::empty(),
+                );
+            }
+            x += f64::from(size.width) + look.sibling;
+            row_height = row_height.max(f64::from(size.height));
+        }
+        y += row_height + look.sibling;
+        if self.source_invocation.is_some() || self.source_error.is_some() {
+            y = Self::provider_note(ctx, look, body, y, &self.source_status()) + look.sibling;
+        }
+        y + look.sibling
+    }
+
+    fn draw_spotify_remote_queue(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        look: &Look,
+        body: Rect,
+        mut y: f64,
+    ) -> f64 {
+        if !self.spotify_catalogue && self.spotify_remote_queue.is_none() {
+            return y;
+        }
+        if let Some(button) = self
+            .source_buttons
+            .iter_mut()
+            .find(|button| button.test_id() == Some("music-spotify-queue-refresh"))
+        {
+            let width = (body.width() - 2.0 * look.gutter).max(1.0) as f32;
+            let size = Self::source_control_size(button, ctx);
+            button.apply_layout_external(Rect::from_origin_size(
+                (body.x0 + look.gutter, y),
+                (
+                    f64::from(size.width).min(f64::from(width)),
+                    f64::from(size.height),
+                ),
+            ));
+            button.draw(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                ctx.theme,
+                &PresenceCtx::empty(),
+            );
+            y += f64::from(size.height) + look.sibling;
+        }
+        y = Self::section_heading(ctx, look, body, y, &ui::i18n!("music-spotify-remote-queue"));
+        let mut lines = vec![ui::i18n!("music-spotify-remote-queue-help")];
+        if let Some(error) = &self.source_error {
+            lines.push(error.clone());
+        }
+        if let Some((snapshot, observed)) = &self.spotify_remote_queue {
+            lines.push(ui::i18n::I18nManager::format(
+                "music-spotify-remote-queue-age",
+                &[("seconds", observed.elapsed().as_secs().to_string().into())],
+            ));
+            let queue = &snapshot["remote_queue"];
+            if queue["currently_playing"].is_object() {
+                lines.push(super::spotify::remote_item_label(
+                    &queue["currently_playing"],
+                ));
+            }
+            if let Some(items) = queue["queue"].as_array() {
+                if items.is_empty() {
+                    lines.push(ui::i18n!("music-spotify-remote-queue-empty"));
+                }
+                lines.extend(items.iter().take(50).enumerate().map(|(i, item)| {
+                    format!("{}. {}", i + 1, super::spotify::remote_item_label(item))
+                }));
+            }
+            if snapshot["truncated"].as_bool() == Some(true) {
+                lines.push(ui::i18n!("music-spotify-remote-queue-truncated"));
+            }
+        } else {
+            lines.push(ui::i18n!("music-spotify-remote-queue-unloaded"));
+        }
+        for line in lines {
+            y = Self::provider_note(ctx, look, body, y, &line) + look.sibling;
+        }
+        Self::section_heading(
+            ctx,
+            look,
+            body,
+            y + look.sibling,
+            &ui::i18n!("music-spotify-local-queue"),
+        )
+    }
+
     fn draw_home(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, body: Rect, y: f64) -> f64 {
         // Kick off the real Home fetch (charts / new releases / top artists).
         self.ensure_home();
         let mut y = y + look.gutter;
+        self.refresh_spotify_control_flags();
+        y = self.position_source_buttons(ctx, look, body, y);
 
-        // Real YouTube-Music content when it has landed.
+        // Remote catalogue content when it has landed.
         if let Some(home) = self.home.take() {
             for section in &home.sections {
                 y = Self::section_heading(ctx, look, body, y, &section.title);
@@ -2954,7 +3333,7 @@ impl MusicApp {
             .items
             .iter()
             .filter(|it| it.kind == HomeItemKind::Track)
-            .map(|it| format!("yt:{}", it.video_id))
+            .map(|it| live_track_id(&it.video_id))
             .collect();
         let mut queue = SectionQueue {
             ids: &track_ids,
@@ -2965,7 +3344,7 @@ impl MusicApp {
             .items
             .iter()
             .zip(&ids)
-            .filter_map(|(item, art_id)| {
+            .map(|(item, art_id)| {
                 let action = match item.kind {
                     HomeItemKind::Track => {
                         let index = queue.next;
@@ -2977,17 +3356,17 @@ impl MusicApp {
                     }
                     HomeItemKind::Album => Action::Nav(View::Album(item.id.clone())),
                     HomeItemKind::Artist => Action::Nav(View::Artist(item.id.clone())),
-                    HomeItemKind::Playlist => return None,
+                    HomeItemKind::Playlist => Action::Nav(View::Playlist(item.id.clone())),
                 };
                 let play = matches!(item.kind, HomeItemKind::Track).then(|| action.clone());
-                Some(GridCard {
+                GridCard {
                     art_id,
                     title: &item.title,
                     meta: [Some(item.subtitle.as_str()).filter(|s| !s.is_empty()), None],
                     portrait: matches!(item.kind, HomeItemKind::Artist),
                     action,
                     play,
-                })
+                }
             })
             .collect();
         self.draw_media_grid(ctx, look, body, y, &cards)
@@ -2996,7 +3375,7 @@ impl MusicApp {
     /// The cover-cache key of a Home item.
     fn home_item_art(item: &HomeItem) -> String {
         match item.kind {
-            HomeItemKind::Track => format!("yt:{}", item.video_id),
+            HomeItemKind::Track => live_track_id(&item.video_id),
             _ => item.id.clone(),
         }
     }
@@ -3069,6 +3448,12 @@ impl MusicApp {
                 portrait: card.portrait,
                 action: card.action.clone(),
                 play: card.play.clone(),
+                menu: match &card.action {
+                    Action::Nav(View::Playlist(id)) if id.starts_with("spotify:playlist:") => {
+                        Some(Action::OpenSpotifyPlaylistMenu(id.clone()))
+                    }
+                    _ => None,
+                },
             })
             .collect();
         let index = self.media_grids_drawn;
@@ -3181,6 +3566,14 @@ impl MusicApp {
         pls: &[PlaylistDisp],
     ) -> f64 {
         let span = (body.x0 + look.gutter, body.x1 - look.gutter);
+        if self.spotify_catalogue {
+            let y = self.position_source_buttons(ctx, look, body, y);
+            return if pls.is_empty() {
+                Self::note(ctx, look, body, y, "Playlists you make appear here.")
+            } else {
+                self.draw_playlist_cards(ctx, look, body, y, pls)
+            };
+        }
         let y = self.page_part(ctx, span, y, "new-playlist".into(), |asked| {
             Box::new(
                 ui::widget::Row::new().no_wrap().push(Box::new(
@@ -3283,9 +3676,11 @@ impl MusicApp {
         let action_w = super::track_table::action_side(theme);
         let actions = if downloads {
             Actions::Download
-        } else if table.playlist.is_some() || table.queue_offset.is_some() {
+        } else if table.playlist.is_some_and(|id| !id.starts_with("spotify:"))
+            || table.queue_offset.is_some()
+        {
             Actions::Reorder {
-                playlist: table.playlist.is_some(),
+                playlist: table.playlist.is_some_and(|id| !id.starts_with("spotify:")),
             }
         } else {
             Actions::Track
@@ -3736,6 +4131,7 @@ impl MusicApp {
             ),
         ];
         let id = header.id.to_string();
+        let spotify_menu_label = ui::i18n!("music-spotify-playlist-actions");
         match header.kind {
             DetailKind::Album { saved } => buttons.push((
                 if saved {
@@ -3768,6 +4164,12 @@ impl MusicApp {
                     Action::DeletePlaylist(id),
                 ));
             }
+            DetailKind::Playlist { own: false } if id.starts_with("spotify:playlist:") => buttons
+                .push((
+                    &spotify_menu_label,
+                    ButtonRole::Secondary,
+                    Action::OpenSpotifyPlaylistMenu(id),
+                )),
             DetailKind::Playlist { own: false } => {}
         }
         // The actions are the toolkit's buttons in a wrapping row.
@@ -3880,7 +4282,7 @@ impl MusicApp {
         let ids: Vec<String> = page
             .tracks
             .iter()
-            .map(|h| format!("yt:{}", h.video_id))
+            .map(|h| live_track_id(&h.video_id))
             .collect();
         let ids = self.unique_recordings(&ids);
         let rows = self.gather_tracks(&ids);
@@ -4039,9 +4441,11 @@ impl MusicApp {
         let top_ids: Vec<String> = page
             .tracks
             .iter()
-            .map(|h| format!("yt:{}", h.video_id))
+            .map(|h| live_track_id(&h.video_id))
             .collect();
-        let followed = self.lib.is_artist_followed(&page.id);
+        let followed = page
+            .provider_followed
+            .unwrap_or_else(|| self.lib.is_artist_followed(&page.id));
         let mut y = self.draw_detail_header(
             ctx,
             look,
@@ -4299,7 +4703,7 @@ impl MusicApp {
         let ids: Vec<String> = page
             .tracks
             .iter()
-            .map(|h| format!("yt:{}", h.video_id))
+            .map(|h| live_track_id(&h.video_id))
             .collect();
         let rows = self.gather_tracks(&ids);
         let caption = length_caption(&rows);
@@ -4340,7 +4744,13 @@ impl MusicApp {
         if ids.is_empty() {
             return Self::note(ctx, look, body, y, "This playlist has no playable songs.");
         }
-        self.draw_track_table(ctx, look, body, y, &TrackTable::new(&rows, &ids))
+        self.draw_track_table(
+            ctx,
+            look,
+            body,
+            y,
+            &TrackTable::new(&rows, &ids).in_playlist(&page.id),
+        )
     }
 
     // ---- queue ------------------------------------------------------------
@@ -4436,6 +4846,7 @@ impl MusicApp {
 
     fn draw_queue(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, body: Rect, y: f64) -> f64 {
         let mut y = y + look.gutter;
+        y = self.draw_spotify_remote_queue(ctx, look, body, y);
         let full = self.pb.queue.clone();
         if let Some(cur) = self.pb.current.clone() {
             y = Self::section_heading(ctx, look, body, y, "Now playing");
@@ -5368,17 +5779,5 @@ impl ui::widget::WindowHeader for MusicApp {
     fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
         self.history.set_control(control);
         self.dirty = true;
-    }
-}
-impl ui::widget::controls::ActionControls for MusicApp {
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.search_opener
-            .take()
-            .or_else(|| self.history.take())
-            .or_else(|| {
-                self.children_mut()
-                    .into_iter()
-                    .find_map(ui::widget::controls::take_control_invocation)
-            })
     }
 }

@@ -925,6 +925,20 @@ impl ChatApp {
             Hit::StartCall if self.call_allows(crate::call::CallAction::Join) => {
                 self.on_hit_start_call(doc);
             }
+            Hit::StopSharingLiveContext => {
+                // The same device-local handler the public effect reaches.
+                let _ = self.answer_effect(crate::effects::ChatEffect::StopSharingLiveContext);
+            }
+            Hit::CopyResourceLink(message) => {
+                if let Some(dispatch) = &self.dispatch {
+                    dispatch.effect(&crate::effects::ChatEffect::CopyResourceLink { message });
+                }
+            }
+            Hit::OpenResourceLink(message) => {
+                if let Some(dispatch) = &self.dispatch {
+                    dispatch.effect(&crate::effects::ChatEffect::OpenResourceLink { message });
+                }
+            }
             Hit::CloseThread => {
                 self.close_thread();
             }
@@ -3493,6 +3507,160 @@ mod tests {
         }
         app.land(doc);
         app.stage_scenario("agent-work");
+    }
+
+    #[test]
+    fn sidebar_accessibility_focus_retires_the_previous_keyboard_and_drawer_owner() {
+        use ui::Widget;
+        use ui::a11y::Action;
+        use ui::headless::FrameHarness;
+        let (app, doc) = app_with_doc();
+        let mut state = ui::State::new();
+        assert!(state.adopt_doc(doc));
+        let mut driver = FrameHarness::for_root(state, app, (1800, 900), ui::Theme::dark());
+        let people = driver
+            .a11y_node_named("Show people or thread")
+            .expect("the actual Chat People control");
+        driver
+            .perform_a11y_action(people, &Action::Activate)
+            .unwrap();
+        assert!(
+            driver.wait_until(ui::time::Duration::from_secs(1), |driver| {
+                driver
+                    .root::<ChatApp>()
+                    .right_flap
+                    .resize_accessibility()
+                    .is_some()
+            })
+        );
+        let people = driver.a11y_node_named("Show people or thread").unwrap();
+        driver.perform_a11y_action(people, &Action::Focus).unwrap();
+        assert!(driver.root::<ChatApp>().keyboard_target.is_some());
+        let sidebar = driver.a11y_node_named("Resize sidebar").unwrap();
+        driver.perform_a11y_action(sidebar, &Action::Focus).unwrap();
+        assert!(driver.root::<ChatApp>().keyboard_target.is_none());
+        let inspector = driver.a11y_node_named("Resize inspector").unwrap();
+        driver
+            .perform_a11y_action(inspector, &Action::Focus)
+            .unwrap();
+        let root = driver.root::<ChatApp>();
+        assert!(!root.left_flap.resize_accessibility().unwrap().state.focused);
+        assert!(
+            root.right_flap
+                .resize_accessibility()
+                .unwrap()
+                .state
+                .focused
+        );
+
+        let children = root.accessibility().unwrap().children;
+        let left = children
+            .iter()
+            .position(|node| node.action_target.as_deref() == Some("sidebar-resize"))
+            .unwrap();
+        let right = children
+            .iter()
+            .position(|node| node.action_target.as_deref() == Some("inspector-resize"))
+            .unwrap();
+        let root = driver.root_mut::<ChatApp>();
+        assert!(root.focus_synthetic_accessibility(&[left]));
+        assert!(root.focus_synthetic_accessibility(&[right]));
+        assert!(!root.left_flap.resize_accessibility().unwrap().state.focused);
+        assert!(
+            root.right_flap
+                .resize_accessibility()
+                .unwrap()
+                .state
+                .focused
+        );
+    }
+
+    #[test]
+    fn sidebar_resize_uses_the_live_host_pointer_and_semantic_routes() {
+        use ui::Widget;
+        use ui::headless::FrameHarness;
+        let (app, doc) = app_with_doc();
+        let mut state = ui::State::new();
+        assert!(state.adopt_doc(doc));
+        let mut driver = FrameHarness::for_root(state, app, (960, 720), ui::Theme::dark());
+        assert!(!driver.root::<ChatApp>().left_overlay());
+        driver.resize((880, 720)).expect("normal narrow layout");
+        assert!(driver.root::<ChatApp>().left_overlay());
+        driver.resize((960, 720)).expect("normal wide layout");
+        assert!(!driver.root::<ChatApp>().left_overlay());
+        let before = driver.state_mut().doc.get_heads();
+        let edge = driver.root::<ChatApp>().left_flap.sidebar_rect().x1;
+        driver.drag_at((edge, 200.0), (edge - 40.0, 200.0));
+        assert_eq!(
+            driver.root::<ChatApp>().left_flap.list_rect().width(),
+            240.0
+        );
+        assert!(!driver.root::<ChatApp>().wants_pointer_capture());
+        let access = driver.root::<ChatApp>().accessibility().unwrap();
+        for child in &access.children {
+            if !matches!(
+                child.action_target.as_deref(),
+                Some("sidebar-resize" | "inspector-resize")
+            ) {
+                assert!(
+                    child.semantic_key.is_none(),
+                    "legacy Chat controls keep typed domain authority"
+                );
+            }
+        }
+        let resources = driver.resources();
+        let resize = resources
+            .iter()
+            .find(|resource| {
+                resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "set-value")
+                    && resource.label == "Resize sidebar"
+            })
+            .expect("the live shared separator publishes exact resize alongside steps");
+        for id in ["increment", "decrement", "set-value"] {
+            assert!(resize.actions.iter().any(|action| action.id == id));
+        }
+        let address = ui::tilo_actions::ActionAddress::new(resize.id.as_str(), "set-value");
+        let arguments = serde_json::Map::from_iter([(
+            ui::tilo_actions::PROMPTED_PARAM.to_owned(),
+            serde_json::Value::String("30%".into()),
+        )]);
+        assert!(
+            driver
+                .invoke_action(&address, &arguments, false, None)
+                .expect("the freshly published canonical resize door")
+                .completed()
+                .is_some()
+        );
+        let root = driver.root::<ChatApp>();
+        assert_eq!(root.left_flap.sidebar_rect().width(), 288.0);
+        assert_eq!(root.left_flap.list_rect().width(), 212.0);
+        assert_eq!(
+            driver.state_mut().doc.get_heads(),
+            before,
+            "resizing never changes the shared conversation"
+        );
+    }
+
+    #[test]
+    fn navigation_remains_docked_while_the_shared_content_minimum_fits() {
+        let (mut app, _doc) = app_with_doc();
+        render_frame(&mut app, 960.0, 720.0);
+        assert!(
+            !app.left_overlay(),
+            "rail + sidebar + content minimum fit at this width"
+        );
+        assert!(
+            app.left_flap.content_rect().width()
+                >= f64::from(ui::tokens::Metrics::BASE.content_min_width)
+        );
+        render_frame(&mut app, 880.0, 720.0);
+        assert!(
+            app.left_overlay(),
+            "the navigation must become a drawer when content actually no longer fits"
+        );
     }
 
     #[test]

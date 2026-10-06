@@ -46,6 +46,17 @@ pub enum ChatEffect {
     /// Reveal message
     #[effect(view, row)]
     RevealMessage { message: String },
+    /// Reveal message range
+    #[effect(view, row, returns)]
+    RevealMessageRange {
+        message: String,
+        #[param("Start offset in the declared unit")]
+        start: usize,
+        #[param("End offset in the declared unit")]
+        end: usize,
+        #[param("Offset unit", choices = ["Chars", "Bytes"])]
+        unit: String,
+    },
     /// Open person
     #[effect(view, row)]
     OpenPerson { user: String },
@@ -55,6 +66,12 @@ pub enum ChatEffect {
     /// whole text and the agent's record of its work.
     #[effect(view, row, returns)]
     ReadMessage { message: String },
+    /// Copy resource link
+    #[effect(job, device_only, returns)]
+    CopyResourceLink { message: String },
+    /// Open resource in browser
+    #[effect(job, device_only, returns)]
+    OpenResourceLink { message: String },
     /// Attach file
     ///
     /// Shares a file from this device in a conversation: its bytes go to
@@ -67,6 +84,23 @@ pub enum ChatEffect {
         #[param("Path of the file on this device")]
         path: String,
     },
+    /// Share live Chat context
+    ///
+    /// Opt in to publishing the open conversation, thread and scroll position.
+    #[effect(device_only, idempotent)]
+    ShareLiveContext,
+    /// Stop sharing live Chat context
+    #[effect(device_only, idempotent)]
+    StopSharingLiveContext,
+    /// Live context status
+    #[effect(device_only, idempotent, returns)]
+    LiveContextStatus,
+    /// Open Slack channel in browser
+    #[effect(device_only)]
+    OpenSlackChannel { workspace: String, channel: String },
+    /// Open Discord channel in browser
+    #[effect(device_only)]
+    OpenDiscordChannel { server: String, channel: String },
     /// Join call
     #[effect(row, device_only)]
     JoinCall { channel: String },
@@ -80,7 +114,10 @@ pub enum ChatEffect {
     #[effect(row, device_only)]
     Unmute { channel: String },
     /// Call status
-    #[effect(row, idempotent, device_only)]
+    ///
+    /// Requests a refresh and returns the last reported service state.
+    /// The response is explicitly a cached report, never microphone consent.
+    #[effect(row, idempotent, device_only, returns)]
     CallStatus { channel: String },
     /// Start a call
     ///
@@ -120,6 +157,12 @@ impl ChatApp {
                 self.toggle_category(&category);
             }
             ChatEffect::RevealMessage { message } => self.reveal_message(&message)?,
+            ChatEffect::RevealMessageRange {
+                message,
+                start,
+                end,
+                unit,
+            } => return self.reveal_message_range(&message, start, end, &unit),
             ChatEffect::OpenPerson { user } => self.open_person(&user)?,
             ChatEffect::ReadMessage { message } => {
                 return self.read_message(&message).map(Effected::value);
@@ -139,6 +182,35 @@ impl ChatApp {
                     return Err("attachment import was not accepted".into());
                 }
             }
+            ChatEffect::ShareLiveContext => {
+                if !self.channels.iter().any(|channel| {
+                    channel.id == self.active_channel
+                        && channel.kind == ChannelKind::Text
+                        && !channel.archived
+                }) {
+                    return Err("Open a conversation before sharing its context".into());
+                }
+                self.sharing_context = true;
+                self.request_relayout();
+            }
+            ChatEffect::StopSharingLiveContext => {
+                self.sharing_context = false;
+                self.request_relayout();
+            }
+            ChatEffect::LiveContextStatus => {
+                return Ok(Effected::value(serde_json::json!({
+                    "sharing": self.sharing_context,
+                    "following": self.following_context,
+                    "channel": self.active_channel,
+                    "videoCapture": false,
+                })));
+            }
+            ChatEffect::CopyResourceLink { .. }
+            | ChatEffect::OpenResourceLink { .. }
+            | ChatEffect::OpenSlackChannel { .. }
+            | ChatEffect::OpenDiscordChannel { .. } => {
+                return Err("Browser navigation requires the owning host".into());
+            }
             ChatEffect::JoinCall { channel } => {
                 let channel_id = channel.clone();
                 self.native_voice_command(&channel, Command::Join { channel_id })?;
@@ -152,9 +224,7 @@ impl ChatApp {
             ChatEffect::Unmute { channel } => {
                 self.native_voice_command(&channel, Command::SetMuted { muted: false })?;
             }
-            ChatEffect::CallStatus { channel } => {
-                self.native_voice_command(&channel, Command::Status)?;
-            }
+            ChatEffect::CallStatus { channel } => return self.native_call_status(&channel),
             ChatEffect::StartCall => self.start_call(None)?,
             ChatEffect::StartVideoCall => return Err(video_call_unavailable_reason()),
             ChatEffect::SelectInput { channel, input } => {
@@ -167,6 +237,15 @@ impl ChatApp {
             }
         }
         Ok(Effected::done())
+    }
+
+    fn native_call_status(&mut self, channel: &str) -> EffectAnswer {
+        self.native_voice_command(channel, Command::Status)?;
+        Ok(Effected::value(serde_json::json!({
+            "channel": self.native_voice.channel,
+            "reported": self.native_voice.snapshot,
+            "refreshRequested": true,
+        })))
     }
 
     /// Start a call in the open workspace: join its voice channel, making
@@ -300,6 +379,45 @@ impl ChatApp {
         Ok(())
     }
 
+    fn reveal_message_range(
+        &mut self,
+        message: &str,
+        start: usize,
+        end: usize,
+        unit: &str,
+    ) -> EffectAnswer {
+        let unit = match unit {
+            "Chars" => tilo_reference::SpanUnit::Chars,
+            "Bytes" => tilo_reference::SpanUnit::Bytes,
+            _ => return Err("unsupported range unit".into()),
+        };
+        if start > end {
+            return Err("backwards message range".into());
+        }
+        let span = tilo_reference::Span { start, end, unit };
+        let text = self
+            .search_messages
+            .iter()
+            .find(|m| m.id == message)
+            .map(|m| &m.text)
+            .ok_or("message no longer exists")?;
+        let selected = span
+            .slice(text)
+            .ok_or("message range no longer fits")?
+            .to_owned();
+        let start_byte = match unit {
+            tilo_reference::SpanUnit::Bytes => start,
+            tilo_reference::SpanUnit::Chars => text.chars().take(start).map(char::len_utf8).sum(),
+        };
+        let end_byte = start_byte + selected.len();
+        let source = text.clone();
+        self.reveal_message(message)?;
+        self.revealed_range = Some((message.to_owned(), source, start_byte, end_byte));
+        Ok(Effected::value(
+            serde_json::json!({"selected": selected, "span": span}),
+        ))
+    }
+
     fn reveal_message(&mut self, message: &str) -> Result<(), String> {
         let found = self
             .search_messages
@@ -317,6 +435,7 @@ impl ChatApp {
         self.active_channel = channel;
         self.inbox_open = false;
         self.thread_open = parent;
+        self.revealed_range = None;
         self.revealed_message = Some(message.to_owned());
         self.reveal_scroll_pending = true;
         self.revealed_person = None;
@@ -393,6 +512,8 @@ impl ChatApp {
             "edited": message.edited,
             "text": message.text,
             "work": message.work,
+            "reference": message.reference,
+            "sourceProvider": message.source_provider,
         }))
     }
 }

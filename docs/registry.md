@@ -197,6 +197,7 @@ namespaces but never the contact address. Nothing is approved over HTTP:
 
 ```
 tilo-registry-server applications list
+tilo-registry-server applications show <pubkey> --json
 tilo-registry-server applications approve <pubkey> --reviewer <name>
 tilo-registry-server applications reject <pubkey> --reviewer <name> --reason <text>
 ```
@@ -205,6 +206,76 @@ tilo-registry-server applications reject <pubkey> --reviewer <name> --reason <te
 waited fails the approval and changes nothing. Otherwise it allowlists the key
 with `--can-add-new` for the proven namespaces, adding them to any it already
 had.
+
+For a UI or a script that decides what it previously displayed, take `review_id`
+from `applications show --json` and pass it to either decision:
+
+```
+tilo-registry-server applications approve <pubkey> --reviewer <name> --review-id <id>
+tilo-registry-server applications reject <pubkey> --reviewer <name> --reason <text> --review-id <id>
+```
+
+The id identifies the complete stored application, including its signed claims
+and review state. If the publisher replaces it, refresh and review the new
+request; an old decision changes neither the allowlist nor the replacement.
+Approval also compares the reviewed snapshot under the transaction lock after
+checking proofs, so a replacement arriving during a DNS/HTTPS check cannot be
+overwritten. Rust callers use `applications::approve_reviewed` or
+`applications::reject_reviewed` with the displayed `StoredApplication`.
+The original CLI forms remain supported. These commands use existing local
+operator access; they introduce no remotely callable approval endpoint.
+
+## Native operator review
+
+On the registry host, the native operator tool uses the same local review
+library as the CLI. Build it with `cargo build --locked -p registry-review`,
+then open an explicitly private window:
+
+```bash
+target/debug/tilo-registry-review --private --registry-dir /path/to/registry
+```
+
+Choose **Refresh applications**, inspect the signed request, its exact
+namespaces, contact, note and proof locations, then name the reviewer.
+**Approve namespaces** checks ownership proofs again. **Reject with feedback**
+returns the written reason through the publisher's existing status endpoint.
+Both decisions require confirmation and refuse a replacement application;
+refresh and inspect the new request before deciding again.
+
+The pending queue is device-local view state. Only reviewer/feedback drafts
+use the SDK document and its undo/history on a disposable private profile;
+no registry queue or contact data is synced. Revoking owner access hides the
+review pane and refuses its actions. A shared launch reads no registry data.
+The tool needs the operator's existing filesystem access to an initialized
+registry; it grants no access, opens no approval service and holds no registry
+signing key. Public publication still uses the registry's existing signing
+workflow. The same window also reviews package submissions through the CLI's shared signed-byte inspection and approval workflow.
+
+The action surface is `Refresh`, `Inspect {publisher}`, followed by
+`Approve {publisher, review_id, reviewer}` or
+`Reject {publisher, review_id, reviewer, reason}`. `Inspect` returns the exact
+snapshot and review id; automated operators use the same confirmation and
+stale-review checks as the controls. Queue pages contain at most 20 rows.
+
+Choose **Refresh packages** to list pending package summaries without downloading
+anything. **Verify and inspect packages** explicitly reads uploaded artifacts or
+fetches external versions with the CLI's bounded, public-network-only policy.
+The detail view shows verified versions, byte counts and signed sandbox requests;
+review never launches a package. Verification errors remain visible and block
+approval while leaving rejection available. Name the reviewer and write a reason
+before either confirmed decision. Approval rechecks bytes, current authorization
+and the exact pending request before staging metadata and publishing reviewed
+uploads. Signed registry snapshot publication remains a separate operator step.
+
+Package agents use `PackageReview::RefreshPackages`, `InspectPackage {package}`, then
+`ApprovePackage {package, review_id, reviewer, reason}` or
+`RejectPackage {package, review_id, reviewer, reason}`. Inspection returns the full
+submission, its review id, and either `verified_packages` or `inspection_error`.
+Refresh and `PackagePage {page}` return at most 20 addressable summaries; no package
+bytes or full signatures are returned in discovery. Registration and package
+operations share one busy state, the same private-window requirement and owner
+permission checks. Switching inspected requests clears feedback for the previous
+request; registry state stays outside draft history.
 
 ## Bootstrapping your own instance
 
@@ -449,8 +520,10 @@ remotely callable approval endpoint.
 tilo-registry-server review list --json
 tilo-registry-server review show so.tilo.example --json
 tilo-registry-server review approve so.tilo.example \
+    --review-id <review_id-from-show> \
     --reviewer alice --reason "capabilities and core journeys verified"
 tilo-registry-server review reject so.tilo.example \
+    --review-id <review_id-from-show> \
     --reviewer alice --reason "misleading subscription disclosure"
 ```
 
@@ -461,6 +534,14 @@ compare the signed manifest's app id and version with the submission.
 Their output includes filesystem, network, portal, and service requests.
 Approval moves the exact signed metadata into snapshot staging; a moderator
 cannot quietly rewrite a publisher's submission.
+
+`show --json` includes a `review_id` for the entire signed pending request,
+including its receipt time and both signatures. Pass it to either decision to
+refuse a request replaced after inspection, before fetching packages or changing
+registry state. Approval also rechecks the exact candidate under the registry
+lock; rejection does the same and retains the reviewed bytes and literal feedback.
+Rejecting an invalid request does not require its signature to become valid.
+The flag is optional for existing CLI callers; agents should preserve and pass it.
 
 Publish the next bounded-lifetime snapshot from an offline signing environment:
 

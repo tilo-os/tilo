@@ -687,6 +687,13 @@ fn verbs_for(access: &AccessNode) -> Vec<SemanticAction> {
                 label: "Decrement".into(),
                 kind: SemanticActionKind::Verb(Action::Decrement),
             });
+            if matches!(access.role, Role::Slider | Role::Separator) && !s.read_only {
+                out.push(SemanticAction {
+                    name: "set-value".into(),
+                    label: "Set value".into(),
+                    kind: SemanticActionKind::Verb(Action::SetValue(String::new())),
+                });
+            }
         }
         Role::ComboBox | Role::TreeItem => {
             if let Some(expanded) = s.expanded {
@@ -1074,6 +1081,48 @@ mod tests {
             .unwrap();
         root.apply_layout(&taffy, node, vello::kurbo::Point::ZERO);
         node_map
+    }
+
+    #[test]
+    fn sidebar_range_controls_publish_existing_set_value_alongside_steps() {
+        use crate::widget::{Slider, SplitHandle, SplitOrientation, SplitRatio};
+        let slider = Slider::new("volume", "volume").with_accessible_name("Volume");
+        let separator = SplitHandle::new(SplitOrientation::Horizontal, SplitRatio::default());
+        let controls = [
+            slider.accessibility().unwrap(),
+            SplitHandle::accessibility(&separator),
+        ];
+        for mut access in controls {
+            let actions = verbs_for(&access);
+            for verb in ["increment", "decrement", "set-value"] {
+                assert!(actions.iter().any(|action| action.name == verb));
+            }
+            access.state.read_only = true;
+            assert!(
+                verbs_for(&access)
+                    .iter()
+                    .all(|action| action.name != "set-value")
+            );
+            access.state.disabled = true;
+            assert!(verbs_for(&access).is_empty());
+        }
+        let mut slider = slider;
+        let map = layout(&mut slider);
+        let mut tree = SemanticTree::new();
+        tree.refresh(&slider, &map, None, &[]);
+        let resources = tree.action_resources();
+        let volume = resources
+            .iter()
+            .find(|resource| resource.label == "Volume")
+            .unwrap();
+        assert!(volume.actions.iter().any(|action| action.id == "set-value"));
+        assert!(
+            tilo_actions::validate_surface_contracts(
+                &resources,
+                &tilo_actions::ActionRegistry::new()
+            )
+            .is_empty()
+        );
     }
 
     #[test]

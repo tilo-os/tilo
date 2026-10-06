@@ -627,20 +627,20 @@ impl WindowGroup {
     }
 
     pub fn begin_resize(&mut self, pointer_x: f32) {
-        self.resize_origin = Some((pointer_x, self.resolved_width_px()));
+        let visible_width = if self.rect.width() > 1.0 {
+            self.rect.width()
+        } else {
+            self.layout_width_px()
+        };
+        self.set_width_px(visible_width);
+        self.resize_origin = Some((pointer_x, visible_width));
     }
     pub fn update_resize(&mut self, pointer_x: f32) {
         if let Some((origin_x, origin_w)) = self.resize_origin {
             let delta = f64::from(pointer_x - origin_x);
             let usable = self.strip_usable_px;
             let clamped = (origin_w + delta).clamp(min_group_px(usable), max_group_px(usable));
-            let next = WindowWidth::from_px(clamped, usable);
-            if next != self.width {
-                self.width = next;
-                // Taffy bakes width as a fixed length; without this flag
-                // the drag updates the field but nothing moves on screen.
-                self.style_dirty = true;
-            }
+            self.set_width_px(clamped);
         }
     }
     pub fn end_resize(&mut self) {
@@ -677,12 +677,13 @@ impl WindowGroup {
     /// [`Self::set_width`] and springs.
     pub fn set_width_px(&mut self, px: f64) {
         let next = WindowWidth::from_px(px, self.strip_usable_px);
+        let animated = self.width_spring.take().is_some();
+        self.last_width_step = None;
         if next == self.width {
+            self.style_dirty |= animated;
             return;
         }
         self.width = next;
-        self.width_spring = None;
-        self.last_width_step = None;
         self.style_dirty = true;
     }
 
@@ -839,6 +840,11 @@ impl WindowGroup {
         host.set_focused(self.focused || self.search_active);
         host.draw_complete_content_capture(scene, transform, tr, theme, presence)?;
         Some(self.rect.union(capture_rect))
+    }
+
+    /// Cancel the tab bar's gesture while preserving every live tab host.
+    pub fn cancel_tab_drag(&mut self) -> bool {
+        self.bar.cancel_drag()
     }
 
     /// Returns `(tab_id, release_point)` if the user released a drag
@@ -1366,7 +1372,10 @@ impl WindowGroup {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if self.maximized && self.close_rect.contains(self.last_cursor) => {
+            } if !self.external_navigation
+                && self.maximized
+                && self.close_rect.contains(self.last_cursor) =>
+            {
                 // Route through the same deferred fade flow as the
                 // per-tab × click (`bar.start_closing` → `closing_hosts`
                 // → sweep) so the group shrinks coherently instead of
@@ -1392,7 +1401,10 @@ impl WindowGroup {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if self.maximized && self.restore_rect.contains(self.last_cursor) => {
+            } if !self.external_navigation
+                && self.maximized
+                && self.restore_rect.contains(self.last_cursor) =>
+            {
                 // Handled here (not via bar.pending_max) so the click
                 // never races with a tab selection under the pill's geometry.
                 self.begin_rect_spring_from_current();
@@ -1405,7 +1417,10 @@ impl WindowGroup {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if !self.maximized && self.hover_resize && !self.new_tab_hit(self.last_cursor) => {
+            } if !self.maximized
+                && self.hover_resize
+                && (self.external_navigation || !self.new_tab_hit(self.last_cursor)) =>
+            {
                 // Anchor on the actual press point, not the group's right
                 // edge — the hit zone is `RESIZE_HANDLE_PX` wide, so the
                 // edge would jump the window on grab.
@@ -1429,7 +1444,8 @@ impl WindowGroup {
                         ..
                     },
                 ..
-            } if m.state().control_key()
+            } if !self.external_navigation
+                && m.state().control_key()
                 && m.state().shift_key()
                 && matches!(logical_key, Key::Character(s) if s.eq_ignore_ascii_case("p")) =>
             {
@@ -1908,10 +1924,16 @@ impl WindowGroup {
             return;
         };
         let Some((_, host)) = self.hosts.iter_mut().find(|(id, _)| *id == visual.tab_id) else {
+            self.bar
+                .draw_drag_ghost(scene, transform, tr, theme, presence);
             return;
         };
         let source = host.get_rect();
         if source.width() <= 0.0 || source.height() <= 0.0 {
+            // Inactive hosts intentionally have no layout until selected.
+            // Keep the carried handle visible without waking/rendering them.
+            self.bar
+                .draw_drag_ghost(scene, transform, tr, theme, presence);
             return;
         }
 
@@ -1959,6 +1981,45 @@ impl WindowGroup {
 }
 
 impl FloatingSurfaceProvider for WindowGroup {
+    fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
+        for (_, host) in &mut self.hosts {
+            FloatingSurfaceProvider::on_floating_surface_focus_changed(host, id, focused);
+        }
+    }
+
+    fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
+        for (_, host) in &mut self.hosts {
+            FloatingSurfaceProvider::on_floating_surface_event_source(host, id);
+        }
+    }
+
+    fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
+        self.hosts
+            .iter()
+            .find_map(|(_, host)| FloatingSurfaceProvider::floating_surface_accessibility(host, id))
+    }
+
+    fn perform_floating_surface_accessibility_action(
+        &mut self,
+        id: &str,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> bool {
+        self.hosts.iter_mut().any(|(_, host)| {
+            FloatingSurfaceProvider::perform_floating_surface_accessibility_action(
+                host, id, target, action, state, path,
+            )
+        })
+    }
+
+    fn floating_surface_ime(&self, id: &str) -> Option<(winit::window::ImePurpose, Rect)> {
+        self.hosts
+            .iter()
+            .find_map(|(_, host)| FloatingSurfaceProvider::floating_surface_ime(host, id))
+    }
+
     fn take_floating_surface_request(
         &mut self,
     ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
@@ -2407,10 +2468,7 @@ impl Widget for WindowGroup {
         // the window's own trailing edge, over its content, where it reads
         // as that app's scrollbar (and stays put when the app's panels go).
         // The east-west cursor already marks the band before it shows.
-        if !self.maximized
-            && !self.external_navigation
-            && (self.hover_resize || self.resize_origin.is_some())
-        {
+        if !self.maximized && (self.hover_resize || self.resize_origin.is_some()) {
             self.draw_resize_grip(scene, transform, theme);
         }
 
@@ -2442,9 +2500,7 @@ impl Widget for WindowGroup {
             self.rect.x1,
             self.rect.y1,
         );
-        if !self.external_navigation
-            && self.handle_direct_input(event, ctx.scale_factor, *ctx.modifiers, handle_rect)
-        {
+        if self.handle_direct_input(event, ctx.scale_factor, *ctx.modifiers, handle_rect) {
             *ctx.handled = true;
             return;
         }
@@ -2498,16 +2554,7 @@ impl Widget for WindowGroup {
     /// Mirrors the inter-group [`crate::widget::ResizeHandle`] so both
     /// affordances give the same feedback.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.external_navigation {
-            return None;
-        }
-        let band = Rect::new(
-            self.rect.x1 - RESIZE_HANDLE_PX,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y1,
-        );
-        if self.resize_origin.is_some() || band.contains(point) {
+        if self.resize_origin.is_some() || self.resize_grab_hit(point) {
             Some(winit::window::CursorIcon::EwResize)
         } else {
             None
@@ -2560,6 +2607,13 @@ impl Widget for WindowGroup {
     fn layout_needs_measure(&self) -> bool {
         (!self.external_navigation && self.bar.layout_needs_measure())
             || self.active_host().is_some_and(Widget::layout_needs_measure)
+    }
+    fn has_pending_visual_work(&self) -> bool {
+        // Inactive retained owners do not paint. Their record writes must not
+        // prevent a still of the active presentation from reaching rest.
+        self.children()
+            .into_iter()
+            .any(Widget::has_pending_visual_work)
     }
     fn needs_animation_frame(&self) -> bool {
         // Include group and inactive closing-host animations beyond the active presentation.
@@ -2883,6 +2937,12 @@ mod tests {
                 .set(self.hits.resources_mut.get() + 1);
             Ok(())
         }
+        fn has_pending_visual_work(&self) -> bool {
+            self.pending_control
+        }
+        fn has_transient_feedback(&self) -> bool {
+            self.pending_control
+        }
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -3007,6 +3067,24 @@ mod tests {
                 &mut crate::bound_dispatch::legacy_document::ResourceRequest::Discard,
             )
             .unwrap();
+
+        assert!(
+            !group.has_pending_visual_work(),
+            "inactive work must not hold the active scene unsettled"
+        );
+        assert!(
+            !group.has_transient_feedback(),
+            "inactive feedback is not part of the presented scene"
+        );
+        group.bar.set_active(2);
+        assert!(
+            group.has_pending_visual_work(),
+            "the same work counts when its tab becomes visible"
+        );
+        assert!(
+            group.has_transient_feedback(),
+            "the same feedback counts when its tab becomes visible"
+        );
 
         for hits in [active, inactive] {
             assert_eq!(hits.unsaved.get(), 1);

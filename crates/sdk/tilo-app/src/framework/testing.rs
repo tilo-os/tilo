@@ -357,7 +357,8 @@ impl<A: ResourceApp> HeadlessApp<A> {
         handoff: Option<PlaybackHandoff>,
         capture: Option<(Capture, (u32, u32))>,
     ) -> Result<Self, LaunchError> {
-        let (arguments, options) = split_command_line(arguments, A::OPTIONS, A::FLAGS);
+        let (profile, private, private_arguments) = private_launch::<A>(profile, arguments)?;
+        let (arguments, options) = split_command_line(&private_arguments, A::OPTIONS, A::FLAGS);
         let arguments = arguments.as_slice();
         let person = author.to_owned();
         let author = UserId(person.clone());
@@ -393,6 +394,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let checkout = prepared.context.record().clone();
         hand_launch(definition, arguments, &mut prepared)?;
         prepared.context.provide_launch_options(options);
+        if private {
+            prepared.context.provide_private();
+        }
         if let Some(file) = file {
             prepared.context.provide_open_file(file);
         }
@@ -1441,6 +1445,28 @@ fn find_mut<T: 'static>(widget: &mut dyn ui_core::widget::Widget) -> Option<&mut
         return widget.as_any_mut()?.downcast_mut::<T>();
     }
     widget.children_mut().into_iter().find_map(find_mut::<T>)
+}
+
+/// Match the native runner's disposable private profile and built-in flag.
+fn private_launch<A: ResourceApp>(
+    profile: Profile,
+    arguments: &[String],
+) -> Result<(Profile, bool, Vec<String>), LaunchError> {
+    let private = A::PRIVATE_WINDOWS && arguments.iter().any(|word| word == "--private");
+    let arguments = arguments
+        .iter()
+        .filter(|word| !private || word.as_str() != "--private")
+        .cloned()
+        .collect();
+    let profile = if private {
+        Profile::Temporary(
+            Rc::new(tempfile::tempdir().map_err(operation)?),
+            "private".into(),
+        )
+    } else {
+        profile
+    };
+    Ok((profile, private, arguments))
 }
 
 /// Split a command line into its arguments and the app's own `options`

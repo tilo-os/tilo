@@ -151,6 +151,9 @@ pub fn process_environment() -> crate::host::HostEnvironment {
                 std::env::var("TILO_PROFILE_PRESENTATION").ok().as_deref(),
                 std::env::var_os("TILO_NATIVE_SCENARIO").as_deref(),
             ),
+            presentation_timing: presentation_timing_requested(
+                std::env::var("TILO_PROFILE_PRESENTATION").ok().as_deref(),
+            ),
             window_no_activate: std::env::var("TILO_PROFILE_WINDOW_NO_ACTIVATE").as_deref()
                 == Ok("1"),
             host_perf_baseline: ["TILO_HOST_PERF_BASELINE", "TILO_HOST_PERF2_BASELINE"]
@@ -164,6 +167,11 @@ pub fn process_environment() -> crate::host::HostEnvironment {
         // `settings_store::SESSION_SETTINGS_ENV`. Empty is unset.
         session_settings: path("TILO_SESSION_SETTINGS"),
     }
+}
+
+/// Ordinary timing diagnostics require explicit opt-in without a synthetic scenario.
+fn presentation_timing_requested(profile: Option<&str>) -> bool {
+    profile == Some("1")
 }
 
 /// Presentation profiling needs an explicit `profile == "1"` and a native
@@ -210,6 +218,14 @@ impl MediaSessionFactory for super::mpris::DesktopMediaSessions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordinary_presentation_timing_requires_explicit_host_diagnostics() {
+        assert!(presentation_timing_requested(Some("1")));
+        for value in [None, Some(""), Some("0"), Some("true")] {
+            assert!(!presentation_timing_requested(value));
+        }
+    }
 
     #[test]
     fn presentation_profile_requires_a_native_scenario_and_explicit_feedback() {

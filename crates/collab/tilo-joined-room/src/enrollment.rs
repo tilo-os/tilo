@@ -30,7 +30,8 @@ pub(crate) fn restore(
     record: &StoredRoom,
     now: SystemTime,
 ) -> Result<NativeCommittedView, String> {
-    if record.version != 2
+    if !matches!(record.version, 2 | 3)
+        || (record.version == 3) != record.effect_history_root.is_some()
         || room != record.room
         || record.generation == 0
         || record.continuity == 0
@@ -85,6 +86,7 @@ pub(crate) fn restore(
         record: record.clone(),
     };
     publication::validate(&view)?;
+    crate::effect_receipt::validate(&view)?;
     Ok(view)
 }
 impl NativeWorkspaceOwner {
@@ -400,6 +402,9 @@ impl NativeWorkspaceOwner {
             continuity: 0,
             floor: None,
             publication: Some(publication::StoredPublication::default()),
+            workspace_memberships: std::collections::BTreeMap::new(),
+            effect_receipts: std::collections::BTreeMap::new(),
+            effect_history_root: None,
         };
         self.publish_room(room, NativeCommittedView { peer, record }, Some(&pending))
     }

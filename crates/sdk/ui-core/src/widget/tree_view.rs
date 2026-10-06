@@ -1873,7 +1873,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         self.index = next;
         self.refresh_nav_heights();
         let new_snapshot = self.capture_transition_snapshot();
-        if self.laid_out {
+        if self.laid_out && !self.is_nav() {
             self.transitions.reconcile(
                 &old_snapshot,
                 &new_snapshot,
@@ -1883,7 +1883,10 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 self.reduce_motion,
             );
         } else {
-            // Nothing is on screen yet, so nothing moves.
+            // Navigation rows and section headings must share the same geometry
+            // as their hit and accessibility targets immediately. Moving old
+            // headings through full-height arriving rows causes live overlap.
+            // Generic trees retain their structural transitions above.
             self.transitions.clear();
         }
         self.transition_snapshot = new_snapshot;

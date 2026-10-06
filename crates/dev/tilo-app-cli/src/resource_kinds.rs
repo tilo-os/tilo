@@ -1,7 +1,7 @@
-//! The resource kinds an app declares with `#[resource(kind = "...")]`, read
-//! from its sources so `tilo-app package` signs them into the manifest's
-//! `[resources]` table. The attribute takes only a string literal, so the
-//! sources name every kind a crate declares.
+//! The resource kinds an app declares with `#[resource(kind = "...")]` or
+//! a manual `Resource` implementation, read from its sources so `tilo-app
+//! package` signs them into the manifest's `[resources]` table. Both forms
+//! name their kinds with string literals.
 
 use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
@@ -107,7 +107,7 @@ fn visit_sources(dir: &Path, kinds: &mut Kinds) -> Result<()> {
         } else if path.extension().is_some_and(|extension| extension == "rs") {
             let source = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
-            if !source.contains("resource") {
+            if !source.contains("resource") && !source.contains("Resource") {
                 continue;
             }
             let mut file =
@@ -124,9 +124,32 @@ fn test_only(attributes: &[syn::Attribute]) -> bool {
     attributes.iter().any(|attribute| {
         attribute.path().is_ident("cfg")
             && attribute
-                .parse_args::<syn::Ident>()
-                .is_ok_and(|predicate| predicate == "test")
+                .parse_args::<syn::Meta>()
+                .is_ok_and(|predicate| requires_test(&predicate))
     })
+}
+
+/// A production build cannot satisfy `test`, or an `all` containing it.
+/// An `any` is test-only only when every arm requires `test`.
+fn requires_test(predicate: &syn::Meta) -> bool {
+    match predicate {
+        syn::Meta::Path(path) => path.is_ident("test"),
+        syn::Meta::List(list) => {
+            let Ok(arms) = list.parse_args_with(
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+            ) else {
+                return false;
+            };
+            if list.path.is_ident("all") {
+                arms.iter().any(requires_test)
+            } else if list.path.is_ident("any") && !arms.is_empty() {
+                arms.iter().all(requires_test)
+            } else {
+                false
+            }
+        }
+        syn::Meta::NameValue(_) => false,
+    }
 }
 
 #[derive(Default)]
@@ -141,6 +164,21 @@ impl VisitMut for Kinds {
 
     fn visit_item_impl_mut(&mut self, item: &mut syn::ItemImpl) {
         if !test_only(&item.attrs) {
+            if item.trait_.as_ref().is_some_and(|(_, path, _)| {
+                path.segments
+                    .last()
+                    .is_some_and(|segment| segment.ident == "Resource")
+            }) {
+                for member in &item.items {
+                    if let syn::ImplItem::Const(constant) = member
+                        && constant.ident == "KIND"
+                        && let syn::Expr::Lit(literal) = &constant.expr
+                        && let syn::Lit::Str(kind) = &literal.lit
+                    {
+                        self.0.insert(kind.value());
+                    }
+                }
+            }
             syn::visit_mut::visit_item_impl_mut(self, item);
         }
     }
@@ -171,6 +209,75 @@ impl VisitMut for Kinds {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+
+    #[test]
+    fn manual_resource_implementations_declare_kinds_without_attributes() {
+        let app = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(app.path().join("src")).unwrap();
+        std::fs::write(
+            app.path().join("src/lib.rs"),
+            r#"
+            impl Resource for Music { const KIND: &'static str = "music.library"; }
+            impl ui::tilo_resource::Resource for Book { const KIND: &'static str = "books.library"; }
+            impl Unrelated { const KIND: &'static str = "unrelated.kind"; }
+            #[cfg(test)]
+            impl Resource for Fixture { const KIND: &'static str = "test.fixture"; }
+            #[cfg(test)]
+            mod tests {
+                impl Resource for Page { const KIND: &'static str = "test.page"; }
+            }
+            #[cfg(all(test, not(target_arch = "wasm32")))]
+            mod native_tests {
+                impl Resource for Fixture { const KIND: &'static str = "test.native"; }
+            }
+            #[cfg(any(test, feature = "live"))]
+            impl Resource for Live { const KIND: &'static str = "live.library"; }
+            "#,
+        ).unwrap();
+        std::fs::write(
+            app.path().join("src/uppercase.rs"),
+            r#"impl Resource for Uppercase { const KIND: &'static str = "uppercase.library"; }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            super::declared_in(app.path()).unwrap(),
+            [
+                "books.library",
+                "live.library",
+                "music.library",
+                "uppercase.library"
+            ]
+        );
+    }
+
+    #[test]
+    fn music_production_resource_is_declared_for_packaging() {
+        let app = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/music");
+        assert_eq!(super::declared_in(&app).unwrap(), ["music.library"]);
+        let authored = tilo_app_package::Manifest::from_toml_str(
+            &std::fs::read_to_string(app.join("tilo-app.toml")).unwrap(),
+        )
+        .unwrap();
+        let desktop = tilo_app_package::desktop::desktop_manifest(
+            &authored,
+            "linux",
+            "x86_64",
+            "x86_64",
+            "bin/music",
+        )
+        .unwrap();
+        assert_eq!(desktop.resources.kinds, ["music.library"]);
+        assert_eq!(
+            super::declared_by_app(&app).unwrap(),
+            [
+                "music.library",
+                "tilo.accounts",
+                "tilo.text",
+                "tilo.workbook"
+            ],
+            "the production dependency resources are included; SDK test fixtures are excluded"
+        );
+    }
 
     #[test]
     fn kinds_are_read_from_every_resource_attribute_in_the_sources() {

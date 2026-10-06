@@ -136,6 +136,25 @@ impl Env {
         path
     }
 
+    /// A self-contained fixture with a linked release, never a runtime override.
+    fn desktop_tapp(&self, body: &[u8], platform: &str, arch: &str) -> PathBuf {
+        let build = self.home.path().join("desktop-build");
+        let payload = build.join("payload");
+        write_payload(&payload, body);
+        let authored = Manifest::from_toml_str(&manifest_src(
+            "0.2.0",
+            &self.pub_hex,
+            Some("tilo-runtime/2026.07"),
+        ))
+        .unwrap();
+        let manifest =
+            tilo_app_package::desktop::desktop_manifest(&authored, platform, arch, arch, "bin/app")
+                .unwrap();
+        let path = build.join("pkg.tapp");
+        build_tapp(&path, &manifest, &self.sk, &payload);
+        path
+    }
+
     fn cmd(&self, args: &[&str]) -> (bool, String, String) {
         let mut c = Command::new(install_bin());
         c.env_clear();
@@ -619,4 +638,91 @@ fn thin_of(full: &Path) -> PathBuf {
     let out = std::fs::File::create(&thin).unwrap();
     tilo_app_package::tapp::write(out, &tapp.meta, None).unwrap();
     thin
+}
+
+#[test]
+fn desktop_contract_installs_above_thin_limit_without_shared_runtime() {
+    let env = Env::new();
+    let pkg = env.desktop_tapp(
+        &vec![0; 3 * 1024 * 1024],
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    );
+    let (ok, out, err) = env.cmd(&[
+        "install",
+        pkg.to_str().unwrap(),
+        "--require-publisher",
+        &env.pub_hex,
+    ]);
+    assert!(ok, "{out}{err}");
+    assert_eq!(
+        std::fs::metadata(env.payload_root().join("bin/app"))
+            .unwrap()
+            .len(),
+        3 * 1024 * 1024
+    );
+    assert!(!env.xdg_data().join("tilo-runtime").exists());
+}
+
+#[test]
+fn desktop_contract_refuses_foreign_platform_and_architecture() {
+    for (platform, arch) in [
+        (
+            if std::env::consts::OS == "linux" {
+                "windows"
+            } else {
+                "linux"
+            },
+            std::env::consts::ARCH,
+        ),
+        (
+            std::env::consts::OS,
+            if std::env::consts::ARCH == "x86_64" {
+                "aarch64"
+            } else {
+                "x86_64"
+            },
+        ),
+    ] {
+        let env = Env::new();
+        let pkg = env.desktop_tapp(b"foreign", platform, arch);
+        let (ok, out, err) = env.cmd(&[
+            "install",
+            pkg.to_str().unwrap(),
+            "--require-publisher",
+            &env.pub_hex,
+        ]);
+        assert!(!ok, "{out}");
+        assert!(err.contains("cannot run on"), "{err}");
+        assert!(env.registry_toml().is_empty());
+    }
+}
+
+#[test]
+fn desktop_contract_keeps_both_archive_size_limits() {
+    for desktop in [false, true] {
+        let env = Env::new();
+        let limit = if desktop {
+            tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES
+        } else {
+            tilo_app_package::MAX_APP_TAPP_BYTES
+        };
+        // Payload is exactly at its ceiling, but the signed tar adds metadata:
+        // the production installer must reject that oversized wire archive.
+        let body = vec![0; usize::try_from(limit).unwrap() - b"payload data".len()];
+        let pkg = if desktop {
+            env.desktop_tapp(&body, std::env::consts::OS, std::env::consts::ARCH)
+        } else {
+            env.tapp("0.2.0", &body, None)
+        };
+        let (ok, out, err) = env.cmd(&[
+            "install",
+            pkg.to_str().unwrap(),
+            "--require-publisher",
+            &env.pub_hex,
+        ]);
+        assert!(!ok, "{out}");
+        assert!(err.contains(&format!("at most {limit} bytes")), "{err}");
+        assert!(env.registry_toml().is_empty());
+    }
 }

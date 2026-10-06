@@ -1671,6 +1671,8 @@ pub enum ShortcutAction {
     FocusNextWindow,
     PreviousTab,
     NextTab,
+    /// Show the focused tab's shell context menu.
+    TabMenu,
     PreviousStrip,
     NextStrip,
     PreviousWorkspace,
@@ -1718,6 +1720,9 @@ pub enum ShortcutAction {
     NextInputSource,
     /// Open the emoji picker over the focused text field.
     EmojiPicker,
+    DictationToggle,
+    DictationFinish,
+    DictationCancel,
 }
 
 impl ShortcutAction {
@@ -2119,6 +2124,7 @@ impl KeyChord {
             "space" => "Space",
             "delete" => "Delete",
             "f1" => "F1",
+            "f10" => "F10",
             other => other,
         };
         ["Super", "Ctrl", "Alt", "Shift"]
@@ -2260,6 +2266,7 @@ impl Default for ShortcutConfig {
             // means the overview is never opened while changing tabs.
             (ShortcutAction::PreviousTab, ctrl_shift_chord("tab")),
             (ShortcutAction::NextTab, ctrl_chord("tab")),
+            (ShortcutAction::TabMenu, super_chord("f10")),
             // Arrows move focus across the plane; Shift carries the focused
             // group the same way (docs/architecture/window-management.md).
             (ShortcutAction::PreviousStrip, super_chord("up")),
@@ -2325,6 +2332,9 @@ impl Default for ShortcutConfig {
             (ShortcutAction::NextInputSource, super_alt_chord("space")),
             // Windows' emoji panel key; GNOME uses Super+. for the same.
             (ShortcutAction::EmojiPicker, super_chord(".")),
+            (ShortcutAction::DictationToggle, super_shift_chord("d")),
+            (ShortcutAction::DictationFinish, super_alt_chord("d")),
+            (ShortcutAction::DictationCancel, super_shift_chord("escape")),
         ]
         .into_iter()
         .collect();
@@ -2853,6 +2863,7 @@ mod tests {
         assert_eq!(shown(ShortcutAction::MagnifierZoomOut), "Super+Alt+-");
         assert_eq!(shown(ShortcutAction::PowerMenu), "Ctrl+Alt+Delete");
         assert_eq!(shown(ShortcutAction::EmojiPicker), "Super+.");
+        assert_eq!(shown(ShortcutAction::TabMenu), "Super+F10");
         assert_eq!(ShortcutAction::OpenFiles.focus_group_index(), None);
         assert!(cfg.validate().is_ok(), "no two defaults share a chord");
     }
@@ -3053,7 +3064,7 @@ mod tests {
         // Phase `desktop_navigation_defaults_are_complete_and_conflict_free`.
         {
             let cfg = ShortcutConfig::default();
-            assert_eq!(cfg.bindings.len(), 46);
+            assert_eq!(cfg.bindings.len(), 50);
             let unique: BTreeSet<_> = cfg.bindings.values().collect();
             assert_eq!(unique.len(), cfg.bindings.len());
             assert_eq!(

@@ -506,6 +506,9 @@ impl Default for TermModes {
 )]
 pub struct TerminalWidget {
     rect: Rect,
+    /// Local input/output invalidates deferred speech even at the same caret.
+    /// Exhaustion fails closed rather than reusing an epoch.
+    input_epoch: std::cell::Cell<u64>,
     pty_write: Arc<Mutex<Box<dyn Write + Send>>>,
     pty_master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     #[cfg(unix)]
@@ -766,6 +769,7 @@ impl TerminalWidget {
 
         Self {
             rect: Rect::ZERO,
+            input_epoch: std::cell::Cell::new(0),
             pty_write: writer,
             pty_master: master,
             #[cfg(unix)]
@@ -916,6 +920,24 @@ impl TerminalWidget {
     /// claim that a collaborator's separately attached terminal is dead.
     pub fn is_disconnected(&self) -> bool {
         self.session_disconnected.load(Ordering::Acquire)
+    }
+
+    /// Process exit may precede the reader's final bytes. Observe the actual
+    /// reader channel closing only after every queued chunk has been pumped.
+    #[cfg(test)]
+    pub(crate) fn pty_output_drained(&self) -> bool {
+        if let Some(bytes) = self.deferred_output.take() {
+            self.deferred_output.set(Some(bytes));
+            return false;
+        }
+        match self.output_rx.try_recv() {
+            Ok(bytes) => {
+                self.deferred_output.set(Some(bytes));
+                false
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => true,
+        }
     }
 
     fn mark_disconnected(&self, message: &str) {
@@ -1759,6 +1781,9 @@ impl TerminalWidget {
     /// very same path. From here on the terminal shows its own emulator's
     /// screen; the session record follows it at the next sync.
     pub fn feed(&mut self, bytes: &[u8]) {
+        if !bytes.is_empty() {
+            self.invalidate_deferred_input();
+        }
         // Output with no process attached (a scenario, a test) starts the
         // screen's own session, as an attached process does.
         if !self.emulating {
@@ -1852,6 +1877,11 @@ impl TerminalWidget {
         self.set_geometry(rect);
     }
 
+    fn invalidate_deferred_input(&self) {
+        self.input_epoch
+            .set(self.input_epoch.get().saturating_add(1));
+    }
+
     /// Write raw bytes to the PTY's stdin and report exact transport failure.
     /// Resource actions use this fallible path so the action door cannot turn a
     /// dead PTY into a false `Succeeded` result. Local keyboard/paste callers
@@ -1876,6 +1906,9 @@ impl TerminalWidget {
             );
             return Err("terminal input is unavailable because its PTY writer stopped".to_string());
         };
+        if !bytes.is_empty() {
+            self.invalidate_deferred_input();
+        }
         let failed = writer.write_all(bytes).is_err() || writer.flush().is_err();
         drop(writer);
         if failed {
@@ -2793,6 +2826,27 @@ impl Widget for TerminalWidget {
             let y = self.grid_rect.y0 + row as f64 * self.char_h;
             Rect::new(x, y, x + self.char_w.max(1.0), y + self.char_h.max(1.0))
         })
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        (self.focused && self.input_unavailable().is_none())
+            .then_some(winit::window::ImePurpose::Terminal)
+    }
+
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.ime_purpose()?;
+        // The transcript is read-only; the live process input is not. Bind
+        // deferred input to its screen/position without copying output or
+        // exposing shell contents to the recognizer.
+        if self.input_epoch.get() == u64::MAX {
+            return None;
+        }
+        Some(ui::ime::edit_fingerprint(
+            &format!("{}:{}", self.alt_active, self.input_epoch.get()),
+            self.cursor_x,
+            self.cursor_y,
+            key,
+        ))
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
@@ -6777,6 +6831,18 @@ impl TerminalWidget {
         let mut widget = Self::without_process(ContentStore::memory());
         widget.sessions = crate::sessions::Sessions::hosted(services);
         Ok(widget)
+    }
+
+    /// A live hosted tab whose required supervisor is unavailable. Keep the
+    /// startup cause visible and input refused, rather than presenting it as
+    /// a capture-only terminal that was never meant to open a process.
+    pub(crate) fn without_hosted_runtime(reason: String) -> Self {
+        let mut widget = Self::without_process(ContentStore::memory());
+        widget.sessions =
+            crate::sessions::Sessions::hosted(crate::HostedProcessServices::unavailable());
+        widget.show_status(&reason);
+        widget.sessions.state = crate::sessions::OpenState::NoRuntime(reason);
+        widget
     }
 
     /// The standalone terminal. Its session opens at the first sync, on the

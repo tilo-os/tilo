@@ -599,11 +599,26 @@ impl SheetsApp {
         self.paint_settings_sheet(scene, transform, tr, theme);
         // The command palette floats above everything else, over the scrim.
         if self.palette.is_open() {
-            ui::overlay::scrim::modal(scene, transform, self.rect, 1.0, theme);
             let (pw, ph) = self.palette.desired_size();
+            let gutter = f64::from(theme.tokens.spacing.s6);
+            let pw = pw.min((self.rect.width() - 2.0 * gutter).max(0.0));
+            let ph = ph.min((self.rect.height() - 2.0 * gutter).max(0.0));
             let x0 = self.rect.center().x - pw / 2.0;
-            let y0 = self.rect.y0 + (self.rect.height() * 0.12).max(self.metrics.s6);
-            self.palette.set_rect(Rect::new(x0, y0, x0 + pw, y0 + ph));
+            let y0 = (self.rect.y0 + (self.rect.height() * 0.12).max(gutter))
+                .min(self.rect.y1 - ph - gutter)
+                .max(self.rect.y0 + gutter);
+            let card = Rect::new(x0, y0, x0 + pw, y0 + ph);
+            ui::overlay::scrim::behind_panel(
+                scene,
+                transform,
+                self.rect,
+                vello::kurbo::RoundedRect::from_rect(
+                    card,
+                    ui::widget::floating_surface::radius(theme),
+                ),
+                theme,
+            );
+            self.palette.set_rect(card);
             self.palette.draw(scene, transform, tr, theme, presence);
         }
     }

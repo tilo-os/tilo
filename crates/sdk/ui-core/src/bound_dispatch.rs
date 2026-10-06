@@ -560,6 +560,10 @@ impl BoundPublication {
         binding: &CallbackBinding,
         mut resource: tilo_actions::Resource,
     ) -> Result<tilo_actions::Resource, BoundActionError> {
+        resource.semantic_identity = tilo_actions::ResourceSemanticIdentity::new(
+            resource.kind.clone(),
+            resource.id.as_str(),
+        );
         resource.id = tilo_actions::ResourceId::new(self.alias(binding, resource.id.as_str())?);
         resource.children = resource
             .children
@@ -1828,6 +1832,9 @@ pub(crate) struct ResourceOperation<'a> {
     pub(crate) local_author: &'a str,
     pub(crate) broker_admitted: bool,
     pub(crate) invocation: tilo_actions::InvocationId,
+    /// Exact invocation retained by an admitted external dispatch. Local
+    /// operation ids are intentionally not projected into action payloads.
+    pub(crate) source_invocation: Option<tilo_actions::InvocationId>,
     pub(crate) ambient: Option<&'a tilo_actions::ActionContext>,
     pub(crate) scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
 }
@@ -1851,9 +1858,14 @@ pub(crate) fn execute_resource_operation(
         local_author,
         broker_admitted,
         invocation,
+        source_invocation,
         ambient,
         scope,
     } = operation;
+    debug_assert!(
+        !broker_admitted || source_invocation.is_some(),
+        "admitted operation {address:?} must retain its source invocation"
+    );
     if spec
         .contract
         .tags
@@ -1895,7 +1907,12 @@ pub(crate) fn execute_resource_operation(
         if context.invoker.is_none() && !actor.is_empty() {
             context = context.with_invoker(tilo_actions::ActionInvoker::actor(actor));
         }
-        let context = context.with_args_from_payload(&encoded.payload);
+        // Ambient context is descriptive and may arrive from the caller. The
+        // retained dispatch boundary is the sole source for invocation
+        // identity, so replace any ambient value, including with `None`.
+        let context = context
+            .with_source_invocation(source_invocation)
+            .with_args_from_payload(&encoded.payload);
         // Before apply, so a delete can still read the row it removes. Undo
         // of this span applies the compensating action instead of patches.
         note_compensating_action(doc, action.inverse_encoded(doc), encoded.clone());
@@ -2008,6 +2025,7 @@ pub(crate) struct ResourceActionRequest<'a> {
     pub(crate) confirmed: bool,
     pub(crate) broker_admitted: bool,
     pub(crate) invocation: tilo_actions::InvocationId,
+    pub(crate) source_invocation: Option<tilo_actions::InvocationId>,
     pub(crate) ambient: Option<&'a tilo_actions::ActionContext>,
     pub(crate) scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
 }
@@ -2028,6 +2046,7 @@ pub(crate) fn invoke_resource_action(
         confirmed,
         broker_admitted,
         invocation,
+        source_invocation,
         ambient,
         scope,
     } = request;
@@ -2132,6 +2151,7 @@ pub(crate) fn invoke_resource_action(
                                 local_author: &binding.author.0,
                                 broker_admitted,
                                 invocation,
+                                source_invocation,
                                 ambient: ambient.or(Some(&binding.operation_context)),
                                 scope,
                             },
@@ -3707,6 +3727,48 @@ pub(crate) fn restore_legacy_history(
         })
         .map_err(|error| OwnedRestoreError::Bound(BoundDispatchError::Record(error)))?
 }
+/// A read-only invalidation stamp. It contains no document text and confers no
+/// write authority; an unavailable stamp must invalidate deferred insertion.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DocumentEditStamp {
+    owner: Option<(uuid::Uuid, u64)>,
+    frontier: Vec<ChangeHash>,
+    pending: usize,
+}
+impl DocumentEditStamp {
+    /// Bind an embedded field's private equality check to its record and node.
+    #[cfg(feature = "native")]
+    pub(crate) fn bind_fingerprint(
+        &self,
+        node: NodeId,
+        field: [u8; 32],
+        key: &[u8; 32],
+    ) -> [u8; 32] {
+        let mut hash = blake3::Hasher::new_keyed(key);
+        hash.update(b"tilo.ime.embedded-edit.v1");
+        hash.update(&u64::from(node).to_le_bytes());
+        if let Some((owner, generation)) = self.owner {
+            hash.update(owner.as_bytes());
+            hash.update(&generation.to_le_bytes());
+        }
+        hash.update(&self.pending.to_le_bytes());
+        for head in &self.frontier {
+            hash.update(&head.0);
+        }
+        hash.update(&field);
+        *hash.finalize().as_bytes()
+    }
+
+    /// Snapshot an unbound host document without committing its open action.
+    pub fn for_document(document: &AutoCommit) -> Self {
+        Self {
+            owner: None,
+            frontier: document.base_heads(),
+            pending: document.pending_ops(),
+        }
+    }
+}
+
 /// Admission metadata for precisely one live widget/Taffy layout.
 #[derive(Default)]
 pub struct BoundNodeMap {
@@ -3717,6 +3779,55 @@ pub struct BoundNodeMap {
     a11y_aliases: a11y_owner::OwnerAliases,
 }
 impl BoundNodeMap {
+    /// Read the nearest canonical record owner's monotonic edit generation.
+    /// Local writes, remote merges and undo/redo invalidate it, including an
+    /// edit followed by its inverse. Reading does not open an action or commit.
+    /// # Errors
+    /// Rejects missing/inactive nodes, retired owners, borrowed records and
+    /// exhausted generations; callers must cancel deferred text insertion.
+    pub fn document_edit_stamp(
+        &self,
+        node: NodeId,
+        document: &AutoCommit,
+    ) -> Result<DocumentEditStamp, BoundDispatchError> {
+        let entry = self
+            .nodes
+            .get(&node)
+            .filter(|entry| !entry.inactive)
+            .ok_or(BoundDispatchError::MissingNode)?;
+        let owner = if let Some(binding) = &entry.binding {
+            let generation = binding
+                .generation()?
+                .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+            Some((binding.lifetime_id, generation))
+        } else if let Some(legacy) = &entry.legacy {
+            legacy
+                .validate()
+                .map_err(|_| BoundDispatchError::ClosedLifetime)?;
+            let (store, checkout) = legacy.store_checkout();
+            let generation = store
+                .action_generation(&checkout.id)
+                .map_err(BoundDispatchError::Record)?
+                .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+            Some((
+                legacy
+                    .lifetime_id()
+                    .ok_or(BoundDispatchError::ClosedLifetime)?,
+                generation,
+            ))
+        } else {
+            None
+        };
+        Ok(if owner.is_some() {
+            DocumentEditStamp {
+                owner,
+                frontier: Vec::new(),
+                pending: 0,
+            }
+        } else {
+            DocumentEditStamp::for_document(document)
+        })
+    }
     /// Current admitted layout ancestry, including structural non-widget nodes.
     pub(crate) fn is_descendant(&self, mut node: NodeId, ancestor: NodeId) -> bool {
         while let Some(parent) = self.parents.get(&node) {

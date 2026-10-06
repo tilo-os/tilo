@@ -83,6 +83,7 @@ pub struct QueryComposition {
     signature: u64,
     layout_epoch: Option<Arc<()>>,
     caret: Option<Rect>,
+    origin: Point,
 }
 
 impl Default for QueryComposition {
@@ -107,6 +108,7 @@ impl QueryComposition {
             signature: u64::MAX,
             layout_epoch: None,
             caret: None,
+            origin: Point::ZERO,
         }
     }
 
@@ -121,6 +123,29 @@ impl QueryComposition {
         self.caret = None;
         self.signature = u64::MAX;
         self.layout_epoch = None;
+    }
+
+    /// Place an inline query caret using its last shaped, painted layout.
+    /// Stale text or active IME composition keeps the existing selection.
+    pub fn pointer_selection(&self, text: &str, position: Point) -> Option<Selection> {
+        if self.is_composing()
+            || self.layout_text != text
+            || !position.x.is_finite()
+            || !position.y.is_finite()
+        {
+            return None;
+        }
+        let relative = position - self.origin;
+        let layout = self.layout.as_ref()?;
+        if relative.x.abs() > f64::from(f32::MAX) || relative.y.abs() > f64::from(f32::MAX) {
+            return None;
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "finite local text-layout pixel coordinates fit the f32 shaping API"
+        )]
+        let position = layout.hit_position(relative.x as f32, relative.y as f32);
+        Some(Selection::collapsed(position.byte.min(text.len())))
     }
 
     /// Load the owner's selection into the core, clamped onto `text`.
@@ -399,6 +424,7 @@ impl QueryComposition {
             rect.x0 - scroll_x,
             rect.center().y - f64::from(layout.height()) / 2.0,
         );
+        self.origin = origin;
         let caret = Rect::new(
             origin.x + f64::from(caret_x),
             origin.y + f64::from(caret_top),
@@ -456,6 +482,17 @@ impl QueryComposition {
         self.caret = show_caret.then_some(caret);
     }
 
+    /// Private text/selection equality without retaining a query snapshot.
+    pub fn ime_edit_fingerprint(
+        &self,
+        text: &str,
+        selection: &Selection,
+        key: &[u8; 32],
+    ) -> Option<[u8; 32]> {
+        (!self.is_composing())
+            .then(|| crate::ime::edit_fingerprint(text, selection.anchor, selection.cursor, key))
+    }
+
     pub fn ime_cursor_rect(&self) -> Option<Rect> {
         self.caret
     }
@@ -475,6 +512,28 @@ impl QueryComposition {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn deferred_input_query_refuses_composition_and_pins_selection() {
+        let mut composition = super::QueryComposition::new();
+        let mut selection = crate::text_selection::Selection::collapsed(5);
+        let stamp = composition
+            .ime_edit_fingerprint("hello", &selection, &[4; 32])
+            .unwrap();
+        selection.anchor = 0;
+        assert_ne!(
+            composition
+                .ime_edit_fingerprint("hello", &selection, &[4; 32])
+                .unwrap(),
+            stamp
+        );
+        composition.core.set_preedit("draft", Some((5, 5)));
+        assert!(
+            composition
+                .ime_edit_fingerprint("hello", &selection, &[4; 32])
+                .is_none()
+        );
+    }
+
     use super::*;
     use crate::text_render::{FontChoice, TextRenderer};
     use vello::Scene;

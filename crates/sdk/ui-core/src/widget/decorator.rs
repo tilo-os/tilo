@@ -482,6 +482,10 @@ pub trait Decorator {
         self.inner().is_enabled()
     }
 
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.inner().ime_edit_fingerprint(key)
+    }
+
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         self.inner().ime_purpose()
     }
@@ -616,6 +620,10 @@ pub trait Decorator {
 
     fn has_pending_visual_work(&self) -> bool {
         self.inner().has_pending_visual_work()
+    }
+
+    fn has_transient_feedback(&self) -> bool {
+        self.inner().has_transient_feedback()
     }
 
     fn needs_redraw(&self) -> bool {
@@ -1088,6 +1096,10 @@ impl<T: Decorator + 'static> Widget for T {
         Decorator::is_enabled(self)
     }
 
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        Decorator::ime_edit_fingerprint(self, key)
+    }
+
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         Decorator::ime_purpose(self)
     }
@@ -1221,6 +1233,10 @@ impl<T: Decorator + 'static> Widget for T {
 
     fn has_pending_visual_work(&self) -> bool {
         Decorator::has_pending_visual_work(self)
+    }
+
+    fn has_transient_feedback(&self) -> bool {
+        Decorator::has_transient_feedback(self)
     }
 
     fn needs_redraw(&self) -> bool {

@@ -136,11 +136,11 @@ impl ResourceSurface<Clocks, ClocksEffect> for ClocksApp {
 
     fn stage(&mut self, scenario: Option<&str>) {
         match scene(scenario) {
-            "world" => self.mode.set(crate::app::WORLD),
-            "alarms" => self.mode.set(crate::app::ALARMS),
-            "stopwatch" => self.mode.set(crate::app::STOPWATCH),
+            "world" => self.set_mode(crate::app::WORLD),
+            "alarms" => self.set_mode(crate::app::ALARMS),
+            "stopwatch" => self.set_mode(crate::app::STOPWATCH),
             "running" => {
-                self.mode.set(crate::app::TIMERS);
+                self.set_mode(crate::app::TIMERS);
                 let timers: Vec<String> = self.state.with(|shown| {
                     shown
                         .clocks
@@ -152,11 +152,11 @@ impl ResourceSurface<Clocks, ClocksEffect> for ClocksApp {
                 self.update_device(|device| device.floating_timers.extend(timers));
             }
             "ringing" => {
-                self.mode.set(crate::app::TIMERS);
+                self.set_mode(crate::app::TIMERS);
                 self.notice
                     .set(Some(("Timer finished".to_owned(), "Tea".to_owned())));
             }
-            _ => self.mode.set(crate::app::TIMERS),
+            _ => self.set_mode(crate::app::TIMERS),
         }
     }
 

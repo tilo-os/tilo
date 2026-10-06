@@ -645,6 +645,9 @@ fn log_line(line: &str) -> Element {
 }
 
 fn logs(c: &Container) -> Element {
+    if let Some(error) = &c.logs_error {
+        return note(&format!("Log output is unavailable: {error}"));
+    }
     if c.logs.is_empty() {
         return note("The container hasn't written any log output.");
     }
@@ -702,6 +705,9 @@ fn stats(c: &Container) -> Element {
         return note("Usage appears while the container runs.");
     }
     let s = &c.stats;
+    if !s.available {
+        return note("Usage is unavailable. Podman did not return a telemetry sample.");
+    }
     let cpu = format!("{:.0}%", s.cpu_percent * 100.0);
     let memory = if s.mem_limit_bytes > 0 {
         format!(
@@ -1398,4 +1404,31 @@ fn page_view(parts: &Parts) -> Element {
         },
     ));
     scrolling(view, &parts.offsets.list)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_telemetry_and_logs_are_not_presented_as_measured_zero_or_empty() {
+        let engine = crate::model::sample_engine();
+        let mut container = engine
+            .containers
+            .into_iter()
+            .find(|item| item.status.is_running())
+            .unwrap();
+        container.stats = crate::model::Stats::default();
+        let usage = stats(&container).accessibility().unwrap().name.unwrap();
+        assert!(usage.contains("unavailable"), "{usage}");
+        assert!(!usage.contains("0%"), "{usage}");
+        container.logs.clear();
+        container.logs_error = Some("engine connection closed".into());
+        let failed = logs(&container).accessibility().unwrap().name.unwrap();
+        assert!(failed.contains("engine connection closed"), "{failed}");
+        assert!(!failed.contains("hasn't written"), "{failed}");
+        container.logs_error = None;
+        let empty = logs(&container).accessibility().unwrap().name.unwrap();
+        assert!(empty.contains("hasn't written"), "{empty}");
+    }
 }

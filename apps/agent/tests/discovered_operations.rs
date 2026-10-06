@@ -227,6 +227,7 @@ fn run(
             }
             CollabEvent::Invocation {
                 id,
+                invocation,
                 resource,
                 action,
                 argument,
@@ -241,7 +242,7 @@ fn run(
                     &resources,
                     word_processor::actions::register,
                     typed_peer::DocumentInvocation {
-                        id,
+                        invocation,
                         address: ActionAddress::new(resource, action),
                         argument: argument.as_deref(),
                         actor: &actor,
@@ -764,6 +765,7 @@ fn drive_photo_peer(
             }
             CollabEvent::Invocation {
                 id,
+                invocation,
                 resource,
                 action,
                 argument,
@@ -798,8 +800,6 @@ fn drive_photo_peer(
                             ),
                             _ => Err("the export descriptor did not encode an export".into()),
                         });
-                    let invocation =
-                        tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
                     match result {
                         Ok(output) => {
                             exported = true;
@@ -822,7 +822,7 @@ fn drive_photo_peer(
                         &resources,
                         photos::actions::register,
                         typed_peer::DocumentInvocation {
-                            id,
+                            invocation,
                             address: ActionAddress::new(resource, action),
                             argument: argument.as_deref(),
                             actor: &actor,
@@ -904,6 +904,7 @@ fn drive_word_processor_peer(
             }
             CollabEvent::Invocation {
                 id,
+                invocation,
                 resource,
                 action,
                 argument,
@@ -918,7 +919,7 @@ fn drive_word_processor_peer(
                     &resources,
                     word_processor::actions::register,
                     typed_peer::DocumentInvocation {
-                        id,
+                        invocation,
                         address: ActionAddress::new(resource, action),
                         argument: argument.as_deref(),
                         actor: &actor,

@@ -2168,6 +2168,7 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
                             confirmed: true,
                             broker_admitted: false,
                             invocation: tilo_actions::InvocationId::new(),
+                            source_invocation: None,
                             ambient: None,
                             scope: None,
                         },
@@ -2484,9 +2485,7 @@ fn behaviour_probe_factory(
     Ok(component)
 }
 
-fn hosted_behaviour(
-    create: crate::application::ComponentFactory,
-) -> crate::application::ComponentBehaviour {
+fn hosted_behaviour_app(create: crate::application::ComponentFactory) -> App {
     let host = crate::application_test_support::ProbeHost::new();
     let definition = crate::application_test_support::definition(create);
     let target = LaunchTarget::New;
@@ -2501,8 +2500,13 @@ fn hosted_behaviour(
     let component = definition
         .instantiate(context, target, RestoreInput::None)
         .unwrap();
-    let app =
-        App::from_component(component, crate::application_test_support::runner_inputs()).unwrap();
+    App::from_component(component, crate::application_test_support::runner_inputs()).unwrap()
+}
+
+fn hosted_behaviour(
+    create: crate::application::ComponentFactory,
+) -> crate::application::ComponentBehaviour {
+    let app = hosted_behaviour_app(create);
     crate::application::ComponentBehaviour {
         autofocus_on_structure_change: app.autofocus_on_structure_change,
         appearance_reconcile: app.appearance_reconcile,
@@ -2530,4 +2534,173 @@ fn the_hosting_window_takes_the_components_behaviour() {
             window: crate::application::WindowRole::InputSurface,
         }
     );
+}
+
+#[test]
+fn deferred_input_stamp_is_read_only_and_invalidates_an_edit_and_its_inverse() {
+    let mut fixture = ActionFixture::new();
+    let owner = fixture.bindings[0].clone();
+    let node = *fixture
+        .app
+        .layout
+        .node_map
+        .keys()
+        .find(|node| {
+            fixture
+                .app
+                .bindings
+                .binding_for(**node)
+                .is_some_and(|binding| binding.same_component(&owner))
+        })
+        .unwrap();
+    let pending = fixture.app.state.doc.pending_ops();
+    let before = fixture
+        .app
+        .bindings
+        .document_edit_stamp(node, &fixture.app.state.doc)
+        .unwrap();
+    let repeated = fixture
+        .app
+        .bindings
+        .document_edit_stamp(node, &fixture.app.state.doc)
+        .unwrap();
+    assert!(before == repeated);
+    assert_eq!(
+        fixture.app.state.doc.pending_ops(),
+        pending,
+        "reading a stamp must not commit or mutate the host document"
+    );
+    owner
+        .with_document(&mut fixture.app.state.doc, |doc, _| {
+            doc.put(ROOT, "dictation-guard", "edit").unwrap();
+        })
+        .unwrap();
+    let edited = fixture
+        .app
+        .bindings
+        .document_edit_stamp(node, &fixture.app.state.doc)
+        .unwrap();
+    assert!(edited != before);
+    owner
+        .with_document(&mut fixture.app.state.doc, |doc, _| {
+            doc.delete(ROOT, "dictation-guard").unwrap();
+        })
+        .unwrap();
+    let reverted = fixture
+        .app
+        .bindings
+        .document_edit_stamp(node, &fixture.app.state.doc)
+        .unwrap();
+    assert!(
+        reverted != edited && reverted != before,
+        "restoring the same text must not revive a deferred insertion"
+    );
+    owner.closing.set(true);
+    assert!(
+        fixture
+            .app
+            .bindings
+            .document_edit_stamp(node, &fixture.app.state.doc)
+            .is_err(),
+        "a retired owner cannot issue a live stamp"
+    );
+}
+
+#[test]
+fn deferred_input_embedded_app_follows_its_actual_editable_child() {
+    use crate::widget::{Column, TextInput, Widget};
+    let mut app = App::from_scoped_parts_with_controlled_inputs(
+        crate::wake::WakeScope::new(),
+        State::new(),
+        Box::new(
+            Column::new()
+                .push(Box::new(TextInput::local().with_initial_value("same")))
+                .push(Box::new(TextInput::local().with_initial_value("same"))),
+        ),
+    );
+    app.init_layout();
+    app.refresh_focus_order();
+    let first = app.focusable_order[0];
+    let second = app.focusable_order[1];
+    app.set_focused_node(Some(first));
+    let mut embedded = crate::app::EmbeddedApp::new(app, |_| {}).unwrap();
+    assert!(crate::ime::ImeWindowState::from_widget(&embedded).is_some());
+    let stamp = embedded.ime_edit_fingerprint(&[3; 32]).unwrap();
+    embedded.app_mut().set_focused_node(Some(second));
+    assert_ne!(
+        embedded.ime_edit_fingerprint(&[3; 32]).unwrap(),
+        stamp,
+        "identical embedded fields must remain distinct insertion targets"
+    );
+    let stamp = embedded.ime_edit_fingerprint(&[3; 32]).unwrap();
+    embedded
+        .app_mut()
+        .state
+        .doc
+        .put(ROOT, "guard", "edit")
+        .unwrap();
+    embedded.app_mut().state.doc.delete(ROOT, "guard").unwrap();
+    assert_ne!(
+        embedded.ime_edit_fingerprint(&[3; 32]).unwrap(),
+        stamp,
+        "an edit and inverse must invalidate deferred embedded input"
+    );
+    embedded.app_mut().set_focused_node(None);
+    assert!(crate::ime::ImeWindowState::from_widget(&embedded).is_none());
+    assert!(embedded.ime_edit_fingerprint(&[3; 32]).is_none());
+}
+
+#[test]
+fn input_surfaces_keep_their_controls_without_native_document_chrome() {
+    for (create, ordinary) in [
+        (
+            collaboration_probe_factory as crate::application::ComponentFactory,
+            true,
+        ),
+        (
+            behaviour_probe_factory as crate::application::ComponentFactory,
+            false,
+        ),
+    ] {
+        let mut app = hosted_behaviour_app(create);
+        app.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
+        assert_eq!(app.history_chrome_enabled, ordinary);
+        assert_eq!(app.native_document_chrome, ordinary);
+        assert_eq!(
+            app.document_sync_status().is_some(),
+            ordinary,
+            "an intentionally unattached input service is not a failed document route"
+        );
+        for (width, height) in [(800, 600), (600, 800)] {
+            app.init_layout();
+            let root = app.layout.root_node.expect("native root layout exists");
+            run_layout_pass(&mut app, root, width, height, 1.0, false, None).unwrap();
+            app.refresh_semantic_tree();
+            let names: Vec<_> = app
+                .semantic_tree()
+                .iter()
+                .filter_map(|node| node.name.as_deref())
+                .collect();
+            assert!(
+                names.contains(&"Live owner"),
+                "the actual application's accessible label remains: {names:?}"
+            );
+            assert!(
+                tilo_actions::door::resolve(
+                    &app.collect_local_resources(),
+                    &tilo_actions::ActionAddress::new("bound-collaboration", "export"),
+                )
+                .is_some(),
+                "the app's declared control remains available"
+            );
+            assert_eq!(names.contains(&"History"), ordinary);
+        }
+        app.action_publication_failure = Some("explicit publication refusal".into());
+        assert_eq!(
+            app.document_sync_status(),
+            Some("explicit publication refusal"),
+            "system-surface presentation must still expose actual errors"
+        );
+        app.close_components();
+    }
 }

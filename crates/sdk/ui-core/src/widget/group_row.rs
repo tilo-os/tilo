@@ -2210,6 +2210,18 @@ impl GroupRow {
         self.tab_drop_target
     }
 
+    /// Cancel owned tab gestures and their in-strip drop feedback.
+    pub fn cancel_tab_drag(&mut self) -> bool {
+        let mut cancelled = false;
+        for group in &mut self.groups {
+            cancelled |= group.cancel_tab_drag();
+        }
+        if cancelled {
+            self.clear_tab_drop_preview();
+        }
+        cancelled
+    }
+
     /// Whether one of this row's own tab bars currently owns a drag.
     pub fn tab_drag_active(&self) -> bool {
         self.groups.iter().any(WindowGroup::drag_in_flight)
@@ -2757,6 +2769,45 @@ impl GroupRow {
 }
 
 impl FloatingSurfaceProvider for GroupRow {
+    fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
+        for group in &mut self.groups {
+            FloatingSurfaceProvider::on_floating_surface_focus_changed(group, id, focused);
+        }
+    }
+
+    fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
+        for group in &mut self.groups {
+            FloatingSurfaceProvider::on_floating_surface_event_source(group, id);
+        }
+    }
+
+    fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
+        self.groups
+            .iter()
+            .find_map(|group| FloatingSurfaceProvider::floating_surface_accessibility(group, id))
+    }
+
+    fn perform_floating_surface_accessibility_action(
+        &mut self,
+        id: &str,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> bool {
+        self.groups.iter_mut().any(|group| {
+            FloatingSurfaceProvider::perform_floating_surface_accessibility_action(
+                group, id, target, action, state, path,
+            )
+        })
+    }
+
+    fn floating_surface_ime(&self, id: &str) -> Option<(winit::window::ImePurpose, Rect)> {
+        self.groups
+            .iter()
+            .find_map(|group| FloatingSurfaceProvider::floating_surface_ime(group, id))
+    }
+
     fn take_floating_surface_request(
         &mut self,
     ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
@@ -3300,7 +3351,9 @@ impl Widget for GroupRow {
                 *w = right;
             }
         }
-        let steady = !self.group_drag_active()
+        let edge_resizing = self.groups.iter().any(WindowGroup::edge_resize_in_flight);
+        let steady = !edge_resizing
+            && !self.group_drag_active()
             && !self
                 .handles
                 .iter()
@@ -3322,7 +3375,7 @@ impl Widget for GroupRow {
             // or a release settle is in flight. At rest, geometry changes
             // clamp to the deliberate trailing allowance instead of the old
             // three-viewports of unbounded empty canvas.
-            if pan.strip_pan_origin.is_none() && pan.snap_anim.is_none() {
+            if !edge_resizing && pan.strip_pan_origin.is_none() && pan.snap_anim.is_none() {
                 pan.scroll_x = pan.scroll_x.clamp(0.0, pan.pan_max_scroll_x());
             }
             if spans_aligned {

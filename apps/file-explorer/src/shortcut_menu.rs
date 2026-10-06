@@ -246,6 +246,7 @@ mod tests {
                 presentation: None,
             },
             action: Some(ActionDescriptor {
+                semantic_identity: None,
                 address: ActionAddress::new(resource, SHORTCUT_RUN_ACTION),
                 resource_kind: SHORTCUT_RESOURCE_KIND.into(),
                 resource_label: label.into(),

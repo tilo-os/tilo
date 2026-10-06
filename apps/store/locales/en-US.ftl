@@ -29,3 +29,15 @@ store-remote-enable = Enable source
 store-remote-disable = Disable source
 store-remote-managed-change = This source is managed by the device. Only sources in your account can be changed here.
 store-launch-opened = App opened.
+
+store-technical-details = Technical details
+store-show-technical-details = Show technical details
+store-hide-technical-details = Hide technical details
+store-publisher-key = Publisher key
+store-about-app = About this app
+store-supported-languages = Supported languages
+
+store-source-timeout = This source took too long to respond. Refresh to try again.
+store-refresh-in-progress = Sources are already refreshing. You can keep browsing.
+store-catalogue-loading = Loading more apps…
+store-catalogue-refreshed = Store refreshed.

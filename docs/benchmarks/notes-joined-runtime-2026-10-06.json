@@ -1,0 +1,521 @@
+{
+  "date": "2026-10-06",
+  "source": "12f4dfb2d535f0ea9c64278b66a9bef435d2e4b3",
+  "image": "registry.tilo.so/tilo/tilo-vm@sha256:ec4aff79035255d6aec7f9cf3c3e7555f26a8a1890b3d24c8bc95310708c228e",
+  "environment": "QEMU10.2.2 TCG4CPU4GiB virtio2d1280x800 llvmpipe; unsigned dev-overrides build; isolated COW; public-only joined test identity",
+  "sample_count_per_journey": 1,
+  "original_gate": "FAILED; Notes New note exposed no Block text within original20s. No assertion or deadline changed.",
+  "single_early_activation": {
+    "click_return_ms": 158.8113389999819,
+    "original_field_deadline_passed": false,
+    "same_activation_late_field_ms": 34500.156933,
+    "stale_tree_observations": [
+      "gdbus call --address unix:path=/run/user/1000/at-spi/bus --dest failed: Error: GDBus.Error:org.freedesktop.DBus.Error.UnknownObject: /org/a11y/atspi/accessible/0/228825980091428729114840983879037222912"
+    ],
+    "text_after_edit": {
+      "/org/a11y/atspi/accessible/0/79228162827858986846606327808": "Joined Notes baseline",
+      "/org/a11y/atspi/accessible/0/332854744350201154068118017734200000512": "Joined Notes baseline"
+    }
+  },
+  "early_frames": {
+    "before": {
+      "foreign_frames": {
+        "frames": [
+          {
+            "surface_id": 4294967337,
+            "app_id": "so.tilo.notes",
+            "sheets": [],
+            "frame_seq": 0,
+            "last_error": null,
+            "rect": {
+              "x": 252.0,
+              "y": 128.0,
+              "w": 664.0,
+              "h": 672.0
+            },
+            "buffer": null,
+            "presented": false,
+            "opening": true
+          }
+        ]
+      }
+    },
+    "after_original_deadline": {
+      "foreign_frames": {
+        "frames": [
+          {
+            "surface_id": 4294967337,
+            "app_id": "so.tilo.notes",
+            "sheets": [],
+            "frame_seq": 0,
+            "last_error": null,
+            "rect": {
+              "x": 252.0,
+              "y": 128.0,
+              "w": 664.0,
+              "h": 672.0
+            },
+            "buffer": null,
+            "presented": true,
+            "opening": false
+          }
+        ]
+      }
+    }
+  },
+  "early_inspection": {
+    "initial": {
+      "answer": {
+        "action": {
+          "provider": "app-actions",
+          "id": "so.tilo.notes\u001fread\u001f94f044b6-7c67-4abc-bc44-1e5303fd6011\u001fderived:default@tab:0000000000000000\u001ftilo-ui-bound:v1:d6846426-a3d3-4a08-9bd2-5ac2b415e178:87ef98f9-23ac-40af-9889-a0635c8e7dc5:6e6f7465732e6e6f7465626f6f6b\u001finspect-editor",
+          "kind": "Actions",
+          "title": "Inspect editor",
+          "params": [],
+          "contract": {
+            "availability": {
+              "state": "available"
+            },
+            "permission": "read",
+            "risk": "none",
+            "confirmation": {
+              "mode": "none"
+            },
+            "retry": "idempotent",
+            "reversible": false,
+            "execution": {
+              "mode": "immediate"
+            },
+            "discovery": "live",
+            "result": {
+              "type": "json",
+              "schema": {}
+            }
+          }
+        },
+        "receipt": {
+          "broker_invocation_id": 1,
+          "update": {
+            "state": "accepted",
+            "invocation": "e62f4902-f8bf-475c-8faa-2b7ea78290dc"
+          }
+        }
+      }
+    },
+    "final": {
+      "answer": {
+        "action": {
+          "invocation_id": "job\u001f1"
+        },
+        "receipt": {
+          "broker_invocation_id": 1,
+          "update": {
+            "state": "succeeded",
+            "invocation": "00000000-0000-0000-0000-000000000001",
+            "output": {
+              "value": {
+                "app": "so.tilo.notes",
+                "editor_id": "block_editor",
+                "selected_page": null,
+                "bound_page": null,
+                "main_page": null,
+                "editor_binding_page": null,
+                "pending_page_events": 0,
+                "adopted": true,
+                "canonical_sync_key": {
+                  "heads_hash": "74a8cc2feeb0ff15977dda92aaa305fcb2a04b2a2e9e50f405656489bf39b172",
+                  "heads_count": 1,
+                  "pending_operations": 0,
+                  "selected_page": null,
+                  "active_tag": null
+                },
+                "hash_algorithm": "blake3",
+                "body_hash": null,
+                "body_chars": null,
+                "body_bytes": null,
+                "rendered_body_hash": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+                "rendered_body_chars": 0,
+                "editor_focused": false,
+                "caret": null,
+                "editor_rect": [
+                  280.0,
+                  56.0,
+                  280.0,
+                  56.0
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "phased_journey": {
+    "cold_control_extents": {
+      "/org/a11y/atspi/accessible/0/79228162956986195362573189120": "((280, 56, 904, 652),)\n",
+      "/org/a11y/atspi/accessible/0/79228162698731778330639466496": "((236, 12, 32, 32),)\n"
+    },
+    "first_frame": {
+      "elapsed_ms": 30603.138401999986,
+      "frame": {
+        "surface_id": 4294967340,
+        "app_id": "so.tilo.notes",
+        "sheets": [],
+        "frame_seq": 3,
+        "last_error": null,
+        "rect": {
+          "x": 252.0,
+          "y": 128.0,
+          "w": 664.0,
+          "h": 672.0
+        },
+        "buffer": {
+          "w": 664,
+          "h": 672
+        },
+        "presented": true,
+        "opening": false
+      }
+    },
+    "ready_control_extents": {
+      "/org/a11y/atspi/accessible/0/79228162864752474994025431040": "((0, 56, 664, 616),)\n"
+    },
+    "ready_creation_ms": 4312.992333000011,
+    "text_after_edit": {
+      "/org/a11y/atspi/accessible/0/79228162827858986846606327808": "Joined Notes baseline",
+      "/org/a11y/atspi/accessible/0/332854744350201154068118017734200000512": "Joined Notes baseline"
+    },
+    "edit_saved": true,
+    "undo": {
+      "initial": {
+        "answer": {
+          "action": {
+            "provider": "app-actions",
+            "id": "so.tilo.notes\u001fwrite\u001f8f6322f1-1378-48c3-b254-2a1ad91b05a7\u001fderived:default@tab:0000000000000000\u001ftilo-ui-bound:v1:e10dca47-ed22-4857-b2ac-f84b69520dd4:ce69cfb2-31d4-4d63-89aa-2f6608a660b2:6e6f7465732e6e6f7465626f6f6b\u001fundo",
+            "kind": "Actions",
+            "title": "Undo",
+            "params": [
+              {
+                "name": "steps",
+                "type": "integer",
+                "required": false,
+                "description": "How many steps, newest first",
+                "choices": [],
+                "schema": null,
+                "nullable": true
+              },
+              {
+                "name": "run",
+                "type": "text",
+                "required": false,
+                "description": "An agent run id from history",
+                "choices": [],
+                "schema": null,
+                "nullable": true
+              },
+              {
+                "name": "to",
+                "type": "text",
+                "required": false,
+                "description": "A change id from history, or a checkpoint name",
+                "choices": [],
+                "schema": null,
+                "nullable": true
+              }
+            ],
+            "contract": {
+              "availability": {
+                "state": "available"
+              },
+              "permission": "write",
+              "risk": "low",
+              "confirmation": {
+                "mode": "none"
+              },
+              "retry": "at_most_once",
+              "reversible": true,
+              "execution": {
+                "mode": "immediate"
+              },
+              "discovery": "live",
+              "result": {
+                "type": "json",
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "receipt": {
+            "broker_invocation_id": 1,
+            "update": {
+              "state": "accepted",
+              "invocation": "84133d90-7992-438c-8377-9b23667e502f"
+            }
+          }
+        }
+      },
+      "final": {
+        "answer": {
+          "action": {
+            "invocation_id": "job\u001f1"
+          },
+          "receipt": {
+            "broker_invocation_id": 1,
+            "update": {
+              "state": "succeeded",
+              "invocation": "00000000-0000-0000-0000-000000000001",
+              "output": {
+                "value": {
+                  "undone": [
+                    {
+                      "change": "983b0e858cc3",
+                      "action": "Splice text",
+                      "args": "{page:\"0ddf2c8f-25c2-4c7d-b0da-80fbc4f5\u2026\",edit:{SpliceText:{5 fields}}}"
+                    }
+                  ],
+                  "now": "d5b3eaded87e"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "text_after_undo": {
+      "/org/a11y/atspi/accessible/0/79228162827858986846606327808": "",
+      "/org/a11y/atspi/accessible/0/332854744350201154068118017734200000512": ""
+    },
+    "redo": {
+      "initial": {
+        "answer": {
+          "action": {
+            "provider": "app-actions",
+            "id": "so.tilo.notes\u001fwrite\u001f8f6322f1-1378-48c3-b254-2a1ad91b05a7\u001fderived:default@tab:0000000000000000\u001ftilo-ui-bound:v1:e10dca47-ed22-4857-b2ac-f84b69520dd4:ce69cfb2-31d4-4d63-89aa-2f6608a660b2:6e6f7465732e6e6f7465626f6f6b\u001fredo",
+            "kind": "Actions",
+            "title": "Redo",
+            "params": [
+              {
+                "name": "steps",
+                "type": "integer",
+                "required": false,
+                "description": "How many undos, newest first",
+                "choices": [],
+                "schema": null,
+                "nullable": true
+              }
+            ],
+            "contract": {
+              "availability": {
+                "state": "available"
+              },
+              "permission": "write",
+              "risk": "low",
+              "confirmation": {
+                "mode": "none"
+              },
+              "retry": "at_most_once",
+              "reversible": true,
+              "execution": {
+                "mode": "immediate"
+              },
+              "discovery": "live",
+              "result": {
+                "type": "json",
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "receipt": {
+            "broker_invocation_id": 2,
+            "update": {
+              "state": "accepted",
+              "invocation": "ddfc089a-f9e2-4d1a-88db-43c77498400a"
+            }
+          }
+        }
+      },
+      "final": {
+        "answer": {
+          "action": {
+            "invocation_id": "job\u001f2"
+          },
+          "receipt": {
+            "broker_invocation_id": 2,
+            "update": {
+              "state": "succeeded",
+              "invocation": "00000000-0000-0000-0000-000000000002",
+              "output": {
+                "value": {
+                  "redone": [
+                    {
+                      "change": "983b0e858cc3",
+                      "action": "Splice text",
+                      "args": "{page:\"0ddf2c8f-25c2-4c7d-b0da-80fbc4f5\u2026\",edit:{SpliceText:{5 fields}}}"
+                    }
+                  ],
+                  "now": "a26227ec538d"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "text_after_redo": {
+      "/org/a11y/atspi/accessible/0/79228162827858986846606327808": "Joined Notes baseline",
+      "/org/a11y/atspi/accessible/0/332854744350201154068118017734200000512": "Joined Notes baseline"
+    },
+    "redo_saved": true,
+    "inspection_after": {
+      "initial": {
+        "answer": {
+          "action": {
+            "provider": "app-actions",
+            "id": "so.tilo.notes\u001fread\u001f8f6322f1-1378-48c3-b254-2a1ad91b05a7\u001fderived:default@tab:0000000000000000\u001ftilo-ui-bound:v1:e10dca47-ed22-4857-b2ac-f84b69520dd4:ce69cfb2-31d4-4d63-89aa-2f6608a660b2:6e6f7465732e6e6f7465626f6f6b\u001finspect-editor",
+            "kind": "Actions",
+            "title": "Inspect editor",
+            "params": [],
+            "contract": {
+              "availability": {
+                "state": "available"
+              },
+              "permission": "read",
+              "risk": "none",
+              "confirmation": {
+                "mode": "none"
+              },
+              "retry": "idempotent",
+              "reversible": false,
+              "execution": {
+                "mode": "immediate"
+              },
+              "discovery": "live",
+              "result": {
+                "type": "json",
+                "schema": {}
+              }
+            }
+          },
+          "receipt": {
+            "broker_invocation_id": 3,
+            "update": {
+              "state": "accepted",
+              "invocation": "6b989876-9213-4ee1-ad0d-59d28e199d47"
+            }
+          }
+        }
+      },
+      "final": {
+        "answer": {
+          "action": {
+            "invocation_id": "job\u001f3"
+          },
+          "receipt": {
+            "broker_invocation_id": 3,
+            "update": {
+              "state": "succeeded",
+              "invocation": "00000000-0000-0000-0000-000000000003",
+              "output": {
+                "value": {
+                  "app": "so.tilo.notes",
+                  "editor_id": "block_editor",
+                  "selected_page": "0ddf2c8f-25c2-4c7d-b0da-80fbc4f5b338",
+                  "bound_page": "0ddf2c8f-25c2-4c7d-b0da-80fbc4f5b338",
+                  "main_page": "0ddf2c8f-25c2-4c7d-b0da-80fbc4f5b338",
+                  "editor_binding_page": "0ddf2c8f-25c2-4c7d-b0da-80fbc4f5b338",
+                  "pending_page_events": 0,
+                  "adopted": true,
+                  "canonical_sync_key": {
+                    "heads_hash": "3d27e25901be3c086215152741a404ddf75b9cd91422b06ce3c1bf1ab5740598",
+                    "heads_count": 1,
+                    "pending_operations": 0,
+                    "selected_page": "0ddf2c8f-25c2-4c7d-b0da-80fbc4f5b338",
+                    "active_tag": null
+                  },
+                  "hash_algorithm": "blake3",
+                  "body_hash": "2654212239ac8a078c747622d389397fdbd20e0ef08549f8760c75f33c40b0a4",
+                  "body_chars": 21,
+                  "body_bytes": 21,
+                  "rendered_body_hash": "2654212239ac8a078c747622d389397fdbd20e0ef08549f8760c75f33c40b0a4",
+                  "rendered_body_chars": 21,
+                  "editor_focused": true,
+                  "caret": {
+                    "block_id": "genesis.0",
+                    "block_index": 0,
+                    "byte_offset": 0
+                  },
+                  "editor_rect": [
+                    24.0,
+                    167.4000015258789,
+                    640.0,
+                    187.7000026702881
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "reopened_frame": {
+      "elapsed_ms": 3243.1205229999878,
+      "frame": {
+        "surface_id": 30064771116,
+        "app_id": "so.tilo.notes",
+        "sheets": [],
+        "frame_seq": 1,
+        "last_error": null,
+        "rect": {
+          "x": 252.0,
+          "y": 128.0,
+          "w": 664.0,
+          "h": 672.0
+        },
+        "buffer": {
+          "w": 664,
+          "h": 672
+        },
+        "presented": true,
+        "opening": false
+      }
+    },
+    "reopened_text": {
+      "/org/a11y/atspi/accessible/0/79228162827858986846606327808": "Joined Notes baseline",
+      "/org/a11y/atspi/accessible/0/332854744350201154068118017734200000512": "Joined Notes baseline"
+    },
+    "reopened_saved": true,
+    "verdict": "PASS"
+  },
+  "first_frame_timing_origin": "wait_frame called after AT-SPI app arrival, reachable controls and extents queries. Remaining startup wait, not launch-to-first-frame latency.",
+  "cleanup": {
+    "guest_stopped": true,
+    "cow_removed": true,
+    "base_deleted_bytes": 10026745856,
+    "base_deleted": true
+  },
+  "raw_local_files": [
+    {
+      "path": "/tmp/tilo-joined-current-evidence.json",
+      "sha256": "cce02b1b2e402136c07b011e848d5c3fccc5a99280056f51f6235da5d01355eb"
+    },
+    {
+      "path": "/tmp/tilo-notes-joined-probe01.json",
+      "sha256": "b40835752747ac6c58464468801f4beab8dbda7da70d1e8352d6a18c3e08583b"
+    },
+    {
+      "path": "/tmp/tilo-notes-joined-probe02.json",
+      "sha256": "fcc642dd163b5fb148acfc7d4219ee4a758d098b56ffbcc9de9318d6bed561b1"
+    },
+    {
+      "path": "/tmp/tilo-notes-joined-probe03.raw",
+      "sha256": "daa8db168233d6bf5106936ae22ab1321159a7f70d549776420ed0de147658a0"
+    },
+    {
+      "path": "/tmp/tilo-notes-joined-probe03.json",
+      "sha256": "1168d4c41fd8b312a9912514b09d10faa5d54dca6692986a346813ccb8035c3d"
+    }
+  ]
+}

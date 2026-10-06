@@ -39,18 +39,42 @@ fn home() -> Machine {
 #[test]
 fn the_registry_must_be_https_or_this_machine() {
     let mut profile = Replica::<Publisher>::new();
-    assert!(
+    for address in [
+        "https://apps.example.com",
+        "http://127.0.0.1:8080",
+        "http://127.1.2.3:8080",
+        "http://localhost:8080",
+        "http://[::1]:8080",
+    ] {
+        assert!(registry_client::RegistryClient::validate_url(address).is_ok());
         profile
-            .apply(Publisher::SET_REGISTRY.with("http://apps.example.com".into()))
-            .is_err()
-    );
-    profile
-        .apply(Publisher::SET_REGISTRY.with("http://127.0.0.1:8080".into()))
-        .expect("a local registry");
-    assert_eq!(
-        profile.state().expect("profile").registry,
-        "http://127.0.0.1:8080"
-    );
+            .apply(Publisher::SET_REGISTRY.with(address.into()))
+            .expect("HTTPS or an actual loopback host");
+        assert_eq!(profile.state().expect("profile").registry, address);
+    }
+    let saved = profile.state().expect("profile").registry;
+    for address in [
+        "http://apps.example.com",
+        "http://localhost.example.com",
+        "http://127.0.0.1.example.com",
+        "http://localhost@apps.example.com",
+        "https://",
+        "not a URL",
+        "file:///tmp/registry",
+    ] {
+        assert!(registry_client::RegistryClient::validate_url(address).is_err());
+        assert!(
+            profile
+                .apply(Publisher::SET_REGISTRY.with(address.into()))
+                .is_err(),
+            "reject an invalid address at the action door: {address}"
+        );
+        assert_eq!(
+            profile.state().expect("profile").registry,
+            saved,
+            "rejected edits preserve the valid registry"
+        );
+    }
 }
 
 #[test]
@@ -230,4 +254,30 @@ fn a_capture_shows_a_key_without_reading_the_machine_s() {
         .expect("the scenario's key is shown");
     assert_eq!(app.state().domain, "lovelace.dev");
     assert!(home.key().is_none(), "a capture writes no key");
+}
+
+#[test]
+fn narrow_key_actions_reserve_their_wrapped_rows_before_namespaces() {
+    let mut app =
+        TestApp::<App>::capture_at(Some("key"), (390, 844)).expect("the narrow capture opens");
+    let targets = app.harness().targets();
+    let heading = targets
+        .get("namespaces-heading")
+        .expect("namespace heading bounds");
+    for id in ["copy-proof", "copy-secret", "check-status"] {
+        let button = targets
+            .get(id)
+            .unwrap_or_else(|| panic!("{id} is laid out"));
+        assert!(
+            button.x0 >= 0.0 && button.x1 <= 390.0,
+            "{id} fits: {button:?}"
+        );
+        assert!(
+            button.y1 <= heading.y0,
+            "{id} precedes namespace heading: {button:?}, {heading:?}"
+        );
+    }
+    app.harness()
+        .expect(&SemanticExpectation::named("proof-line").name_contains("tilo-publisher="))
+        .expect("scrolling retains the exact published proof value");
 }

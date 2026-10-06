@@ -34,8 +34,9 @@ mod catalogue;
 mod pending;
 
 pub use catalogue::{
-    CatalogueLimits, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueResource,
-    CatalogueRow, MAX_CATALOGUE_PAGE, RowVisibility,
+    CanonicalActionRoute, CatalogueLimits, CataloguePage, CatalogueProvider, CatalogueQuery,
+    CatalogueResource, CatalogueRow, MAX_CATALOGUE_PAGE, ResourceViewLocator, RowVisibility,
+    ViewResourceQuery,
 };
 pub use pending::{Completer, Pending, PendingPoll, pending};
 
@@ -1278,6 +1279,7 @@ mod tests {
 
     fn descriptor(resource: &str, action: &str) -> ActionDescriptor {
         ActionDescriptor {
+            semantic_identity: None,
             address: ActionAddress::new(resource, action),
             resource_kind: "notes.note".into(),
             resource_label: "Groceries".into(),

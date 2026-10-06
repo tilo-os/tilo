@@ -105,6 +105,8 @@ pub struct HistoryHost {
     /// Whether the closed toolbar offers its own History button. Off where
     /// the host's chrome (a menu bar, the Tilo shell) presents History.
     open_button: bool,
+    /// Embedded hosts may provide a fallback; app windows use their existing header.
+    fallback_bar: bool,
     /// The live app draws the window's header row, which holds the History
     /// control while History is closed, so this toolbar draws none then.
     app_presents_button: bool,
@@ -220,8 +222,13 @@ impl HistoryHost {
             .unwrap_or_default()
     }
 
-    /// The host's own chrome presents History: drop the toolbar's button.
-    #[cfg(any(feature = "native", test))]
+    /// The host presents History elsewhere, or the system surface omits
+    /// document chrome: retain History custody without its closed button.
+    pub(crate) fn remove_fallback_bar(&mut self) {
+        self.fallback_bar = false;
+        self.rebuild_toolbar();
+    }
+
     pub(crate) fn remove_open_button(&mut self) {
         self.open_button = false;
         self.rebuild_toolbar();
@@ -288,6 +295,7 @@ impl HistoryHost {
             requested_entry: None,
             open: false,
             open_button: true,
+            fallback_bar: true,
             app_presents_button: false,
             rect: Rect::ZERO,
             chrome_node: None,
@@ -1376,7 +1384,7 @@ impl HistoryHost {
             return;
         }
         if self.selected.is_empty() {
-            if (self.open_button && !self.app_presents_button) || self.open {
+            if (self.fallback_bar && self.open_button && !self.app_presents_button) || self.open {
                 let clicked = self.open_requested.clone();
                 toolbar = toolbar.push(Box::new(
                     Row::new()
