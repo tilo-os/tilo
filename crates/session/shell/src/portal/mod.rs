@@ -497,11 +497,16 @@ impl GrantStoreHandle {
         tree.desktop
             .workspaces
             .iter()
-            .any(|workspace| workspace.id == caller.workspace_id)
-            .then(|| {
+            .find(|workspace| workspace.id == caller.workspace_id)
+            .filter(|workspace| !workspace.room.is_nil())
+            .map(|workspace| {
+                // A local slot survives joining a different room. Consent
+                // belongs to the durable room, never to that reusable slot.
+                // The prefix also leaves legacy numeric-slot records inert:
+                // their original room cannot be recovered safely.
                 format!(
-                    "{}\u{1f}{}\u{1f}{}",
-                    caller.workspace_id.0,
+                    "room:{}\u{1f}{}\u{1f}{}",
+                    workspace.room,
                     caller.app_id,
                     kind.name()
                 )
@@ -1381,6 +1386,46 @@ mod tests {
 
     fn empty_ws(id: u64) -> Workspace {
         Workspace::new(WorkspaceId(id), "t")
+    }
+
+    #[test]
+    fn private_portal_consent_requires_a_durable_room_and_ignores_legacy_slots() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("consents.json");
+        let (store, id) = GrantStoreHandle::test_with_workspace(empty_ws(31));
+        let shared = store.tree_handle();
+        let caller = PortalCaller::new(id, "private-app");
+        let mut legacy = BTreeSet::new();
+        legacy.insert(format!("{}\u{1f}private-app\u{1f}camera", id.0));
+        persist_portal_consents(&path, &legacy).unwrap();
+        let store = GrantStoreHandle::with_consent_path(shared.clone(), Some(path.clone()));
+        assert_eq!(store.lookup(&caller, CapabilityKind::Camera), None);
+        assert!(store.insert_portal_consent(
+            &caller,
+            &Capability::Camera {
+                scope: GRANT_ALWAYS
+            }
+        ));
+
+        // A different local slot for the same room preserves durable consent.
+        let moved_id = WorkspaceId(32);
+        shared.write().desktop.workspaces[0].id = moved_id;
+        let moved = PortalCaller::new(moved_id, "private-app");
+        let restored = GrantStoreHandle::with_consent_path(shared.clone(), Some(path));
+        assert_eq!(restored.lookup(&caller, CapabilityKind::Camera), None);
+        assert_eq!(
+            restored.lookup(&moved, CapabilityKind::Camera),
+            Some(GRANT_ALWAYS)
+        );
+
+        shared.write().desktop.workspaces[0].room = crate::shell::state::RoomId::nil();
+        assert_eq!(restored.lookup(&moved, CapabilityKind::Camera), None);
+        assert!(!restored.insert_portal_consent(
+            &moved,
+            &Capability::Camera {
+                scope: GRANT_ALWAYS
+            }
+        ));
     }
 
     #[test]
