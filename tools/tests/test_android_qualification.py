@@ -150,9 +150,12 @@ class Qualification(unittest.TestCase):
         self.assertEqual(manifest["sandbox"], {"seccomp": "tilo-default", "net": {"mode": "off"}})
         self.assertEqual(qualify.digest(output / "app.apk"), apk_pin)
         self.assertEqual(qualify.runtime_files(output / "runtime"), qualify.runtime_files(root))
+        self.assertEqual((output / "activity.txt").read_text(), args.activity + "\n")
+        self.assertEqual(result["desktop_action"], {"provider": "applications", "id": manifest["package"]["id"]})
         argv = result["launcher_argv"]
         self.assertEqual(argv[:2], ["tilo-launcher", "run"])
-        self.assertIn("-Xusejit:false", argv)
+        self.assertIn("-Xusejit:false", result["runtime_policy"]["art_options"])
+        self.assertNotIn("--", argv)  # GUI run does not forward arbitrary trailing argv.
         self.assertNotIn("--capabilities", argv)
         self.assertNotIn("--allow-unsigned-runtime", argv)
         self.assertTrue(result["signature_verified"])
@@ -160,6 +163,18 @@ class Qualification(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already exists"):
             with patch.object(qualify, "verify_signer"):
                 qualify.prepare(args)
+        args.output = self.root / "offline payload"
+        args.workspace_id = None
+        args.wayland_socket = None
+        with patch.object(qualify, "verify_signer"):
+            offline = qualify.prepare(args)
+        self.assertIsNone(offline["launcher_argv"])
+        self.assertEqual(offline["desktop_action"], result["desktop_action"])
+
+    def test_prepare_refuses_activity_injection_on_the_production_function(self):
+        for activity in ("calculator/Calculator\nextra", "--help", "../Calculator"):
+            with self.subTest(activity=activity), self.assertRaisesRegex(ValueError, "invalid ATL activity"):
+                qualify.prepare(argparse.Namespace(activity=activity))
 
 
 if __name__ == "__main__":

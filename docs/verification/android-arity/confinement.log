@@ -1,0 +1,10 @@
+tilo-sandbox-exec: skipping rule for /usr/share/nvidia (open failed: failed to open "/usr/share/nvidia": No such file or directory (os error 2))
+tilo-sandbox-exec: skipping rule for /dev/dri (open failed: failed to open "/dev/dri": No such file or directory (os error 2))
+tilo-sandbox-exec: skipping rule for /dev/nvidia0 (open failed: failed to open "/dev/nvidia0": No such file or directory (os error 2))
+tilo-sandbox-exec: skipping rule for /dev/nvidiactl (open failed: failed to open "/dev/nvidiactl": No such file or directory (os error 2))
+tilo-sandbox-exec: skipping rule for /dev/nvidia-modeset (open failed: failed to open "/dev/nvidia-modeset": No such file or directory (os error 2))
+tilo-sandbox-exec: skipping rule for /dev/nvidia-uvm (open failed: failed to open "/dev/nvidia-uvm": No such file or directory (os error 2))
+tilo-sandbox-exec: skipping rule for /dev/nvidia-uvm-tools (open failed: failed to open "/dev/nvidia-uvm-tools": No such file or directory (os error 2))
+tilo-sandbox-exec: skipping rule for /dev/nvidia-caps (open failed: failed to open "/dev/nvidia-caps": No such file or directory (os error 2))
+tilo-sandbox-exec: Landlock restriction status: RestrictionStatus { ruleset: FullyEnforced, no_new_privs: true, landlock: Available { effective_abi: V7, kernel_abi: Some(10) }, log_same_exec: true, log_new_exec: false, log_subdomains: true }
+tilo-sandbox-exec: landlock: fully enforced (29 ro, 10 rw, net_restricted=true, gate_port=None)

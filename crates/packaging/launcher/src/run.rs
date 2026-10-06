@@ -22,9 +22,10 @@ use crate::manifest::{MinimalManifest, PortalPolicy, read_manifest};
 use crate::sandbox::{DBusBindPlan, build_bwrap_argv};
 use crate::seccomp::compile_baseline;
 use crate::services::{
-    BASELINE_SECCOMP_CHILD_FD, CLONE3_COMPAT_SECCOMP_CHILD_FD, EXIT_REQUIRED_SERVICE_MISSING,
-    ServiceError, ServiceLaunchContext, resolve_blob_bind, resolve_chooser_bind,
-    resolve_identity_bind, resolve_service_binds_for_launch, to_service_binds,
+    ACCOUNT_CHILD_FD, BASELINE_SECCOMP_CHILD_FD, CLONE3_COMPAT_SECCOMP_CHILD_FD,
+    EXIT_REQUIRED_SERVICE_MISSING, ServiceError, ServiceLaunchContext, resolve_blob_bind,
+    resolve_chooser_bind, resolve_identity_bind, resolve_service_binds_for_launch,
+    to_service_binds,
 };
 
 struct SeccompFds {
@@ -44,8 +45,15 @@ impl SeccompFds {
         *argv = prefix;
     }
 
-    fn host_fds(&self) -> (RawFd, RawFd) {
-        (self.clone3_compat.as_raw_fd(), self.baseline.as_raw_fd())
+    fn child_fds(&self, account: RawFd) -> [(RawFd, RawFd); 3] {
+        [
+            (
+                self.clone3_compat.as_raw_fd(),
+                CLONE3_COMPAT_SECCOMP_CHILD_FD,
+            ),
+            (self.baseline.as_raw_fd(), BASELINE_SECCOMP_CHILD_FD),
+            (account, ACCOUNT_CHILD_FD),
+        ]
     }
 }
 
@@ -97,17 +105,6 @@ mod seccomp_fd_tests {
             "reserved slots overlap"
         );
     }
-}
-
-unsafe fn place_fd(host: RawFd, child: RawFd) -> std::io::Result<()> {
-    if unsafe { libc::dup2(host, child) } == -1 {
-        return Err(std::io::Error::last_os_error());
-    }
-    let flags = unsafe { libc::fcntl(child, libc::F_GETFD) };
-    if flags != -1 {
-        let _ = unsafe { libc::fcntl(child, libc::F_SETFD, flags & !libc::FD_CLOEXEC) };
-    }
-    Ok(())
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1214,7 +1211,7 @@ fn start_egress_gate(
     }
 }
 
-/// Put every opened service socket on the fd the app expects, in the
+/// Put service sockets, seccomp programs and account data on their child fds, in the
 /// child, before `exec`. bwrap forwards fds it wasn't asked about
 /// untouched, so a placement here survives namespace setup.
 ///
@@ -1222,7 +1219,7 @@ fn start_egress_gate(
 /// into a regular file, so a connected socket blocks reading for an EOF
 /// that never comes — the launch hangs before `exec` with no symptom.
 ///
-/// Two passes: target numbers start at 17 and a source can already sit on
+/// Two passes: a source can already sit on
 /// an unwritten target, so every source is relocated above the target
 /// window first, so no `dup2` clobbers one still waiting to be placed.
 ///
@@ -1233,7 +1230,7 @@ fn start_egress_gate(
 /// # Safety
 /// Call only from `Command::pre_exec` (post-fork, pre-exec). Uses only
 /// `fcntl`, `dup2` and `close`, all async-signal-safe; allocates nothing.
-unsafe fn place_service_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()> {
+unsafe fn place_child_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()> {
     let Some(highest) = pairs.iter().map(|(_, dst)| *dst).max() else {
         return Ok(());
     };
@@ -1247,20 +1244,20 @@ unsafe fn place_service_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()>
         // F_DUPFD returns the lowest free fd >= floor, i.e. clear of
         // every target.
         let moved = unsafe { libc::fcntl(*src, libc::F_DUPFD, floor) };
-        if moved >= 0 {
-            // The original number is done with — a second live descriptor at an
-            // unnamed number is one the app cannot close.
-            unsafe { libc::close(*src) };
-            *src = moved;
+        if moved < 0 {
+            return Err(std::io::Error::last_os_error());
         }
+        // The original number is done with — a second live descriptor at an
+        // unnamed number is one the app cannot close.
+        unsafe { libc::close(*src) };
+        *src = moved;
     }
     for (src, dst) in pairs.iter() {
         if unsafe { libc::dup2(*src, *dst) } == -1 {
             return Err(std::io::Error::last_os_error());
         }
         // dup2 leaves the target without FD_CLOEXEC — it must survive bwrap's and
-        // the app's exec. Cleared again explicitly since relocation above is
-        // best-effort.
+        // the app's exec.
         unsafe {
             let flags = libc::fcntl(*dst, libc::F_GETFD);
             if flags != -1 {
@@ -1617,6 +1614,8 @@ fn splice_sandbox_shim(
         argv.push("--ro".to_string());
         argv.push(path.display().to_string());
     }
+    // This is generated sandbox data, never the host account database.
+    argv.extend(["--ro".to_string(), "/etc/passwd".to_string()]);
     // Capability-granted paths need matching Landlock rules from the same
     // plan, or the bind is visible but every open() returns EACCES.
     for path in &ctx.capabilities.ro_paths {
@@ -1695,6 +1694,110 @@ fn push_scratch_and_engine_rules(argv: &mut Vec<String>, manifest: &MinimalManif
     }
 }
 
+/// A libc-compatible account record without disclosing the host account database.
+fn sandbox_account(uid: u32, gid: u32) -> String {
+    format!("app:x:{uid}:{gid}:Sandbox application:/run/tilo/app:/sbin/nologin\n")
+}
+
+/// Give bwrap a private, read-only account file. No host `/etc/passwd` bind.
+fn stage_sandbox_account(argv: &mut Vec<String>) -> Result<OwnedFd, RunError> {
+    let account = sandbox_account(unsafe { libc::geteuid() }, unsafe { libc::getegid() });
+    let data = stage_seccomp_blob(account.as_bytes())?;
+    // Keep the source above the fixed child slots: earlier dup2 calls must
+    // not overwrite it before the account descriptor is handed to bwrap.
+    let fd = unsafe { libc::fcntl(data.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 128) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let owned = unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+    argv.splice(
+        0..0,
+        [
+            "--ro-bind-data".to_string(),
+            ACCOUNT_CHILD_FD.to_string(),
+            "/etc/passwd".to_string(),
+        ],
+    );
+    Ok(owned)
+}
+
+#[cfg(test)]
+mod sandbox_account_tests {
+    use super::*;
+
+    #[test]
+    fn handoff_preserves_a_service_source_in_the_account_child_slot() {
+        let service = stage_seccomp_blob(b"service").expect("service fixture");
+        let filters = SeccompFds {
+            clone3_compat: stage_seccomp_blob(b"clone3").expect("compat fixture"),
+            baseline: stage_seccomp_blob(b"baseline").expect("baseline fixture"),
+        };
+        let account = stage_sandbox_account(&mut Vec::new()).expect("account");
+        let expected = format!(
+            "serviceclone3baseline{}",
+            sandbox_account(unsafe { libc::geteuid() }, unsafe { libc::getegid() })
+        );
+        let source = service.as_raw_fd();
+        let mut pairs = vec![(ACCOUNT_CHILD_FD, 17)];
+        pairs.extend(filters.child_fds(account.as_raw_fd()));
+        let mut command = Command::new("/bin/cat");
+        command.args([
+            "/proc/self/fd/17",
+            "/proc/self/fd/40",
+            "/proc/self/fd/41",
+            "/proc/self/fd/42",
+        ]);
+        // Move only the child's fixture onto the colliding source slot.
+        // The production handoff must preserve it before assigning account 42.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::dup2(source, ACCOUNT_CHILD_FD) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                place_child_fds(&mut pairs)
+            });
+        }
+        let output = command.output().expect("fixture child");
+        assert!(output.status.success(), "{:?}", output.stderr);
+        assert_eq!(output.stdout, expected.as_bytes());
+    }
+
+    #[test]
+    fn staged_account_is_private_read_only_data_and_reserves_its_descriptor() {
+        use std::io::Read as _;
+        let mut argv = vec!["--unshare-all".to_string(), "/app/bin".to_string()];
+        let fd = stage_sandbox_account(&mut argv).expect("stage account");
+        assert!(fd.as_raw_fd() >= 128);
+        let mut contents = String::new();
+        std::fs::File::from(fd)
+            .read_to_string(&mut contents)
+            .expect("account bytes");
+        assert_eq!(
+            contents,
+            sandbox_account(unsafe { libc::geteuid() }, unsafe { libc::getegid() })
+        );
+        assert_eq!(
+            argv,
+            [
+                "--ro-bind-data",
+                "42",
+                "/etc/passwd",
+                "--unshare-all",
+                "/app/bin"
+            ]
+        );
+    }
+
+    #[test]
+    fn account_contains_only_the_sandbox_identity_and_home() {
+        assert_eq!(
+            sandbox_account(1000, 1001),
+            "app:x:1000:1001:Sandbox application:/run/tilo/app:/sbin/nologin\n"
+        );
+        assert!(crate::services::RESERVED_CHILD_FDS.contains(&ACCOUNT_CHILD_FD));
+    }
+}
+
 /// What [`spawn_and_wait`] wires into the child in `pre_exec`: the staged
 /// seccomp filters, the resolved service sockets, the identity broker (app end,
 /// control end, serving thread) and whether to apply game scheduling hints.
@@ -1755,6 +1858,8 @@ fn spawn_and_wait(
     });
     let (identity_broker_app, identity_broker_control, identity_broker_thread) = identity_broker;
     SeccompFds::prepend_bwrap_args(&mut argv);
+    let account_fd = stage_sandbox_account(&mut argv)?;
+    let host_account_fd = account_fd.as_raw_fd();
 
     // Passthrough: everything after the entrypoint token is opaque to bwrap,
     // forwarded as the sandboxed program's argv[1..].
@@ -1784,7 +1889,6 @@ fn spawn_and_wait(
 
     // pre_exec: place both seccomp blobs on fixed child fds, and put
     // each service socket on the fd number the app was told to read.
-    let (host_clone3_compat_fd, host_baseline_seccomp_fd) = seccomp_fds.host_fds();
     let mut service_fds: Vec<(RawFd, RawFd)> = resolved
         .iter()
         .map(|r| (r.host_fd(), r.child_fd as RawFd))
@@ -1795,6 +1899,7 @@ fn spawn_and_wait(
             runtime_identity::broker::BROKER_CHILD_FD,
         ));
     }
+    service_fds.extend(seccomp_fds.child_fds(host_account_fd));
     for r in &resolved {
         tracing::info!(
             service = %r.name,
@@ -1831,9 +1936,7 @@ fn spawn_and_wait(
     // landlock crate's syscall wrappers. No allocator calls, no locks.
     unsafe {
         cmd.pre_exec(move || {
-            place_fd(host_clone3_compat_fd, CLONE3_COMPAT_SECCOMP_CHILD_FD)?;
-            place_fd(host_baseline_seccomp_fd, BASELINE_SECCOMP_CHILD_FD)?;
-            place_service_fds(&mut service_fds)?;
+            place_child_fds(&mut service_fds)?;
             set_sandbox_resource_limits()?;
             if latency_sensitive {
                 crate::performance::apply_game_performance_hints()?;
@@ -1867,6 +1970,7 @@ fn spawn_and_wait(
     }
     // Keep both filter fds alive until spawn has duplicated them in the child.
     drop(seccomp_fds);
+    drop(account_fd);
     // Same rule: the child holds its own copies, so the launcher's are dead
     // weight, dropped before the wait so the far end learns of the exit.
     drop(resolved);
@@ -2331,6 +2435,8 @@ fn spawn_and_capture(
 ) -> Result<(ExitStatus, Vec<u8>), RunError> {
     let (identity_broker_app, identity_broker_control, identity_broker_thread) = identity_broker;
     SeccompFds::prepend_bwrap_args(&mut argv);
+    let account_fd = stage_sandbox_account(&mut argv)?;
+    let host_account_fd = account_fd.as_raw_fd();
     // Everything after the entrypoint token is opaque to bwrap and
     // becomes the child's argv[1..].
     argv.extend(passthrough);
@@ -2344,7 +2450,6 @@ fn spawn_and_capture(
     clear_bwrap_environment(&mut cmd);
     cmd.stdout(std::process::Stdio::piped());
 
-    let (host_clone3_compat_fd, host_baseline_seccomp_fd) = seccomp_fds.host_fds();
     let mut service_fds: Vec<(RawFd, RawFd)> = resolved
         .iter()
         .map(|r| (r.host_fd(), r.child_fd as RawFd))
@@ -2355,11 +2460,10 @@ fn spawn_and_capture(
             runtime_identity::broker::BROKER_CHILD_FD,
         ));
     }
+    service_fds.extend(seccomp_fds.child_fds(host_account_fd));
     unsafe {
         cmd.pre_exec(move || {
-            place_fd(host_clone3_compat_fd, CLONE3_COMPAT_SECCOMP_CHILD_FD)?;
-            place_fd(host_baseline_seccomp_fd, BASELINE_SECCOMP_CHILD_FD)?;
-            place_service_fds(&mut service_fds)?;
+            place_child_fds(&mut service_fds)?;
             set_sandbox_resource_limits()?;
             Ok(())
         });
@@ -2367,6 +2471,7 @@ fn spawn_and_capture(
 
     let mut child = cmd.spawn().map_err(RunError::Spawn)?;
     drop(seccomp_fds);
+    drop(account_fd);
     // As in `run_with`: the child has its own copies, so holding these open
     // only keeps the service from seeing the app end.
     drop(resolved);
@@ -2520,6 +2625,8 @@ fn spawn_and_capture_bounded(
     let plan = plan.validate()?;
     let (identity_broker_app, identity_broker_control, identity_broker_thread) = identity_broker;
     SeccompFds::prepend_bwrap_args(&mut argv);
+    let account_fd = stage_sandbox_account(&mut argv)?;
+    let host_account_fd = account_fd.as_raw_fd();
     argv.extend(passthrough);
 
     let bwrap = opts
@@ -2533,7 +2640,6 @@ fn spawn_and_capture_bounded(
     cmd.stderr(std::process::Stdio::piped());
     cmd.stdin(std::process::Stdio::null());
 
-    let (host_clone3_compat_fd, host_baseline_seccomp_fd) = seccomp_fds.host_fds();
     let mut service_fds: Vec<(RawFd, RawFd)> = resolved
         .iter()
         .map(|service| (service.host_fd(), service.child_fd as RawFd))
@@ -2544,11 +2650,10 @@ fn spawn_and_capture_bounded(
             runtime_identity::broker::BROKER_CHILD_FD,
         ));
     }
+    service_fds.extend(seccomp_fds.child_fds(host_account_fd));
     unsafe {
         cmd.pre_exec(move || {
-            place_fd(host_clone3_compat_fd, CLONE3_COMPAT_SECCOMP_CHILD_FD)?;
-            place_fd(host_baseline_seccomp_fd, BASELINE_SECCOMP_CHILD_FD)?;
-            place_service_fds(&mut service_fds)?;
+            place_child_fds(&mut service_fds)?;
             set_sandbox_resource_limits()?;
             set_captured_resource_limits(plan)?;
             if libc::setpgid(0, 0) != 0 {
@@ -2560,6 +2665,7 @@ fn spawn_and_capture_bounded(
 
     let mut child = cmd.spawn().map_err(RunError::Spawn)?;
     drop(seccomp_fds);
+    drop(account_fd);
     drop(resolved);
     drop(identity_broker_app);
     let used = Arc::new(AtomicUsize::new(0));

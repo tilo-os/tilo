@@ -124,6 +124,8 @@ def verify_runtime(root, receipt_path, receipt_sha256, arch):
 
 
 def prepare(args):
+    if not re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$/]*", args.activity):
+        raise ValueError("invalid ATL activity")
     report = inspect_apk(args.apk, args.architecture, args.apk_sha256)
     verify_signer(args.apk, args.apksigner, args.signer_sha256)
     verify_runtime(args.runtime_root, args.runtime_receipt, args.runtime_receipt_sha256,
@@ -148,17 +150,19 @@ def prepare(args):
                     '[entrypoint]\nbin = "runtime/bin/android-translation-layer"\n'
                     '[sandbox]\nseccomp = "tilo-default"\n[sandbox.net]\nmode = "off"\n')
         (stage / "tilo.toml").write_text(manifest)
+        (stage / "activity.txt").write_text(args.activity + "\n")
         # These are argv tokens, never a shell command. The normal launcher supplies
         # per-workspace XDG data, Wayland and process-tree confinement.
         command = ["tilo-launcher", "run", "--manifest", str(args.output / "tilo.toml"),
                    "--payload-root", str(args.output), "--no-services",
                    "--workspace-id", args.workspace_id,
-                   "--wayland-socket", str(args.wayland_socket), "--",
-                   f"/var/tilo-apps/{package_id}/app.apk", "-l", args.activity,
-                   "-X", "-Xnoimage-dex2oat", "-X", "-Xusejit:false"]
+                   "--wayland-socket", str(args.wayland_socket)] if args.wayland_socket else None
         report.update(signature_verified=True, signer_sha256=args.signer_sha256,
                       runtime_receipt_sha256=args.runtime_receipt_sha256,
-                      launcher_argv=command, prepared=True)
+                      runtime_policy={"activity": args.activity,
+                                      "art_options": ["-Xnoimage-dex2oat", "-Xusejit:false"]},
+                      launcher_argv=command, desktop_action={"provider": "applications", "id": package_id},
+                      prepared=True)
         (stage / "qualification.json").write_text(json.dumps(report, indent=2) + "\n")
         stage.rename(args.output)
     return report
@@ -184,19 +188,22 @@ def main():
         args.apk = args.apk.resolve(strict=True)
         if args.output:
             required = ("runtime_root", "runtime_receipt", "runtime_receipt_sha256",
-                        "apksigner", "signer_sha256", "activity", "workspace_id", "wayland_socket")
+                        "apksigner", "signer_sha256", "activity")
             if any(not getattr(args, key) for key in required):
-                raise ValueError("preparation requires runtime pins, signer, activity, workspace and socket")
+                raise ValueError("preparation requires runtime pins, signer and activity")
             if not re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$/]*", args.activity):
                 raise ValueError("invalid ATL activity")
-            if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", args.workspace_id):
+            if bool(args.workspace_id) != bool(args.wayland_socket):
+                raise ValueError("standalone preflight requires both workspace and socket")
+            if args.workspace_id and not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", args.workspace_id):
                 raise ValueError("invalid workspace id")
             for key in ("runtime_root", "runtime_receipt", "apksigner"):
                 setattr(args, key, getattr(args, key).resolve(strict=True))
             args.output = args.output.absolute()
-            args.wayland_socket = args.wayland_socket.absolute()
-            if not stat.S_ISSOCK(args.wayland_socket.stat().st_mode):
-                raise ValueError("qualification requires an existing isolated Wayland socket")
+            if args.wayland_socket:
+                args.wayland_socket = args.wayland_socket.absolute()
+                if not stat.S_ISSOCK(args.wayland_socket.stat().st_mode):
+                    raise ValueError("preflight requires an existing isolated Wayland socket")
             report = prepare(args)
         else:
             report = inspect_apk(args.apk, args.architecture, args.apk_sha256)
