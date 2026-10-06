@@ -4630,3 +4630,21 @@ fn check_import_of_nothing_is_a_clean_noop() {
     assert!(app.toast.is_none(), "a cancelled/empty import stays silent");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn narrow_sort_row_has_full_aligned_control_without_extra_gutters() {
+    for scale in [1.0, 2.0] {
+        let mut app = Live::sample(390, 844);
+        app.harness_mut()
+            .relayout_themed((390, 844), Theme::light().with_text_scale(scale))
+            .unwrap();
+        let row = target(&app, "contacts.sort-row");
+        let control = target(&app, "contacts.sort");
+        assert!(control.width() > 0.0 && control.height() >= 32.0);
+        assert!(control.x0 >= row.x0 && control.x1 <= row.x1);
+        assert!(control.y0 >= row.y0 && control.y1 <= row.y1);
+        assert_eq!(control.x0, row.x0, "sort aligns with its overview rail");
+        assert!(control.x0 >= 0.0 && control.x1 <= 390.0);
+        assert!(app.sort_choice.with(|value| value == "name"));
+    }
+}

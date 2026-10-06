@@ -319,3 +319,58 @@ fn timer_alarm_and_world_clock_inputs_are_bounded_and_readable() {
             .all(|zone| !zone.starts_with("Etc/"))
     );
 }
+
+#[test]
+fn staged_navigation_selection_changes_before_the_next_widget_sync() {
+    use ui::framework::ResourceSurface;
+    let mut app = TestApp::<ClocksShell>::new().unwrap();
+    app.with_surface::<super::ClocksApp, _>(|surface| {
+        for (scenario, mode) in [
+            ("timers", super::TIMERS),
+            ("world", super::WORLD),
+            ("alarms", super::ALARMS),
+            ("stopwatch", super::STOPWATCH),
+        ] {
+            surface.stage(Some(scenario));
+            assert_eq!(surface.mode.get(), mode);
+            assert_eq!(
+                surface.selection.get(),
+                Some(mode.to_string()),
+                "{scenario} must publish one selection immediately"
+            );
+        }
+    })
+    .unwrap();
+}
+
+#[test]
+fn narrow_custom_timer_fields_fit_and_start_through_real_controls() {
+    let mut app = TestApp::<ClocksShell>::capture_at(Some("timers"), (390, 844)).unwrap();
+    let harness = app.harness();
+    harness.set_interaction_environment(ui::InteractionEnvironment::TOUCH);
+    let targets = harness.targets();
+    let start = targets["clocks.timer.custom.add"];
+    assert!(
+        start.y1 <= 844.0,
+        "custom timer starts without an initially cropped form: {start:?}"
+    );
+    for (field, value) in [("hours", "2"), ("minutes", "3"), ("seconds", "4")] {
+        let id = format!("clocks.timer.custom.{field}");
+        let rect = targets[&id];
+        assert!(rect.width() > 0.0 && rect.height() >= 44.0);
+        assert!(rect.x0 >= 0.0 && rect.x1 <= 390.0);
+        harness
+            .perform_named(&id, &ui::a11y::Action::SetValue(value.into()))
+            .unwrap();
+    }
+    harness
+        .perform_named("clocks.timer.custom.add", &ui::a11y::Action::Activate)
+        .unwrap();
+    app.settle();
+    let timers = app.state();
+    assert_eq!(timers.timers.len(), 1);
+    assert_eq!(
+        timers.timers.values().next().unwrap().duration_ms,
+        7_384_000
+    );
+}

@@ -95,6 +95,8 @@ pub struct NavRowFace<'a> {
     pub count: Option<NavCount>,
     /// Nesting level below the top level of its section.
     pub depth: usize,
+    /// Quiet leading inset for destinations beneath a named section.
+    pub under_section: bool,
     /// `Some(expanded)` when the row has children.
     pub disclosure: Option<bool>,
     /// Selected (`active`), hovered, pressed.
@@ -145,6 +147,7 @@ impl<'a> NavRowFace<'a> {
             icon: None,
             count: None,
             depth: 0,
+            under_section: false,
             disclosure: None,
             state: SelectionState::default(),
             focused: false,
@@ -174,6 +177,14 @@ impl<'a> NavRowFace<'a> {
     #[must_use]
     pub fn count(mut self, count: NavCount) -> Self {
         self.count = Some(count);
+        self
+    }
+
+    /// Give rows beneath a labelled section a quiet leading inset without
+    /// changing tree depth, selection bounds or pointer targets.
+    #[must_use]
+    pub fn under_section(mut self) -> Self {
+        self.under_section = true;
         self
     }
 
@@ -619,7 +630,8 @@ fn list_layout(
     let selection = Rect::new(r.x0 + s2, r.y0 + hairline, r.x1 - s2, r.y1 - hairline);
     let mid = selection.center().y;
 
-    let mut x = selection.x0 + s2 + depth_f64(face.depth) * s4;
+    let mut x =
+        selection.x0 + s2 + depth_f64(face.depth) * s4 + if face.under_section { s1 } else { 0.0 };
     let check = face.checked.map(|_| {
         let rect = slot(x, mid, icon_side);
         x = rect.x1 + gap;
@@ -1361,6 +1373,28 @@ mod tests {
         assert!(hovered.count.is_none());
         assert_eq!(hovered.actions.len(), 1);
         assert!(hovered.label_x1 < hovered.actions[0].x0);
+    }
+
+    #[test]
+    fn section_inset_is_quiet_and_preserves_real_tree_depth_and_targets() {
+        for scale in [1.0, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut text = TextRenderer::new();
+            let face = NavRowFace::new(row(&theme), "Request").icon(Icon::File);
+            let plain = nav_row_layout(&theme, &mut text, &face);
+            let grouped = nav_row_layout(&theme, &mut text, &face.clone().under_section());
+            assert_eq!(plain.selection, grouped.selection);
+            assert_eq!(plain.label_x1, grouped.label_x1);
+            assert_eq!(
+                grouped.label_x0 - plain.label_x0,
+                f64::from(theme.tokens.spacing.s1)
+            );
+            let nested = nav_row_layout(&theme, &mut text, &face.under_section().depth(1));
+            assert_eq!(
+                nested.label_x0 - grouped.label_x0,
+                f64::from(theme.tokens.spacing.s4)
+            );
+        }
     }
 
     #[test]

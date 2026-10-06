@@ -232,6 +232,7 @@ pub struct ToggleGroup {
     /// Finger owning the current gesture. Selection commits on release, so a
     /// scroll or cancelled touch never changes tabs on initial contact.
     active_touch: Option<u64>,
+    touch_start: Option<Point>,
     /// Something that changes the measured size landed since the last layout.
     layout_dirty: bool,
     /// Focus came from a press: the ring is for keyboard focus, and returns
@@ -295,6 +296,7 @@ impl ToggleGroup {
             rows: 1,
             scroll_x: 0.0,
             active_touch: None,
+            touch_start: None,
             layout_dirty: true,
             pressed_into_focus: false,
             orientation: Orientation::Horizontal,
@@ -1657,6 +1659,34 @@ impl ToggleGroup {
         }
     }
 
+    /// One deliberate horizontal swipe advances a mode; vertical scrolling
+    /// and sub-target drags do not change selection. The caller supplies its
+    /// shared control target size rather than an app-specific threshold.
+    #[must_use]
+    pub fn swipe_selection(
+        delta: vello::kurbo::Vec2,
+        target_size: f64,
+        selected: usize,
+        count: usize,
+    ) -> Option<usize> {
+        if count == 0
+            || selected >= count
+            || delta.x.abs()
+                < target_size.max(f64::from(
+                    crate::InteractionEnvironment::TOUCH.minimum_target(),
+                ))
+            || delta.x.abs() < delta.y.abs() * 1.5
+        {
+            return None;
+        }
+        let next = if delta.x < 0.0 {
+            selected.saturating_add(1).min(count - 1)
+        } else {
+            selected.saturating_sub(1)
+        };
+        (next != selected).then_some(next)
+    }
+
     fn handle_touch_event(
         &mut self,
         touch: &winit::event::Touch,
@@ -1677,6 +1707,7 @@ impl ToggleGroup {
                 if self.active_touch.is_none() && self.rect.contains(pos) =>
             {
                 self.active_touch = Some(touch.id);
+                self.touch_start = Some(pos);
                 self.pressed_into_focus |= !self.is_focused;
                 *focus_target = Some(node_id);
                 *handled = true;
@@ -1686,17 +1717,37 @@ impl ToggleGroup {
             }
             winit::event::TouchPhase::Ended if self.active_touch == Some(touch.id) => {
                 self.active_touch = None;
-                if let Some(index) = self
-                    .segment_rects
-                    .iter()
-                    .position(|segment| segment.contains(pos))
-                {
-                    self.request_selection(index);
+                if let Some(start) = self.touch_start.take() {
+                    if self.orientation == Orientation::Horizontal
+                        && self.chosen.is_none()
+                        && let Some(index) = Self::swipe_selection(
+                            pos - start,
+                            self.metrics
+                                .height
+                                .max(StripMetrics::stock(ControlSize::Large).height),
+                            self.selected,
+                            self.segments.len(),
+                        )
+                    {
+                        self.request_selection(index);
+                    } else if (pos - start).hypot() < self.metrics.height
+                        && let Some(index) = self
+                            .segment_rects
+                            .iter()
+                            .position(|segment| segment.contains(pos))
+                    {
+                        self.request_selection(index);
+                    }
                 }
                 *handled = true;
             }
             winit::event::TouchPhase::Cancelled if self.active_touch == Some(touch.id) => {
                 self.active_touch = None;
+                self.touch_start = None;
+                *handled = true;
+            }
+            winit::event::TouchPhase::Started if self.active_touch.is_some() => {
+                self.touch_start = None;
                 *handled = true;
             }
             _ => {}
@@ -2150,6 +2201,14 @@ impl Widget for ToggleGroup {
         "ToggleGroup"
     }
 
+    fn wants_pointer_capture(&self) -> bool {
+        self.active_touch.is_some()
+    }
+
+    fn claims_raw_touch(&self, point: Point) -> bool {
+        self.rect.contains(point)
+    }
+
     fn get_rect(&self) -> Rect {
         if self.caption.is_some() {
             self.outer
@@ -2354,6 +2413,62 @@ mod tests {
     use std::rc::Rc;
     use taffy::prelude::TaffyMaxContent;
     use vello_encoding::DrawTag;
+
+    #[test]
+    fn hosted_mode_swipes_commit_once_and_reject_scroll_cancel_and_multitouch() {
+        use winit::event::TouchPhase::{Cancelled, Ended, Moved, Started};
+        let selected = crate::LocalState::new(0_usize);
+        let next = selected.clone();
+        let commits = Rc::new(RefCell::new(Vec::new()));
+        let receipts = Rc::clone(&commits);
+        let mut frame = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            ToggleGroup::new(
+                vec![
+                    Segment::new("Photo"),
+                    Segment::new("Video"),
+                    Segment::new("Scan"),
+                ],
+                0,
+            )
+            .bind_selection(&selected)
+            .on_view("camera-modes", move |index| {
+                next.set(index);
+                receipts.borrow_mut().push(index);
+            }),
+            (360, 100),
+            Theme::dark(),
+        );
+        let rect = frame.root::<ToggleGroup>().get_rect();
+        let start = rect.center();
+        frame.touch(1, Started, start.x, start.y);
+        frame.touch(1, Moved, start.x - 90.0, start.y);
+        assert_eq!(selected.get(), 0, "motion alone cannot change mode");
+        frame.touch(1, Ended, start.x - 90.0, start.y);
+        assert_eq!(selected.get(), 1);
+        frame.touch(1, Ended, start.x - 90.0, start.y);
+        assert_eq!(selected.get(), 1, "a release commits once");
+        frame.touch(2, Started, start.x, start.y);
+        frame.touch(2, Ended, start.x - 20.0, start.y + 90.0);
+        assert_eq!(selected.get(), 1, "vertical scrolling keeps the mode");
+        frame.touch(3, Started, start.x, start.y);
+        frame.touch(3, Cancelled, start.x - 90.0, start.y);
+        frame.touch(3, Ended, start.x - 90.0, start.y);
+        assert_eq!(selected.get(), 1, "cancelled swipes cannot commit");
+        frame.touch(4, Started, start.x, start.y);
+        frame.touch(5, Started, start.x, start.y);
+        frame.touch(4, Ended, start.x - 90.0, start.y);
+        frame.touch(5, Ended, start.x - 90.0, start.y);
+        assert_eq!(selected.get(), 1, "multitouch cannot change modes");
+        frame.touch(6, Started, start.x, start.y);
+        frame.touch(6, Ended, start.x + 90.0, start.y);
+        assert_eq!(selected.get(), 0, "right swipe selects the previous mode");
+        assert_eq!(
+            &*commits.borrow(),
+            &[1, 0],
+            "only two deliberate swipes invoke the real view operation"
+        );
+    }
 
     /// Fixed rect so tests can simulate clicks without a full taffy pass.
     fn group_at(segments: Vec<Segment>, selected: usize, rect: Rect) -> ToggleGroup {
