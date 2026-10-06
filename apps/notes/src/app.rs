@@ -2218,10 +2218,18 @@ impl Widget for NotesApp {
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        // A scheduled sync only presents when update reports a change. Mark
+        // the expired chip dirty so reduced motion still removes it; paint
+        // consumes its deadline, leaving an idle window asleep afterward.
+        let feedback_expired = self
+            .save_surface
+            .next_wake_deadline()
+            .is_some_and(|deadline| deadline <= ui::time::now());
+        self.self_dirty |= feedback_expired;
         // The retained shell owns queued header views, responsive bindings
         // and navigation. It participates in the same lifecycle as the
         // separately projected notebook content in its column slots.
-        self.shell.update(state, path)
+        self.shell.update(state, path) || feedback_expired
     }
 
     fn native_input_snapshot(
@@ -2481,11 +2489,17 @@ impl Widget for NotesApp {
     }
 
     fn has_pending_visual_work(&self) -> bool {
-        self.save_surface.needs_frame(ui::time::now())
+        self.children()
+            .iter()
+            .any(|child| child.has_pending_visual_work())
+    }
+
+    fn has_transient_feedback(&self) -> bool {
+        self.save_surface.next_wake_deadline().is_some()
             || self
                 .children()
                 .iter()
-                .any(|child| child.has_pending_visual_work())
+                .any(|child| child.has_transient_feedback())
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -3695,7 +3709,7 @@ mod tests {
 
         eprintln!("phase reduced_motion_stops_notes_owned_status_bubble_frames");
         {
-            let (mut app, _state, _tmp, _) = app_seeded_into_doc();
+            let (mut app, state, _tmp, _) = app_seeded_into_doc();
             app.theme.reduce_motion = false;
             app.shots_save_status = Some(SaveStatus::Saved);
             app.refresh_status();
@@ -3712,9 +3726,14 @@ mod tests {
                 "the reduced-motion chip must still schedule its removal"
             );
             assert!(
-                app.has_pending_visual_work(),
-                "a transient chip is not a settled scene"
+                app.has_transient_feedback(),
+                "scene comparisons must observe the transient chip"
             );
+            assert!(
+                !app.has_pending_visual_work(),
+                "captures can include save feedback without waiting out its lifetime"
+            );
+            assert_expired_save_feedback_presents(&mut app, &state);
         }
 
         eprintln!("phase unchanged_document_heads_skip_full_search_snapshot_work");
@@ -3725,6 +3744,31 @@ mod tests {
             app.refresh_search_blocks(&state.doc);
             assert!(app.search_blocks.is_empty());
         }
+    }
+
+    fn assert_expired_save_feedback_presents(app: &mut NotesApp, state: &ui::State) {
+        app.save_surface.poke(
+            ui::time::now()
+                .checked_sub(ui::time::Duration::from_secs(3))
+                .expect("the test clock can age the transient chip"),
+        );
+        app.mark_drawn();
+        assert!(!app.self_dirty);
+        assert!(
+            app.update(&state.doc, &state.root),
+            "deadline sync must request the chip-removal frame"
+        );
+        assert!(app.self_dirty, "the native host must present the change");
+        app.draw_status_bubble(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::default(),
+        );
+        assert!(
+            app.save_surface.next_wake_deadline().is_none(),
+            "painting the removal consumes the one-shot wake"
+        );
     }
 
     /// A notebook holding one "Welcome" note of several paragraphs, and the

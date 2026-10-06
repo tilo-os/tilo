@@ -2904,6 +2904,9 @@ mod tests {
         fn has_pending_visual_work(&self) -> bool {
             self.pending_control
         }
+        fn has_transient_feedback(&self) -> bool {
+            self.pending_control
+        }
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -3033,10 +3036,18 @@ mod tests {
             !group.has_pending_visual_work(),
             "inactive work must not hold the active scene unsettled"
         );
+        assert!(
+            !group.has_transient_feedback(),
+            "inactive feedback is not part of the presented scene"
+        );
         group.bar.set_active(2);
         assert!(
             group.has_pending_visual_work(),
             "the same work counts when its tab becomes visible"
+        );
+        assert!(
+            group.has_transient_feedback(),
+            "the same feedback counts when its tab becomes visible"
         );
 
         for hits in [active, inactive] {

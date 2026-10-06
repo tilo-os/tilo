@@ -471,7 +471,7 @@ fn build_settled_workspace_settings_host(
         );
         host.set_motion_reduced(true);
         let _ = render_host_to_scene(&mut host);
-        if !host.has_pending_visual_work() {
+        if !host.has_pending_visual_work() && !host.has_transient_feedback() {
             break;
         }
         assert!(
@@ -485,7 +485,7 @@ fn build_settled_workspace_settings_host(
 }
 
 fn pending_visual_names(widget: &dyn Widget) -> Vec<String> {
-    if !widget.has_pending_visual_work() {
+    if !widget.has_pending_visual_work() && !widget.has_transient_feedback() {
         return Vec::new();
     }
     let mut names = vec![format!("{}:{:?}", widget.name(), widget.test_id())];
