@@ -2,6 +2,24 @@
 use std::sync::Arc;
 use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceTaskStatus};
 
+pub use crate::collab_broker_capnp::workspace_messages::AgentMessagePublisherInstallation;
+
+/// Private native installation door. Applications never receive this service
+/// or a constructor for its broker-owned installation request.
+pub trait WorkspaceMessages: Send + Sync {
+    fn requires_room(&self, room: &str) -> bool;
+
+    /// Register the actual admitted worker, directory, and stable stream with
+    /// the canonical owner. The returned lease is not serializable.
+    ///
+    /// # Errors
+    /// Refuses absent, retired, or non-local native owner custody.
+    fn install_publisher(
+        &self,
+        request: &AgentMessagePublisherInstallation,
+    ) -> Result<tilo_joined_room::AgentMessagePublisherLease, String>;
+}
+
 /// The normal desktop opening deadline, shared with placement retirement.
 pub const APPLICATION_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
@@ -810,6 +828,7 @@ pub struct HostServices {
     pub desktop_commands: Option<Arc<dyn DesktopCommands>>,
     pub workspace_memberships: Option<Arc<dyn WorkspaceMemberships>>,
     pub workspace_tasks: Option<Arc<dyn WorkspaceTasks>>,
+    pub workspace_messages: Option<Arc<dyn WorkspaceMessages>>,
     /// Documents proposed into the room and the owner's answers. Without it
     /// nothing can be proposed.
     pub document_imports: Option<Arc<dyn DocumentImports>>,

@@ -2,6 +2,7 @@
 //! Adapters from the shared broker to the native session's existing services.
 use super::state::WorkspaceAuthority as _;
 use super::state::WorkspaceTreeHandle;
+mod agent_messages;
 #[cfg(target_os = "linux")]
 pub(crate) mod agent_runtime;
 #[cfg(target_os = "linux")]
@@ -1508,6 +1509,9 @@ pub(crate) fn native_services_with_agent_runtime(
     let workspace_tasks = owner
         .as_ref()
         .map(|service| service.clone() as Arc<dyn WorkspaceTasks>);
+    let workspace_messages = owner
+        .as_ref()
+        .map(|service| service.clone() as Arc<dyn tilo_action_broker::services::WorkspaceMessages>);
     drop(owner);
     let governance = membership.as_ref().map(|tree| {
         Arc::new(NativeWorkspaceGovernance(tree.clone(), network.clone()))
@@ -1534,6 +1538,7 @@ pub(crate) fn native_services_with_agent_runtime(
         app_action_grants,
         committed_documents,
         workspace_tasks,
+        workspace_messages,
         workspace_memberships,
         resource_views,
         desktop_commands: None,

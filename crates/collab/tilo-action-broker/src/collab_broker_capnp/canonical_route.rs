@@ -13,6 +13,7 @@ struct Publisher {
     registration: uuid::Uuid,
     worker: uuid::Uuid,
     ordinal: u64,
+    message_lease: Option<tilo_joined_room::AgentMessagePublisherLease>,
 }
 
 #[derive(Clone)]
@@ -27,10 +28,36 @@ pub(super) struct CanonicalDirectories {
     next_ordinal: u64,
     publishers: HashMap<u64, Publisher>,
     selected: HashMap<(String, String, String), Selection>,
+    streams: HashMap<u64, std::sync::Arc<super::workspace_messages::MessagePublisherStream>>,
 }
 
 impl CanonicalDirectories {
-    pub(super) fn stream_replaced(&mut self, peer: u64) {
+    pub(super) fn retire_message_publishers(&self) {
+        for stream in self.streams.values() {
+            stream.retire();
+        }
+        for publisher in self.publishers.values() {
+            if let Some(lease) = publisher.message_lease.as_ref() {
+                lease.retire();
+            }
+        }
+    }
+
+    pub(super) fn stream_replaced(&mut self, peer: u64, stable: bool) {
+        if let Some(stream) = self.streams.remove(&peer) {
+            stream.retire();
+        }
+        if let Some(publisher) = self.publishers.get_mut(&peer)
+            && let Some(lease) = publisher.message_lease.take()
+        {
+            lease.retire();
+        }
+        if stable {
+            self.streams.insert(
+                peer,
+                std::sync::Arc::new(super::workspace_messages::MessagePublisherStream::new()),
+            );
+        }
         // A new stable stream cannot resurrect a token issued for a receiver
         // that has since closed, even if no query observed the closed interval.
         for selected in self
@@ -42,8 +69,21 @@ impl CanonicalDirectories {
         }
     }
     pub(super) fn remove(&mut self, peer: u64) {
-        self.publishers.remove(&peer);
+        if let Some(publisher) = self.publishers.remove(&peer)
+            && let Some(lease) = publisher.message_lease
+        {
+            lease.retire();
+        }
+        if let Some(stream) = self.streams.remove(&peer) {
+            stream.retire();
+        }
         self.selected.retain(|_, selection| selection.peer != peer);
+    }
+}
+
+impl Drop for CanonicalDirectories {
+    fn drop(&mut self) {
+        self.retire_message_publishers();
     }
 }
 
@@ -62,6 +102,18 @@ fn route_key(route: &CrdtRoute) -> (String, String, String) {
 }
 
 impl CapnpBrokerState {
+    pub(super) fn message_publisher_stream(
+        &self,
+        peer: u64,
+    ) -> Option<std::sync::Arc<super::workspace_messages::MessagePublisherStream>> {
+        self.canonical_directories
+            .lock()
+            .ok()?
+            .streams
+            .get(&peer)
+            .cloned()
+    }
+
     pub(super) fn register_canonical_directory(
         &self,
         peer: u64,
@@ -99,6 +151,11 @@ impl CapnpBrokerState {
                 .ok_or("canonical directory admission order exhausted")?;
             directories.next_ordinal
         };
+        if let Some(previous) = directories.publishers.remove(&peer)
+            && let Some(lease) = previous.message_lease
+        {
+            lease.retire();
+        }
         directories.publishers.insert(
             peer,
             Publisher {
@@ -106,6 +163,7 @@ impl CapnpBrokerState {
                 registration,
                 worker: worker.identity,
                 ordinal,
+                message_lease: None,
             },
         );
         // Replacing a directory invalidates its old token even at the same
@@ -118,6 +176,46 @@ impl CapnpBrokerState {
             selected.registration = registration;
             selected.token = uuid::Uuid::new_v4();
         }
+        drop(directories);
+        self.install_message_publisher(peer)?;
+        Ok(())
+    }
+
+    pub(super) fn install_message_publisher(&self, peer: u64) -> Result<(), String> {
+        let Some(service) = self.services.workspace_messages.as_ref() else {
+            return Ok(());
+        };
+        let mut directories = self
+            .canonical_directories
+            .lock()
+            .map_err(|_| "canonical directory registry unavailable")?;
+        let Some(stream) = directories.streams.get(&peer).cloned() else {
+            return Ok(());
+        };
+        let Some(publisher) = directories.publishers.get_mut(&peer) else {
+            return Ok(());
+        };
+        if publisher.message_lease.is_some()
+            || publisher.route.app_id != "so.tilo.chat"
+            || !publisher.route.record_id.is_empty()
+            || !service.requires_room(&publisher.route.cluster_id)
+        {
+            return Ok(());
+        }
+        let room = tilo_desktop_model::RoomId::parse(&publisher.route.cluster_id)
+            .ok_or("invalid native Message publisher room")?;
+        let request = super::workspace_messages::AgentMessagePublisherInstallation {
+            data: tilo_joined_room::AgentMessagePublisherData {
+                room,
+                worker: publisher.worker,
+                directory: publisher.registration,
+                stream: stream.identity,
+                installation: uuid::Uuid::new_v4(),
+            },
+        };
+        let lease = service.install_publisher(&request)?;
+        stream.install(lease.clone())?;
+        publisher.message_lease = Some(lease);
         drop(directories);
         Ok(())
     }

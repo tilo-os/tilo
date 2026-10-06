@@ -35,6 +35,8 @@ mod published_invocation;
 mod resolved_invocation;
 #[path = "workspace_memberships.rs"]
 mod workspace_memberships;
+#[path = "workspace_messages.rs"]
+pub(crate) mod workspace_messages;
 #[path = "workspace_tasks.rs"]
 mod workspace_tasks;
 pub use crate::services::LaunchScope;
@@ -3076,6 +3078,9 @@ impl CapnpBrokerState {
             };
         }
         self.execution_activity.close();
+        if let Ok(directories) = self.canonical_directories.lock() {
+            directories.retire_message_publishers();
+        }
         clear!(self.host_workers);
         clear!(self.channels);
         clear!(self.surfaces);
@@ -8656,12 +8661,15 @@ impl channel_handle::Server for CapnpChannelHandle {
             return Promise::err(error);
         }
         if let Ok(mut directories) = self.state.canonical_directories.lock() {
-            directories.stream_replaced(self.peer_id);
+            directories.stream_replaced(self.peer_id, stable);
         } else {
             return Promise::err(capnp::Error::failed(
                 "canonical stream registry unavailable".into(),
             ));
         }
+        let provisional = workspace_messages::ProvisionalMessagePublisherStream::new(
+            self.state.message_publisher_stream(self.peer_id),
+        );
         if let Ok(mut capabilities) = self.state.stable_invocation_subscribers.lock() {
             if stable {
                 capabilities.insert(self.peer_id);
@@ -8681,6 +8689,9 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "invocation subscriber registry unavailable".into(),
             ));
         }
+        if let Err(error) = self.state.install_message_publisher(self.peer_id) {
+            return Promise::err(capnp::Error::failed(error));
+        }
         drop(admission);
         // The app the launcher attested, else the one this channel names.
         let (app, room) = self
@@ -8696,6 +8707,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             );
         let delivered = invocation_delivery_notice(&self.state.services, app, room);
         let client: invocation_stream::Client = capnp_rpc::new_client(InvocationStreamServer {
+            message_publisher: provisional.transfer(),
             host_guard: HostWorkerReadGuard::for_channel(
                 &self.state,
                 self.peer_id,
@@ -10868,10 +10880,19 @@ fn invocation_delivery_notice(
 }
 
 struct InvocationStreamServer {
+    message_publisher: Option<Arc<workspace_messages::MessagePublisherStream>>,
     host_guard: Option<HostWorkerReadGuard>,
     rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<InvocationEnvelope>>>,
     /// Told each time an invocation is handed to the app.
     delivered: Option<Box<dyn Fn()>>,
+}
+
+impl Drop for InvocationStreamServer {
+    fn drop(&mut self) {
+        if let Some(publisher) = self.message_publisher.as_ref() {
+            publisher.retire();
+        }
+    }
 }
 
 struct TaskRunStreamServer {
@@ -13447,6 +13468,8 @@ pub mod tests {
     include!("reliable_resolution_tests.rs");
     #[cfg(test)]
     include!("canonical_route_tests.rs");
+    #[cfg(test)]
+    include!("workspace_message_publisher_tests.rs");
     #[cfg(test)]
     include!("durable_local_invocation_matrix_tests.rs");
     #[cfg(test)]
@@ -16668,6 +16691,7 @@ pub mod tests {
                         )));
                         let stream: invocation_stream::Client =
                             capnp_rpc::new_client(InvocationStreamServer {
+                                message_publisher: None,
                                 host_guard: None,
                                 rx: rx.clone(),
                                 delivered: None,
@@ -16809,6 +16833,7 @@ pub mod tests {
                     )));
                     let stream: invocation_stream::Client =
                         capnp_rpc::new_client(InvocationStreamServer {
+                            message_publisher: None,
                             host_guard: None,
                             rx: rx.clone(),
                             delivered: None,
@@ -17166,6 +17191,7 @@ pub mod tests {
                     let (tx, rx) = mpsc::unbounded_channel();
                     let stream: invocation_stream::Client =
                         capnp_rpc::new_client(InvocationStreamServer {
+                            message_publisher: None,
                             host_guard: None,
                             rx: Rc::new(AsyncMutex::new(rx)),
                             delivered: invocation_delivery_notice(

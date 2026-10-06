@@ -339,7 +339,17 @@ impl OriginalRoom {
         expires_at_ns: Option<u64>,
         persist_path: Option<std::path::PathBuf>,
     ) -> Self {
-        Self::hosting(capabilities, expires_at_ns, persist_path, None)
+        Self::hosting(capabilities, expires_at_ns, persist_path, None, None)
+    }
+
+    pub fn with_message_service(service: Arc<dyn crate::services::WorkspaceMessages>) -> Self {
+        Self::hosting(
+            DeviceCapabilities::primary(),
+            None,
+            None,
+            None,
+            Some(service),
+        )
     }
 
     /// The room on a host that keeps record content through `content`:
@@ -353,6 +363,7 @@ impl OriginalRoom {
             None,
             None,
             Some((content, room)),
+            None,
         )
     }
 
@@ -364,6 +375,7 @@ impl OriginalRoom {
             Arc<crate::record_content::RouteContent>,
             Option<tilo_desktop_model::RoomId>,
         )>,
+        messages: Option<Arc<dyn crate::services::WorkspaceMessages>>,
     ) -> Self {
         let (record_content, room) = record_content.unzip();
         let root = SigningKey::from_bytes(&[83; 32]);
@@ -378,6 +390,10 @@ impl OriginalRoom {
         if let Some(room) = room.flatten() {
             workspace.room = room;
         }
+        if messages.is_some() {
+            workspace.room =
+                tilo_desktop_model::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
+        }
         workspace.set_owner(principal_id_for_root(cert.user_public_key));
         workspace.owner = None;
         workspace.capabilities = workspace
@@ -385,11 +401,15 @@ impl OriginalRoom {
             .into_iter()
             .map(|cap| cap.with_expiry(100))
             .collect();
-        let route = CrdtRoute::record(
-            "so.tilo.word-processor",
-            workspace.room.to_string(),
-            "document-1",
-        );
+        let route = if messages.is_some() {
+            CrdtRoute::record("so.tilo.chat", workspace.room.to_string(), "")
+        } else {
+            CrdtRoute::record(
+                "so.tilo.word-processor",
+                workspace.room.to_string(),
+                "document-1",
+            )
+        };
         let mut tree = crate::test_support::WorkspaceTree::default();
         tree.workspaces.push(workspace);
         tree.persist_path = persist_path;
@@ -401,6 +421,7 @@ impl OriginalRoom {
             PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(owner_handle));
         let mut services = membership.services();
         services.record_content = record_content;
+        services.workspace_messages = messages;
         let (state, bridge_rx) = CapnpBrokerState::new_configured(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
