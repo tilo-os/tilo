@@ -60,8 +60,8 @@ pub const SHELL_UI_SERVICE: &str = "shell-ui";
 /// This names the app before descriptor handoff; it is independent of the
 /// versioned requests the authenticated app subsequently sends.
 pub const SHELL_UI_LAUNCH_PROTOCOL: u16 = 1;
-/// The session shell's own file choosers, for sessions without a desktop
-/// portal (`tilo_dialogs::shell`). Not declared by manifests: every app
+/// The session shell's authenticated file chooser (`tilo_dialogs::shell`),
+/// served alongside any desktop portal. Not declared by manifests: every app
 /// launched into a room is handed a connection naming itself and the room.
 pub const CHOOSER_SERVICE: &str = "chooser";
 const CHOOSER_PROTOCOL: u16 = 1;
@@ -364,8 +364,8 @@ pub fn chooser_handshake(app_id: &str, workspace_id: &str) -> serde_json::Result
 /// Connect the session shell's chooser service on the app's behalf and name
 /// the app and its room before the sandboxed app can write to it.
 ///
-/// A launch outside a room, or a session whose shell serves no chooser (it
-/// has a desktop portal), degrades to `Ok(None)`.
+/// A launch outside a room, or a session whose shell serves no chooser,
+/// degrades to `Ok(None)`.
 ///
 /// # Errors
 ///
@@ -1171,7 +1171,7 @@ mod tests {
                     Some("room-7"),
                     false
                 )
-                .expect("a shell with a portal serves no chooser")
+                .expect("an absent chooser service gives no connection")
                 .is_none()
             );
         }

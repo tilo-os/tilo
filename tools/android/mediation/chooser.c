@@ -2,6 +2,9 @@
 // No filesystem or D-Bus fallback. Only an inherited authenticated connection.
 #define _GNU_SOURCE
 #include <jni.h>
+#include <gio/gio.h>
+#include <gtk/gtk.h>
+#include <stdint.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -12,6 +15,68 @@
 
 #define FRAME_LIMIT 65536
 static int connection = -2;
+
+// ATL wraps its GtkLabel inside a generic WrapperWidget and GtkBox. Generic
+// roles do not expose an accessible name. Label the TextView's real semantic
+// widget, using only public GTK child traversal and a bounded depth.
+static GtkWidget *text_label(GtkWidget *widget, int depth) {
+    if (GTK_IS_LABEL(widget)) return widget;
+    if (!depth) return NULL;
+    int children = 0;
+    for (GtkWidget *child = gtk_widget_get_first_child(widget); child && children++ < 32;
+         child = gtk_widget_get_next_sibling(child)) {
+        GtkWidget *label = text_label(child, depth - 1);
+        if (label) return label;
+    }
+    return NULL;
+}
+
+JNIEXPORT void JNICALL Java_android_app_TiloAccessibility_describeNative(JNIEnv *env, jclass klass,
+        jlong widget, jstring label, jboolean text_view) {
+    (void)klass;
+    GtkAccessible *accessible = (GtkAccessible *)(uintptr_t)widget;
+    if (!accessible || !GTK_IS_ACCESSIBLE(accessible)) return;
+    if (text_view) {
+        GtkWidget *target = text_label(GTK_WIDGET(accessible), 3);
+        if (!target) return;
+        accessible = GTK_ACCESSIBLE(target);
+    }
+    if (!label) {
+        gtk_accessible_reset_property(accessible, GTK_ACCESSIBLE_PROPERTY_LABEL);
+        return;
+    }
+    jsize length = (*env)->GetStringLength(env, label);
+    if (length > 4096) return;
+    const jchar *characters = (*env)->GetStringChars(env, label, NULL);
+    if (!characters) return;
+    gchar *text = g_utf16_to_utf8((const gunichar2 *)characters, length, NULL, NULL, NULL);
+    (*env)->ReleaseStringChars(env, label, characters);
+    if (!text) return;
+    gtk_accessible_update_property(accessible, GTK_ACCESSIBLE_PROPERTY_LABEL, text, -1);
+    g_free(text);
+}
+
+// Reuse ATL's already registered GApplication connection. The launcher exposes
+// this bus only through its filtered proxy; without a declared via-host portal
+// the notification query is denied. Never open another bus or activate a daemon.
+JNIEXPORT jboolean JNICALL Java_android_app_TiloChooser_notificationServiceAvailable(JNIEnv *env, jclass klass) {
+    (void)env;
+    (void)klass;
+    GApplication *application = g_application_get_default();
+    if (!application || !g_application_get_is_registered(application)) return JNI_FALSE;
+    GDBusConnection *bus = g_application_get_dbus_connection(application);
+    if (!bus) return JNI_FALSE;
+    GVariant *reply = g_dbus_connection_call_sync(bus, "org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications", "org.freedesktop.Notifications",
+        "GetServerInformation", NULL, G_VARIANT_TYPE("(ssss)"),
+        G_DBUS_CALL_FLAGS_NO_AUTO_START, 2000, NULL, NULL);
+    if (!reply) return JNI_FALSE;
+    const char *name, *vendor, *version, *spec;
+    g_variant_get(reply, "(&s&s&s&s)", &name, &vendor, &version, &spec);
+    gboolean qualified = g_str_equal(name, "Tilo Notifications") && g_str_equal(vendor, "Tilo");
+    g_variant_unref(reply);
+    return qualified ? JNI_TRUE : JNI_FALSE;
+}
 
 static long milliseconds(void) {
     struct timespec now;

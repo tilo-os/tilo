@@ -3,7 +3,7 @@
 This is a private runtime integration and an owned SDK-built test APK. It is not
 an installed Tilo app, a package-store publisher, or a general Android framework.
 
-`patch_framework.py` checks exact SHA-256 pins for the three modified Java sources
+`patch_framework.py` checks exact SHA-256 pins for the five modified Java sources
 from ATL commit `f4622e36186f5757b75a605deff543145df3094b` before changing anything.
 Upstream Java sources retain GPL-3.0-only licensing. The added chooser and fixture
 sources carry MIT notices. No upstream or built framework/APK binary is vendored.
@@ -17,17 +17,24 @@ failure closes the stream permanently so a late reply cannot satisfy another
 request. Requests serialize off the UI thread; a finishing activity gets no reply.
 Multiple selection and persisted Android URI permissions are unsupported.
 
-Notification APIs report unavailable and suppress send/cancel while there is no
-qualified capability mapping. The entrypoint forces GIO's portal backend, retaining
-the launcher's filtered-bus policy. It never requests the raw desktop bus or adds
-a manifest portal grant. Notification delivery/actions are not qualified here.
+Notification APIs check Tilo's existing provider over the already registered
+GApplication filtered bus. Explicit fixture preparation with `--notifications`
+declares only the existing `notifications = "via-host"` portal; the default declares
+none. The entry selects the freedesktop backend, which remains behind the launcher
+filter. Actual delivery and withdrawal, with authenticated room attribution, are
+qualified. Notification tags, actions and background persistence are not.
+
+Android content descriptions propagate through GTK's existing AT-SPI tree.
+TextView labels retain them after text changes; the external client must observe
+the expected semantic name. This is representative coverage, not a complete
+Android accessibility/resource bridge.
 
 ## Build and stage
 
 Run on the approved remote builder in a **disposable rootless Alpine container**
 with two CPUs, 2 GiB memory and 256 PIDs. Use the official immutable base recorded
 in `docs/android-compatibility.md`, signed Alpine repositories and pinned
-`art_standalone-dev=0_git20251009-r2`, plus `openjdk17-jdk`, `build-base`, `python3`.
+`art_standalone-dev=0_git20251009-r2`, plus `openjdk17-jdk`, `build-base`, `python3`, `glib-dev`, `gtk4.0-dev`, `pkgconf`.
 Keep the unmodified primary-source archive and the complete package/provenance
 record. `build_framework.sh PINNED_SOURCE NEW_OUTPUT` compiles all framework Java
 sources and the private JNI chooser library with strict C warnings. It refuses an
@@ -58,19 +65,32 @@ the shell action and checks pause/stop/destroy ordering and Landlock evidence.
 It tears down only its owned compositor and records exact production binary and
 PNG hashes. A failed journey writes no successful acceptance record.
 
+For the successful path, prepare `IntegrationActivity` with `--notifications`,
+then use `tools/android/run_integration_journey.py --fixture-grants --help`.
+The explicit flag authorizes only newly created fixture source-read/output-write
+grants. The runner uses an owned bus, selects the real picker controls through
+external AT-SPI, checks notification delivery and withdrawal, exact document
+bytes, read-only/sibling denials, close lifecycle and external content description,
+revokes both grants, then relaunches and requires former URI read/write denials.
+It always revokes outstanding fixture grants and stops its owned processes.
+See `docs/verification/android-integration` for actual results and original PNGs.
+
 ## Acceptance checklist
 
 - [x] Actual unchanged Arity APK calculation, persistence and separate room state.
 - [x] Actual SDK-built APK sees storage/camera/microphone/location denial.
 - [x] Runtime permission request delivers matching denied callback results.
 - [x] Document intent reaches authenticated chooser; no grant yields cancel/no URI.
-- [x] Notifications advertise unavailable; no raw-bus fallback or added host grant.
-- [x] Real close invokes pause, stop and destroy in order; owned session cleans up.
-- [ ] Actual APK selects and reads/writes an already-approved hydrated document.
-- [ ] Revocation and persisted URI authority have qualified Android semantics.
-- [ ] Notification identity, actions, cancellation and delivery reach Tilo resources.
-- [ ] Compositor loss, room stop, background services and updates are qualified.
-- [ ] Real-device GPU/DRM, ARM64, touch/IME and Android accessibility integration.
+- [x] Actual approved local fixture document read/write through Android ContentResolver.
+- [x] Read-only source write and ungranted sibling access fail with unchanged bytes.
+- [x] Grants revoked; relaunch denies read/write to former URIs and chooser cancels.
+- [x] Filtered notification delivery/withdrawal reaches Tilo with room attribution.
+- [x] External AT-SPI client selects real picker controls and observes Android TextView description.
+- [x] Real close invokes pause, stop and destroy; owned session/bus clean up.
+- [ ] Cold P2P hydration, persisted URI authority and already-open FD revocation.
+- [ ] Full notification identity/tags, actions and background persistence.
+- [ ] Compositor loss, room stop, background services and updates.
+- [ ] Real-device GPU/DRM, ARM64, touch/IME and complete Android accessibility/resources.
 
-The checked items are bounded x86-64 software/headless evidence. The remaining
-items are work still to implement and execute, not an external runtime blocker.
+The checked items are bounded x86-64 software/headless execution evidence.
+Remaining items are additional platform implementation and qualification scope.

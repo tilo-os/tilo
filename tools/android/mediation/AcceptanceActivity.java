@@ -39,11 +39,11 @@ public final class AcceptanceActivity extends Activity {
                 "null permission was not denied");
         NotificationManager notifications = (NotificationManager)getSystemService(NOTIFICATION_SERVICE);
         require(!notifications.areNotificationsEnabled(), "unqualified notifications advertised enabled");
-        require("portal".equals(System.getenv("GNOTIFICATION_BACKEND")), "notification backend bypass");
+        require("freedesktop".equals(System.getenv("GNOTIFICATION_BACKEND")), "notification backend bypass");
         notifications.notify(7, new Notification.Builder(this).setContentTitle("Android acceptance")
                 .setContentText("No host bus grant").build());
         notifications.cancel(7);
-        record("acceptance.txt", "notification-capability=unavailable;backend=portal");
+        record("acceptance.txt", "notification-capability=unavailable;backend=filtered-Tilo");
         requestPermissions(new String[] {"android.permission.CAMERA", "android.permission.WRITE_EXTERNAL_STORAGE"}, 19);
         startActivityForResult(new Intent("android.intent.action.OPEN_DOCUMENT").setType("text/plain"), 23);
     }

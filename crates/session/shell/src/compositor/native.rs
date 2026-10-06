@@ -1136,8 +1136,9 @@ fn app_local_to_desktop(rect: Rect, app_rect: Rect) -> Rect {
     rect + app_rect.origin().to_vec2()
 }
 
-/// Serve the shell's own file choosers when apps have no portal to reach: no
-/// session bus, as on a provider's headless guest. `attended` says whether an
+/// Serve the authenticated, workspace-scoped chooser connection alongside
+/// any desktop portal. Legacy runtimes may use this connection for documents
+/// while using the filtered session bus for notifications. `attended` says whether an
 /// agent is driving the screen; an unattended session (one that saves into
 /// `TILO_SAVE_DIRECTORY`) otherwise leaves its choosers to the apps.
 fn start_chooser_service(
@@ -1145,9 +1146,6 @@ fn start_chooser_service(
     attended: Arc<AtomicBool>,
     wake: crate::session_runtime::Wake,
 ) -> Option<crate::compositor::chooser_service::ChooserService> {
-    if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some_and(|address| !address.is_empty()) {
-        return None;
-    }
     let portal = portal?;
     let save_directory = std::env::var_os(tilo_dialogs::portal::SAVE_DIRECTORY_ENV)
         .filter(|directory| !directory.is_empty())

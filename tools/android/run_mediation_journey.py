@@ -67,7 +67,7 @@ def main():
                     return files[0] if len(files) == 1 and 'complete=true' in files[0].read_text() else None
                 acceptance = wait_for(accepted, 'actual Android permission and picker callbacks')
                 text = acceptance.read_text()
-                expected = ['notification-capability=unavailable;backend=portal',
+                expected = ['notification-capability=unavailable;backend=filtered-Tilo',
                     'permissions=denied;callback=19', 'picker=cancelled;callback=23;uri=none', 'complete=true']
                 if sorted(text.splitlines()) != sorted(expected):
                     raise RuntimeError('unexpected Android API results: ' + text)

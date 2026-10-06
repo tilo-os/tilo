@@ -149,6 +149,8 @@ def prepare(args):
         manifest = ('[package]\n' + f'id = "{package_id}"\nversion = "0.0.0"\n'
                     '[entrypoint]\nbin = "runtime/bin/android-translation-layer"\n'
                     '[sandbox]\nseccomp = "tilo-default"\n[sandbox.net]\nmode = "off"\n')
+        if getattr(args, 'notifications', False):
+            manifest += '[sandbox.portals]\nnotifications = "via-host"\n'
         (stage / "tilo.toml").write_text(manifest)
         (stage / "activity.txt").write_text(args.activity + "\n")
         # These are argv tokens, never a shell command. The normal launcher supplies
@@ -158,6 +160,7 @@ def prepare(args):
                    "--workspace-id", args.workspace_id,
                    "--wayland-socket", str(args.wayland_socket)] if args.wayland_socket else None
         report.update(signature_verified=True, signer_sha256=args.signer_sha256,
+                      notification_provider_declared=getattr(args, 'notifications', False),
                       runtime_receipt_sha256=args.runtime_receipt_sha256,
                       runtime_policy={"activity": args.activity,
                                       "art_options": ["-Xnoimage-dex2oat", "-Xusejit:false"]},
@@ -181,6 +184,8 @@ def main():
     parser.add_argument("--apksigner", type=Path)
     parser.add_argument("--signer-sha256")
     parser.add_argument("--activity", help="explicit slash-separated ATL activity")
+    parser.add_argument("--notifications", action="store_true",
+                        help="explicitly declare filtered host notifications in this developer fixture")
     parser.add_argument("--workspace-id")
     parser.add_argument("--wayland-socket", type=Path)
     args = parser.parse_args()

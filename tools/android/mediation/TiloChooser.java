@@ -13,6 +13,23 @@ final class TiloChooser {
     private static boolean loaded;
     private static boolean broken;
     private static native byte[] exchange(byte[] request);
+    private static native boolean notificationServiceAvailable();
+
+    static synchronized void loadBridge() {
+        if (loaded) return;
+        String library = System.getenv("TILO_ANDROID_CHOOSER_LIBRARY");
+        if (library == null) throw new IllegalStateException("no Tilo mediation bridge");
+        System.load(library);
+        loaded = true;
+    }
+
+    static boolean notificationsAvailable() {
+        try {
+            loadBridge();
+            return "freedesktop".equals(System.getenv("GNOTIFICATION_BACKEND")) &&
+                    notificationServiceAvailable();
+        } catch (Exception unavailable) { return false; }
+    }
 
     private static synchronized String ask(int action, String mime, String name) throws Exception {
         if (broken) throw new IllegalStateException("chooser stream is unusable");
@@ -21,12 +38,7 @@ final class TiloChooser {
     }
 
     private static String exchangeRequest(int action, String mime, String name) throws Exception {
-        if (!loaded) {
-            String library = System.getenv("TILO_ANDROID_CHOOSER_LIBRARY");
-            if (library == null) throw new IllegalStateException("no Tilo chooser bridge");
-            System.load(library);
-            loaded = true;
-        }
+        loadBridge();
         if (action < 0 || action > 2) throw new IllegalArgumentException("unsupported chooser");
         long id = nextId++;
         JSONObject request = new JSONObject();

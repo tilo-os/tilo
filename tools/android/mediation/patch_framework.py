@@ -10,7 +10,9 @@ import shutil
 
 PINS = {'src/api-impl/android/app/Activity.java': 'b696fd26674c5549fe9956511fde168840ae514d8e9f71525966a96bc21731e2',
  'src/api-impl/android/app/NotificationManager.java': 'ed4939335389b7efbf9e0c405d92db43a62a642ede049092e1cd983d3e29d9aa',
- 'src/api-impl/android/content/pm/PackageManager.java': '0ce023e27cb636d9a3944ad83607b2bdc4f474385dcb2eab0c0b05db8465c583'}
+ 'src/api-impl/android/content/pm/PackageManager.java': '0ce023e27cb636d9a3944ad83607b2bdc4f474385dcb2eab0c0b05db8465c583',
+ 'src/api-impl/android/view/View.java': '2efcb76f87b12ed72c3ac7b25971487efe3fea849a2f9ff141238cce62f4f25d',
+ 'src/api-impl/android/widget/TextView.java': 'd651d6894113c0ffedd1232b8a7c21f8e5e855448a2e89136c47beff0c6d20cf'}
 
 
 def patch(root):
@@ -50,13 +52,32 @@ def patch(root):
     manager.write_text(text)
     notification = root / 'src/api-impl/android/app/NotificationManager.java'
     text = notification.read_text().replace('public boolean areNotificationsEnabled() {\n\t\treturn true;',
-                                            'public boolean areNotificationsEnabled() {\n\t\treturn false;')
+                                            'public boolean areNotificationsEnabled() {\n\t\treturn TiloChooser.notificationsAvailable();')
     text = text.replace('public void notify(String tag, int id, Notification notification) {',
                         'public void notify(String tag, int id, Notification notification) {\n\t\tif (!areNotificationsEnabled()) return;')
     text = text.replace('public void cancel(String tag, final int id) {',
                         'public void cancel(String tag, final int id) {\n\t\tif (!areNotificationsEnabled()) return;')
     notification.write_text(text)
+    view = root / 'src/api-impl/android/view/View.java'
+    text = view.read_text().replace('public void setContentDescription(CharSequence contentDescription) {}',
+        '''private String tiloContentDescription;
+    public void setContentDescription(CharSequence contentDescription) {
+        tiloContentDescription = contentDescription == null ? null : contentDescription.toString();
+        android.app.TiloAccessibility.describe(widget, tiloContentDescription,
+            this instanceof android.widget.TextView);
+    }''')
+    text = text.replace('public CharSequence getContentDescription() {\n\t\treturn null;',
+                        'public CharSequence getContentDescription() {\n\t\treturn tiloContentDescription;')
+    view.write_text(text)
+    text_view = root / 'src/api-impl/android/widget/TextView.java'
+    text = text_view.read_text().replace('native_setText(text != null ? text.toString() : null);',
+        '''native_setText(text != null ? text.toString() : null);
+        CharSequence description = getContentDescription();
+        if (description != null)
+            android.app.TiloAccessibility.describe(widget, description.toString(), true);''')
+    text_view.write_text(text)
     shutil.copyfile(Path(__file__).with_name('TiloChooser.java'), root / 'src/api-impl/android/app/TiloChooser.java')
+    shutil.copyfile(Path(__file__).with_name('TiloAccessibility.java'), root / 'src/api-impl/android/app/TiloAccessibility.java')
 
 
 if __name__ == '__main__':

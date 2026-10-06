@@ -1,0 +1,14 @@
+[app so.tilo.android.qualify.hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4 stderr] tilo-sandbox-exec: Landlock restriction status: RestrictionStatus { ruleset: FullyEnforced, no_new_privs: true, landlock: Available { effective_abi: V7, kernel_abi: Some(10) }, log_same_exec: true, log_new_exec: false, log_subdomains: true }
+[app so.tilo.android.qualify.hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4 stderr] tilo-sandbox-exec: landlock: fully enforced (34 ro, 13 rw, net_restricted=true, gate_port=None)
+2026-10-06T03:27:44.155671Z DEBUG shell::notifications: Notifications.Notify: app="android-translation-layer" id=1 caller_ws=Some(WorkspaceId(0))
+[app so.tilo.android.qualify.hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4 stderr] I/TiloChooser(    2): reply from authenticated chooser: picked
+[app so.tilo.android.qualify.hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4 stderr] I/TiloChooser(    2): reply from authenticated chooser: picked
+[app so.tilo.android.qualify.hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4 stderr] I/Activity(    2): - onPause - yay!
+[app so.tilo.android.qualify.hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4 stderr] I/Activity(    2): - onStop - yay!
+[app so.tilo.android.qualify.hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4 stderr] I/Activity(    2): - onDestroy - yay!
+[app so.tilo.android.qualify.hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4 stderr] tilo-sandbox-exec: Landlock restriction status: RestrictionStatus { ruleset: FullyEnforced, no_new_privs: true, landlock: Available { effective_abi: V7, kernel_abi: Some(10) }, log_same_exec: true, log_new_exec: false, log_subdomains: true }
+[app so.tilo.android.qualify.hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4 stderr] tilo-sandbox-exec: landlock: fully enforced (33 ro, 12 rw, net_restricted=true, gate_port=None)
+[app so.tilo.android.qualify.hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4 stderr] I/TiloChooser(    2): reply from authenticated chooser: failed
+[app so.tilo.android.qualify.hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4 stderr] I/Activity(    2): - onPause - yay!
+[app so.tilo.android.qualify.hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4 stderr] I/Activity(    2): - onStop - yay!
+[app so.tilo.android.qualify.hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4 stderr] I/Activity(    2): - onDestroy - yay!

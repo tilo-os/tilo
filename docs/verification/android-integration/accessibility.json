@@ -1,0 +1,51 @@
+{
+  "bus_name": ":1.2",
+  "path": "/so/tilo/android/qualify/hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4/a11y/23942582_3da6_41a2_b612_c6977831cc04",
+  "tree": {
+    "/org/a11y/atspi/accessible/root": "(<'android-translation-layer'>,)\n",
+    "/so/tilo/android/qualify/hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4/a11y/4c26d54e_fd7d_4add_af7d_2971d0ebe278": "(<'org.tilo.android.acceptance'>,)\n",
+    "/so/tilo/android/qualify/hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4/a11y/c1fe3f94_f7a1_4766_a94e_76eb0123136a": "(<''>,)\n",
+    "/so/tilo/android/qualify/hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4/a11y/1d194163_5b8e_4dd6_9232_cbf0eab504e1": "(<''>,)\n",
+    "/so/tilo/android/qualify/hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4/a11y/4a8dfe4d_c9e8_4a15_ac83_2121a1d4b4d3": "(<''>,)\n",
+    "/so/tilo/android/qualify/hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4/a11y/247d451a_fee5_4284_8526_1af23f899a5b": "(<''>,)\n",
+    "/so/tilo/android/qualify/hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4/a11y/a27a0413_08e0_4605_b820_3d87588435eb": "(<''>,)\n",
+    "/so/tilo/android/qualify/hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4/a11y/23942582_3da6_41a2_b612_c6977831cc04": "(<'Approved Android document status'>,)\n"
+  },
+  "picker": {
+    "bus_name": ":1.0",
+    "path": "/org/a11y/atspi/accessible/0/332496571651220846595994041899001315328",
+    "tree": {
+      "/org/a11y/atspi/accessible/root": "(<'shell'>,)\n",
+      "/org/a11y/atspi/accessible/0/0": "(<'Tilo application window'>,)\n",
+      "/org/a11y/atspi/accessible/0/79228162864752474994025431040": "(<'Tilo workspace'>,)\n",
+      "/org/a11y/atspi/accessible/0/79228162569604569814672605184": "(<'Desktop navigation'>,)\n",
+      "/org/a11y/atspi/accessible/0/79228162698731778330639466496": "(<'Hosted applications'>,)\n",
+      "/org/a11y/atspi/accessible/0/79228162846305730920315879424": "(<'Workspace wheel'>,)\n",
+      "/org/a11y/atspi/accessible/0/250243185941941319284717325105649156096": "(<'Open file'>,)\n",
+      "/org/a11y/atspi/accessible/0/209064234937811413446713451523868721152": "(<'Notifications'>,)\n",
+      "/org/a11y/atspi/accessible/0/338026467394150739340396881657972391936": "(<''>,)\n",
+      "/org/a11y/atspi/accessible/0/172144019735965384240460958586512605184": "(<'Open overview'>,)\n",
+      "/org/a11y/atspi/accessible/0/189151017030400171449501116755402031104": "(<'Previous workspace'>,)\n",
+      "/org/a11y/atspi/accessible/0/297259434776406587078397208756496629760": "(<'Next workspace'>,)\n",
+      "/org/a11y/atspi/accessible/0/226470469647524728620794985657667682304": "(<'Workspace settings for Home'>,)\n",
+      "/org/a11y/atspi/accessible/0/298537724490286383378939245223085080576": "(<'Show clock'>,)\n",
+      "/org/a11y/atspi/accessible/0/257603641787738285711150103479097229312": "(<'Show system monitor'>,)\n",
+      "/org/a11y/atspi/accessible/0/323480102243498407368618832432285614080": "(<'Show calendar'>,)\n",
+      "/org/a11y/atspi/accessible/0/264394831534037690141771084261014634496": "(<'Open quick settings'>,)\n",
+      "/org/a11y/atspi/accessible/0/339379326099724985118478684441888686080": "(<'Invite'>,)\n",
+      "/org/a11y/atspi/accessible/0/79228162624944802035801260032": "(<''>,)\n",
+      "/org/a11y/atspi/accessible/0/213642980064593674918476298561632862208": "(<'Switch to Home'>,)\n",
+      "/org/a11y/atspi/accessible/0/254821931068723580756480172143413297152": "(<'Add a workspace'>,)\n",
+      "/org/a11y/atspi/accessible/0/194527164403572927012332720426481352704": "(<'Files'>,)\n",
+      "/org/a11y/atspi/accessible/0/235706115407702832850336594008261787648": "(<'File type'>,)\n",
+      "/org/a11y/atspi/accessible/0/323489396859912252906016150560585023488": "(<'Cancel'>,)\n",
+      "/org/a11y/atspi/accessible/0/199952543847522535392004529815243718656": "(<'Open'>,)\n",
+      "/org/a11y/atspi/accessible/0/181296457693204959877265781673034776576": "(<'Hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4'>,)\n",
+      "/org/a11y/atspi/accessible/0/280401694415297876804262725078430515200": "(<'New tab'>,)\n",
+      "/org/a11y/atspi/accessible/0/332496571651220846595994041899001315328": "(<'android-input.txt'>,)\n",
+      "/org/a11y/atspi/accessible/0/279611480273698503204743583959084957696": "(<'android-output.txt'>,)\n",
+      "/org/a11y/atspi/accessible/0/195043015289301864334266003801386254336": "(<'private-canary'>,)\n",
+      "/org/a11y/atspi/accessible/0/308791368455325313950496742396433268736": "(<'Close Hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4'>,)\n"
+    }
+  }
+}
