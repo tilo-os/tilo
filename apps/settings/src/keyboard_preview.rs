@@ -43,6 +43,7 @@ pub(crate) fn map_with_options(
 ) -> Result<KeyboardMap, String> {
     static GEOMETRIES: LazyLock<Result<BTreeMap<String, Geometry>, serde_json::Error>> =
         LazyLock::new(|| serde_json::from_str(include_str!("../data/pc-keyboard-geometry.json")));
+    let source_id = source.to_owned();
     let source = settings_store::hardware::KeyboardInputSource::parse(source)
         .ok_or_else(|| "the source is not an XKB layout".to_owned())?;
     let geometries = GEOMETRIES
@@ -59,7 +60,8 @@ pub(crate) fn map_with_options(
             height: geometry.height,
         },
         label,
-    ))
+    )
+    .with_configuration(source_id, model.to_owned()))
 }
 
 #[cfg(test)]
