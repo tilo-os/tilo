@@ -305,7 +305,7 @@ baseline binary. Neither mode establishes decoded display output or physical
 receiver interoperability; the historical transport success was unauthenticated.
 
 ```bash
-rcargo --on-builder run --locked -p tilo-projector --bin tilo-projector -- --help
+$CARGO build --locked -p tilo-projector --bin tilo-projector
 python3 scripts/headless-examples/cast-session-proof.py \
   --projector target/debug/tilo-projector --evidence target/cast-session-proof.json
 ```
