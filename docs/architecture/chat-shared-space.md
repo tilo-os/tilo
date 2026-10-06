@@ -135,14 +135,15 @@ binding and permissions are checked before opening. Leave aborts pending navigat
 closes the app and releases the peer/device key. This is the runtime's shipped browser
 entry point, not a newly deployed service.
 
-Remaining integration: native Chat's legacy `ResourceRef` still does not carry the
-source provider or host/room locator. Browser peers supplied with admitted source
-view metadata can mint and open links in frame fixtures. The native Chat resource
-chip's Copy/Open link path needs host-provided route metadata. The browser entry now offers an existing-account picker projected from Settings'
-personal accounts record. The normal identity sign-in flow still needs to publish
-that public account entry; the picker cannot infer or create one. New admission continues through the existing governed invitation flow, never
-through this navigation address. Physical browser/native cross-device acceptance and
-hosting distribution are unproven here. No access grant or deployment is added.
+Native messages now keep the exact source provider beside `ResourceRef` and expose
+public Copy/Open effects backed by fresh host-provided route metadata. Older
+references without provenance remain readable and refuse browser navigation. The
+browser entry projects existing accounts from Settings' personal record. Its
+explicit public metadata publication action is available after sign-in; automatic
+publication from every sign-in entry is still unwired. New admission continues
+through the existing governed invitation flow, never through a navigation address.
+Physical cross-device acceptance and a deployed browser entry remain unverified.
+No access grant or deployment is added.
 
 The existing browser-peer HTTPS fixture
 `the_owner_admits_and_removes_a_different_person_over_https` also passes on the remote
