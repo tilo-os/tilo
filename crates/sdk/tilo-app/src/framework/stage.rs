@@ -164,6 +164,12 @@ pub fn stage<A: ResourceApp>(
             scenario.unwrap_or("default")
         ))
     })?;
+    // Durability is finite visual work too. A scenario's explicit save
+    // boundary must run before waiting for that acknowledgement; otherwise
+    // fixture edits can keep the capture waiting for its own later flush.
+    harness
+        .flush_component_records()
+        .map_err(LaunchError::Operation)?;
     harness
         .wait_for_visuals(SETTLE)
         .map_err(|error| match scenario {
