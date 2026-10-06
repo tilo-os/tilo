@@ -1388,6 +1388,61 @@ mod tests {
         Workspace::new(WorkspaceId(id), "t")
     }
 
+    #[tokio::test]
+    async fn private_portal_prompt_cannot_approve_a_different_room() {
+        for variant in 0..3 {
+            for outcome in [
+                PromptOutcome::AllowOnce,
+                PromptOutcome::AllowSession,
+                PromptOutcome::AllowAlways,
+            ] {
+                let (store, id) = GrantStoreHandle::test_with_workspace(empty_ws(31));
+                let queue = PromptQueueHandle::new(PromptResolver::Channel);
+                let ctx = (store.clone(), queue.clone());
+                let caller = PortalCaller::new(id, "private-app");
+                let response = async {
+                    let cap = Capability::Camera { scope: GRANT_ONCE };
+                    match variant {
+                        0 => flow::resolve(&ctx, caller.clone(), CapabilityKind::Camera, cap).await,
+                        1 => {
+                            flow::resolve_for_request(
+                                &ctx,
+                                caller.clone(),
+                                CapabilityKind::Camera,
+                                cap,
+                                "/request/camera".into(),
+                            )
+                            .await
+                        }
+                        _ => {
+                            flow::resolve_local(&ctx, caller.clone(), CapabilityKind::Camera, cap)
+                                .await
+                        }
+                    }
+                };
+                tokio::pin!(response);
+                assert!(futures_util::poll!(&mut response).is_pending());
+                let prompts = queue.drain();
+                assert_eq!(prompts.len(), 1);
+                assert!(
+                    store
+                        .tree_handle()
+                        .write()
+                        .set_room_in_memory(id, crate::shell::state::RoomId::new())
+                );
+                prompts
+                    .into_iter()
+                    .next()
+                    .unwrap()
+                    .reply
+                    .send(outcome)
+                    .unwrap();
+                assert_eq!(response.await, PromptOutcome::Deny);
+                assert_eq!(store.lookup(&caller, CapabilityKind::Camera), None);
+            }
+        }
+    }
+
     #[test]
     fn private_portal_consent_requires_a_durable_room_and_ignores_legacy_slots() {
         let directory = tempfile::tempdir().unwrap();
