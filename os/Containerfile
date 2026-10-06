@@ -344,6 +344,7 @@ COPY apps /build/apps
 COPY examples /build/examples
 COPY vendor /build/vendor
 COPY dist /build/dist
+COPY docs/developers/tasks /build/docs/developers/tasks
 COPY tools/ci/rustc-thin-app-wrapper.sh /build/tools/ci/rustc-thin-app-wrapper.sh
 COPY tools/policy/app_portability_rules.toml /build/tools/policy/app_portability_rules.toml
 COPY tools/policy/app_capability_usage.toml /build/tools/policy/app_capability_usage.toml
