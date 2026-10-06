@@ -46,7 +46,8 @@ def probe_notification_ownership(output, bus_address):
         raise RuntimeError('unrelated bus sender could replace the foreground notification')
 
 
-def exercise_work(journey, output, profile, package, args, source, destination, grants):
+def exercise_work(journey, output, profile, package, args, documents, grants):
+    source, destination = documents
     frame = journey.launch()
     private = profile / 'data/tilo-rooms' / journey.workspace()['room'] / package
     def recorded(marker):
@@ -157,7 +158,7 @@ def exercise_denial(journey, output, profile, package, args):
         'scoped_worker_started': False, 'additional_grants': False, 'real_device': False}
 
 
-def main():
+def main(work_driver=None):
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('payload', 'runtime-receipt', 'runtime-parent', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
@@ -167,6 +168,8 @@ def main():
     expectation = parser.add_mutually_exclusive_group()
     expectation.add_argument('--expect-incompatibility', action='store_true')
     expectation.add_argument('--expect-notification-denial', action='store_true')
+    if work_driver is not None:
+        expectation.add_argument('--expect-sticky-incompatibility', action='store_true')
     args = parser.parse_args()
     output = checked_output(args.output)
     payload = args.payload.resolve(strict=True)
@@ -219,14 +222,13 @@ def main():
                 if args.expect_notification_denial:
                     result = exercise_denial(journey, output, profile, package, args)
                 else:
-                    result = exercise_work(journey, output, profile, package, args, source, destination, grants)
+                    result = (work_driver or exercise_work)(journey, output, profile, package, args, (source, destination), grants)
                 log.flush()
                 text = (output / 'compositor.log').read_text()
                 if 'landlock: fully enforced' not in text or 'no_new_privs: true' not in text:
                     raise RuntimeError('mandatory confinement evidence absent')
-                if not args.expect_incompatibility and not args.expect_notification_denial \
-                        and 'sticky/redelivery process recovery unsupported; no background restart authority' not in text:
-                    raise RuntimeError('unsupported sticky recovery was not reported')
+                if work_driver is None and 'foreground sticky recovery pending' in text:
+                    raise RuntimeError('normal stop or withdrawal incorrectly entered recovery')
             finally:
                 try:
                     if journey is not None and process is not None and process.poll() is None:
