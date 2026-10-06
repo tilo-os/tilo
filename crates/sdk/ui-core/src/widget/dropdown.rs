@@ -15,8 +15,8 @@
 //! highlight; Enter selects + closes; Esc dismisses. In a list of
 //! [`FILTER_MIN_OPTIONS`] or more, printable characters drive an
 //! incremental, case-insensitive substring filter (Backspace edits it) so
-//! hundred-entry lists stay usable without endless scrolling; the query
-//! takes the field only once typed, and the value shows until then. A
+//! hundred-entry lists stay usable without endless scrolling. Opening a
+//! searchable list shows its search prompt and caret immediately. A
 //! shorter list never filters: a typed letter arms the next option starting
 //! with it.
 //!
@@ -667,7 +667,21 @@ impl Dropdown {
         let caption = self.caption.as_deref().map_or(0.0, |caption| {
             f64::from(text.measure_style(caption, None, &self.caption_style).0).ceil()
         });
-        field.max(caption)
+        let search = if self.supports_filter() {
+            field_width_for(
+                [crate::i18n!("dropdown-search-placeholder").as_str()],
+                true,
+                &self.label_style,
+                text,
+            )
+        } else {
+            0.0
+        };
+        field.max(caption).max(search)
+    }
+
+    fn supports_filter(&self) -> bool {
+        self.menu.is_none() && self.options.len() >= FILTER_MIN_OPTIONS
     }
 
     /// Lay the widget out in `outer`: the caption on top, the field below.
@@ -1290,10 +1304,7 @@ impl Widget for Dropdown {
             self.place(self.outer);
         }
         let disabled = !self.effectively_enabled();
-        // While open the field keeps showing the value; the query replaces
-        // it only once the person has typed, and never shows a prompt.
-        let filtering =
-            self.open && (!self.filter.is_empty() || self.filter_composition.is_composing());
+        let filtering = self.open && self.supports_filter();
         let (label, placeholder) = if self.selected.is_empty() {
             (self.placeholder.clone(), true)
         } else {
@@ -1305,7 +1316,11 @@ impl Widget for Dropdown {
                 outer: self.outer,
                 field: self.rect,
                 caption: self.caption.as_deref(),
-                icon: self.leading_icon,
+                icon: if filtering {
+                    Some(crate::icons::Icon::Search)
+                } else {
+                    self.leading_icon
+                },
                 label: (!filtering).then_some((label.as_str(), placeholder)),
                 size: self.control_size,
                 open: self.open,
@@ -1320,7 +1335,7 @@ impl Widget for Dropdown {
                 QueryView {
                     text: &self.filter,
                     selection: &self.filter_selection,
-                    placeholder: "",
+                    placeholder: &crate::i18n!("dropdown-search-placeholder"),
                     show_caret: self.is_focused,
                 },
                 content,
@@ -1634,6 +1649,9 @@ impl Widget for Dropdown {
         }
         if self.action.is_none() && self.on_change.is_none() {
             node = node.with_action_target(self.test_id().unwrap_or("dropdown"));
+        }
+        if self.open && self.supports_filter() {
+            node = node.with_description(crate::i18n!("dropdown-search-description"));
         }
         Some(node)
     }
