@@ -3270,7 +3270,7 @@ impl FileExplorerWidget {
     pub fn set_sort_by(&mut self, s: SortBy) {
         let changed = self.sort_by != s;
         self.sort_by = s;
-        sort_entries(self.sort_by, self.sort_order, &mut self.entries);
+        self.sort_preserving_selection();
         if changed {
             self.store_preferences();
         }
@@ -3280,8 +3280,38 @@ impl FileExplorerWidget {
             SortOrder::Ascending => SortOrder::Descending,
             SortOrder::Descending => SortOrder::Ascending,
         };
-        sort_entries(self.sort_by, self.sort_order, &mut self.entries);
+        self.sort_preserving_selection();
         self.store_preferences();
+    }
+
+    fn sort_preserving_selection(&mut self) {
+        // Sorting only permutes this snapshot; paths identify its unchanged
+        // entries without cloning file metadata or reading/hydrating content.
+        let positions: HashMap<_, _> = self
+            .selection
+            .selected_set()
+            .iter()
+            .copied()
+            .chain(self.selection.primary())
+            .chain(self.selection.anchor())
+            .filter_map(|index| {
+                self.entries
+                    .get(index)
+                    .map(|entry| (entry.path.clone(), index))
+            })
+            .collect();
+        sort_entries(self.sort_by, self.sort_order, &mut self.entries);
+        let remapped: HashMap<_, _> = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter_map(|(new, entry)| positions.get(&entry.path).map(|old| (*old, new)))
+            .collect();
+        self.selection
+            .remap_indices(|old| remapped.get(&old).copied());
+        // A previous click's row cannot be used for double-click detection
+        // after reordering: that row may now contain a different file.
+        self.last_click = None;
     }
     pub fn set_view_mode(&mut self, m: ViewMode) {
         if self.view_mode == m {
@@ -5155,6 +5185,9 @@ impl FileExplorerWidget {
     pub fn stage_scenario(&mut self, scenario: Option<&str>) {
         let rect = self.rect;
         match scenario {
+            Some(name @ ("selection-sort" | "selection-sorted" | "selection-reversed")) => {
+                self.stage_sort_selection(name);
+            }
             Some(name @ ("recent" | "recent-menu" | "recent-revealed" | "recent-forgotten")) => {
                 // Capture-only files from the prepared scratch home. Use the
                 // same Recent setting and commands as the live window.
@@ -5249,6 +5282,27 @@ impl FileExplorerWidget {
                 self.debug_open_history_demo();
             }
             _ => {}
+        }
+    }
+
+    fn stage_sort_selection(&mut self, name: &str) {
+        self.set_view_mode(ViewMode::List);
+        self.set_sort_by(SortBy::Name);
+        self.apply_set_sort_order(SortOrder::Ascending);
+        for filename in ["Notes.txt", "Recipes.md"] {
+            if let Some(index) = self.entries.iter().position(|entry| entry.name == filename) {
+                self.apply_command(FileCommand::Click {
+                    index,
+                    ctrl: true,
+                    shift: false,
+                });
+            }
+        }
+        if name != "selection-sort" {
+            self.set_sort_by(SortBy::Size);
+        }
+        if name == "selection-reversed" {
+            self.apply_set_sort_order(SortOrder::Descending);
         }
     }
 
