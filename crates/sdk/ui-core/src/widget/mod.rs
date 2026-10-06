@@ -2539,6 +2539,7 @@ pub use marks::{Mark, MarkSpan};
 pub mod rich_text_line;
 pub use rich_text_line::{LineSignal, RichTextLine};
 pub mod block_editor;
+pub mod paint_damage;
 pub use block_editor::{
     Block, BlockContent, BlockEditOp, BlockEditor, BlockKind, CursorPlacement, DocumentPosition,
     DocumentSelection, EditScope, PresenceKeyFn, TransclusionPreview, legacy_block_id,

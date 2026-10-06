@@ -786,7 +786,32 @@ impl FrameHarness {
         inputs: crate::application::ComponentRunnerInputs,
         notify: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self, crate::launch::LaunchError> {
+        Self::from_component_with_root(component, viewport, inputs, notify, |root| root)
+    }
+
+    /// Observe the ordinary mounted component through a transparent root decorator.
+    /// The decorator participates in the same custody, layout, dispatch and draw loop.
+    /// # Errors
+    /// Preserves the ordinary component mounting and history validation errors.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_component_with_decorator(
+        component: crate::application::AppComponent,
+        viewport: (u32, u32),
+        inputs: crate::application::ComponentRunnerInputs,
+        decorate: impl FnOnce(Box<dyn Widget>) -> Box<dyn Widget>,
+    ) -> Result<Self, crate::launch::LaunchError> {
+        Self::from_component_with_root(component, viewport, inputs, || {}, decorate)
+    }
+
+    fn from_component_with_root(
+        component: crate::application::AppComponent,
+        viewport: (u32, u32),
+        inputs: crate::application::ComponentRunnerInputs,
+        notify: impl Fn() + Send + Sync + 'static,
+        decorate: impl FnOnce(Box<dyn Widget>) -> Box<dyn Widget>,
+    ) -> Result<Self, crate::launch::LaunchError> {
         let (root, wake, history) = Self::mount_component(component, std::sync::Arc::new(notify))?;
+        let root = decorate(root);
         let binding = wake.binding.clone();
         let mut harness = Self::with_inputs(
             State::new(),

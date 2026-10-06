@@ -363,6 +363,7 @@ pub struct NotesApp {
     /// Forces a redraw when our own chrome changes without any child widget
     /// flagging itself dirty.
     self_dirty: bool,
+    paint_damage: ui::widget::paint_damage::PaintDamage,
     /// Inputs of the last canonical projection: document heads, pending
     /// operations, selected page and tag filter. `sync` re-projects the
     /// whole page tree only when one of them moved instead of every frame.
@@ -610,6 +611,7 @@ impl NotesApp {
             bound_page: None,
             laid_out: false,
             self_dirty: false,
+            paint_damage: ui::widget::paint_damage::PaintDamage::default(),
             canonical_synced: None,
             projection_adopted: false,
             dispatcher: None,
@@ -2420,6 +2422,7 @@ impl Widget for NotesApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        let incoming = std::mem::take(scene);
         // No ground of our own: the window paints `surfaces.content`, and the
         // shell paints the sidebar's region.
         let drawer_open = self.shell.geometry().sidebar == SidebarPlacement::Drawer
@@ -2434,6 +2437,7 @@ impl Widget for NotesApp {
         // note), then the page tree on the sidebar the shell painted.
         self.main
             .draw(scene, transform, text_renderer, theme, presence);
+        let main_scene = std::mem::take(scene);
         self.shell
             .draw(scene, transform, text_renderer, theme, presence);
         if self.sidebar_node.is_some() {
@@ -2466,6 +2470,29 @@ impl Widget for NotesApp {
         self.transfer_toasts.place_bottom_right(toast_area, gutter);
         self.transfer_toasts
             .draw(scene, transform, text_renderer, theme, presence);
+        let outside = std::mem::take(scene);
+        let mut main_damage = Vec::new();
+        self.main.collect_damage(&mut main_damage);
+        self.paint_damage.record(
+            self.rect,
+            (!self.main.has_editor_popup()).then(|| {
+                ui::widget::paint_damage::PaintFrame::new(
+                    vec![self.rect, self.main.get_rect()],
+                    transform,
+                    theme,
+                    outside.clone(),
+                    vec![ui::widget::paint_damage::PaintPart::new(
+                        "note-main".into(),
+                        self.main.get_rect(),
+                        main_scene.clone(),
+                        main_damage,
+                    )],
+                )
+            }),
+        );
+        *scene = incoming;
+        scene.append(&main_scene, None);
+        scene.append(&outside, None);
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -2649,7 +2676,21 @@ impl Widget for NotesApp {
             || self.shortcuts.needs_redraw()
     }
 
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.needs_redraw() || self.paint_damage.is_recorded() {
+            self.paint_damage.collect(self.rect, regions);
+        }
+    }
+
+    fn release_scene_cache(&mut self) {
+        self.paint_damage.release_scene_cache();
+        for child in self.children_mut() {
+            child.release_scene_cache();
+        }
+    }
+
     fn mark_drawn(&mut self) {
+        self.paint_damage.mark_drawn();
         self.self_dirty = false;
         self.shell.mark_drawn();
         self.sidebar.mark_drawn();
