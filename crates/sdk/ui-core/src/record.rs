@@ -1911,7 +1911,16 @@ impl RecordSet {
                 return Err(RecordOpenError::IdentityMismatch);
             }
             let doc = slot.doc.as_ref().ok_or(RecordOpenError::Busy)?;
-            validate_identity(doc, want, &self.home)?;
+            if validate_identity(doc, want, &self.home).is_err() {
+                let bridge = self
+                    .native_initial
+                    .as_ref()
+                    .ok_or(RecordOpenError::IdentityMismatch)?;
+                let read = bridge
+                    .record(&self.package_id, &self.home, want)
+                    .map_err(RecordOpenError::Initialization)?;
+                validate_creation_capture(doc, want, &self.home, &read)?;
+            }
             return Ok(RecordOpenOutcome::AlreadyOpen);
         }
         if let Some(bridge) = &self.native_initial {
@@ -1919,11 +1928,24 @@ impl RecordSet {
                 .record(&self.package_id, &self.home, want)
                 .map_err(RecordOpenError::Initialization)?;
             let store = app_state::DocStore::exclusive(backend, key)?;
-            let (mut doc, autosave) =
-                crate::persist::finish_canonical_initial(store, read, |doc| {
-                    validate_identity(doc, want, &self.home).map_err(|error| error.to_string())
-                })
-                .map_err(RecordOpenError::Initialization)?;
+            let creation = read.clone();
+            let creation_heads = creation_capture_heads(&read)?;
+            let (mut doc, autosave) = crate::persist::finish_canonical_created(
+                store,
+                read,
+                |doc| validate_identity(doc, want, &self.home).map_err(|error| error.to_string()),
+                |doc| {
+                    validate_created_graph(
+                        doc,
+                        want,
+                        &self.home,
+                        creation.creation_workspace().map(|scope| scope.id.as_str()),
+                        &creation_heads,
+                    )
+                    .map_err(|error| error.to_string())
+                },
+            )
+            .map_err(RecordOpenError::Initialization)?;
             let history = crate::state::UndoLog::new(&mut doc);
             self.open.insert(
                 want.id.clone(),
@@ -2378,6 +2400,68 @@ fn validate_identity(
         return Err(RecordOpenError::IdentityMismatch);
     }
     Ok(())
+}
+
+fn validate_created_identity(
+    doc: &AutoCommit,
+    want: &RecordCheckout,
+    workspace: &str,
+    creation_room: Option<&str>,
+) -> Result<(), RecordOpenError> {
+    if creation_room != Some(workspace)
+        || workspace.is_empty()
+        || !want.is_valid_local_storage_request()
+        || !primary_document(doc)
+        || home(doc).is_some_and(|found| found != workspace)
+        || room_scope(doc).is_some_and(|found| found != workspace)
+        || transfer::is_retired(doc)
+    {
+        return Err(RecordOpenError::IdentityMismatch);
+    }
+    Ok(())
+}
+
+fn validate_creation_capture(
+    doc: &AutoCommit,
+    want: &RecordCheckout,
+    workspace: &str,
+    read: &crate::collaboration::CommittedDocument,
+) -> Result<(), RecordOpenError> {
+    let heads = creation_capture_heads(read)?;
+    validate_created_graph(
+        doc,
+        want,
+        workspace,
+        read.creation_workspace().map(|scope| scope.id.as_str()),
+        &heads,
+    )
+}
+
+fn validate_created_graph(
+    doc: &AutoCommit,
+    want: &RecordCheckout,
+    workspace: &str,
+    creation_room: Option<&str>,
+    heads: &[automerge::ChangeHash],
+) -> Result<(), RecordOpenError> {
+    validate_created_identity(doc, want, workspace, creation_room)?;
+    if doc.pending_ops() != 0 || doc.base_heads() != heads {
+        return Err(RecordOpenError::IdentityMismatch);
+    }
+    Ok(())
+}
+
+fn creation_capture_heads(
+    read: &crate::collaboration::CommittedDocument,
+) -> Result<Vec<automerge::ChangeHash>, RecordOpenError> {
+    read.with_mutation(|mutation| {
+        let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
+            return Err(RecordOpenError::IdentityMismatch);
+        };
+        let original = AutoCommit::load(bytes).map_err(|_| RecordOpenError::IdentityMismatch)?;
+        Ok(original.base_heads())
+    })
+    .map_err(RecordOpenError::Initialization)?
 }
 
 #[derive(Clone)]
