@@ -81,6 +81,7 @@ pub struct ActionHierarchy {
     pub room: String,
     pub record: String,
     pub resource: String,
+    pub semantic_identity: Option<tilo_actions::ResourceSemanticIdentity>,
     pub operation: String,
 }
 

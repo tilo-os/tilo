@@ -676,6 +676,10 @@ fn serialized_bytes<T: serde::Serialize>(value: &T, meter: &mut ByteMeter) {
 
 fn exported_action_bytes(action: &ExportedAction, meter: &mut ByteMeter) {
     meter.string_capacity(&action.resource);
+    if let Some(identity) = &action.semantic_identity {
+        meter.string_capacity(&identity.kind);
+        meter.string_capacity(&identity.key);
+    }
     meter.string_capacity(&action.action);
     meter.string_capacity(&action.resource_kind);
     meter.string_capacity(&action.resource_label);
@@ -1058,6 +1062,10 @@ async fn remote_action_round_trip(
 
 fn broker_action_bytes(action: &BrokerActionDescriptor, meter: &mut ByteMeter) {
     meter.string_capacity(&action.resource);
+    if let Some(identity) = &action.semantic_identity {
+        meter.string_capacity(&identity.kind);
+        meter.string_capacity(&identity.key);
+    }
     meter.string_capacity(&action.action);
     meter.string_capacity(&action.resource_kind);
     meter.string_capacity(&action.resource_label);
@@ -4943,6 +4951,11 @@ fn write_directory_descriptor(
     descriptor: &runtime_collab::ExportedAction,
 ) {
     out.set_resource(&descriptor.resource);
+    if let Some(identity) = &descriptor.semantic_identity {
+        let mut out = out.reborrow().init_semantic_identity();
+        out.set_kind(&identity.kind);
+        out.set_key(&identity.key);
+    }
     out.set_action(&descriptor.action);
     out.set_resource_kind(&descriptor.resource_kind);
     out.set_resource_label(&descriptor.resource_label);
@@ -5347,6 +5360,12 @@ async fn dispatch_sdk_request(
                 .into_iter()
                 .map(|action| runtime_collab::ExportedAction {
                     resource: action.resource,
+                    semantic_identity: action.semantic_identity.map(|identity| {
+                        runtime_collab::ExportedResourceSemanticIdentity {
+                            kind: identity.kind,
+                            key: identity.key,
+                        }
+                    }),
                     action: action.action,
                     resource_kind: action.resource_kind,
                     resource_label: action.resource_label,
@@ -6108,6 +6127,7 @@ mod tests {
                 resource_presentation_json: text(length),
                 action: Some(text(length)),
                 descriptor: Some(runtime_collab::ExportedAction {
+                    semantic_identity: None,
                     resource: text(length),
                     action: text(length),
                     resource_kind: text(length),

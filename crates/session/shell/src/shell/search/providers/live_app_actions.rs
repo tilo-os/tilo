@@ -420,6 +420,37 @@ fn deadline_after(duration: std::time::Duration) -> std::time::Instant {
 }
 
 impl LiveAppActionsProvider {
+    fn directory_semantic_identity(
+        &self,
+        peer: u64,
+        revision: &str,
+        resource: &str,
+        operation: &str,
+    ) -> Option<tilo_actions::ResourceSemanticIdentity> {
+        let pages = self.directory_pages.borrow();
+        let publisher = peer.to_string();
+        let mut descriptors = pages
+            .iter()
+            .filter(|((cached_peer, _, _, _), page)| {
+                *cached_peer == peer && page.revision == revision
+            })
+            .flat_map(|(_, page)| &page.rows)
+            .filter(|row| row.provider == publisher)
+            .filter_map(|row| row.action.as_ref())
+            .filter(|descriptor| {
+                descriptor.address.resource == resource && descriptor.address.action == operation
+            });
+        let first = descriptors.next()?;
+        let identity = first.semantic_identity.clone()?;
+        (identity.is_valid()
+            && identity.kind == first.resource_kind
+            && descriptors.all(|descriptor| {
+                descriptor.semantic_identity.as_ref() == Some(&identity)
+                    && descriptor.resource_kind == identity.kind
+            }))
+        .then_some(identity)
+    }
+
     fn wants_resource_rows(wanted: &[ResourceKind]) -> bool {
         wanted.is_empty()
             || wanted
@@ -1690,6 +1721,8 @@ impl SearchProvider for LiveAppActionsProvider {
                 record: root.record_id,
                 resource: resource.into(),
                 operation: operation.into(),
+                semantic_identity: self
+                    .directory_semantic_identity(peer, revision, resource, operation),
             });
         }
         let (application, room, record, resource, operation) = Self::hierarchy(id)?;
@@ -1699,6 +1732,26 @@ impl SearchProvider for LiveAppActionsProvider {
             record: record.into(),
             resource: resource.into(),
             operation: operation.into(),
+            semantic_identity: self
+                .surface_snapshot
+                .borrow()
+                .as_ref()
+                .filter(|snapshot| snapshot.source_generation == self.broker.surfaces_generation())
+                .and_then(|snapshot| {
+                    snapshot
+                        .entries
+                        .iter()
+                        .find(|(surface, action)| Self::result_id(surface, action) == id)
+                        .and_then(|(_, action)| {
+                            action
+                                .semantic_identity
+                                .as_ref()
+                                .filter(|identity| {
+                                    identity.is_valid() && identity.kind == action.resource_kind
+                                })
+                                .cloned()
+                        })
+                }),
         })
     }
 
@@ -2677,6 +2730,7 @@ mod tests {
 
     fn exported(label: &str, action: &str) -> tilo_actions::ActionDescriptor {
         tilo_actions::ActionDescriptor {
+            semantic_identity: None,
             address: tilo_actions::ActionAddress::new(format!("resource:{action}"), action),
             resource_kind: "fixture".into(),
             resource_label: "Fixture".into(),
@@ -2689,6 +2743,122 @@ mod tests {
             params: Vec::new(),
             view: None,
         }
+    }
+
+    #[test]
+    fn hierarchy_projects_only_exact_retained_semantic_identity() {
+        let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
+            peer_id: 9,
+            app_id: "so.tilo.store".into(),
+            cluster_id: "room".into(),
+            record_id: "record".into(),
+        }]);
+        let provider = LiveAppActionsProvider::new(broker);
+        let identity =
+            tilo_actions::ResourceSemanticIdentity::new("store.app", "app:so.tilo.chat").unwrap();
+        let mut descriptor = exported("Misleading label", "open");
+        descriptor.resource_kind = "store.app".into();
+        descriptor.semantic_identity = Some(identity.clone());
+        let row = CatalogueRow {
+            provider: "9".into(),
+            app_id: "so.tilo.store".into(),
+            parent_resource: String::new(),
+            resource: CatalogueResource {
+                id: descriptor.address.resource.clone(),
+                kind: "fixture".into(),
+                label: "Not an identity".into(),
+                presentation: None,
+            },
+            action: Some(descriptor),
+            has_children: false,
+            visibility: None,
+        };
+        provider.directory_pages.borrow_mut().insert(
+            (9, "actor".into(), String::new(), Vec::new()),
+            page(vec![row.clone()], Vec::new()),
+        );
+        let id = ["directory", "9", "r1", "resource:open", "open"].join(&ID_SEPARATOR.to_string());
+        assert_eq!(
+            provider.action_hierarchy(&id).unwrap().semantic_identity,
+            Some(identity)
+        );
+        assert!(
+            provider
+                .action_hierarchy(&id.replace("r1", "r0"))
+                .unwrap()
+                .semantic_identity
+                .is_none()
+        );
+        let mut conflicting = row;
+        conflicting.action.as_mut().unwrap().semantic_identity =
+            tilo_actions::ResourceSemanticIdentity::new("store.app", "other");
+        provider.directory_pages.borrow_mut().insert(
+            (9, "actor".into(), "another-query".into(), Vec::new()),
+            page(vec![conflicting], Vec::new()),
+        );
+        assert!(
+            provider
+                .action_hierarchy(&id)
+                .unwrap()
+                .semantic_identity
+                .is_none()
+        );
+        provider.directory_pages.borrow_mut().clear();
+        assert!(
+            provider
+                .action_hierarchy(&id)
+                .unwrap()
+                .semantic_identity
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn local_hierarchy_identity_requires_current_retained_descriptor() {
+        let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let provider = LiveAppActionsProvider::new(broker.clone());
+        let mut action = local_action("Display label is not identity", "open");
+        action.resource_kind = "store.app".into();
+        action.resource = "opaque-address".into();
+        let identity =
+            tilo_actions::ResourceSemanticIdentity::new("store.app", "app:so.tilo.chat").unwrap();
+        action.semantic_identity = Some(identity.clone());
+        let surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.store".into(),
+            route: CrdtRoute::app("so.tilo.store", "room"),
+            actions: vec![action.clone()],
+            live: true,
+        };
+        let entries = vec![(surface.clone(), action)];
+        let id = LiveAppActionsProvider::result_id(&surface, surface.actions.first().unwrap());
+        assert!(
+            provider
+                .action_hierarchy(&id)
+                .unwrap()
+                .semantic_identity
+                .is_none()
+        );
+        *provider.surface_snapshot.borrow_mut() = Some(SurfaceSnapshot {
+            source_generation: broker.surfaces_generation(),
+            scope: String::new(),
+            entries,
+            index: None,
+            machine_index: None,
+        });
+        assert_eq!(
+            provider.action_hierarchy(&id).unwrap().semantic_identity,
+            Some(identity)
+        );
+        broker.replace_published_surfaces_for_test(vec![surface]);
+        assert!(
+            provider
+                .action_hierarchy(&id)
+                .unwrap()
+                .semantic_identity
+                .is_none()
+        );
     }
 
     /// A broker whose workspace authority is the chrome's own tree, so the
@@ -2712,6 +2882,7 @@ mod tests {
 
     fn local_action(label: &str, action: &str) -> PublishedAction {
         PublishedAction {
+            semantic_identity: None,
             resource: format!("resource:{action}"),
             action: action.into(),
             resource_kind: "fixture".into(),

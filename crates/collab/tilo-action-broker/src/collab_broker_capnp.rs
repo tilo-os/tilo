@@ -1007,6 +1007,8 @@ pub enum PublishedInput {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PublishedAction {
     pub resource: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_identity: Option<tilo_actions::ResourceSemanticIdentity>,
     pub action: String,
     pub resource_kind: String,
     pub resource_label: String,
@@ -1036,6 +1038,32 @@ fn validate_view_action_binding(action: &PublishedAction, role: &str) -> Result<
         )));
     }
     Ok(())
+}
+
+fn decode_semantic_identity(
+    row: runtime_collab::collab_capnp::exported_action::Reader<'_>,
+) -> Result<Option<tilo_actions::ResourceSemanticIdentity>, capnp::Error> {
+    if !row.has_semantic_identity() {
+        return Ok(None);
+    }
+    let identity = row.get_semantic_identity()?;
+    let kind = identity.get_kind()?;
+    let key = identity.get_key()?;
+    if kind.len() > tilo_actions::ResourceSemanticIdentity::MAX_KIND_BYTES
+        || key.len() > tilo_actions::ResourceSemanticIdentity::MAX_KEY_BYTES
+    {
+        return Err(capnp::Error::failed(
+            "oversized resource semantic identity".into(),
+        ));
+    }
+    let identity = tilo_actions::ResourceSemanticIdentity::new(kind.to_str()?, key.to_str()?)
+        .ok_or_else(|| capnp::Error::failed("invalid resource semantic identity".into()))?;
+    if identity.kind != row.get_resource_kind()?.to_str()? {
+        return Err(capnp::Error::failed(
+            "resource semantic identity kind mismatch".into(),
+        ));
+    }
+    Ok(Some(identity))
 }
 
 fn validate_resource_range_binding(
@@ -2492,6 +2520,11 @@ fn write_directory_descriptor(
     descriptor: &runtime_collab::ExportedAction,
 ) {
     out.set_resource(&descriptor.resource);
+    if let Some(identity) = &descriptor.semantic_identity {
+        let mut out = out.reborrow().init_semantic_identity();
+        out.set_kind(&identity.kind);
+        out.set_key(&identity.key);
+    }
     out.set_action(&descriptor.action);
     out.set_resource_kind(&descriptor.resource_kind);
     out.set_resource_label(&descriptor.resource_label);
@@ -7660,6 +7693,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                     .transpose()?;
                 actions.push(PublishedAction {
                     resource,
+                    semantic_identity: decode_semantic_identity(row)?,
                     action,
                     resource_kind: row.get_resource_kind()?.to_str()?.to_owned(),
                     resource_label: row.get_resource_label()?.to_str()?.to_owned(),
@@ -9214,6 +9248,15 @@ fn published_directory_action(
             "directory descriptor address changed during conversion".into(),
         ));
     }
+    if descriptor
+        .semantic_identity
+        .as_ref()
+        .is_some_and(|identity| !identity.is_valid() || identity.kind != descriptor.resource_kind)
+    {
+        return Err(capnp::Error::failed(
+            "invalid directory resource semantic identity".into(),
+        ));
+    }
     let operation_kind = match descriptor.operation_kind.as_str() {
         "document" => tilo_actions::OperationKind::Document,
         "effect" => tilo_actions::OperationKind::Effect,
@@ -9269,6 +9312,12 @@ fn published_directory_action(
         });
     Ok(PublishedAction {
         resource: descriptor.resource.clone(),
+        semantic_identity: descriptor.semantic_identity.as_ref().map(|identity| {
+            tilo_actions::ResourceSemanticIdentity {
+                kind: identity.kind.clone(),
+                key: identity.key.clone(),
+            }
+        }),
         action: descriptor.action.clone(),
         resource_kind: descriptor.resource_kind.clone(),
         resource_label: descriptor.resource_label.clone(),
@@ -12299,6 +12348,7 @@ pub mod tests {
         fn row(&self) -> runtime_collab::ActionDirectoryRow {
             let contract_json = self.contract_json();
             let descriptor = runtime_collab::ExportedAction {
+                semantic_identity: None,
                 resource: "workspace:atlas".into(),
                 action: "open".into(),
                 resource_kind: "workspace".into(),
@@ -12743,6 +12793,55 @@ pub mod tests {
             0,
             "invalid local requests are rejected before a directory capability is contacted"
         );
+    }
+
+    #[test]
+    fn published_semantic_identity_retains_exact_directory_address_and_refuses_bad_wire() {
+        use runtime_collab::collab_capnp::exported_action;
+
+        let fixture = local_directory_fixture();
+        let mut row = fixture.directory_state.borrow().row();
+        let identity = runtime_collab::ExportedResourceSemanticIdentity {
+            kind: "workspace".into(),
+            key: "source-workspace:atlas".into(),
+        };
+        row.descriptor.as_mut().unwrap().semantic_identity = Some(identity);
+        let action = published_directory_action(&row).unwrap();
+        assert_eq!(action.resource, row.resource);
+        assert_eq!(action.action, row.action.as_deref().unwrap());
+        assert_eq!(
+            action.semantic_identity,
+            tilo_actions::ResourceSemanticIdentity::new("workspace", "source-workspace:atlas")
+        );
+
+        let decode = |kind: &str, key: &str| {
+            let mut message = capnp::message::Builder::new_default();
+            let mut descriptor = message.init_root::<exported_action::Builder<'_>>();
+            descriptor.set_resource_kind("chat.agent");
+            let mut identity = descriptor.init_semantic_identity();
+            identity.set_kind(kind);
+            identity.set_key(key);
+            decode_semantic_identity(
+                message
+                    .get_root_as_reader::<exported_action::Reader<'_>>()
+                    .unwrap(),
+            )
+        };
+        assert_eq!(
+            decode("chat.agent", "chat.person:scribe").unwrap(),
+            tilo_actions::ResourceSemanticIdentity::new("chat.agent", "chat.person:scribe")
+        );
+        assert!(decode("chat.person", "chat.person:scribe").is_err());
+        assert!(decode("chat.agent", "key\nsecret").is_err());
+        assert!(decode("chat.agent", &"x".repeat(4097)).is_err());
+        row.descriptor
+            .as_mut()
+            .unwrap()
+            .semantic_identity
+            .as_mut()
+            .unwrap()
+            .kind = "person".into();
+        assert!(published_directory_action(&row).is_err());
     }
 
     #[test]
@@ -13850,6 +13949,7 @@ pub mod tests {
             app_id: "so.tilo.files".into(),
             route: CrdtRoute::record("so.tilo.files", cluster, format!("record-{peer_id}")),
             actions: vec![PublishedAction {
+                semantic_identity: None,
                 resource: resource.into(),
                 action: "open".into(),
                 resource_kind: "files.entry".into(),
@@ -14239,6 +14339,7 @@ pub mod tests {
         );
         let action =
             |resource: String, action: &str, description: Option<String>| PublishedAction {
+                semantic_identity: None,
                 resource,
                 action: action.into(),
                 resource_kind: "document".into(),
@@ -14400,6 +14501,7 @@ pub mod tests {
                 route,
                 actions: vec![
                     PublishedAction {
+                        semantic_identity: None,
                         resource: "files.entry:/tmp/report".into(),
                         action: "reveal".into(),
                         resource_kind: "files.entry".into(),
@@ -14413,6 +14515,7 @@ pub mod tests {
                         input: PublishedInput::None,
                     },
                     PublishedAction {
+                        semantic_identity: None,
                         resource: "files.entry:/tmp/report".into(),
                         action: "erase".into(),
                         resource_kind: "files.entry".into(),
@@ -14430,6 +14533,7 @@ pub mod tests {
                         input: PublishedInput::None,
                     },
                     PublishedAction {
+                        semantic_identity: None,
                         resource: "files.entry:/tmp/report".into(),
                         action: "refresh".into(),
                         resource_kind: "files.entry".into(),
@@ -14628,6 +14732,7 @@ pub mod tests {
                     .clone(),
             ),
             actions: vec![PublishedAction {
+                semantic_identity: None,
                 resource: "files.app".into(),
                 action: "new-window".into(),
                 resource_kind: "files.app".into(),
@@ -16230,6 +16335,7 @@ mod resource_view_tests {
 
     fn test_published_view(action: &str, view_id: &str, primary: bool) -> PublishedAction {
         PublishedAction {
+            semantic_identity: None,
             resource: "note:one".into(),
             action: action.into(),
             resource_kind: "note".into(),
