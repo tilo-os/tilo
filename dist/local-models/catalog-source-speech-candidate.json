@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "production": true,
+  "key_id": "tilo-local-model-release-2026-10",
+  "recommendation": "",
+  "runtimes": [],
+  "models": [
+    {
+      "id": "u2net-subject",
+      "label": "Subject selection (U²-Net)",
+      "description": "Finds the main subject of a photo so apps can select or cut it out in one step. U²-Net runs on this device's processor inside the apps that use it; images never leave this device.",
+      "revision": "8d10d2f3bb75ae3b6d527c77944fc5e7dcd94b29809d47a739a7a728a912b491",
+      "artifact": {
+        "file": "artifacts/u2net.onnx",
+        "url": "https://code.tilo.so/api/packages/tilo/generic/u2net-subject/8d10d2f3bb75ae3b6d527c77944fc5e7dcd94b29809d47a739a7a728a912b491/u2net.onnx",
+        "sha256": "8d10d2f3bb75ae3b6d527c77944fc5e7dcd94b29809d47a739a7a728a912b491",
+        "size_bytes": 175997641
+      },
+      "artifact_format": "onnx_file",
+      "license_id": "Apache-2.0",
+      "license_url": "https://code.tilo.so/api/packages/tilo/generic/u2net-subject/8d10d2f3bb75ae3b6d527c77944fc5e7dcd94b29809d47a739a7a728a912b491/LICENSE",
+      "requires_acceptance": true,
+      "installed_size_bytes": 175997641,
+      "allowed_runtimes": [],
+      "required_memory_mib": 1024,
+      "required_accelerator_mib": 0,
+      "context_window": 0,
+      "vision": false,
+      "face_recognition": false,
+      "segmentation": true
+    },
+    {
+      "id": "whisper-tiny-multilingual",
+      "label": "On-device dictation (Whisper tiny)",
+      "description": "Recognizes speech locally on the processor. Audio stays on this device. Language support and accuracy vary.",
+      "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+      "artifact": {
+        "file": "artifacts/ggml-tiny.bin",
+        "url": "https://code.tilo.so/api/packages/tilo/generic/whisper-tiny/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.bin",
+        "sha256": "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+        "size_bytes": 77691713
+      },
+      "artifact_format": "whisper_ggml",
+      "license_id": "MIT",
+      "license_url": "https://code.tilo.so/api/packages/tilo/generic/whisper-tiny/5359861c739e955e79d9a303bcbc70fb988958b1/LICENSE",
+      "requires_acceptance": true,
+      "installed_size_bytes": 77691713,
+      "allowed_runtimes": [],
+      "required_memory_mib": 1024,
+      "required_accelerator_mib": 0,
+      "context_window": 0,
+      "vision": false,
+      "face_recognition": false,
+      "segmentation": false
+    }
+  ]
+}

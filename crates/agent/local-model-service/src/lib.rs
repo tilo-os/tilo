@@ -39,6 +39,10 @@ use sha2::{Digest, Sha256};
 use system_extension::{AcceptedExtension, ExtensionKind};
 use thiserror::Error;
 
+pub mod catalog;
+#[cfg(target_os = "linux")]
+pub mod speech;
+
 const STATE_FILE: &str = "state.json";
 const MAX_SNAPSHOT_FILES: u32 = 100_000;
 const MAX_SNAPSHOT_PATH_BYTES: usize = 1024;
@@ -1528,6 +1532,65 @@ mod tests {
         assert_eq!(installed.id, "speech");
         assert_eq!(installed.sha256, release.artifact.sha256);
         assert_eq!(fs::read(&installed.path).unwrap(), bytes);
+        // A test-only trust fixture stays in this temporary directory; it
+        // never changes the image keyring or the person's model store.
+        #[cfg(target_os = "linux")]
+        {
+            use crate::catalog::{
+                CATALOG_SIGNATURE_DOMAIN, CatalogPayload, SignedCatalog, VerifiedCatalog,
+                catalog_signing_bytes,
+            };
+            use ed25519_dalek::{Signer as _, SigningKey};
+            let key = SigningKey::from_bytes(&[5; 32]);
+            let payload = CatalogPayload {
+                schema: 1,
+                models: vec![release.clone()],
+                runtimes: vec![],
+                recommendation: String::new(),
+            };
+            let signed = SignedCatalog {
+                schema: 1,
+                signature_domain: CATALOG_SIGNATURE_DOMAIN.into(),
+                key_id: "isolated-test-only".into(),
+                signature: key
+                    .sign(&catalog_signing_bytes(&payload).unwrap())
+                    .to_bytes()
+                    .to_vec(),
+                payload,
+            };
+            let catalog_path = dir.path().join("test-catalog.json");
+            let keys_path = dir.path().join("test-keys.json");
+            fs::write(&catalog_path, serde_json::to_vec(&signed).unwrap()).unwrap();
+            fs::write(&keys_path, serde_json::to_vec(&serde_json::json!({"keys": {"isolated-test-only": hex::encode(key.verifying_key().to_bytes())}})).unwrap()).unwrap();
+            let verified = VerifiedCatalog::load(&catalog_path, &keys_path).unwrap();
+            let (_, _, loaded) = crate::speech::speech_model_bytes(dir.path(), &verified).unwrap();
+            assert_eq!(&**loaded, bytes);
+            fs::write(&installed.path, vec![0; bytes.len()]).unwrap();
+            assert!(matches!(
+                crate::speech::speech_model_bytes(dir.path(), &verified),
+                Err(crate::speech::SpeechError::ModelReceipt)
+            ));
+            fs::write(&installed.path, bytes).unwrap();
+            service.state.accepted_licenses.clear();
+            service.persist().unwrap();
+            assert!(matches!(
+                crate::speech::speech_model_bytes(dir.path(), &verified),
+                Err(crate::speech::SpeechError::ModelUnavailable)
+            ));
+            service.record_license_acceptance(&release).unwrap();
+            fs::remove_file(&installed.path).unwrap();
+            std::os::unix::fs::symlink(&catalog_path, &installed.path).unwrap();
+            assert!(matches!(
+                crate::speech::speech_model_bytes(dir.path(), &verified),
+                Err(crate::speech::SpeechError::ModelUnavailable)
+            ));
+            fs::remove_file(&installed.path).unwrap();
+            fs::write(&installed.path, bytes).unwrap();
+            let mut forged = signed;
+            forged.payload.models[0].artifact_format = ModelArtifactFormat::OnnxFile;
+            fs::write(&catalog_path, serde_json::to_vec(&forged).unwrap()).unwrap();
+            assert!(VerifiedCatalog::load(&catalog_path, &keys_path).is_err());
+        }
         service.remove("speech").unwrap();
         assert_eq!(
             installed_in_process_model(dir.path(), InProcessCapability::SpeechRecognition).unwrap(),
