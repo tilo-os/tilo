@@ -333,6 +333,18 @@ pub enum StoreEffect {
         #[param("Enabled device Flathub repository identity")]
         remote: String,
     },
+    /// Enable source.
+    #[effect(job, permission = "admin")]
+    EnableRemote {
+        #[param("Account repository identity")]
+        remote: String,
+    },
+    /// Disable source.
+    #[effect(job, permission = "admin")]
+    DisableRemote {
+        #[param("Account repository identity")]
+        remote: String,
+    },
     /// Remove remote.
     #[effect(job, destructive, permission = "admin")]
     RemoveRemote {

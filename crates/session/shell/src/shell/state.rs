@@ -2533,16 +2533,21 @@ impl WorkspaceTree {
     pub fn queue_save(&self) {
         let started = std::time::Instant::now();
         let export = self.fs_capability_export();
+        let actions = crate::shell::launcher::action_authority::Export::of(self);
         match (&self.persist_path, export) {
             (Some(path), export) => {
                 crate::shell::persist::queue_save(self, path, move || {
+                    actions.publish();
                     if let Some(export) = export {
                         export.write();
                     }
                 });
             }
-            (None, Some(export)) => export.submit(),
-            (None, None) => {}
+            (None, Some(export)) => {
+                export.submit();
+                actions.submit();
+            }
+            (None, None) => actions.submit(),
         }
         let took = started.elapsed();
         if took > std::time::Duration::from_millis(4) {

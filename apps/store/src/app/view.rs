@@ -801,6 +801,19 @@ impl StoreApp {
                     );
                 }
                 if remote.user_managed
+                    && let Some(binding) = bindings::effect(&super::remote_enabled_effect(remote))
+                {
+                    row = row.action_binding(
+                        Icon::Globe,
+                        ui::i18n!(if remote.disabled {
+                            "store-remote-enable"
+                        } else {
+                            "store-remote-disable"
+                        }),
+                        binding,
+                    );
+                }
+                if remote.user_managed
                     && let Some(binding) = bindings::remove_remote(remote)
                 {
                     row = row.action_binding(Icon::Trash, "Remove remote", binding);
