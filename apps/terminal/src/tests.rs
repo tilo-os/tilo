@@ -2723,6 +2723,37 @@ fn ime_and_accessibility_expose_terminal_semantics() {
         let (mut w, rx) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.set_focus(true);
+        assert_eq!(w.ime_purpose(), Some(winit::window::ImePurpose::Terminal));
+        assert_eq!(
+            ui::ime::ImeWindowState::from_widget(&w).unwrap().purpose,
+            winit::window::ImePurpose::Terminal
+        );
+        let stamp = w.ime_edit_fingerprint(&[9; 32]).unwrap();
+        w.feed(b"x");
+        assert_ne!(
+            w.ime_edit_fingerprint(&[9; 32]).unwrap(),
+            stamp,
+            "deferred terminal input must invalidate when its live caret moves"
+        );
+
+        let stamp = w.ime_edit_fingerprint(&[9; 32]).unwrap();
+        let caret = w.ime_cursor_rect();
+        w.feed(b"\x1b[31m");
+        assert_eq!(w.ime_cursor_rect(), caret);
+        assert_ne!(
+            w.ime_edit_fingerprint(&[9; 32]).unwrap(),
+            stamp,
+            "PTY state changes invalidate speech even without caret motion"
+        );
+        let stamp = w.ime_edit_fingerprint(&[9; 32]).unwrap();
+        w.try_write_input(b"typed").unwrap();
+        assert_ne!(
+            w.ime_edit_fingerprint(&[9; 32]).unwrap(),
+            stamp,
+            "pending keyboard input must invalidate before PTY echo arrives"
+        );
+        assert_eq!(drain_writes(&rx), b"typed");
+
         let mut handled = false;
         let mut focus = None;
         let mut taffy = taffy::TaffyTree::<()>::new();
