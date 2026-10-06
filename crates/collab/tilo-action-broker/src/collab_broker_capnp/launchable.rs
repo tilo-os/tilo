@@ -198,6 +198,23 @@ impl LaunchableCatalogue {
             .unwrap_or_default()
     }
 
+    pub(super) fn action_for(
+        &self,
+        route: &CrdtRoute,
+        resource: &str,
+        action: &str,
+    ) -> Option<(PublishedSurface, PublishedAction)> {
+        self.surfaces
+            .lock()
+            .ok()?
+            .get(&(
+                route.app_id.clone(),
+                route.cluster_id.clone(),
+                route.record_id.clone(),
+            ))?
+            .action_projection(resource, action)
+    }
+
     /// The retained surface `provider` names.
     pub(super) fn surface_for(&self, provider: &str) -> Option<PublishedSurface> {
         self.surfaces.lock().ok().and_then(|surfaces| {

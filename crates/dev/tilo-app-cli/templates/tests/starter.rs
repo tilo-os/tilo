@@ -55,3 +55,43 @@ fn the_name_survives_a_relaunch() {
     let app = app.reopen().expect("the app reopens");
     assert_eq!(app.state().name, "Grace");
 }
+
+/// The same resource syncs in both directions, updates the live view, and
+/// keeps a collaborator's edit when the local participant undoes theirs.
+#[test]
+fn collaboration_updates_the_view_and_undo_preserves_peer_edits() {
+    let mut app = TestApp::<App>::for_person("ada").expect("the app opens");
+    app.invoke(Greeting::SET_NAME.with("Ada".into()))
+        .expect("initial name");
+    let mut peer = Replica::<Greeting>::from_doc(app.peer_document()).as_author("grace");
+
+    app.invoke(Greeting::SET_NAME.with("Countess Ada".into()))
+        .expect("local prefix");
+    let envelope = peer
+        .apply(Greeting::SET_NAME.with("Ada Byron".into()))
+        .expect("peer suffix");
+    assert_eq!(envelope.actor.as_deref(), Some(b"grace".as_slice()));
+    let remote_actor = envelope.actor().to_hex_string();
+    app.merge_peer(peer.doc_mut()).expect("exchange edits");
+
+    assert_eq!(app.state().name, "Countess Ada Byron");
+    assert_eq!(peer.state().expect("peer state").name, "Countess Ada Byron");
+    app.harness()
+        .expect(&SemanticExpectation::named("greeting").name_contains("Countess Ada Byron"))
+        .expect("the view follows sync without app-specific glue");
+
+    assert!(app.undo(), "undo the local prefix");
+    assert_eq!(app.state().name, "Ada Byron", "the peer suffix remains");
+    assert!(app.redo(), "redo the local prefix");
+    assert_eq!(app.state().name, "Countess Ada Byron");
+    let versions = app.versions();
+    assert!(versions.len() >= 3, "local and remote edits have history");
+    assert!(
+        versions
+            .iter()
+            .any(|version| version.actor == remote_actor && version.context.is_some()),
+        "the peer edit keeps its author and action context in history"
+    );
+    let app = app.reopen().expect("the app reopens");
+    assert_eq!(app.state().name, "Countess Ada Byron");
+}

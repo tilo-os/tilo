@@ -737,6 +737,9 @@ pub struct ChromeState {
     /// drains them on its next update and runs each exactly as its chord
     /// would, since the focused group's widgets live there.
     shortcut_action_requests: Vec<settings_store::hardware::ShortcutAction>,
+    cancel_tab_drag_requested: bool,
+    axis_navigation_enabled: bool,
+    axis_gather_requested: bool,
     /// The input-source chord chose this source. The native compositor
     /// drains it and switches the seat and the physical keyboard at once;
     /// the persisted choice reaches them again on the settings poll.
@@ -884,6 +887,9 @@ impl ChromeState {
             fullscreen_toggle_requested: false,
             transition_paints_remaining: 0,
             shortcut_action_requests: Vec::new(),
+            cancel_tab_drag_requested: false,
+            axis_navigation_enabled: false,
+            axis_gather_requested: false,
             input_source_request: None,
             strip_viewport: None,
             viewport_size: None,
@@ -1074,6 +1080,26 @@ impl ChromeState {
         self.transition_paints_remaining = self.transition_paints_remaining.saturating_sub(1);
     }
 
+    pub fn axis_navigation_enabled(&self) -> bool {
+        self.axis_navigation_enabled
+    }
+
+    /// Experimental local view policy. Never persisted or shared with peers.
+    pub fn set_axis_navigation_enabled(&mut self, enabled: bool) {
+        self.axis_navigation_enabled = enabled;
+        self.axis_gather_requested = enabled;
+        self.bump();
+    }
+
+    pub fn request_axis_gather(&mut self) {
+        self.axis_gather_requested = self.axis_navigation_enabled;
+        self.bump();
+    }
+
+    pub fn take_axis_gather_request(&mut self) -> bool {
+        std::mem::take(&mut self.axis_gather_requested)
+    }
+
     /// Run `action` as if its chord had been pressed once, on the overlay
     /// host's next update.
     pub fn request_shortcut_action(&mut self, action: settings_store::hardware::ShortcutAction) {
@@ -1085,6 +1111,16 @@ impl ChromeState {
         &mut self,
     ) -> Vec<settings_store::hardware::ShortcutAction> {
         std::mem::take(&mut self.shortcut_action_requests)
+    }
+
+    /// Cancel the shell's pending tab gesture through the same path as Escape.
+    pub fn request_tab_drag_cancel(&mut self) {
+        self.cancel_tab_drag_requested = true;
+        self.bump();
+    }
+
+    pub fn take_tab_drag_cancel_request(&mut self) -> bool {
+        std::mem::take(&mut self.cancel_tab_drag_requested)
     }
 
     pub fn request_input_source(&mut self, index: usize) {

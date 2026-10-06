@@ -1767,3 +1767,4 @@ accounts-browser-identity-about = Public account choices for existing browser si
 accounts-browser-identity-hide = Hide from browser picker
 accounts-browser-identity-show = Show in browser picker
 accounts-browser-identity-remove = Remove browser choice
+shortcut-name-tab-menu = Show tab menu

@@ -72,6 +72,10 @@ impl TabMenuLayer {
             .open_anchored(Rect::new(at.x, at.y, at.x, at.y), viewport);
     }
 
+    pub(crate) fn focus_first_action(&mut self) {
+        self.menu.focus_first_action();
+    }
+
     pub(crate) fn close(&mut self) {
         self.menu.close();
         self.target = None;
@@ -166,6 +170,10 @@ impl ShellLayer for TabMenuLayer {
     /// closes this menu and falls through so the tab bar under the pointer
     /// can open its own in the same dispatch.
     fn handle_event(&mut self, event: &WindowEvent, cx: &mut LayerCx<'_, '_>) -> Routed {
+        // Holding the opening chord must preserve the armed row.
+        if cx.shortcut == Some(settings_store::hardware::ShortcutAction::TabMenu) {
+            return Routed::Consumed;
+        }
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {

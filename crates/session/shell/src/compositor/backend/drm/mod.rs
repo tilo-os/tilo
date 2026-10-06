@@ -161,6 +161,7 @@ pub struct DrmPresenter {
     /// hard reset still leaves exact phase costs in the flight record.
     profile_phases: bool,
     profile_seq: u64,
+    frame_phases: Option<crate::shell::present::FramePhaseTiming>,
     /// Bounded aggregate diagnostics are always collected. They make a slow physical session
     /// actionable even when its wrapper forgot the opt-in per-frame trace environment: one log
     /// record every two seconds is cheap enough for production and survives a hard reset.
@@ -364,6 +365,10 @@ impl Default for PhaseWindow {
 impl PhaseWindow {
     fn record(&mut self, timing: paint::BridgePhaseTiming) {
         self.frames = self.frames.saturating_add(1);
+        self.accumulate(timing);
+    }
+
+    fn accumulate(&mut self, timing: paint::BridgePhaseTiming) {
         self.submit_us = self.submit_us.saturating_add(timing.submit_us);
         self.gpu_readback_map_us = self
             .gpu_readback_map_us
@@ -408,7 +413,15 @@ impl PhaseWindow {
         }
     }
 
-    fn record_direct_submit(&mut self, render_us: u128, sparse: bool) {
+    fn record_direct_submit(
+        &mut self,
+        render_us: u128,
+        sparse: bool,
+        timing: Option<paint::BridgePhaseTiming>,
+    ) {
+        if let Some(timing) = timing {
+            self.accumulate(timing);
+        }
         self.frames = self.frames.saturating_add(1);
         self.direct_frames = self.direct_frames.saturating_add(1);
         self.direct_us = self.direct_us.saturating_add(render_us);
@@ -526,13 +539,27 @@ mod phase_window_tests {
         // Phase `phase_window_records_direct_submission_drop_and_flip_completion`.
         {
             let mut window = PhaseWindow::default();
-            window.record_direct_submit(7_000, false);
-            window.record_direct_submit(3_000, true);
+            window.record_direct_submit(
+                7_000,
+                false,
+                Some(paint::BridgePhaseTiming {
+                    submit_us: 2,
+                    completed_readback_map_us: 4,
+                    settle_us: 6,
+                    backdrop_us: 14,
+                    ..Default::default()
+                }),
+            );
+            window.record_direct_submit(3_000, true, None);
             window.record_direct_drop();
             window.record_flip_completions(2);
 
             assert_eq!(window.frames, 2);
             assert_eq!(window.direct_frames, 2);
+            assert_eq!(window.submit_us, 2);
+            assert_eq!(window.gpu_readback_map_us, 4);
+            assert_eq!(window.settle_us, 6);
+            assert_eq!(window.backdrop_us, 14);
             assert_eq!(window.direct_us, 10_000);
             assert_eq!(window.max_direct_us, 7_000);
             assert_eq!(window.direct_sparse_frames, 1);
@@ -762,6 +789,10 @@ impl DrmPresenter {
         &mut self,
         frame: &FramePaint,
     ) -> Option<crate::shell::present::PhysicalPresentation> {
+        self.frame_phases = None;
+        if let Some(bridge) = &mut self.paint {
+            let _ = bridge.take_phase_timing();
+        }
         self.drain_commands();
         if self.blanked || self.paused {
             return None;
@@ -792,6 +823,14 @@ impl DrmPresenter {
             Some(&mut self.phase_window),
             &mut self.direct_bypass_reported,
         );
+        let retirement_started = self.profile_phases.then(Instant::now);
+        let retirement_attempted = sample.direct_queued
+            || (self.scanouts.len() == 1
+                && self
+                    .scanouts
+                    .first()
+                    .map(|entry| entry.scanout.flip_submission())
+                    != before);
         let physical = if sample.direct_queued {
             self.retire_direct_flip()
         } else if self.scanouts.len() == 1
@@ -805,7 +844,24 @@ impl DrmPresenter {
         } else {
             None
         };
+        if let Some(started) = retirement_started {
+            self.frame_phases = self
+                .paint
+                .as_ref()
+                .and_then(paint::VelloDrmBridge::last_phase_timing)
+                .map(|paint| crate::shell::present::FramePhaseTiming {
+                    paint,
+                    kms_retirement_us: if retirement_attempted {
+                        started.elapsed().as_micros()
+                    } else {
+                        0
+                    },
+                });
+        }
         self.emit_phase_profile(sample);
+        if let Some(bridge) = &mut self.paint {
+            let _ = bridge.take_phase_timing();
+        }
         report_signal_status(&mut self.scanouts, self.signal_reports.as_ref());
         physical
     }
@@ -1620,6 +1676,7 @@ fn paint_scanouts(
                                                 render_us,
                                                 stats.sparse_attempts > 0
                                                     && stats.full_attempts == 0,
+                                                bridge.last_phase_timing(),
                                             );
                                         }
                                         let degradation = if want_hdr {
@@ -2446,6 +2503,10 @@ impl Presenter for DrmPresenter {
         self.render(scene);
     }
 
+    fn frame_phase_timing(&self) -> Option<crate::shell::present::FramePhaseTiming> {
+        self.frame_phases
+    }
+
     /// Mesa's CPU Vulkan driver compiles each pipeline on its first dispatch, seconds of work
     /// the bridge's warm-up pays up front. Starting it here overlaps the compositor's startup.
     fn prepare(&mut self) {
@@ -2642,7 +2703,9 @@ impl Backend for DrmBackend {
             // The scanouts and the commands addressed to them travel together: whoever owns one owns the other.
             commands: self.commands.take(),
             present_gate: self.inner.dispatch.present_gate.clone(),
-            profile_phases: std::env::var_os("TILO_DRM_PHASE_TRACE").is_some(),
+            profile_phases: std::env::var_os("TILO_DRM_PHASE_TRACE").is_some()
+                || std::env::var_os("TILO_PROFILE_GPU_STAGES").is_some_and(|value| value == "1"),
+            frame_phases: None,
             profile_seq: 0,
             phase_window: PhaseWindow::default(),
             direct_bypass_reported: false,

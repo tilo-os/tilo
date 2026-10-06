@@ -61,7 +61,7 @@ impl ShortcutCategory {
 
 impl ShortcutAction {
     /// Every rebindable desktop action, in the order it is listed.
-    pub const ALL: [Self; 46] = [
+    pub const ALL: [Self; 47] = [
         Self::Search,
         Self::WorkspaceOverview,
         Self::Lock,
@@ -71,6 +71,7 @@ impl ShortcutAction {
         Self::FocusNextWindow,
         Self::PreviousTab,
         Self::NextTab,
+        Self::TabMenu,
         Self::PreviousStrip,
         Self::NextStrip,
         Self::PreviousWorkspace,
@@ -123,6 +124,7 @@ impl ShortcutAction {
             Self::FocusNextWindow => "focus-next-window",
             Self::PreviousTab => "previous-tab",
             Self::NextTab => "next-tab",
+            Self::TabMenu => "tab-menu",
             Self::PreviousStrip => "previous-strip",
             Self::NextStrip => "next-strip",
             Self::PreviousWorkspace => "previous-workspace",
@@ -205,7 +207,8 @@ impl ShortcutAction {
             | Self::FocusGroup7
             | Self::FocusGroup8
             | Self::FocusGroup9 => ShortcutCategory::Navigation,
-            Self::ToggleMaximize
+            Self::TabMenu
+            | Self::ToggleMaximize
             | Self::ToggleFullscreen
             | Self::DetachTab
             | Self::AttachTabLeft
