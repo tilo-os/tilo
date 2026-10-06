@@ -449,6 +449,35 @@ fn mount<W: Widget + 'static>(
 
 fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.first().is_some_and(|arg| arg == "--native-fixture") {
+        assert_eq!(
+            args.len(),
+            4,
+            "--native-fixture HOST PROFILE LOOPBACK_HTTP_URL"
+        );
+        let url = url::Url::parse(&args[3]).expect("synthetic loopback URL");
+        assert_eq!(url.scheme(), "http");
+        assert_eq!(url.host_str(), Some("127.0.0.1"));
+        assert!(
+            std::env::var_os("WAYLAND_DISPLAY").is_some(),
+            "owned Wayland fixture required"
+        );
+        assert!(
+            std::env::var_os("TILO_TEST_CONTROL").is_some(),
+            "owned control socket required"
+        );
+        tilo_ui::App::from_factory(State::new(), || {
+            let engine: SharedEngine =
+                ChromiumEngine::with_host(Path::new(&args[1]), Path::new(&args[2]))
+                    .expect("actual sandboxed Chromium host");
+            engine.set_visible(true);
+            engine.send(WebViewCommand::Navigate(url.to_string()));
+            Box::new(WebView::new(engine))
+        })
+        .with_window_title("Synthetic dictation qualification")
+        .run();
+        return;
+    }
     if args == ["--help"] {
         println!("browser-text-input-qualification HOST PROFILE SYNTHETIC_HTTP_URL");
         return;

@@ -624,3 +624,51 @@ repeated results. Public probes exposed and verified each fix. The signed-store
 qualification separately asserts the production loader's exact bounded capacity.
 Disabling timestamp prediction was tested and discarded because it worsened
 French and Mandarin. No timestamp-policy change is included.
+
+### Current intermediate-size qualification (6 October 2026)
+
+The existing multilingual Whisper Base fixture was reverified, not downloaded
+or installed: 147,951,465 bytes, SHA-256
+`60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe`,
+from the same pinned MIT model repository as Tiny. The unchanged production
+configuration (two CPU threads, fresh state, 1 GiB address-space limit) completed
+all 21 probes on the same 33-source FLEURS fixture. Cold-load median was 2,130 ms.
+
+| Language | Short quality | Fixed-language median | Auto-language median |
+| --- | ---: | ---: | ---: |
+| English | 10.96% WER | 1,211 ms | 2,241 ms |
+| German | 20.97% WER | 1,231 ms | 2,255 ms |
+| French | 26.61% WER | 1,268 ms | 2,324 ms |
+| Spanish | 9.80% WER | 1,282 ms | 2,290 ms |
+| Arabic | 42.03% WER | 1,350 ms | 2,400 ms |
+| Mandarin | 33.33% CER | 1,217 ms | 2,267 ms |
+
+Three independent Arabic probes and one long Mandarin probe completed with
+actual decoder peak virtual memory of 942.46–951.73 MiB, leaving at least
+72.27 MiB of observed headroom; peak resident memory was 448.27 MiB. The initial
+full-run supervisor counters were discarded because they did not observe its
+isolated decoder children. These are sampled observations, not worst-case bounds.
+Long English/French/Mandarin errors remained 64.74% WER / 40.09% WER / 42.75%
+CER. Base improves several Tiny results and memory margin compared with Small,
+but neither this quality nor three short recordings per language establish the
+user's Flow-level goal. No catalogue, default or user selection changed.
+
+The qualification examples now expose opt-in fixture entry points: a scoped
+native WebView window on a loopback HTTP page, and a reviewed-model fixture held
+only while its owner's stdin pipe remains open. Its deterministic test key,
+accepted-license receipt and model store live in an automatically removed
+temporary directory. They must only be mounted inside a disposable non-root
+namespace; they are never installed into OS or user trust. Production worker
+paths and microphone consent are unchanged. These entry points alone do not
+prove the assembled audio-to-browser journey.
+
+A disposable namespace run assembled the current headless compositor and the
+sandboxed native Chromium fixture on loopback successfully. After an actual
+click within the measured foreign-surface rectangle, the compositor reported
+the correct native keyboard surface and text-input surface, but
+`text_input_active` remained false for the full ten-second observation. Thus
+this run has **not** reached dictation preparation, capture or insertion. The
+browser field-admission/focus path remains to be diagnosed. Separately, the
+fixed-path real worker reached `Ready` inside the same namespace layout and
+reported explicit `WorkerStopped` after owner EOF. Neither result is an
+assembled audio-to-browser success; no microphone consent was given.
