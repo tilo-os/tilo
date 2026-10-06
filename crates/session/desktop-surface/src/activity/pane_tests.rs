@@ -2443,7 +2443,7 @@ mod tests {
         }));
     }
 
-    /// The header band equals the authored 76 px at 100 % and grows with the
+    /// The header band equals the authored 80 px at 100 % and grows with the
     /// text scale so the title, subtitle and "Latest" lines have their own
     /// room; every row under it moves down with it, and a `draw` at a new
     /// scale lays the sheet out again before placing anything.
@@ -2491,7 +2491,7 @@ mod tests {
                 ui::chrome::selection_tier(&theme, ui::chrome::SelectionState::active(true));
             let idle = theme.tokens.colors.lift(PILL_FLOOR_LIFT_T);
             assert_ne!(
-                active.fill, theme.tokens.colors.accent[5],
+                active.fill, theme.tokens.colors.intent.inverted,
                 "{}: not an accent wash",
                 theme.name
             );

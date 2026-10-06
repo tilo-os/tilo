@@ -10,6 +10,7 @@
 //! [`ReadSettings`], a personal setting the reader's effects change.
 
 use std::rc::Rc;
+use ui::search::ScopeDecl;
 
 use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Effected, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
@@ -154,6 +155,16 @@ impl Resource for Feeds {
         });
         feeds.chain(articles).chain(tags).collect()
     }
+
+    /// Each feed is a part search can be narrowed to.
+    fn search_scopes(state: &FeedsState) -> Vec<ScopeDecl> {
+        state
+            .store
+            .feeds
+            .iter()
+            .map(|feed| ScopeDecl::new(crate::actions::feed_resource_id(feed.id), &feed.title))
+            .collect()
+    }
 }
 
 /// What the reader does that changes no document by itself; what it brings
@@ -232,7 +243,11 @@ impl ResourceApp for FeedsShell {
     const ICON: Option<&'static str> = Some("feeds");
 
     fn view(cx: &mut ViewCx<Feeds>) -> Element {
-        cx.surface(FeedsApp::new())
+        let app = FeedsApp::new();
+        // A picked search hit (or an agent's `open`) shows its item.
+        let opened = app.opener();
+        cx.on_open(move |anchor| opened.borrow_mut().push(anchor.to_owned()));
+        cx.surface(app)
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
@@ -361,11 +376,11 @@ impl ResourceSurface<Feeds, FeedsEffect> for FeedsApp {
                 Ok(Effected::done())
             }
             FeedsEffect::ReaderTextLarger => {
-                self.change_read_settings(|s| s.font_scale += ReadSettings::FONT_STEP)?;
+                self.change_read_settings(|s| s.adjust_text_percent(1))?;
                 Ok(Effected::done())
             }
             FeedsEffect::ReaderTextSmaller => {
-                self.change_read_settings(|s| s.font_scale -= ReadSettings::FONT_STEP)?;
+                self.change_read_settings(|s| s.adjust_text_percent(-1))?;
                 Ok(Effected::done())
             }
             FeedsEffect::ReaderFont { font } => {
@@ -721,7 +736,7 @@ mod tests {
                 .harness()
                 .inspection_json()
                 .unwrap()
-                .contains("Back to articles")
+                .contains("nav-shell-back")
         );
 
         let settings = TestApp::<FeedsShell>::capture(Some("reader-settings")).unwrap();
@@ -750,11 +765,18 @@ mod tests {
 
         let mut tags = TestApp::<FeedsShell>::capture(Some("tags")).unwrap();
         assert_eq!(tags.harness().inspection().viewport, [1280, 800]);
+        let nodes = tags.harness().a11y_nodes();
         assert!(
-            tags.harness()
-                .inspection_json()
-                .unwrap()
-                .contains("Article tags")
+            nodes.iter().any(|(_, node)| {
+                node.role() == ui::accesskit::Role::Dialog && node.label() == Some("Edit tags")
+            }),
+            "the capture stages the actual article-tag dialog"
+        );
+        assert!(
+            nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Save tags")),
+            "the staged dialog retains its real submission control"
         );
 
         let empty = TestApp::<FeedsShell>::capture(Some("empty")).unwrap();

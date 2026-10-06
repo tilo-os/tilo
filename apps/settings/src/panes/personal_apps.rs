@@ -538,11 +538,11 @@ mod tests {
         );
         assert_eq!(
             PersonalAppsPane::resource_label(&ResourceKind::extension("pdf").unwrap()),
-            ".pdf files"
+            "PDF documents"
         );
         assert_eq!(
             PersonalAppsPane::resource_label(&ResourceKind::scheme("https").unwrap()),
-            "https: links"
+            "Secure web links"
         );
     }
 

@@ -145,6 +145,8 @@ pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::
 pub enum RemoteAction {
     Add = 0,
     Remove = 1,
+    Enable = 2,
+    Disable = 3,
 }
 
 impl ::capnp::introspect::Introspect for RemoteAction {
@@ -159,6 +161,8 @@ impl ::core::convert::TryFrom<u16> for RemoteAction {
         match value {
             0 => ::core::result::Result::Ok(Self::Add),
             1 => ::core::result::Result::Ok(Self::Remove),
+            2 => ::core::result::Result::Ok(Self::Enable),
+            3 => ::core::result::Result::Ok(Self::Disable),
             n => ::core::result::Result::Err(::capnp::NotInSchema(n)),
         }
     }
@@ -171,7 +175,7 @@ impl ::capnp::traits::HasTypeId for RemoteAction {
     const TYPE_ID: u64 = 0x8411_f378_db92_13dbu64;
 }
 mod remote_action {
-pub(crate) static ENCODED_NODE: [::capnp::Word; 26] = [
+pub(crate) static ENCODED_NODE: [::capnp::Word; 34] = [
     ::capnp::word(0, 0, 0, 0, 5, 0, 6, 0),
     ::capnp::word(219, 19, 146, 219, 120, 243, 17, 132),
     ::capnp::word(15, 0, 0, 0, 2, 0, 0, 0),
@@ -181,7 +185,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 26] = [
     ::capnp::word(21, 0, 0, 0, 226, 0, 0, 0),
     ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(29, 0, 0, 0, 55, 0, 0, 0),
+    ::capnp::word(29, 0, 0, 0, 103, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(97, 112, 112, 45, 104, 111, 115, 116),
@@ -189,15 +193,23 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 26] = [
     ::capnp::word(101, 109, 111, 116, 101, 65, 99, 116),
     ::capnp::word(105, 111, 110, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 1, 0, 1, 0),
-    ::capnp::word(8, 0, 0, 0, 1, 0, 2, 0),
+    ::capnp::word(16, 0, 0, 0, 1, 0, 2, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(17, 0, 0, 0, 34, 0, 0, 0),
+    ::capnp::word(41, 0, 0, 0, 34, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(1, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(9, 0, 0, 0, 58, 0, 0, 0),
+    ::capnp::word(33, 0, 0, 0, 58, 0, 0, 0),
+    ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+    ::capnp::word(2, 0, 0, 0, 0, 0, 0, 0),
+    ::capnp::word(25, 0, 0, 0, 58, 0, 0, 0),
+    ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+    ::capnp::word(3, 0, 0, 0, 0, 0, 0, 0),
+    ::capnp::word(17, 0, 0, 0, 66, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(97, 100, 100, 0, 0, 0, 0, 0),
     ::capnp::word(114, 101, 109, 111, 118, 101, 0, 0),
+    ::capnp::word(101, 110, 97, 98, 108, 101, 0, 0),
+    ::capnp::word(100, 105, 115, 97, 98, 108, 101, 0),
 ];
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
