@@ -87,10 +87,13 @@ impl SpotifyBackend {
 
     pub(super) fn playback_account(&self, sign_in: bool) -> Result<String, BackendError> {
         let profile = self.get("me", &[])?;
-        if profile.get("product").and_then(Value::as_str).is_none() {
-            return Err(BackendError("Spotify did not disclose subscription eligibility. Native playback remains unavailable; this does not mean the account is Free.".into()));
-        }
-        if profile.get("product").and_then(Value::as_str) != Some("premium") {
+        // This resolves identity/grants, not playback eligibility. The native
+        // session must confirm Premium before constructing any audio output.
+        // Deprecated/missing Web API metadata is neither Premium nor Free.
+        if matches!(
+            profile.get("product").and_then(Value::as_str),
+            Some("free" | "open")
+        ) {
             return Err(BackendError(
                 "Spotify Premium is required for native playback; you can still browse your music"
                     .into(),
@@ -109,6 +112,14 @@ impl SpotifyBackend {
                 self.sign_in_for(STREAMING_USE, STREAMING_ACCOUNT)?;
             }
             let streaming_profile = self.get_for(STREAMING_USE, STREAMING_ACCOUNT, "me", &[])?;
+            if matches!(
+                streaming_profile.get("product").and_then(Value::as_str),
+                Some("free" | "open")
+            ) {
+                return Err(BackendError(
+                    "Spotify Premium is required for native playback".into(),
+                ));
+            }
             let stable_identity = match (
                 profile.get("account_id"),
                 streaming_profile.get("account_id"),
@@ -880,17 +891,79 @@ mod tests {
     }
 
     #[test]
-    fn spotify_missing_subscription_field_is_unknown_rather_than_free() {
+    fn spotify_identity_without_subscription_metadata_does_not_claim_premium() {
+        use test_http::{Reply, Responder};
+        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+        let profiles = if cfg!(feature = "spotify-native") {
+            vec![
+                Reply::status(200).body(br#"{"id":"catalogue","account_id":"matched"}"#.to_vec()),
+                Reply::status(200).body(br#"{"id":"catalogue","account_id":"matched"}"#.to_vec()),
+            ]
+        } else {
+            vec![Reply::status(200).body(br#"{"id":"catalogue"}"#.to_vec())]
+        };
+        let api = Responder::start(profiles);
+        let (backend, _root) = fixture(&api.url(), &oauth);
+        #[cfg(feature = "spotify-native")]
+        {
+            seal_test_streaming_grant(&backend);
+            // This is account identity only. The native output gate separately
+            // refuses missing/unknown protocol eligibility before any PCM.
+            assert_eq!(backend.playback_account(false).unwrap(), "catalogue");
+            assert_eq!(api.next_request().target, "/me");
+        }
+        #[cfg(not(feature = "spotify-native"))]
+        assert!(
+            backend
+                .playback_account(false)
+                .unwrap_err()
+                .to_string()
+                .contains("does not include native")
+        );
+        assert_eq!(api.next_request().target, "/me");
+        api.assert_untouched();
+    }
+
+    #[cfg(feature = "spotify-native")]
+    fn seal_test_streaming_grant(backend: &SpotifyBackend) {
+        backend
+            .custody
+            .seal_oauth(
+                &AccountId::from(tilo_spotify::STREAMING_ACCOUNT.to_string()),
+                &account_custody::TokenSet {
+                    access_token: "stream-test".into(),
+                    refresh_token: "refresh-test".into(),
+                    expires_in: 3600,
+                    ..Default::default()
+                }
+                .stamp_now(),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    #[cfg(feature = "spotify-native")]
+    fn spotify_explicit_streaming_profile_free_is_refused_before_audio() {
         use test_http::{Reply, Responder};
         let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
         let api = Responder::start(vec![
             Reply::status(200).body(br#"{"id":"catalogue"}"#.to_vec()),
+            Reply::status(200).body(br#"{"id":"catalogue","product":"free"}"#.to_vec()),
         ]);
         let (backend, _root) = fixture(&api.url(), &oauth);
-        let error = backend.playback_account(false).unwrap_err().to_string();
-        assert!(error.contains("did not disclose"));
-        assert_eq!(api.next_request().target, "/me");
+        seal_test_streaming_grant(&backend);
+        assert!(
+            backend
+                .playback_account(false)
+                .unwrap_err()
+                .to_string()
+                .contains("Premium")
+        );
+        for _ in 0..2 {
+            assert_eq!(api.next_request().target, "/me");
+        }
         api.assert_untouched();
+        assert_eq!(oauth.refreshes(), 0);
     }
 
     #[test]

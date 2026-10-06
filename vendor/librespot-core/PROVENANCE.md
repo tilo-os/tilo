@@ -10,6 +10,8 @@ published core archive does not include that workspace file.
 Tilo changes:
 
 - Both manifests select quick-xml 0.41 instead of the banned 0.38 parser.
+- Remove the obsolete deprecation lint expectation on `with_blob`; the locked
+  cipher dependency does not emit that warning, so strict CI rejected it.
 - Product-info and both attribute setters invalidate a non-Premium session
   instead of terminating the application. The dispatch task returns a
   recoverable permission error; rejected attributes cannot revive a session.
