@@ -1,146 +1,310 @@
-//! Small drawing helpers shared by the app's panes.
-//!
-//! These wrap the handful of Vello primitives the snippet manager paints
-//! (filled rounded rects, hairline borders, pills) so the pane code stays
-//! about layout, not about `kurbo` plumbing. Every colour comes in from a
-//! [`ui::theme::Theme`] token at the call site — nothing here invents a
-//! colour.
+//! Layout and paint helpers shared by the app's panes, the fill-in dialog's
+//! preview and the history preview.
 
+use std::collections::HashMap;
+
+use taffy::{NodeId, Style, TaffyTree};
 use ui::paint::PaintCtx;
-pub use ui::paint::{fill_rect, fill_round, stroke_round};
-use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle};
+use ui::theme::Theme;
+use ui::tokens::TextRole;
+use ui::widget::Widget;
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
-use vello::peniko::Color;
+use vello::kurbo::{Affine, Point, Rect};
 
-/// A crisp 1 px edge on `rect`'s outermost pixel row: strokes
-/// [`ui::surface::edge_outline`] (half a pixel *inside* the rect — kurbo's
-/// `Rect::inset(+x)` grows a rect, so this is the one place that geometry
-/// lives). For a surface whose fill and edge cannot go through
-/// [`ui::surface::card`] in one call (the code card paints its gutter
-/// between fill and edge; the modal strokes `panel_border`).
-pub fn stroke_edge(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: Color) {
-    scene.stroke(
-        &Stroke::new(1.0),
-        t,
-        color,
-        None,
-        &ui::surface::edge_outline(rect, radius),
-    );
+use crate::highlight::{self, Span};
+use crate::model::{Language, Snippet};
+
+/// A leaf node that fills what its parent gives it, registered for `widget`.
+#[allow(
+    clippy::expect_used,
+    reason = "TaffyTree::new_leaf only fails on allocation, which aborts anyway"
+)]
+pub(crate) fn fill_leaf<W: Widget + 'static>(
+    taffy: &mut TaffyTree<()>,
+    node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    widget: &mut W,
+) -> NodeId {
+    let node = taffy
+        .new_leaf(Style {
+            size: taffy::Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::percent(1.0),
+            },
+            ..Default::default()
+        })
+        .expect("a leaf node");
+    node_map.insert(node, std::ptr::from_mut::<dyn Widget>(widget));
+    node
 }
 
-/// Stroke a straight line between two points (toggle glyphs: hamburger,
-/// close-X, back chevron).
-pub fn stroke_line(scene: &mut Scene, t: Affine, a: Point, b: Point, width: f64, color: Color) {
-    scene.stroke(&Stroke::new(width), t, color, None, &Line::new(a, b));
-}
-
-/// The monospace style the body preview / highlighter paints in.
-pub fn mono_style(size: f32, weight: TextWeight) -> TextStyle {
-    TextStyle::new(size)
-        .with_weight(weight)
-        .with_family(FontChoice::Monospace)
-}
-
-/// Measure the advance width of a monospace string at `size`.
-pub fn mono_width(tr: &mut TextRenderer, s: &str, size: f32) -> f64 {
-    f64::from(
-        tr.measure_styled(s, size, None, TextWeight::Regular, false, true)
-            .0,
+/// The rect taffy placed `node` at, in window coordinates.
+pub(crate) fn leaf_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
+    let layout = taffy.layout(node).copied().unwrap_or_default();
+    let x = origin.x + f64::from(layout.location.x);
+    let y = origin.y + f64::from(layout.location.y);
+    Rect::new(
+        x,
+        y,
+        x + f64::from(layout.size.width),
+        y + f64::from(layout.size.height),
     )
 }
 
-/// Fit a monospace line into `max_w` px with a trailing ellipsis. Every
-/// glyph of a monospace face shares one advance, so one measurement gives
-/// the exact character budget — no per-candidate re-measuring. Proportional
-/// text uses the shared [`TextRenderer::elide_to_width_weighted`] instead.
-pub fn mono_fit(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> String {
-    if max_w <= 0.0 {
-        return String::new();
+/// One painted row of wrapped code: the source line it starts (counted from
+/// 1; `None` when it continues the line above) and its highlighted runs.
+pub(crate) struct CodeRow {
+    pub(crate) number: Option<usize>,
+    pub(crate) runs: Vec<Span>,
+}
+
+fn width_of(text: &mut TextRenderer, s: &str, style: &TextStyle) -> f64 {
+    f64::from(text.measure_style(s, None, style).0)
+}
+
+/// The longest leading part of `s` that fits in `room`, ending after a
+/// space or `/` when one fits. Without `force` (the row already holds
+/// code) a part that would split a token is empty: the token moves to the
+/// next row; with `force` the part is never empty.
+fn fitting_prefix<'a>(
+    text: &mut TextRenderer,
+    s: &'a str,
+    style: &TextStyle,
+    room: f64,
+    force: bool,
+) -> &'a str {
+    let bounds: Vec<usize> = s.char_indices().map(|(i, c)| i + c.len_utf8()).collect();
+    // Binary search the last char boundary whose prefix fits.
+    let (mut lo, mut hi) = (0usize, bounds.len());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        let end = bounds.get(mid - 1).copied().unwrap_or(0);
+        if width_of(text, s.get(..end).unwrap_or(""), style) <= room {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
     }
-    let advance = mono_width(tr, "0", size);
-    if advance <= 0.0 {
-        return s.to_string();
+    let end = if lo == 0 {
+        if force {
+            bounds.first().copied().unwrap_or(0)
+        } else {
+            0
+        }
+    } else {
+        bounds.get(lo - 1).copied().unwrap_or(0)
+    };
+    let fits = s.get(..end).unwrap_or("");
+    if end >= s.len() {
+        return fits;
     }
-    let budget = (max_w / advance).floor() as usize;
-    let len = s.chars().count();
-    if len <= budget {
-        return s.to_string();
+    // Break after a space or a path separator when one fits, so words and
+    // path segments stay whole; a token with neither breaks where it must.
+    match fits.rfind([' ', '/']) {
+        Some(at) if at > 0 => s.get(..=at).unwrap_or(fits),
+        _ if !force => "",
+        _ => fits,
     }
-    if budget == 0 {
-        return String::new();
+}
+
+/// Highlight `body` and wrap it to `width` in `style`: a line that does not
+/// fit continues on the next row, so nothing is cut off.
+pub(crate) fn wrap_code(
+    text: &mut TextRenderer,
+    style: &TextStyle,
+    body: &str,
+    language: Language,
+    width: f64,
+) -> Vec<CodeRow> {
+    let width = width.max(1.0);
+    let mut rows = Vec::new();
+    for (index, spans) in highlight::highlight_lines(body, language).enumerate() {
+        let mut row = CodeRow {
+            number: Some(index + 1),
+            runs: Vec::new(),
+        };
+        let mut x = 0.0;
+        for span in spans {
+            let mut rest = span.text.as_str();
+            while !rest.is_empty() {
+                let whole = width_of(text, rest, style);
+                if x + whole <= width {
+                    row.runs.push(Span {
+                        text: rest.to_string(),
+                        kind: span.kind,
+                    });
+                    x += whole;
+                    break;
+                }
+                let part = fitting_prefix(text, rest, style, width - x, x == 0.0);
+                if !part.is_empty() {
+                    row.runs.push(Span {
+                        text: part.to_string(),
+                        kind: span.kind,
+                    });
+                }
+                rows.push(std::mem::replace(
+                    &mut row,
+                    CodeRow {
+                        number: None,
+                        runs: Vec::new(),
+                    },
+                ));
+                x = 0.0;
+                rest = rest.get(part.len()..).unwrap_or("");
+            }
+        }
+        rows.push(row);
     }
-    let mut out: String = s
-        .chars()
-        .take(budget - 1)
-        .collect::<String>()
-        .trim_end()
-        .to_string();
-    out.push('…');
-    out
+    if rows.is_empty() {
+        rows.push(CodeRow {
+            number: Some(1),
+            runs: Vec::new(),
+        });
+    }
+    rows
 }
 
-/// Measured line box of one line at `size` as the renderer paints it (the
-/// accessibility scale included) — what stacked lines step by and what a
-/// band centres, never the bare font size.
-pub fn line_box(tr: &mut TextRenderer, size: f32) -> f64 {
-    let (_, h) = tr.measure("0", size, None);
-    f64::from(h)
+/// Paint `rows` from `origin`, one code line box apart, each run in its
+/// syntax colour. Line numbers, when `numbers` gives their column width,
+/// sit right-aligned before the code in tertiary ink.
+pub(crate) fn paint_code_rows(
+    ctx: &mut PaintCtx<'_>,
+    rows: &[CodeRow],
+    origin: Point,
+    numbers: Option<f64>,
+) {
+    let theme = ctx.theme;
+    let code = theme.text(TextRole::Code);
+    let numeric = code.clone().numeric();
+    let line = f64::from(code.line_height_px());
+    let gap = f64::from(theme.tokens.spacing.s4);
+    let code_x = numbers.map_or(origin.x, |w| origin.x + w + gap);
+    let mut y = origin.y;
+    for row in rows {
+        if let (Some(column), Some(number)) = (numbers, row.number) {
+            let label = number.to_string();
+            let width = width_of(ctx.text, &label, &numeric);
+            ctx.text(
+                &label,
+                &numeric,
+                theme.text_tertiary,
+                Point::new(origin.x + column - width, y),
+                None,
+            );
+        }
+        let mut x = code_x;
+        for run in &row.runs {
+            ctx.text(
+                &run.text,
+                &code,
+                theme.tokens.syntax.color(run.kind),
+                Point::new(x, y),
+                None,
+            );
+            x += width_of(ctx.text, &run.text, &code);
+        }
+        y += line;
+    }
 }
 
-/// Measured line box of one monospace line at `size`.
-pub fn mono_line_box(tr: &mut TextRenderer, size: f32) -> f64 {
-    let (_, h) = tr.measure_styled("0", size, None, TextWeight::Regular, false, true);
-    f64::from(h)
+/// The width of the line-number column for `body`.
+fn number_column(text: &mut TextRenderer, theme: &Theme, body: &str) -> f64 {
+    let lines = body.lines().count().max(1);
+    width_of(
+        text,
+        &lines.to_string(),
+        &theme.text(TextRole::Code).numeric(),
+    )
 }
 
-/// How much one line of `size` has grown over its 1× box at the current
-/// accessibility scale — what a 1×-designed row or control adds to keep
-/// seating its text. Zero at 1×.
-pub fn line_growth(tr: &mut TextRenderer, size: f32) -> f64 {
-    let line = line_box(tr, size);
-    let scale = f64::from(tr.text_scale()).max(f32::EPSILON.into());
-    (line - line / scale).max(0.0)
+/// The code a well at `width` shows for `snippet`, wrapped to fit.
+fn snippet_rows(
+    text: &mut TextRenderer,
+    theme: &Theme,
+    width: f64,
+    snippet: &Snippet,
+) -> (Vec<CodeRow>, f64) {
+    let pad = f64::from(theme.tokens.spacing.s4);
+    let numbers = number_column(text, theme, &snippet.body);
+    let code_w = width - pad * 2.0 - numbers - f64::from(theme.tokens.spacing.s4);
+    let rows = wrap_code(
+        text,
+        &theme.text(TextRole::Code),
+        &snippet.body,
+        snippet.language,
+        code_w,
+    );
+    (rows, numbers)
 }
 
-/// A left-to-right run of pills sharing one top edge, height and label size.
-pub struct PillRun {
-    /// Left edge of the next pill.
-    pub x: f64,
-    pub y: f64,
-    pub height: f64,
-    pub size: f32,
+/// Paint a snippet's body, syntax-highlighted with line numbers, in a code
+/// well at `card`: the read-only view History shows of a past version. Long
+/// lines wrap inside the well; [`code_height`] sizes the well to hold them.
+pub fn paint_code(
+    scene: &mut Scene,
+    t: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    card: Rect,
+    snippet: &Snippet,
+) {
+    let ground = theme.tokens.colors.surfaces.raised;
+    ui::surface::card(
+        scene,
+        t,
+        card,
+        f64::from(theme.tokens.radii.control),
+        ground,
+    );
+    let ink = theme.on_ground(ground);
+    let pad = f64::from(theme.tokens.spacing.s4);
+    let (rows, numbers) = snippet_rows(text, theme, card.width(), snippet);
+    let mut ctx = PaintCtx::new(scene, t, text, &ink);
+    paint_code_rows(
+        &mut ctx,
+        &rows,
+        Point::new(card.x0 + pad, card.y0 + pad),
+        Some(numbers),
+    );
 }
 
-impl PillRun {
-    /// Draw a small filled pill (rounded capsule) with a centred label at
-    /// the run's cursor. Returns the pill's outer rect so callers can lay the
-    /// next pill out.
-    pub fn pill(&self, ctx: &mut PaintCtx<'_>, label: &str, fg: Color, bg: Color) -> Rect {
-        let (x, y, height, size) = (self.x, self.y, self.height, self.size);
-        let pad_x = 8.0;
-        let (text_w, text_h) = ctx.text.measure(label, size, None);
-        let w = f64::from(text_w) + pad_x * 2.0;
-        let rect = Rect::new(x, y, x + w, y + height);
-        // A capsule with its derived rest edge: a tinted pill on the same
-        // ground as its neighbours otherwise reads as bare text on a wash.
-        ui::surface::pill(
-            ctx.scene,
-            ctx.transform,
-            rect,
-            bg,
-            Some(ui::surface::edge_on(bg)),
-            None,
+/// The height of a code well `width` wide that shows all of `snippet`,
+/// long lines wrapped.
+pub fn code_height(text: &mut TextRenderer, theme: &Theme, width: f64, snippet: &Snippet) -> f64 {
+    let line_h = f64::from(theme.text(TextRole::Code).line_height_px());
+    let (rows, _) = snippet_rows(text, theme, width, snippet);
+    line_h * rows.len() as f64 + f64::from(theme.tokens.spacing.s4) * 2.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Wrapped code keeps every character, in order, and every row fits.
+    #[test]
+    fn wrapped_code_fits_and_keeps_every_character() {
+        let mut text = TextRenderer::new();
+        let theme = Theme::dark();
+        let style = theme.text(TextRole::Code);
+        let body =
+            "COPY --from=builder /app/target/release/${binary} /usr/local/bin/${binary}\nRUN x";
+        let width = 220.0;
+        let rows = wrap_code(&mut text, &style, body, Language::Dockerfile, width);
+        assert!(rows.len() > 2, "the long line wraps");
+        assert_eq!(
+            rows.iter().filter(|row| row.number.is_some()).count(),
+            2,
+            "a continuation row carries no line number"
         );
-        // Centre the measured line box in the capsule, not the bare font size.
-        let ty = y + (height - f64::from(text_h)) / 2.0;
-        ctx.text(
-            label,
-            &TextStyle::new(size).with_weight(TextWeight::Medium),
-            fg,
-            Point::new(x + pad_x, ty),
-            None,
-        );
-        rect
+        for row in &rows {
+            let line: String = row.runs.iter().map(|run| run.text.as_str()).collect();
+            assert!(width_of(&mut text, &line, &style) <= width, "{line:?} fits");
+        }
+        let joined: String = rows
+            .iter()
+            .flat_map(|row| row.runs.iter().map(|run| run.text.as_str()))
+            .collect();
+        assert_eq!(joined, body.replace('\n', ""));
     }
 }

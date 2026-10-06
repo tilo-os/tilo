@@ -6,6 +6,7 @@
 use std::rc::Rc;
 
 use ui::prelude::*;
+use ui::widget::ButtonRole;
 use ui::widget::Toggle;
 
 use super::heading;
@@ -238,8 +239,26 @@ impl Target {
 /// built again at each edit, so a drag begun as an edit lands is kept.
 pub fn panel(cx: &ViewCx<ArtworkResource>, ids: &[String], tools: &Tools) -> Element {
     tools.live.borrow_mut().clear();
+    let first = ids.first().cloned().unwrap_or_default();
+    let pixelated =
+        cx.value(move |art: &Artwork| art.mark(&first).is_some_and(|mark| mark.style.pixelated));
+    let sampling = cx.actions().bind(
+        Toggle::from_state(&pixelated)
+            .with_id("canvas-picture-pixelated")
+            .with_accessible_name(&ui::i18n::I18nManager::lookup_plain(
+                "canvas-picture-pixelated",
+            )),
+        ArtworkResource::SET_PIXELATED.map({
+            let ids = ids.to_vec();
+            move |on: bool| (ids.clone(), on)
+        }),
+    );
     section(vec![
         heading("canvas-picture"),
+        labelled(
+            &ui::i18n::I18nManager::lookup_plain("canvas-picture-pixelated"),
+            Box::new(sampling),
+        ),
         framing(cx, ids, tools),
         straighten(cx, ids, tools),
         adjustments(cx, &Target::Marks(ids.to_vec()), tools),
@@ -251,9 +270,9 @@ pub fn panel(cx: &ViewCx<ArtworkResource>, ids: &[String], tools: &Tools) -> Ele
 pub fn adjustments(cx: &ViewCx<ArtworkResource>, target: &Target, tools: &Tools) -> Element {
     let reset = cx
         .button("canvas-adjust-reset", target.invoke(Adjust::default()))
-        .ghost();
+        .role(ButtonRole::Plain);
     let title = Row::new()
-        .with_gap(8.0)
+        .with_gap(ui::tokens::Spacing::BASE.s2)
         .no_wrap()
         .with_align_items(ui::taffy::AlignItems::Center)
         .push(heading("canvas-adjust"))
@@ -307,7 +326,11 @@ fn framing(cx: &ViewCx<ArtworkResource>, ids: &[String], tools: &Tools) -> Eleme
             let button = Button::new(id, &name)
                 .tooltip(ui::i18n::I18nManager::lookup_plain("canvas-crop-hint"))
                 .on_view(move || flip.set(!flip.with(|on| *on)));
-            Box::new(if *cropping { button.primary() } else { button }) as Element
+            Box::new(if *cropping {
+                button.role(ButtonRole::Primary)
+            } else {
+                button
+            }) as Element
         })
     };
     let fit = cx
@@ -324,12 +347,12 @@ fn framing(cx: &ViewCx<ArtworkResource>, ids: &[String], tools: &Tools) -> Eleme
                 id,
                 ArtworkResource::FLIP.with((ids.to_vec(), way.to_owned())),
             )
-            .ghost(),
+            .role(ButtonRole::Plain),
         ) as Element
     };
     let row = |children: Vec<Element>| {
         let mut row = Row::new()
-            .with_gap(6.0)
+            .with_gap(ui::tokens::Spacing::BASE.s2)
             .no_wrap()
             .with_align_items(ui::taffy::AlignItems::Center);
         for child in children {
@@ -384,7 +407,7 @@ fn straighten(cx: &ViewCx<ArtworkResource>, ids: &[String], tools: &Tools) -> El
     let typed = cx.actions().bind(
         NumberInput::from_state(&cx.value(angle_in))
             .with_range(-45.0, 45.0)
-            .with_size(128.0, 32.0)
+            .control_size(ui::widget::ControlSize::Regular)
             .with_step(0.1)
             .with_precision(1)
             .with_id("canvas-straighten-degrees")

@@ -1,4 +1,4 @@
-//! Opening a document from search, end to end: Super+K, the document's
+//! Opening a document from search, end to end: Super+Space, the document's
 //! name, Enter — through `ShellOverlayHost`, layout, winit key events, search
 //! fan-out, `doc_open` routing, and
 //! `tilo-launcher` invocation, asserting on the command actually executed.
@@ -294,16 +294,16 @@ fn documents_opened_from_the_palette_or_a_drop_open_in_their_own_app() {
         let layout = lay_out_host(&mut host);
         let mut session = Session::new();
 
-        // Super+K — the global-scope palette chord the live binary binds.
+        // Super+Space — the global-scope palette chord the live binary binds.
         session.press(
             &mut host,
             &layout,
             ModifiersState::SUPER,
-            &Key::Character(winit::keyboard::SmolStr::new("k")),
+            &Key::Named(winit::keyboard::NamedKey::Space),
         );
         assert!(
             host.palette_visible(),
-            "Super+K must open the palette; without it there is no row to activate"
+            "Super+Space must open the palette; without it there is no row to activate"
         );
 
         // The Files provider walks $HOME on a background thread, so re-type the

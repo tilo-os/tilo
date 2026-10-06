@@ -210,6 +210,30 @@ impl OffsetMap {
         Self { insertions }
     }
 
+    /// Add `extra` insertions; each goes after any already at its source
+    /// position.
+    pub(crate) fn add_insertions(&mut self, extra: &[VirtualInsertion]) {
+        self.insertions.extend_from_slice(extra);
+        self.insertions.sort_by_key(|insertion| insertion.source);
+    }
+
+    /// Whether the shaped byte `shaped` lies inside a virtual `ch`.
+    pub(crate) fn is_virtual(&self, shaped: usize, ch: char) -> bool {
+        let mut added = 0usize;
+        for insertion in &self.insertions {
+            let at = insertion.source.saturating_add(added);
+            if shaped < at {
+                return false;
+            }
+            let len = insertion.ch.len_utf8();
+            if shaped < at.saturating_add(len) {
+                return insertion.ch == ch;
+            }
+            added = added.saturating_add(len);
+        }
+        false
+    }
+
     pub(crate) fn is_identity(&self) -> bool {
         self.insertions.is_empty()
     }

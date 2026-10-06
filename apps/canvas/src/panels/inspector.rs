@@ -6,7 +6,8 @@
 use ui::LocalState;
 use ui::icons::Icon;
 use ui::prelude::*;
-use ui::widget::{ColorSwatchPicker, Toggle};
+use ui::widget::ControlSize;
+use ui::widget::{ColorSwatch, ColorSwatchPicker, Toggle};
 
 use super::{caption, heading, icon_button, percent};
 use crate::brushes::Preset;
@@ -38,8 +39,9 @@ impl Selecting for ColorSwatchPicker {
     }
 }
 
-/// A swatch cell's side.
-const SWATCH: f64 = 28.0; // eight to a row across the sidebar: a cell size, not spacing
+/// A swatch cell's side: a small control's, so eight fit across the
+/// inspector.
+const SWATCH: f32 = ui::tokens::Metrics::BASE.bar_control_height;
 
 /// `#rrggbb` as `0xrrggbb`.
 fn packed(hex: &str) -> Option<u32> {
@@ -49,6 +51,64 @@ fn packed(hex: &str) -> Option<u32> {
 
 fn hex(rgb: u32) -> String {
     format!("#{rgb:06x}")
+}
+
+/// A picker of the document colours `colours`, each named by `names`,
+/// `columns` to a row.
+pub(crate) fn swatches(colours: &[u32], names: Vec<String>, columns: usize) -> ColorSwatchPicker {
+    let swatches = colours.iter().zip(names).map(|(rgb, name)| {
+        let [_, r, g, b] = rgb.to_be_bytes();
+        ColorSwatch::named(ui::vello::peniko::Color::from_rgb8(r, g, b), name)
+    });
+    ColorSwatchPicker::new(swatches, columns)
+}
+
+/// Reuse document paint through the shared picker; changing counts while
+/// painting leaves this subtree in place.
+fn artwork_palette(
+    cx: &ViewCx<ArtworkResource>,
+    id: String,
+    current: impl Fn() -> String + 'static,
+    choose: impl Fn(String) + Clone + 'static,
+) -> Element {
+    let colours = cx.value(crate::palette::swatches);
+    cx.switch(&colours, move |_, colours| {
+        let authored = !colours.is_empty();
+        let colours = if authored {
+            colours.clone()
+        } else {
+            INKS.iter().map(|rgb| hex(*rgb)).collect()
+        };
+        let loaded = current().to_lowercase();
+        let selected = colours.iter().position(|colour| colour == &loaded);
+        let values = colours.clone();
+        let choose = choose.clone();
+        let picker = ColorSwatchPicker::new(
+            colours.iter().filter_map(|colour| {
+                crate::render::colour(colour, &[])
+                    .map(|paint| ColorSwatch::named(paint, colour.clone()))
+            }),
+            8,
+        )
+        .with_cell(f64::from(SWATCH))
+        .selecting(selected)
+        .on_change(move |index| {
+            if let Some(colour) = values.get(index) {
+                choose(colour.clone());
+            }
+        });
+        let mut parts: Vec<Element> = Vec::new();
+        if authored {
+            parts.push(heading("canvas-artwork-colours"));
+        }
+        parts.push(Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_id(id.clone())
+                .with_child(Box::new(picker)),
+        ));
+        section(parts)
+    })
 }
 
 /// A pigment's name as words: `burnt-sienna` is "burnt sienna".
@@ -79,7 +139,7 @@ pub(super) fn spaced(groups: Vec<Element>) -> Element {
     let mut column = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(18.0);
+        .with_gap(ui::tokens::Spacing::BASE.s4);
     for group in groups {
         column = column.push(group);
     }
@@ -102,7 +162,7 @@ pub(super) fn section(children: Vec<Element>) -> Element {
     let mut column = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(8.0);
+        .with_gap(ui::tokens::Spacing::BASE.s2);
     for child in children {
         column = column.push(child);
     }
@@ -113,7 +173,7 @@ pub(super) fn section(children: Vec<Element>) -> Element {
 pub(super) fn labelled(label: &str, value: Element) -> Element {
     Box::new(
         Row::new()
-            .with_gap(8.0)
+            .with_gap(ui::tokens::Spacing::BASE.s2)
             .no_wrap()
             .with_align_items(ui::taffy::AlignItems::Center)
             .push(Box::new(Text::new(label).with_role(TextRole::Label)))
@@ -122,22 +182,15 @@ pub(super) fn labelled(label: &str, value: Element) -> Element {
     )
 }
 
-/// The width of a field's label, so a form's controls line up.
-const LABEL_WIDTH: f32 = 84.0; // the longest field label's width, so controls line up: not spacing
-
-/// A label on the left and a control filling the rest of the row.
+/// A label over a control spanning the panel, as a form's field stacks
+/// in a narrow column.
 fn field(label: &str, control: Element) -> Element {
     Box::new(
-        Row::new()
-            .with_gap(8.0)
-            .no_wrap()
-            .with_align_items(ui::taffy::AlignItems::Center)
-            .push(Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_width(LABEL_WIDTH)
-                    .with_child(Box::new(Text::new(label).with_role(TextRole::Label))),
-            ))
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(ui::tokens::Spacing::BASE.s1)
+            .push(Box::new(Text::new(label).with_role(TextRole::Label)))
             .push(grow(control)),
     )
 }
@@ -163,9 +216,11 @@ fn brush_and_artwork(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                 let settings = match tool {
                     Tool::Eraser => eraser(cx, &tools),
                     // Picking lays no paint: nothing to set.
-                    Tool::Select => return Box::new(Spacer::fixed(0.0)) as Element,
+                    Tool::Select => {
+                        return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
+                    }
                     Tool::Marquee | Tool::Oval | Tool::Lasso | Tool::Wand => {
-                        area_tool(&tools, tool)
+                        area_tool(cx, &tools, tool)
                     }
                     // Where the fill comes from first: it decides what
                     // the bucket fills.
@@ -221,18 +276,14 @@ fn layer_adjust(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str) -> Ele
             };
             let name = ui::i18n::I18nManager::lookup_plain(name);
             let header = Row::new()
-                .with_gap(8.0)
+                .with_gap(ui::tokens::Spacing::BASE.s2)
                 .no_wrap()
                 .with_align_items(ui::taffy::AlignItems::Center)
                 .push(heading("canvas-layer-adjust"))
                 .push(Box::new(Spacer::new()))
                 .push(Box::new(
-                    Button::new("canvas-layer-adjust-fold", "")
-                        .with_icon(icon)
-                        .ghost()
-                        .with_accessible_name(&name)
-                        .tooltip(name.clone())
-                        .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
+                    Button::icon_only("canvas-layer-adjust-fold", icon, &name)
+                        .control_size(ControlSize::Small)
                         .on_view(move || flip.set(!flip.with(|on| *on))),
                 ));
             let mut parts: Vec<Element> = vec![Box::new(header)];
@@ -273,8 +324,17 @@ fn brush(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str, tool: Tool) -
         parts.push(preset_picker(tools));
     }
     let palette = brush_palette(tools, &pigments);
-    parts.push(Box::new(palette.with_cell(SWATCH).bare()));
-    if medium.is_none() {
+    if medium.is_some() {
+        parts.push(Box::new(palette.with_cell(f64::from(SWATCH))));
+    } else {
+        let chosen = tools.colour.clone();
+        let loaded = tools.clone();
+        parts.push(artwork_palette(
+            cx,
+            "canvas-artwork-colours".into(),
+            move || loaded.hex(),
+            move |value| chosen.set(value),
+        ));
         parts.push(field(
             &ui::i18n::I18nManager::lookup_plain("canvas-colour"),
             Box::new(
@@ -342,7 +402,7 @@ fn tool_heading(tools: &Tools, medium: Option<&crate::media::MediumSpec>, tool: 
     };
     Box::new(
         Row::new()
-            .with_gap(8.0)
+            .with_rhythm(ui::tokens::Rhythm::Related)
             .no_wrap()
             .with_align_items(ui::taffy::AlignItems::Center)
             .push(heading("canvas-brush"))
@@ -456,36 +516,34 @@ fn sampling(choice: &LocalState<Sampling>, heading_id: &str) -> Element {
     section(vec![
         heading(heading_id),
         Box::new(
-            ui::widget::ToggleGroup::from_state(choices, choice)
-                .with_flexible_width()
-                .with_id(if heading_id == "canvas-sample" {
+            ui::widget::ToggleGroup::from_state(choices, choice).with_id(
+                if heading_id == "canvas-sample" {
                     "canvas-sampling"
                 } else {
                     "canvas-fill-sampling"
-                }),
+                },
+            ),
         ),
     ])
 }
 
 /// A selecting tool: how it adds to and takes from the selection, and for
 /// the magic wand how alike the colours it takes in are.
-fn area_tool(tools: &Tools, tool: Tool) -> Element {
+fn area_tool(cx: &ViewCx<ArtworkResource>, tools: &Tools, tool: Tool) -> Element {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let mut parts: Vec<Element> = vec![heading(tool.label())];
     // The photo's subject in one click, found on this device: off the
     // window's thread, so the window keeps drawing; the canvas says it is
     // under way and applies the area as one step.
-    let finding = std::rc::Rc::clone(&tools.finding);
+    let button = Button::new("canvas-select-subject", &lookup("canvas-select-subject"))
+        .with_icon(Icon::Sparkles)
+        .tooltip(lookup("canvas-select-subject-hint"));
+    let effect = crate::resource::ViewOp::FindArea(crate::resource::FindArea {
+        subject: Some(true),
+        ..Default::default()
+    });
     parts.push(Box::new(
-        Button::new("canvas-select-subject", &lookup("canvas-select-subject"))
-            .with_icon(Icon::Sparkles)
-            .tooltip(lookup("canvas-select-subject-hint"))
-            .on_view(move || {
-                finding.borrow_mut().wanted = Some(crate::selection::Select {
-                    subject: Some(true),
-                    ..crate::selection::Select::default()
-                });
-            }),
+        cx.actions().bind_effect_invocation(button, &effect),
     ));
     if tool == Tool::Wand {
         parts.push(tolerance(tools));
@@ -528,7 +586,7 @@ fn eraser(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         ),
     ];
     let mode = ui::widget::ToggleGroup::from_state(choices, &tools.erasing)
-        .with_flexible_width()
+        .fill()
         .with_id("canvas-erasing");
     let size_label = {
         let tools = tools.clone();
@@ -549,7 +607,7 @@ fn eraser(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         let tools = tools.clone();
         cx.switch(&tools.erasing.clone(), move |_, erasing| {
             if *erasing == Erasing::Strokes {
-                return Box::new(Spacer::fixed(0.0)) as Element;
+                return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
             }
             section(vec![
                 fraction(
@@ -580,8 +638,7 @@ fn brush_palette(tools: &Tools, pigments: &[crate::media::PigmentSpec]) -> Color
         tools.pigment.set(None);
         let current = packed(&tools.hex());
         let chosen = tools.colour.clone();
-        return ColorSwatchPicker::with_palette(INKS.to_vec(), 7)
-            .with_accessible_labels(INKS.iter().map(|rgb| hex(*rgb)).collect())
+        return swatches(&INKS, INKS.iter().map(|rgb| hex(*rgb)).collect(), 7)
             .on_change(move |index| {
                 if let Some(rgb) = INKS.get(index) {
                     chosen.set(hex(*rgb));
@@ -617,8 +674,7 @@ fn brush_palette(tools: &Tools, pigments: &[crate::media::PigmentSpec]) -> Color
         .map(|pigment| words(&pigment.name))
         .collect();
     let pigment = tools.pigment.clone();
-    ColorSwatchPicker::with_palette(colours, 8)
-        .with_accessible_labels(labels)
+    swatches(&colours, labels, 8)
         .on_change(move |index| {
             if let Some(load) = loads.get(index) {
                 pigment.set(Some(load.clone()));
@@ -696,10 +752,8 @@ fn artwork(cx: &ViewCx<ArtworkResource>) -> Element {
     );
     let dispatch = cx.dispatcher();
     let ground_now = cx.read(|art| art.and_then(|art| packed(&art.ground.colour)));
-    let grounds = ColorSwatchPicker::with_palette(GROUNDS.to_vec(), 7)
-        .with_accessible_labels(GROUNDS.iter().map(|rgb| hex(*rgb)).collect())
-        .with_cell(SWATCH)
-        .bare()
+    let grounds = swatches(&GROUNDS, GROUNDS.iter().map(|rgb| hex(*rgb)).collect(), 7)
+        .with_cell(f64::from(SWATCH))
         .selecting(GROUNDS.iter().position(|rgb| Some(*rgb) == ground_now))
         .on_change(move |index| {
             if let Some(rgb) = GROUNDS.get(index) {
@@ -740,16 +794,16 @@ fn selection(cx: &ViewCx<ArtworkResource>, ids: Vec<String>, tools: &Tools) -> E
     };
     let heading_row = cx.switch(&summary, |_, summary| {
         let Some(summary) = summary else {
-            return Box::new(Spacer::fixed(0.0)) as Element;
+            return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
         };
         Box::new(
             Row::new()
-                .with_gap(8.0)
+                .with_rhythm(ui::tokens::Rhythm::Related)
                 .no_wrap()
                 .with_align_items(ui::taffy::AlignItems::Center)
                 .push(heading("canvas-selection"))
                 .push(Box::new(Spacer::new()))
-                .push(caption(summary)),
+                .push(caption(&summary.0)),
         )
     });
     let picture = {
@@ -767,7 +821,7 @@ fn selection(cx: &ViewCx<ArtworkResource>, ids: Vec<String>, tools: &Tools) -> E
             if *picture {
                 super::picture::panel(cx, &ids, &tools)
             } else {
-                Box::new(Spacer::fixed(0.0))
+                Box::new(Spacer::token(ui::tokens::SpacingStep::S0))
             }
         })
     };
@@ -781,41 +835,62 @@ fn selection(cx: &ViewCx<ArtworkResource>, ids: Vec<String>, tools: &Tools) -> E
     spaced(vec![heading_row, picture_part, rest])
 }
 
-/// What is picked, in a word: the kind of one mark (an eraser named so)
-/// and its name, or how many marks.
-fn summary(marks: &[Mark], erasers: bool) -> String {
+/// What is picked, in a word: the kind of one mark (an eraser named so),
+/// or how many marks; and the one mark's name, when it has one.
+fn summary(marks: &[Mark], erasers: bool) -> (String, Option<String>) {
     let [mark] = marks else {
-        return ui::i18n::I18nManager::format(
+        let count = ui::i18n::I18nManager::format(
             "canvas-marks-selected",
             &[("count", marks.len().into())],
         );
+        return (count, None);
     };
     let kind = if erasers {
         ui::i18n::I18nManager::lookup_plain("canvas-eraser")
     } else {
         ui::i18n::I18nManager::lookup_plain(&format!("canvas-kind-{}", mark.shape.kind()))
     };
-    if mark.name.is_empty() {
-        kind
-    } else {
-        format!("{kind} · {}", mark.name)
-    }
+    (
+        kind,
+        Some(mark.name.clone()).filter(|name| !name.is_empty()),
+    )
+}
+
+fn selection_heading(summary: &str) -> Element {
+    Box::new(
+        Row::new()
+            .with_gap(ui::tokens::Spacing::BASE.s2)
+            .no_wrap()
+            .with_align_items(ui::taffy::AlignItems::Center)
+            .push(heading("canvas-selection"))
+            .push(Box::new(Spacer::new()))
+            .push(caption(summary)),
+    )
 }
 
 fn marks_inspector(cx: &ViewCx<ArtworkResource>, marks: &[Mark], tools: &Tools) -> Element {
     let stop = &tools.stop;
     let Some(first) = marks.first() else {
-        return Box::new(Spacer::fixed(0.0));
+        return Box::new(Spacer::token(ui::tokens::SpacingStep::S0));
     };
     let ids: Vec<String> = marks.iter().map(|mark| mark.id.clone()).collect();
     let style = &first.style;
     // An eraser has no colour to choose: it takes paint off.
     let erasers = marks.iter().all(Mark::erases);
+    let (summary, name) = summary(marks, erasers);
     let palette = cx.read(|art| {
         art.map(|art| crate::media::palette_for(art, &first.layer))
             .unwrap_or_default()
     });
-    let mut parts: Vec<Element> = Vec::new();
+    let mut parts: Vec<Element> = vec![selection_heading(&summary)];
+    // The mark's own name under the heading, the kind beside it.
+    if let Some(name) = name {
+        parts.push(Box::new(Text::new(&name).with_role(TextRole::Body)));
+    }
+    let picture = matches!(first.shape, Shape::Image { .. });
+    if picture {
+        parts.push(super::picture::panel(cx, &ids, tools));
+    }
     let lines_only = matches!(
         first.shape,
         Shape::Line { .. } | Shape::Stroke { .. } | Shape::Image { .. }
@@ -962,10 +1037,8 @@ fn paints(
     let chosen = values;
     let columns = if colours.len() > 14 { 8 } else { 7 };
     let picked = paint.clone();
-    let swatches = ColorSwatchPicker::with_palette(colours, columns)
-        .with_accessible_labels(names)
-        .with_cell(SWATCH)
-        .bare()
+    let swatches = self::swatches(&colours, names, columns)
+        .with_cell(f64::from(SWATCH))
         .selecting(selected)
         .on_change(move |index| {
             if let Some(value) = chosen.get(index) {
@@ -1007,18 +1080,36 @@ fn paints(
             }),
         )),
     };
-    section(vec![Box::new(swatches), field])
+    let mut parts: Vec<Element> = Vec::new();
+    if palette.is_empty() {
+        let dispatch = cx.dispatcher();
+        let ids = ids.to_vec();
+        let paint = paint.clone();
+        let current = current.unwrap_or("none").to_owned();
+        parts.push(artwork_palette(
+            cx,
+            format!("{}-artwork-colours", paint.id()),
+            move || current.clone(),
+            move |value| {
+                dispatch.invoke(paint.invoke(&ids, value));
+            },
+        ));
+    } else {
+        parts.push(Box::new(swatches));
+    }
+    parts.push(field);
+    section(parts)
 }
 
 /// Brush strokes' preset, width and dynamics, and their paths: smoothed,
 /// simplified, joined.
 fn stroke_brush(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, plain: bool) -> Element {
     let Shape::Stroke { size, .. } = &mark.shape else {
-        return Box::new(Spacer::fixed(0.0));
+        return Box::new(Spacer::token(ui::tokens::SpacingStep::S0));
     };
     let mut rows: Vec<Element> = Vec::new();
     let preset = Preset::of(&mark.style);
-    if plain && preset != Preset::Eraser {
+    if plain && !preset.erases() {
         let dispatch = cx.dispatcher();
         let targets = ids.to_vec();
         let ink = mark.style.stroke.clone().unwrap_or_default();
@@ -1112,7 +1203,7 @@ fn dynamic(
 fn path_tools(cx: &ViewCx<ArtworkResource>, ids: &[String], size: f64) -> Element {
     let lookup = |id: &str| ui::i18n::I18nManager::lookup_plain(id);
     let mut row = Row::new()
-        .with_gap(6.0)
+        .with_gap(ui::tokens::Spacing::BASE.s2)
         .no_wrap()
         .push(Box::new(cx.button(
             &lookup("canvas-stroke-smooth"),
@@ -1322,7 +1413,7 @@ fn text_style(cx: &ViewCx<ArtworkResource>, mark: &Mark) -> Element {
         ..
     } = &mark.shape
     else {
-        return Box::new(Spacer::fixed(0.0));
+        return Box::new(Spacer::token(ui::tokens::SpacingStep::S0));
     };
     let ids = vec![mark.id.clone()];
     let restyled = |change: fn(&mut Shape, &str)| {
@@ -1398,7 +1489,7 @@ fn text_style(cx: &ViewCx<ArtworkResource>, mark: &Mark) -> Element {
         heading("canvas-text"),
         Box::new(
             Row::new()
-                .with_gap(6.0)
+                .with_gap(ui::tokens::Spacing::BASE.s2)
                 .no_wrap()
                 .with_align_items(ui::taffy::AlignItems::Center)
                 .push(grow(family))
@@ -1427,7 +1518,7 @@ fn arrange(cx: &ViewCx<ArtworkResource>, ids: &[String]) -> Element {
     };
     Box::new(
         Row::new()
-            .with_gap(4.0)
+            .with_gap(ui::tokens::Spacing::BASE.s1)
             .no_wrap()
             .push(to(Icon::ArrowUp, "canvas-forward", "forward"))
             .push(to(Icon::ArrowDown, "canvas-backward", "backward"))

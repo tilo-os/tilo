@@ -81,13 +81,13 @@ impl crate::search::SearchProvider for PagedProbe {
     }
     fn search_page(
         &self,
-        query: &str,
+        query: &crate::search::SearchQuery,
         cursor: Option<&crate::search::SearchCursor>,
         work_budget: usize,
         result_limit: usize,
     ) -> crate::search::SearchPage {
         self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+            .query_page(query.text(), cursor, work_budget, result_limit)
     }
     // Deliberately inherit unknown generation: validation cannot cache a
     // claim that this provider's authorization declarations are stable.
@@ -600,6 +600,7 @@ fn bound_components_keep_child_binding_and_focused_document_history() {
             title: "Probe",
             icon: IconDescriptor::Glyph("P"),
             record_kind: crate::record::RecordKind::new("probe"),
+
             required: vec![],
             optional: vec![],
             opens: &[],
@@ -906,6 +907,7 @@ impl ActionFixture {
                 title: "Probe",
                 icon: IconDescriptor::Glyph("P"),
                 record_kind: crate::record::RecordKind::new("probe"),
+
                 required: vec![],
                 optional: vec![],
                 opens: &[],
@@ -967,6 +969,7 @@ impl ActionFixture {
     fn target(&self, index: usize, action: &str) -> crate::bound_dispatch::BoundActionTarget {
         let binding = self.bindings[index].clone();
         crate::bound_dispatch::BoundActionTarget {
+            physical_text: false,
             address: crate::bound_dispatch::BoundActionAddress {
                 instance_id: binding.instance_id,
                 address: tilo_actions::ActionAddress::new("bound:probe", action),
@@ -2381,6 +2384,91 @@ fn collaboration_walk_enters_bound_owner_and_refuses_closing_lifetime() {
     );
 }
 
+/// Inside the Tilo shell the app's window does not present search: a
+/// component's request to open it is handed to the host as an intent, and
+/// the host's tile drains it.
+#[test]
+fn a_hosted_components_search_request_becomes_a_host_intent() {
+    let request = crate::search::SearchRequest::within(crate::search::ScopeDecl::new(
+        "folder:inbox",
+        "Inbox",
+    ))
+    .with_query("invoice");
+
+    let mut fixture = ActionFixture::new();
+    fixture.bindings[0]
+        .queued_controls
+        .borrow_mut()
+        .push_back(crate::search::open_search_invocation(&request));
+    assert!(fixture.app.dispatch_control_invocations() > 0);
+    assert!(
+        fixture.app.action_palette().is_none(),
+        "a window that does not present search opens no palette of its own"
+    );
+    assert_eq!(
+        fixture.bindings[0].take_search_request(),
+        Some(request.clone())
+    );
+    assert_eq!(fixture.bindings[1].take_search_request(), None);
+
+    // The tile hosting the component hands the request to the shell once.
+    let temp = tempfile::tempdir().unwrap();
+    let mut owners = crate::record::RecordOwners::new(temp.path().into());
+    let records = owners
+        .open(
+            "so.tilo.binding-probe",
+            "00000000-0000-0000-0000-000000000009",
+        )
+        .unwrap();
+    let views = Rc::new(
+        crate::application_view::InstanceViewStore::new(
+            temp.path().into(),
+            "D",
+            "00000000-0000-0000-0000-000000000009",
+        )
+        .unwrap(),
+    );
+    let definition = ApplicationDefinition {
+        app_id: "so.tilo.binding-probe",
+        title: "Probe",
+        icon: IconDescriptor::Glyph("P"),
+        record_kind: crate::record::RecordKind::new("probe"),
+        room_record: true,
+        required: vec![],
+        optional: vec![],
+        opens: &[],
+        create: factory,
+    };
+    let context = HostContext::prepare(
+        &definition,
+        HostContextInputs {
+            records,
+            views,
+            device_id: "D".into(),
+            instance_id: 21,
+            permissions: Rc::new(RefCell::new(
+                crate::permissions::PermissionContext::permissive(),
+            )),
+            author: crate::permissions::UserId("fixture-user".into()),
+            action_context: tilo_actions::ActionContext::default(),
+        },
+        &LaunchTarget::New,
+    )
+    .unwrap();
+    let component = definition
+        .instantiate(context, LaunchTarget::New, RestoreInput::None)
+        .unwrap();
+    let binding = component.callback_binding();
+    let mut tile = TileHost::from_component(component);
+    assert!(tile.take_host_intent().is_none());
+    binding.request_search(request.clone());
+    assert_eq!(
+        tile.take_host_intent(),
+        Some(crate::widget::AppHostIntent::OpenSearch(request))
+    );
+    assert!(tile.take_host_intent().is_none(), "the request drains once");
+}
+
 fn behaviour_probe_factory(
     context: HostContext,
     target: LaunchTarget,
@@ -2396,9 +2484,7 @@ fn behaviour_probe_factory(
     Ok(component)
 }
 
-fn hosted_behaviour(
-    create: crate::application::ComponentFactory,
-) -> crate::application::ComponentBehaviour {
+fn hosted_behaviour_app(create: crate::application::ComponentFactory) -> App {
     let host = crate::application_test_support::ProbeHost::new();
     let definition = crate::application_test_support::definition(create);
     let target = LaunchTarget::New;
@@ -2413,8 +2499,13 @@ fn hosted_behaviour(
     let component = definition
         .instantiate(context, target, RestoreInput::None)
         .unwrap();
-    let app =
-        App::from_component(component, crate::application_test_support::runner_inputs()).unwrap();
+    App::from_component(component, crate::application_test_support::runner_inputs()).unwrap()
+}
+
+fn hosted_behaviour(
+    create: crate::application::ComponentFactory,
+) -> crate::application::ComponentBehaviour {
+    let app = hosted_behaviour_app(create);
     crate::application::ComponentBehaviour {
         autofocus_on_structure_change: app.autofocus_on_structure_change,
         appearance_reconcile: app.appearance_reconcile,
@@ -2442,4 +2533,59 @@ fn the_hosting_window_takes_the_components_behaviour() {
             window: crate::application::WindowRole::InputSurface,
         }
     );
+}
+
+#[test]
+fn input_surfaces_keep_their_controls_without_native_document_chrome() {
+    for (create, ordinary) in [
+        (
+            collaboration_probe_factory as crate::application::ComponentFactory,
+            true,
+        ),
+        (
+            behaviour_probe_factory as crate::application::ComponentFactory,
+            false,
+        ),
+    ] {
+        let mut app = hosted_behaviour_app(create);
+        app.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
+        assert_eq!(app.history_chrome_enabled, ordinary);
+        assert_eq!(app.native_document_chrome, ordinary);
+        assert_eq!(
+            app.document_sync_status().is_some(),
+            ordinary,
+            "an intentionally unattached input service is not a failed document route"
+        );
+        for (width, height) in [(800, 600), (600, 800)] {
+            app.init_layout();
+            let root = app.layout.root_node.expect("native root layout exists");
+            run_layout_pass(&mut app, root, width, height, 1.0, false, None).unwrap();
+            app.refresh_semantic_tree();
+            let names: Vec<_> = app
+                .semantic_tree()
+                .iter()
+                .filter_map(|node| node.name.as_deref())
+                .collect();
+            assert!(
+                names.contains(&"Live owner"),
+                "the actual application's accessible label remains: {names:?}"
+            );
+            assert!(
+                tilo_actions::door::resolve(
+                    &app.collect_local_resources(),
+                    &tilo_actions::ActionAddress::new("bound-collaboration", "export"),
+                )
+                .is_some(),
+                "the app's declared control remains available"
+            );
+            assert_eq!(names.contains(&"History"), ordinary);
+        }
+        app.action_publication_failure = Some("explicit publication refusal".into());
+        assert_eq!(
+            app.document_sync_status(),
+            Some("explicit publication refusal"),
+            "system-surface presentation must still expose actual errors"
+        );
+        app.close_components();
+    }
 }

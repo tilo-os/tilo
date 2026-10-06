@@ -75,7 +75,6 @@ impl Resource for Vpn {
                 anchor: Some(crate::effects::connection_resource_id(connection.id)),
                 title: connection.name.clone(),
                 text: connection.kind.as_str().to_owned(),
-                action: None,
                 ..Default::default()
             })
             .collect()

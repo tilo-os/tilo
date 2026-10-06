@@ -133,7 +133,7 @@ enum Command {
         /// The release executable.
         #[arg(long)]
         executable: PathBuf,
-        /// `windows` or `macos`.
+        /// `linux`, `windows` or `macos`.
         #[arg(long, value_enum)]
         platform: DesktopPlatform,
         /// `x86_64` or `aarch64`.
@@ -149,6 +149,10 @@ enum Command {
         /// Identity JSON; a fresh keypair is generated when absent.
         #[arg(long)]
         identity: Option<PathBuf>,
+        /// Validate and print an unsigned plan without selecting a signing key
+        /// or writing an archive.
+        #[arg(long, conflicts_with = "identity")]
+        dry_run: bool,
     },
     /// Pack the web build of an app (or of the toolkit core) from its
     /// authored manifest and WebAssembly module. The module's
@@ -435,6 +439,7 @@ fn main() -> Result<()> {
             isa,
             output,
             identity,
+            dry_run,
         } => cmd_pack_desktop(&PackDesktopArgs {
             manifest: &manifest,
             executable: &executable,
@@ -443,6 +448,7 @@ fn main() -> Result<()> {
             arch: &arch,
             output: &output,
             identity: identity.as_deref(),
+            dry_run,
         }),
         Command::SealImage(args) => cmd_seal_image(&args),
         Command::Thin { output, file } => cmd_thin(&file, &output),
@@ -665,17 +671,13 @@ struct PackDesktopArgs<'a> {
     isa: &'a str,
     output: &'a Path,
     identity: Option<&'a Path>,
+    dry_run: bool,
 }
 
 fn cmd_pack_desktop(args: &PackDesktopArgs<'_>) -> Result<()> {
     let manifest_src = std::fs::read_to_string(args.manifest)
         .with_context(|| format!("read manifest {}", args.manifest.display()))?;
-    let mut authored = Manifest::from_toml_str(&manifest_src).context("decode manifest TOML")?;
-    let identity = match args.identity {
-        Some(path) => load_identity(path)?,
-        None => SigningIdentity::generate(),
-    };
-    authored.publisher.identity = format!("ed25519:{}", hex::encode(identity.public_key_bytes()));
+    let authored = Manifest::from_toml_str(&manifest_src).context("decode manifest TOML")?;
     let name = args
         .executable
         .file_name()
@@ -692,9 +694,40 @@ fn cmd_pack_desktop(args: &PackDesktopArgs<'_>) -> Result<()> {
         DesktopPlatform::Windows => registry_types::WINDOWS_PLATFORM,
         DesktopPlatform::Macos => registry_types::MACOS_PLATFORM,
     };
-    let manifest = tilo_app_package::desktop::desktop_manifest(
+    let mut manifest = tilo_app_package::desktop::desktop_manifest(
         &authored, platform, args.arch, args.isa, &module,
     )?;
+
+    let executable_bytes = std::fs::metadata(args.executable)?.len();
+    let limit = tilo_app_package::app_size_limit(&manifest)
+        .ok_or_else(|| anyhow!("desktop package has no application size contract"))?;
+    if executable_bytes > limit {
+        bail!("executable is {executable_bytes} bytes; desktop payload limit is {limit} bytes");
+    }
+    if args.dry_run {
+        if args.identity.is_some() {
+            bail!("dry-run cannot select a signing identity");
+        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "signed": false,
+                "publisher_selected": false,
+                "archive_size_verified": false,
+                "executable": args.executable,
+                "executable_bytes": executable_bytes,
+                "maximum_archive_bytes": limit,
+                "output": args.output,
+                "manifest_toml": manifest.to_toml_string()?,
+            }))?
+        );
+        return Ok(());
+    }
+    let identity = match args.identity {
+        Some(path) => load_identity(path)?,
+        None => SigningIdentity::generate(),
+    };
+    manifest.publisher.identity = format!("ed25519:{}", hex::encode(identity.public_key_bytes()));
 
     let staging = tempfile::tempdir().context("create staging directory")?;
     std::fs::create_dir_all(staging.path().join("bin")).context("create bin directory")?;
@@ -1272,4 +1305,82 @@ fn cmd_entry(args: &EntryArgs) -> Result<()> {
     let version = entry.versions.first().map_or("?", |v| v.version.as_str());
     eprintln!("entry: {}@{version} -> {url}", entry.package_id);
     Ok(())
+}
+
+#[cfg(test)]
+mod desktop_plan_tests {
+    use super::*;
+
+    #[test]
+    fn desktop_dry_run_refuses_identity_selection() {
+        assert!(
+            Cli::try_parse_from([
+                "tilo-app-package",
+                "pack-desktop",
+                "--manifest",
+                "app.toml",
+                "--executable",
+                "app",
+                "--platform",
+                "linux",
+                "--arch",
+                "x86_64",
+                "--output",
+                "app.tapp",
+                "--dry-run",
+                "--identity",
+                "private.json",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn desktop_dry_run_validates_without_writing_or_signing() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = dir.path().join("app.toml");
+        std::fs::write(
+            &manifest,
+            format!(
+                r#"
+[package]
+id = "so.tilo.plan"
+version = "0.1.0"
+kind = "app"
+runtime = "tilo-runtime/2026.07"
+[publisher]
+identity = "ed25519:{}"
+signature = ""
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount", "net"]
+seccomp = "tilo-default"
+landlock = "strict"
+[sandbox.net]
+mode = "off"
+[entrypoint]
+bin = "bin/app"
+"#,
+                "00".repeat(32)
+            ),
+        )
+        .unwrap();
+        let executable = dir.path().join("app");
+        std::fs::write(&executable, b"not executed").unwrap();
+        let output = dir.path().join("missing/app.tapp");
+        let mut args = PackDesktopArgs {
+            manifest: &manifest,
+            executable: &executable,
+            platform: DesktopPlatform::Linux,
+            arch: "x86_64",
+            isa: "x86-64-v3",
+            output: &output,
+            identity: None,
+            dry_run: true,
+        };
+        cmd_pack_desktop(&args).unwrap();
+        assert!(!output.parent().unwrap().exists());
+        args.arch = "wasm32";
+        assert!(cmd_pack_desktop(&args).is_err());
+        assert!(!output.exists());
+    }
 }

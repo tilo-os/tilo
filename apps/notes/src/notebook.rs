@@ -129,6 +129,25 @@ fn integer(doc: &AutoCommit, parent: &ObjId, key: &str) -> Result<u64, String> {
     }
 }
 
+/// Read the original u32 ordinal as a stable fractional key without changing
+/// the record. Fixed width preserves numeric order; the final nonzero digit
+/// leaves room for inserts. Deleting another page cannot change this key.
+pub(crate) fn page_order(doc: &AutoCommit, page: &ObjId) -> Result<String, String> {
+    let (value, _) = required(doc, page, "order")?;
+    let ordinal = match value {
+        Value::Scalar(value) => match value.as_ref() {
+            ScalarValue::Str(key) => return Ok(key.to_string()),
+            ScalarValue::Uint(value) => u32::try_from(*value).ok(),
+            ScalarValue::Int(value) => u32::try_from(*value).ok(),
+            _ => None,
+        },
+        Value::Object(_) => None,
+    };
+    ordinal
+        .map(|value| format!("i{value:08x}1"))
+        .ok_or_else(|| "order must be a fractional key or legacy u32 ordinal".into())
+}
+
 fn schema_version(doc: &AutoCommit) -> Result<u64, String> {
     let version = |value: &Value<'_>| match value {
         Value::Scalar(value) => match value.as_ref() {
@@ -192,7 +211,7 @@ fn validated_workspace(doc: &AutoCommit, validate_image_bytes: bool) -> Result<W
         } else {
             Some(uuid(&parent)?)
         };
-        let order = string(doc, &page, "order")?;
+        let order = page_order(doc, &page)?;
         data.pages.push(PageMeta {
             id,
             title: text(doc, &page, "title")?,
@@ -583,6 +602,86 @@ mod tests {
         .into_iter()
         .collect();
         notebook_with(&[read])
+    }
+
+    #[test]
+    fn numeric_page_order_reopens_without_rewriting_notebook() {
+        let (mut doc, page) = notebook_with(&[ui::widget::BlockContent::paragraph(
+            "",
+            "Preserve my existing note",
+        )]);
+        let pages = object(&doc, &ROOT, "pages", ObjType::Map).unwrap();
+        let entry = object(&doc, &pages, &page.to_string(), ObjType::Map).unwrap();
+        doc.put(&entry, "order", 7_i64).unwrap();
+        let bytes = doc.save();
+        let mut reopened = AutoCommit::load(&bytes).unwrap();
+        let workspace = project(&reopened, Some(page)).unwrap();
+        assert_eq!(workspace.data.selected, Some(page));
+        assert_eq!(workspace.data.pages[0].id, page);
+        assert_eq!(
+            NotesDoc::page_block_snapshots(&reopened, page),
+            NotesDoc::page_block_snapshots(&doc, page),
+        );
+        assert_eq!(reopened.save(), bytes);
+    }
+
+    #[test]
+    fn legacy_order_remains_stable_across_gaps_duplicates_and_fractional_inserts() {
+        let (mut doc, first) = notebook_with(&[]);
+        let second = uuid::Uuid::new_v4();
+        NotesDoc::upsert_page_meta(
+            &mut doc,
+            &PageMeta {
+                id: second,
+                title: "Second".into(),
+                parent: None,
+                order: "b".into(),
+            },
+        );
+        NotesDoc::fill_page_body(&mut doc, second, &[]).unwrap();
+        let pages = object(&doc, &ROOT, "pages", ObjType::Map).unwrap();
+        let first_entry = object(&doc, &pages, &first.to_string(), ObjType::Map).unwrap();
+        let second_entry = object(&doc, &pages, &second.to_string(), ObjType::Map).unwrap();
+        doc.put(&first_entry, "order", 7_i64).unwrap();
+        doc.put(&second_entry, "order", 40_u64).unwrap();
+        let original = project(&doc, None).unwrap();
+        assert_eq!(
+            original.data.pages.iter().map(|p| p.id).collect::<Vec<_>>(),
+            [first, second]
+        );
+        let first_key = original.data.pages[0].order.clone();
+        let second_key = original.data.pages[1].order.clone();
+        let middle = uuid::Uuid::new_v4();
+        NotesDoc::upsert_page_meta(
+            &mut doc,
+            &PageMeta {
+                id: middle,
+                title: "Middle".into(),
+                parent: None,
+                order: ui::tilo_resource::order::between(Some(&first_key), Some(&second_key)),
+            },
+        );
+        NotesDoc::fill_page_body(&mut doc, middle, &[]).unwrap();
+        assert_eq!(
+            project(&doc, None)
+                .unwrap()
+                .data
+                .pages
+                .iter()
+                .map(|p| p.id)
+                .collect::<Vec<_>>(),
+            [first, middle, second]
+        );
+        doc.put(&second_entry, "order", 7_i64).unwrap();
+        let tied = project(&doc, None).unwrap();
+        assert_eq!(tied.data.pages[0].id, first.min(second));
+        assert_eq!(tied.data.pages[1].id, first.max(second));
+        doc.delete(&pages, first.to_string()).unwrap();
+        assert_eq!(project(&doc, None).unwrap().data.pages[0].order, first_key);
+        for bad in [-1_i64, i64::from(u32::MAX) + 1] {
+            doc.put(&second_entry, "order", bad).unwrap();
+            assert!(project(&doc, None).is_err());
+        }
     }
 
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]

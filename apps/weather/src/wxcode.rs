@@ -25,6 +25,24 @@ pub enum Sky {
 }
 
 impl Sky {
+    /// The library glyph that stands for this sky where a row carries an
+    /// icon (the overview's rail): the sun or moon, a cloud, rain or snow.
+    pub fn rail_icon(self, is_day: bool) -> ui::icons::Icon {
+        use ui::icons::Icon;
+        match self {
+            Sky::Clear | Sky::MainlyClear if is_day => Icon::Sun,
+            Sky::Clear | Sky::MainlyClear => Icon::Moon,
+            Sky::PartlyCloudy | Sky::Overcast | Sky::Fog => Icon::Cloud,
+            Sky::Snow | Sky::SnowShowers => Icon::CloudSnow,
+            Sky::Drizzle
+            | Sky::Rain
+            | Sky::FreezingRain
+            | Sky::Showers
+            | Sky::Thunder
+            | Sky::ThunderHail => Icon::CloudRain,
+        }
+    }
+
     /// Map a raw WMO code to a [`Sky`] family.
     pub fn from_code(code: i64) -> Sky {
         match code {

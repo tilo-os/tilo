@@ -45,6 +45,17 @@ pub trait DocumentHistory {
         false
     }
 
+    /// Pure policy for physical text emitted by this owner. The host alone
+    /// decides whether the exact author, instance and frontier may continue.
+    /// Programmatic and agent document actions never consult this policy.
+    fn physical_text_policy(
+        &self,
+        _previous: Option<&tilo_actions::EncodedAction>,
+        _next: &tilo_actions::EncodedAction,
+    ) -> (bool, bool) {
+        (false, false)
+    }
+
     /// A successful, locally applied resource Document action on this exact
     /// owner. Immutable document access permits cache reconciliation only.
     /// Not called for submissions, failed execution, replay, remote merge,

@@ -893,8 +893,12 @@ fn event_resource(ev: &EventResource) -> Option<Resource> {
         let mut occurrence = Resource::new(
             occurrence_resource_id(event_id, original_date),
             "calendar.occurrence",
-            format!("{} · {original_date}", event_label(&ev.data)),
+            event_label(&ev.data),
         )
+        .with_presentation(ui::tilo_actions::ResourcePresentation {
+            detail: Some(original_date.to_string()),
+            ..Default::default()
+        })
         .with_action(open_spec(occurrence_resource_id(event_id, original_date)));
         occurrence = occurrence.with_action(immediate_spec(
             "exclude",

@@ -240,6 +240,10 @@ fn launched_note<'a>(input: &LaunchInput<'a>) -> Option<(PageId, &'a OpenFile)> 
 }
 
 impl ResourceSurface<Notebook, NotesEffect> for NotesApp {
+    fn take_save_retry(&mut self) -> bool {
+        self.take_save_retry_request()
+    }
+
     fn effect(&mut self, effect: NotesEffect, cx: &mut EffectCx<Notebook, Self>) -> EffectAnswer {
         self.answer_effect(effect, cx)
     }

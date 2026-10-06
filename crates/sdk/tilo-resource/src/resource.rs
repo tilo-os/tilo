@@ -119,8 +119,10 @@ pub trait Resource: Sized + 'static {
     /// keystroke at a time, the values a slider passes through in one drag.
     /// The default keeps every action its own step.
     ///
-    /// Only edits applied immediately (`Dispatcher::apply_now` in
-    /// `tilo-app`) continue one another, and a surface ends the gesture
+    /// Immediate edits (`Dispatcher::apply_now` in `tilo-app`) and native
+    /// keyboard/IME edits from action-bound text fields may continue one
+    /// another. Programmatic/agent invocations remain separate steps.
+    /// A surface ends an immediate pointer gesture
     /// (`Dispatcher::settle`) when the pointer is let go, so the next drag
     /// of the same slider is a step of its own.
     fn coalesces(previous: &Self::Action, next: &Self::Action) -> bool {
@@ -245,6 +247,10 @@ pub trait Resource: Sized + 'static {
     }
 
     /// Entries for the system search index.
+    fn search_scopes(_state: &Self::State) -> Vec<ScopeDecl> {
+        Vec::new()
+    }
+
     fn search(_state: &Self::State) -> Vec<SearchEntry> {
         Vec::new()
     }
@@ -344,6 +350,10 @@ impl tilo_actions::Action for NoAction {
 /// copying it, and whose segments may each be a hit of their own.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SearchEntry {
+    /// The containing resource scope for a flat anchor.
+    pub within: Option<String>,
+    /// Presentation for the platform-rendered result row.
+    pub row: Option<SearchRow>,
     pub anchor: Option<String>,
     pub title: String,
     pub text: String,
@@ -356,6 +366,8 @@ pub struct SearchEntry {
     /// More short text the entry is found by, each ranked by its own
     /// weight: a sender's address, a book's subject, a message's labels.
     pub fields: Vec<(String, SearchWeight)>,
+    /// Structured filter values: token key, localized group label, value.
+    pub facets: Vec<(String, String, String)>,
 }
 
 /// How much a match in one of a [`SearchEntry`]'s fields counts. The title
@@ -455,6 +467,28 @@ impl std::fmt::Debug for SearchBody {
 }
 
 impl SearchEntry {
+    /// Offer this entry under one value of a platform search facet.
+    #[must_use]
+    pub fn facet(
+        mut self,
+        key: impl Into<String>,
+        label: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.facets.push((key.into(), label.into(), value.into()));
+        self
+    }
+
+    /// Whether the entry lies in `scope`: its anchor, or the scope it is
+    /// [`within`](Self::within), is the scope or lies beneath it.
+    #[must_use]
+    pub fn in_scope(&self, scope: &str) -> bool {
+        [self.within.as_deref(), self.anchor.as_deref()]
+            .into_iter()
+            .flatten()
+            .any(|anchor| scope_contains(scope, anchor))
+    }
+
     /// An entry titled `title` whose body text is `text`.
     pub fn new(title: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
@@ -1214,4 +1248,97 @@ pub trait SharedRecord: Resource {
     fn edited_by(app_id: &str) -> bool {
         app_id == Self::OWNER || Self::EDITORS.contains(&app_id)
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchRow {
+    /// The dimmer line under the title (an address, a path, a date).
+    pub subtitle: Option<String>,
+    /// A named icon from the icon set (`"mail"`, `"calendar"`); `None` draws
+    /// the app's own.
+    pub icon: Option<String>,
+    /// What the hit is, for the row's shape.
+    pub shape: SearchRowShape,
+}
+
+impl SearchRow {
+    /// A generic row with `subtitle` under the title.
+    pub fn subtitle(subtitle: impl Into<String>) -> Self {
+        Self {
+            subtitle: Some(subtitle.into()),
+            ..Self::default()
+        }
+    }
+
+    /// A row of `shape`.
+    #[must_use]
+    pub fn shaped(shape: SearchRowShape) -> Self {
+        Self {
+            shape,
+            ..Self::default()
+        }
+    }
+
+    /// The row's named icon.
+    #[must_use]
+    pub fn icon(mut self, name: impl Into<String>) -> Self {
+        self.icon = Some(name.into());
+        self
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum SearchRowShape {
+    /// Icon, title and subtitle.
+    #[default]
+    Plain,
+    /// A message: who sent it, a snippet, when, and whether it is unread.
+    Message {
+        sender: String,
+        snippet: Option<String>,
+        date: Option<String>,
+        unread: bool,
+    },
+    /// A video, track or other media item: who made it and how long it
+    /// runs. (A provider with artwork answers its own rows, with
+    /// `AppImage::from_image_store` thumbnails.)
+    Media {
+        byline: Option<String>,
+        duration: Option<String>,
+    },
+    /// A match inside a file: the path, the line and the matched line.
+    FileHit {
+        path: String,
+        line: Option<u32>,
+        snippet: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
+pub struct ScopeDecl {
+    pub anchor: String,
+    pub label: String,
+}
+
+impl ScopeDecl {
+    pub fn new(anchor: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            anchor: anchor.into(),
+            label: label.into(),
+        }
+    }
+
+    /// Whether the hit anchored at `anchor` lies inside this scope.
+    #[must_use]
+    pub fn contains(&self, anchor: &str) -> bool {
+        scope_contains(&self.anchor, anchor)
+    }
+}
+
+/// Whether `anchor` is `scope` or lies beneath it in the anchor path.
+#[must_use]
+pub fn scope_contains(scope: &str, anchor: &str) -> bool {
+    anchor
+        .strip_prefix(scope)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }

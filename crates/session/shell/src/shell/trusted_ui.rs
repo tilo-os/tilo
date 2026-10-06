@@ -4,7 +4,7 @@
 //! client. Each one carries a seal band in that shell-owned region. The band
 //! follows the active theme's accent and spacing so high contrast can recolour
 //! it, but it is not a [`Theme`](ui::theme::Theme) token and
-//! [`CustomThemeSpec`](ui::theme::CustomThemeSpec) cannot name it.
+//! [`ThemeDocument`](ui::theme::ThemeDocument) cannot name it.
 //!
 //! Automation tells a real surface from an app fake by the target name. That
 //! name is inserted only from shell chrome registration.
@@ -12,7 +12,6 @@
 //! it through `name`, `test_id`, or `test_rects`.
 
 use ui::theme::Theme;
-use ui::tokens::colors::ACCENT_PRIMARY_IDX;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Fill;
@@ -93,16 +92,9 @@ pub fn paint_seal(
     if band.width() <= 0.0 || band.height() <= 0.0 {
         return;
     }
-    let Some(ink) = theme
-        .tokens
-        .colors
-        .accent
-        .stops
-        .get(ACCENT_PRIMARY_IDX)
-        .copied()
-    else {
-        return;
-    };
+    // The seal wears the person's own colour: an app cannot know it, so it
+    // cannot paint a convincing copy.
+    let ink = theme.tokens.colors.intent.you;
     scene.fill(Fill::NonZero, transform, ink, None, &band);
 }
 

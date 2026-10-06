@@ -28,6 +28,36 @@ fn document(output: &Output) -> Value {
 }
 
 #[test]
+fn github_ci_reports_both_workflows_without_extra_json_output() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("tilo-app.toml"), "").unwrap();
+    let args = ["add", "ci", "--forge", "github", "--dry-run"];
+    let human = tilo_app(dir.path(), &args);
+    assert!(human.status.success(), "{human:?}");
+    let text = String::from_utf8(human.stdout).unwrap();
+    assert!(text.contains("tilo.yml"));
+    assert!(text.contains("tilo-build.yml"));
+    let mut args = args.to_vec();
+    args.push("--json");
+    let output = tilo_app(dir.path(), &args);
+    assert!(output.status.success(), "{output:?}");
+    let report = document(&output);
+    assert_eq!(report["ok"], true);
+    assert_eq!(report["result"]["written"], false);
+    for field in ["path", "reusable_path"] {
+        assert!(Path::new(report["result"][field].as_str().unwrap()).is_absolute());
+    }
+    assert!(!dir.path().join(".github").exists());
+    let output = tilo_app(dir.path(), &["add", "ci", "--forge", "github", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let report = document(&output);
+    assert_eq!(report["result"]["written"], true);
+    for field in ["path", "reusable_path"] {
+        assert!(Path::new(report["result"][field].as_str().unwrap()).is_file());
+    }
+}
+
+#[test]
 fn new_dry_run_lists_every_planned_file_in_both_modes() {
     let dir = tempfile::tempdir().unwrap();
     let human = tilo_app(dir.path(), &["new", "notes", "--dry-run"]);

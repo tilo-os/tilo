@@ -244,15 +244,8 @@ fn help_overlay_and_accessibility_expose_the_deck() {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
-        let palette = app.palette(&theme);
-        app.help_overlay.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            app.rect,
-            &palette,
-        );
+        app.help_overlay
+            .draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, app.rect);
         // While open it is modal: a nav key is captured, not applied.
         let before = app.cur_slide;
         assert!(press_named(app, NamedKey::ArrowRight));
@@ -400,9 +393,13 @@ fn notes_typing_edits_the_notes_and_up_down_move_the_caret() {
         );
     });
     named(&mut bench, NamedKey::ArrowUp);
-    assert!(
-        bench.read(|app| app.notes.control().cursor_pos()) < "line one".len(),
-        "ArrowUp moved the notes caret onto the first shaped line"
+    // The second line's final x lies beyond the first line's final glyph.
+    // Shaped vertical navigation therefore lands at the first line's end,
+    // immediately before its newline, while retaining x for ArrowDown.
+    assert_eq!(
+        bench.read(|app| app.notes.control().cursor_pos()),
+        "line one".len(),
+        "ArrowUp reaches the first shaped line's end before its newline"
     );
     named(&mut bench, NamedKey::ArrowDown);
     assert_eq!(
@@ -545,11 +542,14 @@ fn an_agent_writes_speaker_notes_as_a_plain_text_resource() {
 /// Where the starter deck's text box reading `words` is drawn, with the
 /// editor open for `role`.
 fn editing_starter_box(words: &str, role: ui::permissions::Role) -> (Bench, String) {
-    let mut app = ui::framework::testing::TestApp::<crate::SlidesShell>::with_role(role).unwrap();
-    let mut bench = {
-        app.harness().relayout();
-        Bench { app }
-    };
+    let mut slide = Slide::new(Layout::Blank);
+    slide.add(Element::text(words, 96.0, 90.0, 1088.0, 100.0, 54.0));
+    slide.add(Element::text("Subtitle", 96.0, 240.0, 1088.0, 100.0, 32.0));
+    let mut bench = Bench::open_as(
+        &super::bench::deck_of(vec![slide]),
+        super::bench::WINDOW,
+        role,
+    );
     let (id, at) = bench.read(|editor| {
         let id = editor.deck.slides[0]
             .elements
@@ -566,6 +566,20 @@ fn editing_starter_box(words: &str, role: ui::permissions::Role) -> (Bench, Stri
         )
     });
     bench.app.harness().double_click_at(at.x, at.y);
+    bench.read(|editor| {
+        assert!(
+            editor.editing_text,
+            "physical double-click opens the text box"
+        );
+        let retained = editor
+            .text_editor
+            .as_ref()
+            .expect("the clicked text box has its retained rich-text editor");
+        assert_eq!(
+            retained.element_id, id,
+            "the retained editor belongs to the physically clicked box"
+        );
+    });
     (bench, id)
 }
 

@@ -29,7 +29,7 @@ use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    El, StatusTone, caption, card, card_with_action, hgap, rows, semantic_status_pill, value_row,
+    El, StatusTone, caption, card, card_with_action, rows, semantic_status_pill, value_row,
 };
 
 /// The person's agent providers, as their settings hold them: the hosted
@@ -848,16 +848,10 @@ impl AgentModelsModel {
                 body.push(caption(&t("agent-accel-available")));
                 body.push(Box::new(
                     Row::new()
-                        .push(Box::new(
-                            self.cx.bind_invocation(
-                                Button::new(
-                                    "agent-models-accelerator-setup",
-                                    &t("agent-accel-setup"),
-                                )
-                                .content_sized(),
-                                AgentModelsEffect::SetUpAccelerator,
-                            ),
-                        ))
+                        .push(Box::new(self.cx.bind_invocation(
+                            Button::new("agent-models-accelerator-setup", &t("agent-accel-setup")),
+                            AgentModelsEffect::SetUpAccelerator,
+                        )))
                         .push(Box::new(Spacer::new())),
                 ));
                 (t("agent-accel-ready"), StatusTone::Neutral)
@@ -889,16 +883,10 @@ impl AgentModelsModel {
                 body.push(caption(&t("agent-accel-error-retry")));
                 body.push(Box::new(
                     Row::new()
-                        .push(Box::new(
-                            self.cx.bind_invocation(
-                                Button::new(
-                                    "agent-models-accelerator-retry",
-                                    &t("agent-accel-retry"),
-                                )
-                                .content_sized(),
-                                AgentModelsEffect::SetUpAccelerator,
-                            ),
-                        ))
+                        .push(Box::new(self.cx.bind_invocation(
+                            Button::new("agent-models-accelerator-retry", &t("agent-accel-retry")),
+                            AgentModelsEffect::SetUpAccelerator,
+                        )))
                         .push(Box::new(Spacer::new())),
                 ));
                 (t("agent-status-attention"), StatusTone::Warning)
@@ -956,14 +944,14 @@ impl AgentModelsModel {
             Box::new(
                 Row::new()
                     .push(Box::new(self.cx.bind_invocation(
-                        Button::new(controls.0, &accept_btn).content_sized(),
+                        Button::new(controls.0, &accept_btn),
                         AgentModelsEffect::InstallModel {
                             model: package.id.clone(),
                             revision: package.revision.clone(),
                         },
                     )))
                     .push(Box::new(self.cx.bind_invocation(
-                        Button::new(controls.1, &cancel).content_sized(),
+                        Button::new(controls.1, &cancel),
                         cancel_effect,
                     )))
                     .push(Box::new(Spacer::new())),
@@ -1004,7 +992,6 @@ impl AgentModelsModel {
                 Row::new()
                     .push(Box::new(
                         Button::new("agent-models-setup-unavailable", &unavailable)
-                            .content_sized()
                             .with_enabled(false),
                     ))
                     .push(Box::new(Spacer::new())),
@@ -1028,17 +1015,15 @@ impl AgentModelsModel {
                 Row::new()
                     .push(Box::new(
                         self.cx.bind_invocation(
-                            Button::new("agent-models-setup-local", &setup)
-                                .content_sized()
-                                .with_enabled(
-                                    self.manager_available
-                                        && hardware.fit != HardwareFit::Unsupported
-                                        && self
-                                            .snapshot
-                                            .accelerator_setup
-                                            .as_ref()
-                                            .is_none_or(|setup| !setup.status.blocks_model_setup()),
-                                ),
+                            Button::new("agent-models-setup-local", &setup).with_enabled(
+                                self.manager_available
+                                    && hardware.fit != HardwareFit::Unsupported
+                                    && self
+                                        .snapshot
+                                        .accelerator_setup
+                                        .as_ref()
+                                        .is_none_or(|setup| !setup.status.blocks_model_setup()),
+                            ),
                             AgentModelsEffect::ReviewModelDownload { show: true },
                         ),
                     ))
@@ -1140,7 +1125,6 @@ impl AgentModelsModel {
                             &format!("agent-models-inprocess-setup-{widget_token}"),
                             &t("agent-setup-device"),
                         )
-                        .content_sized()
                         .with_enabled(self.manager_available),
                         AgentModelsEffect::ReviewLocalModel {
                             model: package.id.clone(),
@@ -1151,18 +1135,15 @@ impl AgentModelsModel {
                 any = true;
             }
             if model.removable() {
-                row = row.push(Box::new(
-                    self.cx.bind_invocation(
-                        Button::new(
-                            &format!("agent-models-inprocess-remove-{widget_token}"),
-                            &action_label(ModelAction::Remove),
-                        )
-                        .content_sized(),
-                        AgentModelsEffect::RemoveModel {
-                            model: package.id.clone(),
-                        },
+                row = row.push(Box::new(self.cx.bind_invocation(
+                    Button::new(
+                        &format!("agent-models-inprocess-remove-{widget_token}"),
+                        &action_label(ModelAction::Remove),
                     ),
-                ));
+                    AgentModelsEffect::RemoveModel {
+                        model: package.id.clone(),
+                    },
+                )));
                 any = true;
             }
             if any {
@@ -1239,20 +1220,17 @@ impl AgentModelsModel {
         if !actions.is_empty() {
             let mut row = Row::new();
             for action in actions {
-                row = row.push(Box::new(
-                    self.cx.bind_invocation(
-                        Button::new(
-                            &format!(
-                                "agent-models-{}-{}",
-                                action_slug(action),
-                                token(&model.package.id)
-                            ),
-                            &action_label(action),
-                        )
-                        .content_sized(),
-                        model_effect(model, action),
+                row = row.push(Box::new(self.cx.bind_invocation(
+                    Button::new(
+                        &format!(
+                            "agent-models-{}-{}",
+                            action_slug(action),
+                            token(&model.package.id)
+                        ),
+                        &action_label(action),
                     ),
-                ));
+                    model_effect(model, action),
+                )));
             }
             body.push(Box::new(row.push(Box::new(Spacer::new()))));
         }
@@ -1300,25 +1278,19 @@ impl AgentModelsModel {
         let mut body: Vec<El> = vec![caption(&t("agent-hosted-intro"))];
         body.push(Box::new(
             Row::new()
-                .push(Box::new(
-                    self.cx.bind_invocation(
-                        Button::new("agent-models-add-anthropic", &t("agent-add-anthropic"))
-                            .content_sized(),
-                        AgentModelsEffect::AddProvider {
-                            protocol: "anthropic".into(),
-                        },
-                    ),
-                ))
-                .push(hgap(8.0))
-                .push(Box::new(
-                    self.cx.bind_invocation(
-                        Button::new("agent-models-add-openai", &t("agent-add-compatible"))
-                            .content_sized(),
-                        AgentModelsEffect::AddProvider {
-                            protocol: "openai-compatible".into(),
-                        },
-                    ),
-                ))
+                .push(Box::new(self.cx.bind_invocation(
+                    Button::new("agent-models-add-anthropic", &t("agent-add-anthropic")),
+                    AgentModelsEffect::AddProvider {
+                        protocol: "anthropic".into(),
+                    },
+                )))
+                .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                .push(Box::new(self.cx.bind_invocation(
+                    Button::new("agent-models-add-openai", &t("agent-add-compatible")),
+                    AgentModelsEffect::AddProvider {
+                        protocol: "openai-compatible".into(),
+                    },
+                )))
                 .push(Box::new(Spacer::new())),
         ));
         for profile in config
@@ -1381,69 +1353,57 @@ impl AgentModelsModel {
             };
             body.push(Box::new(
                 Row::new()
-                    .push(Box::new(
-                        self.cx.bind(
-                            Button::new(
-                                &format!("agent-models-save-provider-{profile_id}"),
-                                &t("agent-save-details"),
-                            )
-                            .content_sized(),
-                            effect(AgentModelsEffect::SET_PROVIDER_DETAILS).map(move |()| {
-                                let model = read(&save_fields.model);
-                                (
-                                    save_id.clone(),
-                                    read(&save_fields.label),
-                                    read(&save_fields.endpoint),
-                                    (!model.trim().is_empty()).then_some(model),
-                                )
-                            }),
+                    .push(Box::new(self.cx.bind(
+                        Button::new(
+                            &format!("agent-models-save-provider-{profile_id}"),
+                            &t("agent-save-details"),
                         ),
-                    ))
-                    .push(hgap(8.0))
-                    .push(Box::new(
-                        self.cx.bind_invocation(
-                            Button::new(
-                                &format!("agent-models-protocol-{profile_id}"),
-                                &alternate_protocol_label,
+                        effect(AgentModelsEffect::SET_PROVIDER_DETAILS).map(move |()| {
+                            let model = read(&save_fields.model);
+                            (
+                                save_id.clone(),
+                                read(&save_fields.label),
+                                read(&save_fields.endpoint),
+                                (!model.trim().is_empty()).then_some(model),
                             )
-                            .content_sized(),
-                            AgentModelsEffect::SetProviderProtocol {
-                                provider: profile_id.clone(),
-                                protocol: protocol_slug(alternate_protocol).into(),
+                        }),
+                    )))
+                    .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                    .push(Box::new(self.cx.bind_invocation(
+                        Button::new(
+                            &format!("agent-models-protocol-{profile_id}"),
+                            &alternate_protocol_label,
+                        ),
+                        AgentModelsEffect::SetProviderProtocol {
+                            provider: profile_id.clone(),
+                            protocol: protocol_slug(alternate_protocol).into(),
+                        },
+                    )))
+                    .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                    .push(Box::new(self.cx.bind_invocation(
+                        Button::new(
+                            &format!("agent-models-enabled-{profile_id}"),
+                            &if profile.enabled {
+                                t("agent-disable")
+                            } else {
+                                t("agent-enable")
                             },
                         ),
-                    ))
-                    .push(hgap(8.0))
-                    .push(Box::new(
-                        self.cx.bind_invocation(
-                            Button::new(
-                                &format!("agent-models-enabled-{profile_id}"),
-                                &if profile.enabled {
-                                    t("agent-disable")
-                                } else {
-                                    t("agent-enable")
-                                },
-                            )
-                            .content_sized(),
-                            AgentModelsEffect::SetProviderEnabled {
-                                provider: profile_id.clone(),
-                                on: !profile.enabled,
-                            },
+                        AgentModelsEffect::SetProviderEnabled {
+                            provider: profile_id.clone(),
+                            on: !profile.enabled,
+                        },
+                    )))
+                    .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                    .push(Box::new(self.cx.bind_invocation(
+                        Button::new(
+                            &format!("agent-models-remove-provider-{profile_id}"),
+                            &t("agent-remove-provider"),
                         ),
-                    ))
-                    .push(hgap(8.0))
-                    .push(Box::new(
-                        self.cx.bind_invocation(
-                            Button::new(
-                                &format!("agent-models-remove-provider-{profile_id}"),
-                                &t("agent-remove-provider"),
-                            )
-                            .content_sized(),
-                            AgentModelsEffect::RemoveProvider {
-                                provider: profile_id.clone(),
-                            },
-                        ),
-                    ))
+                        AgentModelsEffect::RemoveProvider {
+                            provider: profile_id.clone(),
+                        },
+                    )))
                     .push(Box::new(Spacer::new())),
             ));
             let protocol = t("agent-protocol");
@@ -1471,35 +1431,29 @@ impl AgentModelsModel {
                             .with_secret(true)
                             .with_placeholder(&t("agent-placeholder-key")),
                     ))
-                    .push(Box::new(
-                        self.cx.bind_invocation(
-                            Button::new(
-                                &format!("agent-models-set-api-key-{profile_id}"),
-                                &if configured {
-                                    t("agent-replace-key")
-                                } else {
-                                    t("agent-save-key")
-                                },
-                            )
-                            .content_sized(),
-                            AgentModelsEffect::SaveProviderKey {
-                                provider: profile_id.clone(),
-                                key: None,
+                    .push(Box::new(self.cx.bind_invocation(
+                        Button::new(
+                            &format!("agent-models-set-api-key-{profile_id}"),
+                            &if configured {
+                                t("agent-replace-key")
+                            } else {
+                                t("agent-save-key")
                             },
                         ),
-                    ))
-                    .push(Box::new(
-                        self.cx.bind_invocation(
-                            Button::new(
-                                &format!("agent-models-remove-api-key-{profile_id}"),
-                                &t("agent-remove-key"),
-                            )
-                            .content_sized(),
-                            AgentModelsEffect::RemoveProviderKey {
-                                provider: profile_id.clone(),
-                            },
+                        AgentModelsEffect::SaveProviderKey {
+                            provider: profile_id.clone(),
+                            key: None,
+                        },
+                    )))
+                    .push(Box::new(self.cx.bind_invocation(
+                        Button::new(
+                            &format!("agent-models-remove-api-key-{profile_id}"),
+                            &t("agent-remove-key"),
                         ),
-                    ))
+                        AgentModelsEffect::RemoveProviderKey {
+                            provider: profile_id.clone(),
+                        },
+                    )))
                     .push(Box::new(Spacer::new())),
             ));
             body.push(if configured {
@@ -1510,22 +1464,19 @@ impl AgentModelsModel {
                 caption(&t("agent-key-none"))
             });
             if profile.default_model.is_some() {
-                body.push(Box::new(
-                    self.cx.bind_invocation(
-                        Button::new(
-                            &format!("agent-models-default-{profile_id}"),
-                            &if config.default_profile.as_deref() == Some(&profile.id) {
-                                t("agent-default-current")
-                            } else {
-                                t("agent-use-default")
-                            },
-                        )
-                        .content_sized(),
-                        AgentModelsEffect::SetDefaultProvider {
-                            provider: profile_id.clone(),
+                body.push(Box::new(self.cx.bind_invocation(
+                    Button::new(
+                        &format!("agent-models-default-{profile_id}"),
+                        &if config.default_profile.as_deref() == Some(&profile.id) {
+                            t("agent-default-current")
+                        } else {
+                            t("agent-use-default")
                         },
                     ),
-                ));
+                    AgentModelsEffect::SetDefaultProvider {
+                        provider: profile_id.clone(),
+                    },
+                )));
             }
         }
         for issue in config.validation_errors() {
@@ -1628,7 +1579,7 @@ fn phase_tone(phase: &LocalModelPhase) -> StatusTone {
         LocalModelPhase::Ready { running: true, .. } => StatusTone::Success,
         LocalModelPhase::Ready { running: false, .. } => StatusTone::Neutral,
         LocalModelPhase::Downloading { .. } | LocalModelPhase::Installing { .. } => {
-            StatusTone::Accent
+            StatusTone::Info
         }
         LocalModelPhase::Error { .. } => StatusTone::Warning,
     }
@@ -2146,7 +2097,7 @@ impl LocalModelControl for SampleManager {
             hardware: HardwareRecommendation {
                 fit: HardwareFit::Good,
                 memory_gib: 32,
-                accelerator: "GPU · 16 GiB".into(),
+                accelerator: "GPU with 16 GiB".into(),
                 accelerator_memory_gib: Some(16),
                 free_storage_gib: Some(120),
                 reason: t("agent-reason-good"),
@@ -2398,7 +2349,7 @@ mod tests {
             hardware: HardwareRecommendation {
                 fit: HardwareFit::Good,
                 memory_gib: 24,
-                accelerator: "GPU · 12 GiB".into(),
+                accelerator: "GPU with 12 GiB".into(),
                 accelerator_memory_gib: Some(12),
                 free_storage_gib: Some(80),
                 reason: "Balanced for this device".into(),

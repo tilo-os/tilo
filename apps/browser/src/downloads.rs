@@ -41,7 +41,7 @@ pub struct DownloadEntry {
 
 impl DownloadEntry {
     pub fn resource_id(&self) -> String {
-        format!("browser.download.{}", self.id)
+        format!("{}/{}", crate::actions::DOWNLOADS_SCOPE, self.id)
     }
 
     pub fn display_name(&self) -> &str {
@@ -300,7 +300,7 @@ mod tests {
             downloads.progress("stable-1", 50, Some(100), 0.5);
             let restored = Downloads::from_stored(downloads.stored());
             let entry = restored.get("stable-1").unwrap();
-            assert_eq!(entry.resource_id(), "browser.download.stable-1");
+            assert_eq!(entry.resource_id(), "browser.downloads/stable-1");
             assert_eq!(entry.status, DownloadStatus::Failed);
         }
 

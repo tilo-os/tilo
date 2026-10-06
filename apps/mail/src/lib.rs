@@ -1,12 +1,11 @@
 //! Mail — Tilo native email client, built on the CRDT-native `ui` toolkit.
 //!
 //! ## Layout
-//! Three panes: a folder/account **sidebar** (Inbox/Starred/Sent/Drafts/
-//! Archive/Junk/Trash with unread counts), a **message list** threaded by
-//! conversation (sender · subject · snippet · date · read/star/attachment
-//! indicators), and a **reader** (headers · body · attachments). A modal
-//! **Compose** window (To/Cc/Bcc · subject · body · attachments · send /
-//! save-draft) and an **Account-setup** form (IMAP/SMTP host/port/TLS/user)
+//! The toolkit's window shell with three columns: a **sidebar** of accounts
+//! and their folders (`sidebar.rs`), the **message list** threaded by
+//! conversation (`list.rs`), and the **reader** showing the open conversation
+//! (`reader.rs`). The column headers carry the list's and the message's
+//! actions (`header.rs`). A **compose** window and the **account** sheet
 //! layer on top.
 //!
 //! ## Protocols
@@ -62,17 +61,20 @@ pub mod attachment_store;
 pub mod autoconfig;
 pub mod compose;
 pub mod doc;
-pub mod draw;
 pub mod engine;
+pub mod header;
 pub mod html_mail;
 pub mod i18n;
+pub mod list;
 pub mod model;
 pub mod oauth;
-pub mod pane;
+pub mod reader;
 pub mod resource;
 pub mod sample;
 pub mod search;
+mod setup_sheet;
 pub mod shortcuts_overlay;
+pub mod sidebar;
 pub mod state;
 pub mod transport;
 pub mod util;

@@ -22,9 +22,10 @@ use crate::manifest::{MinimalManifest, PortalPolicy, read_manifest};
 use crate::sandbox::{DBusBindPlan, build_bwrap_argv};
 use crate::seccomp::compile_baseline;
 use crate::services::{
-    BASELINE_SECCOMP_CHILD_FD, CLONE3_COMPAT_SECCOMP_CHILD_FD, EXIT_REQUIRED_SERVICE_MISSING,
-    ServiceError, ServiceLaunchContext, resolve_blob_bind, resolve_chooser_bind,
-    resolve_identity_bind, resolve_service_binds_for_launch, to_service_binds,
+    ACCOUNT_CHILD_FD, BASELINE_SECCOMP_CHILD_FD, CLONE3_COMPAT_SECCOMP_CHILD_FD,
+    EXIT_REQUIRED_SERVICE_MISSING, ServiceError, ServiceLaunchContext, resolve_blob_bind,
+    resolve_chooser_bind, resolve_identity_bind, resolve_service_binds_for_launch,
+    to_service_binds,
 };
 
 struct SeccompFds {
@@ -44,8 +45,15 @@ impl SeccompFds {
         *argv = prefix;
     }
 
-    fn host_fds(&self) -> (RawFd, RawFd) {
-        (self.clone3_compat.as_raw_fd(), self.baseline.as_raw_fd())
+    fn child_fds(&self, account: RawFd) -> [(RawFd, RawFd); 3] {
+        [
+            (
+                self.clone3_compat.as_raw_fd(),
+                CLONE3_COMPAT_SECCOMP_CHILD_FD,
+            ),
+            (self.baseline.as_raw_fd(), BASELINE_SECCOMP_CHILD_FD),
+            (account, ACCOUNT_CHILD_FD),
+        ]
     }
 }
 
@@ -97,17 +105,6 @@ mod seccomp_fd_tests {
             "reserved slots overlap"
         );
     }
-}
-
-unsafe fn place_fd(host: RawFd, child: RawFd) -> std::io::Result<()> {
-    if unsafe { libc::dup2(host, child) } == -1 {
-        return Err(std::io::Error::last_os_error());
-    }
-    let flags = unsafe { libc::fcntl(child, libc::F_GETFD) };
-    if flags != -1 {
-        let _ = unsafe { libc::fcntl(child, libc::F_SETFD, flags & !libc::FD_CLOEXEC) };
-    }
-    Ok(())
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -332,6 +329,8 @@ pub struct RunOptions {
     /// projection. Honoured only for Files and mounted read-only over its
     /// otherwise writable app directory.
     pub trusted_identities_host_path: Option<PathBuf>,
+    /// Separate host action policy projection; never a sandbox capability grant.
+    pub action_authority_host_path: Option<PathBuf>,
     /// Workspace this launch belongs to — the CRDT cluster id
     /// ([`crate::sandbox::WORKSPACE_ID_ENV`]). `None` means no session.
     pub workspace_id: Option<String>,
@@ -372,6 +371,7 @@ impl Default for RunOptions {
             identity: IdentitySource::UserStore,
             data_home: None,
             trusted_identities_host_path: None,
+            action_authority_host_path: None,
             workspace_id: None,
             capabilities_path: None,
             app_id: None,
@@ -1497,7 +1497,7 @@ fn start_egress_gate(
     }
 }
 
-/// Put every opened service socket on the fd the app expects, in the
+/// Put service sockets, seccomp programs and account data on their child fds, in the
 /// child, before `exec`. bwrap forwards fds it wasn't asked about
 /// untouched, so a placement here survives namespace setup.
 ///
@@ -1505,7 +1505,7 @@ fn start_egress_gate(
 /// into a regular file, so a connected socket blocks reading for an EOF
 /// that never comes — the launch hangs before `exec` with no symptom.
 ///
-/// Two passes: target numbers start at 17 and a source can already sit on
+/// Two passes: a source can already sit on
 /// an unwritten target, so every source is relocated above the target
 /// window first, so no `dup2` clobbers one still waiting to be placed.
 ///
@@ -1516,7 +1516,7 @@ fn start_egress_gate(
 /// # Safety
 /// Call only from `Command::pre_exec` (post-fork, pre-exec). Uses only
 /// `fcntl`, `dup2` and `close`, all async-signal-safe; allocates nothing.
-unsafe fn place_service_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()> {
+unsafe fn place_child_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()> {
     let Some(highest) = pairs.iter().map(|(_, dst)| *dst).max() else {
         return Ok(());
     };
@@ -1530,20 +1530,20 @@ unsafe fn place_service_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()>
         // F_DUPFD returns the lowest free fd >= floor, i.e. clear of
         // every target.
         let moved = unsafe { libc::fcntl(*src, libc::F_DUPFD, floor) };
-        if moved >= 0 {
-            // The original number is done with — a second live descriptor at an
-            // unnamed number is one the app cannot close.
-            unsafe { libc::close(*src) };
-            *src = moved;
+        if moved < 0 {
+            return Err(std::io::Error::last_os_error());
         }
+        // The original number is done with — a second live descriptor at an
+        // unnamed number is one the app cannot close.
+        unsafe { libc::close(*src) };
+        *src = moved;
     }
     for (src, dst) in pairs.iter() {
         if unsafe { libc::dup2(*src, *dst) } == -1 {
             return Err(std::io::Error::last_os_error());
         }
         // dup2 leaves the target without FD_CLOEXEC — it must survive bwrap's and
-        // the app's exec. Cleared again explicitly since relocation above is
-        // best-effort.
+        // the app's exec.
         unsafe {
             let flags = libc::fcntl(*dst, libc::F_GETFD);
             if flags != -1 {
@@ -1804,6 +1804,43 @@ fn splice_trusted_identities(
     Ok(())
 }
 
+/// Bind only one app/person projection directory so atomic replacement and
+/// revocation are visible without exposing the host capability store.
+fn splice_action_authority(
+    argv: &mut Vec<String>,
+    manifest: &MinimalManifest,
+    opts: &RunOptions,
+) -> Result<(), RunError> {
+    use collab_types::caps::action_authority::{
+        AppActionAuthorityProjection, MAX_PROJECTION_BYTES,
+    };
+    use std::io::Read as _;
+    let Some(path) = opts.action_authority_host_path.as_deref() else {
+        return Ok(());
+    };
+    let invalid = || RunError::InvalidServiceLaunch("invalid host action authority binding".into());
+    if path.file_name().and_then(|name| name.to_str()) != Some("current.json") {
+        return Err(invalid());
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take((MAX_PROJECTION_BYTES as u64).saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_PROJECTION_BYTES {
+        return Err(invalid());
+    }
+    let policy: AppActionAuthorityProjection =
+        serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+    policy.validate().map_err(|_| invalid())?;
+    if policy.app_id != manifest.package_id || opts.workspace_id.as_deref() != Some(&policy.room) {
+        return Err(invalid());
+    }
+    let entry = pop_entry(argv)?;
+    crate::sandbox::push_action_authority_bind(argv, path);
+    argv.push(entry);
+    Ok(())
+}
+
 /// Wayland display, spliced before the entrypoint token like the
 /// minimal-libs binds. No `wayland_socket` means no display at all. Returns
 /// the resolved bind, needed again by the shim's Landlock plan.
@@ -1935,6 +1972,12 @@ fn splice_sandbox_shim(
         argv.push("--ro".to_string());
         argv.push(path.display().to_string());
     }
+    // This is generated sandbox data, never the host account database.
+    argv.extend(["--ro".to_string(), "/etc/passwd".to_string()]);
+    if opts.action_authority_host_path.is_some() {
+        argv.push("--ro".into());
+        argv.push(crate::sandbox::SANDBOX_ACTION_AUTHORITY_DIR.into());
+    }
     // Capability-granted paths need matching Landlock rules from the same
     // plan, or the bind is visible but every open() returns EACCES.
     for path in &ctx.capabilities.ro_paths {
@@ -2030,6 +2073,110 @@ fn push_scratch_and_engine_rules(argv: &mut Vec<String>, manifest: &MinimalManif
     }
 }
 
+/// A libc-compatible account record without disclosing the host account database.
+fn sandbox_account(uid: u32, gid: u32) -> String {
+    format!("app:x:{uid}:{gid}:Sandbox application:/run/tilo/app:/sbin/nologin\n")
+}
+
+/// Give bwrap a private, read-only account file. No host `/etc/passwd` bind.
+fn stage_sandbox_account(argv: &mut Vec<String>) -> Result<OwnedFd, RunError> {
+    let account = sandbox_account(unsafe { libc::geteuid() }, unsafe { libc::getegid() });
+    let data = stage_seccomp_blob(account.as_bytes())?;
+    // Keep the source above the fixed child slots: earlier dup2 calls must
+    // not overwrite it before the account descriptor is handed to bwrap.
+    let fd = unsafe { libc::fcntl(data.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 128) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let owned = unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+    argv.splice(
+        0..0,
+        [
+            "--ro-bind-data".to_string(),
+            ACCOUNT_CHILD_FD.to_string(),
+            "/etc/passwd".to_string(),
+        ],
+    );
+    Ok(owned)
+}
+
+#[cfg(test)]
+mod sandbox_account_tests {
+    use super::*;
+
+    #[test]
+    fn handoff_preserves_a_service_source_in_the_account_child_slot() {
+        let service = stage_seccomp_blob(b"service").expect("service fixture");
+        let filters = SeccompFds {
+            clone3_compat: stage_seccomp_blob(b"clone3").expect("compat fixture"),
+            baseline: stage_seccomp_blob(b"baseline").expect("baseline fixture"),
+        };
+        let account = stage_sandbox_account(&mut Vec::new()).expect("account");
+        let expected = format!(
+            "serviceclone3baseline{}",
+            sandbox_account(unsafe { libc::geteuid() }, unsafe { libc::getegid() })
+        );
+        let source = service.as_raw_fd();
+        let mut pairs = vec![(ACCOUNT_CHILD_FD, 17)];
+        pairs.extend(filters.child_fds(account.as_raw_fd()));
+        let mut command = Command::new("/bin/cat");
+        command.args([
+            "/proc/self/fd/17",
+            "/proc/self/fd/40",
+            "/proc/self/fd/41",
+            "/proc/self/fd/42",
+        ]);
+        // Move only the child's fixture onto the colliding source slot.
+        // The production handoff must preserve it before assigning account 42.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::dup2(source, ACCOUNT_CHILD_FD) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                place_child_fds(&mut pairs)
+            });
+        }
+        let output = command.output().expect("fixture child");
+        assert!(output.status.success(), "{:?}", output.stderr);
+        assert_eq!(output.stdout, expected.as_bytes());
+    }
+
+    #[test]
+    fn staged_account_is_private_read_only_data_and_reserves_its_descriptor() {
+        use std::io::Read as _;
+        let mut argv = vec!["--unshare-all".to_string(), "/app/bin".to_string()];
+        let fd = stage_sandbox_account(&mut argv).expect("stage account");
+        assert!(fd.as_raw_fd() >= 128);
+        let mut contents = String::new();
+        std::fs::File::from(fd)
+            .read_to_string(&mut contents)
+            .expect("account bytes");
+        assert_eq!(
+            contents,
+            sandbox_account(unsafe { libc::geteuid() }, unsafe { libc::getegid() })
+        );
+        assert_eq!(
+            argv,
+            [
+                "--ro-bind-data",
+                "42",
+                "/etc/passwd",
+                "--unshare-all",
+                "/app/bin"
+            ]
+        );
+    }
+
+    #[test]
+    fn account_contains_only_the_sandbox_identity_and_home() {
+        assert_eq!(
+            sandbox_account(1000, 1001),
+            "app:x:1000:1001:Sandbox application:/run/tilo/app:/sbin/nologin\n"
+        );
+        assert!(crate::services::RESERVED_CHILD_FDS.contains(&ACCOUNT_CHILD_FD));
+    }
+}
+
 /// What [`spawn_and_wait`] wires into the child in `pre_exec`: the staged
 /// seccomp filters, the resolved service sockets, the identity broker (app end,
 /// control end, serving thread) and whether to apply game scheduling hints.
@@ -2090,6 +2237,8 @@ fn spawn_and_wait(
     });
     let (identity_broker_app, identity_broker_control, identity_broker_thread) = identity_broker;
     SeccompFds::prepend_bwrap_args(&mut argv);
+    let account_fd = stage_sandbox_account(&mut argv)?;
+    let host_account_fd = account_fd.as_raw_fd();
 
     // Passthrough: everything after the entrypoint token is opaque to bwrap,
     // forwarded as the sandboxed program's argv[1..].
@@ -2119,7 +2268,6 @@ fn spawn_and_wait(
 
     // pre_exec: place both seccomp blobs on fixed child fds, and put
     // each service socket on the fd number the app was told to read.
-    let (host_clone3_compat_fd, host_baseline_seccomp_fd) = seccomp_fds.host_fds();
     let mut service_fds: Vec<(RawFd, RawFd)> = resolved
         .iter()
         .map(|r| (r.host_fd(), r.child_fd as RawFd))
@@ -2130,6 +2278,7 @@ fn spawn_and_wait(
             runtime_identity::broker::BROKER_CHILD_FD,
         ));
     }
+    service_fds.extend(seccomp_fds.child_fds(host_account_fd));
     for r in &resolved {
         tracing::info!(
             service = %r.name,
@@ -2169,9 +2318,7 @@ fn spawn_and_wait(
     // landlock crate's syscall wrappers. No allocator calls, no locks.
     unsafe {
         cmd.pre_exec(move || {
-            place_fd(host_clone3_compat_fd, CLONE3_COMPAT_SECCOMP_CHILD_FD)?;
-            place_fd(host_baseline_seccomp_fd, BASELINE_SECCOMP_CHILD_FD)?;
-            place_service_fds(&mut service_fds)?;
+            place_child_fds(&mut service_fds)?;
             set_sandbox_resource_limits()?;
             if latency_sensitive {
                 crate::performance::apply_game_performance_hints()?;
@@ -2205,6 +2352,7 @@ fn spawn_and_wait(
     }
     // Keep both filter fds alive until spawn has duplicated them in the child.
     drop(seccomp_fds);
+    drop(account_fd);
     // Same rule: the child holds its own copies, so the launcher's are dead
     // weight, dropped before the wait so the far end learns of the exit.
     drop(resolved);
@@ -2630,6 +2778,7 @@ fn run_with_context(
     splice_session_settings(&mut argv, &manifest.package_id)?;
     let (system_authority, _system_bus_guard) = splice_system_authority(&mut argv, manifest)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
+    splice_action_authority(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
     let gpu = splice_gpu(&mut argv, manifest, opts, &capabilities)?;
@@ -2745,6 +2894,8 @@ fn spawn_and_capture(
 ) -> Result<(ExitStatus, Vec<u8>), RunError> {
     let (identity_broker_app, identity_broker_control, identity_broker_thread) = identity_broker;
     SeccompFds::prepend_bwrap_args(&mut argv);
+    let account_fd = stage_sandbox_account(&mut argv)?;
+    let host_account_fd = account_fd.as_raw_fd();
     // Everything after the entrypoint token is opaque to bwrap and
     // becomes the child's argv[1..].
     argv.extend(passthrough);
@@ -2758,7 +2909,6 @@ fn spawn_and_capture(
     clear_bwrap_environment(&mut cmd);
     cmd.stdout(std::process::Stdio::piped());
 
-    let (host_clone3_compat_fd, host_baseline_seccomp_fd) = seccomp_fds.host_fds();
     let mut service_fds: Vec<(RawFd, RawFd)> = resolved
         .iter()
         .map(|r| (r.host_fd(), r.child_fd as RawFd))
@@ -2769,11 +2919,10 @@ fn spawn_and_capture(
             runtime_identity::broker::BROKER_CHILD_FD,
         ));
     }
+    service_fds.extend(seccomp_fds.child_fds(host_account_fd));
     unsafe {
         cmd.pre_exec(move || {
-            place_fd(host_clone3_compat_fd, CLONE3_COMPAT_SECCOMP_CHILD_FD)?;
-            place_fd(host_baseline_seccomp_fd, BASELINE_SECCOMP_CHILD_FD)?;
-            place_service_fds(&mut service_fds)?;
+            place_child_fds(&mut service_fds)?;
             set_sandbox_resource_limits()?;
             Ok(())
         });
@@ -2781,6 +2930,7 @@ fn spawn_and_capture(
 
     let mut child = cmd.spawn().map_err(RunError::Spawn)?;
     drop(seccomp_fds);
+    drop(account_fd);
     // As in `run_with`: the child has its own copies, so holding these open
     // only keeps the service from seeing the app end.
     drop(resolved);
@@ -2934,6 +3084,8 @@ fn spawn_and_capture_bounded(
     let plan = plan.validate()?;
     let (identity_broker_app, identity_broker_control, identity_broker_thread) = identity_broker;
     SeccompFds::prepend_bwrap_args(&mut argv);
+    let account_fd = stage_sandbox_account(&mut argv)?;
+    let host_account_fd = account_fd.as_raw_fd();
     argv.extend(passthrough);
 
     let bwrap = opts
@@ -2947,7 +3099,6 @@ fn spawn_and_capture_bounded(
     cmd.stderr(std::process::Stdio::piped());
     cmd.stdin(std::process::Stdio::null());
 
-    let (host_clone3_compat_fd, host_baseline_seccomp_fd) = seccomp_fds.host_fds();
     let mut service_fds: Vec<(RawFd, RawFd)> = resolved
         .iter()
         .map(|service| (service.host_fd(), service.child_fd as RawFd))
@@ -2958,11 +3109,10 @@ fn spawn_and_capture_bounded(
             runtime_identity::broker::BROKER_CHILD_FD,
         ));
     }
+    service_fds.extend(seccomp_fds.child_fds(host_account_fd));
     unsafe {
         cmd.pre_exec(move || {
-            place_fd(host_clone3_compat_fd, CLONE3_COMPAT_SECCOMP_CHILD_FD)?;
-            place_fd(host_baseline_seccomp_fd, BASELINE_SECCOMP_CHILD_FD)?;
-            place_service_fds(&mut service_fds)?;
+            place_child_fds(&mut service_fds)?;
             set_sandbox_resource_limits()?;
             set_captured_resource_limits(plan)?;
             if libc::setpgid(0, 0) != 0 {
@@ -2974,6 +3124,7 @@ fn spawn_and_capture_bounded(
 
     let mut child = cmd.spawn().map_err(RunError::Spawn)?;
     drop(seccomp_fds);
+    drop(account_fd);
     drop(resolved);
     drop(identity_broker_app);
     let used = Arc::new(AtomicUsize::new(0));
@@ -3228,6 +3379,7 @@ fn run_with_capture_spawn<T>(
     splice_session_settings(&mut argv, &manifest.package_id)?;
     let (system_authority, _system_bus_guard) = splice_system_authority(&mut argv, manifest)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
+    splice_action_authority(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     let gpu = splice_gpu(&mut argv, manifest, opts, &capabilities)?;
     splice_sandbox_shim(
@@ -4134,5 +4286,71 @@ mod debug_output_tests {
         if std::env::var_os(DEBUG_STDERR_ENV).is_none() {
             assert!(debug_output_log(Path::new("/nonexistent")).is_none());
         }
+    }
+}
+
+#[cfg(test)]
+mod action_authority_tests {
+    use super::*;
+    use collab_types::caps::action_authority::AppActionAuthorityProjection;
+    #[test]
+    fn action_authority_binding_is_readonly_scoped_and_separate_from_sandbox_grants() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("current.json");
+        let manifest: MinimalManifest = toml::from_str(
+            "[package]\nid = \"so.tilo.store\"\nversion = \"1.0\"\n[entrypoint]\nbin = \"store\"\n",
+        )
+        .unwrap();
+        let policy = AppActionAuthorityProjection {
+            schema_version: 1,
+            room: "room-a".into(),
+            app_id: manifest.package_id.clone(),
+            person: "person-a".into(),
+            owner: Some("person-a".into()),
+            capabilities: vec![],
+            issued_at_unix_ms: 10_000,
+            valid_until_unix_ms: 13_000,
+        };
+        std::fs::write(&path, serde_json::to_vec(&policy).unwrap()).unwrap();
+        let opts = RunOptions {
+            workspace_id: Some("room-a".into()),
+            action_authority_host_path: Some(path),
+            ..RunOptions::default()
+        };
+        let before = resolve_capabilities(&manifest, &RunOptions::default());
+        let after = resolve_capabilities(&manifest, &opts);
+        assert_eq!(before.ro_paths, after.ro_paths);
+        assert_eq!(before.rw_paths, after.rw_paths);
+        let mut argv = vec!["bwrap".into(), "store".into()];
+        splice_action_authority(&mut argv, &manifest, &opts).unwrap();
+        assert_eq!(
+            argv,
+            vec![
+                "bwrap",
+                "--ro-bind",
+                temp.path().to_str().unwrap(),
+                crate::sandbox::SANDBOX_ACTION_AUTHORITY_DIR,
+                "store"
+            ]
+        );
+        for room in [None, Some("room-b".into())] {
+            let mut wrong = opts.clone();
+            wrong.workspace_id = room;
+            assert!(splice_action_authority(&mut vec!["store".into()], &manifest, &wrong).is_err());
+        }
+        let mut wrong_app = policy;
+        wrong_app.app_id = "so.tilo.settings".into();
+        std::fs::write(
+            opts.action_authority_host_path.as_ref().unwrap(),
+            serde_json::to_vec(&wrong_app).unwrap(),
+        )
+        .unwrap();
+        assert!(splice_action_authority(&mut vec!["store".into()], &manifest, &opts).is_err());
+        std::fs::write(
+            opts.action_authority_host_path.as_ref().unwrap(),
+            vec![b' '; collab_types::caps::action_authority::MAX_PROJECTION_BYTES + 1],
+        )
+        .unwrap();
+        assert!(splice_action_authority(&mut vec!["store".into()], &manifest, &opts).is_err());
     }
 }

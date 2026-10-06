@@ -25,14 +25,15 @@ use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect};
-use vello::peniko::{BlendMode, Fill, ImageBrush, ImageData as PenikoImage};
+use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::ImageData as PenikoImage;
 
 use ui::ImageStore;
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Avatar, Widget};
+use ui::widget::{AvatarFace, Widget};
 
 pub struct ChannelAvatar {
     /// Background loader/cache; `None` on the hermetic offline / `--shots` path
@@ -42,6 +43,7 @@ pub struct ChannelAvatar {
     url: String,
     /// Uppercased, ≤2-char initials fallback.
     initials: String,
+    name: String,
     size: f32,
     /// Decoded avatar once the store hands it over. Resolved in `sync`.
     image: Option<PenikoImage>,
@@ -58,6 +60,7 @@ impl ChannelAvatar {
             store,
             url: url.to_string(),
             initials,
+            name: name.to_string(),
             size,
             image: None,
             rect: Rect::ZERO,
@@ -83,43 +86,12 @@ impl ChannelAvatar {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
-        if let Some(img) = &self.image {
-            // Circle-clip → cover-fit the decoded photo → pop.
-            let centre = self.rect.center();
-            let radius = self.rect.width().min(self.rect.height()) * 0.5;
-            let clip = Circle::new(centre, radius);
-            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &clip);
-            let iw = f64::from(img.width.max(1));
-            let ih = f64::from(img.height.max(1));
-            let scale = (self.rect.width() / iw).max(self.rect.height() / ih);
-            let dw = iw * scale;
-            let dh = ih * scale;
-            let dx = self.rect.x0 + (self.rect.width() - dw) * 0.5;
-            let dy = self.rect.y0 + (self.rect.height() - dh) * 0.5;
-            let brush_transform = Affine::translate((dx, dy)) * Affine::scale(scale);
-            let brush = ImageBrush::new(img.clone());
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                &brush,
-                Some(brush_transform),
-                &self.rect,
-            );
-            scene.pop_layer();
-        } else {
-            // Deterministic initials chip — identical colour + glyphs to
-            // `ui::Avatar`, so a photo dropping in is the only visible change.
-            let color = Avatar::color_for_initials(&self.initials, theme);
-            Avatar::draw_at(
-                scene,
-                transform,
+        AvatarFace::new(&self.name, &self.initials)
+            .image(self.image.as_ref())
+            .paint(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 self.rect,
-                &self.initials,
-                color,
-                theme,
-                text_renderer,
             );
-        }
     }
 }
 

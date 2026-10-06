@@ -38,13 +38,17 @@
 
 pub mod actions;
 pub mod app;
+mod chrome;
 pub mod diff_view;
 pub mod doc;
 pub mod highlight;
+pub mod i18n;
 pub mod merge_view;
 pub mod model;
+mod pane;
 pub mod resource;
 pub mod samples;
+mod scroll;
 
 pub use actions::{DIFFMERGE_ACTION_TYPE, DiffmergeAction, DiffmergeEffect, HunkChoice};
 pub use app::{DiffMergeApp, Mode};

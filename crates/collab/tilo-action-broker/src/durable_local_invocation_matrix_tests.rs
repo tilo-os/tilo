@@ -90,13 +90,18 @@ mod durable_local_matrix {
     }
     impl Rig {
         async fn new(env: &Environment) -> Self {
+            Self::with_services(env, env.membership.services()).await
+        }
+        async fn with_services(env: &Environment, services: HostServices) -> Self {
             let fanout = Arc::new(FanoutState::new());
-            let (state, bridge_rx) = CapnpBrokerState::new(
+            let (state, bridge_rx) = CapnpBrokerState::new_configured(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 env.publisher.clone(),
-                Some(env.membership.clone()),
+                Some(env.membership.authority()),
                 None,
+                None,
+                services,
             );
             assert!(
                 state
@@ -1083,4 +1088,5 @@ mod durable_local_matrix {
 
     include!("admitted_local_host_tests.rs");
     include!("certified_launch_tests.rs");
+    include!("observed_launch_tests.rs");
 }

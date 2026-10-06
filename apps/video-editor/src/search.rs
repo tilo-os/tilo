@@ -80,7 +80,7 @@ fn clip_marker(clip: &Clip, marker: &Marker, media: &MediaItem) -> SearchEntry {
         .anchored(crate::actions::marker_resource_id(marker.id))
         .invoking(crate::actions::reveal_marker_address(marker.id))
         .grouped(MARKER_KIND)
-        .subtitled(format!("{} · {}", timecode::clock(at), media.name))
+        .subtitled(format!("At {} in {}", timecode::clock(at), media.name))
         .with_icon("star")
 }
 
@@ -97,7 +97,11 @@ fn clip_entry(clip: &Clip, media: &MediaItem, track: &Track) -> SearchEntry {
         .anchored(crate::actions::clip_resource_id(clip.id))
         .invoking(crate::actions::reveal_clip_address(clip.id))
         .grouped(CLIP_KIND)
-        .subtitled(format!("{} · {}", track.name, timecode::clock(clip.start)))
+        .subtitled(format!(
+            "In {} at {}",
+            track.name,
+            timecode::clock(clip.start)
+        ))
         .with_icon("film")
 }
 
@@ -106,7 +110,7 @@ fn effect_entry(clip: &Clip, effect: &ClipEffect, media: &MediaItem, track: &Tra
         .invoking(crate::actions::reveal_effect_address(clip.id, effect.id))
         .grouped(EFFECT_KIND)
         .subtitled(format!(
-            "{} · {} · {:.0}%",
+            "In {} on {} at {:.0}% strength",
             media.name,
             track.name,
             effect.amount * 100.0
@@ -116,10 +120,10 @@ fn effect_entry(clip: &Clip, effect: &ClipEffect, media: &MediaItem, track: &Tra
 
 fn media_entry(item: &MediaItem, uses: usize) -> SearchEntry {
     let subtitle = if uses == 0 {
-        format!("{} · in the bin", item.kind.as_str())
+        format!("{} in the bin", item.kind.as_str())
     } else {
         format!(
-            "{} · used {uses} time{}",
+            "{} used {uses} time{}",
             item.kind.as_str(),
             if uses == 1 { "" } else { "s" }
         )
@@ -150,7 +154,7 @@ fn marker_subtitle(at: f64, marker: &Marker) -> String {
         // The subtitle is merely presentation; the complete note is the
         // entry's text, so nothing caps discovery while rows stay compact.
         let note: String = marker.note.chars().take(160).collect();
-        format!("{} · {}", timecode::clock(at), note)
+        format!("At {}: {}", timecode::clock(at), note)
     }
 }
 
@@ -248,7 +252,7 @@ mod tests {
             let provider = source(&project);
             assert!(
                 provider
-                    .search_page("DEN FL", None, 8, 8)
+                    .search_page(&ui::search::SearchQuery::parse("DEN FL", &[]), None, 8, 8)
                     .results
                     .iter()
                     .any(|hit| {
@@ -258,7 +262,7 @@ mod tests {
             );
             assert!(
                 provider
-                    .search_page("東京の夜", None, 8, 8)
+                    .search_page(&ui::search::SearchQuery::parse("東京の夜", &[]), None, 8, 8)
                     .results
                     .iter()
                     .any(|hit| {
@@ -279,9 +283,18 @@ mod tests {
                 3_000,
             );
             assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
-            let page = provider.search_page(LATE_HIT_NEEDLE, None, 4, 4);
+            let page = provider.search_page(
+                &ui::search::SearchQuery::parse(LATE_HIT_NEEDLE, &[]),
+                None,
+                4,
+                4,
+            );
             assert_eq!(page.results.len(), 1, "the one track that matches");
         }
+        assert_search_pagination();
+    }
+
+    fn assert_search_pagination() {
         // Case `pages_bound_work_and_materialisation_without_losing_broad_hits`.
         {
             let mut project = Project::new("large");
@@ -296,7 +309,12 @@ mod tests {
             let mut cursor = None;
             let mut seen = 0;
             loop {
-                let page = provider.search_page("common", cursor.as_ref(), 17, 5);
+                let page = provider.search_page(
+                    &ui::search::SearchQuery::parse("common", &[]),
+                    cursor.as_ref(),
+                    17,
+                    5,
+                );
                 assert!(page.inspected <= 17);
                 assert!(page.results.len() <= 5);
                 seen += page.results.len();

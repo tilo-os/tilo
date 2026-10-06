@@ -42,7 +42,7 @@ pub fn draw_agent_identity_mark(
     }
 
     let size = rect.width().min(rect.height());
-    let radius = (size * 0.22).min(f64::from(theme.tokens.radii.sm));
+    let radius = (size * 0.22).min(f64::from(theme.tokens.radii.detail));
     let tile = RoundedRect::from_rect(rect, radius);
     let ink = match style {
         AgentIdentityStyle::Solid => {
@@ -105,7 +105,7 @@ mod tests {
                 &theme,
                 AgentIdentityStyle::Solid,
             );
-            let ground = theme.tokens.colors.surfaces.window_card;
+            let ground = theme.tokens.colors.surfaces.content;
             let mut renderer = OffscreenRenderer::new(25, 25);
             let pixels = renderer.render(&scene, ground);
             let background = ground.to_rgba8();
@@ -134,7 +134,7 @@ mod tests {
                 style,
             );
             let mut renderer = OffscreenRenderer::new(40, 40);
-            renderer.render(&scene, theme.tokens.colors.surfaces.window_card)
+            renderer.render(&scene, theme.tokens.colors.surfaces.content)
         };
         let solid = render(AgentIdentityStyle::Solid);
         let outline = render(AgentIdentityStyle::Outline { alpha: 0.55 });

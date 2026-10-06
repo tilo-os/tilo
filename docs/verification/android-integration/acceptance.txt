@@ -1,0 +1,9 @@
+notification=submitted;provider=filtered-Tilo
+document-read=confirmed;write=denied;sibling=denied
+document-write=confirmed;blanket-storage=denied
+notification=withdraw-requested
+complete=true
+revoked-document-read=denied
+revoked-document-write=denied
+revoked-picker=cancelled;uri=none
+revocation-complete=true

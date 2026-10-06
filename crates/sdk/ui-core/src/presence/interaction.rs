@@ -13,10 +13,10 @@ use super::{ParticipantKind, PresenceCtx};
 use crate::ColorCompat;
 use crate::paint::PaintCtx;
 use crate::permissions::UserId;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
+use crate::tokens::TextRole;
 use std::collections::HashMap;
 use tilo_actions::{InteractionActorKind, InteractionPhase, InvocationId, SemanticInteraction};
 use vello::{
@@ -647,7 +647,7 @@ impl PresenceCtx {
     ) {
         let interaction = &entry.interaction;
         let rect = placement.rect;
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control));
         scene.fill(
             Fill::NonZero,
             transform,
@@ -685,16 +685,15 @@ impl PresenceCtx {
             scene.stroke(&Stroke::new(1.2), transform, glyph_outline, None, &dot);
         }
         let actor_label = actor_label(self, &user, is_agent);
-        let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
-        let first = tr.elide_to_width(&actor_label, size, (rect.width() - 40.0) as f32);
-        tr.draw_text_weighted(
+        let style = theme.text(TextRole::Caption);
+        let first = tr.elide_to_width_style(&actor_label, (rect.width() - 40.0) as f32, &style);
+        tr.draw_style(
             scene,
             &first,
-            size,
             theme.tokens.colors.text_primary,
             transform * Affine::translate((rect.x0 + 27.0, rect.y0 + 8.0)),
             None,
-            TextWeight::Medium,
+            &style.clone().with_weight(TextWeight::Medium),
         );
 
         let mut detail = format!(
@@ -707,14 +706,14 @@ impl PresenceCtx {
             use std::fmt::Write as _;
             let _ = write!(detail, " · +{} more", placement.additional);
         }
-        let detail = tr.elide_to_width(&detail, size, (rect.width() - 24.0) as f32);
-        tr.draw_text(
+        let detail = tr.elide_to_width_style(&detail, (rect.width() - 24.0) as f32, &style);
+        tr.draw_style(
             scene,
             &detail,
-            size,
             theme.tokens.colors.text_dim,
             transform * Affine::translate((rect.x0 + 12.0, rect.y0 + 29.0)),
             None,
+            &style,
         );
     }
 }

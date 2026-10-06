@@ -1,7 +1,9 @@
-notes-date-unknown = Unknown
-notes-date-unavailable = Date history unavailable
 notes-created-date = Created { $date }
 notes-edited-date = Edited { $date }
+notes-dates = Created { $created }, edited { $edited }
+notes-date-today = today at { $time }
+notes-date-day = { $day } { $month }
+notes-date-day-year = { $day } { $month } { $year }
 notes-table-add-row = Add row below
 notes-table-add-column = Add column after
 notes-table-delete-row = Delete row
@@ -10,8 +12,10 @@ notes-surface-rename = Click to rename this note
 notes-surface-tag = Show notes tagged { $tag }
 notes-surface-backlink = Open linking note: { $title }
 notes-parent-path = In { $path }
+notes-linked-from = Linked from
+notes-save-failed-detail = Your latest changes are not stored yet.
 
-notes-affordance-new-note = New root note
+notes-affordance-new-note = New note
 notes-affordance-new-child = New child note
 notes-affordance-note-actions = More note actions
 notes-affordance-note-row = Double-click to rename; right-click for note actions

@@ -1,15 +1,15 @@
 //! Logs — a graphical systemd-journal viewer, built on the Tilo `ui`
 //! toolkit (CRDT-native, retained-mode).
 //!
-//! The viewer is a single self-rendering [`app::LogsApp`] widget: a
-//! scrollable, severity-coloured entry list; a detail pane that surfaces
-//! every field of the selected record; and a filter bar (free-text
-//! search, unit, boot, and a syslog-priority threshold) plus a
-//! live-tail toggle. The filter is the document of [`resource::Logs`], so it
-//! follows the person and syncs to collaborators; which entry is selected is
-//! this window's. Refresh, live tail, export and showing an entry are effects
-//! ([`actions::JournalEffect`]); journal entries are this device's, published
-//! as live rows with metadata and stable ids, never raw log payloads.
+//! The viewer is one window shell ([`app::LogsApp`]): the journal table
+//! with its filters (a filter field, unit, boot and a syslog-priority
+//! threshold) as the content, every field of the selected record in the
+//! inspector, and refresh, live tail, export and History in the header. Shared filter and selection preferences sync as document
+//! actions on [`resource::Logs`]. Live tail is a process-local Effect (it
+//! starts this process's journal poller); journal entries themselves are an
+//! external render cache. The resource catalogue also exposes refresh,
+//! follow/pause, and an explicit-path JSON Lines export; it publishes
+//! metadata and stable entry identities, never raw log payloads.
 //!
 //! Data sources:
 //! - **Live**: parses `journalctl -o json` ([`journal::load_live`]) off the
@@ -47,8 +47,7 @@ pub mod app;
 pub mod journal;
 pub mod model;
 pub mod resource;
-pub mod responsive;
-pub mod theme_ext;
+mod view;
 
 pub use app::LogsApp;
 pub use model::{Filter, LogEntry, Priority};

@@ -780,8 +780,9 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
         );
 
         let large = Theme::dark().with_text_scale(2.0);
-        let size = SearchFilters::filter_label_size(&large, &tr);
-        let (_, lh) = tr.measure_weighted("Ag", size, None, TextWeight::Medium);
+        // The palette's filter rows grow with the text scale it lays out at.
+        let row_h = row_h * f64::from(large.text_scale);
+        let (_, lh) = tr.measure_style("Ag", None, &SearchFilters::filter_label_style(&large));
         let at_large = SearchFilters::filter_control_height(&large, &mut tr, row_h);
         assert!(
             at_large > at_base,
@@ -1058,8 +1059,8 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
             let label = h
                 .host
                 .search_scope_pill_label(h.host.search_scope_list()[idx]);
-            let size = SearchFilters::filter_label_size(&theme, &tr);
-            let (w, _) = tr.measure_weighted(&label, size, None, TextWeight::Medium);
+            let style = SearchFilters::filter_label_style(&theme);
+            let (w, _) = tr.measure_style(&label, None, &style);
             assert!(
                 f64::from(w) + f64::from(theme.tokens.spacing.s2) <= seg.width(),
                 "{label:?} ({w} px) fits its segment {seg:?} whole"
@@ -1187,8 +1188,7 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
         let idle = ui::chrome::selection_tier(&theme, ui::chrome::SelectionState::active(false));
         assert_eq!(chosen.fill, colors.lift(1.0));
         assert_ne!(
-            chosen.fill,
-            colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+            chosen.fill, colors.intent.inverted,
             "a chosen chip is lifted, not accent-filled"
         );
         assert!(chosen.border.is_some() && chosen.inner_glow.is_some());
@@ -1266,7 +1266,7 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
             h.host.search_filters.search_more_rect.area() > 0.0,
             "2× text on a compact card must keep leftover kinds behind More"
         );
-        let size = theme.tokens.typography.scale.xs / tr.text_scale();
+        let style = SearchFilters::filter_label_style(&theme);
         for (kind, rect) in h
             .host
             .search_registry
@@ -1277,7 +1277,7 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
             if rect.area() <= 0.0 {
                 continue;
             }
-            let (w, height) = tr.measure(&kind.localized_label(), size, None);
+            let (w, height) = tr.measure_style(&kind.localized_label(), None, &style);
             assert!(
                 f64::from(w) + f64::from(theme.tokens.spacing.s3) / 2.0 <= rect.width(),
                 "{} needs readable width: {:?}",
@@ -1293,7 +1293,7 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
         }
         for (i, scope) in h.host.search_scope_list().iter().enumerate() {
             let label = h.host.search_scope_pill_label(*scope);
-            let (w, height) = tr.measure(&label, size, None);
+            let (w, height) = tr.measure_style(&label, None, &style);
             let rect = h.host.search_filters.search_scope_pill_rect(i);
             assert!(
                 f64::from(w) + 10.0 <= rect.width(),
@@ -2200,10 +2200,7 @@ fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
     /// rows above it.
     fn notification_history_reserves_the_pager_only_when_it_overflows() {
         let theme = Theme::dark();
-        let type_px = (
-            theme.tokens.typography.scale.xs,
-            theme.tokens.typography.scale.sm,
-        );
+        let type_px = tilo_desktop::notifications::CenterLayout::type_lines(&theme);
         let fits = tilo_desktop::notifications::CenterLayout::preferred_height(3, 3, type_px);
         let short = tilo_desktop::notifications::CenterLayout::new(
             Rect::new(0.0, 0.0, 400.0, fits),
@@ -2549,7 +2546,7 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
         std::fs::create_dir_all(&dir).expect("fixture directory");
         let ground = theme.tokens.colors.surfaces.base;
         let floor = qs::control_fill(&theme, false);
-        let panel_ground = panel_surface(&theme, POPOVER_SURFACE_ALPHA);
+        let panel_ground = ui::chrome::shell::panel_ground(&theme);
         for (name, arrange) in scenes {
             let mut harness = build_harness_sized(vw, vh);
             arrange(&mut harness);

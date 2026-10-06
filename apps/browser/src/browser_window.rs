@@ -166,7 +166,7 @@ impl BrowserWindow {
                             Text::new("Esc to exit full screen")
                                 .with_id("browser.fullscreen-hint")
                                 .with_live(Politeness::Polite)
-                                .with_size(14.0),
+                                .with_role(ui::tokens::TextRole::Body),
                         )),
                 )),
         )
@@ -210,9 +210,11 @@ impl BrowserWindow {
                 } else {
                     "Downloads are still running"
                 })
-                .with_size(18.0),
+                .with_role(ui::tokens::TextRole::Heading),
             ))
-            .push(Box::new(Text::new(&status).with_size(13.0)));
+            .push(Box::new(
+                Text::new(&status).with_role(ui::tokens::TextRole::Caption),
+            ));
         if !cancelling {
             let keep = self.exit_choice.writer();
             let cancel = self.exit_choice.writer();
@@ -819,6 +821,20 @@ mod tests {
         fn send(&self, command: WebViewCommand) {
             self.commands.lock().unwrap().push(command);
         }
+        fn navigate_owned(
+            &self,
+            request_id: u32,
+            command: ui::webview::NavigationCommand,
+        ) -> Result<(), String> {
+            if request_id == 0 || request_id > i32::MAX as u32 {
+                return Err("Invalid owned navigation request".into());
+            }
+            self.send(WebViewCommand::ScopedNavigation {
+                request_id,
+                command,
+            });
+            Ok(())
+        }
         fn frames(&self) -> FrameSlot {
             self.frames.clone()
         }
@@ -1330,7 +1346,13 @@ mod tests {
                 let navigated: Vec<_> = commands
                     .iter()
                     .filter_map(|command| match command {
-                        WebViewCommand::Navigate(url) => Some(url.clone()),
+                        WebViewCommand::ScopedNavigation {
+                            request_id,
+                            command: ui::webview::NavigationCommand::Navigate { url },
+                        } => {
+                            assert!(*request_id > 0, "typed navigation has an owner");
+                            Some(url.clone())
+                        }
                         _ => None,
                     })
                     .collect();

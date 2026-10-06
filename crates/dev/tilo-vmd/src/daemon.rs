@@ -1088,19 +1088,20 @@ impl Daemon {
         } else {
             Policy::SessionRestart
         };
+        let restarts = Restarts::of(&generation);
         let mut actions = apply::activate(
             self.apply.as_mut(),
             &mut record,
             &generation,
             &layers,
             policy,
-            &Restarts::of(&generation),
+            &restarts,
             SessionChange::Restart,
         )?;
         self.slots.save(&record)?;
         self.slots.clear_pending(name)?;
         if record.kind == SlotKind::Vm {
-            actions.extend(self.restart_all_sessions()?);
+            actions.extend(self.restart_all_sessions(&restarts.user_units)?);
             let sessions = self.sessions()?;
             self.verify_parity(sessions)?;
         } else {
@@ -1227,7 +1228,7 @@ impl Daemon {
         match policy {
             Policy::VmRefresh => {
                 self.slots.set_current(record, to.number)?;
-                actions.extend(self.restart_all_sessions()?);
+                actions.extend(self.restart_all_sessions(&restarts.user_units)?);
                 let sessions = self.sessions()?;
                 self.verify_parity(sessions)?;
             }
@@ -1279,9 +1280,18 @@ impl Daemon {
 
     /// Slot sessions snapshot `/usr` when they start, so a refreshed VM
     /// `/usr` reaches them only through a restart.
-    fn restart_all_sessions(&mut self) -> Result<Vec<Action>, DaemonError> {
+    fn restart_all_sessions(&mut self, user_units: &[String]) -> Result<Vec<Action>, DaemonError> {
         let mut actions = Vec::new();
         for session in self.sessions()? {
+            if session.login.is_some() && !session.logged_out() {
+                for unit in user_units {
+                    self.apply.restart_user_unit(&session.user, unit)?;
+                    actions.push(Action::RestartUserUnit {
+                        user: session.user.clone(),
+                        unit: unit.clone(),
+                    });
+                }
+            }
             let uid = apply::session_uid(self.apply.as_mut(), &session)?;
             actions.extend(apply::restart_session(self.apply.as_mut(), &session, uid)?);
         }
@@ -1566,6 +1576,70 @@ mod tests {
         let off = awake(&mut daemon, None, true);
         assert_eq!(off, AwakeLease::default());
         assert!(hello(&mut daemon).awake.unwrap().held);
+    }
+
+    #[test]
+    fn vm_component_refresh_restarts_declared_live_owner_user_services() {
+        let root = tempfile::tempdir().unwrap();
+        let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut apply = RecordingApply::with_login("quickuser");
+        apply.mirror = Some(mirror.clone());
+        let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
+        daemon
+            .handle(Request::Hello(tilo_vm_protocol::Hello {
+                protocol: PROTOCOL_VERSION,
+                client_version: String::new(),
+            }))
+            .unwrap();
+        let device = daemon.load_slot(DEVICE_SLOT).unwrap();
+        daemon.slots.save(&device).unwrap();
+        let hash = "cd".repeat(32);
+        fs::create_dir_all(root.path().join("layers").join(&hash).join("usr/bin")).unwrap();
+        let mut info = ComponentInfo::new(Scope::Vm, vec!["fs.service".into()]);
+        info.user_units = vec!["tilo-fs-cloud.service".into()];
+        let result: ApplyResult = serde_json::from_value(
+            daemon
+                .handle(Request::Swap(tilo_vm_protocol::Swap {
+                    slot: VM_SLOT.into(),
+                    component: "fs".into(),
+                    layer: hash,
+                    info: Some(info),
+                }))
+                .unwrap(),
+        )
+        .unwrap();
+        let user_service = Action::RestartUserUnit {
+            user: "quickuser".into(),
+            unit: "tilo-fs-cloud.service".into(),
+        };
+        let desktop = Action::RestartDesktop {
+            user: "quickuser".into(),
+        };
+        let user_ix = result
+            .actions
+            .iter()
+            .position(|action| action == &user_service)
+            .unwrap();
+        let desktop_ix = result
+            .actions
+            .iter()
+            .position(|action| action == &desktop)
+            .unwrap();
+        assert!(
+            user_ix < desktop_ix,
+            "owner services must observe the new binary before the desktop restarts"
+        );
+        let calls = mirror.lock().unwrap().clone();
+        assert!(calls.iter().any(|call| call == "try-restart fs.service"));
+        assert!(
+            calls
+                .iter()
+                .any(|call| call == "restart_user_unit quickuser tilo-fs-cloud.service")
+        );
+        assert!(
+            !calls.iter().any(|call| call == "restart user@1000.service"),
+            "the owner login remains intact"
+        );
     }
 
     /// A laptop's `device` slot (the owner's greetd login) and the `vm` slot

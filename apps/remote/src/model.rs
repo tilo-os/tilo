@@ -24,7 +24,7 @@ pub type ConnectionId = Uuid;
 /// RDP remains a variant so saved, older connection profiles can round-trip
 /// without data loss. Tilo device control is backed by the shell's authenticated
 /// workspace transport and is available for new profiles.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ConnectionKind {
     /// Secure shell — an interactive terminal session.
     Ssh,
@@ -141,7 +141,7 @@ impl ConnectionKind {
 /// How a connection authenticates. Stored alongside the connection but
 /// never carries a live secret in the document — passwords are entered at
 /// connect time and held only in volatile memory.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AuthMethod {
     /// Username + password prompted at connect time.
     Password,
@@ -197,7 +197,7 @@ impl AuthMethod {
 
 /// Reachability of a saved machine, as this device last observed it. Live
 /// state of this device, never part of the saved profile.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Presence {
     /// Reachable on the last probe.
     Online,
@@ -232,15 +232,17 @@ pub struct Connection {
 }
 
 impl Connection {
-    /// Compact address line, omitting parts that don't apply.
+    /// Compact address line, omitting parts that don't apply (a port the
+    /// protocol uses anyway, a user the protocol doesn't sign in with).
     pub fn address(&self) -> String {
         if self.kind == ConnectionKind::Tilo {
             // A certified endpoint id is intentionally long. The row already
-            // carries the user-assigned connection name; show a stable prefix
-            // here while the editable form retains the exact target id.
-            return format!("Tilo device {}", compact_tilo_endpoint(&self.host));
+            // carries the user-assigned connection name and the protocol;
+            // show a stable prefix here while the editable form retains the
+            // exact target id.
+            return compact_tilo_endpoint(&self.host);
         }
-        let host_part = if self.port == 0 {
+        let host_part = if self.port == 0 || self.port == self.kind.default_port() {
             self.host.clone()
         } else {
             format!("{}:{}", self.host, self.port)
@@ -496,25 +498,6 @@ impl Workspace {
     }
 }
 
-/// "Last used" as a person reads it, `now_ms` being the current time.
-pub fn last_used_label(last_used_ms: Option<i64>, now_ms: i64) -> String {
-    const MINUTE: i64 = 60_000;
-    const HOUR: i64 = 60 * MINUTE;
-    const DAY: i64 = 24 * HOUR;
-    let Some(at) = last_used_ms else {
-        return "Never".into();
-    };
-    let ago = now_ms.saturating_sub(at).max(0);
-    match ago {
-        _ if ago < MINUTE => "just now".into(),
-        _ if ago < HOUR => format!("{}m ago", ago / MINUTE),
-        _ if ago < DAY => format!("{}h ago", ago / HOUR),
-        _ if ago < 2 * DAY => "yesterday".into(),
-        _ if ago < 7 * DAY => format!("{}d ago", ago / DAY),
-        _ => format!("{}w ago", ago / (7 * DAY)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use iroh_base::SecretKey;
@@ -545,6 +528,8 @@ mod tests {
             c.user = "root".into();
             c.port = 2222;
             assert_eq!(c.address(), "root@10.0.0.1:2222");
+            c.port = 22;
+            assert_eq!(c.address(), "root@10.0.0.1", "the default port goes unsaid");
         }
 
         eprintln!("phase tilo_address_drops_port");
@@ -553,14 +538,14 @@ mod tests {
             c.host = "studio-node".into();
             c.user = String::new();
             c.port = 0;
-            assert_eq!(c.address(), "Tilo device studio-node");
+            assert_eq!(c.address(), "studio-node");
         }
 
         eprintln!("phase tilo_address_compacts_a_long_endpoint_without_string_slicing");
         {
             let mut c = sample("q", ConnectionKind::Tilo);
             c.host = "abcdefghijklmnopqrstuvwxyz".into();
-            assert_eq!(c.address(), "Tilo device abcdefghijkl…");
+            assert_eq!(c.address(), "abcdefghijkl…");
         }
     }
 
@@ -695,23 +680,5 @@ mod tests {
             w.presence.insert(b, Presence::Offline);
             assert_eq!(w.online_count(), 1);
         }
-    }
-
-    #[test]
-    fn last_used_reads_relative_to_now() {
-        let now = 1_000_000_000_000;
-        let minutes = |m: i64| Some(now - m * 60_000);
-        assert_eq!(last_used_label(None, now), "Never");
-        assert_eq!(last_used_label(minutes(0), now), "just now");
-        assert_eq!(last_used_label(minutes(12), now), "12m ago");
-        assert_eq!(last_used_label(minutes(5 * 60), now), "5h ago");
-        assert_eq!(last_used_label(minutes(30 * 60), now), "yesterday");
-        assert_eq!(last_used_label(minutes(3 * 24 * 60), now), "3d ago");
-        assert_eq!(last_used_label(minutes(7 * 24 * 60), now), "1w ago");
-        assert_eq!(
-            last_used_label(Some(now + 60_000), now),
-            "just now",
-            "a clock that runs behind another device's reads as now"
-        );
     }
 }

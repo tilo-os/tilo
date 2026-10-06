@@ -327,9 +327,9 @@ mod tests {
     fn the_watch_page_controls_change_the_shared_library() {
         // Tall enough that the creator row sits on screen.
         let mut app = TestApp::<TubeShell>::capture_at(Some("watch"), (1280, 1200)).unwrap();
-        click(&mut app, "like_btn");
+        click(&mut app, "watch_like");
         assert_eq!(app.state().likes.get("vid_donut"), Some(&true));
-        click(&mut app, "like_btn");
+        click(&mut app, "watch_like");
         assert_eq!(
             app.state().likes.get("vid_donut"),
             Some(&false),
@@ -373,12 +373,21 @@ mod tests {
         click(&mut app, "switch_autoplay");
         app.settle();
         assert_eq!(preferences.get().autoplay, !autoplay);
-        click(&mut app, &format!("mode_{}", Category::Sponsor.api_key()));
+        let category = app
+            .harness()
+            .a11y_node_named(Category::Sponsor.label())
+            .unwrap();
+        app.harness()
+            .perform_a11y_action(
+                category,
+                &ui::a11y::Action::SetValue(SkipMode::Show.label().into()),
+            )
+            .unwrap();
         app.settle();
         assert_eq!(
             preferences.get().mode_of(Category::Sponsor),
             SkipMode::Show,
-            "the mode pill cycles Auto-skip to Show"
+            "the shared mode selector changes Auto-skip to Show"
         );
         assert_eq!(
             preferences.scope(),

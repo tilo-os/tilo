@@ -364,7 +364,7 @@ fn code_fence_edits_keep_identities_boundaries_and_copy_buttons() {
         );
         let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/notes-review/split-code-copy-dark.png");
-        live.render_window_png(&output);
+        live.render_png(&output);
         live.set_modifiers(&["ctrl".into()]);
         live.key("z");
         live.set_modifiers(&[]);
@@ -430,7 +430,7 @@ fn code_fence_edits_keep_identities_boundaries_and_copy_buttons() {
         live.resize((1000, 1000)).unwrap();
         let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/notes-review/split-code-copy-light-large.png");
-        live.render_window_png(&output);
+        live.render_png(&output);
         close_driver(&mut live);
     }
 }

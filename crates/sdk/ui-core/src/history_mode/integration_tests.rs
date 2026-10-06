@@ -182,7 +182,9 @@ fn managed_review_confirmation_rechecks_authority_and_freshness() {
         driver.key("Escape");
         assert_eq!(driver.state_mut().doc.base_heads(), before);
         driver.click_named("history-restore").unwrap();
-        driver.key("Enter");
+        driver
+            .click_named("history-restore-review.primary")
+            .unwrap();
         assert_eq!(
             crate::state::owned_restore_tests::value(&driver.state_mut().doc),
             "old"
@@ -254,16 +256,22 @@ fn managed_review_confirmation_rechecks_authority_and_freshness() {
             .unwrap();
         driver.state_mut().commit_action(None, None);
         let before = driver.state_mut().doc.base_heads();
-        driver.key("Enter");
+        driver
+            .click_named("history-restore-review.primary")
+            .unwrap();
         assert_eq!(driver.state_mut().doc.base_heads(), before);
         assert!(driver.a11y_node_named("Refresh review").is_some());
-        driver.key("Enter");
+        driver
+            .click_named("history-restore-review.primary")
+            .unwrap();
         assert_eq!(
             driver.state_mut().doc.base_heads(),
             before,
             "refresh itself does not write"
         );
-        driver.key("Enter");
+        driver
+            .click_named("history-restore-review.primary")
+            .unwrap();
         assert_eq!(
             crate::state::owned_restore_tests::value(&driver.state_mut().doc),
             "old"

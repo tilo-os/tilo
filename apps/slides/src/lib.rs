@@ -47,7 +47,6 @@
 pub mod actions;
 pub mod app;
 pub mod assets;
-pub mod chrome;
 pub mod doc;
 pub mod effects;
 mod help_overlay;
@@ -62,7 +61,6 @@ pub mod resource;
 pub mod sample;
 pub mod search;
 pub mod strings;
-mod toolbar_tools;
 
 pub use app::{PresentSurface, SlidesApp};
 

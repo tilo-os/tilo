@@ -154,6 +154,7 @@ async fn presence_round_trips_over_iroh() {
         key: "cursor".into(),
         point: (123.0, 456.0),
         ts: 1_700_000_000,
+        colour: Some("violet".into()),
     };
     cmd_a
         .send(NetCmd::Publish {

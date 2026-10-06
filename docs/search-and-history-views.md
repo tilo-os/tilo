@@ -8,7 +8,7 @@ because a user-level audit (September 2026, headless, en/de, light/dark) found i
 
 ## What the audit found
 
-Search (Super+K, fresh session, then with Notes and Files open):
+Search (Super+Space, fresh session, then with Notes and Files open):
 
 - **Enter on a window closes it.** With Notes open, typing "notes" put *Close tab “Notes”*
   first. Open windows are only listed as close, move and copy rows; there is no "go to" row.
@@ -50,7 +50,7 @@ visuals therefore come from `shots`. That belongs to the rendering owner.
 
 ## Palette information architecture
 
-**One door.** Super+K, Super+Space and a bare Super tap open the same palette, scoped
+**One door.** Super+Space and a bare Super tap open the same palette, scoped
 to Everywhere. Ctrl+K opens it scoped to the focused app. The scope is one toggle, not a chip.
 
 ### Empty query: *Jump back in*

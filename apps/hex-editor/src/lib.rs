@@ -6,7 +6,7 @@
 //! The UI is a classic hex view — offset gutter, hex byte columns, and an
 //! ASCII column with a cursor synced across both — plus a data inspector
 //! that interprets the bytes at the cursor as every common scalar type,
-//! search (hex pattern or text), and goto-offset.
+//! find (a hex pattern or text), and go to offset.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set

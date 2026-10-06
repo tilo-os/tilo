@@ -62,7 +62,7 @@ impl Resource for Music {
                         .trim()
                         .to_owned();
                     let name = if name.is_empty() {
-                        "New Playlist".to_owned()
+                        "New playlist".to_owned()
                     } else {
                         name
                     };
@@ -112,6 +112,11 @@ const SCENARIOS: &[&str] = &[
     "album-page",
     "error",
     "membership-open",
+    "spotify-home",
+    "spotify-devices",
+    "spotify-error",
+    "spotify-queue",
+    "spotify-create",
 ];
 
 /// Framework app: the music widget is the surface over [`Music`].
@@ -139,7 +144,17 @@ impl ResourceApp for MusicShell {
 
     /// Every scenario but `empty` shows the sample library.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Music>> {
-        if matches!(name, Some("empty")) {
+        if matches!(
+            name,
+            Some(
+                "empty"
+                    | "spotify-home"
+                    | "spotify-devices"
+                    | "spotify-error"
+                    | "spotify-queue"
+                    | "spotify-create"
+            )
+        ) {
             return Vec::new();
         }
         crate::seed::sample_actions()
@@ -194,11 +209,30 @@ impl ResourceSurface<Music, MusicEffect> for MusicApp {
     }
 
     /// The songs the live search found that the library does not hold.
+    fn search_query(&mut self, query: &ui::search::SearchQuery) {
+        self.queue_catalogue_query(query.text());
+    }
+
     fn search_entries(&self) -> Vec<SearchEntry> {
         self.live_search_entries()
     }
 
     fn effect(&mut self, effect: MusicEffect, cx: &mut EffectCx<Music, Self>) -> EffectAnswer {
+        if let MusicEffect::ToggleLike { track } = &effect {
+            if cx.dispatcher().read_only() {
+                return Err("Liking a song requires permission to edit the library".into());
+            }
+            let current = cx.live().get();
+            let _gesture = cx.dispatcher().begin_group();
+            if !current.tracks.contains_key(track) {
+                cx.apply(&self.catalogue_import_action(track)?);
+            }
+            cx.apply(&crate::actions::set_liked_action(
+                track,
+                !current.is_liked(track),
+            ));
+            return Ok(ui::framework::Effected::done());
+        }
         let invocation = cx.invocation().unwrap_or_default();
         let answer = self.begin_effect(invocation, effect)?;
         if matches!(answer, ui::framework::Effected::Pending) {
@@ -261,6 +295,11 @@ mod tests {
         assert!(surface.contains("music.player:player"), "{surface}");
         assert!(surface.contains("toggle-shuffle"));
         assert!(surface.contains("open-file"));
+        assert!(surface.contains("music.source:catalogue"));
+        assert!(surface.contains("connect-spotify"));
+        assert!(surface.contains("disconnect-spotify"));
+        assert!(surface.contains("browse-spotify"));
+        assert!(surface.contains("browse-you-tube"));
 
         let album = crate::actions::album_resource_id("al_glasslight");
         app.effect_on(

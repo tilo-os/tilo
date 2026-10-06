@@ -163,6 +163,7 @@ pub struct PermissionContext {
     /// expiry evaluation and is only for deliberately unclocked local contexts.
     now: Option<u64>,
     policy_time: Option<PolicyTimeSampler>,
+    action_authority: Option<ActionAuthoritySampler>,
 }
 
 /// Inert directory cache identity. It cannot make a permission decision.
@@ -172,6 +173,7 @@ pub(crate) struct DirectoryPermissionWitness {
     actor: Actor,
     caps: Vec<CapOverride>,
     live: Vec<bool>,
+    action_authority: Option<(String, Box<DirectoryPermissionWitness>)>,
 }
 
 impl PermissionContext {
@@ -216,6 +218,7 @@ impl PermissionContext {
             caps,
             now: unix_now(),
             policy_time: None,
+            action_authority: None,
         }
     }
 
@@ -248,6 +251,17 @@ impl PermissionContext {
             Some(sampler) => Some((sampler.0)()?),
             None => self.now,
         };
+        let action_authority = self
+            .action_authority
+            .as_ref()
+            .map(|authority| {
+                let current = authority.sample_for(&self.user, &self.actor)?;
+                Ok::<_, String>((
+                    authority.app_id.clone(),
+                    Box::new(current.directory_witness()?),
+                ))
+            })
+            .transpose()?;
         Ok(DirectoryPermissionWitness {
             user: self.user.clone(),
             actor: self.actor.clone(),
@@ -257,6 +271,7 @@ impl PermissionContext {
                 .iter()
                 .map(|cap| cap.expiry.is_live_at(now))
                 .collect(),
+            action_authority,
         })
     }
 
@@ -303,6 +318,16 @@ impl PermissionContext {
             },
             None => self.now,
         };
+        if op == Verb::Admin
+            && let Some(authority) = &self.action_authority
+            && authority.matches(resource)
+        {
+            return authority
+                .sample_for(&self.user, &self.actor)
+                .map_or(CapDecision::DeniedByRole, |current| {
+                    current.decide(resource, op)
+                });
+        }
         decide_capability(&self.actor, resource, op, &self.caps, now)
     }
 
@@ -436,7 +461,9 @@ fn unix_now() -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
+mod action_authority;
 pub mod capability;
+use action_authority::ActionAuthoritySampler;
 
 #[cfg(test)]
 mod policy_time_tests;

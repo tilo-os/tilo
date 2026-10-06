@@ -11,7 +11,6 @@ use crate::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 /// The box itself: 24 px (`spacing.s6` at 1×), centred in the interaction
@@ -43,7 +42,6 @@ pub struct CheckboxFace {
     rect: Rect,
     checked: bool,
     interact: CheckboxInteract,
-    fill_unchecked: bool,
 }
 
 type BoolChangeCallback = Box<dyn FnMut(bool)>;
@@ -54,7 +52,6 @@ impl CheckboxFace {
             rect,
             checked,
             interact: CheckboxInteract::default(),
-            fill_unchecked: true,
         }
     }
 
@@ -73,14 +70,6 @@ impl CheckboxFace {
     #[must_use]
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.interact.disabled = disabled;
-        self
-    }
-
-    /// Let the surrounding canvas provide the unchecked background. Useful
-    /// for checkboxes embedded in rows and cards rather than standalone forms.
-    #[must_use]
-    pub fn transparent_unchecked(mut self) -> Self {
-        self.fill_unchecked = false;
         self
     }
 }
@@ -118,6 +107,8 @@ pub struct Checkbox {
     on_change: Option<BoolChangeCallback>,
     action: Option<ActionEmitter<bool>>,
     interaction: crate::interaction::InteractionEnvironment,
+    /// A labelled box as wide as its content instead of its row.
+    intrinsic: bool,
 }
 
 impl Checkbox {
@@ -137,11 +128,12 @@ impl Checkbox {
             id_override: None,
             accessible_name: None,
             label: None,
-            label_style: TextStyle::new(14.0),
+            label_style: crate::tokens::typography::stock().style(crate::tokens::TextRole::Body),
             binding: Some(crate::doc_source::bool_key(on_toggle_path)),
             on_change: None,
             action: None,
             interaction: crate::interaction::InteractionEnvironment::default(),
+            intrinsic: false,
         }
     }
 
@@ -259,6 +251,14 @@ impl Checkbox {
         self
     }
 
+    /// A labelled checkbox as wide as its box and label, instead of the row:
+    /// it sits beside other controls in a row.
+    #[must_use]
+    pub fn intrinsic_width(mut self) -> Self {
+        self.intrinsic = true;
+        self
+    }
+
     /// Add an inline visible label and make its full row activate this
     /// checkbox. Use this instead of a sibling `Text` when a form sentence is
     /// meant to be one large click target.
@@ -275,17 +275,14 @@ impl Checkbox {
         self.enabled = enabled;
     }
 
-    // Theme roles already include the requested type scale. Renderer APIs
-    // apply their own scale, so divide it out exactly as semantic Text does.
-    fn renderer_label_style(&self, renderer: &TextRenderer) -> TextStyle {
-        let mut style = self.label_style.clone();
-        style.size /= renderer.text_scale();
-        style
-    }
-
     /// Paint a checkbox without taking ownership of its state or events.
+    ///
+    /// The box is always square: the largest square centred in `face.rect`,
+    /// with the item radius.
     pub fn paint(scene: &mut Scene, transform: Affine, theme: &Theme, face: &CheckboxFace) {
-        let shape = RoundedRect::from_rect(face.rect, f64::from(theme.tokens.radii.md));
+        let rect = square_box(face.rect);
+        let radius = f64::from(theme.tokens.radii.item);
+        let shape = RoundedRect::from_rect(rect, radius);
         if face.interact.disabled {
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
@@ -297,16 +294,19 @@ impl Checkbox {
         }
 
         // HIG §9.5: unchecked is the raised control surface with an edge
-        // derived from it — `bg_active` was the pressed tier at rest, and a
-        // declared `border_standard` vanished on a raised dark card.
+        // derived from it, and hover is that surface's lift; a declared
+        // `border_standard` vanished on a raised dark card.
         let box_color = if face.checked {
-            theme.accent_primary
+            theme.tokens.colors.intent.inverted
         } else if face.interact.hovered {
-            theme.bg_hover
+            theme
+                .tokens
+                .colors
+                .lift_on(theme.tokens.colors.surfaces.raised, 0.5)
         } else {
             theme.tokens.colors.surfaces.raised
         };
-        if face.checked || face.fill_unchecked || face.interact.hovered {
+        {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -316,48 +316,28 @@ impl Checkbox {
             );
         }
 
-        // Focus ring wins; the accent-filled checked box is self-defining
-        // (like a Primary button) and takes no rest edge.
-        let edge = if face.interact.focused {
-            Some((2.0, theme.border_focus))
-        } else if face.checked {
-            None
-        } else {
-            Some((1.0, crate::surface::edge_on(box_color)))
-        };
-        if let Some((width, color)) = edge {
-            // Rest edge and focus ring share one half-pixel-inset outline.
-            scene.stroke(
-                &Stroke::new(width),
-                transform,
-                color,
-                None,
-                &crate::surface::edge_outline(face.rect, f64::from(theme.tokens.radii.md)),
-            );
-        }
-
         if face.checked {
             let mut path = BezPath::new();
             path.move_to(Point::new(
-                face.rect.x0 + face.rect.width() * 0.25,
-                face.rect.y0 + face.rect.height() * 0.50,
+                rect.x0 + rect.width() * 0.25,
+                rect.y0 + rect.height() * 0.50,
             ));
             path.line_to(Point::new(
-                face.rect.x0 + face.rect.width() * 0.42,
-                face.rect.y0 + face.rect.height() * 0.67,
+                rect.x0 + rect.width() * 0.42,
+                rect.y0 + rect.height() * 0.67,
             ));
             path.line_to(Point::new(
-                face.rect.x0 + face.rect.width() * 0.75,
-                face.rect.y0 + face.rect.height() * 0.25,
+                rect.x0 + rect.width() * 0.75,
+                rect.y0 + rect.height() * 0.25,
             ));
             scene.stroke(
-                &Stroke::new((face.rect.width().min(face.rect.height()) * 0.105).max(1.5))
+                &Stroke::new((rect.width().min(rect.height()) * 0.105).max(1.5))
                     .with_caps(vello::kurbo::Cap::Round)
                     .with_join(vello::kurbo::Join::Round),
                 transform,
                 theme.tokens.colors.ink_on_any(
                     &[box_color],
-                    Color::WHITE,
+                    theme.tokens.colors.intent.on_inverted,
                     crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
                 ),
                 None,
@@ -368,7 +348,44 @@ impl Checkbox {
         if face.interact.disabled {
             scene.pop_layer();
         }
+
+        // Focus ring wins; the accent-filled checked box is self-defining
+        // (like a Primary button) and takes no rest edge. The edge is drawn
+        // outside the disabled layer: a disabled box keeps its bounds at full
+        // strength (HIG §9.5), or an unchecked one vanishes on a light ground.
+        // The unchecked edge is the only thing that shows the box on its
+        // ground, so it is held to the 3:1 a control's bounds need there.
+        let edge = if face.interact.focused {
+            Some((2.0, theme.tokens.colors.intent.you))
+        } else if face.checked {
+            None
+        } else {
+            Some((1.0, unchecked_edge(theme, box_color)))
+        };
+        if let Some((width, color)) = edge {
+            // Rest edge and focus ring share one half-pixel-inset outline.
+            scene.stroke(
+                &Stroke::new(width),
+                transform,
+                color,
+                None,
+                &crate::surface::edge_outline(rect, radius),
+            );
+        }
     }
+}
+
+/// The edge of an unchecked box: derived from its face and resolved until
+/// it reaches the non-text contrast floor (3:1) against the ground the box
+/// stands on. The derived edge is a translucent hairline, so it is measured
+/// as painted — over the face it is stroked on — never as its opaque base.
+fn unchecked_edge(theme: &Theme, face: vello::peniko::Color) -> vello::peniko::Color {
+    let colors = &theme.tokens.colors;
+    colors.ink_on_any(
+        &[colors.surfaces.content],
+        crate::tokens::colors::composite(crate::surface::edge_on(face), face),
+        crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+    )
 }
 
 impl Widget for Checkbox {
@@ -406,8 +423,10 @@ impl Widget for Checkbox {
         let labelled = self.label.is_some();
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: if labelled {
+                width: if labelled && !self.intrinsic {
                     Dimension::percent(1.0)
+                } else if labelled {
+                    Dimension::auto()
                 } else {
                     Dimension::length(self.interaction.minimum_target())
                 },
@@ -448,14 +467,19 @@ impl Widget for Checkbox {
             taffy::AvailableSpace::MaxContent => None,
         });
         let label_limit = available_width.map(|width| (width - target - gap).max(0.0));
-        let (label_width, label_height) = text_renderer.measure_style(
-            &crate::i18n!(label),
-            label_limit,
-            &self.renderer_label_style(text_renderer),
-        );
+        let (label_width, label_height) =
+            text_renderer.measure_style(&crate::i18n!(label), label_limit, &self.label_style);
+        // An intrinsic box is as wide as its label needs, within the room.
+        let hugged = self.intrinsic.then(|| {
+            let (natural, _) =
+                text_renderer.measure_style(&crate::i18n!(label), None, &self.label_style);
+            let natural = target + gap + natural.ceil();
+            available_width.map_or(natural, |room| natural.min(room))
+        });
         Size {
             width: known_dimensions
                 .width
+                .or(hugged)
                 .or(available_width)
                 .unwrap_or(target + gap + label_width),
             height: known_dimensions
@@ -508,7 +532,7 @@ impl Widget for Checkbox {
             let gap = f64::from(LABEL_GAP);
             let x = self.rect.x0 + target + gap;
             let max_width = (self.rect.x1 - x).max(0.0);
-            let style = self.renderer_label_style(text_renderer);
+            let style = self.label_style.clone();
             let (_, label_height) =
                 text_renderer.measure_style(&label, Some(max_width as f32), &style);
             let y = self.rect.y0 + ((self.rect.height() - f64::from(label_height)) / 2.0).max(0.0);
@@ -724,11 +748,89 @@ impl crate::widget::controls::ActionControls for Checkbox {
     }
 }
 
+/// The largest square centred in `rect`: a checkbox is always square,
+/// whatever rect a canvas hands its face.
+fn square_box(rect: Rect) -> Rect {
+    let side = rect.width().min(rect.height());
+    Rect::from_center_size(rect.center(), (side, side))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::widget::Widget;
     use automerge::{AutoCommit, ReadDoc, transaction::Transactable};
+
+    #[test]
+    fn an_unchecked_box_is_square_in_any_rect() {
+        for rect in [
+            Rect::new(0.0, 0.0, 40.0, 20.0),
+            Rect::new(10.0, 10.0, 30.0, 60.0),
+            Rect::new(0.0, 0.0, 24.0, 24.0),
+        ] {
+            let square = square_box(rect);
+            assert_eq!(square.width(), square.height(), "{rect:?}");
+            assert_eq!(square.center(), rect.center());
+            assert!(rect.contains(square.origin()));
+        }
+    }
+
+    /// The unchecked edge, as painted, holds 3:1 against every region's
+    /// ground in every preset: it is the only thing that shows the box.
+    #[test]
+    fn an_unchecked_edge_reads_on_every_ground() {
+        use crate::tokens::colors::{NON_TEXT_MIN_CONTRAST, composite};
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let s = &theme.tokens.colors.surfaces;
+            for ground in [s.content, s.sidebar, s.inspector, s.raised, s.overlay] {
+                let mut region = theme.clone();
+                region.tokens.colors.surfaces.content = ground;
+                let face = region.tokens.colors.surfaces.raised;
+                let edge = composite(unchecked_edge(&region, face), face);
+                let ratio = crate::a11y::contrast_ratio(edge, ground);
+                assert!(
+                    ratio >= NON_TEXT_MIN_CONTRAST - 0.01,
+                    "{}: the unchecked edge reaches only {ratio:.2}:1 on {ground:?}",
+                    theme.name
+                );
+            }
+        }
+    }
+
+    /// A disabled box dims its face but keeps its edge at full strength
+    /// (HIG §9.5): an unchecked white box on a light ground would otherwise
+    /// vanish.
+    #[test]
+    fn a_disabled_box_keeps_its_edge_at_full_strength() {
+        use crate::offscreen::OffscreenRenderer;
+        let theme = Theme::light();
+        let rect = Rect::new(8.0, 8.0, 32.0, 32.0);
+        let render = |disabled: bool| {
+            let mut scene = Scene::new();
+            Checkbox::paint(
+                &mut scene,
+                Affine::IDENTITY,
+                &theme,
+                &CheckboxFace::new(rect, false).disabled(disabled),
+            );
+            OffscreenRenderer::new(40, 40).render(&scene, theme.tokens.colors.surfaces.content)
+        };
+        let (rest, disabled) = (render(false), render(true));
+        // The outermost pixel column of the box is its edge.
+        let rest_edge = OffscreenRenderer::sample(&rest, 40, 8, 20);
+        let disabled_edge = OffscreenRenderer::sample(&disabled, 40, 8, 20);
+        let ground = OffscreenRenderer::sample(&rest, 40, 2, 20);
+        let delta = |a: (u8, u8, u8, u8), b: (u8, u8, u8, u8)| {
+            a.0.abs_diff(b.0)
+                .max(a.1.abs_diff(b.1))
+                .max(a.2.abs_diff(b.2))
+        };
+        assert!(
+            delta(rest_edge, disabled_edge) <= 4,
+            "disabled edge {disabled_edge:?} vs rest edge {rest_edge:?}"
+        );
+        assert!(delta(disabled_edge, ground) >= delta(rest_edge, ground).saturating_sub(4));
+    }
 
     #[test]
     fn checkbox_identity_face_and_scaled_label_geometry() {
@@ -747,14 +849,12 @@ mod tests {
             let face = CheckboxFace::new(rect, true)
                 .hovered(true)
                 .focused(true)
-                .disabled(true)
-                .transparent_unchecked();
+                .disabled(true);
             assert_eq!(face.rect, rect);
             assert!(face.checked);
             assert!(face.interact.hovered);
             assert!(face.interact.focused);
             assert!(face.interact.disabled);
-            assert!(!face.fill_unchecked);
         }
 
         fn visible_label_is_part_of_the_checkbox_click_target() {
@@ -851,8 +951,10 @@ mod tests {
                     },
                     &mut renderer,
                 );
-                let expected =
-                    (14.0_f32 * 1.4 * theme_scale).max(checkbox.interaction.minimum_target());
+                let expected = theme
+                    .text(crate::tokens::TextRole::Body)
+                    .line_height_px()
+                    .max(checkbox.interaction.minimum_target());
                 assert!(
                     (measured.height - expected).abs() < 0.1,
                     "theme{theme_scale} renderer{renderer_scale}: {measured:?}"
@@ -1151,5 +1253,26 @@ mod tests {
 
         document_binding_resets_after_the_boolean_path_disappears();
         local_state_binding_is_two_way_across_checkboxes();
+    }
+    #[test]
+    fn unchecked_edge_reaches_three_to_one_and_a_labelled_box_can_hug() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let face = theme.tokens.colors.surfaces.raised;
+            let edge = unchecked_edge(&theme, face);
+            let ratio = crate::a11y::contrast_ratio(edge, theme.tokens.colors.surfaces.content);
+            assert!(ratio >= 3.0 - 1e-6, "edge contrast {ratio}");
+        }
+        let row = crate::widget::Row::new().push(Box::new(
+            Checkbox::new("c", "c")
+                .with_id("hug")
+                .with_label("Remember me")
+                .intrinsic_width(),
+        ));
+        let app = crate::headless::Driver::new(crate::State::new(), Box::new(row), (900, 200));
+        let rect = *app.targets().get("hug").expect("checkbox");
+        assert!(
+            rect.width() < 300.0,
+            "a hugging box is as wide as its label: {rect:?}"
+        );
     }
 }

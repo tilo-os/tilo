@@ -127,10 +127,11 @@ impl PackageMeta {
     }
 
     /// The entrypoint path the launcher executes, normalised to the
-    /// collection's forward-slash form, for kinds that have one.
+    /// collection's forward-slash form, for kinds that have one. A runtime
+    /// may declare its internal engine host; this does not make it an app.
     pub fn executable_path(&self) -> Option<String> {
         match self.manifest.package.kind {
-            crate::Kind::App | crate::Kind::Service => self
+            crate::Kind::App | crate::Kind::Service | crate::Kind::Runtime => self
                 .manifest
                 .entrypoint
                 .as_ref()

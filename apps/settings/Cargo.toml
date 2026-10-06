@@ -115,10 +115,6 @@ test-http = { path = "../../crates/dev/test-http" }
 # The persistence tests read the shared account store + vault back to verify
 # the pane wrote through them.
 accounts = { path = "../../crates/system/accounts" }
-# The accounts→Mail loop test drives the Settings add flow, then loads the
-# account back through Mail's own reader to verify Mail consumes what
-# Settings persisted across the shared store.
-mail = { path = "../mail" }
 # A fake authorization server and browser for the sign-in flow tests.
 tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
 # The cloud storage end-to-end test: Settings signs in, the storage

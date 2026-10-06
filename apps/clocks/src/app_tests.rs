@@ -18,31 +18,36 @@ use ui::theme::Theme;
 
 #[test]
 fn compact_and_large_text_layouts_keep_full_disjoint_touch_targets() {
-    // Case: the shared mode switcher keeps full touch targets on compact windows.
-    fn find_toggle(node: &ui::headless::InspectionNode) -> Option<[f64; 4]> {
-        if node.widget == "ToggleGroup" {
-            return Some(node.rect);
-        }
-        node.children.iter().find_map(find_toggle)
-    }
-
+    // The shared navigation is a grouped list. Back exposes it on a phone;
+    // every screen retains a full, independent pointer target.
     for width in [360_u32, 520_u32] {
         let mut app = TestApp::<ClocksShell>::capture_at(Some("timers"), (width, 820)).unwrap();
         let harness = app.harness();
-        let [x, _y, nav_width, nav_height] =
-            find_toggle(&harness.inspection().root).expect("shared segmented navigation");
-        assert!(
-            nav_height >= 44.0,
-            "width {width}: tab targets became too short: {nav_height}"
-        );
-        assert!(
-            x >= 0.0 && x + nav_width <= f64::from(width),
-            "width {width}: switcher at {x}, {nav_width} wide, fits the window"
-        );
+        harness.set_interaction_environment(ui::InteractionEnvironment::TOUCH);
+        harness
+            .perform_named("nav-shell-back", &ui::a11y::Action::Activate)
+            .unwrap();
+        assert!(harness.settle_for_capture(ui::time::Duration::from_secs(1)));
         for label in ["World", "Alarms", "Timers", "Stopwatch"] {
+            let (_, row) = harness
+                .a11y_nodes()
+                .into_iter()
+                .find(|(_, node)| {
+                    node.label() == Some(label) && node.role() == ui::accesskit::Role::TreeItem
+                })
+                .unwrap_or_else(|| {
+                    panic!("width {width}: {label} remains independently discoverable")
+                });
+            let bounds = row
+                .bounds()
+                .expect("the navigation row publishes pointer bounds");
             assert!(
-                harness.a11y_node_named(label).is_some(),
-                "width {width}: {label} must remain independently discoverable"
+                bounds.height() >= 44.0,
+                "width {width}: {label} target too short: {bounds:?}"
+            );
+            assert!(
+                bounds.x0 >= 0.0 && bounds.x1 <= f64::from(width),
+                "width {width}: {label} fits the window: {bounds:?}"
             );
         }
     }
@@ -274,7 +279,7 @@ fn timer_alarm_and_world_clock_inputs_are_bounded_and_readable() {
     // Case: world clock search covers the timezone catalogue without jargon.
     assert_eq!(
         timezone_label("America/Argentina/Buenos_Aires"),
-        "Buenos Aires · America"
+        "Buenos Aires, in America"
     );
     assert!(
         timezone_results("reykjavik")

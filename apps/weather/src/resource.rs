@@ -179,7 +179,7 @@ impl ResourceSurface<Weather, WeatherEffect> for WeatherApp {
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario.unwrap_or_default());
+        self.stage_capture(scenario);
     }
 
     fn effect(

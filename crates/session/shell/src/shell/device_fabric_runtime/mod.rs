@@ -4,6 +4,7 @@
 //! hardware discovery on the render path. Remote clipboard entries become
 //! history, not the live Wayland selection, until explicitly activated.
 
+mod receive_recovery;
 mod remote_capture;
 mod window_views;
 
@@ -4977,7 +4978,16 @@ pub fn decide_nearby_transfer_at(
         .remove(&transfer_id);
     let Some(pending) = pending else {
         if !accept {
-            return Err(crate::shell::i18n::t("device-fabric-error-consent-expired"));
+            let declined = {
+                let mut state = nearby_drop_state()
+                    .lock()
+                    .map_err(|_| "nearby transfer state is unavailable".to_string())?;
+                with_nearby_transfer_store(|store| {
+                    receive_recovery::decline_recovered_receive(store, &mut state, transfer_id)
+                })
+            }?;
+            declined.notify(|peer, action| network.send_personal_fabric_action(peer, action));
+            return Ok(());
         }
         let destination = destination
             .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-destination-expired"))?;
@@ -5079,7 +5089,22 @@ pub fn decide_nearby_transfer_at(
         }
         PendingNearbyPayload::Durable { kind, content_hash } => {
             if !accept {
+                let discarded = with_nearby_transfer_store(|store| {
+                    store.decline_incoming_offer(&crate::shell::nearby_transfer::IncomingManifest {
+                        id: transfer_id,
+                        source: pending.source.as_str().to_string(),
+                        request_id: pending.request_id,
+                        name: pending.name.clone(),
+                        kind,
+                        total_bytes: pending.total_bytes,
+                        content_hash,
+                    })
+                })?;
                 if let Ok(mut state) = nearby_drop_state().lock() {
+                    if discarded {
+                        state.destinations.remove(&transfer_id);
+                        state.progress.remove(&transfer_id);
+                    }
                     state.record_history(NearbyTransferHistory {
                         transfer_id,
                         peer: pending.source.clone(),
@@ -5099,7 +5124,7 @@ pub fn decide_nearby_transfer_at(
                 return Ok(());
             }
             let (committed_offset, prefix_hash) = with_nearby_transfer_store(|store| {
-                store.begin_incoming(
+                store.accept_incoming_offer(
                     crate::shell::nearby_transfer::IncomingManifest {
                         id: transfer_id,
                         source: pending.source.as_str().to_string(),
@@ -7031,13 +7056,13 @@ mod tests {
         // A winner from another device reaches this process's readers and the
         // copy the compositor boots from and apps read.
         apply_roaming_settings(&BTreeMap::from([(
-            "tilo.appearance.theme".to_string(),
-            Value::from("Light"),
+            "tilo.appearance.mode".to_string(),
+            Value::from("light"),
         )]));
-        assert_eq!(settings_store::load_section("appearance")["theme"], "Light");
+        assert_eq!(settings_store::load_section("appearance")["mode"], "light");
         assert_eq!(
-            settings_store::load_section_at(&paths.copy, "appearance")["theme"],
-            "Light"
+            settings_store::load_section_at(&paths.copy, "appearance")["mode"],
+            "light"
         );
 
         // Settings, in its own process, writes the copy; the fabric publishes
@@ -7045,7 +7070,7 @@ mod tests {
         settings_store::update_section_at(
             &paths.copy,
             "appearance",
-            serde_json::json!({"theme": "Dark", "wallpaper_path": "/home/ada/sea.png"})
+            serde_json::json!({"mode": "dark", "wallpaper_path": "/home/ada/sea.png"})
                 .as_object()
                 .unwrap()
                 .clone(),
@@ -7053,7 +7078,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             roaming_setting_values(),
-            BTreeMap::from([("tilo.appearance.theme".to_string(), Value::from("Dark"))])
+            BTreeMap::from([("tilo.appearance.mode".to_string(), Value::from("dark"))])
         );
 
         // A restarted session reads the same records.
@@ -7062,14 +7087,14 @@ mod tests {
         open();
         assert_eq!(
             settings_store::load_section("appearance"),
-            serde_json::json!({"theme": "Dark", "wallpaper_path": "/home/ada/sea.png"})
+            serde_json::json!({"mode": "dark", "wallpaper_path": "/home/ada/sea.png"})
                 .as_object()
                 .unwrap()
                 .clone()
         );
         assert_eq!(
-            settings_store::load_section_at(&paths.copy, "appearance")["theme"],
-            "Dark"
+            settings_store::load_section_at(&paths.copy, "appearance")["mode"],
+            "dark"
         );
         settings_store::install_source(None);
     }
@@ -7132,7 +7157,7 @@ mod tests {
             clipboard: Vec::new(),
             settings: setting
                 .map(|value| RoamingSetting {
-                    key: "tilo.appearance.theme".into(),
+                    key: "tilo.appearance.mode".into(),
                     value,
                     stamp,
                 })
@@ -7734,7 +7759,7 @@ mod tests {
                 media: Vec::new(),
                 clipboard: Vec::new(),
                 settings: vec![RoamingSetting {
-                    key: "tilo.appearance.theme".into(),
+                    key: "tilo.appearance.mode".into(),
                     value: Value::Bool(false),
                     stamp: old_stamp,
                 }],
@@ -7745,10 +7770,10 @@ mod tests {
             };
             let next_stamp = FabricStamp { counter: 9, device };
             let applied_remote =
-                BTreeMap::from([("tilo.appearance.theme".into(), Value::Bool(true))]);
+                BTreeMap::from([("tilo.appearance.mode".into(), Value::Bool(true))]);
 
             let received = reconcile_roaming_settings(
-                BTreeMap::from([("tilo.appearance.theme".into(), Value::Bool(true))]),
+                BTreeMap::from([("tilo.appearance.mode".into(), Value::Bool(true))]),
                 Some(&previous),
                 &applied_remote,
                 &next_stamp,
@@ -7756,7 +7781,7 @@ mod tests {
             assert_eq!(received, previous.settings);
 
             let edited = reconcile_roaming_settings(
-                BTreeMap::from([("tilo.appearance.theme".into(), Value::Bool(false))]),
+                BTreeMap::from([("tilo.appearance.mode".into(), Value::Bool(false))]),
                 Some(&previous),
                 &applied_remote,
                 &next_stamp,
@@ -7766,7 +7791,7 @@ mod tests {
 
             previous.settings.clear();
             let bootstrap = reconcile_roaming_settings(
-                BTreeMap::from([("tilo.appearance.theme".into(), Value::Bool(true))]),
+                BTreeMap::from([("tilo.appearance.mode".into(), Value::Bool(true))]),
                 Some(&previous),
                 &applied_remote,
                 &next_stamp,
@@ -7989,7 +8014,7 @@ mod tests {
             let document = serde_json::json!({
                 "locale": {"currency": "EUR", "time_format": "H24"},
                 "appearance": {
-                    "theme": "Nord",
+                    "mode": "light",
                     "studio": {"id": "aurora"},
                     "wallpaper_path": "/home/person/private.png"
                 },
@@ -8014,7 +8039,7 @@ mod tests {
             for key in [
                 "tilo.locale.currency",
                 "tilo.locale.time_format",
-                "tilo.appearance.theme",
+                "tilo.appearance.mode",
                 "tilo.appearance.studio",
                 "tilo.input.keyboard_layouts",
                 "tilo.audio.mono_output",

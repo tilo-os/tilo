@@ -46,11 +46,12 @@ impl ChannelKind {
             ChannelKind::Text => "text",
         }
     }
-    /// Channel-list glyph: `#` for text, a speaker for voice.
-    pub fn glyph(self) -> &'static str {
+    /// How a channel of this kind is named in a label: `#name` for a text
+    /// channel, "name, voice channel" for a voice channel.
+    pub fn label(self, name: &str) -> String {
         match self {
-            ChannelKind::Text => "#",
-            ChannelKind::Voice => "\u{1F50A}",
+            ChannelKind::Text => format!("#{name}"),
+            ChannelKind::Voice => format!("{name}, voice channel"),
         }
     }
 }

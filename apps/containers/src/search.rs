@@ -24,7 +24,7 @@ pub fn engine_entries(engine: &Engine) -> Vec<SearchEntry> {
             .invoking(ActionAddress::new(&resource_id, "select"))
             .grouped("Containers")
             .subtitled(format!(
-                "{} · {}",
+                "Image {0}, currently {1}.",
                 container.image,
                 container.status.label()
             ))
@@ -62,7 +62,10 @@ pub fn engine_entries(engine: &Engine) -> Vec<SearchEntry> {
             SearchEntry::new(volume.name.clone(), volume.driver.clone())
                 .invoking(ActionAddress::new(&resource_id, "open"))
                 .grouped("Container volumes")
-                .subtitled(format!("{} · used by {}", volume.driver, volume.in_use_by))
+                .subtitled(format!(
+                    "Driver {0}, used by {1}.",
+                    volume.driver, volume.in_use_by
+                ))
                 .with_icon("hard-drive"),
         );
     }
@@ -73,7 +76,7 @@ pub fn engine_entries(engine: &Engine) -> Vec<SearchEntry> {
                 .invoking(ActionAddress::new(&resource_id, "open"))
                 .grouped("Distrobox")
                 .subtitled(format!(
-                    "{} · {}",
+                    "Image {0}, currently {1}.",
                     distrobox.image,
                     distrobox.status.label()
                 ))
@@ -132,7 +135,12 @@ mod tests {
             let mut cursor = None;
             let mut found = false;
             loop {
-                let page = provider.search_page("needle", cursor.as_ref(), 7, 3);
+                let page = provider.search_page(
+                    &ui::search::SearchQuery::new("needle"),
+                    cursor.as_ref(),
+                    7,
+                    3,
+                );
                 assert!(page.inspected <= 7);
                 found |= page
                     .results

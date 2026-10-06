@@ -2,6 +2,7 @@ counter = Wert: { $count }
 btn_1 = Klick Mich
 tab-modified = Nicht gespeicherte Änderungen
 
+standalone-history-title = Verlauf
 standalone-history-restore = Diese Version wiederherstellen…
 standalone-history-restore-title = Diese Version wiederherstellen?
 standalone-history-restore-body = Das Dokument kehrt zum Stand nach „{ $version }“ zurück. Dabei entsteht eine neue Änderung: Spätere Versionen bleiben im Verlauf, und Rückgängig macht die Wiederherstellung rückgängig.
@@ -296,6 +297,7 @@ block-editor-code-exit-hint = Ctrl+Enter: Code verlassen
 block-editor-code-exit-compact = Ctrl+Enter ↵
 block-editor-code-copied = Kopiert
 block-editor-code-keyboard-hint = Ctrl+Enter: darunter schreiben · Ctrl+Shift+Enter: darüber schreiben · Tab / Shift+Tab: einrücken / ausrücken · Ctrl+Shift+C: Code kopieren
+widget-breadcrumb = Pfad
 widget-block-indent = Block mit Unterelementen einrücken
 widget-block-text = Blocktext
 widget-block-outdent = Block mit Unterelementen ausrücken
@@ -420,6 +422,28 @@ history-day-yesterday = Gestern
 history-day-this-week = Diese Woche
 history-day-earlier = Früher
 
+save-status-saving = Wird gespeichert…
+save-status-saved = Gespeichert
+save-status-failed = Speichern fehlgeschlagen
+save-status-retry = Erneut versuchen
+save-status-dismiss = Schließen
+
+# Suchleiste: das Band oben in einem Dokument, das darin sucht.
+find-bar-name = Suchen
+find-bar-placeholder = Suchen
+find-bar-replace-placeholder = Ersetzen durch
+find-bar-match-case = Groß-/Kleinschreibung
+find-bar-whole-word = Ganzes Wort
+find-bar-regex = Regulärer Ausdruck
+find-bar-text = Text
+find-bar-hex = Hex
+find-bar-previous = Vorheriger Treffer
+find-bar-next = Nächster Treffer
+find-bar-close = Suche schließen
+find-bar-replace = Ersetzen
+find-bar-replace-all = Alle ersetzen
+find-bar-position = { $current } von { $total }
+find-bar-no-matches = Keine Treffer
 widget-block-duplicate = Block mit Unterelementen duplizieren
 
 widget-block-duplicate-selection = Ausgewählte oder fokussierte Blöcke duplizieren
