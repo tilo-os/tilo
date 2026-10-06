@@ -798,3 +798,87 @@ fn narrow_keyboard_inspection_has_touch_sized_selector_and_live_readable_details
             .contains("Λ")
     );
 }
+
+#[test]
+fn keyboard_map_read_matches_actual_focused_native_symbols_and_revokes_on_blur() {
+    let mut h = Harness::new();
+    h.app.select(Category::MouseKeyboard);
+    h.rebuild();
+    let key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyQ);
+    h.app
+        .observe_physical_input(ui::widget::PhysicalInput::Focused(true));
+    h.app
+        .observe_physical_input(ui::widget::PhysicalInput::Layout(Some(
+            std::sync::Arc::new(winit::keyboard::KeyboardLayout {
+                depressed: 1,
+                latched: 2,
+                locked: 4,
+                group: 1,
+                keys: vec![winit::keyboard::KeyboardLayoutKey {
+                    physical: key,
+                    symbols: vec![winit::keyboard::KeyboardLayoutSymbol {
+                        name: "Greek_LAMBDA".into(),
+                        text: "Λ".into(),
+                    }],
+                }],
+            }),
+        )));
+    let heads = h.doc.get_heads();
+    let actual = h.app.keyboard_inspection().unwrap();
+    assert_eq!(actual["available"], true);
+    assert_eq!(actual["mode"], "live");
+    assert!(
+        actual["source"].is_null(),
+        "preferred/preview source is not live native evidence"
+    );
+    assert_eq!(actual["native_group"], 1);
+    assert_eq!(actual["native_modifiers"], serde_json::json!([1, 2, 4]));
+    assert_eq!(actual["selected_symbols"], serde_json::json!(["Λ"]));
+    h.app
+        .observe_physical_input(ui::widget::PhysicalInput::Key {
+            key,
+            state: ElementState::Pressed,
+        });
+    assert_eq!(
+        h.app.keyboard_inspection().unwrap()["pressed_physical_keys"],
+        serde_json::json!(["AD01"])
+    );
+    h.app
+        .observe_physical_input(ui::widget::PhysicalInput::Key {
+            key,
+            state: ElementState::Released,
+        });
+    assert_eq!(
+        h.app.keyboard_inspection().unwrap()["pressed_physical_keys"],
+        serde_json::json!([])
+    );
+    h.app
+        .observe_physical_input(ui::widget::PhysicalInput::Focused(false));
+    let blurred = h.app.keyboard_inspection().unwrap();
+    assert_eq!(blurred["available"], false);
+    assert_eq!(blurred["native_layout_available"], false);
+    assert_eq!(blurred["selected_symbols"], serde_json::json!([]));
+    h.app
+        .observe_physical_input(ui::widget::PhysicalInput::Focused(true));
+    h.app
+        .observe_physical_input(ui::widget::PhysicalInput::Layout(Some(
+            std::sync::Arc::new(winit::keyboard::KeyboardLayout {
+                depressed: 0,
+                latched: 0,
+                locked: 0,
+                group: 0,
+                keys: vec![],
+            }),
+        )));
+    let missing = h.app.keyboard_inspection().unwrap();
+    assert_eq!(
+        missing["available"], false,
+        "missing selected native position is not usable evidence"
+    );
+    assert_eq!(missing["selected_symbols"], serde_json::json!([]));
+    assert_eq!(
+        h.doc.get_heads(),
+        heads,
+        "reading and physical feedback never edit the document"
+    );
+}
