@@ -6,6 +6,41 @@ use automerge::transaction::Transactable;
 use ed25519_dalek::Signer as _;
 use tilo_peer_state::workspace_membership::{AgentMembershipPreset, WorkspaceMembershipCommand};
 
+pub(crate) fn publisher(fixture: &Fixture) -> crate::AgentMessagePublisherLease {
+    publisher_on(fixture, &fixture.owner)
+}
+
+fn publisher_on(
+    fixture: &Fixture,
+    owner: &NativeWorkspaceOwner,
+) -> crate::AgentMessagePublisherLease {
+    owner
+        .register_agent_message_publisher(&publisher_registration(fixture), fixture.now)
+        .unwrap()
+}
+
+pub(crate) fn publisher_registration(
+    fixture: &Fixture,
+) -> crate::AgentMessagePublisherRegistration {
+    let mut registration = crate::AgentMessagePublisherRegistration {
+        data: crate::AgentMessagePublisherData {
+            room: RoomId::parse(crate::testing::ROOM).unwrap(),
+            worker: uuid::Uuid::from_u128(901),
+            directory: uuid::Uuid::from_u128(902),
+            stream: uuid::Uuid::from_u128(903),
+            installation: uuid::Uuid::from_u128(904),
+        },
+        attestor: fixture.certificate.clone(),
+        signature: Vec::new(),
+    };
+    registration.signature = fixture
+        .key
+        .sign(&registration.signing_bytes().unwrap())
+        .to_bytes()
+        .to_vec();
+    registration
+}
+
 pub(crate) fn add_agent(fixture: &Fixture) {
     let request = OwnerCommitRequest {
         room: crate::testing::ROOM.into(),
@@ -126,7 +161,7 @@ pub(crate) fn source(
         data: AgentMessageAdmissionData {
             invocation, caller: fixture.certificate.clone(),
             action: serde_json::to_vec(&serde_json::json!({"PostAgentMessage": { "workspace": crate::testing::ROOM, "agent": "scribe", "message": { "ts": 7, "text": "Explicit input", "intent": "message" } }})).unwrap(),
-            document: request.binding().unwrap(), publisher_digest: [7; 32],
+            document: request.binding().unwrap(), publisher_digest: publisher(fixture).digest(),
             operation: AgentMessageOperationData { app: "so.tilo.chat".into(), resource: "opaque-resource".into(), action: "message".into(), contract: tilo_actions::ActionContract::default(), foreign_restriction: false },
             executed_action: executed, executed_actor: executed.actor_bytes().to_vec(), changes,
         },
@@ -343,20 +378,25 @@ fn real_executor_attributed_writer_is_bound_separately_from_action_id() {
     assert!(
         fixture
             .owner
-            .commit_agent_messages(request.clone(), &[wrong], fixture.now)
+            .commit_agent_messages(request.clone(), &[wrong], &publisher(&fixture), fixture.now)
             .unwrap_err()
             .contains("another action actor")
     );
     fixture
         .owner
-        .commit_agent_messages(request.clone(), &[proof.clone()], fixture.now)
+        .commit_agent_messages(
+            request.clone(),
+            &[proof.clone()],
+            &publisher(&fixture),
+            fixture.now,
+        )
         .unwrap();
     proof.data.executed_actor = b"another-writer".to_vec();
     resign(&fixture, &mut proof);
     assert!(
         fixture
             .owner
-            .commit_agent_messages(request, &[proof], fixture.now)
+            .commit_agent_messages(request, &[proof], &publisher(&fixture), fixture.now)
             .is_err(),
         "same UUID and range with different writer must not replay"
     );
@@ -370,7 +410,7 @@ fn same_attributed_writer_does_not_merge_separate_executed_action_ranges() {
     assert!(
         fixture
             .owner
-            .commit_agent_messages(request, &[proof], fixture.now)
+            .commit_agent_messages(request, &[proof], &publisher(&fixture), fixture.now)
             .unwrap_err()
             .contains("outside its typed contribution range")
     );
@@ -396,7 +436,7 @@ fn missing_executor_or_missing_or_wrong_original_invocation_cannot_mint_input() 
             .unwrap();
         let error = fixture
             .owner
-            .commit_agent_messages(request, &[proof], fixture.now)
+            .commit_agent_messages(request, &[proof], &publisher(&fixture), fixture.now)
             .unwrap_err();
         assert!(
             error.contains(if context.is_none() {
@@ -424,11 +464,32 @@ fn canonical_request_and_offline_input_publish_atomically_and_replay_after_reope
     let (request, proof) = source(&fixture, 0);
     let receipt = fixture
         .owner
-        .commit_agent_messages(request.clone(), std::slice::from_ref(&proof), fixture.now)
+        .commit_agent_messages(
+            request.clone(),
+            std::slice::from_ref(&proof),
+            &publisher(&fixture),
+            fixture.now,
+        )
         .unwrap();
     let reopened = crate::open_file(&fixture.directory.path().join("owner.json")).unwrap();
+    assert!(
+        reopened
+            .commit_agent_messages(
+                request.clone(),
+                std::slice::from_ref(&proof),
+                &publisher(&fixture),
+                fixture.now,
+            )
+            .unwrap_err()
+            .contains("another owner")
+    );
     let again = reopened
-        .commit_agent_messages(request, std::slice::from_ref(&proof), fixture.now)
+        .commit_agent_messages(
+            request,
+            std::slice::from_ref(&proof),
+            &publisher_on(&fixture, &reopened),
+            fixture.now,
+        )
         .unwrap();
     assert_eq!(receipt.binding, again.binding);
     assert_eq!(receipt.generation, again.generation);
@@ -463,7 +524,7 @@ fn mismatched_committed_row_or_swapped_typed_contributor_never_partially_publish
             .unwrap();
         let error = fixture
             .owner
-            .commit_agent_messages(request, &[proof], fixture.now)
+            .commit_agent_messages(request, &[proof], &publisher(&fixture), fixture.now)
             .unwrap_err();
         let expected = match variant {
             1 => "committed text differs",
@@ -494,7 +555,7 @@ fn signed_typed_source_without_current_agent_membership_cannot_mint_input() {
     assert!(
         fixture
             .owner
-            .commit_agent_messages(request, &[proof], fixture.now)
+            .commit_agent_messages(request, &[proof], &publisher(&fixture), fixture.now)
             .is_err()
     );
 }
@@ -506,7 +567,12 @@ fn fixed_uuid_replay_cannot_replace_exact_original_typed_bytes() {
     let (request, proof) = source(&fixture, 0);
     fixture
         .owner
-        .commit_agent_messages(request.clone(), std::slice::from_ref(&proof), fixture.now)
+        .commit_agent_messages(
+            request.clone(),
+            std::slice::from_ref(&proof),
+            &publisher(&fixture),
+            fixture.now,
+        )
         .unwrap();
     let mut changed = proof;
     changed.data.action.push(b' ');
@@ -514,7 +580,7 @@ fn fixed_uuid_replay_cannot_replace_exact_original_typed_bytes() {
     assert!(
         fixture
             .owner
-            .commit_agent_messages(request, &[changed], fixture.now)
+            .commit_agent_messages(request, &[changed], &publisher(&fixture), fixture.now)
             .is_err()
     );
 }
@@ -567,7 +633,7 @@ fn operation_restricted_after_source_mint_is_refused_in_actual_owner_turn() {
         .unwrap();
     let error = fixture
         .owner
-        .commit_agent_messages(request, &[proof], fixture.now)
+        .commit_agent_messages(request, &[proof], &publisher(&fixture), fixture.now)
         .unwrap_err();
     assert!(
         error.contains("operation is no longer authorized"),
@@ -597,7 +663,12 @@ fn pending_original_bytes_over_owner_budget_keep_chat_and_terminal_replay_withou
     resign(&fixture, &mut proof);
     let receipt = fixture
         .owner
-        .commit_agent_messages(request.clone(), std::slice::from_ref(&proof), fixture.now)
+        .commit_agent_messages(
+            request.clone(),
+            std::slice::from_ref(&proof),
+            &publisher(&fixture),
+            fixture.now,
+        )
         .unwrap();
     let room = RoomId::parse(crate::testing::ROOM).unwrap();
     fixture
@@ -624,7 +695,12 @@ fn pending_original_bytes_over_owner_budget_keep_chat_and_terminal_replay_withou
         .unwrap();
     let reopened = crate::open_file(&fixture.directory.path().join("owner.json")).unwrap();
     let replay = reopened
-        .commit_agent_messages(request, &[proof], fixture.now)
+        .commit_agent_messages(
+            request,
+            &[proof],
+            &publisher_on(&fixture, &reopened),
+            fixture.now,
+        )
         .unwrap();
     assert_eq!(receipt.binding, replay.binding);
     assert_eq!(receipt.generation, replay.generation);

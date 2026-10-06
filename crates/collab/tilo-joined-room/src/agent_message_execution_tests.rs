@@ -3,7 +3,7 @@
 use super::*;
 use crate::AgentSessionReservation;
 use crate::agent_message::{MessageAttention, MessagePhase};
-use crate::agent_message_commit::tests::{add_agent, source};
+use crate::agent_message_commit::tests::{add_agent, publisher, source};
 use crate::application_record::tests::{Fixture, fixture};
 use launcher::{
     managed::{
@@ -226,7 +226,7 @@ fn admitted() -> (Fixture, uuid::Uuid) {
     let invocation = attestation.data.invocation;
     fixture
         .owner
-        .commit_agent_messages(request, &[attestation], fixture.now)
+        .commit_agent_messages(request, &[attestation], &publisher(&fixture), fixture.now)
         .unwrap();
     (fixture, invocation)
 }
@@ -359,6 +359,9 @@ fn current_request_edit_or_deletion_fences_each_actual_process_boundary() {
 fn unrelated_person_document_edit_does_not_invalidate_addressed_input() {
     let (fixture, invocation) = admitted();
     let mut running = launch(&fixture);
+    // Closing/replacing Chat fences only new addressed publication. It must
+    // neither cancel durable input nor borrow authority for ordinary edits.
+    publisher(&fixture).retire();
     change_chat(&fixture, invocation, 2);
     let delivered = running.service.deliver(invocation, fixture.now).unwrap();
     assert_eq!(delivered.text, "Explicit input");

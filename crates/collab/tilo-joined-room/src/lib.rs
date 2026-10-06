@@ -15,6 +15,7 @@ mod agent_message_commit;
 #[cfg(target_os = "linux")]
 mod agent_message_execution;
 mod agent_message_history;
+mod agent_message_publisher;
 mod agent_session;
 mod agent_session_history;
 mod application_record;
@@ -45,6 +46,9 @@ pub use agent_message_admission::{
 };
 #[cfg(target_os = "linux")]
 pub use agent_message_execution::{AgentMessageDelivery, AgentMessageHostService};
+pub use agent_message_publisher::{
+    AgentMessagePublisherData, AgentMessagePublisherLease, AgentMessagePublisherRegistration,
+};
 pub use agent_session::{AgentSessionBinding, AgentSessionReservation};
 pub use application_record::{ApplicationInitialization, ApplicationRecord};
 pub use bootstrap::NativeBootstrap;
@@ -134,6 +138,7 @@ struct SharedOwner {
     mutation: Mutex<()>,
     current: RwLock<Current>,
     listeners: Mutex<Vec<Weak<dyn NativeFenceObserver>>>,
+    message_publishers: Mutex<agent_message_publisher::PublisherRegistry>,
 }
 #[derive(Default)]
 struct Current {
@@ -330,6 +335,7 @@ impl NativeWorkspaceOwner {
             mutation: Mutex::new(()),
             current: RwLock::new(current),
             listeners: Mutex::new(Vec::new()),
+            message_publishers: Mutex::default(),
         })))
     }
     #[must_use]

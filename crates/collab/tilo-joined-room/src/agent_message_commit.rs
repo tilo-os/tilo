@@ -244,6 +244,7 @@ impl NativeWorkspaceOwner {
         &self,
         request: OwnerCommitRequest,
         attestations: &[AgentMessageAdmissionAttestation],
+        publisher: &crate::AgentMessagePublisherLease,
         now: SystemTime,
     ) -> Result<OwnerCommitReceipt, String> {
         let outgoing = publication::prepare(&request)?;
@@ -252,6 +253,9 @@ impl NativeWorkspaceOwner {
         let _turn = self.0.mutation.lock();
         let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
         let sources = validated_sources(&candidate, &request, attestations, now)?;
+        for source in &sources {
+            publisher.check_identity(self, room, &source.publisher_digest)?;
+        }
         let CommitOperation::Document {
             app,
             record,
@@ -342,6 +346,9 @@ impl NativeWorkspaceOwner {
             generation,
             aggregate_hash: *blake3::hash(&candidate.record.peer).as_bytes(),
         };
+        // Exact replay above observes its immutable receipt without admitting
+        // another input. Only new publication reserves current live custody.
+        let _reservation = publisher.reserve()?;
         self.publish_room(room, candidate, None)?;
         Ok(receipt)
     }
