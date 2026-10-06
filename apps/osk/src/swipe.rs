@@ -69,6 +69,9 @@ pub trait SwipeModel {
 /// SHARK²-style geometric + dictionary swipe decoder (the shipping path).
 pub struct GeometricSwipeModel {
     dict: Dictionary,
+    /// Folded first/last-letter buckets avoid scanning the full vocabulary
+    /// for every gesture. The same location prune selects these candidates.
+    endpoints: HashMap<(char, char), Vec<usize>>,
     /// The embedded language `dict` holds; `None` for a custom dictionary,
     /// which a language switch leaves alone.
     language: Option<Language>,
@@ -77,10 +80,9 @@ pub struct GeometricSwipeModel {
 impl GeometricSwipeModel {
     /// Build a decoder over the embedded dictionary of `language`.
     pub fn for_language(language: Language) -> Self {
-        Self {
-            dict: Dictionary::for_language(language),
-            language: Some(language),
-        }
+        let mut model = Self::with_dictionary(Dictionary::for_language(language));
+        model.language = Some(language);
+        model
     }
 
     /// Build a decoder over the embedded English dictionary.
@@ -90,14 +92,28 @@ impl GeometricSwipeModel {
 
     /// Build a decoder over a custom dictionary (tests / other locales).
     pub fn with_dictionary(dict: Dictionary) -> Self {
+        let endpoints = index_endpoints(&dict);
         Self {
             dict,
+            endpoints,
             language: None,
         }
     }
 
     pub fn dictionary(&self) -> &Dictionary {
         &self.dict
+    }
+
+    fn endpoint_candidates(&self, starts: &[char], ends: &[char]) -> Vec<usize> {
+        let mut indices = Vec::new();
+        for first in starts {
+            for last in ends {
+                if let Some(bucket) = self.endpoints.get(&(*first, *last)) {
+                    indices.extend_from_slice(bucket);
+                }
+            }
+        }
+        indices
     }
 
     /// Convenience over the trait method with a fixed top-N.
@@ -157,7 +173,10 @@ impl SwipeModel for GeometricSwipeModel {
         let approx_letters = (path_len / key_scale).round() as i32;
 
         let mut scored: Vec<Candidate> = Vec::new();
-        for entry in self.dict.words() {
+        for index in self.endpoint_candidates(&start_letters, &end_letters) {
+            let Some(entry) = self.dict.words().get(index) else {
+                continue;
+            };
             let word = &entry.word;
             // Accented letters are swiped through their base key (é on e).
             let chars: Vec<char> = word.chars().map(fold_char).collect();
@@ -220,6 +239,17 @@ impl SwipeModel for GeometricSwipeModel {
         scored.truncate(top_n);
         scored
     }
+}
+
+fn index_endpoints(dict: &Dictionary) -> HashMap<(char, char), Vec<usize>> {
+    let mut index: HashMap<(char, char), Vec<usize>> = HashMap::new();
+    for (position, entry) in dict.words().iter().enumerate() {
+        let mut letters = entry.word.chars().map(fold_char);
+        if let (Some(first), Some(last)) = (letters.next(), letters.next_back()) {
+            index.entry((first, last)).or_default().push(position);
+        }
+    }
+    index
 }
 
 // --- geometry helpers -----------------------------------------------------
@@ -458,6 +488,25 @@ mod tests {
             }
         }
         pts
+    }
+
+    #[test]
+    fn indexed_swipes_follow_language_switches_and_folded_accents() {
+        let layout = KeyboardLayout::azerty();
+        let geom = key_rects(&layout, Rect::new(0.0, 0.0, 390.0, 224.0), ShiftState::Off);
+        let mut model = GeometricSwipeModel::english();
+        model.set_language(Language::French);
+        let path = path_through("bonjour", &geom, &layout);
+        let candidates = model.decode_top(&path, &geom, &layout, 8);
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.word == "bonjour")
+        );
+        let model =
+            GeometricSwipeModel::with_dictionary(Dictionary::from_str("été\t8000\nétude\t7000\n"));
+        let path = path_through("ete", &geom, &layout);
+        assert_eq!(model.decode_top(&path, &geom, &layout, 1)[0].word, "été");
     }
 
     #[test]
