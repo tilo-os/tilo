@@ -321,10 +321,67 @@ mod qualification {
         Ok(())
     }
 
+    fn special_mode(arguments: &[String]) -> Result<bool, Box<dyn std::error::Error>> {
+        if arguments == ["--help"] {
+            println!(
+                "speech_qualify [--worker[-small] | --worker-core[-small] | --hold-fixture REVIEWED_MODEL_FILE]"
+            );
+            return Ok(true);
+        }
+        if arguments.first().is_some_and(|arg| arg == "--fixture") && arguments.len() == 4 {
+            child_fixture(arguments.get(1..).ok_or("fixture arguments")?)?;
+            return Ok(true);
+        }
+        // The parent owns this pipe and a bounded disposable namespace. EOF
+        // drops every fixture file; this never changes an OS/user trust store.
+        if arguments.first().is_some_and(|arg| arg == "--hold-fixture") && arguments.len() == 2 {
+            let path = arguments.get(1).ok_or("public model path")?;
+            let mut model = Zeroizing::new(Vec::new());
+            fs::File::open(path)?
+                .take(256 * 1024 * 1024 + 1)
+                .read_to_end(&mut model)?;
+            let digest = hex::encode(Sha256::digest(&*model));
+            let reviewed = [
+                (
+                    77_691_713,
+                    "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+                ),
+                (
+                    147_951_465,
+                    "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+                ),
+                (
+                    190_085_487,
+                    "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+                ),
+            ];
+            if !reviewed
+                .iter()
+                .any(|(size, sha)| model.len() == *size && digest == *sha)
+            {
+                return Err("unreviewed public model fixture".into());
+            }
+            let held = fixture(&model)?;
+            drop(model);
+            println!(
+                "{}",
+                serde_json::json!({
+                    "root": held.root, "catalog": held.catalog, "keys": held.keys,
+                    "ephemeral": true, "model_sha256": digest,
+                })
+            );
+            std::io::stdout().flush()?;
+            let mut end = [0];
+            let _ = std::io::stdin().read(&mut end)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-        if arguments.first().is_some_and(|arg| arg == "--fixture") && arguments.len() == 4 {
-            return child_fixture(arguments.get(1..).ok_or("fixture arguments")?);
+        if special_mode(&arguments)? {
+            return Ok(());
         }
         let small = arguments == ["--worker-small"] || arguments == ["--worker-core-small"];
         let mut model = if small {

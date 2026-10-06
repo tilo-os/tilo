@@ -2145,6 +2145,426 @@
         },
         "limits": "One resource observation only, not a complete memory-stability or older-device benchmark."
       }
+    },
+    "base": {
+      "date": "2026-10-06",
+      "model_sha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+      "size_bytes": 147951465,
+      "license": "MIT",
+      "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.bin",
+      "download": "existing public fixture reverified by exact size/hash; no download or installation in this follow-up",
+      "summary": {
+        "load": {
+          "model": "base",
+          "load_ms": 2121,
+          "threads": 2,
+          "memory_limit_bytes": 1073741824,
+          "loaded_probes": 1,
+          "probes": 1,
+          "observed_primary_probes": 21,
+          "loads": 21,
+          "cold_load_ms": {
+            "median": 2130,
+            "max": 2222
+          }
+        },
+        "short": {
+          "en": {
+            "cases": 3,
+            "text_wer": 0.1096,
+            "auto_text_wer": 0.1096,
+            "text_cer": 0.0464,
+            "auto_text_cer": 0.0464,
+            "draft_prefix_revision_fraction": 0.125,
+            "draft_ms": {
+              "median": 1135,
+              "max": 1139
+            },
+            "final_ms": {
+              "median": 1211,
+              "max": 1237
+            },
+            "auto_ms": {
+              "median": 2241,
+              "max": 2372
+            },
+            "audio_seconds": 30.78
+          },
+          "de": {
+            "cases": 3,
+            "text_wer": 0.2097,
+            "auto_text_wer": 0.2097,
+            "text_cer": 0.0349,
+            "auto_text_cer": 0.0349,
+            "draft_prefix_revision_fraction": 0.2174,
+            "draft_ms": {
+              "median": 1126,
+              "max": 1138
+            },
+            "final_ms": {
+              "median": 1231,
+              "max": 1247
+            },
+            "auto_ms": {
+              "median": 2255,
+              "max": 2313
+            },
+            "audio_seconds": 41.52
+          },
+          "fr": {
+            "cases": 3,
+            "text_wer": 0.2661,
+            "auto_text_wer": 0.2661,
+            "text_cer": 0.1166,
+            "auto_text_cer": 0.1166,
+            "draft_prefix_revision_fraction": 0.3542,
+            "draft_ms": {
+              "median": 1185,
+              "max": 1233
+            },
+            "final_ms": {
+              "median": 1268,
+              "max": 1497
+            },
+            "auto_ms": {
+              "median": 2324,
+              "max": 2558
+            },
+            "audio_seconds": 41.88
+          },
+          "es": {
+            "cases": 3,
+            "text_wer": 0.098,
+            "auto_text_wer": 0.098,
+            "text_cer": 0.0331,
+            "auto_text_cer": 0.0331,
+            "draft_prefix_revision_fraction": 0.1765,
+            "draft_ms": {
+              "median": 1173,
+              "max": 1189
+            },
+            "final_ms": {
+              "median": 1282,
+              "max": 1375
+            },
+            "auto_ms": {
+              "median": 2290,
+              "max": 2418
+            },
+            "audio_seconds": 43.92
+          },
+          "ar": {
+            "cases": 3,
+            "text_wer": 0.4203,
+            "auto_text_wer": 0.4203,
+            "text_cer": 0.1239,
+            "auto_text_cer": 0.1239,
+            "draft_prefix_revision_fraction": 0.1724,
+            "draft_ms": {
+              "median": 1200,
+              "max": 1255
+            },
+            "final_ms": {
+              "median": 1350,
+              "max": 1357
+            },
+            "auto_ms": {
+              "median": 2400,
+              "max": 2406
+            },
+            "audio_seconds": 38.34
+          },
+          "zh": {
+            "cases": 3,
+            "text_wer": 1.0,
+            "auto_text_wer": 1.0,
+            "text_cer": 0.3333,
+            "auto_text_cer": 0.3333,
+            "draft_prefix_revision_fraction": 0.1282,
+            "draft_ms": {
+              "median": 1165,
+              "max": 1196
+            },
+            "final_ms": {
+              "median": 1217,
+              "max": 1226
+            },
+            "auto_ms": {
+              "median": 2267,
+              "max": 2282
+            },
+            "audio_seconds": 32.52
+          }
+        },
+        "long": {
+          "en": {
+            "cases": 1,
+            "text_wer": 0.6474,
+            "auto_text_wer": 0.6474,
+            "text_cer": 0.6315,
+            "auto_text_cer": 0.6315,
+            "draft_prefix_revision_fraction": 0.0,
+            "draft_ms": {
+              "median": 1124,
+              "max": 1124
+            },
+            "final_ms": {
+              "median": 3740,
+              "max": 3740
+            },
+            "auto_ms": {
+              "median": 4824,
+              "max": 4824
+            },
+            "audio_seconds": 70.04
+          },
+          "fr": {
+            "cases": 1,
+            "text_wer": 0.4009,
+            "auto_text_wer": 0.4009,
+            "text_cer": 0.2204,
+            "auto_text_cer": 0.2204,
+            "draft_prefix_revision_fraction": 1.0,
+            "draft_ms": {
+              "median": 1136,
+              "max": 1136
+            },
+            "final_ms": {
+              "median": 6165,
+              "max": 6165
+            },
+            "auto_ms": {
+              "median": 7279,
+              "max": 7279
+            },
+            "audio_seconds": 87.66
+          },
+          "zh": {
+            "cases": 1,
+            "text_wer": 1.0,
+            "auto_text_wer": 1.0,
+            "text_cer": 0.4275,
+            "auto_text_cer": 0.4275,
+            "draft_prefix_revision_fraction": 0.2,
+            "draft_ms": {
+              "median": 1191,
+              "max": 1191
+            },
+            "final_ms": {
+              "median": 6308,
+              "max": 6308
+            },
+            "auto_ms": {
+              "median": 7189,
+              "max": 7189
+            },
+            "audio_seconds": 89.76
+          }
+        }
+      },
+      "log_sha256": "870473dd010fb26beab45fdfd9456cf98ddbe3a5b87da665fee67ef4d8d0ff1b",
+      "decision": "No promotion: short Arabic WER 42.03%, Mandarin CER 33.33%, long English WER 64.74%; this small corpus does not establish Flow-level quality. Catalogue and user model selection unchanged.",
+      "memory_observation": {
+        "method": "External /proc sampling of each actual --single-case confined decoder, every 20 ms; clean LANG-only environment and UID/GID 65534. Initial all-case supervisor measurements discarded.",
+        "probes": [
+          {
+            "run": 0,
+            "case": "ar_eg-1",
+            "model": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+            "exit": 0,
+            "last_phase": "final-auto-language",
+            "peak": {
+              "VmPeak": 965076,
+              "VmSize": 936500,
+              "VmHWM": 354784,
+              "VmRSS": 354784,
+              "Threads": 2
+            },
+            "phase_peaks": {
+              "loading": {
+                "VmPeak": 308992,
+                "VmSize": 308992,
+                "VmHWM": 305364,
+                "VmRSS": 305364,
+                "Threads": 1
+              },
+              "draft-fixed-language": {
+                "VmPeak": 965076,
+                "VmSize": 934700,
+                "VmHWM": 338752,
+                "VmRSS": 338752,
+                "Threads": 2
+              },
+              "final-fixed-language": {
+                "VmPeak": 965076,
+                "VmSize": 936500,
+                "VmHWM": 353976,
+                "VmRSS": 353976,
+                "Threads": 2
+              },
+              "final-auto-language": {
+                "VmPeak": 965076,
+                "VmSize": 936500,
+                "VmHWM": 354784,
+                "VmRSS": 354784,
+                "Threads": 2
+              }
+            },
+            "sample_interval_ms": 20,
+            "memory_limit_bytes": 1073741824,
+            "allocator": "default",
+            "memory_values_unit": "KiB except Threads"
+          },
+          {
+            "run": 1,
+            "case": "ar_eg-1",
+            "model": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+            "exit": 0,
+            "last_phase": "final-auto-language",
+            "peak": {
+              "VmPeak": 965076,
+              "VmSize": 936500,
+              "VmHWM": 354908,
+              "VmRSS": 354908,
+              "Threads": 2
+            },
+            "phase_peaks": {
+              "loading": {
+                "VmPeak": 308992,
+                "VmSize": 308992,
+                "VmHWM": 305604,
+                "VmRSS": 305604,
+                "Threads": 1
+              },
+              "draft-fixed-language": {
+                "VmPeak": 965076,
+                "VmSize": 934700,
+                "VmHWM": 338876,
+                "VmRSS": 338876,
+                "Threads": 2
+              },
+              "final-fixed-language": {
+                "VmPeak": 965076,
+                "VmSize": 936500,
+                "VmHWM": 354100,
+                "VmRSS": 354100,
+                "Threads": 2
+              },
+              "final-auto-language": {
+                "VmPeak": 965076,
+                "VmSize": 936500,
+                "VmHWM": 354908,
+                "VmRSS": 354908,
+                "Threads": 2
+              }
+            },
+            "sample_interval_ms": 20,
+            "memory_limit_bytes": 1073741824,
+            "allocator": "default",
+            "memory_values_unit": "KiB except Threads"
+          },
+          {
+            "run": 2,
+            "case": "ar_eg-1",
+            "model": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+            "exit": 0,
+            "last_phase": "final-auto-language",
+            "peak": {
+              "VmPeak": 965076,
+              "VmSize": 936500,
+              "VmHWM": 354780,
+              "VmRSS": 354780,
+              "Threads": 2
+            },
+            "phase_peaks": {
+              "loading": {
+                "VmPeak": 308992,
+                "VmSize": 308992,
+                "VmHWM": 305420,
+                "VmRSS": 305420,
+                "Threads": 1
+              },
+              "draft-fixed-language": {
+                "VmPeak": 965076,
+                "VmSize": 934700,
+                "VmHWM": 338680,
+                "VmRSS": 338680,
+                "Threads": 2
+              },
+              "final-fixed-language": {
+                "VmPeak": 965076,
+                "VmSize": 936500,
+                "VmHWM": 353904,
+                "VmRSS": 353904,
+                "Threads": 2
+              },
+              "final-auto-language": {
+                "VmPeak": 965076,
+                "VmSize": 936500,
+                "VmHWM": 354780,
+                "VmRSS": 354780,
+                "Threads": 2
+              }
+            },
+            "sample_interval_ms": 20,
+            "memory_limit_bytes": 1073741824,
+            "allocator": "default",
+            "memory_values_unit": "KiB except Threads"
+          },
+          {
+            "run": 3,
+            "case": "long-zh",
+            "model": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+            "exit": 0,
+            "last_phase": "final-auto-language",
+            "peak": {
+              "VmPeak": 974572,
+              "VmSize": 953084,
+              "VmHWM": 459024,
+              "VmRSS": 459024,
+              "Threads": 2
+            },
+            "phase_peaks": {
+              "loading": {
+                "VmPeak": 318392,
+                "VmSize": 318392,
+                "VmHWM": 310120,
+                "VmRSS": 310120,
+                "Threads": 1
+              },
+              "draft-fixed-language": {
+                "VmPeak": 974572,
+                "VmSize": 944196,
+                "VmHWM": 343400,
+                "VmRSS": 343400,
+                "Threads": 2
+              },
+              "final-fixed-language": {
+                "VmPeak": 974572,
+                "VmSize": 953084,
+                "VmHWM": 457084,
+                "VmRSS": 457084,
+                "Threads": 2
+              },
+              "final-auto-language": {
+                "VmPeak": 974572,
+                "VmSize": 953084,
+                "VmHWM": 459024,
+                "VmRSS": 459024,
+                "Threads": 2
+              }
+            },
+            "sample_interval_ms": 20,
+            "memory_limit_bytes": 1073741824,
+            "allocator": "default",
+            "memory_values_unit": "KiB except Threads"
+          }
+        ],
+        "log_sha256": "3314592274c248b06bf701d54de8feee86a5e1d96d4edc2fa6ff8c0e5606792f",
+        "peak_virtual_mib": 951.73046875,
+        "minimum_observed_headroom_mib": 72.26953125,
+        "limits": "Four independent public probes only; sampling is not a proof of worst-case allocation or older-device reliability."
+      }
     }
   }
 }
