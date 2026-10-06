@@ -742,6 +742,7 @@ readers = ["apps/ebook/src/app/interaction_tests.rs"]
 [[cargo]]
 package = "shell"
 inputs = [
+  "apps/browser/tilo-app.toml",
   "crates/sdk/ui-core/assets/fonts/",
   "dist/VERSION",
   "docs/shell-navigation-keyboard-map.md",
@@ -751,6 +752,7 @@ readers = [
   "crates/session/shell/src/linux_main.rs",
   "crates/session/shell/src/shell/fixed_chords.rs",
   "crates/session/shell/src/shell/fixture_inputs.rs",
+  "crates/session/shell/src/shell/network/paired_continuity_tests.rs",
   "crates/session/shell/src/shell/test_support.rs",
 ]
 
@@ -866,6 +868,10 @@ by = "tools/tests/test_focused_test.py"
 
 # Cannot be a required check. "fails on main" entries are hermetic enough to
 # gate but do not pass today; fix the suite, then move it into a group.
+
+[[unrequired]]
+suite = "tools/ci/test_airdrop_sender.py"
+reason = "requires an unmodified pinned GPL-3.0 OpenDrop checkout, external Python dependencies, system libarchive/OpenSSL and loopback TLS sockets; the offline ci-fast image cannot fetch the oracle; run explicitly as documented in continuity-interop.md, failing if prerequisites are absent"
 
 [[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"
