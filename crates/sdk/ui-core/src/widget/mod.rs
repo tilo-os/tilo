@@ -21,6 +21,34 @@ use crate::time::Instant;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+/// Private foreground feedback, stripped of logical keys and typed text.
+/// Observers cannot consume the input or obtain a document edit context.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PhysicalInput {
+    Key {
+        key: winit::keyboard::PhysicalKey,
+        state: winit::event::ElementState,
+    },
+    Focused(bool),
+}
+
+impl PhysicalInput {
+    pub fn from_window_event(event: &WindowEvent) -> Option<Self> {
+        match event {
+            WindowEvent::KeyboardInput {
+                event,
+                is_synthetic: false,
+                ..
+            } => Some(Self::Key {
+                key: event.physical_key,
+                state: event.state,
+            }),
+            WindowEvent::Focused(focused) => Some(Self::Focused(*focused)),
+            _ => None,
+        }
+    }
+}
+
 /// The app's model, lent to a widget pass. The toolkit only passes it on to
 /// children; the layer that owns the model reads it (the document runtime
 /// through [`crate::doc::document`]). A host passes its model by reference
@@ -1079,6 +1107,10 @@ pub trait Widget {
         theme: &Theme,
         presence: &PresenceCtx,
     );
+
+    /// Observe this app's ordinary foreground physical input before framework
+    /// shortcuts consume it. Keep feedback ephemeral; this is not an input grant.
+    fn observe_physical_input(&mut self, _input: PhysicalInput) {}
 
     /// Handle one input event with the runtime services for this retained node.
     fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut EventCtx<'_>) {}
@@ -3264,3 +3296,6 @@ pub(crate) mod control_result_probe {
         }
     }
 }
+
+pub mod keyboard_map;
+pub use keyboard_map::{KeyboardMap, KeyboardMapInput, KeyboardMapKey};

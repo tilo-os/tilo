@@ -1762,3 +1762,15 @@ settings-printers-scanners-read-error = Scanner können nicht aufgelistet werden
 agent-key-read-error = Ob ein Schlüssel gespeichert ist, kann nicht festgestellt werden: { $error }
 
 shortcut-name-tab-menu = Tab-Menü öffnen
+
+input-map-title = Tastaturbelegung
+input-map-layout = Installierte Belegung ansehen
+input-map-model = Physisches Tastaturmodell
+input-map-ansi = ANSI mit 104 Tasten
+input-map-iso = ISO mit 105 Tasten
+input-map-instructions = Drücke Tasten, während diese Seite geöffnet ist, auch während der Layoutsuche. Die Karte zeigt die physische Position, ohne deine Eingabe zu verändern.
+input-map-levels = Links: XKB-Ebenen 1 und 2. Rechts: Ebenen 3 und 4. Das Modell wird ausdrücklich gewählt, nicht erkannt.
+input-map-unavailable = Diese Belegung kann nicht mit dem nativen XKB-Compiler angezeigt werden.
+input-map-apply = Diese Belegung verwenden
+input-map-extra-levels = XKB-Ebenen 5–8 ansehen, wenn vorhanden
+input-map-dead-keys = Tottasten werden mit einem gepunkteten Kreis angezeigt.

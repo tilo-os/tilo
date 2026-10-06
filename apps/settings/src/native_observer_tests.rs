@@ -540,3 +540,100 @@ fn native_observer_reports_the_selected_category_and_layout_class() {
     assert_eq!(snapshot["sidebar_open"], true);
     assert_eq!(snapshot["nav_id"], crate::sidebar::NAV_ID);
 }
+
+fn keyboard_map_pressed(widget: &dyn Widget, key: PhysicalKey) -> Option<bool> {
+    if let Some(map) = widget
+        .as_any()
+        .and_then(|widget| widget.downcast_ref::<ui::KeyboardMap>())
+    {
+        return Some(map.is_pressed(key));
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| keyboard_map_pressed(child, key))
+}
+
+fn dispatch_preview_key(h: &mut Harness, state: ElementState) {
+    let logical = winit::keyboard::Key::Character("z".into());
+    dispatch_preview_event(
+        h,
+        WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            is_synthetic: false,
+            event: winit::event::KeyEvent::synthetic(
+                winit::event::RawKeyEvent {
+                    physical_key: PhysicalKey::Code(winit::keyboard::KeyCode::KeyY),
+                    state,
+                },
+                logical.clone(),
+                Some("z".into()),
+                winit::keyboard::KeyLocation::Standard,
+                false,
+                Some("z".into()),
+                logical,
+            ),
+        },
+    );
+}
+
+fn dispatch_preview_event(h: &mut Harness, event: WindowEvent) {
+    let mods = Modifiers::default();
+    let mut handled = false;
+    let mut focus = None;
+    h.app.handle_event(
+        &event,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: ui::widget::Edits::lend(&mut h.doc),
+            path: &root(),
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: h.app_node,
+            taffy: &h.taffy,
+        },
+    );
+}
+
+#[test]
+fn keyboard_map_observes_foreground_physical_keys_while_search_keeps_editing() {
+    let mut h = Harness::new();
+    h.app.select(Category::MouseKeyboard);
+    h.rebuild();
+    h.click(h.search_field_rect().center());
+    let compiled = crate::keyboard_preview::compilation_count();
+    let key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyY);
+    let heads = h.doc.get_heads();
+    assert_eq!(keyboard_map_pressed(&*h.app, key), Some(false));
+    dispatch_preview_key(&mut h, ElementState::Pressed);
+    assert_eq!(keyboard_map_pressed(&*h.app, key), Some(true));
+    assert_eq!(h.app.search_state.with(Clone::clone), "z");
+    assert_eq!(h.doc.get_heads(), heads, "pressed positions stay ephemeral");
+    // Search invalidates the retained content. The same held physical position
+    // survives that ordinary recomposition while editing remains focused.
+    h.app.sync(&h.doc, &root());
+    h.rebuild();
+    assert_eq!(keyboard_map_pressed(&*h.app, key), Some(true));
+    assert_eq!(
+        crate::keyboard_preview::compilation_count(),
+        compiled,
+        "search recomposition must retain the bounded compiled preview"
+    );
+    let snapshot = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
+    assert_eq!(snapshot["search_focused"], true);
+    dispatch_preview_key(&mut h, ElementState::Released);
+    assert_eq!(keyboard_map_pressed(&*h.app, key), Some(false));
+    assert_eq!(h.app.search_state.with(Clone::clone), "z");
+    dispatch_preview_key(&mut h, ElementState::Pressed);
+    dispatch_preview_event(&mut h, WindowEvent::Focused(false));
+    assert_eq!(keyboard_map_pressed(&*h.app, key), Some(false));
+    dispatch_preview_event(&mut h, WindowEvent::Focused(true));
+    dispatch_preview_key(&mut h, ElementState::Pressed);
+    h.app.select(Category::About);
+    h.rebuild();
+    assert_eq!(keyboard_map_pressed(&*h.app, key), None);
+    h.app.select(Category::MouseKeyboard);
+    h.rebuild();
+    assert_eq!(keyboard_map_pressed(&*h.app, key), Some(false));
+}

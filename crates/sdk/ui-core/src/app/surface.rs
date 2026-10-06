@@ -55,6 +55,17 @@ impl App {
         synthesized_touch: bool,
     ) -> bool {
         let _entry = self.enter_wake_scope();
+        if let Some(input) = crate::widget::PhysicalInput::from_window_event(&event)
+            && (matches!(input, crate::widget::PhysicalInput::Focused(false))
+                || (self.close_admission.dialog.is_none()
+                    && self
+                        .history
+                        .as_ref()
+                        .is_none_or(|history| history.live_interactive())
+                    && self.history_layout.is_none_or(|layout| layout.app_visible)))
+        {
+            self.root_widget.observe_physical_input(input);
+        }
         if self.close_handle_event(&event, window.scale_factor()) {
             window.request_redraw();
             return true;
@@ -734,6 +745,8 @@ mod tests {
 
     thread_local! {
         static CLICKS: RefCell<Option<Rc<RefCell<Vec<Point>>>>> = const { RefCell::new(None) };
+        static PHYSICAL: RefCell<Vec<crate::widget::PhysicalInput>> = const { RefCell::new(Vec::new()) };
+
     }
 
     /// Records where it is clicked, in its own logical coordinates.
@@ -744,6 +757,9 @@ mod tests {
     }
 
     impl Widget for ClickProbe {
+        fn observe_physical_input(&mut self, input: crate::widget::PhysicalInput) {
+            PHYSICAL.with_borrow_mut(|events| events.push(input));
+        }
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -935,6 +951,61 @@ mod tests {
             false,
         ));
         assert_eq!(*clicks.borrow(), vec![Point::new(40.0, 30.0)]);
+    }
+
+    #[test]
+    fn physical_feedback_precedes_framework_shortcuts_without_consuming_them() {
+        use winit::keyboard::{Key, KeyCode, KeyLocation, PhysicalKey};
+        let (mut app, _) = clicks_app();
+        let region = Region {
+            size: (320, 200),
+            redraw: Cell::new(false),
+        };
+        app.surface_frame(&region, &mut Scene::new());
+        app.input.modifiers =
+            winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+        PHYSICAL.with_borrow_mut(Vec::clear);
+        let key = PhysicalKey::Code(KeyCode::KeyZ);
+        let event = WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event: winit::event::KeyEvent::synthetic(
+                winit::event::RawKeyEvent {
+                    physical_key: key,
+                    state: ElementState::Pressed,
+                },
+                Key::Character("z".into()),
+                None,
+                KeyLocation::Standard,
+                false,
+                None,
+                Key::Character("z".into()),
+            ),
+            is_synthetic: false,
+        };
+        assert!(
+            app.surface_input(&region, event.clone(), false),
+            "framework Undo still handles the chord"
+        );
+        PHYSICAL.with_borrow(|events| {
+            assert_eq!(events.len(), 1);
+            assert!(matches!(events[0], crate::widget::PhysicalInput::Key {
+                key: observed, state: ElementState::Pressed
+            } if observed == key));
+        });
+        let mut synthetic = event;
+        if let WindowEvent::KeyboardInput { is_synthetic, .. } = &mut synthetic {
+            *is_synthetic = true;
+        }
+        assert!(crate::widget::PhysicalInput::from_window_event(&synthetic).is_none());
+        app.surface_input(&region, synthetic, false);
+        PHYSICAL.with_borrow(|events| assert_eq!(events.len(), 1));
+        app.surface_input(&region, WindowEvent::Focused(false), false);
+        PHYSICAL.with_borrow(|events| {
+            assert!(matches!(
+                events.last(),
+                Some(crate::widget::PhysicalInput::Focused(false))
+            ))
+        });
     }
 
     fn clicks_app() -> (App, Rc<RefCell<Vec<Point>>>) {

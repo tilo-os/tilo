@@ -1442,6 +1442,7 @@ impl State {
         let repeat_rate_hz = i32::try_from(repeat_rate).unwrap_or(i32::MAX);
         match seat.add_keyboard(
             XkbConfig {
+                model: &keyboard_settings.model,
                 layout: &keyboard_settings.layouts,
                 variant: &keyboard_settings.variants,
                 options: keyboard_settings.options.clone(),
