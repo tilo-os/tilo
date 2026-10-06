@@ -44,6 +44,8 @@ pub type Shared<M> = Rc<RefCell<M>>;
 pub struct ModelPane<M: PaneModel> {
     model: Shared<M>,
     composed: Option<Box<dyn Widget>>,
+    composition_dirty: bool,
+    catalog_revision: u64,
     structure_dirty: bool,
     rect: Rect,
 }
@@ -53,6 +55,8 @@ impl<M: PaneModel> ModelPane<M> {
         Self {
             model,
             composed: None,
+            composition_dirty: true,
+            catalog_revision: ui::i18n::I18nManager::revision(),
             structure_dirty: false,
             rect: Rect::ZERO,
         }
@@ -67,6 +71,7 @@ impl<M: PaneModel> ModelPane<M> {
 impl<M: PaneModel> Widget for ModelPane<M> {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if self.model.borrow_mut().poll() {
+            self.composition_dirty = true;
             self.structure_dirty = true;
         }
         if let Some(c) = &mut self.composed {
@@ -80,9 +85,16 @@ impl<M: PaneModel> Widget for ModelPane<M> {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.model.borrow().compose();
+        if self.composition_dirty || self.catalog_revision != ui::i18n::I18nManager::revision() {
+            self.composed = None;
+        }
+        let composed = self
+            .composed
+            .get_or_insert_with(|| self.model.borrow().compose());
+        self.composition_dirty = false;
+        // Composition may initialize the pane's embedded catalogue.
+        self.catalog_revision = ui::i18n::I18nManager::revision();
         let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
         let style = taffy::Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
