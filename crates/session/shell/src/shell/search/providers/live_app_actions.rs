@@ -273,6 +273,7 @@ struct SurfaceSnapshot {
     /// The entries' fields keyed by position, best match first. `None` for a
     /// one-row projection of an entry that already matched.
     index: Option<SearchIndex>,
+    machine_index: Option<SearchIndex>,
 }
 
 #[cfg(test)]
@@ -520,7 +521,7 @@ impl LiveAppActionsProvider {
             .map_or("", |scope| scope.resource.as_str());
         format!(
             "{:?}\u{1f}{room}\u{1f}{app}\u{1f}{resource}",
-            ctx.chrome.search_scope
+            ctx.effective_scope()
         )
     }
 
@@ -537,7 +538,7 @@ impl LiveAppActionsProvider {
         let app = ctx.chrome.active_app_id();
         SurfaceBuildScope {
             key: Self::surface_scope(ctx),
-            scope: ctx.chrome.search_scope,
+            scope: ctx.effective_scope(),
             room,
             app,
         }
@@ -590,12 +591,14 @@ impl LiveAppActionsProvider {
                     .map(move |action| (surface.clone(), action))
             })
             .collect::<Vec<_>>();
-        let index = Some(index_actions(&entries));
+        let index = Some(index_actions(&entries, false));
+        let machine_index = Some(index_actions(&entries, true));
         SurfaceSnapshot {
             source_generation,
             scope: scope.key.clone(),
             entries,
             index,
+            machine_index,
         }
     }
 
@@ -644,14 +647,21 @@ impl LiveAppActionsProvider {
 
     fn local_action_candidates(
         &self,
-        needle: &str,
+        ctx: &SearchContext<'_>,
         max_results: usize,
     ) -> Vec<(PublishedSurface, PublishedAction, i32)> {
         let snapshot = self.surface_snapshot.borrow();
         let Some(snapshot) = snapshot.as_ref() else {
             return Vec::new();
         };
-        let Some(index) = &snapshot.index else {
+        if snapshot.scope != Self::surface_scope(ctx) {
+            return Vec::new();
+        }
+        let Some(index) = (if ctx.include_programmatic {
+            &snapshot.machine_index
+        } else {
+            &snapshot.index
+        }) else {
             return snapshot
                 .entries
                 .iter()
@@ -660,7 +670,7 @@ impl LiveAppActionsProvider {
                 .collect();
         };
         index
-            .search(needle, Page::first(max_results))
+            .search(ctx.needle, Page::first(max_results))
             .hits
             .iter()
             .filter_map(|hit| {
@@ -691,16 +701,11 @@ impl LiveAppActionsProvider {
             scope,
             entries: vec![(surface, action)],
             index: None,
+            machine_index: None,
         };
         let previous = self.surface_snapshot.replace(Some(temporary));
         let previous_projection = self.projection.replace(QueryProjection::LocalOnly);
-        let results = self.query(SearchContext {
-            needle: ctx.needle,
-            wanted: ctx.wanted,
-            chrome: ctx.chrome,
-            doc: ctx.doc,
-            doc_root: ctx.doc_root,
-        });
+        let results = self.query(*ctx);
         self.projection.set(previous_projection);
         self.surface_snapshot.replace(previous);
         let mut row = results.into_iter().find(|result| result.id == id)?;
@@ -902,7 +907,7 @@ impl LiveAppActionsProvider {
                 break;
             }
             if !matches!(
-                ctx.chrome.search_scope,
+                ctx.effective_scope(),
                 crate::shell::chrome_state::SearchScope::All
             ) && ctx
                 .chrome
@@ -1834,7 +1839,7 @@ impl SearchProvider for LiveAppActionsProvider {
                     continue;
                 }
                 if !matches!(
-                    ctx.chrome.search_scope,
+                    ctx.effective_scope(),
                     crate::shell::chrome_state::SearchScope::All
                 ) && ctx
                     .chrome
@@ -1880,7 +1885,7 @@ impl SearchProvider for LiveAppActionsProvider {
                 if let Some(page) = page {
                     for row in page.rows {
                         if let Some(descriptor) = row.action
-                            && !descriptor.contract.is_programmatic()
+                            && (ctx.include_programmatic || !descriptor.contract.is_programmatic())
                         {
                             results.push(self.directory_action_result(
                                 &root,
@@ -1962,7 +1967,7 @@ impl SearchProvider for LiveAppActionsProvider {
         }
         if self.projection.get() != QueryProjection::All {
             for (surface, owned_action, rank) in
-                self.local_action_candidates(&needle, SearchBudget::PALETTE.max_results)
+                self.local_action_candidates(&ctx, SearchBudget::PALETTE.max_results)
             {
                 let action = &owned_action;
                 let expected_person = ctx
@@ -2139,7 +2144,7 @@ impl SearchProvider for LiveAppActionsProvider {
             .into_iter()
             .find(|root| root.peer_id == peer_id)?;
         if !matches!(
-            ctx.chrome.search_scope,
+            ctx.effective_scope(),
             crate::shell::chrome_state::SearchScope::All
         ) && ctx
             .chrome
@@ -2191,13 +2196,14 @@ impl SearchProvider for LiveAppActionsProvider {
                 snapshot.source_generation == source_generation && snapshot.scope == scope
             });
         format!(
-            "{}:{source_generation}:{}:{}:{}:{}",
+            "{}:{source_generation}:{}:{}:{}:{}:{}",
             if ready { "ready" } else { "indexing" },
             self.directory_epoch.load(Ordering::Relaxed),
             // Listing publishers is a memory read; it never asks an app.
             self.directory_roots(ctx).1,
             self.broker.statuses_generation(),
             ctx.chrome.active_local_user(),
+            ctx.include_programmatic,
         )
     }
 
@@ -2336,7 +2342,7 @@ impl SearchProvider for LiveAppActionsProvider {
                         actor,
                         cursor,
                     } => {
-                        if descriptor.contract.is_programmatic()
+                        if (descriptor.contract.is_programmatic() && !ctx.include_programmatic)
                             || (!ctx.wanted.is_empty()
                                 && !ctx.wanted.contains(&ResourceKind::Action))
                         {
@@ -2435,7 +2441,17 @@ impl SearchProvider for LiveAppActionsProvider {
             let Some(snapshot) = snapshot.as_ref() else {
                 return SearchPage::exhausted(revision, results);
             };
-            let Some(index) = &snapshot.index else {
+            // A completed projection may belong to the preceding palette scope
+            // while its replacement builds. Never publish those rows in the
+            // new scope, even when their current permission is unchanged.
+            if snapshot.scope != scope {
+                return SearchPage::exhausted(revision, results);
+            }
+            let Some(index) = (if ctx.include_programmatic {
+                &snapshot.machine_index
+            } else {
+                &snapshot.index
+            }) else {
                 return SearchPage::exhausted(revision, results);
             };
             let found = index.search(
@@ -2484,7 +2500,10 @@ impl SearchProvider for LiveAppActionsProvider {
 }
 
 /// Index the fields a local action row ranks by, keyed by position.
-fn index_actions(entries: &[(PublishedSurface, PublishedAction)]) -> SearchIndex {
+fn index_actions(
+    entries: &[(PublishedSurface, PublishedAction)],
+    include_programmatic: bool,
+) -> SearchIndex {
     let mut index = SearchIndex::new(Matching {
         spanning: true,
         typos: false,
@@ -2493,7 +2512,7 @@ fn index_actions(entries: &[(PublishedSurface, PublishedAction)]) -> SearchIndex
         entries
             .iter()
             .enumerate()
-            .filter(|(_, (_, action))| !action.contract.is_programmatic())
+            .filter(|(_, (_, action))| include_programmatic || !action.contract.is_programmatic())
             .map(|(at, (surface, action))| {
                 Document::new(at as u64)
                     .field(action.action_label.as_str(), FieldWeight::TITLE)
@@ -2561,6 +2580,8 @@ mod tests {
         doc: &'a AutoCommit,
     ) -> SearchContext<'a> {
         SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle,
             wanted: &[ResourceKind::Action],
             chrome,
@@ -2595,6 +2616,8 @@ mod tests {
             doc: &'a AutoCommit,
         ) -> SearchContext<'a> {
             SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "",
                 wanted,
                 chrome,
@@ -3131,6 +3154,22 @@ mod tests {
                 .results
                 .is_empty()
         );
+        let discovered = provider.query_page(
+            SearchContext {
+                include_programmatic: true,
+                ..context("read", &state, &doc)
+            },
+            None,
+            SearchBudget::PALETTE,
+        );
+        assert_eq!(discovered.results.len(), 1);
+        assert_eq!(discovered.results[0].id, id);
+        assert!(
+            discovered.results[0]
+                .contract
+                .as_ref()
+                .is_some_and(tilo_actions::ActionContract::is_programmatic)
+        );
         let resolved = provider.resolve(&id, context("", &state, &doc));
         assert!(
             resolved.is_some(),
@@ -3140,6 +3179,52 @@ mod tests {
             provider
                 .resolve(&id.replace("r1", "stale"), context("", &state, &doc))
                 .is_none()
+        );
+    }
+
+    fn assert_machine_catalogue_visibility(
+        registry: &crate::shell::search::SearchRegistry,
+        resource: &crate::shell::search::action_api::ResourceRef,
+        chrome: &crate::shell::chrome_state::Chrome,
+        doc: &AutoCommit,
+    ) {
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+        let state = chrome.borrow();
+        let args = crate::shell::search::QueryArgs {
+            needle: "Read page content",
+            scope: crate::shell::chrome_state::SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &state,
+            doc,
+            doc_root: &automerge::ROOT,
+        };
+        let normal = ActionCatalog::build_query(registry, &args, &AllVisible, false);
+        assert!(!normal.contains(resource));
+        let started = Instant::now();
+        let machine = loop {
+            let catalogue = ActionCatalog::build_query(registry, &args, &AllVisible, true);
+            if catalogue.contains(resource) || started.elapsed() >= Duration::from_secs(5) {
+                break catalogue;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert!(machine.contains(resource));
+        assert!(
+            machine.enumerate()[0]
+                .contract
+                .as_ref()
+                .is_some_and(tilo_actions::ActionContract::is_programmatic)
+        );
+        let refused = ActionCatalog::build_query(
+            registry,
+            &args,
+            &|candidate: &ResourceRef, _: &ResourceKind| candidate != resource,
+            true,
+        );
+        assert!(
+            !refused.contains(resource),
+            "machine discovery keeps the visibility gate"
         );
     }
 
@@ -3194,6 +3279,7 @@ mod tests {
         let mut registry = SearchRegistry::new();
         registry.register(provider);
         let resource = ResourceRef::new(PROVIDER_ID, id);
+        assert_machine_catalogue_visibility(&registry, &resource, &chrome, &doc);
         let catalog = ActionCatalog::build_for_resource(
             &registry,
             &resource,
@@ -3291,6 +3377,72 @@ mod tests {
             &AllVisible,
         )
         .contains(resource)
+    }
+
+    #[test]
+    fn canonical_all_scope_does_not_inherit_the_active_app_palette_filter() {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
+        let surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.notes".into(),
+            route: CrdtRoute::app("so.tilo.notes", &room),
+            actions: vec![local_action("Read notebook", "read")],
+            live: true,
+        };
+        let resource = ResourceRef::new(
+            PROVIDER_ID,
+            LiveAppActionsProvider::result_id(&surface, &surface.actions[0]),
+        );
+        broker.replace_published_surfaces_for_test(vec![surface]);
+        let mut registry = crate::shell::search::SearchRegistry::new();
+        registry.register(Rc::new(LiveAppActionsProvider::new(broker)));
+        chrome.borrow_mut().search_scope = SearchScope::ActiveApp;
+        let doc = AutoCommit::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let all = loop {
+            let all = ActionCatalog::build(
+                &registry,
+                "so.tilo.notes",
+                SearchScope::All,
+                None,
+                &chrome.borrow(),
+                &doc,
+                &automerge::ROOT,
+                &AllVisible,
+            );
+            if all.contains(&resource) || Instant::now() >= deadline {
+                break all;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert!(
+            all.contains(&resource),
+            "canonical All must include an inactive app"
+        );
+        assert!(exact_catalogue_contains(
+            &registry, &resource, &chrome, &doc
+        ));
+        let palette = ActionCatalog::build(
+            &registry,
+            "so.tilo.notes",
+            SearchScope::ActiveApp,
+            None,
+            &chrome.borrow(),
+            &doc,
+            &automerge::ROOT,
+            &AllVisible,
+        );
+        assert!(
+            !palette.contains(&resource),
+            "the palette keeps its active-app scope"
+        );
     }
 
     #[test]
@@ -3397,12 +3549,14 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        let index = Some(index_actions(&entries));
+        let index = Some(index_actions(&entries, false));
+        let machine_index = Some(index_actions(&entries, true));
         *provider.surface_snapshot.borrow_mut() = Some(SurfaceSnapshot {
             source_generation: provider.broker.surfaces_generation(),
             scope: LiveAppActionsProvider::surface_scope(&ctx),
             entries,
             index,
+            machine_index,
         });
         let page = provider.query_page(
             ctx,
@@ -3728,6 +3882,8 @@ mod tests {
             let chrome_ref = chrome.borrow();
             let page = provider.query_page(
                 SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "book",
                     wanted: &wanted,
                     chrome: &chrome_ref,
@@ -3766,6 +3922,8 @@ mod tests {
             let chrome_ref = chrome.borrow();
             let _ = provider.query_page(
                 SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "",
                     wanted: &wanted,
                     chrome: &chrome_ref,

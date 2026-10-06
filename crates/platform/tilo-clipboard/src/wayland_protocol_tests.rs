@@ -393,9 +393,10 @@ impl Harness {
         queue.roundtrip(&mut host).expect("real client surfaces");
         let clipboard = match read_deadline {
             ReadDeadline::Production => WaylandClipboard::new_for_wayland_test(connection.clone()),
-            ReadDeadline::AfterTest => {
-                WaylandClipboard::new_test_connection(connection.clone(), read_budget)
-            }
+            ReadDeadline::AfterTest => WaylandClipboard::new_for_wayland_test_with_read_budget(
+                connection.clone(),
+                read_budget,
+            ),
         };
         let harness = Self {
             clipboard: Some(clipboard),

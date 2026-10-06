@@ -186,6 +186,8 @@ pub enum Command {
     ActionsEnumerate {
         #[serde(default)]
         query: String,
+        #[serde(default)]
+        include_programmatic: bool,
     },
     /// Invoke one enumerated action by its `(provider, id)` address, with no window, scene or synthetic input.
     ///
@@ -366,6 +368,22 @@ pub trait ControlState {
     /// Returns a human-readable refusal reason whenever the surface cannot be enumerated at all — no live action registry on this control state.
     fn enumerate_actions(&self, _query: &str) -> Result<serde_json::Value, String> {
         Err("no live action registry on this control state".to_string())
+    }
+
+    /// Enumerate the bounded machine catalogue only when explicitly supported.
+    ///
+    /// # Errors
+    /// Returns a refusal if this state does not support programmatic discovery,
+    /// or if the underlying action catalogue is unavailable.
+    fn enumerate_actions_with_programmatic(
+        &self,
+        query: &str,
+        include_programmatic: bool,
+    ) -> Result<serde_json::Value, String> {
+        if include_programmatic {
+            return Err("this control state cannot enumerate programmatic actions".into());
+        }
+        self.enumerate_actions(query)
     }
 
     /// Resolve `(provider, id)` against a fresh catalogue and report what it addresses, without invoking it — the validation half of `actions_invoke`, so the transport can refuse instead of planning an invocation that silently does nothing.
@@ -747,8 +765,14 @@ pub fn dispatch_command<S: ControlState>(
         Command::ClipboardCopy { text, primary } => clipboard_copy(text, *primary),
         Command::ClipboardCopyImage => clipboard_copy_image(),
         Command::ClipboardPaste { primary } => clipboard_paste(*primary),
-        Command::ActionsEnumerate { query } => (
-            answer_or_err(state.enumerate_actions(query), "enumerate_failed"),
+        Command::ActionsEnumerate {
+            query,
+            include_programmatic,
+        } => (
+            answer_or_err(
+                state.enumerate_actions_with_programmatic(query, *include_programmatic),
+                "enumerate_failed",
+            ),
             Vec::new(),
         ),
         Command::ActionsInvoke {
@@ -2599,6 +2623,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn programmatic_discovery_wire_preserves_defaults_and_refuses_unsupported_states() {
+        let normal: Command = serde_json::from_value(serde_json::json!({
+            "op": "actions_enumerate", "query": "settings"
+        }))
+        .unwrap();
+        assert!(matches!(
+            &normal,
+            Command::ActionsEnumerate {
+                include_programmatic: false,
+                ..
+            }
+        ));
+        let (response, effects) = dispatch_command(&normal, &ActionState);
+        assert!(matches!(response, Response::Answer(_)));
+        assert!(effects.is_empty());
+        let machine: Command = serde_json::from_value(serde_json::json!({
+            "op": "actions_enumerate", "query": "settings", "include_programmatic": true
+        }))
+        .unwrap();
+        let (response, effects) = dispatch_command(&machine, &ActionState);
+        let Response::Err { code, message } = response else {
+            panic!("unsupported machine catalogue must fail: {response:?}");
+        };
+        assert_eq!(code, "enumerate_failed");
+        assert!(message.contains("cannot enumerate programmatic actions"));
+        assert!(effects.is_empty());
+    }
+
     const MOCK_INSERT_PARAMS: &[crate::shell::search::action_api::ActionParam] = &[
         crate::shell::search::action_api::ActionParam::required(
             "text",
@@ -2634,6 +2687,7 @@ mod tests {
             {
                 let (resp, actions) = dispatch_command(
                     &Command::ActionsEnumerate {
+                        include_programmatic: false,
                         query: String::new(),
                     },
                     &ActionState,
@@ -2764,6 +2818,7 @@ mod tests {
                 let state = StaticState::new(&[]);
                 let (resp, actions) = dispatch_command(
                     &Command::ActionsEnumerate {
+                        include_programmatic: false,
                         query: String::new(),
                     },
                     &state,
@@ -2783,6 +2838,7 @@ mod tests {
                 assert_eq!(
                     enumerate,
                     Command::ActionsEnumerate {
+                        include_programmatic: false,
                         query: "settings".to_string()
                     }
                 );
@@ -2792,6 +2848,7 @@ mod tests {
                 assert_eq!(
                     bare,
                     Command::ActionsEnumerate {
+                        include_programmatic: false,
                         query: String::new()
                     }
                 );
