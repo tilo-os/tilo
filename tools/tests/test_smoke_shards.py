@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "run_smoke_shards.sh"
+SCRIPT = Path(__file__).resolve().parents[1] / "web" / "run_smoke_shards.sh"
 
 
 class SmokeShards(unittest.TestCase):
