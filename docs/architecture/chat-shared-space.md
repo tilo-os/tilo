@@ -5,7 +5,7 @@ messaging and contact identity; Chat adds no external-person inbox or contact st
 
 ## Implemented journeys
 
-A text channel exposes `share-resource(reference, text?)` through its published resource.
+A text channel exposes `share-resource(reference, text?, sourceProvider?)` through its published resource.
 `reference` has the existing `tilo_reference::ResourceRef` shape: `kind`, `id`, `label`,
 optional `span` (`start`, `end`, `unit`: `Chars` or `Bytes`). The action creates an
 attributed message through `ChatAction::SendMessage`. Its address survives transport,
@@ -55,11 +55,13 @@ journey still need manual validation before release.
 
 ## Remaining integration boundaries
 
-The runtime includes existing-admission browser link resolution and navigation helpers
-(details below), tested with action-frame fixtures. The production room action service
-does not yet supply local-view metadata for other admitted collaborators. Native Chat chips still need host-provided source route metadata
-and shared identity account-picker integration. `ResourceRef` alone conveys no access capability;
-resource navigation links never grant admission.
+The production room action service supplies declared local-view metadata through
+fresh certified Read checks and bounded replay of existing source state. Native Chat
+Copy/Open effects use that host-provided route, and the browser entry reads Settings'
+existing identity choices. The paired browser journey is fixture-based; an operator
+must configure and deploy the browser entry before external links work against a live
+host. `ResourceRef` alone conveys no access capability, and resource navigation links
+never grant admission. Physical cross-device and microphone acceptance remains unrun.
 
 ## Compatibility research (2026-10-05)
 
