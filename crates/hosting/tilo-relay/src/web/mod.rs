@@ -88,11 +88,22 @@ pub struct WebHandle {
     pub plain_origin: Option<String>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
     legacy: Arc<legacy::LegacyWindows>,
+    locator_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
+    published_origin: Option<Arc<String>>,
 }
 
 impl Drop for WebHandle {
     fn drop(&mut self) {
         self.legacy.close();
+        if let Ok(mut published) = self.locator_origin.write()
+            && self.published_origin.as_ref().is_some_and(|ours| {
+                published
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(ours, current))
+            })
+        {
+            *published = None;
+        }
         for task in &self.tasks {
             task.abort();
         }
@@ -110,6 +121,63 @@ struct Web {
     features: u64,
     /// The rooms this relay governs, for `/rooms` and `/join`.
     rooms: Option<crate::rooms::Rooms>,
+}
+
+/// An unspecified listener is not a usable browser destination. Only its
+/// configured certificate host can provide one; no caller URL is accepted.
+fn browser_locator_origin(tls: &TlsSource, addr: SocketAddr) -> Result<Option<String>, RelayError> {
+    let host = match tls {
+        TlsSource::Files { host, .. } => host
+            .clone()
+            .or_else(|| (!addr.ip().is_unspecified()).then(|| addr.ip().to_string())),
+        TlsSource::Development { hosts, .. } => {
+            let bound = addr.ip().to_string();
+            if !addr.ip().is_unspecified() && hosts.contains(&bound) {
+                Some(bound)
+            } else {
+                hosts
+                    .iter()
+                    .find(|host| {
+                        !host
+                            .parse::<std::net::IpAddr>()
+                            .is_ok_and(|ip| ip.is_unspecified())
+                    })
+                    .cloned()
+            }
+        }
+        TlsSource::Managed { domain } => Some(domain.clone()),
+    };
+    let Some(host) = host else {
+        return Ok(None);
+    };
+    if host
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_unspecified())
+    {
+        return Ok(None);
+    }
+    let authority = if host.contains(':') {
+        format!("[{host}]:{}", addr.port())
+    } else {
+        format!("{host}:{}", addr.port())
+    };
+    let origin = format!("https://{authority}");
+    let uri: hyper::Uri = origin
+        .parse()
+        .map_err(|_| RelayError::Identity("invalid configured browser locator host".into()))?;
+    if uri
+        .authority()
+        .is_none_or(|value| value.as_str() != authority || value.as_str().contains('@'))
+    {
+        return Err(RelayError::Identity(
+            "invalid configured browser locator host".into(),
+        ));
+    }
+    Ok(Some(if addr.port() == 443 {
+        origin.strip_suffix(":443").unwrap_or(&origin).to_owned()
+    } else {
+        origin
+    }))
 }
 
 impl Relay {
@@ -139,6 +207,7 @@ impl Relay {
         let addr = tcp
             .local_addr()
             .map_err(|error| failed(error.to_string()))?;
+        let public_origin = browser_locator_origin(&config.tls, addr)?;
         let endpoint =
             tilo_moq::carrier::listener_on(udp, identity.chain.clone(), identity.key.clone_key())
                 .map_err(failed)?;
@@ -204,13 +273,20 @@ impl Relay {
             tasks.push(tokio::spawn(plain_accept_loop(plain, web.clone())));
         }
         tasks.push(tokio::spawn(accept_loop(tcp, acceptor, web)));
+        let published_origin = public_origin.clone().map(Arc::new);
+        self.browser_origin
+            .write()
+            .map_err(|_| failed("browser locator lock poisoned".into()))?
+            .clone_from(&published_origin);
         Ok(WebHandle {
             addr,
-            origin: format!("https://{addr}"),
+            origin: public_origin.unwrap_or_else(|| format!("https://{addr}")),
             certificate_sha256: identity.pinned_sha256,
             plain_origin,
             tasks,
             legacy,
+            locator_origin: Arc::clone(&self.browser_origin),
+            published_origin,
         })
     }
 }
@@ -240,7 +316,13 @@ impl Relay {
         // Grants name the host a device dials: the certificate's name when
         // the listener is bound to every address.
         let host = match tls {
-            TlsSource::Development { hosts, .. } => hosts.first().cloned(),
+            TlsSource::Development { hosts, .. } => hosts
+                .iter()
+                .find(|host| {
+                    host.parse::<std::net::IpAddr>()
+                        .map_or(true, |ip| !ip.is_unspecified())
+                })
+                .cloned(),
             TlsSource::Managed { domain } => Some(domain.clone()),
             TlsSource::Files { host, .. } => host.clone(),
         }

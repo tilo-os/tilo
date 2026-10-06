@@ -79,6 +79,7 @@ tracing.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-automerge-isolate = { path = "../../doc/tilo-automerge-isolate" }
 tempfile.workspace = true
 tilo-document = { path = "../../doc/tilo-document" }
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents"] }
