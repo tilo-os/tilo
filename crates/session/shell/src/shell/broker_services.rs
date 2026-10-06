@@ -2,6 +2,8 @@
 //! Adapters from the shared broker to the native session's existing services.
 use super::state::WorkspaceAuthority as _;
 use super::state::WorkspaceTreeHandle;
+#[cfg(target_os = "linux")]
+mod airdrop_transfer;
 mod committed_document;
 mod nearby_transfer;
 pub use nearby_transfer::NativeNearbyTransfer;
