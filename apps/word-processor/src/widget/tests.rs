@@ -4088,9 +4088,17 @@ fn context_menus_preserve_the_selection_and_capture_editing_keys() {
                 wp.style_menu.open("body", Point::new(300.0, 300.0));
             }
             if !style_menu {
+                // Selection changes the available toolbar controls; publish that
+                // frame before addressing its retained More control.
+                Framed::harness_mut(&mut framed).relayout();
                 open_hosted_toolbar_overflow(&mut framed);
             }
             let (wp, state) = Framed::split(&mut framed);
+            assert_eq!(
+                wp.inner.selection_text(&state.doc),
+                "Keep my draft",
+                "settling and opening the menu preserves the selected draft"
+            );
             assert!(
                 wp.style_menu.is_open() || wp.tool_bar.is_overflow_open(),
                 "the editing-key isolation subject is an actually open menu"
