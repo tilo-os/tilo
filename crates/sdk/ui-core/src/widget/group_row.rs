@@ -3300,7 +3300,9 @@ impl Widget for GroupRow {
                 *w = right;
             }
         }
-        let steady = !self.group_drag_active()
+        let edge_resizing = self.groups.iter().any(WindowGroup::edge_resize_in_flight);
+        let steady = !edge_resizing
+            && !self.group_drag_active()
             && !self
                 .handles
                 .iter()
@@ -3322,7 +3324,7 @@ impl Widget for GroupRow {
             // or a release settle is in flight. At rest, geometry changes
             // clamp to the deliberate trailing allowance instead of the old
             // three-viewports of unbounded empty canvas.
-            if pan.strip_pan_origin.is_none() && pan.snap_anim.is_none() {
+            if !edge_resizing && pan.strip_pan_origin.is_none() && pan.snap_anim.is_none() {
                 pan.scroll_x = pan.scroll_x.clamp(0.0, pan.pan_max_scroll_x());
             }
             if spans_aligned {
