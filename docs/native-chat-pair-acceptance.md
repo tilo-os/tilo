@@ -19,15 +19,16 @@ short real-daemon check: the owned bus exits and an adjacent private bus survive
 Its receipt remains `qualified: false`, with `mode: cleanup-proof`, because it
 proves cleanup rather than the native pair journey.
 
-Build and run through rcargo in an owned disposable builder environment:
+Build and run in an owned disposable builder environment. Set `CARGO` to
+`cargo` or any Cargo drop-in configured for that environment:
 
 ```sh
-rcargo build --locked -p shell -p tilo-control --bin shell --bin tilo-control
-rcargo build --locked -p launcher --bin tilo-launcher \
+"$CARGO" build --locked -p shell -p tilo-control --bin shell --bin tilo-control
+"$CARGO" build --locked -p launcher --bin tilo-launcher \
   -p tilo-app-package-cli --bin tilo-app-package \
   -p tilo-app-cli --bin tilo-app -p install --bin tilo-install \
   -p runtime-bundle --bin tilo-runtime-bundle
-rcargo --on-builder --fetch native-pair-proof run --locked \
+"$CARGO" run --locked \
   -p shell --example native_pair_host -- \
   --journey --out target/native-pair-proof --pipewire /private/pipewire-payload
 ```
@@ -37,8 +38,8 @@ The disposable environment needs PipeWire utilities, WirePlumber, GStreamer
 `usr/share/pipewire` and `usr/lib64/gstreamer-1.0/libgstpipewire.so`. The fixture
 starts its own socket and session manager per peer; it never connects to the
 operator's audio server. SDK package assembly is sequential and uses four jobs.
-The output directory must be new. Failed rcargo runs do not automatically fetch
-artifacts; read the owned remote task directory for `journey.json` and screenshots.
+The output directory must be new. When running remotely, retrieve only
+`journey.json` and screenshots from the owned task directory.
 Never transfer `bootstrap.json` or private identity directories into evidence.
 
 ## Observed production boundaries
