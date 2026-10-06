@@ -1772,3 +1772,14 @@ shortcut-name-dictation-toggle = Start or finish dictation
 shortcut-name-dictation-finish = Finish dictation
 shortcut-name-dictation-cancel = Cancel dictation
 shortcut-name-tab-menu = Show tab menu
+
+# Network connection guidance
+net-connectivity-caption = Shows whether this device can reach the internet.
+net-wifi-caption = Choose a network to connect. Refresh searches for nearby networks.
+net-diag-idle = Run diagnostics to check your connection, address and DNS.
+net-enterprise-caption = For work or school networks that require a username and certificate.
+net-hotspot-clients-caption = Devices currently connected to your hotspot.
+net-share-caption = Share a saved Wi-Fi network securely with your other devices.
+net-sim-pin-caption = Enter the PIN for the selected SIM to unlock mobile broadband.
+net-ipv4-caption = Use automatic addressing unless your network requires a fixed address.
+net-vpn-caption = Choose a saved VPN to connect. Add connections in VPN Studio.
