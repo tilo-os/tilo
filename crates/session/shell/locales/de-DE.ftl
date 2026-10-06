@@ -2454,3 +2454,6 @@ dictation-copy-failed = Zwischenablage nicht verfügbar. Dein gesamtes Transkrip
 search-action-tab-drag-cancel = Tab-Ziehen abbrechen
 search-action-tab-drag-cancel-subtitle = Den gezogenen Tab an seinem ursprünglichen Ort lassen
 search-action-tab-drag-cancel-unavailable = Das Tab-Ziehen kann bei gesperrter Sitzung nicht abgebrochen werden.
+
+display-confirm-answer-pending = Die Antwort zur Anzeige wird gespeichert…
+display-confirm-answer-failed = Die Antwort zur Anzeige konnte nicht gespeichert werden: { $reason }
