@@ -309,17 +309,72 @@ python3 scripts/headless-examples/cast-session-proof.py \
   --projector target/debug/tilo-projector --evidence target/cast-session-proof.json
 ```
 
-The locked `fcast-sender-sdk` 0.3.0 `chromecast.rs` uses `AllCertVerifier`, accepting
-server certificates and TLS handshake signatures without verification. There is
-no device-auth exchange in that path. A chosen address and encrypted connection
-therefore establish neither receiver authenticity nor a certified Tilo peer.
-The proof deliberately uses an isolated self-signed certificate and reports
+The published `fcast-sender-sdk` 0.3.0 accepted server certificates and TLS
+handshake signatures without verification. Tilo's checksum-verified vendored
+patch now verifies TLS 1.2/1.3 handshake signatures against the presented leaf
+using Rustls/ring, advertises only supported schemes, and bounds negotiation to
+five seconds with immediate disconnect cancellation. Tests use real handshakes
+and a receiver that presents one certificate but signs with another private key.
+The self-signed transport certificate policy is unchanged. There is still no
+DeviceAuth exchange; neither a valid TLS signature nor a chosen address proves
+receiver identity. The native loopback proof reports
 `receiver_authenticated: false`. Never promote this result to authenticated
-pairing, clipboard/workspace trust or an automatic capture authorization.
-[Open Screen's device-auth integration tests](https://chromium.googlesource.com/openscreen/+/7aff9322b2de31ced072e421b1ac31e3aae7745d/cast/test/README.md)
-provide a primary reference for a separate challenge/certificate/revocation
-qualification gate. Audit and implement that adapter boundary before claiming
-secure Cast pairing; retain the existing controller and explicit capture consent.
+pairing, clipboard/workspace trust or automatic capture authorization.
+
+#### DeviceAuth authority decision, not yet applied
+
+A targeted audit found no existing Cast-specific trust authority in Tilo. Full
+receiver authentication consequently needs a separate explicit authority/policy
+review before production enablement. No new roots, trust files, access grants or
+real-device pairing are introduced by the transport fix.
+
+The concrete public authorities proposed for that review are from Open Screen
+revision `1c526caf732881bd0aa1ab9479c36861bb225ba6` (BSD-3-Clause). Fingerprints
+below hash certificate DER, not C++ source. Only fingerprints/provenance were
+recorded; certificate bytes are not installed or added to the production build.
+
+| Proposed purpose | Certificate DER SHA-256 |
+| --- | --- |
+| [Cast Root CA](https://chromium.googlesource.com/openscreen/+/1c526caf732881bd0aa1ab9479c36861bb225ba6/cast/common/certificate/cast_root_ca_cert_der-inc.h) | `809af14700b3fe2611ad597eb1584d6354313b64ccdb3390f097fa3e5826d6ca` |
+| [Eureka Root CA](https://chromium.googlesource.com/openscreen/+/1c526caf732881bd0aa1ab9479c36861bb225ba6/cast/common/certificate/eureka_root_ca_der-inc.h) | `caf6d1e37b532203e01a76bf07187bb731ccd38801565ab2211a2c0ab7f3bc46` |
+| [Cast CRL Root CA](https://chromium.googlesource.com/openscreen/+/1c526caf732881bd0aa1ab9479c36861bb225ba6/cast/common/certificate/cast_crl_root_ca_cert_der-inc.h) | `8b77c60291f9d62764613083f49750b1c5caac2d9efbe5a28edf301f9d84831d` |
+
+The existing controller must send a binary DeviceAuth challenge before any
+CONNECT, status, launch or media message, on the **same TLS connection**. Generate
+a fresh unpredictable 16-byte nonce for each attempt. Consume its pending state
+once, including failure, cancellation and disconnect; never accept an unsolicited
+response or reuse a successful response on reconnect. Bind the proof to the nonce
+followed by the exact peer certificate DER from that connection. Reject malformed,
+oversized, missing, stale or mismatched replies without sending media URLs.
+
+[Google Open Screen's authentication implementation](https://chromium.googlesource.com/openscreen/+/refs/heads/main/cast/sender/channel/cast_auth_util.cc)
+checks this channel binding, TLS leaf validity and a maximum four-day remaining
+leaf lifetime. Its receiver certificate chain uses dedicated Cast Root CA and
+Eureka Root CA authorities, with a separate Cast CRL authority; these must never
+enter WebPKI or Tilo collaborator trust. Certificate signature/key-size/usage/path
+constraints and the audio-only certificate policy must also be enforced. Screen
+projection must reject an audio-only identity, as
+[the sender socket factory does](https://chromium.googlesource.com/openscreen/+/refs/heads/main/cast/sender/channel/sender_socket_factory.cc).
+
+The review must explicitly choose revocation and legacy-signature policy:
+Open Screen's current public entry point uses optional CRLs and allows legacy
+challenge hashes, so claiming it requires CRLs or SHA-256 would be inaccurate.
+Proposed Tilo policy is a SHA-256 challenge proof and authenticated revocation
+validation with a defined missing/stale-CRL failure policy. Legacy SHA-1 certificate
+chains and receivers require a documented compatibility decision, not silent
+fallback. Pin public authority bytes to a reviewed upstream revision, hashes and
+license/provenance; no TOFU, arbitrary environment trust loader, ambient WebPKI
+substitution or second Cast/Spotify controller.
+
+Once that authority decision is approved, qualify the same transport adapter
+with synthetic root/intermediate/device chains: valid nonce/chain, wrong issuer,
+wrong signature, leaf substitution, certificate expiry/not-yet-valid/long lifetime,
+nonce mismatch/replay, invalid/stale revocation, audio-only rejection, bounded
+malformed frames, handshake/auth timeout, cancellation and disconnect. Synthetic
+fixtures install no production authority and grant no Tilo peer permissions.
+Then qualify the user-selected capture source and an explicitly approved physical
+receiver separately. The current TLS tests and loopback HLS result do not cover
+DeviceAuth, decoded output or physical hardware.
 
 ### Current immutable image AirPlay codec gate
 

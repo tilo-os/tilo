@@ -4022,8 +4022,6 @@ dependencies = [
 [[package]]
 name = "fcast-sender-sdk"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f287d576e0dff57869e24c00468747821ab6a8a2db8e9093d29d12b7688a9bb5"
 dependencies = [
  "anyhow",
  "base64",
@@ -17188,6 +17186,7 @@ dependencies = [
  "hex",
  "mdns-sd",
  "rand 0.10.1",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "tilo-callstream",
@@ -17195,6 +17194,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-xdg-paths",
  "tokio",
+ "tokio-rustls",
  "workspace-hack",
  "zbus",
 ]

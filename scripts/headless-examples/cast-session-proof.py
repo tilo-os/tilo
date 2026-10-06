@@ -192,7 +192,9 @@ def main():
             assert not thread.is_alive() and not errors, errors
             assert not (session / "ready").exists() and not (session / "session.pid").exists()
             report = {"schema": 1, "artifact_sha256": file_sha256(binary), "tls": tls, "messages": observed, "fetched": fetched,
-                      "receiver_authenticated": False, "physical_receiver": False,
+                      "receiver_authenticated": False,
+                      "device_auth_challenge_observed": any(namespace == PREFIX + "tp.deviceauth" for namespace, _ in observed),
+                      "physical_receiver": False,
                       "media_decoded": False, "clean_disconnect": True}
             args.evidence.parent.mkdir(parents=True, exist_ok=True)
             args.evidence.write_text(json.dumps(report, indent=2) + "\n")
