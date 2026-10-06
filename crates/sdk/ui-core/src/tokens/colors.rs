@@ -99,7 +99,7 @@ pub const MATERIAL_ALPHA: f32 = 0.72;
 /// Stock backdrop blur of the floating material, in logical pixels.
 pub const MATERIAL_BLUR_PX: f32 = 24.0;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ColorRamp {
     pub stops: [Color; 11],
 }
@@ -145,7 +145,7 @@ impl std::ops::Index<usize> for ColorRamp {
 
 /// The neutral material's surfaces. Every one is opaque except
 /// [`Self::material`], and every one shares [`Colors::neutral_hue`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Surfaces {
     /// The desktop ground behind tiles.
     pub base: Color,
@@ -241,7 +241,7 @@ pub struct TintedChip {
 
 /// Status colours. Muted (chroma at most [`STATUS_MAX_CHROMA`]) and used
 /// only for status: never as decoration, never as a brand.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SemanticColors {
     pub success: Color,
     pub warning: Color,
@@ -252,7 +252,7 @@ pub struct SemanticColors {
 }
 
 /// What controls paint with, by intent rather than by hue.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Intents {
     /// Fill of a primary action, a switch that is on, a checked box, a
     /// slider's filled track. Under [`Emphasis::Inverted`] (the default) it
@@ -590,7 +590,7 @@ pub struct Wash {
     pub mark: Color,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Colors {
     /// The palette these colours were made from.
     pub palette: Palette,

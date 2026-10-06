@@ -68,7 +68,7 @@ impl OskSurface {
     /// The surface over `keyboard`.
     pub fn with_keyboard(keyboard: OskWidget) -> Self {
         Self {
-            keyboard,
+            keyboard: keyboard.with_surface_height(),
             preferences: None,
             learned: None,
             focus: None,

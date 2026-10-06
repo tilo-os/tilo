@@ -47,6 +47,9 @@
 //!   playback is silent without one. (The stream itself is fetched by
 //!   `reqwest`, so no `GStreamer` HTTP-source plugin is needed.)
 
+#[cfg(feature = "spotify-native")]
+pub(crate) use tilo_spotify as spotify_audio;
+
 /// A bounded initialization job. Cancellation drops its result receiver without
 /// joining a potentially slow native initializer. A replacement waits for this
 /// worker to finish, so repeated load/stop never creates parallel initializers.
@@ -253,6 +256,8 @@ impl PcmCapture {
 /// native initialization. The first requested source starts a background job;
 /// only the latest transport intent is applied when the backend arrives.
 pub struct AudioEngine {
+    #[cfg(feature = "spotify-native")]
+    native: Option<spotify_audio::NativeAudio>,
     backend: Option<AudioBackend>,
     initialization: Option<Initialization<AudioBackend>>,
     current_uri: Option<String>,
@@ -304,6 +309,8 @@ impl AudioEngine {
 
     fn unconfigured() -> Self {
         Self {
+            #[cfg(feature = "spotify-native")]
+            native: None,
             backend: None,
             initialization: None,
             current_uri: None,
@@ -320,11 +327,79 @@ impl AudioEngine {
         }
     }
 
+    /// Start an independently authorized native Spotify transport, never a URL resolver.
+    /// # Errors
+    /// Native support is absent or the worker could not start.
+    pub fn load_spotify(&mut self, uri: &str, account: &str) -> Result<(), String> {
+        self.stop();
+        #[cfg(feature = "spotify-native")]
+        {
+            let native = spotify_audio::NativeAudio::start(
+                uri.to_owned(),
+                account.to_owned(),
+                self.spotify_output(),
+            )?;
+            native.volume(self.volume);
+            self.current_uri = Some(uri.to_owned());
+            self.native = Some(native);
+            Ok(())
+        }
+        #[cfg(not(feature = "spotify-native"))]
+        {
+            let _ = (uri, account);
+            Err("This build does not include native Spotify playback".into())
+        }
+    }
+
+    pub fn prepare_spotify_next(&self, uri: Option<&str>) {
+        #[cfg(feature = "spotify-native")]
+        if let Some(native) = &self.native {
+            native.prepare_next(uri);
+        }
+        #[cfg(not(feature = "spotify-native"))]
+        let _ = uri;
+    }
+
+    pub fn uses_spotify(&self) -> bool {
+        self.current_uri
+            .as_ref()
+            .is_some_and(|uri| uri.starts_with("spotify:track:"))
+    }
+
+    pub fn take_spotify_transition(&mut self) -> Option<String> {
+        #[cfg(feature = "spotify-native")]
+        if let Some(native) = &self.native {
+            let uri = native.take_transition()?;
+            self.current_uri = Some(uri.clone());
+            return Some(uri);
+        }
+        None
+    }
+
+    #[cfg(feature = "spotify-native")]
+    fn spotify_output(&self) -> spotify_audio::Output {
+        match &self.output {
+            AudioOutput::System => spotify_audio::Output::System,
+            AudioOutput::Capture(capture) => {
+                let pcm = capture.clone();
+                let rendered = capture.clone();
+                spotify_audio::Output::Capture(spotify_audio::CaptureOutput {
+                    on_pcm: std::sync::Arc::new(move |bytes| pcm.record(bytes)),
+                    on_rendered: std::sync::Arc::new(move || rendered.note_rendered()),
+                })
+            }
+        }
+    }
+
     pub fn load(&mut self, uri: &str) {
         self.load_with_fallback(uri, None);
     }
 
     pub fn load_with_fallback(&mut self, uri: &str, fallback: Option<&str>) {
+        #[cfg(feature = "spotify-native")]
+        {
+            self.native = None;
+        }
         self.current_uri = Some(uri.to_owned());
         self.fallback = fallback.map(str::to_owned);
         self.want_play = false;
@@ -380,6 +455,12 @@ impl AudioEngine {
     }
 
     pub fn play(&mut self) {
+        #[cfg(feature = "spotify-native")]
+        if let Some(native) = &self.native {
+            self.want_play = true;
+            native.play();
+            return;
+        }
         self.want_play = true;
         if self.pending_seek.is_none()
             && let Some(backend) = &mut self.backend
@@ -389,6 +470,12 @@ impl AudioEngine {
     }
 
     pub fn pause(&mut self) {
+        #[cfg(feature = "spotify-native")]
+        if let Some(native) = &self.native {
+            self.want_play = false;
+            native.pause();
+            return;
+        }
         self.want_play = false;
         if let Some(backend) = &mut self.backend {
             backend.pause();
@@ -396,6 +483,10 @@ impl AudioEngine {
     }
 
     pub fn stop(&mut self) {
+        #[cfg(feature = "spotify-native")]
+        {
+            self.native = None;
+        }
         self.current_uri = None;
         self.fallback = None;
         self.want_play = false;
@@ -415,6 +506,11 @@ impl AudioEngine {
     }
 
     pub fn seek_ms(&mut self, ms: u64) {
+        #[cfg(feature = "spotify-native")]
+        if let Some(native) = &self.native {
+            native.seek(ms);
+            return;
+        }
         if !Self::is_live() || self.current_uri.is_none() {
             return;
         }
@@ -461,6 +557,12 @@ impl AudioEngine {
     }
 
     pub fn set_volume(&mut self, volume: f32) {
+        #[cfg(feature = "spotify-native")]
+        if let Some(native) = &self.native {
+            self.volume = volume.clamp(0.0, 1.0);
+            native.volume(self.volume);
+            return;
+        }
         self.volume = volume.clamp(0.0, 1.0);
         if let Some(backend) = &mut self.backend {
             backend.set_volume(self.volume);
@@ -473,9 +575,17 @@ impl AudioEngine {
         self.current_uri.as_deref()
     }
     pub fn position_ms(&self) -> Option<u64> {
+        #[cfg(feature = "spotify-native")]
+        if let Some(native) = &self.native {
+            return native.position();
+        }
         self.backend.as_ref()?.position_ms()
     }
     pub fn duration_ms(&self) -> Option<u64> {
+        #[cfg(feature = "spotify-native")]
+        if self.native.is_some() {
+            return None;
+        }
         self.backend.as_ref()?.duration_ms()
     }
     pub fn has_stream(&self) -> bool {
@@ -485,6 +595,10 @@ impl AudioEngine {
         cfg!(feature = "audio") || element_playback()
     }
     pub fn is_playing_real(&self) -> bool {
+        #[cfg(feature = "spotify-native")]
+        if let Some(native) = &self.native {
+            return native.playing();
+        }
         self.backend
             .as_ref()
             .is_some_and(AudioBackend::is_playing_real)
@@ -496,6 +610,10 @@ impl AudioEngine {
         allow(dead_code, reason = "only the GStreamer backend confirms playback")
     )]
     pub(crate) fn is_playing_confirmed(&self) -> bool {
+        #[cfg(feature = "spotify-native")]
+        if let Some(native) = &self.native {
+            return self.want_play && native.playing();
+        }
         self.want_play
             && self.current_uri.is_some()
             && self.pending_seek.is_none()
@@ -506,6 +624,10 @@ impl AudioEngine {
     }
 
     pub fn pump(&mut self) -> bool {
+        #[cfg(feature = "spotify-native")]
+        if let Some(native) = &self.native {
+            return native.pump();
+        }
         if self.current_uri.is_none() {
             return false;
         }
@@ -564,6 +686,10 @@ impl AudioEngine {
     }
 
     pub fn take_error(&self) -> Option<String> {
+        #[cfg(feature = "spotify-native")]
+        if let Some(native) = &self.native {
+            return native.error();
+        }
         self.initialization_error
             .lock()
             .ok()
@@ -571,15 +697,27 @@ impl AudioEngine {
             .or_else(|| self.backend.as_ref().and_then(AudioBackend::take_error))
     }
     pub fn reached_eos(&self) -> bool {
+        #[cfg(feature = "spotify-native")]
+        if let Some(native) = &self.native {
+            return native.eos();
+        }
         self.backend.as_ref().is_some_and(AudioBackend::reached_eos)
     }
     pub fn staging_complete(&self) -> bool {
+        #[cfg(feature = "spotify-native")]
+        if let Some(native) = &self.native {
+            return native.frames() > 0;
+        }
         self.backend.as_ref().map_or_else(
             || self.current_uri.is_none(),
             AudioBackend::staging_complete,
         )
     }
     pub fn staging_finished(&self) -> bool {
+        #[cfg(feature = "spotify-native")]
+        if let Some(native) = &self.native {
+            return native.frames() > 0;
+        }
         self.backend.as_ref().map_or_else(
             || self.current_uri.is_none(),
             AudioBackend::staging_finished,
@@ -589,14 +727,26 @@ impl AudioEngine {
         self.backend.as_ref()?.staged_progress()
     }
     pub fn frames_rendered(&self) -> u64 {
+        #[cfg(feature = "spotify-native")]
+        if let Some(native) = &self.native {
+            return native.frames();
+        }
         self.backend
             .as_ref()
             .map_or(0, AudioBackend::frames_rendered)
     }
     pub fn actual_audio_sink_name(&self) -> Option<String> {
+        #[cfg(feature = "spotify-native")]
+        if let Some(native) = &self.native {
+            return native.sink();
+        }
         self.backend.as_ref()?.actual_audio_sink_name()
     }
     pub fn audio_sink_is_real(&self) -> Option<bool> {
+        #[cfg(feature = "spotify-native")]
+        if let Some(native) = &self.native {
+            return native.sink().map(|name| !name.contains("fakesink"));
+        }
         self.backend.as_ref()?.audio_sink_is_real()
     }
 
@@ -1871,6 +2021,17 @@ fn build_audio_sink(
     output: &AudioOutput,
 ) -> Option<gstreamer::Element> {
     use gstreamer::prelude::*;
+    let (bin, sink) = build_audio_sink_bin(frames, output)?;
+    playbin.set_property("audio-sink", &bin);
+    Some(sink)
+}
+
+#[cfg(feature = "audio")]
+fn build_audio_sink_bin(
+    frames: &std::sync::Arc<std::sync::atomic::AtomicU64>,
+    output: &AudioOutput,
+) -> Option<(gstreamer::Bin, gstreamer::Element)> {
+    use gstreamer::prelude::*;
     // `ghost_unlinked_pads=true` auto-exposes the audioconvert sink pad so
     // playbin can feed decoded audio into the chain (same idiom as the video
     // sink bin in `apps/tube`). `autoaudiosink` plugs the real system sink.
@@ -1922,8 +2083,7 @@ fn build_audio_sink(
             Some(gstreamer::FlowReturn::Ok.to_value())
         });
     }
-    playbin.set_property("audio-sink", &bin);
-    Some(sink)
+    Some((bin, sink))
 }
 
 #[cfg(feature = "audio")]
