@@ -3636,9 +3636,15 @@ impl Widget for NavShell {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        let mut needed = self.animating || self.fade < 1.0;
-        self.for_each_owned(|child| needed |= child.needs_animation_frame());
-        needed
+        // Hidden drawers retain their controls, but their entrance animations
+        // cannot advance until the drawer is painted. Only painted parts ask
+        // the host for frames; background wakes still visit every owned part.
+        self.animating
+            || self.fade < 1.0
+            || self
+                .host_parts
+                .iter()
+                .any(|part| self.part(*part).is_some_and(Widget::needs_animation_frame))
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -3652,9 +3658,13 @@ impl Widget for NavShell {
     }
 
     fn needs_redraw(&self) -> bool {
-        let mut dirty = self.paint_dirty || self.animating || self.fade < 1.0;
-        self.for_each_owned(|child| dirty |= child.needs_redraw());
-        dirty
+        self.paint_dirty
+            || self.animating
+            || self.fade < 1.0
+            || self
+                .host_parts
+                .iter()
+                .any(|part| self.part(*part).is_some_and(Widget::needs_redraw))
     }
 
     fn mark_drawn(&mut self) {

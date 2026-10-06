@@ -60,6 +60,7 @@ fn sample(preset: Preset, colour: &str) -> Artwork {
         height: SAMPLE.1,
         ground: Ground::default(),
         layers: vec![Layer {
+            group: String::new(),
             id: "sample".into(),
             name: String::new(),
             order: "a".into(),
