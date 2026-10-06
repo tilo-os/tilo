@@ -4432,6 +4432,26 @@ impl ui::widget::controls::ActionControls for ChatApp {
 }
 
 impl ChatApp {
+    fn conversation_heading_accessibility(&self) -> Vec<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, Role};
+        if self.direct_agent.is_some() {
+            return self.agent_accessibility_nodes();
+        }
+        let Some(channel) = self.channel(&self.active_channel) else {
+            return Vec::new();
+        };
+        let mut heading = AccessNode::new(Role::Heading { level: 1 })
+            .with_name(channel.kind.label(&channel.name))
+            .with_bounds(self.header_rect())
+            .with_hashed_key(("conversation-heading", &channel.id));
+        if !channel.topic.trim().is_empty() {
+            // Elision in the painted header must not hide the complete topic
+            // from screen readers, including in a narrow conversation.
+            heading = heading.with_description(channel.topic.clone());
+        }
+        vec![heading]
+    }
+
     fn agent_accessibility_nodes(&self) -> Vec<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, Role};
         let Some(agent) = self.direct_agent.as_deref() else {
@@ -5097,21 +5117,7 @@ impl Widget for ChatApp {
         let mut children: Vec<AccessNode> = controls;
         children.extend(self.left_flap.resize_accessibility());
         children.extend(self.right_flap.resize_accessibility());
-        if self.direct_agent.is_some() {
-            children.extend(self.agent_accessibility_nodes());
-        } else if let Some(channel) = self.channel(&self.active_channel) {
-            let mut heading = AccessNode::new(Role::Heading { level: 1 })
-                .with_name(channel.kind.label(&channel.name))
-                .with_bounds(self.header_rect())
-                .with_hashed_key(("conversation-heading", &channel.id));
-            if !channel.topic.trim().is_empty() {
-                // The desktop header deliberately elides the topic before the
-                // member/call cluster, and narrow layouts may omit it entirely.
-                // Keep the complete string available to screen readers.
-                heading = heading.with_description(channel.topic.clone());
-            }
-            children.push(heading);
-        }
+        children.extend(self.conversation_heading_accessibility());
         children.push(conversation);
         if let Some(menu) = self.menu.as_ref()
             && let Some(menu_node) = menu.widget.accessibility()
