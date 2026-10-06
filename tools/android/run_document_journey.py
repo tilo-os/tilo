@@ -14,6 +14,7 @@ import tempfile
 import tomllib
 
 from qualify_apk import digest, pinned, verify_runtime
+from execution_host import add_architecture, native_architecture
 from run_arity_journey import REPO, Journey, checked_output, wait_for, require_ok
 from run_integration_journey import stop, stop_bus_helpers
 from journey_support import AccessiblePicker
@@ -28,6 +29,7 @@ def revoke_fixture(journey, identifier):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    add_architecture(parser)
     for name in ('payload', 'runtime-receipt', 'runtime-parent', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
     for name in ('apk', 'signer', 'runtime-receipt'):
@@ -38,6 +40,7 @@ def main():
     parser.add_argument('--cold-hydration', action='store_true',
                         help='require real FUSE backend eviction and actual APK relaunch restoration')
     args = parser.parse_args()
+    native_architecture(args.architecture)
     if args.cold_hydration and args.expect_incompatibility:
         parser.error('cold restoration requires the compatible runtime')
     output = checked_output(args.output)
@@ -48,7 +51,7 @@ def main():
         raise RuntimeError('fixture signature qualification does not match')
     if qualification['runtime_receipt_sha256'] != args.runtime_receipt_sha256:
         raise RuntimeError('qualification runtime differs')
-    verify_runtime(payload / 'runtime', args.runtime_receipt, args.runtime_receipt_sha256, 'x86_64')
+    verify_runtime(payload / 'runtime', args.runtime_receipt, args.runtime_receipt_sha256, args.architecture)
     parent = args.runtime_parent.resolve(strict=True)
     if parent.stat().st_uid != os.geteuid() or parent.stat().st_mode & 0o077:
         raise RuntimeError('runtime parent must be private and user-owned')
@@ -187,7 +190,7 @@ def main():
                                  'landlock: fully enforced', 'no_new_privs: true'):
                     if evidence not in runtime_log: raise RuntimeError('missing production evidence: ' + evidence)
                 result = {'schema': 1, 'completed_at_utc': datetime.now(timezone.utc).isoformat(),
-                    'execution': 'headless production Tilo, actual ART, x86_64 software graphics',
+                    'execution': 'headless production Tilo, actual ART, ' + args.architecture + ' software graphics',
                     'apk_sha256': args.apk_sha256, 'runtime_receipt_sha256': args.runtime_receipt_sha256,
                     'production_binaries': {n: digest(REPO / 'target/debug' / n) for n in ('shell', 'tilo-launcher')},
                     'baseline_incompatibility_observed': args.expect_incompatibility,

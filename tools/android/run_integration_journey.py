@@ -17,6 +17,7 @@ import tomllib
 import sys
 
 from qualify_apk import digest, pinned, verify_runtime
+from execution_host import add_architecture, native_architecture
 from run_arity_journey import REPO, Journey, wait_for, require_ok, checked_output
 
 sys.path.insert(0, str(REPO / 'tools'))
@@ -71,6 +72,7 @@ def stop_bus_helpers(runtime):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    add_architecture(parser)
     for name in ('payload', 'runtime-receipt', 'runtime-parent', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
     for name in ('apk', 'signer', 'runtime-receipt'):
@@ -78,6 +80,7 @@ def main():
     parser.add_argument('--fixture-grants', action='store_true', required=True,
                         help='explicitly authorize grants only on newly created fixture documents')
     args = parser.parse_args()
+    native_architecture(args.architecture)
     output = checked_output(args.output)
     payload = args.payload.resolve(strict=True)
     pinned(payload / 'app.apk', args.apk_sha256)
@@ -88,7 +91,7 @@ def main():
         raise RuntimeError('fixture did not declare its filtered notification provider')
     if qualification['runtime_receipt_sha256'] != args.runtime_receipt_sha256:
         raise RuntimeError('qualification runtime differs')
-    verify_runtime(payload / 'runtime', args.runtime_receipt, args.runtime_receipt_sha256, 'x86_64')
+    verify_runtime(payload / 'runtime', args.runtime_receipt, args.runtime_receipt_sha256, args.architecture)
     package = tomllib.loads((payload / 'tilo.toml').read_text())['package']['id']
     parent = args.runtime_parent.resolve(strict=True)
     if parent.stat().st_uid != os.geteuid() or parent.stat().st_mode & 0o077:
@@ -190,7 +193,7 @@ def main():
                 if 'Notifications.Notify:' not in runtime_log or 'caller_ws=Some' not in runtime_log:
                     raise RuntimeError('production notification caller attribution absent')
                 result = {'schema': 1, 'completed_at_utc': datetime.now(timezone.utc).isoformat(),
-                    'execution': 'headless production Tilo, actual ART, x86_64 software graphics',
+                    'execution': 'headless production Tilo, actual ART, ' + args.architecture + ' software graphics',
                     'production_binaries': {n: digest(REPO / 'target/debug' / n) for n in ('shell', 'tilo-launcher')},
                     'apk_sha256': args.apk_sha256, 'runtime_receipt_sha256': args.runtime_receipt_sha256,
                     'room': room, 'presented_frame': frame, 'notification': delivered,
