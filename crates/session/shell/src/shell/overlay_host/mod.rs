@@ -20238,6 +20238,10 @@ impl ShellOverlayHost {
                     .then(|| now.checked_add(LAUNCHPAD_ACTION_POLL))
                     .flatten(),
             ),
+            (
+                "agent-composer",
+                self.agent_quick_composer.next_wake_deadline(),
+            ),
         ]
     }
 

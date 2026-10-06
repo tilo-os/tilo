@@ -51,7 +51,61 @@ struct PendingWork {
 
 #[derive(Default)]
 struct Drafts {
-    values: HashMap<(String, String, ComposerIntent), String>,
+    values: HashMap<(String, String, ComposerIntent), DraftEntry>,
+}
+
+#[derive(Clone)]
+struct DraftEntry {
+    text: String,
+    revision: u64,
+}
+
+struct RetainedSession {
+    intent: ComposerIntent,
+    actions: ui::remote_actions::RemoteActions,
+    tasks: AgentTaskFrontiers,
+    pending_message: Option<PendingMessage>,
+    pending_work: Option<PendingWork>,
+}
+
+impl RetainedSession {
+    fn is_pending(&self) -> bool {
+        self.pending_message.is_some() || self.pending_work.is_some()
+    }
+
+    fn next_wake_deadline(&self) -> Option<std::time::Instant> {
+        let message = self
+            .pending_message
+            .as_ref()
+            .and_then(pending_discovery_deadline);
+        let task = self
+            .pending_work
+            .is_some()
+            .then(|| self.tasks.next_refresh_deadline())
+            .flatten();
+        earliest(message, task)
+    }
+}
+
+fn pending_discovery_deadline(pending: &PendingMessage) -> Option<std::time::Instant> {
+    match &pending.state {
+        AgentMessageSubmission::Invoke { .. } | AgentMessageSubmission::LaunchInvoke { .. } => None,
+        AgentMessageSubmission::AwaitPublisher {
+            retry_at, until, ..
+        } => Some((*retry_at).min(*until)),
+        _ => Some(pending.deadline),
+    }
+}
+
+fn earliest(
+    left: Option<std::time::Instant>,
+    right: Option<std::time::Instant>,
+) -> Option<std::time::Instant> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
+        (None, None) => None,
+    }
 }
 
 /// Shell-owned state. Presence identifies the row; the pinned caller and
@@ -81,6 +135,7 @@ pub(crate) struct AgentQuickComposer {
     message_receipt_revision: Option<u64>,
     permission_refused: bool,
     focus_reset: bool,
+    retained_sessions: HashMap<(String, String, ComposerIntent), RetainedSession>,
 }
 
 impl Default for AgentQuickComposer {
@@ -174,6 +229,7 @@ impl Default for AgentQuickComposer {
             message_receipt_revision: None,
             permission_refused: false,
             focus_reset: false,
+            retained_sessions: HashMap::new(),
         }
     }
 }
@@ -230,6 +286,20 @@ impl AgentQuickComposer {
         viewport: Rect,
     ) {
         self.save_draft();
+        if self.room == room && self.agent == agent && self.actions.is_some() {
+            self.agent_label = agent_label;
+            self.title.set(t_args(
+                "agent-quick-title",
+                &[("agent", self.agent_label.clone().into())],
+            ));
+            self.popover.set_viewport(viewport);
+            self.popover.set_open(true);
+            self.focus_reset = true;
+            self.refresh_status();
+            self.refresh_enabled();
+            return;
+        }
+        self.park_pending_session();
         self.room = room;
         self.agent = agent;
         self.agent_label = agent_label;
@@ -238,32 +308,68 @@ impl AgentQuickComposer {
             &[("agent", self.agent_label.clone().into())],
         ));
         self.frozen_anchor = anchor;
-        self.shown_intent = ComposerIntent::Message;
-        self.intent.set(self.shown_intent);
-        self.load_draft();
         self.permission_refused = false;
-        let actions = ui::remote_actions::RemoteActions::with_host(
-            std::sync::Arc::new(BrokerActionHost::new(broker)),
-            caller,
-        );
-        self.tasks = Some(AgentTaskFrontiers::with_actions(actions.clone()));
+        if let Some(session) = self.retained_sessions.remove(&(
+            self.room.clone(),
+            self.agent.clone(),
+            ComposerIntent::Message,
+        )) {
+            self.shown_intent = session.intent;
+            self.actions = Some(session.actions);
+            self.tasks = Some(session.tasks);
+            self.pending_message = session.pending_message;
+            self.pending_work = session.pending_work;
+        } else {
+            self.shown_intent = ComposerIntent::Message;
+            let actions = ui::remote_actions::RemoteActions::with_host(
+                std::sync::Arc::new(BrokerActionHost::new(broker)),
+                caller,
+            );
+            self.tasks = Some(AgentTaskFrontiers::with_actions(actions.clone()));
+            self.actions = Some(actions);
+            self.pending_message = None;
+            self.pending_work = None;
+        }
+        self.intent.set(self.shown_intent);
+        self.load_draft_and_rebind_pending_revision();
         if let Some(tasks) = self.tasks.as_mut() {
             tasks.observe(&self.room, &self.agent);
         }
-        self.actions = Some(actions);
-        self.pending_message = None;
         self.pending_message_offer = None;
         self.message_offer = None;
         self.next_message_offer_refresh = None;
-        self.pending_work = None;
         self.message_receipt_revision = None;
         self.status.set(t("agent-quick-checking"));
-        self.start_message_offer_refresh();
+        if self.pending_message.is_none() {
+            self.start_message_offer_refresh();
+        }
         self.popover.set_anchor(anchor);
         self.popover.set_viewport(viewport);
         self.popover.set_open(true);
         self.focus_reset = true;
         self.refresh_enabled();
+    }
+
+    fn park_pending_session(&mut self) {
+        if self.room.is_empty() || self.agent.is_empty() {
+            return;
+        }
+        let (Some(actions), Some(tasks)) = (self.actions.take(), self.tasks.take()) else {
+            return;
+        };
+        let session = RetainedSession {
+            intent: self.shown_intent,
+            actions,
+            tasks,
+            pending_message: self.pending_message.take(),
+            pending_work: self.pending_work.take(),
+        };
+        if session.is_pending() {
+            self.retained_sessions.insert(
+                (self.room.clone(), self.agent.clone(), self.shown_intent),
+                session,
+            );
+        }
     }
 
     pub(crate) fn is_open(&self) -> bool {
@@ -291,9 +397,6 @@ impl AgentQuickComposer {
     }
 
     pub(crate) fn tick(&mut self) -> bool {
-        if !self.is_open() {
-            return false;
-        }
         let before = (
             self.draft.revision(),
             self.intent.revision(),
@@ -301,16 +404,33 @@ impl AgentQuickComposer {
             self.send_enabled.revision(),
             self.send_requested.revision(),
         );
+        self.poll_retained_sessions();
+        if !self.is_open() {
+            if self.pending_message.is_some() || self.pending_work.is_some() {
+                if let Some(actions) = &self.actions {
+                    actions.poll();
+                }
+                if self.pending_work.is_some()
+                    && let Some(tasks) = self.tasks.as_mut()
+                {
+                    tasks.observe(&self.room, &self.agent);
+                }
+                self.poll_submission();
+                self.refresh_status();
+                self.refresh_enabled();
+            }
+            return before
+                != (
+                    self.draft.revision(),
+                    self.intent.revision(),
+                    self.status.revision(),
+                    self.send_enabled.revision(),
+                    self.send_requested.revision(),
+                );
+        }
         let selected = self.intent.get();
         if selected != self.shown_intent {
-            if self.pending_message.is_none() && self.pending_work.is_none() {
-                self.save_draft();
-                self.shown_intent = selected;
-                self.message_receipt_revision = None;
-                self.load_draft();
-            } else {
-                self.intent.set(self.shown_intent);
-            }
+            self.switch_intent(selected);
         }
         if let Some(actions) = &self.actions {
             actions.poll();
@@ -334,6 +454,111 @@ impl AgentQuickComposer {
                 self.send_enabled.revision(),
                 self.send_requested.revision(),
             )
+    }
+
+    fn switch_intent(&mut self, selected: ComposerIntent) {
+        self.save_draft();
+        let shared_actions = self.actions.clone();
+        self.park_pending_session();
+        self.shown_intent = selected;
+        self.intent.set(selected);
+        self.message_receipt_revision = None;
+        self.pending_message_offer = None;
+        self.message_offer = None;
+        self.next_message_offer_refresh = None;
+        self.permission_refused = false;
+        if let Some(session) =
+            self.retained_sessions
+                .remove(&(self.room.clone(), self.agent.clone(), selected))
+        {
+            self.actions = Some(session.actions);
+            self.tasks = Some(session.tasks);
+            self.pending_message = session.pending_message;
+            self.pending_work = session.pending_work;
+        } else if let Some(actions) = shared_actions {
+            self.tasks = Some(AgentTaskFrontiers::with_actions(actions.clone()));
+            self.actions = Some(actions);
+            self.pending_message = None;
+            self.pending_work = None;
+        }
+        self.load_draft_and_rebind_pending_revision();
+        if let Some(tasks) = self.tasks.as_mut() {
+            tasks.observe(&self.room, &self.agent);
+        }
+        if selected == ComposerIntent::Message && self.pending_message.is_none() {
+            self.start_message_offer_refresh();
+        }
+    }
+
+    fn poll_retained_sessions(&mut self) {
+        let drafts = &mut self.drafts;
+        self.retained_sessions
+            .retain(|(room, agent, intent), session| {
+                session.actions.poll();
+                if session.pending_work.is_some() {
+                    session.tasks.observe(room, agent);
+                }
+                if let Some(pending) = session.pending_message.as_mut() {
+                    match ui::agent_message_action::poll(
+                        &session.actions,
+                        room,
+                        agent,
+                        &pending.text,
+                        &pending.state,
+                        pending.deadline,
+                        pending.pages_remaining,
+                    ) {
+                        AgentMessagePoll::Waiting => {}
+                        AgentMessagePoll::Advance {
+                            submission,
+                            pages_remaining,
+                        } => {
+                            pending.state = submission;
+                            pending.pages_remaining = pages_remaining;
+                        }
+                        AgentMessagePoll::Succeeded => {
+                            clear_retained_draft(
+                                drafts,
+                                room,
+                                agent,
+                                *intent,
+                                pending.draft_revision,
+                            );
+                            session.pending_message = None;
+                        }
+                        AgentMessagePoll::Failed => session.pending_message = None,
+                    }
+                }
+                if let Some(pending) = session.pending_work {
+                    let settled = match pending.intent {
+                        ComposerIntent::Queue => match session.tasks.queue_state() {
+                            AgentQueueState::Queued { .. } => Some(true),
+                            AgentQueueState::Failed => Some(false),
+                            AgentQueueState::Ready | AgentQueueState::Submitting => None,
+                        },
+                        ComposerIntent::Steer => match session.tasks.direction_state() {
+                            AgentDirectionState::Saved { .. }
+                            | AgentDirectionState::Applied { .. } => Some(true),
+                            AgentDirectionState::NeedsRefresh(_) => Some(false),
+                            AgentDirectionState::Draft | AgentDirectionState::Submitting => None,
+                        },
+                        ComposerIntent::Message => None,
+                    };
+                    if let Some(success) = settled {
+                        session.pending_work = None;
+                        if success {
+                            clear_retained_draft(
+                                drafts,
+                                room,
+                                agent,
+                                pending.intent,
+                                pending.draft_revision,
+                            );
+                        }
+                    }
+                }
+                session.is_pending()
+            });
     }
 
     fn submit(&mut self) {
@@ -615,26 +840,56 @@ impl AgentQuickComposer {
 
     fn save_draft(&mut self) {
         if !self.room.is_empty() && !self.agent.is_empty() {
-            self.drafts
-                .values
-                .insert(self.draft_key(), self.draft.get());
+            self.drafts.values.insert(
+                self.draft_key(),
+                DraftEntry {
+                    text: self.draft.get(),
+                    revision: self.draft.revision(),
+                },
+            );
         }
     }
 
-    fn load_draft(&self) {
+    fn load_draft_and_rebind_pending_revision(&mut self) {
+        let key = self.draft_key();
+        let saved = self.drafts.values.get(&key).cloned();
         self.draft.set(
-            self.drafts
-                .values
-                .get(&self.draft_key())
-                .cloned()
-                .unwrap_or_default(),
+            saved
+                .as_ref()
+                .map_or_else(String::new, |entry| entry.text.clone()),
+        );
+        let loaded_revision = self.draft.revision();
+        if let Some(saved) = saved {
+            if let Some(pending) = self.pending_message.as_mut()
+                && pending.draft_revision == saved.revision
+            {
+                pending.draft_revision = loaded_revision;
+            }
+            if let Some(pending) = self.pending_work.as_mut()
+                && pending.draft_revision == saved.revision
+            {
+                pending.draft_revision = loaded_revision;
+            }
+        }
+        self.drafts.values.insert(
+            key,
+            DraftEntry {
+                text: self.draft.get(),
+                revision: loaded_revision,
+            },
         );
     }
 
     fn clear_if_unchanged(&mut self, revision: u64) {
         if self.draft.revision() == revision {
             self.draft.set(String::new());
-            self.drafts.values.insert(self.draft_key(), String::new());
+            self.drafts.values.insert(
+                self.draft_key(),
+                DraftEntry {
+                    text: String::new(),
+                    revision: self.draft.revision(),
+                },
+            );
         }
     }
 
@@ -651,6 +906,23 @@ impl AgentQuickComposer {
     #[cfg(test)]
     pub(crate) fn panel_rect(&self) -> Rect {
         self.popover.rect()
+    }
+}
+
+fn clear_retained_draft(
+    drafts: &mut Drafts,
+    room: &str,
+    agent: &str,
+    intent: ComposerIntent,
+    revision: u64,
+) {
+    let key = (room.to_owned(), agent.to_owned(), intent);
+    let Some(entry) = drafts.values.get_mut(&key) else {
+        return;
+    };
+    if entry.revision == revision {
+        entry.text.clear();
+        entry.revision = entry.revision.saturating_add(1);
     }
 }
 
@@ -733,6 +1005,37 @@ impl Widget for AgentQuickComposer {
 
     fn traps_focus(&self) -> bool {
         self.popover.traps_focus()
+    }
+
+    fn next_wake_deadline(&self) -> Option<std::time::Instant> {
+        let mut deadline = self.popover.next_wake_deadline();
+        deadline = earliest(
+            deadline,
+            self.pending_message
+                .as_ref()
+                .and_then(pending_discovery_deadline),
+        );
+        if self.is_open() {
+            deadline = earliest(
+                deadline,
+                self.pending_message_offer
+                    .as_ref()
+                    .map(|pending| pending.deadline),
+            );
+            deadline = earliest(deadline, self.next_message_offer_refresh);
+        }
+        if self.is_open() || self.pending_work.is_some() {
+            deadline = earliest(
+                deadline,
+                self.tasks
+                    .as_ref()
+                    .and_then(AgentTaskFrontiers::next_refresh_deadline),
+            );
+        }
+        for session in self.retained_sessions.values() {
+            deadline = earliest(deadline, session.next_wake_deadline());
+        }
+        deadline
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -831,12 +1134,12 @@ mod tests {
         composer.set_draft("message");
         composer.save_draft();
         composer.shown_intent = ComposerIntent::Queue;
-        composer.load_draft();
+        composer.load_draft_and_rebind_pending_revision();
         assert_eq!(composer.draft(), "");
         composer.set_draft("queued work");
         composer.save_draft();
         composer.shown_intent = ComposerIntent::Message;
-        composer.load_draft();
+        composer.load_draft_and_rebind_pending_revision();
         assert_eq!(composer.draft(), "message");
     }
 
@@ -873,6 +1176,218 @@ mod tests {
 
         assert_eq!(composer.draft(), "submitted");
         assert_ne!(composer.draft.revision(), submitted);
+    }
+
+    #[test]
+    fn a_hidden_session_keeps_polling_and_clears_only_its_unchanged_draft() {
+        use ui::collaboration::{CollabEvent, CollabRequest};
+        use ui::widget::Collaborative;
+
+        let invocation = InvocationId(uuid::Uuid::from_bytes([0x4d; 16]));
+        let mut actions = ui::remote_actions::RemoteActions::session();
+        let call = actions.invoke_with_id(
+            invocation,
+            RemoteActionTarget {
+                provider: "chat-provider".into(),
+                address: ActionAddress::new("chat.person:scribe", "message"),
+            },
+            InvokeArgument::Text("Review the release notes".into()),
+            None,
+        );
+        assert!(matches!(
+            actions.take_collab_requests().as_slice(),
+            [CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Invoke(request),
+            }] if request.invocation == invocation
+        ));
+        let mut composer = AgentQuickComposer {
+            room: "room-a".into(),
+            agent: "scribe".into(),
+            actions: Some(actions.clone()),
+            tasks: Some(AgentTaskFrontiers::with_actions(actions.clone())),
+            ..AgentQuickComposer::default()
+        };
+        composer.set_draft("Review the release notes");
+        composer.pending_message = Some(PendingMessage {
+            state: AgentMessageSubmission::Invoke { invocation, call },
+            deadline: std::time::Instant::now(),
+            pages_remaining: 0,
+            text: "Review the release notes".into(),
+            draft_revision: composer.draft.revision(),
+            outcome_uncertain: false,
+        });
+        composer.save_draft();
+        assert!(!composer.is_open());
+
+        actions.handle_collab_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation,
+                status: ReceiptStatus::Completed {
+                    output: tilo_actions::ActionOutput::default(),
+                },
+            }),
+        });
+        composer.tick();
+
+        assert!(composer.pending_message.is_none());
+        assert_eq!(composer.draft(), "");
+    }
+
+    #[test]
+    fn a_switched_away_session_keeps_custody_until_its_terminal_receipt() {
+        use ui::collaboration::{CollabEvent, CollabRequest};
+        use ui::widget::Collaborative;
+
+        let invocation = InvocationId(uuid::Uuid::from_bytes([0x4e; 16]));
+        let mut actions = ui::remote_actions::RemoteActions::session();
+        let call = actions.invoke_with_id(
+            invocation,
+            RemoteActionTarget {
+                provider: "chat-provider".into(),
+                address: ActionAddress::new("chat.person:scribe", "message"),
+            },
+            InvokeArgument::Text("Review the release notes".into()),
+            None,
+        );
+        let _invoke = actions.take_collab_requests();
+        let mut composer = AgentQuickComposer {
+            room: "room-a".into(),
+            agent: "scribe".into(),
+            actions: Some(actions.clone()),
+            tasks: Some(AgentTaskFrontiers::with_actions(actions.clone())),
+            ..AgentQuickComposer::default()
+        };
+        composer.set_draft("Review the release notes");
+        composer.pending_message = Some(PendingMessage {
+            state: AgentMessageSubmission::Invoke { invocation, call },
+            deadline: std::time::Instant::now(),
+            pages_remaining: 0,
+            text: "Review the release notes".into(),
+            draft_revision: composer.draft.revision(),
+            outcome_uncertain: false,
+        });
+        composer.save_draft();
+        composer.park_pending_session();
+        composer.room = "room-b".into();
+        composer.agent = "quill".into();
+
+        assert_eq!(composer.retained_sessions.len(), 1);
+        actions.handle_collab_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation,
+                status: ReceiptStatus::Completed {
+                    output: tilo_actions::ActionOutput::default(),
+                },
+            }),
+        });
+        composer.tick();
+
+        assert!(composer.retained_sessions.is_empty());
+        let saved = composer
+            .drafts
+            .values
+            .get(&("room-a".into(), "scribe".into(), ComposerIntent::Message))
+            .expect("the submitted agent draft remains privately keyed");
+        assert_eq!(saved.text, "");
+        let follow_up = actions.take_collab_requests();
+        assert!(
+            follow_up.iter().all(|request| !matches!(
+                request,
+                CollabRequest::RemoteAction {
+                    message: RemoteActionMessage::Invoke(request),
+                }
+                if request.invocation == invocation
+                    || request.target.address.action == "message"
+            )),
+            "background custody never emits a duplicate invocation: {follow_up:?}"
+        );
+    }
+
+    #[test]
+    fn offer_expiry_is_a_real_widget_wake_deadline() {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut composer = AgentQuickComposer::default();
+        composer.open_for_shots(
+            "room-a",
+            "scribe",
+            "Scribe",
+            "",
+            Rect::new(10.0, 10.0, 34.0, 34.0),
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+        );
+        composer.pending_message_offer = Some(PendingMessageOffer {
+            state: ui::agent_message_action::begin(&ui::remote_actions::RemoteActions::session()),
+            deadline,
+            pages_remaining: 1,
+        });
+        composer.next_message_offer_refresh = None;
+
+        assert_eq!(composer.next_wake_deadline(), Some(deadline));
+    }
+
+    #[test]
+    fn an_unresolved_dispatched_message_does_not_spin_the_desktop() {
+        let invocation = InvocationId(uuid::Uuid::from_bytes([0x4f; 16]));
+        let composer = AgentQuickComposer {
+            pending_message: Some(PendingMessage {
+                state: AgentMessageSubmission::Invoke {
+                    invocation,
+                    call: ui::LocalState::new(RemoteCall::Pending),
+                },
+                deadline: std::time::Instant::now(),
+                pages_remaining: 0,
+                text: "Review the release notes".into(),
+                draft_revision: 1,
+                outcome_uncertain: true,
+            }),
+            ..AgentQuickComposer::default()
+        };
+
+        assert_eq!(composer.next_wake_deadline(), None);
+    }
+
+    #[test]
+    fn switching_intents_restores_the_exact_pending_operation() {
+        let invocation = InvocationId(uuid::Uuid::from_bytes([0x50; 16]));
+        let actions = ui::remote_actions::RemoteActions::session();
+        let call = actions.invoke_with_id(
+            invocation,
+            RemoteActionTarget {
+                provider: "chat-provider".into(),
+                address: ActionAddress::new("chat.person:scribe", "message"),
+            },
+            InvokeArgument::Text("Review the release notes".into()),
+            None,
+        );
+        let mut composer = AgentQuickComposer {
+            room: "room-a".into(),
+            agent: "scribe".into(),
+            actions: Some(actions.clone()),
+            tasks: Some(AgentTaskFrontiers::with_actions(actions)),
+            pending_message: Some(PendingMessage {
+                state: AgentMessageSubmission::Invoke { invocation, call },
+                deadline: std::time::Instant::now(),
+                pages_remaining: 0,
+                text: "Review the release notes".into(),
+                draft_revision: 1,
+                outcome_uncertain: false,
+            }),
+            ..AgentQuickComposer::default()
+        };
+        composer.set_draft("Review the release notes");
+
+        composer.switch_intent(ComposerIntent::Queue);
+        assert!(composer.pending_message.is_none());
+        assert!(composer.retained_sessions.contains_key(&(
+            "room-a".into(),
+            "scribe".into(),
+            ComposerIntent::Message,
+        )));
+
+        composer.switch_intent(ComposerIntent::Message);
+        assert!(composer.pending_message.is_some());
+        assert!(composer.retained_sessions.is_empty());
+        assert_eq!(composer.draft(), "Review the release notes");
     }
 
     #[test]
