@@ -49,6 +49,12 @@ fn device_key(handle: &str) -> SigningKey {
     SigningKey::from_bytes(&seed)
 }
 
+/// The stable human principal authenticated by this fixture's certificate.
+/// A display handle is deliberately not an authority or presence identifier.
+pub fn principal_id() -> String {
+    hex::encode(SigningKey::from_bytes(&ROOT_KEY).verifying_key().to_bytes())
+}
+
 /// # Panics
 ///
 /// Panics if the deterministic test certificate or presentation cannot encode.
@@ -452,7 +458,7 @@ pub fn spawn_with_agent_actions(
         .grant_as(
             &principal,
             ui::permissions::CapOverride::membership(
-                ui::permissions::Subject::agent("Scribe"),
+                ui::permissions::Subject::agent("scribe"),
                 workspace.room.to_string(),
                 ui::permissions::Verb::Write,
             ),
@@ -462,7 +468,7 @@ pub fn spawn_with_agent_actions(
         .grant_as(
             &principal,
             ui::permissions::CapOverride::grant(
-                ui::permissions::Subject::agent("Scribe"),
+                ui::permissions::Subject::agent("scribe"),
                 ui::permissions::Scope::ResourceType(collab_types::ArtifactKind::Note),
                 ui::permissions::Verb::Write,
             ),
@@ -473,7 +479,7 @@ pub fn spawn_with_agent_actions(
             .grant_as(
                 &principal,
                 ui::permissions::CapOverride::grant(
-                    ui::permissions::Subject::agent("Scribe"),
+                    ui::permissions::Subject::agent("scribe"),
                     ui::permissions::Scope::Action {
                         app: (*app).to_string(),
                         action: (*action).to_string(),
