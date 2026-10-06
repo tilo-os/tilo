@@ -42,3 +42,15 @@ mail-compose-discard = Discard
 mail-compose-prompt-link = Link
 mail-compose-prompt-add = Add link
 mail-compose-prompt-cancel = Cancel
+
+# Shared address-book choices. Hints are selected explicitly, never identity proof.
+mail-contact-recipients = Contacts recipients
+mail-contact-draft-choice = Draft to { $person } ({ $id }) at { $email } from { $sender } ({ $sender_account })
+mail-contact-draft-prepared = Contacts draft prepared — review it before sending
+mail-contact-sender-changed = Select the reviewed sending account before sending this draft
+mail-contact-prepare = Prepare draft
+mail-contact-existing-draft = Finish or discard the existing draft before preparing a Contacts draft
+mail-contact-unavailable = Shared Contacts is unavailable
+mail-contact-person-unavailable = Contact is no longer available
+mail-contact-recipient-changed = Contact changed; select and review it again
+mail-contact-account-changed = Sending account changed; select and review it again

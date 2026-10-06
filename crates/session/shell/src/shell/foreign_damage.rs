@@ -286,14 +286,24 @@ mod capture_tests {
         seq: u64,
         brush: Affine,
     ) -> (Scene, Vec<DrawnImage>) {
+        captured_scene_with_extent(surface, rgba, seq, brush, (8, 8))
+    }
+
+    fn captured_scene_with_extent(
+        surface: SurfaceId,
+        rgba: &[u8],
+        seq: u64,
+        brush: Affine,
+        size: (u32, u32),
+    ) -> (Scene, Vec<DrawnImage>) {
         let image = ImageData {
             data: Blob::new(Arc::new(rgba.to_vec())),
-            width: 8,
-            height: 8,
+            width: size.0,
+            height: size.1,
             format: ImageFormat::Rgba8,
             alpha_type: ImageAlphaType::AlphaPremultiplied,
         };
-        let extent = Rect::new(0.0, 0.0, 8.0, 8.0);
+        let extent = Rect::new(0.0, 0.0, f64::from(size.0), f64::from(size.1));
         let recording = Recording::begin();
         record(
             surface,
@@ -305,6 +315,52 @@ mod capture_tests {
         let mut scene = Scene::new();
         scene.fill(Fill::NonZero, brush, &ImageBrush::new(image), None, &extent);
         (scene, recording.finish())
+    }
+
+    #[test]
+    fn cropped_image_without_buffer_coordinate_proof_keeps_full_bounds() {
+        let surface = 8_493_302;
+        let frames = super::super::foreign::store();
+        let old_buffer = [255, 0, 0, 255].repeat(64);
+        let mut new_buffer = old_buffer.clone();
+        new_buffer
+            .get_mut(72..76)
+            .unwrap()
+            .copy_from_slice(&[0, 255, 0, 255]);
+        frames.publish_rgba(surface, &old_buffer, 8, 8);
+        let old_crop = [255, 0, 0, 255].repeat(32);
+        let mut new_crop = old_crop.clone();
+        new_crop
+            .get_mut(40..44)
+            .unwrap()
+            .copy_from_slice(&[0, 255, 0, 255]);
+        let brush = Affine::translate((10.0, 20.0));
+        let (old, old_images) = captured_scene_with_extent(
+            surface,
+            &old_crop,
+            frames.frame_seq(surface),
+            brush,
+            (4, 8),
+        );
+        frames.publish_damaged_rgba_for_test(
+            surface,
+            &new_buffer,
+            (8, 8),
+            vec![Rect::new(2.0, 2.0, 3.0, 3.0)],
+        );
+        let (new, new_images) = captured_scene_with_extent(
+            surface,
+            &new_crop,
+            frames.frame_seq(surface),
+            brush,
+            (4, 8),
+        );
+        assert_eq!(
+            image_only_damage(&old, &new, &old_images, &new_images),
+            Some(vec![new_images[0].bounds]),
+            "full-buffer damage cannot certify a cropped image without its coordinate mapping"
+        );
+        frames.forget(surface);
     }
 
     #[test]

@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 
 PINS = {'src/api-impl/android/app/Activity.java': 'b696fd26674c5549fe9956511fde168840ae514d8e9f71525966a96bc21731e2',
+ 'src/api-impl/android/content/ContentResolver.java': 'bb5ee7805ee956a980c48755895fd0ddb66735d245ffbcae1e85f075e4075238',
  'src/api-impl/android/app/NotificationManager.java': 'ed4939335389b7efbf9e0c405d92db43a62a642ede049092e1cd983d3e29d9aa',
  'src/api-impl/android/content/pm/PackageManager.java': '0ce023e27cb636d9a3944ad83607b2bdc4f474385dcb2eab0c0b05db8465c583',
  'src/api-impl/android/view/View.java': '2efcb76f87b12ed72c3ac7b25971487efe3fea849a2f9ff141238cce62f4f25d',
@@ -76,8 +77,32 @@ def patch(root):
         if (description != null)
             android.app.TiloAccessibility.describe(widget, description.toString(), true);''')
     text_view.write_text(text)
+    resolver = root / 'src/api-impl/android/content/ContentResolver.java'
+    text = resolver.read_text()
+    old = '''			MatrixCursor cursor = new MatrixCursor(projection);
+			Object[] row = new Object[projection.length];
+			native_query_file_info(uri.getPath(), projection, row);
+			cursor.addRow(row);
+			return cursor;'''
+    if text.count(old) != 2:
+        raise ValueError('unexpected qualified file query implementation')
+    text = text.replace(old, '\t\t\treturn android.app.TiloDocuments.queryFile(uri, projection);')
+    text = text.replace('''	public OutputStream openOutputStream(Uri uri) throws FileNotFoundException {
+		ParcelFileDescriptor fd = openFileDescriptor(uri, "w");''', '''	public OutputStream openOutputStream(Uri uri) throws FileNotFoundException {
+		return openOutputStream(uri, "w");
+	}
+
+	public OutputStream openOutputStream(Uri uri, String mode) throws FileNotFoundException {
+		ParcelFileDescriptor fd = openFileDescriptor(uri, mode);''')
+    for signature in (
+        'public Cursor query(Uri uri, String[] projection, Bundle queryArgs, CancellationSignal cancellationSignal) {',
+        'public Cursor query(Uri uri, String[] projection, String selection, String[] selectionArgs, String sortOrder, CancellationSignal cancellationSignal) {',
+    ):
+        text = text.replace(signature, signature + '\n\t\tif (cancellationSignal != null) cancellationSignal.throwIfCanceled();')
+    resolver.write_text(text)
     shutil.copyfile(Path(__file__).with_name('TiloChooser.java'), root / 'src/api-impl/android/app/TiloChooser.java')
     shutil.copyfile(Path(__file__).with_name('TiloAccessibility.java'), root / 'src/api-impl/android/app/TiloAccessibility.java')
+    shutil.copyfile(Path(__file__).with_name('TiloDocuments.java'), root / 'src/api-impl/android/app/TiloDocuments.java')
 
 
 if __name__ == '__main__':

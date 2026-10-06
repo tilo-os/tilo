@@ -2415,3 +2415,7 @@ shortcut-name-tab-menu = Show tab menu
 search-action-tab-menu = Show tab menu
 search-action-tab-menu-subtitle = Actions for the focused tab
 search-action-tab-menu-unavailable = No focused tab is available
+
+search-action-tab-drag-cancel = Cancel tab drag
+search-action-tab-drag-cancel-subtitle = Keep the dragged tab in its original place
+search-action-tab-drag-cancel-unavailable = Tab dragging cannot be cancelled while the session is locked.

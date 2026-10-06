@@ -356,6 +356,7 @@ impl<R: Resource> ResourceRoot<R> {
         if let (Some(permissions), Some(write)) = (&self.permissions, &self.write) {
             self.dispatch.set_read_only(!permissions.check(write));
         }
+        self.dispatch.refresh_permission_states();
     }
 
     pub(crate) fn live(&self) -> &Live<R> {
