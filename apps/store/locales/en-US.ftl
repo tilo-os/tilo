@@ -34,3 +34,5 @@ store-technical-details = Technical details
 store-show-technical-details = Show technical details
 store-hide-technical-details = Hide technical details
 store-publisher-key = Publisher key
+store-about-app = About this app
+store-supported-languages = Supported languages
