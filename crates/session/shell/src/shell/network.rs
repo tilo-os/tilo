@@ -12,6 +12,8 @@ mod hosted_topology;
 mod live_identity_tests;
 mod native_enrollment;
 mod native_ingress;
+#[cfg(test)]
+mod paired_continuity_tests;
 mod record_content;
 pub use record_content::InboundRecordContent;
 #[cfg(test)]
