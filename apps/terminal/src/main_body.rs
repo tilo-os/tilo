@@ -918,6 +918,24 @@ impl TerminalWidget {
         self.session_disconnected.load(Ordering::Acquire)
     }
 
+    /// Process exit may precede the reader's final bytes. Observe the actual
+    /// reader channel closing only after every queued chunk has been pumped.
+    #[cfg(test)]
+    pub(crate) fn pty_output_drained(&self) -> bool {
+        if let Some(bytes) = self.deferred_output.take() {
+            self.deferred_output.set(Some(bytes));
+            return false;
+        }
+        match self.output_rx.try_recv() {
+            Ok(bytes) => {
+                self.deferred_output.set(Some(bytes));
+                false
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => true,
+        }
+    }
+
     fn mark_disconnected(&self, message: &str) {
         set_terminal_disconnected(
             &self.session_disconnected,
