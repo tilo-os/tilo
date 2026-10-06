@@ -2339,9 +2339,31 @@ impl FrameHarness {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn render_rgba_on(&self, background: vello::peniko::Color) -> Vec<u8> {
-        self.drain_component_wakes();
         let (w, h) = self.device_size();
         let mut renderer = crate::offscreen::OffscreenRenderer::new(w, h);
+        self.render_rgba_with(&mut renderer, background)
+    }
+
+    /// Rasterise the recorded frame and its captured backdrop with a caller-owned
+    /// renderer. Pixel oracles can reuse a renderer with stable preprocessing
+    /// without changing process-wide settings or the widget draw pipeline.
+    ///
+    /// # Panics
+    /// Panics if the renderer dimensions differ from the capture's device size,
+    /// or the GPU cannot produce the bounded consecutive valid submissions.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn render_rgba_with(
+        &self,
+        renderer: &mut crate::offscreen::OffscreenRenderer,
+        background: vello::peniko::Color,
+    ) -> Vec<u8> {
+        self.drain_component_wakes();
+        assert_eq!(
+            (renderer.width, renderer.height),
+            self.device_size(),
+            "the renderer must match the actual capture dimensions"
+        );
         renderer.set_backdrop(Some(self.backdrop.clone()));
         renderer.render_resilient(&self.scene, background)
     }
