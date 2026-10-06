@@ -889,6 +889,7 @@ impl StoreApp {
         self.remotes_open = true;
         self.safety_open = false;
         self.focused_detail = None;
+        self.pending_detail = None;
         self.structure_dirty = true;
     }
 
@@ -896,6 +897,7 @@ impl StoreApp {
         self.safety_open = true;
         self.remotes_open = false;
         self.focused_detail = None;
+        self.pending_detail = None;
         self.structure_dirty = true;
     }
 
@@ -959,15 +961,24 @@ impl StoreApp {
     /// Apply a detail snapshot whose retained search projection was already
     /// prepared by the serialized Store worker.  Catalogue-wide indexing is
     /// intentionally never part of a frame-time snapshot drain.
-    fn set_detail_from_worker(&mut self, detail: StoreItem) {
+    fn set_detail_from_worker(&mut self, update: crate::worker::DetailUpdate) {
+        let (detail, open_reference) = match update {
+            crate::worker::DetailUpdate::Requested { item, .. } => (item, false),
+            crate::worker::DetailUpdate::OpenedReference(item) => (Some(item), true),
+        };
+        let Some(detail) = detail else {
+            return;
+        };
         if let Some(item) = self.items.iter_mut().find(|item| item.id == detail.id) {
             *item = detail.clone();
         } else {
             self.items.push(detail.clone());
         }
-        self.focused_detail = Some(detail.id);
-        self.remotes_open = false;
-        self.safety_open = false;
+        if open_reference {
+            self.focused_detail = Some(detail.id);
+            self.remotes_open = false;
+            self.safety_open = false;
+        }
         self.structure_dirty = true;
     }
 
@@ -3679,23 +3690,35 @@ impl StoreApp {
         let snapshots: Vec<_> = std::iter::from_fn(|| worker.try_snapshot()).collect();
         let busy = worker.has_pending();
         for snap in snapshots {
-            let applies_items = match snap.query.as_deref() {
-                Some(query) => query == self.query(),
-                None => snap.detail.is_none(),
-            };
-            if applies_items {
-                self.set_items_from_worker(snap.items);
+            self.apply_worker_snapshot(snap);
+        }
+        self.set_worker_busy(busy);
+    }
+
+    fn apply_worker_snapshot(&mut self, snap: crate::worker::Snapshot) {
+        let current_detail = snap.detail.as_ref().is_none_or(|update| match update {
+            crate::worker::DetailUpdate::OpenedReference(_) => true,
+            crate::worker::DetailUpdate::Requested { id, .. } => {
+                self.focused_detail.as_deref() == Some(id.as_str())
             }
-            if let Some(detail) = snap.detail {
-                self.set_detail_from_worker(detail);
-            }
-            self.set_flatpak_available(snap.flatpak_available);
-            self.flatpak_error = snap.flatpak_error;
-            self.set_remotes(snap.remotes);
+        });
+        let applies_items = match snap.query.as_deref() {
+            Some(query) => query == self.query(),
+            None => snap.detail.is_none(),
+        };
+        if applies_items {
+            self.set_items_from_worker(snap.items);
+        }
+        if let Some(detail) = snap.detail {
+            self.set_detail_from_worker(detail);
+        }
+        self.set_flatpak_available(snap.flatpak_available);
+        self.flatpak_error = snap.flatpak_error;
+        self.set_remotes(snap.remotes);
+        if current_detail {
             self.set_status_line(snap.status_line);
             self.set_operation_error(snap.operation_error);
         }
-        self.set_worker_busy(busy);
     }
 
     /// Ask the worker for the search results and details the window now
@@ -3903,6 +3926,7 @@ impl StoreApp {
             }
             StoreEffect::ShowCatalogue => {
                 self.focused_detail = None;
+                self.pending_detail = None;
                 self.remotes_open = false;
                 self.safety_open = false;
                 self.structure_dirty = true;
@@ -4681,6 +4705,127 @@ fn operation_error_summary() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn late_detail_metadata_preserves_the_declared_navigation_destination() {
+        for destination in [
+            StoreEffect::ShowCatalogue,
+            StoreEffect::ShowRemotes,
+            StoreEffect::ShowDetails {
+                app: "id.chess".into(),
+            },
+        ] {
+            let mut app = seeded_app();
+            app.admit(StoreEffect::ShowDetails {
+                app: "id.notes".into(),
+            })
+            .unwrap();
+            let mut response = app
+                .items
+                .iter()
+                .find(|item| item.id == "id.notes")
+                .unwrap()
+                .clone();
+            response.description = "Enriched catalogue description".into();
+            app.admit(destination).unwrap();
+            let selected = app.focused_detail.clone();
+            let remotes = app.remotes_open;
+            app.apply_worker_snapshot(crate::worker::Snapshot {
+                items: app.items.clone(),
+                status_line: "Loaded an earlier app".into(),
+                query: None,
+                detail: Some(crate::worker::DetailUpdate::Requested {
+                    id: response.id.clone(),
+                    item: Some(response),
+                }),
+                remotes: Vec::new(),
+                flatpak_available: true,
+                flatpak_error: None,
+                operation_error: Some("Earlier detail request failed".into()),
+            });
+            assert_eq!(
+                app.focused_detail, selected,
+                "metadata cannot navigate away from the current destination"
+            );
+            assert_eq!(
+                app.remotes_open, remotes,
+                "metadata cannot close repositories"
+            );
+            assert_ne!(
+                app.status_line, "Loaded an earlier app",
+                "stale metadata cannot replace current feedback"
+            );
+            assert!(
+                app.operation_error.is_none(),
+                "stale detail errors cannot report failure for the current destination"
+            );
+            assert_eq!(
+                app.items
+                    .iter()
+                    .find(|item| item.id == "id.notes")
+                    .unwrap()
+                    .description,
+                "Enriched catalogue description",
+                "the response still enriches the catalogue"
+            );
+        }
+    }
+
+    #[test]
+    fn current_detail_feedback_and_opened_references_keep_their_navigation() {
+        let mut app = seeded_app();
+        app.admit(StoreEffect::ShowDetails {
+            app: "id.notes".into(),
+        })
+        .unwrap();
+        let response = app
+            .items
+            .iter()
+            .find(|item| item.id == "id.notes")
+            .unwrap()
+            .clone();
+        let snapshot = |detail, error| crate::worker::Snapshot {
+            items: Vec::new(),
+            status_line: "Detail response".into(),
+            query: None,
+            detail: Some(detail),
+            remotes: Vec::new(),
+            flatpak_available: true,
+            flatpak_error: None,
+            operation_error: error,
+        };
+        app.apply_worker_snapshot(snapshot(
+            crate::worker::DetailUpdate::Requested {
+                id: "id.notes".into(),
+                item: Some(response.clone()),
+            },
+            None,
+        ));
+        assert_eq!(app.focused_detail.as_deref(), Some("id.notes"));
+        assert_eq!(app.status_line, "Detail response");
+        app.apply_worker_snapshot(snapshot(
+            crate::worker::DetailUpdate::Requested {
+                id: "id.notes".into(),
+                item: None,
+            },
+            Some("Could not load this app".into()),
+        ));
+        assert_eq!(
+            app.operation_error.as_deref(),
+            Some("Could not load this app")
+        );
+        app.admit(StoreEffect::ShowRemotes).unwrap();
+        app.apply_worker_snapshot(snapshot(
+            crate::worker::DetailUpdate::OpenedReference(response),
+            None,
+        ));
+        assert_eq!(app.focused_detail.as_deref(), Some("id.notes"));
+        assert!(
+            !app.remotes_open,
+            "an explicitly opened reference still navigates to its app"
+        );
+        assert!(app.operation_error.is_none());
+    }
 
     fn inspected_store() -> (
         tilo_test_env::ScopedEnv,
