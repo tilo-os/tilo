@@ -111,3 +111,25 @@ chat-agent-empty-message = Send a message without creating a task.
 chat-agent-roster-label = { $name }, agent
 chat-agent-float = Float conversation
 chat-agent-return = Return conversation
+chat-agent-mode-message = Message
+chat-agent-mode-queue = Queue
+chat-agent-mode-steer = Steer
+chat-agent-task-placeholder = Describe the task
+chat-agent-steer-placeholder = Add direction for the current task
+chat-agent-send-message = Send message
+chat-agent-send-queue = Queue task
+chat-agent-send-steer = Save direction
+chat-agent-task-loading = Loading current task…
+chat-agent-task-none = No current task
+chat-agent-task-unavailable = Current task unavailable
+chat-agent-task-working = Working
+chat-agent-task-stopping = Stopping
+chat-agent-task-attention = Needs attention
+chat-agent-direction-saved = Direction saved
+chat-agent-direction-applied = Direction applied
+chat-agent-task-status = { $state } · { $title }
+chat-agent-task-queued-count = { $count ->
+    [one] 1 queued task
+   *[other] { $count } queued tasks
+}
+chat-agent-stop = Stop

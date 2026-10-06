@@ -885,6 +885,8 @@ impl ChatApp {
                 self.direct_agent = Some(agent.clone());
                 self.active_channel =
                     crate::doc::ChatDoc::agent_conversation_channel_id(&self.active_ws, &agent);
+                let workspace = self.active_ws.clone();
+                self.agent_task_context(&workspace, &agent);
                 self.thread_open = None;
                 self.reset_timeline_to_latest();
                 self.focus = Focus::Main;
@@ -898,6 +900,36 @@ impl ChatApp {
                 } else if let Some(agent) = self.direct_agent.clone() {
                     let workspace = self.context_ws.clone();
                     let _ = self.float_agent_conversation(&workspace, &agent);
+                }
+            }
+            Hit::AgentIntent(intent) if self.direct_agent.is_some() => {
+                if intent != crate::app::AgentComposerIntent::Steer
+                    || self
+                        .direct_agent
+                        .clone()
+                        .map(|agent| self.agent_task_context(&self.active_ws.clone(), &agent))
+                        .is_some_and(|tasks| tasks.borrow().can_steer())
+                {
+                    self.set_direct_agent_intent(intent);
+                    self.set_composer_focus();
+                }
+            }
+            Hit::AgentTask(task_id) => {
+                if let Some(agent) = self.direct_agent.clone() {
+                    let workspace = self.active_ws.clone();
+                    let _ = self
+                        .agent_task_context(&workspace, &agent)
+                        .borrow_mut()
+                        .select_for(&workspace, &agent, &task_id);
+                }
+            }
+            Hit::AgentStop => {
+                if let Some(agent) = self.direct_agent.clone() {
+                    let workspace = self.active_ws.clone();
+                    let _ = self
+                        .agent_task_context(&workspace, &agent)
+                        .borrow_mut()
+                        .stop();
                 }
             }
             Hit::VoiceChannel(id) => self.join_voice(&id, doc),
@@ -1562,25 +1594,51 @@ impl ChatApp {
             if text.trim().is_empty() || !self.room_agents.iter().any(|known| known == &agent) {
                 return;
             }
-            let action = actions::post_agent_message_action(
-                &self.active_ws,
-                &agent,
-                &text,
-                crate::model::AgentIntent::Message,
-                now_secs(),
-            )
-            .with_body(self.composer_main.clips());
-            #[cfg(test)]
-            self.dispatched.borrow_mut().push(action.clone());
-            let sent = self.dispatch.as_ref().is_some_and(|dispatch| {
-                dispatch
-                    .apply_now_with(doc, &action, actions::history_context(&action))
-                    .is_ok()
-            });
-            if sent {
-                self.composer_main.clear_private();
-                self.jump_to_latest();
-                self.reload(doc);
+            let workspace = self.active_ws.clone();
+            let intent = self.direct_agent_intent();
+            if intent == crate::app::AgentComposerIntent::Message {
+                let action = actions::post_agent_message_action(
+                    &workspace,
+                    &agent,
+                    &text,
+                    crate::model::AgentIntent::Message,
+                    now_secs(),
+                )
+                .with_body(self.composer_main.clips());
+                #[cfg(test)]
+                self.dispatched.borrow_mut().push(action.clone());
+                let sent = self.dispatch.as_ref().is_some_and(|dispatch| {
+                    dispatch
+                        .apply_now_with(doc, &action, actions::history_context(&action))
+                        .is_ok()
+                });
+                if sent {
+                    self.composer_main.clear_private();
+                    self.jump_to_latest();
+                    self.reload(doc);
+                }
+                return;
+            }
+            let tasks = self.agent_task_context(&workspace, &agent);
+            let submitted = match intent {
+                crate::app::AgentComposerIntent::Queue => {
+                    tasks.borrow_mut().queue(&text, None).is_ok()
+                }
+                crate::app::AgentComposerIntent::Steer => tasks.borrow_mut().steer(&text).is_ok(),
+                crate::app::AgentComposerIntent::Message => false,
+            };
+            if submitted {
+                self.agent_submissions.update(|pending| {
+                    pending.insert(
+                        (workspace, agent),
+                        crate::app::AgentSubmission { text, intent },
+                    );
+                });
+                // A local test host, or an already-warm broker connection, may
+                // settle synchronously. The same poll is harmless while the
+                // durable owner receipt is still pending and never clears the
+                // private draft before that receipt.
+                self.poll_agent_tasks();
             }
             return;
         }
@@ -1932,10 +1990,141 @@ fn run_worker(name: &str, job: impl FnOnce() + Send + 'static, status: &mut Opti
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use super::*;
     use crate::doc::{ChatDoc, NewMessage};
     use crate::model;
+    use tilo_actions::remote::{
+        ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+        InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
+    };
+    use tilo_actions::{ActionOutput, InvocationId};
     use tilo_automerge::ApplyIncoming;
+
+    #[derive(Default)]
+    struct TaskControlHost {
+        requests: Mutex<Vec<InvokeRequest>>,
+    }
+
+    impl TaskControlHost {
+        fn requests(&self) -> Vec<InvokeRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    impl ActionHost for TaskControlHost {
+        fn query(
+            &self,
+            _caller: &Caller,
+            _query: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionHostError>> {
+            Pending::ready(Ok(CataloguePage {
+                revision: "chat-task-controls-1".into(),
+                exhausted: true,
+                ..CataloguePage::default()
+            }))
+        }
+
+        fn invoke(
+            &self,
+            _caller: &Caller,
+            request: InvokeRequest,
+        ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+            self.requests.lock().unwrap().push(request.clone());
+            let task = request
+                .target
+                .address
+                .resource
+                .strip_prefix("desktop:task:")
+                .unwrap_or_default();
+            let value = match request.target.address.action.as_str() {
+                "read-current-tasks" => serde_json::json!({
+                    "generation": 8,
+                    "complete": true,
+                    "total": 1,
+                    "tasks": [{
+                        "task_id": "task-current",
+                        "title": "Review the release",
+                        "assigned_agent": "scribe",
+                        "status": "in_progress",
+                        "run_epoch": 7,
+                        "active_agent": "scribe",
+                        "after_revision": 4,
+                        "applied_revision": 4,
+                        "route": "model",
+                        "cancellation_requested": false
+                    }],
+                    "pending_complete": true,
+                    "pending_total": 1,
+                    "pending": [{
+                        "task_id": "task-queued",
+                        "title": "Check accessibility",
+                        "assigned_agent": "scribe",
+                        "status": "queued",
+                        "route": "model"
+                    }]
+                }),
+                "read-task" => serde_json::json!({
+                    "generation": 8,
+                    "task_id": task,
+                    "title": "Review the release",
+                    "assigned_agent": "scribe",
+                    "status": "in_progress",
+                    "run_epoch": 7,
+                    "active_agent": "scribe",
+                    "after_revision": 5,
+                    "applied_revision": 4,
+                    "route": "model",
+                    "cancellation_requested": false
+                }),
+                "queue" => serde_json::json!({
+                    "generation": 9,
+                    "result": {"queued": {"task_id": "task-new"}},
+                    "delivery": "queued"
+                }),
+                "direct" => serde_json::json!({
+                    "result": {"direction_added": {"task_id": task, "revision": 5}}
+                }),
+                "stop" => serde_json::json!({
+                    "generation": 10,
+                    "result": {"cancellation_requested": {"task_id": task, "epoch": 7}},
+                    "delivery": "saved"
+                }),
+                action => {
+                    return Pending::ready(Err(ActionHostError::InvalidRequest {
+                        reason: format!("unexpected task action {action}"),
+                    }));
+                }
+            };
+            Pending::ready(Ok(InvocationReceipt {
+                invocation: request.invocation,
+                status: ReceiptStatus::Completed {
+                    output: ActionOutput {
+                        value: Some(value),
+                        resources: Vec::new(),
+                    },
+                },
+            }))
+        }
+
+        fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+            None
+        }
+
+        fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Result<(), ActionHostError> {
+            Err(ActionHostError::NotCancellable {
+                reason: "fixture operations settle immediately".into(),
+            })
+        }
+    }
+
+    fn json_argument(request: &InvokeRequest) -> &serde_json::Map<String, serde_json::Value> {
+        let InvokeArgument::Json(value) = &request.argument else {
+            panic!("task controls use closed JSON arguments")
+        };
+        value
+    }
 
     fn service_streams(app: &mut ChatApp, channel: &str, count: usize) {
         app.native_voice
@@ -2070,6 +2259,93 @@ mod tests {
     }
 
     #[test]
+    fn agent_composer_uses_owner_queue_direction_and_stop_without_chat_writes() {
+        use ui::agent_task_frontier::{AgentDirectionState, AgentQueueState, AgentStopState};
+
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.room_names
+            .insert("agent:scribe".into(), "Scribe".into());
+        let host = Arc::new(TaskControlHost::default());
+        app.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
+            Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
+            Caller::local_app("so.tilo.chat").in_room("ws_home"),
+        );
+        app.reload(&doc);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        app.poll_agent_tasks();
+        render_frame(&mut app, 1280.0, 800.0);
+        assert_eq!(
+            count_hits(&app, |hit| matches!(hit, Hit::AgentIntent(_))),
+            3,
+            "Message, Queue and owner-fenced Steer share one composer"
+        );
+        assert_eq!(count_hits(&app, |hit| matches!(hit, Hit::AgentStop)), 1);
+        let tasks = app.direct_agent_tasks().expect("owner-backed task context");
+        assert_eq!(tasks.borrow().pending_tasks().len(), 1);
+
+        app.on_hit(
+            Hit::AgentIntent(crate::app::AgentComposerIntent::Queue),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        type_str(&mut app, &mut doc, "Inspect the compact layout");
+        app.send_focused(&mut ui::widget::Edits::lend(&mut doc));
+        assert!(matches!(
+            tasks.borrow().queue_state(),
+            AgentQueueState::Queued { .. }
+        ));
+        assert_eq!(app.composer_main.private_plain().as_deref(), Some(""));
+        let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
+        assert!(
+            ChatDoc::list_messages(&doc, &channel).is_empty(),
+            "Queue is an owner command, never a fabricated Chat message"
+        );
+        let queue = host
+            .requests()
+            .into_iter()
+            .find(|request| request.target.address.action == "queue")
+            .expect("canonical Task Center queue invocation");
+        assert_eq!(queue.target.address.resource, "desktop:tasks");
+        assert_eq!(json_argument(&queue)["agent"], "scribe");
+        assert_eq!(json_argument(&queue)["route"], "model");
+        assert_eq!(
+            json_argument(&queue)["instruction"],
+            "Inspect the compact layout"
+        );
+
+        app.on_hit(
+            Hit::AgentIntent(crate::app::AgentComposerIntent::Steer),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        type_str(&mut app, &mut doc, "Include keyboard evidence");
+        app.send_focused(&mut ui::widget::Edits::lend(&mut doc));
+        assert!(matches!(
+            tasks.borrow().direction_state(),
+            AgentDirectionState::Saved { revision: 5, .. }
+        ));
+        let direct = host
+            .requests()
+            .into_iter()
+            .find(|request| request.target.address.action == "direct")
+            .expect("exact run-bound direction invocation");
+        assert_eq!(direct.target.address.resource, "desktop:task:task-current");
+        assert_eq!(json_argument(&direct)["run_epoch"], 7);
+        assert_eq!(json_argument(&direct)["after_revision"], 4);
+
+        app.on_hit(Hit::AgentStop, &mut ui::widget::Edits::lend(&mut doc));
+        app.poll_agent_tasks();
+        assert!(matches!(
+            tasks.borrow().stop_state(),
+            AgentStopState::Stopping { run_epoch: 7, .. }
+        ));
+    }
+
+    #[test]
     fn floated_agent_conversation_returns_the_same_private_editor() {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
@@ -2123,6 +2399,28 @@ mod tests {
                 transfer_covered: true,
                 coordinate_offset: [0.0, 0.0],
             },
+        );
+        assert!(
+            app.direct_agent.is_none(),
+            "the app source stays cleared during native window preparation"
+        );
+        assert!(
+            !app.agent_surfaces[&channel].placement.is_desktop_adopted(),
+            "Prepare is not the first-buffer acknowledgement"
+        );
+        let mut prepared = vello::Scene::new();
+        let mut prepared_text = ui::text_render::TextRenderer::new();
+        ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
+            &mut app,
+            &mut prepared,
+            vello::kurbo::Affine::IDENTITY,
+            &mut prepared_text,
+            &ui::theme::Theme::dark(),
+            &ui::presence::PresenceCtx::empty(),
+        );
+        assert!(
+            !prepared.encoding().is_empty(),
+            "the prepared Agent pane submits its first secondary buffer before Adopted"
         );
         ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
             &mut app,

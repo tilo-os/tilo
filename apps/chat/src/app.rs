@@ -14,7 +14,9 @@
 //! projection + an input router, in keeping with the toolkit's
 //! "state lives in the CRDT" contract.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::rc::Rc;
 use std::sync::mpsc::{Receiver, SyncSender};
 use ui::widget::{AppModel, ModelPath};
 
@@ -59,6 +61,20 @@ pub(crate) const HUDDLE_VIDEO: (f64, f64, f64, f64) = (0.505, 0.300, 0.250, 0.23
 pub(crate) enum Focus {
     Main,
     Thread,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum AgentComposerIntent {
+    #[default]
+    Message,
+    Queue,
+    Steer,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AgentSubmission {
+    pub(crate) text: String,
+    pub(crate) intent: AgentComposerIntent,
 }
 
 /// A right-click context menu over a channel or category row, or the
@@ -277,6 +293,13 @@ pub(crate) enum Hit {
     Agent(Id),
     /// Move the open direct conversation to a secondary surface, or return it.
     AgentWindow,
+    /// Choose what the direct-agent composer submits through its canonical
+    /// domain action.
+    AgentIntent(AgentComposerIntent),
+    /// Select one exact owner-published active task when several exist.
+    AgentTask(Id),
+    /// Request cancellation of the exact selected active run.
+    AgentStop,
     /// A voice-channel member chip in the sidebar — clicking joins the call.
     VoiceChannel(Id),
     /// Toggle a category's collapsed state.
@@ -367,6 +390,9 @@ impl Hit {
             Self::Channel(id) => format!("chat.channel:{id}"),
             Self::Agent(id) => format!("chat.agent:{id}"),
             Self::AgentWindow => "chat.agent-window".into(),
+            Self::AgentIntent(intent) => format!("chat.agent-intent:{intent:?}"),
+            Self::AgentTask(id) => format!("chat.agent-task:{id}"),
+            Self::AgentStop => "chat.agent-stop".into(),
             Self::VoiceChannel(id) => format!("chat.voice-channel:{id}"),
             Self::CategoryToggle(id) => format!("chat.category-toggle:{id}"),
             Self::AddChannel {
@@ -699,6 +725,16 @@ pub struct ChatApp {
     /// Authority still comes from `room_agents`; this value is never read from
     /// the shared Chat document.
     pub(crate) direct_agent: Option<Id>,
+    /// One owner-backed task reader per exact workspace/Agent conversation.
+    /// Parent and detached presentations share these cells; only the root
+    /// pumps their one shared action transport.
+    pub(crate) agent_tasks:
+        HashMap<(Id, Id), Rc<RefCell<ui::agent_task_frontier::AgentTaskFrontiers>>>,
+    pub(crate) agent_task_actions: ui::remote_actions::RemoteActions,
+    /// Peer-local composer intent and unsettled exact submissions, keyed like
+    /// the private rich draft. They never enter the Chat CRDT.
+    pub(crate) agent_intents: ui::LocalState<HashMap<(Id, Id), AgentComposerIntent>>,
+    pub(crate) agent_submissions: ui::LocalState<HashMap<(Id, Id), AgentSubmission>>,
 
     // Agent display names of agent-authored messages (`agent_authors` in the
     // document): what every member renders as "<name> (agent)".
@@ -961,6 +997,10 @@ impl ChatApp {
             room_colors: HashMap::new(),
             room_agents: Vec::new(),
             direct_agent: None,
+            agent_tasks: HashMap::new(),
+            agent_task_actions: ui::remote_actions::RemoteActions::current(),
+            agent_intents: ui::LocalState::new(HashMap::new()),
+            agent_submissions: ui::LocalState::new(HashMap::new()),
             agent_authors: HashMap::new(),
             body_views: std::cell::RefCell::new(HashMap::new()),
             body_text_inset: std::cell::Cell::new(0.0),
@@ -1169,6 +1209,7 @@ impl ChatApp {
                 .insert("agent:scribe".into(), "Scribe".into());
             self.active_channel = ChatDoc::agent_conversation_channel_id("ws_acme", "scribe");
             self.direct_agent = Some("scribe".into());
+            self.agent_task_context("ws_acme", "scribe");
             self.composer_main.set_agent_draft("ws_acme", "scribe");
             self.composer_main.set_placeholder(&crate::i18n::t_args(
                 "chat-agent-message-placeholder",
@@ -1726,6 +1767,7 @@ impl ChatApp {
         workspace.clone_into(&mut self.active_ws);
         self.active_channel = ChatDoc::agent_conversation_channel_id(workspace, agent);
         self.direct_agent = Some(agent.into());
+        self.agent_task_context(workspace, agent);
         self.inbox_open = false;
         self.thread_open = None;
         self.focus = Focus::Main;
@@ -1756,6 +1798,10 @@ impl ChatApp {
         view.active_ws.clone_from(&parent.active_ws);
         view.active_channel = ChatDoc::agent_conversation_channel_id(&parent.active_ws, agent);
         view.direct_agent = Some(agent.into());
+        view.agent_tasks.clone_from(&parent.agent_tasks);
+        view.agent_task_actions = parent.agent_task_actions.clone();
+        view.agent_intents = parent.agent_intents.clone();
+        view.agent_submissions = parent.agent_submissions.clone();
         view.conversation_surface = true;
         view.thread_open = None;
         view.left_flap.snap(false);
@@ -1765,6 +1811,115 @@ impl ChatApp {
             view.attach_framework(dispatcher);
         }
         view
+    }
+
+    pub(crate) fn agent_task_context(
+        &mut self,
+        workspace: &str,
+        agent: &str,
+    ) -> Rc<RefCell<ui::agent_task_frontier::AgentTaskFrontiers>> {
+        let key = (workspace.to_owned(), agent.to_owned());
+        let actions = self.agent_task_actions.clone();
+        let context = self
+            .agent_tasks
+            .entry(key)
+            .or_insert_with(|| {
+                Rc::new(RefCell::new(
+                    ui::agent_task_frontier::AgentTaskFrontiers::with_actions(actions),
+                ))
+            })
+            .clone();
+        context.borrow_mut().observe(workspace, agent);
+        context
+    }
+
+    pub(crate) fn direct_agent_intent(&self) -> AgentComposerIntent {
+        let Some(agent) = &self.direct_agent else {
+            return AgentComposerIntent::Message;
+        };
+        self.agent_intents.with(|intents| {
+            intents
+                .get(&(self.active_ws.clone(), agent.clone()))
+                .copied()
+                .unwrap_or_default()
+        })
+    }
+
+    pub(crate) fn direct_agent_tasks(
+        &self,
+    ) -> Option<Rc<RefCell<ui::agent_task_frontier::AgentTaskFrontiers>>> {
+        let agent = self.direct_agent.as_ref()?;
+        self.agent_tasks
+            .get(&(self.active_ws.clone(), agent.clone()))
+            .cloned()
+    }
+
+    pub(crate) fn set_direct_agent_intent(&self, intent: AgentComposerIntent) {
+        let Some(agent) = self.direct_agent.clone() else {
+            return;
+        };
+        self.agent_intents
+            .update(|intents| _ = intents.insert((self.active_ws.clone(), agent), intent));
+    }
+
+    pub(crate) fn poll_agent_tasks(&mut self) {
+        for ((workspace, agent), context) in &self.agent_tasks {
+            context.borrow_mut().observe(workspace, agent);
+        }
+        self.settle_agent_submissions();
+    }
+
+    fn settle_agent_submissions(&mut self) {
+        use ui::agent_task_frontier::{AgentDirectionState, AgentQueueState};
+
+        let pending = self.agent_submissions.get();
+        let mut settled = Vec::new();
+        for (key, submission) in &pending {
+            let Some(tasks) = self.agent_tasks.get(key) else {
+                continue;
+            };
+            let tasks = tasks.borrow();
+            let succeeded = match submission.intent {
+                AgentComposerIntent::Message => false,
+                AgentComposerIntent::Queue => {
+                    matches!(tasks.queue_state(), AgentQueueState::Queued { .. })
+                }
+                AgentComposerIntent::Steer => matches!(
+                    tasks.direction_state(),
+                    AgentDirectionState::Saved { .. } | AgentDirectionState::Applied { .. }
+                ),
+            };
+            let failed = match submission.intent {
+                AgentComposerIntent::Message => true,
+                AgentComposerIntent::Queue => {
+                    matches!(tasks.queue_state(), AgentQueueState::Failed)
+                }
+                AgentComposerIntent::Steer => {
+                    matches!(
+                        tasks.direction_state(),
+                        AgentDirectionState::NeedsRefresh(_)
+                    )
+                }
+            };
+            if succeeded {
+                let (workspace, agent) = key;
+                if self
+                    .composer_main
+                    .private_plain_for(workspace, agent)
+                    .as_deref()
+                    == Some(submission.text.as_str())
+                {
+                    self.composer_main.clear_private_for(workspace, agent);
+                }
+                settled.push(key.clone());
+            } else if failed {
+                settled.push(key.clone());
+            }
+        }
+        if !settled.is_empty() {
+            self.agent_submissions
+                .update(|pending| pending.retain(|key, _| !settled.contains(key)));
+        }
     }
 
     pub(crate) fn float_agent_conversation(
@@ -2656,7 +2811,12 @@ impl ChatApp {
     }
     /// The composer field's height for a draft `text` wrapped at `width`:
     /// one line at rest, growing with the draft up to the cap.
-    fn composer_field_height(&self, tr: &mut TextRenderer, text: &str, width: f64) -> f64 {
+    pub(crate) fn composer_field_height(
+        &self,
+        tr: &mut TextRenderer,
+        text: &str,
+        width: f64,
+    ) -> f64 {
         let chrome = &self.chrome;
         let wrap = width.max(40.0) as f32;
         let probe = if text.is_empty() { "Ag" } else { text };
@@ -2666,13 +2826,27 @@ impl ChatApp {
     }
     /// The width the composer's draft wraps at inside a field `field_w`
     /// wide: the field less its buttons (attach, emoji, send).
-    fn composer_text_width(&self, field_w: f64) -> f64 {
+    pub(crate) fn composer_text_width(&self, field_w: f64) -> f64 {
         field_w - 4.0 * self.chrome.composer_min_h
     }
     pub(crate) fn composer_height(&self, tr: &mut TextRenderer) -> f64 {
         let field_w = self.center_right() - self.center_left() - 2.0 * self.chrome.gutter;
         let text_w = self.composer_text_width(field_w);
-        self.composer_field_height(tr, &self.draft_main, text_w)
+        let field = self.composer_field_height(tr, &self.draft_main, text_w);
+        if self.direct_agent.is_none() {
+            return field;
+        }
+        let rows = if self.direct_agent_tasks().is_some_and(|tasks| {
+            matches!(
+                tasks.borrow().choice(),
+                ui::agent_task_frontier::AgentTaskChoice::Choose(_)
+            )
+        }) {
+            3.0
+        } else {
+            2.0
+        };
+        field + rows * self.chrome.composer_min_h + rows * self.chrome.composer_pad
     }
     pub(crate) fn composer_rect(&self, tr: &mut TextRenderer) -> Rect {
         let h = self.composer_height(tr);
@@ -2977,6 +3151,18 @@ impl ChatApp {
                         Role::Button,
                         false,
                     ),
+                    Hit::AgentIntent(intent) => (
+                        match intent {
+                            AgentComposerIntent::Message => "Message",
+                            AgentComposerIntent::Queue => "Queue task",
+                            AgentComposerIntent::Steer => "Steer current task",
+                        }
+                        .into(),
+                        Role::Tab,
+                        *intent == self.direct_agent_intent(),
+                    ),
+                    Hit::AgentTask(task) => (format!("Select task {task}"), Role::ListItem, false),
+                    Hit::AgentStop => ("Stop current task".into(), Role::Button, false),
                     Hit::CategoryToggle(id) => {
                         let category = self.categories.iter().find(|category| category.id == *id);
                         let name = category.map_or("category", |category| category.name.as_str());
@@ -2991,13 +3177,31 @@ impl ChatApp {
                     Hit::AddCategory(_) => ("Add category".into(), Role::Button, false),
                     Hit::FocusRename => ("Rename field".into(), Role::TextInput, false),
                     Hit::FocusEdit => ("Edit message".into(), Role::MultilineTextInput, false),
-                    Hit::FocusMain => ("Message composer".into(), Role::MultilineTextInput, false),
+                    Hit::FocusMain => (
+                        match self.direct_agent_intent() {
+                            AgentComposerIntent::Message => "Message composer",
+                            AgentComposerIntent::Queue => "Task instruction composer",
+                            AgentComposerIntent::Steer => "Task direction composer",
+                        }
+                        .into(),
+                        Role::MultilineTextInput,
+                        false,
+                    ),
                     Hit::FocusThread => (
                         "Thread reply composer".into(),
                         Role::MultilineTextInput,
                         false,
                     ),
-                    Hit::Send => ("Send message".into(), Role::Button, false),
+                    Hit::Send => (
+                        match self.direct_agent_intent() {
+                            AgentComposerIntent::Message => "Send message",
+                            AgentComposerIntent::Queue => "Queue task",
+                            AgentComposerIntent::Steer => "Save direction",
+                        }
+                        .into(),
+                        Role::Button,
+                        false,
+                    ),
                     Hit::JumpToLatest => ("Jump to latest message".into(), Role::Button, false),
                     Hit::ComposerEmoji(_) => {
                         (crate::i18n::t("chat-emoji-insert"), Role::Button, false)
@@ -3241,6 +3445,7 @@ impl Collaborative for ChatApp {
         }
         let mut requests = std::mem::take(&mut self.realtime.requests);
         requests.extend(self.resource_navigation_requests());
+        requests.extend(self.agent_task_actions.take_collab_requests());
         let before = self.native_voice.snapshot.state;
         requests.extend(self.native_voice.take_requests(ui::time::now()));
         if before != self.native_voice.snapshot.state {
@@ -3250,6 +3455,8 @@ impl Collaborative for ChatApp {
     }
 
     fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
+        self.agent_task_actions.handle_collab_event(event);
+        self.poll_agent_tasks();
         match event {
             ui::collaboration::CollabEvent::RemoteAction { message } => {
                 self.complete_resource_navigation(message);
@@ -3398,7 +3605,11 @@ impl FloatingSurfaceProvider for ChatApp {
             surface.view.room_agents.clone_from(&self.room_agents);
             surface.view.room_names.clone_from(&self.room_names);
             surface.view.room_colors.clone_from(&self.room_colors);
-            if surface.placement.is_desktop_adopted() || surface.placement.is_return_pending() {
+            if matches!(
+                surface.placement.attachment(),
+                ui::floating_surface::Attachment::Desktop { .. }
+            ) || surface.placement.is_return_pending()
+            {
                 surface.view.rect = surface.placement.rect(surface.source, desktop);
                 surface
                     .view
@@ -3742,6 +3953,7 @@ impl Widget for ChatApp {
             self.mark_active_read(doc);
         }
         self.sync_composers(doc);
+        self.poll_agent_tasks();
         for surface in self.agent_surfaces.values_mut() {
             surface.view.room_agents.clone_from(&self.room_agents);
             surface.view.room_names.clone_from(&self.room_names);
@@ -4124,7 +4336,14 @@ impl Widget for ChatApp {
             .with_hashed_key("message-list");
 
         let mut children: Vec<AccessNode> = controls;
-        if let Some(channel) = self.channel(&self.active_channel) {
+        if let Some(agent) = self.direct_agent.as_deref() {
+            children.push(
+                AccessNode::new(Role::Heading { level: 1 })
+                    .with_name(format!("{}, agent", self.agent_display_name(agent)))
+                    .with_bounds(self.header_rect())
+                    .with_hashed_key(("agent-conversation-heading", agent)),
+            );
+        } else if let Some(channel) = self.channel(&self.active_channel) {
             let mut heading = AccessNode::new(Role::Heading { level: 1 })
                 .with_name(channel.kind.label(&channel.name))
                 .with_bounds(self.header_rect())

@@ -362,7 +362,6 @@ impl DraftComposer {
         self.host.widget().source().private_plain()
     }
 
-    #[cfg(test)]
     pub(crate) fn private_plain_for(&self, workspace: &str, agent: &str) -> Option<String> {
         let key = agent_draft_key(workspace, agent);
         self.host
@@ -375,6 +374,27 @@ impl DraftComposer {
     /// Clear only the currently attached direct-agent draft.
     pub fn clear_private(&mut self) -> bool {
         let cleared = self.host.widget_mut().source_mut().clear_private();
+        if cleared {
+            self.host.widget_mut().present_now();
+        }
+        cleared
+    }
+
+    /// Clear one exact direct-agent draft after its asynchronous owner action
+    /// succeeds, even when another conversation is currently attached.
+    pub(crate) fn clear_private_for(&mut self, workspace: &str, agent: &str) -> bool {
+        let key = agent_draft_key(workspace, agent);
+        let mut cleared = false;
+        self.host
+            .widget_mut()
+            .source_mut()
+            .private
+            .update(|drafts| {
+                if let Some(draft) = drafts.get_mut(&key) {
+                    draft.clear();
+                    cleared = true;
+                }
+            });
         if cleared {
             self.host.widget_mut().present_now();
         }
