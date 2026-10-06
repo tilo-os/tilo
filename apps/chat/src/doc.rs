@@ -335,6 +335,48 @@ impl ChatDoc {
         );
     }
 
+    /// Initialize only the exact workspace admitted by the native host.
+    ///
+    /// # Errors
+    ///
+    /// Refuses rebinding a previously initialized Chat record to another room.
+    pub fn seed_workspace(
+        doc: &mut AutoCommit,
+        workspace: &str,
+        workspace_name: &str,
+        creator: &str,
+        creator_name: &str,
+        creator_initials: &str,
+        color_idx: usize,
+    ) -> Result<(), String> {
+        if Self::is_seeded(doc) {
+            return Self::list_workspaces(doc)
+                .iter()
+                .any(|existing| existing.id == workspace)
+                .then_some(())
+                .ok_or_else(|| "Chat is already initialized for another workspace".into());
+        }
+        let _ = doc.put(&ROOT, "seeded", true);
+        Self::put_shared_roots(doc);
+        Self::put_user(
+            doc,
+            creator,
+            creator_name,
+            creator_initials,
+            color_idx,
+            Presence::Online,
+        );
+        Self::put_workspace(
+            doc,
+            workspace,
+            workspace_name,
+            &monogram(workspace_name),
+            0,
+            0,
+        );
+        Ok(())
+    }
+
     /// Populate the document with a believable demo workspace if it is
     /// empty, with `me` as the person reading it. **Screenshots and tests
     /// only** — a real record starts from [`Self::seed_starter`]. Idempotent
