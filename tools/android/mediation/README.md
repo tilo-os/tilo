@@ -3,7 +3,7 @@
 This is a private runtime integration and an owned SDK-built test APK. It is not
 an installed Tilo app, a package-store publisher, or a general Android framework.
 
-`patch_framework.py` checks exact SHA-256 pins for the six modified Java sources
+`patch_framework.py` checks exact SHA-256 pins for the eight modified Java sources
 from ATL commit `f4622e36186f5757b75a605deff543145df3094b` before changing anything.
 Upstream Java sources retain GPL-3.0-only licensing. The added chooser and fixture
 sources carry MIT notices. No upstream or built framework/APK binary is vendored.
@@ -40,6 +40,15 @@ TextView labels retain them after text changes; the external client must observe
 the expected semantic name. This is representative coverage, not a complete
 Android accessibility/resource bridge.
 
+Started services receive unique, increasing request IDs reserved before dispatch
+to the main looper. `stopSelfResult` rejects an older request, checks the registered
+service instance, removes it once and invokes `onDestroy` on the main looper.
+`stopSelf` overloads use the same registry; a bound-only instance cannot self-stop
+as a started service. These changes use the existing APK process and private
+workspace storage, without an independent service supervisor or new capability.
+Bound-client lifetimes, sticky restarts, foreground services and process-loss
+recovery remain unqualified.
+
 ## Build and stage
 
 Run on the approved remote builder in a **disposable rootless Alpine container**
@@ -75,6 +84,19 @@ files, requires an authenticated chooser refusal in production logs, closes with
 the shell action and checks pause/stop/destroy ordering and Landlock evidence.
 It tears down only its owned compositor and records exact production binary and
 PNG hashes. A failed journey writes no successful acceptance record.
+
+For started-service acceptance, compile `ServiceActivity.java` with
+`ServiceManifest.xml` and the same SDK recipe, then qualify the APK with activity
+`org/tilo/android/services/ServiceActivity`. Keep that signed APK unchanged between
+the previous and changed runtime. `tools/android/run_service_journey.py` takes the
+same pinned inputs as the mediation runner. On the previous runtime,
+`--expect-incompatibility` requires actual duplicate zero start IDs, a stale stop
+returning true and an absent service-destroy callback; it records no runtime
+acceptance. On the changed runtime, the runner requires IDs 1 and 2, rejection of
+the stale stop, exactly one main-looper service destruction, ordered activity
+pause/stop/destroy, preserved visit data across relaunch, and two isolated
+workspace histories. It requires presented frames and mandatory confinement,
+creates no grants, and keeps reports/screenshots in `target/` or outside source.
 
 For the successful path, prepare `IntegrationActivity` with `--notifications`,
 then use `tools/android/run_integration_journey.py --fixture-grants --help`.
