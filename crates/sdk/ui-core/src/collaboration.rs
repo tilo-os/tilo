@@ -395,6 +395,14 @@ pub enum CollabRequest {
         /// before it launches the target application.
         content_hash: Option<String>,
     },
+    /// A Store launch, with a dedicated reply vocabulary so a widget's
+    /// correlation id cannot complete an unrelated SDK action invocation.
+    LaunchInstalledApplication {
+        request_id: u64,
+        app_id: String,
+        package_root: Option<String>,
+        on_behalf_of: Option<tilo_actions::InvocationId>,
+    },
     /// Lifecycle record for a broker-minted task lease. Only an admitted
     /// agent connection can make this request; the broker checks the lease.
     SubscribeEnrolledTasks {
@@ -758,6 +766,10 @@ pub enum CollabEvent {
         result: crate::host_worker::managed_sender::ManagedAttemptResult,
     },
     PublishedInvocationResult {
+        request_id: u64,
+        result: Result<(u64, tilo_actions::InvocationUpdate), String>,
+    },
+    InstalledApplicationLaunchResult {
         request_id: u64,
         result: Result<(u64, tilo_actions::InvocationUpdate), String>,
     },
