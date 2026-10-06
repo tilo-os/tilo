@@ -1384,6 +1384,37 @@ mod tests {
     }
 
     #[test]
+    fn private_portal_consent_does_not_follow_a_workspace_into_another_room() {
+        for scope in [GRANT_SESSION, GRANT_ALWAYS] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("consents.json");
+            let (store, id) = GrantStoreHandle::test_with_workspace(empty_ws(31));
+            let shared = store.tree_handle();
+            let store = GrantStoreHandle::with_consent_path(shared.clone(), Some(path.clone()));
+            let caller = PortalCaller::new(id, "private-app");
+            assert!(store.insert_portal_consent(&caller, &Capability::Camera { scope }));
+            assert_eq!(store.lookup(&caller, CapabilityKind::Camera), Some(scope));
+
+            // Joining an invitation preserves the local slot and replaces
+            // its collaboration room through the production join operation.
+            let joined_room = crate::shell::state::RoomId::new();
+            assert!(shared.write().set_room_in_memory(id, joined_room));
+            assert_eq!(
+                store.lookup(&caller, CapabilityKind::Camera),
+                None,
+                "privacy consent from the previous room must not authorize the joined room"
+            );
+            let restored = GrantStoreHandle::with_consent_path(shared, Some(path));
+            assert_eq!(restored.lookup(&caller, CapabilityKind::Camera), None);
+            assert!(restored.insert_portal_consent(&caller, &Capability::Camera { scope }));
+            assert_eq!(
+                restored.lookup(&caller, CapabilityKind::Camera),
+                Some(scope)
+            );
+        }
+    }
+
+    #[test]
     #[allow(
         clippy::significant_drop_tightening,
         reason = "st's only use is producing tree via tree(), read from through the inner \
