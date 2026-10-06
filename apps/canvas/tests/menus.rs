@@ -30,6 +30,20 @@ fn right_click(app: &mut TestApp<App>, (x, y): (f64, f64)) {
 fn rename_from_a_layer_rows_menu_takes_the_typed_name() {
     let mut app = TestApp::<App>::new().unwrap();
     app.call("add-layer", json!({"name": ""})).unwrap();
+    let art = app.state();
+    let position = art
+        .layers
+        .iter()
+        .rev()
+        .position(|layer| layer.id == "layer-1")
+        .unwrap();
+    app.harness()
+        .perform_semantic_named(
+            "canvas-layer-tree",
+            Some(&format!("node:{}", position + 1)),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
     let row = app.harness().targets()["canvas-layer-name-layer-1"];
     right_click(&mut app, (row.center().x, row.center().y));
     // The menu opens with Rename ready for the keyboard.
@@ -70,6 +84,20 @@ fn a_right_click_on_a_mark_picks_it_and_the_menu_duplicates_it() {
 fn rename_chosen_with_the_pointer_takes_the_typed_name() {
     let mut app = TestApp::<App>::new().unwrap();
     app.call("add-layer", json!({"name": ""})).unwrap();
+    let art = app.state();
+    let position = art
+        .layers
+        .iter()
+        .rev()
+        .position(|layer| layer.id == "layer-1")
+        .unwrap();
+    app.harness()
+        .perform_semantic_named(
+            "canvas-layer-tree",
+            Some(&format!("node:{}", position + 1)),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
     let row = app.harness().targets()["canvas-layer-name-layer-1"];
     right_click(&mut app, (row.center().x, row.center().y));
     let menu = app

@@ -51,6 +51,9 @@ impl Default for Ground {
 pub struct Layer {
     pub id: String,
     pub name: String,
+    /// Organisational folder; empty for an ungrouped layer. It does not
+    /// change stacking, clipping or how the layers composite.
+    pub group: String,
     /// Fractional position among layers; later is on top.
     pub order: String,
     /// The medium preset that paints this layer's marks, or empty for plain

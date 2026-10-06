@@ -5,6 +5,21 @@ use automerge::ObjType;
 use automerge::transaction::Transactable as _;
 
 #[test]
+fn hovering_and_leaving_a_field_do_not_consume_a_siblings_pointer_movement() {
+    let mut input = TextInput::local();
+    input.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
+    let mut doc = AutoCommit::new();
+    for (x, hovered) in [(100.0, true), (250.0, false)] {
+        let moved = WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(x, 20.0),
+        };
+        assert!(!drive(&mut input, &mut doc, &moved, Modifiers::default()));
+        assert_eq!(input.is_hovered, hovered);
+    }
+}
+
+#[test]
 fn caret_paints_with_real_line_geometry_and_can_be_suppressed() {
     // Case `drag_preview_suppresses_caret_paint_without_blurring_or_clearing_ime`.
     {

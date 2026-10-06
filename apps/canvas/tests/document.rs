@@ -6,6 +6,8 @@
     reason = "test assertions over exact, hand-written fixtures"
 )]
 
+mod support;
+
 use canvas::App;
 use ui::prelude::TestApp;
 
@@ -169,14 +171,10 @@ fn a_tools_key_works_after_a_click_in_the_rail_and_a_tool_click_after_a_drag_lan
     // is taken, and the next drag draws an ellipse.
     app.harness()
         .drag_at((x - 100.0, y - 100.0), (x - 80.0, y - 80.0));
-    let tools = canvas::tools::Tool::ALL;
-    let index = tools
-        .iter()
-        .position(|tool| *tool == canvas::tools::Tool::Ellipse)
-        .unwrap();
-    #[allow(clippy::cast_precision_loss, reason = "a handful of tools")]
-    let at = rail.y0 + rail.height() / tools.len() as f64 * (index as f64 + 0.5);
-    app.harness().click_at(rail.center().x, at);
+    let snapshot = app.harness().inspection();
+    let label = ui::i18n::I18nManager::lookup_plain("canvas-tool-ellipse");
+    let target = support::named_bounds(&snapshot.root, &label).expect("ellipse control is visible");
+    app.harness().click_at(target.center().x, target.center().y);
     app.harness()
         .drag_at((x + 80.0, y + 60.0), (x + 160.0, y + 120.0));
     assert!(
@@ -286,4 +284,104 @@ fn an_artwork_file_opens_from_files_as_its_own_record() {
     .unwrap();
     let handed = TestApp::<App>::handed(file).unwrap();
     assert_eq!(handed.state().marks.len(), painted.marks.len());
+}
+
+#[test]
+fn folders_keep_paint_order_and_round_trip_through_history_and_saved_artwork() {
+    use serde_json::json;
+    let mut app = TestApp::<App>::new().unwrap();
+    app.call("add-layer", json!({"id":"hut", "name":"Hut"}))
+        .unwrap();
+    let before = app.state();
+    app.call("checkpoint", json!({"name":"before folder"}))
+        .unwrap();
+    app.call("edit-layer", json!({"id":"hut", "group":"Night scene"}))
+        .unwrap();
+    assert_eq!(app.state().layer("hut").unwrap().group, "Night scene");
+    assert_eq!(
+        app.state()
+            .layers
+            .iter()
+            .map(|l| &l.order)
+            .collect::<Vec<_>>(),
+        before.layers.iter().map(|l| &l.order).collect::<Vec<_>>()
+    );
+    let diff = app
+        .call("diff", json!({"from":"before folder"}))
+        .unwrap()
+        .unwrap();
+    assert_eq!(diff["layers"]["changed"]["hut"], json!(["group"]));
+    assert!(app.undo());
+    assert_eq!(app.state().layer("hut").unwrap().group, "");
+    assert!(app.redo());
+    let saved = app.call("save-artwork", json!({})).unwrap().unwrap();
+    app.call("new-artwork", json!({})).unwrap();
+    app.call("open-artwork", json!({"file":saved["content"]}))
+        .unwrap();
+    assert_eq!(app.state().layer("hut").unwrap().group, "Night scene");
+    app.call("edit-layer", json!({"id":"hut","group":""}))
+        .unwrap();
+    assert!(app.state().layer("hut").unwrap().group.is_empty());
+}
+
+#[test]
+fn the_pixel_template_starts_small_transparent_and_uses_a_cell_brush() {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.harness().click_named("canvas-welcome-new").unwrap();
+    app.harness()
+        .click_named("canvas-new-size-pixel-32")
+        .unwrap();
+    app.harness().click_named("canvas-new-title").unwrap();
+    app.harness().type_text("Sprite");
+    app.harness().key("Enter");
+    let art = app.state();
+    assert_eq!((art.width, art.height), (32.0, 32.0));
+    assert_eq!(art.ground.texture, "smooth");
+    assert_eq!(art.ground.colour, "#ffffff00");
+    let canvas = app.harness().targets()["canvas"];
+    app.harness().click_at(canvas.center().x, canvas.center().y);
+    let art = app.state();
+    assert_eq!(art.marks.len(), 1);
+    assert_eq!(art.marks[0].style.brush.as_deref(), Some("pixel"));
+}
+
+#[test]
+fn naming_a_layer_folder_is_one_edit_with_one_undo_step() {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.call("add-layer", serde_json::json!({"id":"hut", "name":"Hut"}))
+        .unwrap();
+    let before = app.state();
+    app.harness().click_named("canvas-layer-folder").unwrap();
+    app.harness().type_text("Night scene");
+    assert_eq!(
+        app.state(),
+        before,
+        "letters remain local until the rename is committed"
+    );
+    app.harness().key("Enter");
+    assert_eq!(app.state().layer("hut").unwrap().group, "Night scene");
+    assert!(app.undo());
+    assert_eq!(
+        app.state(),
+        before,
+        "one undo removes the whole folder assignment"
+    );
+    assert!(app.redo());
+    assert_eq!(app.state().layer("hut").unwrap().group, "Night scene");
+}
+
+#[test]
+fn a_pixel_template_allows_an_explicit_paper_ground() {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.harness().click_named("canvas-welcome-new").unwrap();
+    app.harness()
+        .click_named("canvas-new-size-pixel-32")
+        .unwrap();
+    app.harness().click_named("canvas-new-start-paper").unwrap();
+    app.harness().click_named("canvas-new-title").unwrap();
+    app.harness().type_text("Paper sprite");
+    app.harness().key("Enter");
+    assert_eq!(app.state().width.to_bits(), 32.0_f64.to_bits());
+    assert_eq!(app.state().ground.texture, "paper");
+    assert_eq!(app.state().ground.colour, "#f4efe3");
 }

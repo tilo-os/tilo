@@ -384,3 +384,21 @@ canvas-finding-read-only = The artwork is read-only now
 canvas-brush-pixel = Pixel
 canvas-brush-pixel-eraser = Pixel eraser
 canvas-picture-pixelated = Crisp pixels
+
+canvas-layer-folder = Layer folder (optional)
+canvas-objects = Objects
+canvas-checkpoint-label = Name this version
+canvas-checkpoint-save = Save version
+
+canvas-workspace = Tools for this project
+canvas-workspace-auto = Auto
+canvas-workspace-vector = Vector
+canvas-workspace-photo = Photo
+canvas-workspace-pixel = Pixel
+canvas-tools-focused = Suggested tools
+canvas-tools-all = All tools
+
+canvas-size-pixel-32 = Sprite · 32 × 32
+canvas-size-pixel-64 = Sprite · 64 × 64
+canvas-size-pixel-128 = Scene · 128 × 128
+canvas-start-transparent = Transparent

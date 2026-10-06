@@ -118,7 +118,7 @@ impl ResourceApp for App {
                     .no_wrap()
                     .with_gap(0.0)
                     .with_fill_remaining_height()
-                    .push(Box::new(Pane::new(rail(&tools), Edge::Right)))
+                    .push(Box::new(Pane::new(rail(cx, &tools), Edge::Right)))
                     .push(Box::new(work))
                     .push(sidebar),
             ));
@@ -364,6 +364,7 @@ impl ui::widget::Decorator for Shown {
 enum Dock {
     #[default]
     Layers,
+    Objects,
     History,
 }
 
@@ -372,11 +373,38 @@ pub(crate) const RAIL: f32 = 56.0; // a pointer target and its inset, laid out b
 /// The sidebar's width.
 pub(crate) const SIDEBAR: f32 = 288.0; // the swatches' width plus insets: a layout width, not spacing
 
+/// Recommended tools follow the document; a person can override the suggestion.
+fn rail(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools) -> Element {
+    let inferred = cx.value(tools::Workspace::of);
+    let tools = tools.clone();
+    cx.switch(&inferred, move |cx, inferred| {
+        let tools = tools.clone();
+        let inferred = *inferred;
+        cx.switch(&tools.workspace.clone(), move |cx, wanted| {
+            let workspace = if *wanted == tools::Workspace::Auto {
+                inferred
+            } else {
+                *wanted
+            };
+            let tools = tools.clone();
+            cx.switch(&tools.all_tools.clone(), move |cx, _| {
+                let tools = tools.clone();
+                cx.switch(&tools.tool.clone(), move |_cx, _| {
+                    rail_choices(&tools, workspace)
+                })
+            })
+        })
+    })
+}
+
 /// The tools, top to bottom, each with its key, and at the foot the paint
 /// the brush is loaded with.
-fn rail(tools: &tools::Tools) -> Element {
+fn rail_choices(tools: &tools::Tools, workspace: tools::Workspace) -> Element {
     let choices = tools::Tool::ALL
         .iter()
+        .filter(|tool| {
+            tools.all_tools.get() || workspace.tools().contains(tool) || **tool == tools.tool.get()
+        })
         .map(|tool| {
             let segment = ui::widget::toggle_group::Segment::new(
                 ui::i18n::I18nManager::lookup_plain(tool.label()),
@@ -406,6 +434,74 @@ fn rail(tools: &tools::Tools) -> Element {
     )
 }
 
+fn workspace_controls(tools: &tools::Tools) -> Element {
+    use tools::Workspace;
+    let choices = [
+        (Workspace::Auto, "canvas-workspace-auto"),
+        (Workspace::Vector, "canvas-workspace-vector"),
+        (Workspace::Photo, "canvas-workspace-photo"),
+        (Workspace::Pixel, "canvas-workspace-pixel"),
+    ]
+    .into_iter()
+    .map(|(value, label)| {
+        (
+            value,
+            ui::widget::toggle_group::Segment::new(ui::i18n::I18nManager::lookup_plain(label)),
+        )
+    })
+    .collect();
+    let held = tools.clone();
+    let choose = ui::widget::ToggleGroup::from_state(choices, &tools.workspace).on_view(
+        "canvas-workspace",
+        move |_| {
+            let workspace = held.workspace.get();
+            held.tool.set(if workspace == Workspace::Pixel {
+                tools::Tool::Brush
+            } else {
+                tools::Tool::Select
+            });
+            held.choose_preset(if workspace == Workspace::Pixel {
+                brushes::Preset::Pixel
+            } else {
+                brushes::Preset::Round
+            });
+            if workspace == Workspace::Photo {
+                held.layer_adjust.set(true);
+            }
+        },
+    );
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(4.0)
+            .push(Box::new(
+                Text::new("canvas-workspace").with_role(TextRole::Label),
+            ))
+            .push(Box::new(choose))
+            .push(Box::new(
+                ui::widget::ToggleGroup::from_state(
+                    vec![
+                        (
+                            false,
+                            ui::widget::toggle_group::Segment::new(
+                                ui::i18n::I18nManager::lookup_plain("canvas-tools-focused"),
+                            ),
+                        ),
+                        (
+                            true,
+                            ui::widget::toggle_group::Segment::new(
+                                ui::i18n::I18nManager::lookup_plain("canvas-tools-all"),
+                            ),
+                        ),
+                    ],
+                    &tools.all_tools,
+                )
+                .on_view("canvas-tools-scope", |_| {}),
+            )),
+    )
+}
+
 /// The inspector above; under it the layers or the history.
 fn sidebar(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools, dock: &LocalState<Dock>) -> Element {
     let inspector = Column::new()
@@ -413,6 +509,7 @@ fn sidebar(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools, dock: &LocalState
         .with_gap(12.0)
         .with_vertical_padding(14.0)
         .with_horizontal_padding(16.0, 14.0)
+        .push(workspace_controls(tools))
         .push(panels::inspector::panel(cx, tools));
     // The dock folds away to its tabs, giving the inspector the height.
     let open = LocalState::new(true);
@@ -426,6 +523,7 @@ fn sidebar(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools, dock: &LocalState
             let tools = tools.clone();
             cx.switch(&dock, move |cx, dock| match dock {
                 Dock::Layers => panels::layers::panel(cx, &tools),
+                Dock::Objects => panels::layers::objects_panel(cx, &tools),
                 Dock::History => panels::history::panel(cx, &tools),
             })
         })
@@ -467,6 +565,7 @@ fn dock_tabs(
     let tabs = ui::widget::ToggleGroup::from_state(
         vec![
             tab(Dock::Layers, "canvas-layers"),
+            tab(Dock::Objects, "canvas-objects"),
             tab(Dock::History, "canvas-history"),
         ],
         dock,
@@ -478,6 +577,7 @@ fn dock_tabs(
     let action = cx.switch(dock, move |cx, dock| match dock {
         Dock::Layers => panels::layers::add_menu(cx, &tools),
         Dock::History => panels::history::checkpoint_button(cx),
+        Dock::Objects => Box::new(Spacer::fixed(0.0)),
     });
     Box::new(
         Row::new()

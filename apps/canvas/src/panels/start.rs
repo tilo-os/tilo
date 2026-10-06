@@ -110,6 +110,11 @@ pub fn create(dispatch: &Dispatcher<ArtworkResource>, tools: &Tools) -> bool {
         return false;
     };
     dispatch.apply(&action);
+    if tools.new.size.get().starts_with("pixel-") {
+        tools.workspace.set(crate::tools::Workspace::Pixel);
+        tools.choose_preset(crate::brushes::Preset::Pixel);
+        tools.tool.set(crate::tools::Tool::Brush);
+    }
     tools.file.set(None);
     tools.selection.set(Vec::new());
     tools.layer.set("layer-1".to_owned());
@@ -485,6 +490,15 @@ pub fn body(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         .with_id("canvas-new-title")
         .with_placeholder(&lookup("canvas-untitled"))
         .with_accessible_name(lookup("canvas-artwork-title"));
+    let starts = {
+        let choices = choices.clone();
+        cx.switch(&choices.size.clone(), move |_cx, size| {
+            if size.starts_with("pixel-") && choices.start.get() == "paper" {
+                choices.start.set("transparent".into());
+            }
+            rows(start_tiles(&choices), 3)
+        })
+    };
     Box::new(
         Column::new()
             .with_no_padding()
@@ -494,7 +508,7 @@ pub fn body(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
             .push(rows(size_tiles(&choices), 4))
             .push(orientation(cx, &choices))
             .push(super::heading("canvas-new-start"))
-            .push(rows(start_tiles(&choices), 3))
+            .push(starts)
             .push(super::heading("canvas-artwork-title"))
             .push(Box::new(title))
             .push(replacing(cx)),
