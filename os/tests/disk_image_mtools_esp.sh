@@ -56,6 +56,7 @@ EOF
 cat >"$work/bin/mount" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >>"$MOCK_MOUNTS"
+[ "${1:-}" != -o ] || shift 2
 case "${1:-}" in
   /dev/loop-testp2) mkdir -p "$2/state/deploy/test/etc" ;;
 esac
@@ -87,6 +88,7 @@ else
   cp -a "$MOCK_FAT/." "$destination"
 fi
 EOF
+printf '#!/bin/sh\nexit 0\n' >"$work/bin/btrfs"
 chmod +x "$work/bin/"*
 
 PATH="$work/bin:$PATH" MOCK_OUTPUT="$work/output" MOCK_FAT="$work/fat" \
