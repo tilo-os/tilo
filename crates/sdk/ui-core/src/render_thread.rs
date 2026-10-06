@@ -1403,20 +1403,15 @@ fn render_one_frame(
     let submit_us = t_submit.map(|t| t.elapsed().as_secs_f64() * 1e6);
 
     let t_present = present_dbg.then(crate::time::now);
-    #[cfg(target_os = "linux")]
-    {
-        let damage = bounded_present_damage(width, height, frame.damage_regions).filter(|_| {
-            !frame.full_redraw
-                && !POST_PROCESSOR_ACTIVE.load(std::sync::atomic::Ordering::Acquire)
-                && frame.backdrop.is_empty()
-        });
-        // SAFETY: borrow only this configured surface's HAL guard and use its
-        // checked hint setter; no Vulkan handle is retained or destroyed. Drop
-        // the guard before present takes the surface/swapchain locks again.
-        if let Some(hal) = unsafe { surface.surface.as_hal::<vello::wgpu::hal::vulkan::Api>() } {
-            hal.set_next_present_damage(damage.as_deref().unwrap_or_default());
-        }
-    }
+    let damage = bounded_present_damage(width, height, frame.damage_regions).filter(|_| {
+        !frame.full_redraw
+            && !POST_PROCESSOR_ACTIVE.load(std::sync::atomic::Ordering::Acquire)
+            && frame.backdrop.is_empty()
+    });
+    tilo_presentation::set_next_present_damage(
+        &surface.surface,
+        damage.as_deref().unwrap_or_default(),
+    );
     if frame_ix == 0 {
         tilo_startup_metrics::mark("render-worker-first-present-start");
     }
@@ -1484,7 +1479,6 @@ fn render_one_frame(
     FrameOutcome::Presented
 }
 
-#[cfg(target_os = "linux")]
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -1494,7 +1488,7 @@ fn bounded_present_damage(
     width: u32,
     height: u32,
     damage: &[Rect],
-) -> Option<Vec<vello::wgpu::hal::vulkan::PresentDamageRect>> {
+) -> Option<Vec<tilo_presentation::DamageRect>> {
     if width == 0 || height == 0 || damage.is_empty() || damage.len() > 128 {
         return None;
     }
@@ -1522,7 +1516,7 @@ fn bounded_present_damage(
     Some(
         coalesce_regions(regions)
             .into_iter()
-            .map(|rect| vello::wgpu::hal::vulkan::PresentDamageRect {
+            .map(|rect| tilo_presentation::DamageRect {
                 x: rect.x,
                 y: rect.y,
                 width: rect.width,
@@ -1532,7 +1526,7 @@ fn bounded_present_damage(
     )
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod present_damage_tests {
     use super::{Rect, bounded_present_damage};
 

@@ -8,11 +8,15 @@ repository.workspace = true
 homepage.workspace = true
 description = "Native presentation feedback, input provenance and clock observations behind a portable host boundary."
 
+[features]
+gpu-damage = ["dep:wgpu"]
+
 [dependencies]
 winit.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = "0.1"
+wgpu = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true

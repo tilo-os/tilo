@@ -16294,6 +16294,7 @@ dependencies = [
  "libc",
  "tilo-clock",
  "tilo-winit",
+ "wgpu",
  "workspace-hack",
 ]
 
