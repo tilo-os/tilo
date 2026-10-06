@@ -171,6 +171,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "room.activity.open"
         | "room.activity.explore"
         | "room.activity.replay"
+        | "tab.menu"
         | "history.compare"
         | "history.undo"
         | "history.restore" => {
@@ -268,6 +269,7 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "room.activity.open"
         | "room.activity.explore"
         | "room.activity.replay"
+        | "tab.menu"
         | "history.compare"
         | "history.undo"
         | "history.restore"
@@ -1644,6 +1646,20 @@ impl Action {
         // The tab menu's three rows as actions, on the focused tab: a
         // capability reachable only by right-click is not finished. The
         // rows and these closures call the same `window_actions` functions.
+        chrome(
+            "tab.menu",
+            "search-action-tab-menu",
+            "search-action-tab-menu-subtitle",
+            |st, _| {
+                if st.session_locked() || crate::shell::window_actions::active_tab_id(st).is_none()
+                {
+                    return Err(ActionError::Refused(t(
+                        "search-action-tab-menu-unavailable",
+                    )));
+                }
+                request_window_shortcut(st, ShortcutAction::TabMenu)
+            },
+        ),
         chrome(
             "tab.close",
             "search-action-tab-close",
@@ -3801,6 +3817,42 @@ mod tests {
                 "{needle} must surface {id}"
             );
         }
+    }
+
+    #[test]
+    fn tab_menu_is_searchable_as_a_view_and_refuses_empty_focus() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let doc = AutoCommit::new();
+        let rows = {
+            let state = chrome.borrow();
+            provider.query(SearchContext {
+                needle: "tab menu",
+                wanted: &[ResourceKind::Action],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+        };
+        let menu = rows
+            .iter()
+            .find(|row| row.id == "tab.menu")
+            .expect("search discovers the menu");
+        assert_eq!(menu.operation_kind, tilo_actions::OperationKind::View);
+        let mut doc = AutoCommit::new();
+        let result = (menu.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &ActionArgs::none(),
+        );
+        assert!(matches!(result, Err(ActionError::Refused(_))));
+        assert!(
+            chrome
+                .borrow_mut()
+                .take_shortcut_action_requests()
+                .is_empty()
+        );
     }
 
     #[test]

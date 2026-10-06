@@ -12151,6 +12151,12 @@ impl ShellOverlayHost {
             }
             return true;
         }
+        if action == A::TabMenu {
+            if !repeat {
+                let _ = self.open_focused_tab_context_menu();
+            }
+            return true;
+        }
         if action == A::EmojiPicker {
             if !repeat {
                 self.toggle_emoji_picker();
@@ -15866,6 +15872,80 @@ impl ShellOverlayHost {
         self.layers
             .tab_menu
             .open(target, tab_count, point, title, self.rect);
+    }
+
+    /// Open the shell menu at the focused tab, independent of the pointer.
+    /// Resolve the durable focus first; a stale or unlaid-out tab cannot open
+    /// a menu at a made-up location. The menu is local presentation only.
+    pub fn open_focused_tab_context_menu(&mut self) -> bool {
+        if self.onboarding.is_some() || self.content.wants_pointer_capture() {
+            return false;
+        }
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let target = {
+            let st = chrome.borrow();
+            if st.session_locked() {
+                return false;
+            }
+            let tree = st.tree();
+            let Some(strip) = tree.desktop.active_strip.get(&tree.desktop.active).copied() else {
+                return false;
+            };
+            let Some(group) = tree.desktop.active_group_for(strip) else {
+                return false;
+            };
+            drop(tree);
+            let Some(tab) = crate::shell::window_actions::active_tab_id(&st) else {
+                return false;
+            };
+            drop(st);
+            TabMenuTarget { strip, group, tab }
+        };
+        let Some(&ptr) = self.group_row_ptrs.get(&target.strip) else {
+            return false;
+        };
+        // SAFETY: see field doc on `group_row_ptrs`; only read the live row.
+        let row: &GroupRow = unsafe { &*ptr };
+        let Some(group) = row.groups.iter().find(|group| group.id == target.group) else {
+            return false;
+        };
+        let Some((index, tab)) = group
+            .tabs()
+            .iter()
+            .enumerate()
+            .find(|(_, tab)| tab.id == target.tab)
+        else {
+            return false;
+        };
+        let Some(rect) = group.tab_rects().get(index).copied() else {
+            return false;
+        };
+        // Compact bars may collapse an inactive pill, and keyboard focus can
+        // change before the next layout expands it. Its laid-out bar remains
+        // a real anchor; do not discard that opening key between frames.
+        let rect = if rect.area() > 0.0 {
+            rect
+        } else {
+            group.bar_rect()
+        };
+        if rect.area() <= 0.0 {
+            return false;
+        }
+        let title = tab.title.clone();
+        let tab_count = group.tab_count();
+        let outputs = self.layer_outputs();
+        let viewport = self.layer_geometry(&outputs).display_for(None);
+        self.layers.tab_menu.open(
+            target,
+            tab_count,
+            Point::new(rect.x0, rect.y1),
+            title,
+            viewport,
+        );
+        self.layers.tab_menu.focus_first_action();
+        true
     }
 
     /// A menu whose tab or group has gone has nothing left to act on.
