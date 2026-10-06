@@ -18,7 +18,7 @@ import tomllib
 import sys
 
 from qualify_apk import digest, pinned, verify_runtime
-from run_arity_journey import REPO, Journey, wait_for, require_ok
+from run_arity_journey import REPO, Journey, wait_for, require_ok, checked_output
 
 sys.path.insert(0, str(REPO / 'tools'))
 from atspi_external_client import AtspiClient, GateError, bus_pids
@@ -79,6 +79,7 @@ def main():
     parser.add_argument('--fixture-grants', action='store_true', required=True,
                         help='explicitly authorize grants only on newly created fixture documents')
     args = parser.parse_args()
+    output = checked_output(args.output)
     payload = args.payload.resolve(strict=True)
     pinned(payload / 'app.apk', args.apk_sha256)
     qualification = json.loads((payload / 'qualification.json').read_text())
@@ -93,7 +94,6 @@ def main():
     parent = args.runtime_parent.resolve(strict=True)
     if parent.stat().st_uid != os.geteuid() or parent.stat().st_mode & 0o077:
         raise RuntimeError('runtime parent must be private and user-owned')
-    output = args.output.absolute()
     output.mkdir(mode=0o700)
     output = output.resolve(strict=True)
     profile = output / 'profile'

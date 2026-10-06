@@ -73,7 +73,10 @@ external AT-SPI, checks notification delivery and withdrawal, exact document
 bytes, read-only/sibling denials, close lifecycle and external content description,
 revokes both grants, then relaunches and requires former URI read/write denials.
 It always revokes outstanding fixture grants and stops its owned processes.
-See `docs/verification/android-integration` for actual results and original PNGs.
+See the [PR #2908 evidence attachment](https://code.tilo.so/attachments/9cc177c1-c0ef-4607-8872-0a7b1af8c5e0) for actual results and original PNGs.
+Write generated reports under `target/android-acceptance/` or outside the checkout;
+the runners reject output in tracked source. Publish selected reports and PNGs as
+PR attachments or CI artifacts, never private session profiles or signing keys.
 
 ## Acceptance checklist
 
