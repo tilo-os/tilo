@@ -2845,6 +2845,7 @@ mod tests {
             scope: String::new(),
             entries,
             index: None,
+            machine_index: None,
         });
         assert_eq!(
             provider.action_hierarchy(&id).unwrap().semantic_identity,
