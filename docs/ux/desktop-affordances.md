@@ -36,18 +36,19 @@ background polling or continuous frame demand is added.
 
 ## Reproduction and evidence
 
-All Cargo compilation and execution use the approved remote rcargo runner:
+Use plain Cargo or any Cargo drop-in appropriate to the build environment:
 
 ```sh
-rcargo test --locked -p shell --lib tab_context_menu -j 4
-rcargo test --locked -p shell --lib tab_menu_ -j 4
-rcargo test --locked -p settings-store --lib shortcuts -j 4
-rcargo check --locked -p shell --tests -j 4
-rcargo --on-builder --fetch ux-tab-menu-dark run --locked -p shell --bin shots -j 4 -- --mode offscreen --scenario tab_menu_keyboard --out target/ux-tab-menu-dark
+cargo test --locked -p shell --lib tab_context_menu -j 4
+cargo test --locked -p shell --lib tab_menu_ -j 4
+cargo test --locked -p settings-store --lib shortcuts -j 4
+cargo check --locked -p shell --tests -j 4
+cargo run --locked -p shell --bin shots -j 4 -- --mode offscreen --scenario tab_menu_keyboard --out target/ux-tab-menu-dark
 ```
 
-Use `RCARGO_ENV_TILO_SHOTS_THEME=light|dark|high-contrast` for the three material/contrast
-variants. The scenario emits desktop, focused-menu, next-row and cancelled
+Use `TILO_SHOTS_THEME=light|dark|high-contrast` for the three material/contrast
+variants; a remote Cargo drop-in must forward that environment variable to its
+runner. The scenario emits desktop, focused-menu, next-row and cancelled
 frames. These are production offscreen frames, never the user's desktop.
 Actual results and any unrun checks belong in the PR description. Native screen
 reader, real touch/keyboard hardware and older-machine latency remain device
