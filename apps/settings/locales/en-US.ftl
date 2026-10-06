@@ -1772,3 +1772,23 @@ shortcut-name-dictation-toggle = Start or finish dictation
 shortcut-name-dictation-finish = Finish dictation
 shortcut-name-dictation-cancel = Cancel dictation
 shortcut-name-tab-menu = Show tab menu
+
+input-map-title = Keyboard layout map
+input-map-layout = Preview any installed layout
+input-map-model = Physical keyboard model
+input-map-ansi = 104-key ANSI
+input-map-iso = 105-key ISO
+input-map-instructions = Press keys while this page is open, including while searching layouts. The map highlights physical positions without changing what you type.
+input-map-levels = Preview levels can be selected or inspected. Live mode follows actual modifiers. The physical model is chosen explicitly, not detected.
+input-map-unavailable = This layout cannot be previewed with the native XKB compiler.
+input-map-apply = Use this layout
+input-map-extra-levels = Inspect XKB levels 5–8 when available
+input-map-dead-keys = Dead keys use a dotted circle.
+
+input-map-jis = 106-key Japanese
+input-map-korean = 106-key Korean
+input-map-live = Show live keyboard
+input-map-level = Modifier level
+
+input-map-live-description = While Settings is focused, this map follows the keyboard’s current layout and modifiers.
+input-map-preview-description = Previewing the selected layout. Choose a level or inspect a key to see its other symbols.

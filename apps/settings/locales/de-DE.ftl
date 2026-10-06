@@ -1772,3 +1772,22 @@ shortcut-name-dictation-finish = Diktat beenden
 shortcut-name-dictation-cancel = Diktat abbrechen
 shortcut-name-tab-menu = Tab-Menü öffnen
 
+input-map-title = Tastaturbelegung
+input-map-layout = Installierte Belegung ansehen
+input-map-model = Physisches Tastaturmodell
+input-map-ansi = ANSI mit 104 Tasten
+input-map-iso = ISO mit 105 Tasten
+input-map-instructions = Drücke Tasten, während diese Seite geöffnet ist, auch während der Layoutsuche. Die Karte zeigt die physische Position, ohne deine Eingabe zu verändern.
+input-map-levels = Vorschau-Ebenen lassen sich wählen oder untersuchen. Der Live-Modus folgt den aktuellen Modifikatoren. Das physische Modell wird ausdrücklich gewählt, nicht erkannt.
+input-map-unavailable = Diese Belegung kann nicht mit dem nativen XKB-Compiler angezeigt werden.
+input-map-apply = Diese Belegung verwenden
+input-map-extra-levels = XKB-Ebenen 5–8 ansehen, wenn vorhanden
+input-map-dead-keys = Tottasten werden mit einem gepunkteten Kreis angezeigt.
+
+input-map-jis = Japanisch mit 106 Tasten
+input-map-korean = Koreanisch mit 106 Tasten
+input-map-live = Aktuelle Tastatur anzeigen
+input-map-level = Modifikatorebene
+
+input-map-live-description = Solange Einstellungen den Fokus hat, folgt diese Karte dem aktuellen Tastaturlayout und den Modifikatoren.
+input-map-preview-description = Vorschau des gewählten Layouts. Wähle eine Ebene oder untersuche eine Taste, um weitere Zeichen zu sehen.
