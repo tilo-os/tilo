@@ -122,6 +122,9 @@ pub enum Reply {
     Initialized {
         revision: [u8; 32],
     },
+    /// Authenticated service route with no application-owned CRDT document.
+    /// The broker, not the client, selects this mode after admission.
+    Documentless,
 }
 impl Request {
     /// Encode a valid request for the wire.
@@ -316,6 +319,11 @@ mod tests {
             token: [3; 16],
         };
         assert_eq!(Reply::decode(&reply.encode().unwrap()).unwrap(), reply);
+        assert_eq!(Reply::Legacy.encode().unwrap(), vec![0]);
+        assert_eq!(
+            Reply::decode(&Reply::Documentless.encode().unwrap()).unwrap(),
+            Reply::Documentless
+        );
         let mut extra = request.encode().unwrap();
         extra.push(0);
         assert!(Request::decode(&extra).is_err());

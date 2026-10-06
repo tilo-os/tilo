@@ -524,6 +524,9 @@ pub(super) async fn install(
         inbound.state.document_reads.legacy(&key)?;
         return Ok(false);
     }
+    if first == Reply::Documentless {
+        return Ok(true);
+    }
     let ready = inbound.state.document_reads.pending(&key)?;
     let (initial, revision) = match first {
         Reply::Chunk { .. } | Reply::Created { .. } => match read_capture(channel, first).await {

@@ -318,7 +318,7 @@ impl CapnpChannelHandle {
             .services
             .committed_documents
             .as_ref()
-            .is_some_and(|service| service.requires_room(&self.route().cluster_id));
+            .is_some_and(|service| service.requires_room(&route.cluster_id));
         if !required {
             return Ok(Reply::Legacy);
         }

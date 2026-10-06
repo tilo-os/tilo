@@ -6390,8 +6390,10 @@ mod tests {
         #[cfg(unix)]
         directory: DirectoryCaptures,
         committed_history_fixture: Option<Vec<u8>>,
+        committed_documentless_fixture: bool,
         committed_recheck_gate: Option<tokio::sync::oneshot::Receiver<()>>,
         committed_reads: Vec<runtime_collab::committed_document::Request>,
+        op_stream_subscriptions: usize,
         media_commands: Vec<runtime_collab::native_media::Request>,
         media_active_fixture: bool,
         media_capture_active: bool,
@@ -6859,29 +6861,33 @@ mod tests {
                     .map_err(|error| capnp::Error::failed(error.into()))?;
                 let mut captures = self.captures.lock().unwrap();
                 captures.committed_reads.push(request.clone());
-                let reply = match captures.committed_history_fixture.as_ref() {
-                    None => Reply::Legacy,
-                    Some(bytes) => match request {
-                        Request::Open {
-                            known_revision: Some(revision),
-                        } if revision == [7; 32] => Reply::Unchanged { revision },
-                        Request::Open { .. } => Reply::Chunk {
-                            capture: 1,
-                            revision: [7; 32],
-                            total: bytes.len() as u32,
-                            offset: 0,
-                            bytes: bytes.clone(),
-                            token: [3; 16],
+                let reply = if captures.committed_documentless_fixture {
+                    Reply::Documentless
+                } else {
+                    match captures.committed_history_fixture.as_ref() {
+                        None => Reply::Legacy,
+                        Some(bytes) => match request {
+                            Request::Open {
+                                known_revision: Some(revision),
+                            } if revision == [7; 32] => Reply::Unchanged { revision },
+                            Request::Open { .. } => Reply::Chunk {
+                                capture: 1,
+                                revision: [7; 32],
+                                total: bytes.len() as u32,
+                                offset: 0,
+                                bytes: bytes.clone(),
+                                token: [3; 16],
+                            },
+                            Request::Cancel { capture: 1, token } if token == [3; 16] => {
+                                Reply::Cancelled
+                            }
+                            _ => {
+                                return Err(capnp::Error::failed(
+                                    "fixture read continuation refused".into(),
+                                ));
+                            }
                         },
-                        Request::Cancel { capture: 1, token } if token == [3; 16] => {
-                            Reply::Cancelled
-                        }
-                        _ => {
-                            return Err(capnp::Error::failed(
-                                "fixture read continuation refused".into(),
-                            ));
-                        }
-                    },
+                    }
                 };
                 let gate = if matches!(reply, Reply::Unchanged { .. }) {
                     captures.committed_recheck_gate.take()
@@ -7007,6 +7013,7 @@ mod tests {
             _params: channel_handle::SubscribeParams,
             mut results: channel_handle::SubscribeResults,
         ) -> Promise<(), capnp::Error> {
+            self.captures.lock().unwrap().op_stream_subscriptions += 1;
             let client: stream::Client = capnp_rpc::new_client(FakeOpStream {
                 backlog: self.op_backlog.clone(),
                 captures: self.captures.clone(),
@@ -11039,6 +11046,66 @@ mod tests {
             "record_id": "notebook", "live": true, "actions": actions
         }]})
         .to_string()
+    }
+
+    /// The broker selects this mode only after admitting the exact locally
+    /// launched managed Agent. The client cannot turn a normal document route
+    /// into a capability by choosing its participant kind.
+    #[test]
+    #[cfg(unix)]
+    fn broker_documentless_agent_route_joins_without_a_crdt_stream() {
+        let cluster = Uuid::new_v4();
+        let captures = Captures {
+            committed_documentless_fixture: true,
+            action_catalogue_fixture: Some(vec![
+                serde_json::json!({"version": 1, "surfaces": []}).to_string(),
+            ]),
+            ..Captures::default()
+        };
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(captures)),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, worker) = stand_up_fake_broker(broker);
+        let sdk = CollaborationManager::spawn_sdk(
+            SdkConnectSource::Fd(fd),
+            Some(SdkJoinIdentity {
+                presentation: Vec::new(),
+                participant_kind: "agent",
+                signer: harness_document_signer(),
+            }),
+        )
+        .unwrap();
+        let mut manager = CollaborationManager::with_transport(Box::new(sdk));
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: "so.tilo.agent".into(),
+            cluster_id: cluster,
+            record: None,
+            record_kind: None,
+            handle: Some("scribe".into()),
+        }));
+        manager
+            .await_primary_route()
+            .expect("the broker-authenticated documentless route joins");
+        assert!(broker_state(&manager).is_healthy());
+        let captures = captures.lock().unwrap();
+        assert_eq!(
+            captures.committed_reads,
+            vec![runtime_collab::committed_document::Request::Open {
+                known_revision: None,
+            }],
+            "the route mode comes from the broker's first authenticated reply"
+        );
+        assert_eq!(
+            captures.op_stream_subscriptions, 0,
+            "a managed service does not acquire an invented CRDT stream"
+        );
+        drop(captures);
+        drop(manager);
+        worker.join().unwrap();
     }
 
     /// Production SDK socket, join and initial/watch delivery; this fixture
