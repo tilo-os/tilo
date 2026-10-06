@@ -179,16 +179,41 @@ pub fn open_canonical_at(app: &str, directory: &Path) -> (State, DocWriter) {
 /// cache and continue it with a background writer. Only the previously
 /// stored heads are durable; the merged graph stays a pending write.
 pub(crate) fn finish_canonical_initial(
-    mut store: DocStore,
+    store: DocStore,
     read: crate::collaboration::CommittedDocument,
     validate: impl Fn(&automerge::AutoCommit) -> Result<(), String>,
 ) -> Result<(automerge::AutoCommit, DocWriter), String> {
+    finish_canonical_read(store, read, &validate, &validate)
+}
+
+/// The exceptional first graph is admitted only by its live creation capture.
+/// Existing local bytes always pass the ordinary identity validator.
+pub(crate) fn finish_canonical_created(
+    store: DocStore,
+    read: crate::collaboration::CommittedDocument,
+    validate: impl Fn(&automerge::AutoCommit) -> Result<(), String>,
+    validate_created: impl Fn(&automerge::AutoCommit) -> Result<(), String>,
+) -> Result<(automerge::AutoCommit, DocWriter), String> {
+    finish_canonical_read(store, read, &validate, &validate_created)
+}
+
+fn finish_canonical_read(
+    mut store: DocStore,
+    read: crate::collaboration::CommittedDocument,
+    validate: &impl Fn(&automerge::AutoCommit) -> Result<(), String>,
+    validate_created: &impl Fn(&automerge::AutoCommit) -> Result<(), String>,
+) -> Result<(automerge::AutoCommit, DocWriter), String> {
+    let incoming_validator = if read.creation_workspace().is_some() {
+        validate_created as &dyn Fn(&automerge::AutoCommit) -> Result<(), String>
+    } else {
+        validate as &dyn Fn(&automerge::AutoCommit) -> Result<(), String>
+    };
     let mut incoming = read.with_mutation(|mutation| {
         let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
             return Err("native canonical snapshot missing".to_string());
         };
         let doc = automerge::AutoCommit::load(bytes).map_err(|error| error.to_string())?;
-        validate(&doc)?;
+        incoming_validator(&doc)?;
         Ok::<_, String>(doc)
     })??;
     let label = store.document_path().to_path_buf();
@@ -200,6 +225,7 @@ pub(crate) fn finish_canonical_initial(
         existing
             .merge_incoming(&mut incoming)
             .map_err(|error| error.to_string())?;
+        validate(&existing)?;
         existing
     } else {
         // The absence is solely in this local cache. Its content comes from
@@ -207,7 +233,7 @@ pub(crate) fn finish_canonical_initial(
         incoming.set_actor(store.actor().clone());
         incoming
     };
-    validate(&doc)?;
+    incoming_validator(&doc)?;
     app_state::validate_canonical_schema_of(&doc, &label).map_err(|error| error.to_string())?;
     if let Some(reason) = store.refusal() {
         return Err(reason.to_string());

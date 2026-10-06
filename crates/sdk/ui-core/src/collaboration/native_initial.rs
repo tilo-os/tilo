@@ -523,6 +523,10 @@ impl InitialReadBridge {
 }
 
 #[cfg(all(test, feature = "broker-transport"))]
+#[path = "native_initial/named_creation_tests.rs"]
+mod named_creation_tests;
+
+#[cfg(all(test, feature = "broker-transport"))]
 mod tests {
     use super::{
         BridgeState, CollaborationManager, Construction, InitialReadBridge, NativeConstruction,
