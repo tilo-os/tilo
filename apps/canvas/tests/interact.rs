@@ -1371,6 +1371,10 @@ fn enabling_reduced_motion_finishes_an_in_flight_wheel_zoom() {
     let pumped = ui::background::Pumped::new();
     let _entered = pumped.background().enter();
     let mut desk = Desk::open();
+    // A smooth ground keeps scheduling demand focused on zoom policy.
+    desk.app
+        .call("set-artwork", serde_json::json!({"texture":"smooth"}))
+        .unwrap();
     desk.app.harness().resize((1280, 900)).unwrap();
     pumped.run_pending();
     desk.key("Ctrl+1");
