@@ -19,6 +19,11 @@ impl FrameHarness {
     /// app) keeps that one: wrapping it in the standalone adapter as well
     /// would stack two History toolbars and squeeze the app's layout.
     pub fn enable_document_history_chrome(&mut self) {
+        if let Some(history) = &mut self.history {
+            history.remove_fallback_bar();
+            self.invalidate_layout_tree();
+            self.relayout();
+        }
         if self.history.is_some()
             || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
             || crate::history_mode::capability::provides_document_history(self.root.as_ref())
