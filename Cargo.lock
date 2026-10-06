@@ -13802,6 +13802,7 @@ dependencies = [
  "tilo-desktop-entry",
  "tilo-files",
  "tilo-fs",
+ "tilo-keyboard-map",
  "tilo-media",
  "tilo-model-gateway",
  "tilo-net",
@@ -16135,6 +16136,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-contact-directory"
+version = "0.1.0"
+dependencies = [
+ "tilo-resource",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-content"
 version = "0.1.0"
 dependencies = [
@@ -16147,15 +16157,6 @@ dependencies = [
  "tilo-paths",
  "tilo-xdg-paths",
  "tracing",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-contact-directory"
-version = "0.1.0"
-dependencies = [
- "tilo-resource",
- "uuid",
  "workspace-hack",
 ]
 
@@ -16744,6 +16745,15 @@ dependencies = [
  "tracing",
  "uuid",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-keyboard-map"
+version = "0.1.0"
+dependencies = [
+ "tilo-winit",
+ "workspace-hack",
+ "xkbcommon",
 ]
 
 [[package]]

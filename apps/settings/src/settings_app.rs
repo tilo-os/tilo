@@ -111,6 +111,8 @@ pub struct SettingsApp {
     time_date: panes::time_date::TimeDateArea,
     /// The installed input sources and the attached input devices.
     input: panes::mouse_keyboard::InputArea,
+    keyboard_map_input: ui::KeyboardMapInput,
+    keyboard_map_cache: crate::panes::mouse_keyboard::KeyboardPreviewCacheHandle,
     /// This device's battery, power profile and charge cap.
     power: panes::power::PowerArea,
     /// This device's system image, firmware and codec pack.
@@ -162,6 +164,8 @@ impl SettingsApp {
             default_apps: panes::personal_apps::DefaultAppsArea::new(&cx),
             time_date: panes::time_date::TimeDateArea::new(&cx),
             input: panes::mouse_keyboard::InputArea::new(&cx),
+            keyboard_map_input: ui::KeyboardMapInput::default(),
+            keyboard_map_cache: Default::default(),
             power: panes::power::PowerArea::new(&cx),
             updates: panes::updates::UpdatesArea::new(&cx),
             storage: panes::storage::StorageArea::new(&cx),
@@ -240,6 +244,9 @@ impl SettingsApp {
     /// narrow list screen that row is the checked one, and choosing it must
     /// show its content rather than do nothing.
     pub fn select(&mut self, category: Category) {
+        if category != Category::MouseKeyboard {
+            self.keyboard_map_input.clear();
+        }
         if self.selected != category {
             self.selected = category;
             self.structure_dirty = true;
@@ -505,10 +512,11 @@ impl SettingsApp {
             Category::Displays => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
                 self.displays.model(),
             ))),
-            Category::MouseKeyboard => Box::new(panes::mouse_keyboard::MouseKeyboardPane::new(
-                self.cx.clone(),
-                &self.input,
-            )),
+            Category::MouseKeyboard => Box::new(
+                panes::mouse_keyboard::MouseKeyboardPane::new(self.cx.clone(), &self.input)
+                    .with_map_input(self.keyboard_map_input.clone())
+                    .with_map_cache(self.keyboard_map_cache.clone()),
+            ),
             Category::KeyboardShortcuts => Box::new(panes::keyboard_shortcuts::ShortcutPane::new(
                 self.cx.clone(),
             )),
@@ -847,11 +855,55 @@ impl Widget for SettingsApp {
         }
     }
 
+    fn observe_physical_input(&mut self, input: ui::widget::PhysicalInput) {
+        fn observe_map(widget: &mut dyn Widget, input: ui::widget::PhysicalInput) -> bool {
+            if let Some(map) = widget
+                .as_any_mut()
+                .and_then(|widget| widget.downcast_mut::<ui::KeyboardMap>())
+            {
+                map.observe_physical_input(input);
+                return true;
+            }
+            let mut visible = false;
+            for child in widget.children_mut() {
+                visible |= observe_map(child, input);
+            }
+            visible
+        }
+        let visible = self.selected == Category::MouseKeyboard
+            && self
+                .shell
+                .as_mut()
+                .is_some_and(|shell| observe_map(shell, input));
+        if !visible {
+            self.keyboard_map_input.clear();
+        }
+    }
+
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
+        // Observe only the mounted foreground page, before its search/picker
+        // can consume editing events. This never changes handling or focus.
+        fn observe_map(widget: &mut dyn Widget, event: &winit::event::WindowEvent) {
+            if let Some(map) = widget
+                .as_any_mut()
+                .and_then(|widget| widget.downcast_mut::<ui::KeyboardMap>())
+            {
+                map.observe_foreground_event(event);
+                return;
+            }
+            for child in widget.children_mut() {
+                observe_map(child, event);
+            }
+        }
+        if self.selected == Category::MouseKeyboard
+            && let Some(shell) = &mut self.shell
+        {
+            observe_map(shell, event);
+        }
         if let (Ok(children), Some(shell)) = (ctx.taffy.children(ctx.node_id), &mut self.shell)
             && let Some(&shell_node) = children.first()
         {

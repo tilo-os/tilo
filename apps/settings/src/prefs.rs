@@ -198,6 +198,12 @@ pub struct InputPrefs {
     /// Ordered XKB layouts. `keyboard_layout` remains the active first item
     /// for backward compatibility with old sessions.
     pub keyboard_layouts: Vec<String>,
+    /// Explicit physical model; no hardware detection is implied.
+    pub keyboard_model: String,
+    /// Layout being inspected without changing the active input source.
+    pub keyboard_preview: Option<String>,
+    /// Inspect the higher native XKB levels without changing typed input.
+    pub keyboard_preview_extra_levels: bool,
     /// Per-tablet mapping, pressure and buttons, keyed by device identity.
     #[serde(deserialize_with = "settings_store::hardware::lenient_tablets")]
     pub tablets: std::collections::BTreeMap<String, settings_store::hardware::TabletConfig>,
@@ -234,6 +240,9 @@ impl Default for InputPrefs {
             compose_key: None,
             caps_lock: None,
             keyboard_layouts: vec!["us".into()],
+            keyboard_model: "pc105".into(),
+            keyboard_preview: None,
+            keyboard_preview_extra_levels: false,
             tablets: std::collections::BTreeMap::new(),
         }
     }
@@ -298,6 +307,7 @@ impl InputPrefs {
             key_repeat_rate_hz: self.key_repeat_rate_hz,
             keyboard_layout: self.keyboard_layout.clone(),
             keyboard_layouts: self.keyboard_layouts.clone(),
+            keyboard_model: self.keyboard_model.clone(),
             compose_key: self.compose_key.clone(),
             caps_lock: self.caps_lock.clone(),
             touchpad_gestures: self.touchpad_gestures,
@@ -307,6 +317,7 @@ impl InputPrefs {
             tablets: self.tablets.clone(),
         };
         config.normalise_sources();
+        self.keyboard_model = config.keyboard_model;
         self.keyboard_layout = config.keyboard_layout;
         self.keyboard_layouts = config.keyboard_layouts;
     }
