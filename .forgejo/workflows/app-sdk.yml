@@ -269,9 +269,8 @@ jobs:
   # Web: the desktop bundle built from the app manifests and every registered
   # app mounted in headless Chromium on WebGPU.
   web:
-    # The release assets come from web-size in this same workflow run.
-    # A failed release build also skips the dependent dev mount/qualification lane.
-    needs: [builder, web-size]
+    # The dev mount does not consume release artifacts; build both lanes in parallel.
+    needs: [builder]
     if: needs.builder.outputs.affected == 'true'
     # wasm-bindgen over the whole desktop bundle exceeds the quality lane's
     # 5 GiB.
@@ -335,6 +334,46 @@ jobs:
           mkdir -p "$RUNNER_TEMP/web-shots"
           SHOTS_DIR="$RUNNER_TEMP/web-shots" node crates/browser/tilo-web-desktop/scripts/smoke.mjs \
             http://127.0.0.1:7878 "${apps[@]}" desktop
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: app-sdk-web-shots
+          path: ${{ runner.temp }}/web-shots
+          if-no-files-found: ignore
+      - name: Report compiler cache
+        if: always()
+        run: bash tools/ci/sccache.sh report || true
+
+  # Qualify this run's exact release worker independently of the dev mount.
+  # Both checks remain required; a failed release build blocks qualification.
+  web-release:
+    needs: [builder, web-size]
+    if: needs.builder.outputs.affected == 'true'
+    runs-on: runner
+    timeout-minutes: 150
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+      - name: Merge onto main
+        uses: ./.forgejo/actions/merge-main
+        with:
+          main: ${{ needs.builder.outputs.main }}
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+      - name: Node toolchain
+        run: command -v node || dnf install -y nodejs
+      - name: Headless Chromium for Testing
+        run: |
+          # Chrome's shared-library dependencies; present on current builders.
+          dnf install -y nss atk at-spi2-atk cups-libs libdrm libXcomposite libXdamage \
+            libXrandr mesa-libgbm pango alsa-lib libxkbcommon || true
+          npx --yes @puppeteer/browsers@2 install chrome@stable --path "$RUNNER_TEMP/chrome" \
+            | tee "$RUNNER_TEMP/chrome.txt"
+          echo "CHROME=$(awk '{print $2}' "$RUNNER_TEMP/chrome.txt" | tail -n 1)" >> "$GITHUB_ENV"
       - name: Download exact release private image worker
         uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
@@ -360,12 +399,6 @@ jobs:
           name: app-sdk-compute-qualification
           path: ${{ runner.temp }}/compute-qualification/qualification.json
           if-no-files-found: error
-      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
-        if: always()
-        with:
-          name: app-sdk-web-shots
-          path: ${{ runner.temp }}/web-shots
-          if-no-files-found: ignore
       - name: Report compiler cache
         if: always()
         run: bash tools/ci/sccache.sh report || true
