@@ -182,6 +182,10 @@ impl<M: PaneModel> Widget for ModelPane<M> {
 
     fn needs_animation_frame(&self) -> bool {
         self.model.borrow().busy()
+            || self
+                .composed
+                .as_ref()
+                .is_some_and(|child| child.needs_animation_frame())
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
