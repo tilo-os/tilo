@@ -20,7 +20,7 @@ use settings_store::hardware::{
     TouchpadScrollMethod,
 };
 use taffy::{NodeId, TaffyTree};
-use ui::framework::{ActionControl, EffectAnswer, EffectCx, Effected, LiveRow};
+use ui::framework::{ActionControl, Effect as _, EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::i18n::ArgValue;
 use ui::text_assistance::TextAssistancePrefs;
 use ui::theme::Theme;
@@ -831,6 +831,9 @@ pub enum InputEffect {
         #[param("The source's id, such as `us` or `de`")]
         source: String,
     },
+    /// Inspect this device's mounted keyboard map and current physical feedback.
+    #[effect(returns, idempotent, device_only, permission = "read")]
+    InspectKeyboardMap,
     /// Inspect any installed XKB layout without changing what the keyboard types.
     #[effect(idempotent)]
     PreviewLayout { source: String },
@@ -1239,7 +1242,10 @@ fn apply(
                 dial_for_id(&action).ok_or_else(|| format!("`{action}` is not a dial choice"))?;
             tablet_entry(input, &device)?.set_dial_action(dial, mode, action);
         }
-        E::SetSpellChecking { .. } | E::SetAutoCorrect { .. } | E::SetSpellingLanguage { .. } => {}
+        E::InspectKeyboardMap
+        | E::SetSpellChecking { .. }
+        | E::SetAutoCorrect { .. }
+        | E::SetSpellingLanguage { .. } => {}
     }
     Ok(())
 }
@@ -1258,6 +1264,9 @@ pub(crate) fn answer(
     effect: InputEffect,
     _cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
+    if effect == InputEffect::InspectKeyboardMap {
+        return app.keyboard_inspection().map(Effected::value);
+    }
     let host = app.host();
     match effect {
         InputEffect::SetSpellChecking { on } => {
@@ -1344,8 +1353,14 @@ impl InputArea {
 
     /// One live row per attached drawing tablet and pad, by device id.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
+        let inspection = LiveRow::new(
+            "settings.keyboard-map",
+            "settings.keyboard-map",
+            t("input-map-title"),
+        )
+        .operation(crate::effects::SettingsEffect::from(InputEffect::InspectKeyboardMap).bound());
         let Some(devices) = self.devices() else {
-            return Vec::new();
+            return vec![inspection];
         };
         let row = |device: &InputDeviceSnapshot, id: String, kind: &str| {
             LiveRow::new(id, kind, device_title(device)).presentation(ResourcePresentation {
@@ -1353,15 +1368,20 @@ impl InputArea {
                 ..ResourcePresentation::default()
             })
         };
-        devices
-            .of_kind(InputDeviceKind::Tablet)
-            .into_iter()
-            .map(|device| row(device, tablet_resource_id(&device.key), "settings.tablet"))
+        std::iter::once(inspection)
             .chain(
                 devices
-                    .of_kind(InputDeviceKind::TabletPad)
+                    .of_kind(InputDeviceKind::Tablet)
                     .into_iter()
-                    .map(|device| row(device, pad_resource_id(&device.key), "settings.tablet-pad")),
+                    .map(|device| row(device, tablet_resource_id(&device.key), "settings.tablet"))
+                    .chain(
+                        devices
+                            .of_kind(InputDeviceKind::TabletPad)
+                            .into_iter()
+                            .map(|device| {
+                                row(device, pad_resource_id(&device.key), "settings.tablet-pad")
+                            }),
+                    ),
             )
             .collect()
     }
@@ -3039,6 +3059,145 @@ mod tests {
         assert!(input.keyboard_preview.is_none());
         assert_eq!(input.keyboard_preview_level, 0);
         assert_eq!(input.keyboard_layout, "de");
+    }
+
+    #[test]
+    fn keyboard_map_read_is_published_device_scoped_and_never_changes_preferences() {
+        use ui::tilo_resource::Effect as _;
+        let mut app = TestApp::<SettingsShell>::with_role(ui::permissions::Role::Viewer).unwrap();
+        let effect = InputEffect::InspectKeyboardMap;
+        let actions = app.actions().unwrap();
+        let action = actions
+            .iter()
+            .find(|action| action.address.action == effect.id())
+            .unwrap();
+        assert_eq!(
+            action.contract.permission,
+            ui::tilo_actions::PermissionRequirement::Read
+        );
+        assert!(
+            action
+                .contract
+                .tags
+                .iter()
+                .any(|tag| tag == ui::tilo_actions::LOCAL_DEVICE_ONLY)
+        );
+        let address = action.address.clone();
+        let before = app.settings::<InputPrefs>().get();
+        let value = app
+            .call_on(&address.resource, &address.action, serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(value["page_visible"], false);
+        assert_eq!(value["pressed_physical_keys"], serde_json::json!([]));
+        assert_eq!(app.settings::<InputPrefs>().get(), before);
+        let denied = app.call_by(
+            ui::tilo_actions::ActionInvoker {
+                actor: "unrelated-collaborator".into(),
+                participant: None,
+            },
+            &address.resource,
+            &address.action,
+            serde_json::json!({}),
+        );
+        assert!(
+            matches!(denied, Err(ui::tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "local_device_only")
+        );
+        assert_eq!(app.settings::<InputPrefs>().get(), before);
+    }
+
+    #[test]
+    fn keyboard_map_read_uses_the_mounted_preview_and_live_key_release_state() {
+        use ui::tilo_resource::Effect as _;
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let read = |app: &mut TestApp<SettingsShell>| {
+            app.call_on(
+                "settings.keyboard-map",
+                InputEffect::InspectKeyboardMap.id(),
+                serde_json::json!({}),
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let open = crate::effects::open_pane_address(crate::categories::Category::MouseKeyboard);
+        app.call_on(&open.resource, &open.action, serde_json::json!({}))
+            .unwrap();
+        assert!(set(
+            &mut app,
+            InputEffect::PreviewLayout {
+                source: "de".into()
+            }
+        ));
+        assert!(set(
+            &mut app,
+            InputEffect::InspectKeyboardKey { key: "AD06".into() }
+        ));
+        let before = app.settings::<InputPrefs>().get();
+        app.harness().dispatch_to_root(&WindowEvent::Focused(true));
+        let preview = read(&mut app);
+        assert_eq!(preview["mode"], "preview");
+        assert_eq!(preview["available"], true);
+        assert_eq!(preview["source"], "de");
+        assert_eq!(preview["inspected_key"], "AD06");
+        assert!(
+            preview["selected_symbols"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|symbol| symbol == "z")
+        );
+        let key = |state| WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            is_synthetic: false,
+            event: winit::event::KeyEvent::synthetic(
+                winit::event::RawKeyEvent {
+                    physical_key: winit::keyboard::PhysicalKey::Code(
+                        winit::keyboard::KeyCode::KeyY,
+                    ),
+                    state,
+                },
+                winit::keyboard::Key::Character("z".into()),
+                Some("z".into()),
+                winit::keyboard::KeyLocation::Standard,
+                false,
+                Some("z".into()),
+                winit::keyboard::Key::Character("z".into()),
+            ),
+        };
+        app.harness()
+            .dispatch_to_root(&key(winit::event::ElementState::Pressed));
+        assert_eq!(
+            read(&mut app)["pressed_physical_keys"],
+            serde_json::json!(["AD06"])
+        );
+        app.harness()
+            .dispatch_to_root(&key(winit::event::ElementState::Released));
+        assert_eq!(
+            read(&mut app)["pressed_physical_keys"],
+            serde_json::json!([])
+        );
+        assert_eq!(app.settings::<InputPrefs>().get(), before);
+        assert!(set(&mut app, InputEffect::ShowLiveKeyboardMap));
+        let live = read(&mut app);
+        assert_eq!(live["mode"], "live");
+        assert_eq!(
+            live["available"], false,
+            "native evidence is mandatory, never preferred-layout fallback"
+        );
+        assert_eq!(live["selected_symbols"], serde_json::json!([]));
+        app.harness()
+            .dispatch_to_root(&key(winit::event::ElementState::Pressed));
+        app.harness().dispatch_to_root(&WindowEvent::Focused(false));
+        let blurred = read(&mut app);
+        assert_eq!(blurred["foreground"], false);
+        assert_eq!(blurred["pressed_physical_keys"], serde_json::json!([]));
+        let about = crate::effects::open_pane_address(crate::categories::Category::About);
+        app.call_on(&about.resource, &about.action, serde_json::json!({}))
+            .unwrap();
+        let off_page = read(&mut app);
+        assert_eq!(off_page["page_visible"], false);
+        assert_eq!(off_page["selected_symbols"], serde_json::json!([]));
+        assert_eq!(off_page["pressed_physical_keys"], serde_json::json!([]));
     }
 
     #[test]
