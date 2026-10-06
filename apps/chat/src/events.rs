@@ -3118,6 +3118,42 @@ mod tests {
     }
 
     #[test]
+    fn agent_task_refresh_deadline_reaches_the_production_widget_host() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.room_names
+            .insert("agent:scribe".into(), "Scribe".into());
+        app.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
+            Arc::new(TaskControlHost::default()) as Arc<dyn ActionHost + Send + Sync>,
+            Caller::local_app("so.tilo.chat").in_room("ws_home"),
+        );
+        app.reload(&doc);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        app.poll_agent_tasks();
+
+        let tasks = app.direct_agent_tasks().expect("owner-backed task context");
+        let expected = tasks
+            .borrow()
+            .next_wake_deadline()
+            .expect("bounded owner refresh deadline");
+        assert_eq!(
+            ui::Widget::next_wake_deadline(&app),
+            Some(expected),
+            "the retained Chat root must wake even without an unrelated input or document event"
+        );
+        let snapshot = ui::Widget::native_input_snapshot(&app, &doc, &automerge::ROOT)
+            .expect("opt-in native diagnostic snapshot");
+        assert_eq!(snapshot["agent_task"]["task_id"], "task-current");
+        assert_eq!(snapshot["agent_task"]["run_epoch"], 7);
+        assert!(snapshot["agent_task"].get("title").is_none());
+    }
+
+    #[test]
     fn chat_writer_without_task_actions_can_message_but_not_queue_steer_or_stop() {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");

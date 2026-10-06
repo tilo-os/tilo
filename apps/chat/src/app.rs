@@ -4547,6 +4547,38 @@ impl Widget for ChatApp {
         Some(self)
     }
 
+    fn native_input_snapshot(
+        &self,
+        _state: &AppModel,
+        _path: &ModelPath,
+    ) -> Option<serde_json::Value> {
+        let current = self
+            .direct_agent_tasks()
+            .and_then(|tasks| tasks.borrow().context_task())
+            .map(|task| {
+                let execution = task.execution.map(|execution| {
+                    serde_json::json!({
+                        "run_epoch": execution.run_epoch,
+                        "sequence": execution.sequence,
+                        "phase": execution.phase,
+                    })
+                });
+                serde_json::json!({
+                    "task_id": task.task_id,
+                    "run_epoch": task.run_epoch,
+                    "execution": execution,
+                })
+            });
+        Some(serde_json::json!({"agent_task": current}))
+    }
+
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.agent_tasks
+            .values()
+            .filter_map(|tasks| tasks.borrow().next_wake_deadline())
+            .min()
+    }
+
     fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
         &crate::semantic_read::action::READERS
     }
