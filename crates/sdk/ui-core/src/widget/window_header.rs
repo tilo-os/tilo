@@ -5,9 +5,9 @@
 //! provides [`WindowHeader`]: [`NavShell`](crate::widget::NavShell) does,
 //! and so does a painted app that lays its top band out with
 //! [`crate::chrome::HeaderRowFace`]. The host offers it the window's own
-//! controls (today: History) before it builds the app, and draws them itself
-//! only where the app has no header row; such a window draws no History bar
-//! above the app.
+//! controls (today: History) before it builds the app. App windows never add
+//! a second header when the app declines this capability; History remains
+//! available through the platform action, palette and keyboard.
 //!
 //! A painted app keeps a [`HistoryOpener`]:
 //!

@@ -5,8 +5,8 @@
 //! covers stays visible behind it.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Rect};
-use vello::peniko::{ColorStop, Fill, Gradient};
+use vello::kurbo::{Affine, Rect, RoundedRect, Shape};
+use vello::peniko::{BlendMode, ColorStop, Fill, Gradient};
 
 use crate::theme::Theme;
 
@@ -21,6 +21,29 @@ pub fn modal(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32, th
         theme.tokens.colors.surfaces.scrim_strength * openness.clamp(0.0, 1.0),
         theme,
     );
+}
+
+/// Dim only the background around a modal's foreground. Floating material
+/// records the scene behind it for blur, so dimming underneath the panel
+/// would also darken the material a foreground control stands on.
+pub fn behind_panel(
+    scene: &mut Scene,
+    transform: Affine,
+    window: Rect,
+    panel: RoundedRect,
+    theme: &Theme,
+) {
+    let mut background = window.to_path(0.1);
+    background.extend(panel.path_elements(0.1));
+    scene.push_layer(
+        Fill::EvenOdd,
+        BlendMode::default(),
+        1.0,
+        transform,
+        &background,
+    );
+    modal(scene, transform, window, 1.0, theme);
+    scene.pop_layer();
 }
 
 /// The edge of a [`vertical_fade`] where it is strongest.
