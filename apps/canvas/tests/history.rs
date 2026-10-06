@@ -246,7 +246,7 @@ const WIDTH: u32 = 1280;
 /// The colour of the window's pixel at `(x, y)`.
 fn pixel_at(app: &mut TestApp<App>, (x, y): (f64, f64)) -> [u8; 4] {
     let width = WIDTH;
-    let rgba = app.harness().render_window_rgba();
+    let rgba = app.harness().render_rgba();
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,

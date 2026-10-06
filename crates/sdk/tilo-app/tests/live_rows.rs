@@ -409,3 +409,67 @@ fn a_surface_cannot_publish_a_document_action_of_its_own() {
     assert!(app.call_on("rogue", "bump", json!({})).is_err());
     assert_eq!(app.state(), 0);
 }
+
+thread_local! {
+    static RETAINED_ACTIONS: RefCell<Option<tilo_app::framework::Actions<Tally>>> = const { RefCell::new(None) };
+}
+
+struct DynamicBindingsApp;
+
+impl ResourceApp for DynamicBindingsApp {
+    type Resource = Tally;
+    const ID: &'static str = "so.tilo.test-dynamic-bindings";
+    const TITLE: &'static str = "Dynamic bindings";
+
+    fn view(cx: &mut ViewCx<Tally>) -> Element {
+        RETAINED_ACTIONS.with(|actions| *actions.borrow_mut() = Some(cx.actions()));
+        cx.bind_declarations(|count| {
+            let mut declarations = vec![ActionDecl::new("seed", "Seed", Vec::new(), |_, _| {
+                Ok(TallyAction::Add { by: 1 })
+            })];
+            if *count > 0 {
+                declarations.push(ActionDecl::new(
+                    "conditional",
+                    "Conditional",
+                    Vec::new(),
+                    |_, _| Ok(TallyAction::Add { by: 1 }),
+                ));
+            }
+            declarations
+        });
+        Box::new(Text::new("Dynamic declarations"))
+    }
+}
+
+#[test]
+fn retained_actions_follow_canonical_publication_through_edits_and_undo() {
+    use tilo_resource::ActionRef;
+    let mut app = TestApp::<DynamicBindingsApp>::new().unwrap();
+    let actions = RETAINED_ACTIONS
+        .with(|actions| actions.borrow().clone())
+        .unwrap();
+    let conditional = ActionRef::<Tally, ()>::new("conditional", &[]);
+    let root = actions
+        .binding(ActionRef::<Tally, ()>::new("seed", &[]))
+        .unwrap()
+        .address()
+        .resource
+        .clone();
+    assert!(actions.binding(conditional).is_none());
+    app.invoke(ActionRef::<Tally, ()>::new("seed", &[]).invoke())
+        .unwrap();
+    let binding = actions
+        .binding(conditional)
+        .expect("new declaration is bindable");
+    assert_eq!(binding.address().resource, root);
+    assert!(app.undo());
+    assert!(
+        actions.binding(conditional).is_none(),
+        "removed declaration cannot bind"
+    );
+    assert!(app.redo());
+    assert_eq!(
+        actions.binding(conditional).unwrap().address().resource,
+        root
+    );
+}

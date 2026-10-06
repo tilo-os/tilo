@@ -125,6 +125,14 @@ impl Resource for Browser {
         vec![bookmarks, settings_child()]
     }
 
+    fn search_scopes(_state: &BrowserState) -> Vec<ui::search::ScopeDecl> {
+        vec![
+            ui::search::ScopeDecl::new(crate::actions::HISTORY_SCOPE, "History"),
+            ui::search::ScopeDecl::new(crate::actions::BOOKMARKS_SCOPE, "Bookmarks"),
+            ui::search::ScopeDecl::new(crate::actions::DOWNLOADS_SCOPE, "Downloads"),
+        ]
+    }
+
     fn search(state: &BrowserState) -> Vec<SearchEntry> {
         state
             .bookmarks

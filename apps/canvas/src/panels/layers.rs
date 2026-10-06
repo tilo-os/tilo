@@ -9,7 +9,8 @@ use std::rc::Rc;
 use ui::LocalState;
 use ui::icons::Icon;
 use ui::prelude::*;
-use ui::widget::{Badge, BadgeTone, EditableLabel, ListRow};
+use ui::widget::ButtonRole;
+use ui::widget::{Badge, ChipStyle, ControlRow, EditableLabel, Tone};
 
 use super::{caption, icon_button, percent};
 use crate::model::Artwork;
@@ -88,7 +89,7 @@ fn rows(art: &Artwork) -> Vec<LayerRow> {
 const THUMB: (f32, f32) = (44.0, 33.0); // a picture's size, not spacing
 
 /// How tall the list of layers grows before it scrolls.
-const LIST: f32 = 160.0; // about four layer rows: a share of the sidebar, not spacing
+const LIST: f32 = 5.0 * ui::tokens::Metrics::BASE.panel_row_height;
 
 /// The panel: the layers, scrolling when there are many, and under them
 /// the chosen layer's own controls, always in view.
@@ -115,16 +116,22 @@ pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
             .push(Box::new(
                 Column::new()
                     .with_intrinsic_height()
-                    .with_vertical_padding(4.0)
-                    .with_horizontal_padding(8.0, 8.0)
+                    .with_vertical_padding(ui::tokens::Spacing::BASE.s1)
+                    .with_horizontal_padding(
+                        ui::tokens::Spacing::BASE.s2,
+                        ui::tokens::Spacing::BASE.s2,
+                    )
                     .push(list),
             ))
             .push(Box::new(ui::widget::Divider::horizontal()))
             .push(Box::new(
                 Column::new()
                     .with_intrinsic_height()
-                    .with_vertical_padding(8.0)
-                    .with_horizontal_padding(16.0, 12.0)
+                    .with_vertical_padding(ui::tokens::Spacing::BASE.s2)
+                    .with_horizontal_padding(
+                        ui::tokens::Spacing::BASE.s4,
+                        ui::tokens::Spacing::BASE.s3,
+                    )
                     .push(footer),
             )),
     )
@@ -176,7 +183,7 @@ fn layer_tree(rows: &[LayerRow], tools: &Tools) -> Element {
             .with_id("canvas-layer-tree")
             .with_selected(selected)
             .with_expanded(expanded)
-            .with_viewport(LIST, 32.0)
+            .with_viewport(LIST, ui::tokens::Metrics::BASE.panel_row_height)
             .on_select(move |node| {
                 if let Some(id) = targets.get(&node) {
                     chosen.set(id.clone());
@@ -232,10 +239,10 @@ fn pictures(cx: &ViewCx<ArtworkResource>, tools: &Tools, row: &LayerRow) -> Row 
         let chosen = tools.layer.clone();
         let target = layer.to_owned();
         let choose = Button::new(&format!("canvas-paint-{layer}"), "")
-            .ghost()
+            .role(ButtonRole::Plain)
             .with_accessible_name(name)
             .tooltip(name)
-            .with_size(THUMB.0, THUMB.1)
+            .fill_width()
             .on_view(move || chosen.set(target.clone()));
         // The picture over its button: the button takes the press the
         // picture lets through, and the picture shows what it chooses.
@@ -252,7 +259,7 @@ fn pictures(cx: &ViewCx<ArtworkResource>, tools: &Tools, row: &LayerRow) -> Row 
     };
     let named = |id: &str| ui::i18n::I18nManager::format(id, &[("name", row.name.clone().into())]);
     let mut pictures = Row::new()
-        .with_gap(4.0)
+        .with_gap(ui::tokens::Spacing::BASE.s1)
         .no_wrap()
         .with_align_items(ui::taffy::AlignItems::Center)
         .push(thumb(&row.id, &named("canvas-layer-paint-name")));
@@ -272,7 +279,7 @@ fn layer_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, row: &LayerRow) -> Ele
     let renaming = LocalState::new(false);
     let name = cx.actions().bind(
         EditableLabel::new(&row.name)
-            .with_font_size(14.0)
+            .with_text_role(TextRole::Body)
             .with_id(&format!("canvas-layer-name-{}", row.id))
             .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-layer-rename"))
             .renames_on_double_click()
@@ -281,13 +288,12 @@ fn layer_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, row: &LayerRow) -> Ele
         rename,
     );
     let mut summary = Row::new()
-        .with_gap(6.0)
+        .with_gap(ui::tokens::Spacing::BASE.s2)
         .no_wrap()
         .with_align_items(ui::taffy::AlignItems::Center)
-        .push(Box::new(Badge::semantic_pill(
-            row.medium.clone(),
-            BadgeTone::Neutral,
-        )));
+        .push(Box::new(
+            Badge::text(row.medium.clone()).style(ChipStyle::Tinted(Tone::Neutral)),
+        ));
     if row.opacity < 1.0 {
         summary = summary.push(caption(&percent(row.opacity)));
     }
@@ -308,8 +314,8 @@ fn layer_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, row: &LayerRow) -> Ele
         (Icon::LockOpen, named("canvas-layer-lock-name"))
     };
     let content = Row::new()
-        .with_padding(6.0, 4.0)
-        .with_gap(10.0)
+        .with_padding(ui::tokens::Spacing::BASE.s2, ui::tokens::Spacing::BASE.s1)
+        .with_gap(ui::tokens::Spacing::BASE.s3)
         .no_wrap()
         .with_align_items(ui::taffy::AlignItems::Center)
         .push(Box::new(pictures))
@@ -333,8 +339,7 @@ fn layer_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, row: &LayerRow) -> Ele
             ArtworkResource::SET_LAYER_LOCKED.with((row.id.clone(), !row.locked)),
         )));
     let row_element: Element = Box::new(
-        ListRow::new(content)
-            .on_raised()
+        ControlRow::new(content)
             .choosing_any(
                 &tools.layer,
                 std::iter::once(row.id.clone())
@@ -483,7 +488,7 @@ fn chosen_layer(cx: &ViewCx<ArtworkResource>, id: &str, tools: &Tools) -> Elemen
                 .find(|row| row.id == id || row.mask.as_ref().is_some_and(|mask| mask.id == id))
         })
     }) else {
-        return Box::new(Spacer::fixed(0.0));
+        return Box::new(Spacer::token(ui::tokens::SpacingStep::S0));
     };
     let opacity = {
         let id = row.id.clone();
@@ -534,7 +539,7 @@ fn chosen_layer(cx: &ViewCx<ArtworkResource>, id: &str, tools: &Tools) -> Elemen
         .with_gap(0.0)
         .push(Box::new(
             Row::new()
-                .with_gap(2.0)
+                .with_gap(ui::tokens::Spacing::BASE.s1)
                 .no_wrap()
                 .with_align_items(ui::taffy::AlignItems::Center)
                 .push(Box::new(label))
@@ -646,7 +651,7 @@ fn objects(cx: &ViewCx<ArtworkResource>, layer: &str, tools: &Tools) -> Element 
 fn mask_buttons(cx: &ViewCx<ArtworkResource>, row: &LayerRow) -> Element {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let mut buttons = Row::new()
-        .with_gap(2.0)
+        .with_gap(ui::tokens::Spacing::BASE.s1)
         .no_wrap()
         .with_align_items(ui::taffy::AlignItems::Center);
     if row.mask.is_none() {
@@ -664,7 +669,7 @@ fn mask_buttons(cx: &ViewCx<ArtworkResource>, row: &LayerRow) -> Element {
         ArtworkResource::SET_LAYER_CLIP.with((row.id.clone(), !row.clip)),
     );
     if row.clip {
-        clip = clip.primary();
+        clip = clip.toggled(true);
     }
     Box::new(buttons.push(Box::new(clip)))
 }
@@ -685,7 +690,7 @@ fn mask_line(cx: &ViewCx<ArtworkResource>, row: &LayerRow, mask: &MaskRow) -> El
         ArtworkResource::SET_MASK_INVERT.with((row.id.clone(), !mask.invert)),
     );
     if mask.invert {
-        invert = invert.primary();
+        invert = invert.toggled(true);
     }
     let (chain, link) = if mask.unlinked {
         (Icon::Unlink, "link")
@@ -700,7 +705,7 @@ fn mask_line(cx: &ViewCx<ArtworkResource>, row: &LayerRow, mask: &MaskRow) -> El
     );
     Box::new(
         Row::new()
-            .with_gap(2.0)
+            .with_gap(ui::tokens::Spacing::BASE.s1)
             .no_wrap()
             .with_align_items(ui::taffy::AlignItems::Center)
             .push(caption(&lookup("canvas-medium-mask")))

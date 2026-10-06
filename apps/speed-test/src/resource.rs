@@ -108,6 +108,9 @@ impl ResourceApp for SpeedTestShell {
             _ => (1180, 760),
         }
     }
+    // Results stay on this device and the document is empty: nothing to
+    // look back on.
+    const DOCUMENT_HISTORY: bool = false;
 
     fn view(cx: &mut ViewCx<SpeedTest>) -> Element {
         cx.surface(SpeedTestApp::new())
@@ -118,6 +121,8 @@ impl ResourceApp for SpeedTestShell {
             "idle",
             "running",
             "complete",
+            "error",
+            "complete-slow",
             "complete-narrow",
             "complete-short",
         ]
@@ -130,7 +135,7 @@ impl ResourceApp for SpeedTestShell {
                 jitter,
                 download,
                 upload,
-                "Cloudflare · LHR".to_owned(),
+                "Cloudflare at LHR".to_owned(),
                 "capture-device".to_owned(),
             ))
         };

@@ -1,12 +1,21 @@
-//! Shared global-search framework for Tilo.
+//! Search as a platform service.
 //!
-//! Rather than each app rolling its own search bar, result list, and
-//! ranking, an app declares what it can find by implementing
-//! [`SearchProvider`], and the framework queries, merges, and ranks.
-//! Paired with [`SearchField`](crate::widget::SearchField) and
-//! [`SearchResultsView`](crate::widget::SearchResultsView), that's a
-//! consistent OS-styled search surface for free — and lets a future
-//! shell-level Ctrl+K drive the same [`SearchRegistry`] across every app.
+//! Apps never draw a search field or a result list. An app declares what it
+//! can find and the platform presents it:
+//!
+//! - **Providers.** A [`SearchProvider`] per findable kind answers bounded,
+//!   paged queries ([`SearchQuery`]: text, [`Facet`] filters, scope). A slow
+//!   source returns [`SearchPage::pending`] and finishes through
+//!   [`SearchProvider::poll_page`].
+//! - **Rows.** A hit says what it is with a [`SearchRow`] (a message, a video,
+//!   a file hit); the generic row is the fallback.
+//! - **Opening search.** [`search_button`] / [`open_search_binding`] open the
+//!   one platform palette narrowed to the app or one of its parts
+//!   ([`SearchRequest`], [`ScopeDecl`]); `/` and Ctrl+K do the same.
+//! - **In-content narrowing** is a [`SearchField`](crate::widget::SearchField)
+//!   bound to a [`Filterable`](crate::widget::Filterable) list, and **find in
+//!   a document** is the [`FindBar`](crate::widget::FindBar) over a
+//!   [`Findable`](crate::widget::Findable) view. Neither searches the app.
 //!
 //! ```
 //! use tilo_ui::search::{SearchRegistry, SearchResult};
@@ -28,20 +37,30 @@
 mod body;
 pub mod capability;
 mod provider;
+mod query;
 pub mod rank;
 mod registry;
+pub(crate) mod request;
+mod row;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
 pub use body::{BodyPiece, SearchBody, SearchBodySource};
 pub use provider::{
     CatalogSearchProvider, DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_INDEX_LIMIT,
-    DEFAULT_SEARCH_RESULT_LIMIT, MAX_SEARCH_QUERY_SCALARS, OpenResourceSearch, SearchCatalog,
-    SearchCatalogError, SearchCatalogStats, SearchCursor, SearchPage, SearchProvider, SearchRecord,
-    SearchResult, normalize_search_text,
+    DEFAULT_SEARCH_RESULT_LIMIT, MAX_SEARCH_QUERY_SCALARS, OpenResourceSearch, PagePoll,
+    PendingToken, SearchCatalog, SearchCatalogError, SearchCatalogStats, SearchCursor, SearchPage,
+    SearchProvider, SearchRecord, SearchResult, normalize_search_text,
 };
+pub use query::{Facet, FacetFilter, FacetValue, SearchQuery};
 pub use rank::{FieldWeight, MatchTier, result_relevance};
 pub use registry::{FnProvider, SearchGroup, SearchRegistry};
+pub use request::{
+    ScopeDecl, SearchOpener, SearchRequest, SearchRequestScope, open_search_binding,
+    open_search_invocation, scope_contains, search_button,
+};
+pub(crate) use request::{search_address, search_resource};
+pub use row::SearchRow;
 /// Fold text the way every index does: case, compatibility forms and
 /// alphabetic diacritics.
 pub use tilo_search::fold as fold_search_text;

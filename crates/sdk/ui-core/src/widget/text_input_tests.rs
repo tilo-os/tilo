@@ -4,6 +4,11 @@ use crate::text_selection::{next_word_boundary, prev_word_boundary};
 use automerge::ObjType;
 use automerge::transaction::Transactable as _;
 
+/// The 1× size a role-less field sets its text at.
+fn body_size() -> f32 {
+    crate::tokens::typography::stock().size(TextRole::Body)
+}
+
 #[test]
 fn hovering_and_leaving_a_field_do_not_consume_a_siblings_pointer_movement() {
     let mut input = TextInput::local();
@@ -104,23 +109,22 @@ fn caret_paints_with_real_line_geometry_and_can_be_suppressed() {
     }
 
     // Case `text_baseline_centred_with_caret`.
-    // Pins the text top against `line_height`, *not* `FONT_SIZE` itself —
+    // Pins the text top against `line_height`, *not* `body_size()` itself —
     // the naive computation shifts glyphs ~2-3 px below the caret in a
     // 40 px input.
     {
         let rect_h = 40.0_f32;
-        let line_height = FONT_SIZE * LINE_HEIGHT_RATIO;
+        let line_height = body_size() * LINE_HEIGHT_RATIO;
         let text_y_correct = (rect_h - line_height) / 2.0;
-        let text_y_naive = (rect_h - FONT_SIZE) / 2.0;
+        let text_y_naive = (rect_h - body_size()) / 2.0;
         assert!(text_y_naive > text_y_correct);
-        assert!((text_y_naive - text_y_correct - (line_height - FONT_SIZE) / 2.0).abs() < 0.01);
+        assert!((text_y_naive - text_y_correct - (line_height - body_size()) / 2.0).abs() < 0.01);
     }
 
-    // Case `single_line_band_is_40_at_one_x_and_grows_with_the_scaled_line`.
-    // The single-line band is the shipped 40 px at 1× (a 20 px line has
-    // 10 px of slack a side) and grows to line + `ML_PAD_Y` a side once
-    // the scaled line no longer fits: at 2× text the 40 px line sat edge
-    // to edge in a 40 px band.
+    // Case `single_line_band_is_the_control_height_and_grows_with_the_scaled_line`.
+    // The single-line band is a Regular control (32) at 1×, the height of a
+    // button beside it, and grows to line + `spacing.s1` a side once the
+    // scaled line no longer fits.
     {
         fn band_height(theme: &Theme) -> Dimension {
             let mut ti = TextInput::new(vec![PathSegment::Field("name".into())]);
@@ -130,18 +134,24 @@ fn caret_paints_with_real_line_geometry_and_can_be_suppressed() {
             let node = ti.build_layout(&mut taffy, theme, &mut node_map);
             taffy.style(node).unwrap().size.height
         }
-        assert_eq!(band_height(&Theme::dark()), Dimension::length(40.0));
-        let scaled_line = f64::from(FONT_SIZE * LINE_HEIGHT_RATIO) * 2.0;
+        let theme = Theme::dark();
         assert_eq!(
-            scaled_line, 40.0,
-            "2× base line fills the shipped band exactly"
+            band_height(&theme),
+            Dimension::length(32.0),
+            "a field is as tall as a Regular button"
+        );
+        let scaled_line = f64::from(body_size() * LINE_HEIGHT_RATIO) * 2.0;
+        let pads = 2.0 * f64::from(theme.tokens.spacing.s1);
+        assert!(
+            scaled_line + pads > 32.0,
+            "fixture: the 2× body line and its pads outgrow the control band"
         );
         #[allow(clippy::cast_possible_truncation, reason = "small test constant")]
-        let expected = (scaled_line + ML_PAD_Y * 2.0) as f32;
+        let expected = (scaled_line + pads).ceil() as f32;
         assert_eq!(
             band_height(&Theme::dark().with_text_scale(2.0)),
             Dimension::length(expected),
-            "2× band = scaled line + 2×ML_PAD_Y"
+            "2× band = scaled line + 2×spacing.s1"
         );
     }
 }
@@ -656,7 +666,7 @@ fn shaped_layout_is_cached_until_display_inputs_or_fonts_change() {
     // requested named family rather than silently reverting to sans.
     {
         let mut tr = crate::font_catalog::fixture_renderer();
-        let fam = crate::text_render::UI_SERIF_FAMILY.to_owned();
+        let fam = crate::tokens::ReadingFace::Literata.family().to_owned();
         assert!(tr.system_families().contains(&fam));
 
         let mut ti = TextInput::local()
@@ -866,7 +876,7 @@ fn unfocused_input_shows_start_and_placeholder() {
         );
     }
 
-    // Case `placeholder_visible_only_when_empty_and_unfocused`.
+    // Case `placeholder_visible_while_empty_focused_or_not`.
     {
         let mut ti = TextInput::local().with_placeholder("Search…");
         assert_eq!(ti.placeholder(), "Search…");
@@ -876,7 +886,16 @@ fn unfocused_input_shows_start_and_placeholder() {
         );
 
         ti.set_focus(true);
-        assert!(!ti.shows_placeholder(), "focused input hides placeholder");
+        assert!(
+            ti.shows_placeholder(),
+            "focusing an empty input keeps the placeholder"
+        );
+
+        ti.set_text("h");
+        assert!(
+            !ti.shows_placeholder(),
+            "the first character replaces the placeholder"
+        );
 
         ti.set_focus(false);
         ti.set_text("hello");
@@ -915,21 +934,21 @@ fn unfocused_input_shows_start_and_placeholder() {
             "placeholder must paint a glyph run when shown",
         );
 
-        let mut hidden = TextInput::local().with_placeholder("Type here");
-        hidden.set_focus(true);
-        hidden.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
-        let mut scene2 = Scene::new();
+        let mut focused = TextInput::local().with_placeholder("Type here");
+        focused.set_focus(true);
+        focused.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
+        let mut scene_focused = Scene::new();
         Widget::draw(
-            &mut hidden,
-            &mut scene2,
+            &mut focused,
+            &mut scene_focused,
             Affine::IDENTITY,
             &mut tr,
             &theme,
             &presence,
         );
         assert!(
-            scene2.encoding().resources.glyph_runs.is_empty(),
-            "focused input must not paint the placeholder",
+            !scene_focused.encoding().resources.glyph_runs.is_empty(),
+            "a focused empty input still paints the placeholder",
         );
     }
 
@@ -1403,6 +1422,7 @@ fn spellcheck_eligibility_follows_field_kind_vocabulary_and_language() {
             TextInputKind::Code,
             TextInputKind::Number,
             TextInputKind::Password,
+            TextInputKind::Secret,
         ] {
             let mut structured = TextInput::local()
                 .with_kind(kind)
@@ -1933,6 +1953,21 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
         );
     }
 
+    // Case `password_and_key_kinds_never_leak_to_a11y_even_unmasked`.
+    for kind in [TextInputKind::Password, TextInputKind::Secret] {
+        let mut ti = TextInput::new(Vec::new()).with_kind(kind);
+        ti.text = "JBSWY3DPEHPK3PXP".to_string();
+        let node = Widget::accessibility(&ti).unwrap();
+        assert_eq!(node.value, None, "{kind:?}: a key is not exported");
+        assert!(node.state.protected, "{kind:?}: a key field is protected");
+        assert_eq!(node.text_selection, None, "{kind:?}: no selection offsets");
+        assert_eq!(
+            Widget::ime_purpose(&ti),
+            Some(winit::window::ImePurpose::Password),
+            "{kind:?}: no input-method suggestions learn the key"
+        );
+    }
+
     // Case `secret_reveal_toggle_shows_glyphs_but_never_leaks_to_a11y`.
     {
         let mut ti = TextInput::new(Vec::new()).with_secret(true);
@@ -2053,7 +2088,7 @@ fn a_secret_never_reaches_the_clipboard() {
 }
 
 #[test]
-fn secret_field_carries_a_focusable_show_hide_control() {
+fn secret_field_carries_a_show_hide_control_off_the_tab_order() {
     use crate::a11y::{Action, Role};
 
     // Case `secret_is_hidden_by_default_with_a_named_show_control`.
@@ -2075,7 +2110,10 @@ fn secret_field_carries_a_focusable_show_hide_control() {
         let children = Widget::children(&ti);
         assert_eq!(children.len(), 1, "the control is a real child widget");
         let child = children.first().unwrap();
-        assert!(child.is_focusable(), "keyboard reaches the control");
+        assert!(
+            !child.is_focusable(),
+            "an inline accessory is not a Tab stop"
+        );
         let node = child.accessibility().unwrap();
         assert_eq!(node.role, Role::Button);
         assert_eq!(node.name.as_deref(), Some("Show password"));
@@ -2192,7 +2230,7 @@ fn secret_field_carries_a_focusable_show_hide_control() {
         assert!(!ti.is_revealed(), "a tap hides it again");
     }
 
-    // Case `tab_order_visits_the_text_then_the_control`.
+    // Case `tab_moves_from_field_to_field_past_the_control`.
     {
         let mut ti = TextInput::local().with_secret(true);
         let mut taffy = TaffyTree::new();
@@ -2200,9 +2238,7 @@ fn secret_field_carries_a_focusable_show_hide_control() {
         let root = ti.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
         let (order, trapped) = crate::focus_navigation::order(root, &ti, &taffy);
         assert!(!trapped);
-        assert_eq!(order.len(), 2, "field, then its show/hide control");
-        assert_eq!(order.first(), Some(&root));
-        assert_eq!(order.get(1), taffy.children(root).unwrap().first());
+        assert_eq!(order, [root], "the field alone, not its show/hide control");
     }
 
     // Case `only_single_line_secrets_carry_the_control`.
@@ -2612,7 +2648,7 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
     {
         let mut normal = TextInput::local()
             .multiline(true)
-            .with_font_size(12.0)
+            .with_text_role(TextRole::Caption)
             .with_initial_value("A durable comment body that wraps onto another row.");
         normal.apply_layout_external(Rect::new(0.0, 0.0, 260.0, 160.0));
         draw_with_theme(&mut normal, &Theme::dark());
@@ -2622,7 +2658,7 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
 
         let mut large = TextInput::local()
             .multiline(true)
-            .with_font_size(12.0)
+            .with_text_role(TextRole::Caption)
             .with_initial_value("A durable comment body that wraps onto another row.");
         large.apply_layout_external(Rect::new(0.0, 0.0, 260.0, 160.0));
         let large_theme = Theme::dark().with_text_scale(2.0);
@@ -2646,7 +2682,7 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
         let text = "A long wrapping line whose measured height must match the caret rows produced by the shaped draw path at large text.";
         let mut input = TextInput::local()
             .multiline(true)
-            .with_font_size(14.0)
+            .with_text_role(TextRole::Body)
             .with_initial_value(text);
         let mut renderer = TextRenderer::new();
         renderer.set_text_scale(2.0);
@@ -2789,7 +2825,7 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
         );
         input.apply_layout_external(Rect::new(0.0, 0.0, 180.0, f64::from(measured_large.height)));
         draw_with_theme(&mut input, &large);
-        let drawn_large = input.content_height() as f32;
+        let drawn_large = input.content_height().ceil() as f32;
         assert!((measured_large.height - drawn_large).abs() < 0.1);
 
         let normal = Theme::dark();
@@ -2815,7 +2851,7 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
             f64::from(measured_normal.height),
         ));
         draw_with_theme(&mut input, &normal);
-        assert!((measured_normal.height - input.content_height() as f32).abs() < 0.1);
+        assert!((measured_normal.height - input.content_height().ceil() as f32).abs() < 0.1);
         assert!(
             measured_large.height > measured_normal.height * 1.8,
             "same instance remeasures from large text back to normal"
@@ -3803,7 +3839,7 @@ fn attributed_single_line_is_shaped_during_measure_before_draw() {
             .flat_map(|r| r.glyphs.iter().map(|g| g.font_weight.0))
             .collect();
         assert_eq!(weights, [400, 700, 400]);
-        assert_eq!(layout.buffer.metrics().font_size, 16.0 * scale);
+        assert_eq!(layout.buffer.metrics().font_size, body_size() * scale);
     }
 }
 
@@ -3918,7 +3954,7 @@ fn attributed_single_line_chip_and_link_rules_follow_shaped_ranges() {
                 .buffer
                 .layout_runs()
                 .flat_map(|r| r.glyphs.iter())
-                .all(|g| g.font_size == 16.0 * scale)
+                .all(|g| g.font_size == body_size() * scale)
         );
         for (background, pad) in [(true, 2.0), (false, 0.0)] {
             let mut decorations = Scene::new();
@@ -4064,5 +4100,267 @@ fn insertion_collapses_an_empty_drag_selection() {
         ti.insert_str("x");
         assert_eq!(ti.value(), expected);
         assert_eq!(ti.selection_range_public(), None);
+    }
+}
+
+#[test]
+fn field_kinds_set_their_text_kind_while_typing() {
+    for (kind, text) in [
+        (TextInputKind::Prose, TextKind::Prose),
+        (TextInputKind::Search, TextKind::Prose),
+        (TextInputKind::Username, TextKind::Identifier),
+        (TextInputKind::Email, TextKind::Identifier),
+        (TextInputKind::Url, TextKind::Url),
+        (TextInputKind::Number, TextKind::Numeric),
+        (TextInputKind::Code, TextKind::Code),
+        (TextInputKind::Password, TextKind::Secret),
+        (TextInputKind::Secret, TextKind::Secret),
+    ] {
+        assert_eq!(kind.text_kind(), text, "{kind:?}");
+        let input = TextInput::local().with_kind(kind);
+        assert_eq!(input.multiline_style(1.0).kind, text, "{kind:?}");
+    }
+}
+
+#[test]
+fn fields_share_rows_with_buttons_and_state_what_they_are() {
+    fn layout_height(ti: &mut TextInput, theme: &Theme, width: f32) -> f32 {
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
+            std::collections::HashMap::new();
+        let node = ti.build_layout(&mut taffy, theme, &mut node_map);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
+        let size = Widget::measure(
+            ti,
+            taffy::Size {
+                width: Some(width),
+                height: None,
+            },
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(width),
+                height: taffy::AvailableSpace::MaxContent,
+            },
+            &mut tr,
+        );
+        match taffy.style(node).unwrap().size.height.into_option() {
+            Some(fixed) => fixed,
+            None => size.height,
+        }
+    }
+
+    // Case `a_small_field_is_as_tall_as_a_small_button`.
+    {
+        let theme = Theme::dark();
+        let mut small = TextInput::local().control_size(ControlSize::Small);
+        assert_eq!(layout_height(&mut small, &theme, 200.0), 28.0);
+        assert!(
+            (FieldFace::height(ControlSize::Regular, &theme) - 32.0).abs() < 1e-9,
+            "the painted face agrees with the retained field"
+        );
+    }
+
+    // Case `min_lines_holds_a_wrapping_field_open_with_the_field_inset`.
+    {
+        let theme = Theme::dark();
+        let mut notes = TextInput::local().with_min_lines(4);
+        let height = layout_height(&mut notes, &theme, 300.0);
+        let line = body_size() * LINE_HEIGHT_RATIO;
+        assert!(
+            height >= 4.0 * line,
+            "four lines tall while empty: {height} vs line {line}"
+        );
+        let mut one = TextInput::local().multiline(true);
+        assert!(
+            layout_height(&mut one, &theme, 300.0) >= 32.0,
+            "a wrapping field is never shorter than a single-line one"
+        );
+        let single = TextInput::local();
+        assert!(
+            (notes.text_inset_x(&theme) - single.text_inset_x(&theme)).abs() < 1e-9,
+            "wrapping and single-line fields start their text at one inset"
+        );
+    }
+
+    // Case `a_plain_field_leaves_the_gutter_to_its_parent`.
+    {
+        let theme = Theme::dark();
+        let plain = TextInput::local().multiline(true).with_plain_chrome();
+        assert_eq!(plain.text_inset_x(&theme), 0.0);
+        let mut document = TextInput::local().multiline(true).with_plain_chrome();
+        document.keep_document_inset();
+        assert_eq!(document.text_inset_x(&theme), ML_PAD_X);
+    }
+
+    // Case `the_role_sets_the_family_and_the_placeholder_follows_it`.
+    {
+        let reading = TextInput::local().with_text_role(TextRole::Reading);
+        assert_eq!(reading.placeholder_style(16.0).family, FontChoice::Serif);
+        let code = TextInput::local().with_text_role(TextRole::Code);
+        assert_eq!(code.placeholder_style(13.0).family, FontChoice::Monospace);
+        let body = TextInput::local();
+        assert_eq!(body.placeholder_style(14.0).family, FontChoice::SansSerif);
+    }
+
+    // Case `set_text_parks_the_caret_at_the_end`.
+    {
+        let mut ti = TextInput::local().with_initial_value("abc");
+        ti.set_cursor_pos(1);
+        ti.set_text("hello");
+        assert_eq!(ti.cursor_pos(), 5);
+    }
+
+    // Case `content_sized_text_does_not_grow_with_the_text_scale`.
+    {
+        let big = Theme::dark().with_text_scale(2.0);
+        let mut document = TextInput::local().with_content_size(12.0);
+        let mut chrome = TextInput::local();
+        assert!(
+            layout_height(&mut document, &big, 200.0) < layout_height(&mut chrome, &big, 200.0),
+            "a document-space field keeps its size under a large text scale"
+        );
+        assert!((document.scale_for(2.0) - 1.0).abs() < f32::EPSILON);
+    }
+}
+
+#[test]
+fn submit_accessory_and_span_highlighting() {
+    // Case `on_submit_reports_the_text_on_enter`.
+    {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let sink = seen.clone();
+        let mut ti = TextInput::local()
+            .with_initial_value("https://tilo.so")
+            .on_submit(move |text| sink.borrow_mut().push(text.to_string()));
+        ti.set_focus(true);
+        let mut doc = AutoCommit::new();
+        assert!(drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::Enter),
+            mods(false, false)
+        ));
+        assert_eq!(seen.borrow().as_slice(), ["https://tilo.so"]);
+        assert!(ti.take_submit(), "the polled signal still fires");
+    }
+
+    // Case `the_clear_accessory_empties_the_field_as_an_edit`.
+    {
+        let mut ti = TextInput::local()
+            .with_initial_value("query")
+            .with_clear_button();
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 32.0));
+        draw_to_populate(&mut ti);
+        let node = Widget::accessibility(&ti).expect("field semantics");
+        assert_eq!(node.children.len(), 1);
+        assert_eq!(node.children[0].name.as_deref(), Some("Clear"));
+        let rect = Widget::synthetic_accessibility_rect(&ti, &[0]).expect("accessory rect");
+        assert!(rect.x1 <= 240.0 && rect.x0 > 120.0, "{rect:?}");
+        let mut doc = AutoCommit::new();
+        drive(
+            &mut ti,
+            &mut doc,
+            &mouse_move(rect.center().x, rect.center().y),
+            mods(false, false),
+        );
+        assert!(drive(&mut ti, &mut doc, &left_press(), mods(false, false)));
+        assert_eq!(ti.value(), "");
+        assert_eq!(
+            ti.take_dirty().as_deref(),
+            Some(""),
+            "clearing is a user edit"
+        );
+        let node = Widget::accessibility(&ti).expect("field semantics");
+        assert!(
+            node.children.is_empty(),
+            "an empty field hides its clear button"
+        );
+    }
+
+    // Case `a_toggle_accessory_is_a_pressed_toggle_for_people_and_agents`.
+    {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::<bool>::new()));
+        let sink = seen.clone();
+        let mut ti = TextInput::local().with_trailing_accessory(
+            crate::icons::Icon::X,
+            "Clear for every photo",
+            AccessoryAction::Toggle {
+                pressed: false,
+                on_toggle: Box::new(move |on| sink.borrow_mut().push(on)),
+            },
+        );
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 32.0));
+        draw_to_populate(&mut ti);
+        let node = Widget::accessibility(&ti).expect("field semantics");
+        assert_eq!(node.children.len(), 1, "shown while the field is empty");
+        let toggle = &node.children[0];
+        assert_eq!(toggle.role, crate::a11y::Role::ToggleButton);
+        assert_eq!(toggle.state.checked, Some(false));
+        let target = toggle.action_target.clone().expect("agents can reach it");
+
+        let rect = Widget::synthetic_accessibility_rect(&ti, &[0]).expect("accessory rect");
+        let mut doc = AutoCommit::new();
+        drive(
+            &mut ti,
+            &mut doc,
+            &mouse_move(rect.center().x, rect.center().y),
+            mods(false, false),
+        );
+        assert!(drive(&mut ti, &mut doc, &left_press(), mods(false, false)));
+        assert_eq!(ti.accessory_pressed(), Some(true));
+        let node = Widget::accessibility(&ti).expect("field semantics");
+        assert_eq!(node.children[0].state.checked, Some(true));
+
+        let root = automerge::ROOT;
+        assert!(Widget::perform_semantic_action(
+            &mut ti,
+            &target,
+            &crate::a11y::Action::Activate,
+            &mut crate::widget::Edits::lend(&mut doc),
+            &root,
+        ));
+        assert_eq!(seen.borrow().as_slice(), [true, false]);
+        assert_eq!(ti.accessory_pressed(), Some(false));
+
+        ti.set_accessory_pressed(true);
+        assert_eq!(ti.accessory_pressed(), Some(true), "the host syncs it");
+        assert!(ti.take_dirty().is_none(), "toggling is not a text edit");
+    }
+
+    // Case `a_span_highlighter_colours_the_single_line`.
+    {
+        let mut ti = TextInput::local()
+            .with_initial_value("=A1+B2")
+            .with_span_highlighter(|text, theme| {
+                text.match_indices("A1")
+                    .map(|(at, m)| (at..at + m.len(), theme.tokens.colors.semantic.danger))
+                    .collect()
+            });
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 32.0));
+        draw_to_populate(&mut ti);
+        let spans = &ti.single_attributes.as_ref().expect("highlighted").spans;
+        assert_eq!(
+            spans.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(),
+            ["=", "A1", "+B2"]
+        );
+        assert!(spans[1].color.is_some() && spans[0].color.is_none());
+    }
+
+    // Case `the_painted_field_matches_the_retained_one`.
+    {
+        let theme = Theme::dark();
+        let mut face = Scene::new();
+        FieldFace::new(Rect::new(0.0, 0.0, 200.0, 32.0), "")
+            .focused(true)
+            .paint_chrome(&mut face, Affine::IDENTITY, &theme);
+        let mut tr = TextRenderer::new();
+        FieldFace::new(Rect::new(0.0, 0.0, 200.0, 32.0), "")
+            .placeholder("Search")
+            .paint(&mut face, Affine::IDENTITY, &mut tr, &theme);
+        let text_rect = FieldFace::new(Rect::new(0.0, 0.0, 200.0, 32.0), "").text_rect(&theme);
+        assert!(
+            (text_rect.x0 - TextInput::local().text_inset_x(&theme)).abs() < 1e-9,
+            "a painted field insets its text like a retained one"
+        );
     }
 }
