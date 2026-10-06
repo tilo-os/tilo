@@ -63,11 +63,15 @@ fn subject(root: &Path) {
     let vm = root.join("vm");
     let app = root.join("app");
     tree(&image, "base-only");
+    fs::set_permissions(image.join("opt"), fs::Permissions::from_mode(0o775)).unwrap();
     for name in ["proc", "proof", "vm"] {
         fs::create_dir(image.join(name)).unwrap();
     }
     tree(&vm, "vm-only");
     tree(&app, "app-only");
+    // A signed/imported hierarchy may be group-writable in its readonly
+    // presentation without making the protected backing mountpoint mutable.
+    fs::set_permissions(app.join("opt"), fs::Permissions::from_mode(0o775)).unwrap();
     overlay(&image, &boot); // Bootc-like base: filesystem depth one.
     let global = format!(
         "lowerdir={}:{}",
@@ -126,6 +130,10 @@ fn subject(root: &Path) {
     );
     remove(&views, "proof").unwrap();
     assert!(!mounted(&view.join("usr")).unwrap());
+    // The exception is never applied to a mutable backing mountpoint.
+    fs::set_permissions(view.join("opt"), fs::Permissions::from_mode(0o775)).unwrap();
+    assert!(prepare_from(&views, "proof", &layers, &boot).is_err());
+    fs::set_permissions(view.join("opt"), fs::Permissions::from_mode(0o700)).unwrap();
     let escape = root.join("escape");
     std::os::unix::fs::symlink(&image, &escape).unwrap();
     assert!(prepare_from(&views, "proof", &[escape], &boot).is_err());
