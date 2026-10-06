@@ -557,6 +557,10 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
         }
     }
 
+    fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+        self.host_intent.take()
+    }
+
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario.unwrap_or_default());
     }

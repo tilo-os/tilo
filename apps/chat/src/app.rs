@@ -340,6 +340,8 @@ pub(crate) enum Hit {
     AgentIntent(AgentComposerIntent),
     /// Select one exact owner-published active task when several exist.
     AgentTask(Id),
+    /// Open the existing Task Center, optionally selecting this exact task.
+    AgentTaskCenter(Option<Id>),
     /// Request cancellation of the exact selected active run.
     AgentStop,
     /// Expand or collapse the factual action record on an Agent reply.
@@ -437,6 +439,8 @@ impl Hit {
             Self::AgentDragHandle => "chat.agent-drag-handle".into(),
             Self::AgentIntent(intent) => format!("chat.agent-intent:{intent:?}"),
             Self::AgentTask(id) => format!("chat.agent-task:{id}"),
+            Self::AgentTaskCenter(Some(id)) => format!("chat.agent-task-center:{id}"),
+            Self::AgentTaskCenter(None) => "chat.agent-task-center".into(),
             Self::AgentStop => "chat.agent-stop".into(),
             Self::AgentWorkToggle(id) => format!("chat.agent-work:{id}"),
             Self::VoiceChannel(id) => format!("chat.voice-channel:{id}"),
@@ -897,6 +901,7 @@ pub struct ChatApp {
     /// so an unchanged document is not reloaded and repainted every frame.
     synced: Option<(Vec<automerge::ChangeHash>, usize)>,
     host_focused: bool,
+    pub(crate) host_intent: Option<ui::widget::AppHostIntent>,
     pub(crate) external_services: bool,
 }
 
@@ -1097,6 +1102,7 @@ impl ChatApp {
             canonical_dirty: true,
             synced: None,
             host_focused: true,
+            host_intent: None,
             external_services: true,
         }
     }
@@ -2232,6 +2238,38 @@ impl ChatApp {
             || self.can_participate(),
             |_| self.direct_agent_intent_allowed(self.direct_agent_intent()),
         )
+    }
+
+    fn direct_agent_task_title(&self, task_id: &str) -> Option<String> {
+        let tasks = self.direct_agent_tasks()?;
+        let tasks = tasks.borrow();
+        tasks
+            .available_tasks()
+            .into_iter()
+            .map(|task| (task.task_id, task.title))
+            .chain(
+                tasks
+                    .pending_tasks()
+                    .into_iter()
+                    .map(|task| (task.task_id, task.title)),
+            )
+            .find_map(|(id, title)| (id == task_id).then_some(title))
+    }
+
+    fn direct_agent_task_accessible_status(&self, task_id: &str) -> Option<String> {
+        use ui::agent_task_frontier::{AgentStopState, AgentTaskChoice};
+
+        let tasks = self.direct_agent_tasks()?;
+        let tasks = tasks.borrow();
+        let current = match tasks.choice() {
+            AgentTaskChoice::One(task) | AgentTaskChoice::Selected(task) => task,
+            AgentTaskChoice::None | AgentTaskChoice::Choose(_) => return None,
+        };
+        if current.task_id != task_id {
+            return None;
+        }
+        let stopping = matches!(tasks.stop_state(), AgentStopState::Stopping { .. });
+        Some(self.direct_agent_status_lines(&tasks, stopping).primary)
     }
 
     pub(crate) fn agent_message_awaiting_confirmation(&self, agent: &str) -> bool {
@@ -3899,6 +3937,26 @@ impl ChatApp {
                         *intent == self.direct_agent_intent(),
                     ),
                     Hit::AgentTask(task) => (format!("Select task {task}"), Role::ListItem, false),
+                    Hit::AgentTaskCenter(Some(task)) => (
+                        self.direct_agent_task_accessible_status(task)
+                            .or_else(|| self.direct_agent_task_title(task))
+                            .map_or_else(
+                                || crate::i18n::t("chat-agent-open-current-task"),
+                                |title| {
+                                    crate::i18n::t_args(
+                                        "chat-agent-open-task",
+                                        &[("title", title.into())],
+                                    )
+                                },
+                            ),
+                        Role::Button,
+                        false,
+                    ),
+                    Hit::AgentTaskCenter(None) => (
+                        crate::i18n::t("chat-agent-open-task-center"),
+                        Role::Button,
+                        false,
+                    ),
                     Hit::AgentStop => ("Stop current task".into(), Role::Button, false),
                     Hit::AgentWorkToggle(message) => {
                         let expanded = self

@@ -154,4 +154,7 @@ chat-agent-task-queued-count = { $count ->
     [one] 1 queued task
    *[other] { $count } queued tasks
 }
+chat-agent-open-task = Open { $title } in Task Center
+chat-agent-open-current-task = Open current task in Task Center
+chat-agent-open-task-center = Open Task Center
 chat-agent-stop = Stop

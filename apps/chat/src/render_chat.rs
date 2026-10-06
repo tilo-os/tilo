@@ -2757,15 +2757,40 @@ impl ChatApp {
         let caption = paint.theme.text(TextRole::Caption);
         let ink = paint.theme.text_dim;
         let status = Rect::new(rect.x0, y, rect.x1, (y + row_h).min(rect.y1));
-        line_in(
-            &mut paint,
-            &lines.primary,
-            &caption,
-            ink,
-            status.x0,
-            status,
-            (status.width() - stop_w - gap).max(0.0),
-        );
+        let task_status = current.as_ref().map(|_| {
+            Rect::new(
+                status.x0,
+                status.y0,
+                (status.x1 - stop_w - gap).max(status.x0),
+                status.y1,
+            )
+        });
+        if let (Some(task), Some(task_status)) = (current.as_ref(), task_status) {
+            Button::paint(
+                paint.scene,
+                paint.transform,
+                paint.text,
+                paint.theme,
+                &ButtonFace::new(task_status, &lines.primary)
+                    .control_size(ControlSize::Small)
+                    .hovered(self.hovered(task_status)),
+            );
+            ChatApp::push_hit(
+                hits,
+                task_status,
+                Hit::AgentTaskCenter(Some(task.task_id.clone())),
+            );
+        } else {
+            line_in(
+                &mut paint,
+                &lines.primary,
+                &caption,
+                ink,
+                status.x0,
+                status,
+                status.width(),
+            );
+        }
         if can_stop {
             let stop = Rect::new(status.x1 - stop_w, status.y0, status.x1, status.y1);
             Button::paint(
@@ -2780,9 +2805,23 @@ impl ChatApp {
             ChatApp::push_hit(hits, stop, Hit::AgentStop);
         }
         y = status.y1 + gap;
-        for line in [lines.receipt, lines.queue].into_iter().flatten() {
+        if let Some(line) = lines.receipt {
             let row = Rect::new(rect.x0, y, rect.x1, (y + row_h).min(rect.y1));
             line_in(&mut paint, &line, &caption, ink, row.x0, row, row.width());
+            y = row.y1 + gap;
+        }
+        if let Some(line) = lines.queue {
+            let row = Rect::new(rect.x0, y, rect.x1, (y + row_h).min(rect.y1));
+            Button::paint(
+                paint.scene,
+                paint.transform,
+                paint.text,
+                paint.theme,
+                &ButtonFace::new(row, &line)
+                    .control_size(ControlSize::Small)
+                    .hovered(self.hovered(row)),
+            );
+            ChatApp::push_hit(hits, row, Hit::AgentTaskCenter(None));
             y = row.y1 + gap;
         }
         y

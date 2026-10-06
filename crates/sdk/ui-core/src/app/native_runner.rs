@@ -1554,6 +1554,9 @@ impl AppHandler {
                 | crate::floating_surface::FloatingSurfaceHostMessage::PaintStop
                 | crate::floating_surface::FloatingSurfaceHostMessage::HostShellAllowed {
                     ..
+                }
+                | crate::floating_surface::FloatingSurfaceHostMessage::WorkspaceTasksOutcome {
+                    ..
                 } => {}
             }
         }

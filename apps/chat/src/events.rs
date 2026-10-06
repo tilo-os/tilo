@@ -939,6 +939,12 @@ impl ChatApp {
                         .select_for(&workspace, &agent, &task_id);
                 }
             }
+            Hit::AgentTaskCenter(task_id) => {
+                self.host_intent = Some(ui::widget::AppHostIntent::ShowWorkspaceTasks {
+                    task_id,
+                    source_surface: self.input_agent_surface.clone(),
+                });
+            }
             Hit::AgentStop => {
                 if let Some(agent) = self.direct_agent.clone() {
                     let workspace = self.active_ws.clone();
@@ -3074,6 +3080,79 @@ mod tests {
         assert_eq!(count_hits(&app, |hit| matches!(hit, Hit::AgentStop)), 1);
         let tasks = app.direct_agent_tasks().expect("owner-backed task context");
         assert_eq!(tasks.borrow().pending_tasks().len(), 1);
+        assert_eq!(
+            count_hits(&app, |hit| matches!(
+                hit,
+                Hit::AgentTaskCenter(Some(task)) if task == "task-current"
+            )),
+            1,
+            "the painted current-task status opens its exact Task Center row"
+        );
+        assert_eq!(
+            count_hits(&app, |hit| matches!(hit, Hit::AgentTaskCenter(None))),
+            1,
+            "the painted queued-count status opens the Task Center overview"
+        );
+        let accessibility = ui::Widget::accessibility(&app).expect("Chat accessibility root");
+        let task_center_names = accessibility
+            .children
+            .iter()
+            .filter_map(|node| node.name.as_deref())
+            .filter(|name| name.contains("Task Center"))
+            .collect::<Vec<_>>();
+        assert!(
+            task_center_names.contains(&"Open Status unknown: Review the release in Task Center"),
+            "the public phase and task title are used instead of an opaque ID: {task_center_names:?}"
+        );
+        assert!(task_center_names.contains(&"Open Task Center"));
+        assert!(
+            task_center_names
+                .iter()
+                .all(|name| !name.contains("task-current")),
+            "opaque task IDs are not user-facing names: {task_center_names:?}"
+        );
+        let current_task_index = app.hits.iter().position(
+            |(_, hit)| matches!(hit, Hit::AgentTaskCenter(Some(task)) if task == "task-current"),
+        );
+        app.keyboard_target = current_task_index;
+        feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+        assert!(matches!(
+            app.host_intent.take(),
+            Some(ui::widget::AppHostIntent::ShowWorkspaceTasks {
+                task_id: Some(task),
+                source_surface: None,
+            })
+                if task == "task-current"
+        ));
+        let current_task_rect = app.hits[current_task_index.expect("current task hit")].0;
+        click_point(&mut app, &mut doc, current_task_rect.center());
+        assert!(matches!(
+            app.host_intent.take(),
+            Some(ui::widget::AppHostIntent::ShowWorkspaceTasks {
+                task_id: Some(task),
+                source_surface: None,
+            }) if task == "task-current"
+        ));
+        ui::widget::FloatingSurfaceProvider::on_floating_surface_event_source(
+            &mut app,
+            Some("agent:scribe"),
+        );
+        let overview_target = Hit::AgentTaskCenter(None).semantic_id();
+        assert!(ui::Widget::perform_semantic_action(
+            &mut app,
+            &overview_target,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        assert!(matches!(
+            app.host_intent.take(),
+            Some(ui::widget::AppHostIntent::ShowWorkspaceTasks {
+                task_id: None,
+                source_surface: Some(source),
+            })
+                if source == "agent:scribe"
+        ));
 
         app.on_hit(
             Hit::AgentIntent(crate::app::AgentComposerIntent::Queue),
@@ -3478,10 +3557,16 @@ mod tests {
             .iter()
             .filter_map(|node| node.name.as_deref())
             .collect::<Vec<_>>();
-        assert!(names.contains(&"Documentation and Accessibility Specialist, agent"));
-        assert!(names.contains(
-            &"Status unknown: Review the international release notes and verify every keyboard navigation path before publishing"
-        ));
+        assert!(
+            names.contains(&"Documentation and Accessibility Specialist, agent"),
+            "complete direct-Agent heading is exported: {names:?}"
+        );
+        assert!(
+            names.contains(
+                &"Status unknown: Review the international release notes and verify every keyboard navigation path before publishing"
+            ),
+            "complete task status is exported: {names:?}"
+        );
         assert!(names.contains(&"2 queued tasks"));
         assert!(
             app.hits.iter().any(|(rect, hit)| {

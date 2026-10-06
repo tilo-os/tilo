@@ -649,6 +649,275 @@ mod tests {
     }
 
     #[test]
+    fn exact_task_deep_link_opens_task_center_and_stale_target_fails_closed() {
+        let (mut tree, workspace, _) = busy_room();
+        let task_id = tree
+            .create_workspace_task(
+                workspace,
+                "Prepare screenshots",
+                "ada",
+                Some("studio-agent".into()),
+                WorkspaceTaskRoute::RulesOnly,
+                None,
+            )
+            .expect("task is created");
+        let mut pane = native_pane();
+        pane.task_compose_open = true;
+        pane.task_draft = "Keep this private draft".into();
+        pane.apply_deep_link(ActivityDeepLink {
+            task_id: Some(task_id.clone()),
+            ..ActivityDeepLink::default()
+        });
+        pane.refresh(&mut tree);
+        assert_eq!(pane.view(), ActivityView::Tasks);
+        assert!(!pane.task_compose_open);
+        assert_eq!(pane.task_draft, "Keep this private draft");
+        assert_eq!(pane.selected_task.as_deref(), Some(task_id.as_str()));
+        assert_eq!(pane.keyboard_focus, Some(ActivityFocus::Task(task_id)));
+
+        pane.open_task_composer(&tree);
+        assert!(pane.task_compose_open);
+        assert_eq!(
+            pane.task_draft, "Keep this private draft",
+            "returning to New Task restores the private draft hidden by navigation"
+        );
+        pane.task_compose_open = false;
+
+        pane.apply_deep_link(ActivityDeepLink {
+            task_id: Some("task:stale".into()),
+            ..ActivityDeepLink::default()
+        });
+        pane.invalidate();
+        pane.refresh(&mut tree);
+        assert!(pane.selected_task.is_none());
+        assert!(pane.keyboard_focus.is_none());
+    }
+
+    #[test]
+    fn selected_agent_task_exposes_the_original_full_instruction_to_accessibility() {
+        let instruction = "Check every translated release note, preserve the private draft, and verify keyboard focus before publishing.";
+        let task = WorkspaceTask {
+            id: "task:instruction".into(),
+            title: "Review release notes".into(),
+            created_by: "ada".into(),
+            assigned_agent: Some("scribe".into()),
+            route: WorkspaceTaskRoute::Model,
+            status: WorkspaceTaskStatus::Queued,
+            resource: Some(tilo_desktop_model::WorkspaceTaskResource {
+                app_id: Some("so.tilo.chat".into()),
+                app_label: Some("Chat".into()),
+                id: "chat.message:request".into(),
+                kind: "chat.message".into(),
+                label: "Agent request".into(),
+                agent_request: Some(tilo_desktop_model::WorkspaceAgentRequest {
+                    chat_record: "chat-record".into(),
+                    channel_id: "agent:scribe".into(),
+                    message_id: "request".into(),
+                    instruction: instruction.into(),
+                    invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(7)),
+                }),
+            }),
+            created_at: 1,
+            updated_at: 1,
+            audit: Vec::new(),
+        };
+
+        let description = task_accessibility_description(&task, SystemTime::UNIX_EPOCH);
+        assert!(description.contains(instruction));
+        assert_eq!(task_instruction(&task), Some(instruction));
+    }
+
+    fn long_instruction_task() -> (String, String, WorkspaceTask) {
+        let instruction = "Review every translated release note, preserve the private draft, verify keyboard focus, and record the final evidence. ".repeat(80);
+        let task_id = "task:long-instruction".to_string();
+        let task = WorkspaceTask {
+            id: task_id.clone(),
+            title: "Review release notes".into(),
+            created_by: "ada".into(),
+            assigned_agent: Some("scribe".into()),
+            route: WorkspaceTaskRoute::Model,
+            status: WorkspaceTaskStatus::Queued,
+            resource: Some(tilo_desktop_model::WorkspaceTaskResource {
+                app_id: Some("so.tilo.chat".into()),
+                app_label: Some("Chat".into()),
+                id: "chat.message:request".into(),
+                kind: "chat.message".into(),
+                label: "Agent request".into(),
+                agent_request: Some(tilo_desktop_model::WorkspaceAgentRequest {
+                    chat_record: "chat-record".into(),
+                    channel_id: "agent:scribe".into(),
+                    message_id: "request".into(),
+                    instruction: instruction.clone(),
+                    invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(7)),
+                }),
+            }),
+            created_at: 1,
+            updated_at: 1,
+            audit: Vec::new(),
+        };
+        (instruction, task_id, task)
+    }
+
+    #[test]
+    fn full_task_instruction_uses_one_scrollable_pointer_keyboard_and_accessibility_route() {
+        let (instruction, task_id, task) = long_instruction_task();
+        let (mut tree, _, _) = busy_room();
+        let mut pane = native_pane();
+        pane.set_view(ActivityView::Tasks);
+        pane.layout(Rect::new(0.0, 0.0, 560.0, 560.0));
+        pane.tasks = vec![task];
+        pane.selected_task = Some(task_id.clone());
+        paint(&mut pane);
+
+        assert_eq!(
+            pane.task_instruction_target.as_deref(),
+            Some(task_id.as_str())
+        );
+        let open_rect = pane.task_instruction_open_button.widget().get_rect();
+        assert!(open_rect.area() > 0.0);
+        let _pressed = click_at(&mut pane, &mut tree, open_rect.center());
+        let opened = pane.handle_event(
+            &mouse_release(),
+            1.0,
+            &Modifiers::default(),
+            Some(open_rect.center()),
+            &mut tree,
+        );
+        assert!(opened.handled);
+        paint(&mut pane);
+        assert_eq!(
+            pane.task_instruction_detail.as_deref(),
+            Some(task_id.as_str())
+        );
+        assert!(pane.task_instruction_scroll.overflows_vertically());
+        assert_eq!(
+            pane.keyboard_focus,
+            Some(ActivityFocus::TaskInstructionScroll)
+        );
+        assert!(
+            pane.focus_order()
+                .contains(&ActivityFocus::TaskInstructionScroll)
+        );
+        let snapshot = format!("{:?}", pane.accessibility_snapshot());
+        assert!(snapshot.contains(&instruction));
+
+        let before = pane.task_instruction_scroll.offset().y;
+        let detail_cursor = pane.task_instruction_scroll.content_rect().center();
+        let wheel = WindowEvent::MouseWheel {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
+            phase: winit::event::TouchPhase::Moved,
+        };
+        let outcome = pane.handle_event(
+            &wheel,
+            1.0,
+            &Modifiers::default(),
+            Some(detail_cursor),
+            &mut tree,
+        );
+        assert!(outcome.handled);
+        assert!(pane.task_instruction_scroll.offset().y > before);
+
+        let before = pane.task_instruction_scroll.offset().y;
+        let outcome = pane.handle_event(
+            &key_press(winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::PageDown,
+            )),
+            1.0,
+            &Modifiers::default(),
+            None,
+            &mut tree,
+        );
+        assert!(outcome.handled);
+        assert!(pane.task_instruction_scroll.offset().y > before);
+
+        let outcome = pane.handle_event(
+            &key_press(winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::Escape,
+            )),
+            1.0,
+            &Modifiers::default(),
+            None,
+            &mut tree,
+        );
+        assert!(outcome.handled);
+        assert!(pane.task_instruction_detail.is_none());
+        assert_eq!(
+            pane.keyboard_focus,
+            Some(ActivityFocus::TaskInstruction(task_id.clone()))
+        );
+
+        let opened = pane.activate_focus(&mut tree, None);
+        assert!(opened.handled);
+        paint(&mut pane);
+        assert_eq!(
+            pane.task_instruction_detail.as_deref(),
+            Some(task_id.as_str())
+        );
+        pane.keyboard_focus = Some(ActivityFocus::TaskInstructionClose);
+        let closed = pane.activate_focus(&mut tree, None);
+        assert!(closed.handled);
+        assert!(pane.task_instruction_detail.is_none());
+        assert_eq!(
+            pane.keyboard_focus,
+            Some(ActivityFocus::TaskInstruction(task_id))
+        );
+    }
+
+    #[test]
+    fn compact_large_text_keeps_the_selected_task_and_full_instruction_door() {
+        let (_, task_id, task) = long_instruction_task();
+        let (mut tree, _, _) = busy_room();
+        let mut pane = native_pane();
+        pane.set_view(ActivityView::Tasks);
+        pane.layout_window(Rect::new(0.0, 0.0, 242.0, 434.0));
+        pane.tasks = vec![task];
+        pane.selected_task = Some(task_id.clone());
+        pane.task_scroll_to_selected = true;
+
+        let theme = Theme::high_contrast().with_text_scale(2.0);
+        paint_with_theme(&mut pane, &theme);
+
+        assert_eq!(
+            pane.task_instruction_target.as_deref(),
+            Some(task_id.as_str()),
+            "the compact layout must not drop the selected task wholesale; sheet={:?}, chrome={}",
+            pane.sheet,
+            pane.chrome_height()
+        );
+        let card = pane
+            .task_rects
+            .iter()
+            .find_map(|(id, rect)| (id == &task_id).then_some(*rect))
+            .expect("selected task remains visibly laid out");
+        let disclosure = pane.task_instruction_open_button.widget().get_rect();
+        assert!(disclosure.area() > 0.0);
+        assert!(card.contains(Point::new(disclosure.x0, disclosure.y0)));
+        assert!(card.contains(Point::new(disclosure.x1, disclosure.y1)));
+        let viewport = pane.task_list_scroll.content_rect();
+        assert!(
+            disclosure.x0 >= viewport.x0
+                && disclosure.y0 >= viewport.y0
+                && disclosure.x1 <= viewport.x1
+                && disclosure.y1 <= viewport.y1,
+            "viewport={viewport:?}, disclosure={disclosure:?}, offset={:?}",
+            pane.task_list_scroll.offset()
+        );
+        assert!(pane.task_list_scroll.overflows_vertically());
+
+        pane.keyboard_focus = Some(ActivityFocus::TaskInstruction(task_id.clone()));
+        let opened = pane.activate_focus(&mut tree, None);
+        assert!(opened.handled);
+        paint_with_theme(&mut pane, &theme);
+        assert_eq!(
+            pane.task_instruction_detail.as_deref(),
+            Some(task_id.as_str())
+        );
+        assert!(pane.task_instruction_scroll.content_rect().area() > 0.0);
+        assert!(pane.task_instruction_scroll.overflows_vertically());
+    }
+
+    #[test]
     fn task_center_presents_agent_principals_without_leaking_wire_ids() {
         let event_time = SystemTime::UNIX_EPOCH
             .checked_add(Duration::from_secs(42))
@@ -1000,6 +1269,7 @@ mod tests {
             entry_id: Some(*id.as_bytes()),
             resource_id: Some(resource.clone()),
             resource_version: Some(*id.as_bytes()),
+            task_id: None,
         });
 
         assert_eq!(pane.view(), ActivityView::Explore);
@@ -1998,6 +2268,14 @@ mod tests {
         }
     }
 
+    fn mouse_release() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: winit::event::ElementState::Released,
+            button: winit::event::MouseButton::Left,
+        }
+    }
+
     fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
         // SAFETY: as in `ui`'s own widget tests — every pub field of `KeyEvent`
         // tolerates the all-zero bit pattern, and winit 0.30 keeps
@@ -2021,13 +2299,18 @@ mod tests {
     /// Paint the sheet so the rects the click handler reads off the last frame
     /// are populated exactly as they are live.
     fn paint(pane: &mut RoomActivityPane) {
+        paint_with_theme(pane, &Theme::dark());
+    }
+
+    fn paint_with_theme(pane: &mut RoomActivityPane, theme: &Theme) {
         let mut scene = Scene::new();
         let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
         pane.draw(
             &mut scene,
             Affine::IDENTITY,
             &mut tr,
-            &Theme::dark(),
+            theme,
             &PresenceCtx::empty(),
         );
     }

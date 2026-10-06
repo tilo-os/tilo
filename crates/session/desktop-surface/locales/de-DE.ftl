@@ -144,6 +144,12 @@ a11y-shell-activity-task-description = { $status }; { $route }; { $assignee }; {
        *[other] Prüfereignisse
     }
 a11y-shell-activity-task-latest = zuletzt: { $latest }
+a11y-shell-activity-task-instruction = Anweisung: { $instruction }
+activity-task-instruction = Anweisung
+activity-task-read-instruction = Vollständige Anweisung lesen
+activity-task-full-instruction = Vollständige Anweisung
+activity-task-close-instruction = Zurück zur Aufgabe
+a11y-shell-activity-task-close-instruction = Zur ausgewählten Aufgabe zurückkehren
 activity-view-catch-up = Aufholen
 activity-view-tasks = Aufgaben
 activity-view-explore = Erkunden

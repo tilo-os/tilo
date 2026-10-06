@@ -61,6 +61,7 @@ pub(super) struct FloatingRuntime {
     /// Exact painted primary-marker projection last sent to the compositor.
     /// An empty replacement retires every prior accessible marker.
     agent_marker_publication: Vec<crate::floating_surface::AgentConversationNavigation>,
+    workspace_tasks_request: u64,
 }
 
 impl FloatingRuntime {
@@ -86,6 +87,7 @@ impl FloatingRuntime {
             paint_capable_sent: false,
             close_window_requested: false,
             agent_marker_publication: Vec::new(),
+            workspace_tasks_request: 0,
         }
     }
 }
@@ -260,16 +262,11 @@ impl App {
     }
 
     #[cfg(feature = "native")]
-    fn take_native_host_shell_allow(
-        &mut self,
-    ) -> Option<std::rc::Weak<std::cell::RefCell<crate::widget::HostShellAllow>>> {
+    fn take_native_host_intent(&mut self) -> Option<crate::widget::AppHostIntent> {
         let widget = crate::widget::capability::capability_mut::<dyn crate::AppWidget>(
             &mut *self.root_widget,
         )?;
-        match widget.take_host_intent()? {
-            crate::widget::AppHostIntent::AllowHostShell { reply } => Some(reply),
-            _ => None,
-        }
+        widget.take_host_intent()
     }
 
     #[cfg(feature = "native")]
@@ -278,11 +275,12 @@ impl App {
         // A local gesture is never replayed into a shell connected later.
         changed |= self.window.pending_agent_navigation.take().is_some();
         self.floating.agent_marker_publication.clear();
-        if let Some(reply) = self
-            .take_native_host_shell_allow()
-            .and_then(|reply| reply.upgrade())
-        {
-            reply.borrow_mut().answer = Some(false);
+        if let Some(intent) = self.take_native_host_intent() {
+            if let crate::widget::AppHostIntent::AllowHostShell { reply } = intent
+                && let Some(reply) = reply.upgrade()
+            {
+                reply.borrow_mut().answer = Some(false);
+            }
             changed = true;
         }
         // Outside a Tilo session there is no trusted shell chooser to open.
@@ -332,10 +330,38 @@ impl App {
             )?;
             *changed = true;
         }
-        if let Some(reply) = self.take_native_host_shell_allow() {
-            self.floating.host_shell_allow = Some(reply);
+        if let Some(intent) = self.take_native_host_intent() {
+            match intent {
+                crate::widget::AppHostIntent::AllowHostShell { reply } => {
+                    self.floating.host_shell_allow = Some(reply);
+                    client.send(
+                        &crate::floating_surface::FloatingSurfaceClientMessage::AllowHostShell,
+                    )?;
+                }
+                crate::widget::AppHostIntent::ShowWorkspaceTasks {
+                    task_id,
+                    source_surface,
+                } => {
+                    self.floating.workspace_tasks_request = self
+                        .floating
+                        .workspace_tasks_request
+                        .checked_add(1)
+                        .ok_or("workspace task navigation request exhausted")?;
+                    let source = source_surface.map_or(
+                        crate::floating_surface::WorkspaceTasksSource::Primary,
+                        |id| crate::floating_surface::WorkspaceTasksSource::Floating { id },
+                    );
+                    client.send(
+                        &crate::floating_surface::FloatingSurfaceClientMessage::ShowWorkspaceTasks {
+                            request: self.floating.workspace_tasks_request,
+                            task_id,
+                            source,
+                        },
+                    )?;
+                }
+                _ => {}
+            }
             *changed = true;
-            client.send(&crate::floating_surface::FloatingSurfaceClientMessage::AllowHostShell)?;
         }
         let protected = self.wants_capture_protection();
         if !self.floating.paint_capable_sent && crate::webview::paint::share_capable() {
@@ -633,6 +659,7 @@ impl App {
                         reply.borrow_mut().answer = Some(*allowed);
                     }
                 }
+                FloatingSurfaceHostMessage::WorkspaceTasksOutcome { .. } => {}
                 FloatingSurfaceHostMessage::PrepareSurface {
                     id,
                     coordinate_offset,

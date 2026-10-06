@@ -823,6 +823,17 @@ pub(crate) fn foreign_root(surface: &WlSurface) -> Option<WlSurface> {
 }
 
 impl State {
+    pub(crate) fn surface_launch_custody(
+        &self,
+        surface_id: u64,
+    ) -> Option<crate::shell::launcher::VerifiedLaunchCustody> {
+        self.client_input
+            .surface(surface_id)?
+            .client()?
+            .get_data::<ClientState>()?
+            .launch_custody
+    }
+
     pub(crate) fn authorize_floating_toplevel(&mut self, pending: PendingFloatingToplevel) {
         self.pending_floating_toplevels.retain(|candidate| {
             candidate.connection != pending.connection || candidate.public_id != pending.public_id
@@ -4076,6 +4087,10 @@ pub struct ClientState {
     /// Durable workspace room from the same host-owned launch record. A client
     /// cannot select or change this through Wayland protocol state.
     pub workspace_id: Option<String>,
+    /// Exact supervised launch which owns this Wayland connection. Combined
+    /// with `workspace_id` and `package_id`, this distinguishes independent
+    /// processes of the same app without trusting a client-provided token.
+    pub(crate) launch_custody: Option<crate::shell::launcher::VerifiedLaunchCustody>,
     /// Whether package/app-id equality is part of this connection's sandbox
     /// boundary. Unconfined host launches keep their desktop compatibility ids.
     pub enforce_package_id: bool,
@@ -4109,6 +4124,7 @@ impl Default for ClientState {
             input_method: None,
             package_id: None,
             workspace_id: None,
+            launch_custody: None,
             enforce_package_id: false,
             executable: None,
             pid: None,
@@ -4133,11 +4149,13 @@ impl ClientState {
     /// authenticated at the public socket boundary.
     pub(crate) fn attributed_arc(
         identity: crate::shell::launcher::VerifiedLaunchIdentity,
+        launch_custody: Option<crate::shell::launcher::VerifiedLaunchCustody>,
         pid: u32,
     ) -> Arc<Self> {
         Arc::new(Self {
             package_id: Some(identity.package_id),
             workspace_id: identity.workspace_id,
+            launch_custody,
             enforce_package_id: identity.confined,
             pid: Some(pid),
             ..Self::default()
@@ -6671,6 +6689,7 @@ mod osk_identity_tests {
                     workspace_id: Some(room.to_string()),
                     confined,
                 },
+                None,
                 42,
             )
         };
@@ -6719,6 +6738,7 @@ mod osk_identity_tests {
                     workspace_id: Some(room.to_string()),
                     confined: true,
                 },
+                None,
                 42,
             );
             assert_eq!(
@@ -6741,6 +6761,7 @@ mod osk_identity_tests {
                     workspace_id: Some("not-a-room".into()),
                     confined: true,
                 },
+                None,
                 42,
             );
             assert!(authenticated_toplevel_identity(Some(&attributed), None).is_err());
@@ -6771,6 +6792,7 @@ mod osk_identity_tests {
                     workspace_id: Some(room.to_string()),
                     confined: false,
                 },
+                None,
                 42,
             );
             assert_eq!(

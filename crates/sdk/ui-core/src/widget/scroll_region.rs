@@ -361,6 +361,14 @@ impl ScrollRegion {
         self.focused = focused;
     }
 
+    /// Seed the pointer used for wheel hit-testing when a host opens this
+    /// region under a stationary pointer. Normally `CursorMoved` supplies the
+    /// same value, but a newly revealed region must not require an otherwise
+    /// meaningless pointer twitch before its first wheel event works.
+    pub fn set_pointer_position(&mut self, point: Point) {
+        self.cursor = point;
+    }
+
     /// Wheel and touchpad scrolling over the region, dragging and paging
     /// with its bars, and Page Up/Down, Home/End and the arrows while the
     /// host holds focus. Marks the event handled when it scrolled. Returns

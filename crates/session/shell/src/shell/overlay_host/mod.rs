@@ -4565,6 +4565,33 @@ impl ShellOverlayHost {
                         },
                     ));
                 }
+                ui::widget::AppHostIntent::ShowWorkspaceTasks {
+                    task_id,
+                    source_surface: _,
+                } => {
+                    let source_is_active = {
+                        let state = chrome.borrow();
+                        let tree = state.tree();
+                        tree.desktop
+                            .workspaces
+                            .iter()
+                            .find(|workspace| workspace.id == tree.desktop.active)
+                            .into_iter()
+                            .flat_map(|workspace| &workspace.strips)
+                            .flat_map(|strip| &strip.window_groups)
+                            .flat_map(|group| &group.tabs)
+                            .any(|tab| tab.id == source_tab)
+                    };
+                    if !source_is_active {
+                        continue;
+                    }
+                    chrome.borrow_mut().open_room_activity(Some(
+                        crate::shell::chrome_state::ActivityFocus {
+                            task_id,
+                            ..crate::shell::chrome_state::ActivityFocus::default()
+                        },
+                    ));
+                }
                 ui::widget::AppHostIntent::OpenSearch(request) => {
                     self.open_app_search(source_tab, &request);
                 }
@@ -11149,6 +11176,7 @@ impl ShellOverlayHost {
                     entry_id: None,
                     resource_id: None,
                     resource_version: None,
+                    task_id: None,
                 });
         {
             let mut state = chrome.borrow_mut();
@@ -17902,6 +17930,17 @@ impl Widget for ShellOverlayHost {
         {
             self.agent_quick_composer.dismiss();
             self.open_agent_conversation_from_user_navigation(&room, &[(agent.clone(), agent)]);
+        }
+        if let Some(task_id) = self.agent_quick_composer.take_task_center_request()
+            && let Some(chrome) = self.chrome.as_ref()
+        {
+            self.agent_quick_composer.dismiss();
+            chrome.borrow_mut().open_room_activity(Some(
+                crate::shell::chrome_state::ActivityFocus {
+                    task_id,
+                    ..crate::shell::chrome_state::ActivityFocus::default()
+                },
+            ));
         }
         if search_index_ready {
             // A worker published an immutable index after the palette opened.

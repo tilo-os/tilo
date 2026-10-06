@@ -35,7 +35,8 @@ use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::widget::{
-    ArtifactKind, HistoryClassification, HistoryEntry, HistoryEntryId, HistoryFilter,
+    ArtifactKind, Button, Embedded, HistoryClassification, HistoryEntry, HistoryEntryId,
+    HistoryFilter, ScrollRegion,
 };
 use ui::{
     ActivityBrief, ActivityDigest, ActivityTimeline, AgentRun, AuthorDirectory, BandUndoRequest,
@@ -196,6 +197,9 @@ enum ActivityFocus {
     MoreBriefs,
     NewTask,
     Task(String),
+    TaskInstruction(String),
+    TaskInstructionClose,
+    TaskInstructionScroll,
     TaskRoute(WorkspaceTaskRoute),
     TaskCreate,
     TaskCancelCompose,
@@ -711,6 +715,19 @@ pub struct RoomActivityPane {
     tasks: Vec<WorkspaceTask>,
     selected_task: Option<String>,
     task_rects: Vec<(String, Rect)>,
+    task_instruction_target: Option<String>,
+    task_instruction_detail: Option<String>,
+    task_instruction_open_button: Embedded<Button>,
+    task_instruction_open_signal: Rc<Cell<bool>>,
+    task_instruction_close_button: Embedded<Button>,
+    task_instruction_close_signal: Rc<Cell<bool>>,
+    task_list_scroll: ScrollRegion,
+    task_list_theme: Option<Theme>,
+    task_scroll_to_selected: bool,
+    task_list_viewport: Rect,
+    task_list_text_scale: f32,
+    task_instruction_scroll: ScrollRegion,
+    task_instruction_theme: Option<Theme>,
     new_task_rect: Option<Rect>,
     task_action_rects: Vec<(TaskAction, Rect)>,
     task_compose_open: bool,
@@ -813,10 +830,14 @@ impl RoomActivityPane {
         let name_intent: Rc<RefCell<Option<GroupNameRequest>>> = Rc::new(RefCell::new(None));
         let undo_intent: Rc<RefCell<Option<BandUndoRequest>>> = Rc::new(RefCell::new(None));
         let clear_filters_intent = Rc::new(Cell::new(false));
+        let task_instruction_open_signal = Rc::new(Cell::new(false));
+        let task_instruction_close_signal = Rc::new(Cell::new(false));
         let ri = Rc::clone(&revert_intent);
         let ni = Rc::clone(&name_intent);
         let ui = Rc::clone(&undo_intent);
         let ci = Rc::clone(&clear_filters_intent);
+        let instruction_open = Rc::clone(&task_instruction_open_signal);
+        let instruction_close = Rc::clone(&task_instruction_close_signal);
         Self {
             explicit_local_user,
             timeline: {
@@ -893,6 +914,31 @@ impl RoomActivityPane {
             tasks: Vec::new(),
             selected_task: None,
             task_rects: Vec::new(),
+            task_instruction_target: None,
+            task_instruction_detail: None,
+            task_instruction_open_button: Embedded::new(
+                Button::new(
+                    "activity-task-read-instruction",
+                    &t("activity-task-read-instruction"),
+                )
+                .on_click(move || instruction_open.set(true)),
+            ),
+            task_instruction_open_signal,
+            task_instruction_close_button: Embedded::new(
+                Button::new(
+                    "activity-task-close-instruction",
+                    &t("activity-task-close-instruction"),
+                )
+                .on_click(move || instruction_close.set(true)),
+            ),
+            task_instruction_close_signal,
+            task_list_scroll: ScrollRegion::vertical().with_edge_fade(),
+            task_list_theme: None,
+            task_scroll_to_selected: false,
+            task_list_viewport: Rect::ZERO,
+            task_list_text_scale: 1.0,
+            task_instruction_scroll: ScrollRegion::vertical().with_edge_fade(),
+            task_instruction_theme: None,
             new_task_rect: None,
             task_action_rects: Vec::new(),
             task_compose_open: false,
@@ -1198,6 +1244,11 @@ impl RoomActivityPane {
         }
         self.view = view;
         self.expanded_brief = None;
+        if view != ActivityView::Tasks {
+            self.task_instruction_detail = None;
+            self.task_instruction_scroll
+                .set_offset(vello::kurbo::Vec2::ZERO);
+        }
     }
 
     fn step_replay(&mut self, forward: bool) {
@@ -1801,6 +1852,18 @@ impl RoomActivityPane {
     }
 
     pub fn apply_deep_link(&mut self, focus: ActivityDeepLink) {
+        if let Some(task) = focus.task_id {
+            self.view = ActivityView::Tasks;
+            // A routed exact task replaces the New Task presentation, but its
+            // private draft remains available when the person returns to it.
+            self.task_compose_open = false;
+            self.selected_task = Some(task.clone());
+            self.task_scroll_to_selected = true;
+            self.task_instruction_detail = None;
+            self.task_instruction_scroll
+                .set_offset(vello::kurbo::Vec2::ZERO);
+            self.keyboard_focus = Some(ActivityFocus::Task(task));
+        }
         if let Some(author) = focus.author {
             self.author = Some(author);
         }
@@ -1965,6 +2028,12 @@ impl RoomActivityPane {
             .is_some_and(|id| !self.tasks.iter().any(|task| &task.id == id))
         {
             self.selected_task = None;
+            self.task_instruction_detail = None;
+            self.task_instruction_scroll
+                .set_offset(vello::kurbo::Vec2::ZERO);
+            if matches!(self.keyboard_focus, Some(ActivityFocus::Task(_))) {
+                self.keyboard_focus = None;
+            }
         }
 
         let heads = tree.document_mut().get_heads();
@@ -2702,7 +2771,7 @@ impl RoomActivityPane {
     }
 
     fn chrome_height(&self) -> f64 {
-        if self.view == ActivityView::CatchUp {
+        if self.view == ActivityView::CatchUp || self.task_instruction_detail.is_some() {
             return self.header_h();
         }
         if self.shows_chip_rows() {
@@ -2791,7 +2860,7 @@ impl RoomActivityPane {
         );
 
         self.draw_title_and_subtitle(scene, transform, tr, theme);
-        if self.view == ActivityView::CatchUp {
+        if self.view == ActivityView::CatchUp || self.task_instruction_detail.is_some() {
             // Catch Up is the friendly, focused recap. Full-history scope and
             // mode tabs belong to the deeper views and must not leak into its
             // paint, hit-testing, keyboard order, or accessibility snapshot.
@@ -2811,7 +2880,7 @@ impl RoomActivityPane {
         }
         match self.view {
             ActivityView::CatchUp => self.draw_catch_up(scene, transform, tr, theme),
-            ActivityView::Tasks => self.draw_task_center(scene, transform, tr, theme),
+            ActivityView::Tasks => self.draw_task_center(scene, transform, tr, theme, presence),
             ActivityView::Explore => {
                 self.draw_explorer_panel_tabs(scene, transform, tr, theme);
                 self.draw_explorer_sidebars(scene, transform, tr, theme);
@@ -4027,39 +4096,99 @@ impl RoomActivityPane {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
     ) {
         self.task_rects.clear();
         self.task_action_rects.clear();
         self.task_route_rects.clear();
+        // Keep the exact preview binding while its detail is open. Escape returns focus to
+        // that same retained control, including before the next paint has rebuilt the preview.
+        if self.task_instruction_detail.is_none() {
+            self.task_instruction_target = None;
+        }
         self.task_create_rect = None;
         self.task_cancel_rect = None;
 
         let x0 = self.sheet.x0 + 12.0;
         let x1 = self.sheet.x1 - 12.0;
         let mut y = self.sheet.y0 + self.chrome_height() + 8.0;
-        let new_task = Rect::new(x1 - 116.0, y, x1, y + 30.0);
+        if let Some(task_id) = self.task_instruction_detail.clone() {
+            let detail = self
+                .tasks
+                .iter()
+                .find(|task| task.id == task_id)
+                .and_then(|task| {
+                    task_instruction(task)
+                        .map(|instruction| (task.title.clone(), instruction.to_string()))
+                });
+            if let Some((title, instruction)) = detail {
+                self.draw_task_instruction_detail(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    presence,
+                    Rect::new(x0, y, x1, self.sheet.y1 - 8.0),
+                    (&title, &instruction),
+                );
+                return;
+            }
+            self.task_instruction_detail = None;
+            self.task_instruction_scroll
+                .set_offset(vello::kurbo::Vec2::ZERO);
+        }
+        let queue_label = t("activity-task-queue");
+        let queue_style = theme.text(TextRole::Label);
+        let (queue_width, queue_height) = tr.measure_style(&queue_label, None, &queue_style);
+        let text_scale = f64::from(theme.text_scale);
+        let queue_width = f64::from(queue_width) * text_scale;
+        let queue_height = f64::from(queue_height);
+        let button_height = (queue_height + 12.0).max(MIN_TARGET);
+        let stack_new_task = queue_width + 12.0 + 116.0 > x1 - x0;
+        let new_task = if stack_new_task {
+            Rect::new(
+                x0,
+                y + queue_height + 8.0,
+                x1,
+                y + queue_height + 8.0 + button_height,
+            )
+        } else {
+            Rect::new(x1 - 116.0, y, x1, y + button_height)
+        };
+        let queue_end = if stack_new_task {
+            new_task.y1 + 8.0
+        } else {
+            y + button_height + 10.0
+        };
+        // A selected task is its own focused inspection state. The queue
+        // heading and creation affordance return when it is collapsed; they
+        // must not consume the only readable rows above its exact controls.
+        let compact_selected = self.selected_task.is_some();
         self.new_task_rect = None;
-        if self.host.mutations_available() && !self.feed_coverage.pending_tree {
+        if !compact_selected && self.host.mutations_available() && !self.feed_coverage.pending_tree
+        {
             self.new_task_rect = Some(new_task);
-            draw_task_button(
+            Button::paint(
                 scene,
                 transform,
                 tr,
                 theme,
-                new_task,
-                &t("activity-task-new"),
-                true,
+                &ui::widget::ButtonFace::new(new_task, &t("activity-task-new"))
+                    .control_size(ui::widget::ControlSize::Small)
+                    .role(ui::widget::ButtonRole::Primary),
             );
         }
-        tr.draw_style(
-            scene,
-            &t("activity-task-queue"),
-            theme.tokens.colors.text_dim,
-            at(transform, x0 + 4.0, y + 8.0),
-            None,
-            &theme.text(TextRole::Label),
-        );
-        y += 40.0;
+        if !compact_selected {
+            tr.draw_style(
+                scene,
+                &queue_label,
+                theme.tokens.colors.text_dim,
+                at(transform, x0 + 4.0, y + 8.0),
+                None,
+                &queue_style,
+            );
+            y = queue_end;
+        }
 
         if self.task_compose_open {
             let composer = Rect::new(x0, y, x1, y + 164.0);
@@ -4247,52 +4376,262 @@ impl RoomActivityPane {
             return;
         }
 
-        for task in &self.tasks {
+        let now = self.now();
+        let mut prepared = Vec::with_capacity(self.tasks.len());
+        let mut content_y = 0.0;
+        for task in self.tasks.clone() {
             let selected = self.selected_task.as_deref() == Some(task.id.as_str());
-            let audit_rows = if selected { task.audit.len().min(3) } else { 0 };
-            let execution_notice = selected.then(|| self.task_execution_notice(task)).flatten();
-            let height = 82.0
-                + if selected {
-                    72.0 + 18.0 * audit_rows as f64
-                        + if execution_notice.is_some() {
-                            18.0
-                        } else {
-                            0.0
-                        }
+            let execution_notice = selected
+                .then(|| self.task_execution_notice(&task))
+                .flatten();
+            let text_scale = f64::from(theme.text_scale);
+            let caption_height =
+                f64::from(theme.text(TextRole::Caption).line_height_px()) * text_scale;
+            let label_height = f64::from(theme.text(TextRole::Label).line_height_px()) * text_scale;
+            let body_height = f64::from(theme.text(TextRole::Body).line_height_px()) * text_scale;
+            let instruction = selected
+                .then(|| task_instruction(&task))
+                .flatten()
+                .map(|instruction| {
+                    tr.clamp_to_lines(
+                        instruction,
+                        &theme.text(TextRole::Caption),
+                        text_width(x1 - x0 - 24.0),
+                        4,
+                    )
+                })
+                .unwrap_or_default();
+            let actions = selected
+                .then(|| self.task_actions_for(&task))
+                .unwrap_or_default();
+            let instruction_button_height = if selected && task_instruction(&task).is_some() {
+                self.task_instruction_open_button.layout(
+                    Rect::new(0.0, 0.0, (x1 - x0 - 16.0).max(1.0), 0.0),
+                    theme,
+                    tr,
+                )
+            } else {
+                0.0
+            };
+            let card_layout = TaskCardLayout {
+                gap: f64::from(theme.tokens.spacing.s1),
+                label_height,
+                body_height,
+                caption_height,
+                selected,
+                notice: execution_notice.is_some(),
+                instruction_lines: instruction.len(),
+                instruction_button_height,
+                audit_rows: task.audit.len().min(3),
+                action_height: if selected && !actions.is_empty() {
+                    (caption_height + 8.0).max(MIN_TARGET)
                 } else {
                     0.0
-                };
-            if y + height > self.sheet.y1 - 8.0 {
-                break;
-            }
-            let rect = Rect::new(x0, y, x1, y + height);
-            self.task_rects.push((task.id.clone(), rect));
-            draw_task_card(
-                &mut PaintCtx::new(scene, transform, tr, theme),
+                },
+            };
+            let height = card_layout.height();
+            let action_items = actions
+                .iter()
+                .map(|action| (*action, self.task_action_label(*action, &task)))
+                .collect();
+            prepared.push(PreparedTaskCard {
                 task,
-                rect,
                 selected,
-                self.now(),
-                execution_notice.as_deref(),
-            );
-            if selected {
-                let actions = self.task_actions_for(task);
-                let items = actions
-                    .iter()
-                    .map(|action| (*action, self.task_action_label(*action, task)))
-                    .collect::<Vec<_>>();
-                self.task_action_rects = draw_chip_row(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    Rect::new(rect.x0 + 8.0, rect.y1 - 32.0, rect.x1 - 8.0, rect.y1 - 4.0),
-                    &items,
-                    |_| false,
-                );
-            }
-            y += height + 8.0;
+                execution_notice,
+                instruction,
+                action_items,
+                layout: card_layout,
+                y: content_y,
+            });
+            content_y += height + 8.0;
         }
+
+        let viewport = Rect::new(x0, y, x1, self.sheet.y1 - 8.0);
+        if viewport != self.task_list_viewport
+            || (theme.text_scale - self.task_list_text_scale).abs() > f32::EPSILON
+        {
+            self.task_scroll_to_selected |= self.selected_task.is_some();
+            self.task_list_viewport = viewport;
+            self.task_list_text_scale = theme.text_scale;
+        }
+        self.task_list_scroll.set_viewport(viewport, theme);
+        self.task_list_scroll
+            .set_content_size(viewport.width(), content_y.max(viewport.height()));
+        let content_viewport = self.task_list_scroll.content_rect();
+        self.task_list_scroll.set_focused(matches!(
+            self.keyboard_focus,
+            Some(
+                ActivityFocus::Task(_)
+                    | ActivityFocus::TaskInstruction(_)
+                    | ActivityFocus::TaskAction(_)
+            )
+        ));
+        self.task_list_theme = Some(theme.clone());
+        if self.task_scroll_to_selected {
+            if let Some(selected) = prepared.iter().find(|card| card.selected) {
+                let disclosure_bottom = selected.layout.instruction_button_top()
+                    + selected.layout.instruction_button_height;
+                self.task_list_scroll.scroll_into_view(Rect::new(
+                    0.0,
+                    selected.y,
+                    content_viewport.width(),
+                    selected.y + disclosure_bottom,
+                ));
+            }
+            self.task_scroll_to_selected = false;
+        }
+
+        let offset = self.task_list_scroll.offset().y;
+        let mut task_rects = Vec::new();
+        let mut task_action_rects = Vec::new();
+        let mut instruction_target = None;
+        let instruction_button = &mut self.task_instruction_open_button;
+        self.task_list_scroll
+            .paint(scene, transform, theme, |scene, _content_transform| {
+                for card in &prepared {
+                    let height = card.layout.height();
+                    let rect = Rect::new(
+                        content_viewport.x0,
+                        content_viewport.y0 + card.y - offset,
+                        content_viewport.x1,
+                        content_viewport.y0 + card.y + height - offset,
+                    );
+                    if rect.y1 <= content_viewport.y0 || rect.y0 >= content_viewport.y1 {
+                        continue;
+                    }
+                    task_rects.push((card.task.id.clone(), rect));
+                    draw_task_card(
+                        &mut PaintCtx::new(scene, transform, tr, theme),
+                        &card.task,
+                        rect,
+                        card.selected,
+                        now,
+                        card.execution_notice.as_deref(),
+                        &card.instruction,
+                        &card.layout,
+                    );
+                    if !card.selected {
+                        continue;
+                    }
+                    if task_instruction(&card.task).is_some() {
+                        let button_top = rect.y0 + card.layout.instruction_button_top();
+                        let bounds = Rect::new(
+                            rect.x0 + 8.0,
+                            button_top,
+                            rect.x1 - 8.0,
+                            button_top + card.layout.instruction_button_height,
+                        );
+                        instruction_target = Some(card.task.id.clone());
+                        instruction_button.layout(bounds, theme, tr);
+                        instruction_button.draw(scene, transform, tr, theme, presence);
+                    }
+                    task_action_rects = draw_chip_row(
+                        scene,
+                        transform,
+                        tr,
+                        theme,
+                        Rect::new(
+                            rect.x0 + 8.0,
+                            rect.y1 - card.layout.action_height - 4.0,
+                            rect.x1 - 8.0,
+                            rect.y1 - 4.0,
+                        ),
+                        &card.action_items,
+                        |_| false,
+                    );
+                }
+            });
+        self.task_rects = task_rects;
+        self.task_action_rects = task_action_rects;
+        self.task_instruction_target = instruction_target;
+    }
+
+    fn draw_task_instruction_detail(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        rect: Rect,
+        copy: (&str, &str),
+    ) {
+        let (title, instruction) = copy;
+        let label_style = theme.text(TextRole::Label);
+        let heading_style = theme.text(TextRole::Heading);
+        let body_style = theme.text(TextRole::Body);
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let mut y = rect.y0 + 4.0;
+        let close_height = self.task_instruction_close_button.layout(
+            Rect::new(rect.x0, 0.0, rect.x1, 0.0),
+            theme,
+            tr,
+        );
+        let text_scale = f64::from(theme.text_scale);
+        let label_height = f64::from(label_style.line_height_px()) * text_scale;
+        let heading_height = f64::from(heading_style.line_height_px()) * text_scale;
+        let body_height = f64::from(body_style.line_height_px()) * text_scale;
+        let show_section_label = rect.height()
+            >= 4.0 + label_height + heading_height + close_height + body_height * 2.0 + gap * 4.0;
+        if show_section_label {
+            tr.draw_style(
+                scene,
+                &t("activity-task-full-instruction"),
+                theme.tokens.colors.text_dim,
+                at(transform, rect.x0 + 4.0, y),
+                None,
+                &label_style,
+            );
+            y += label_height + gap;
+        }
+        let title = tr.elide_to_width_style(title, text_width(rect.width() - 8.0), &heading_style);
+        tr.draw_style(
+            scene,
+            &title,
+            theme.tokens.colors.text_primary,
+            at(transform, rect.x0 + 4.0, y),
+            None,
+            &heading_style,
+        );
+        y += heading_height + gap;
+        self.task_instruction_close_button
+            .layout(Rect::new(rect.x0, y, rect.x1, y), theme, tr);
+        self.task_instruction_close_button
+            .draw(scene, transform, tr, theme, presence);
+        y += close_height + gap;
+
+        let viewport = Rect::new(rect.x0, y, rect.x1, rect.y1);
+        self.task_instruction_scroll.set_viewport(viewport, theme);
+        let style = body_style;
+        let line_height = f64::from(style.line_height_px()) * f64::from(theme.text_scale);
+        let content_width =
+            (viewport.width() - f64::from(theme.tokens.metrics.scrollbar_gutter) - 16.0).max(1.0);
+        let lines = tr.clamp_to_lines(instruction, &style, text_width(content_width), usize::MAX);
+        let content_height =
+            (line_height * ui::num::f64_of_usize(lines.len()) + 16.0).max(viewport.height());
+        self.task_instruction_scroll
+            .set_content_size(viewport.width(), content_height);
+        self.task_instruction_scroll
+            .set_focused(self.keyboard_focus == Some(ActivityFocus::TaskInstructionScroll));
+        self.task_instruction_theme = Some(theme.clone());
+        let visible = self.task_instruction_scroll.visible_content();
+        self.task_instruction_scroll
+            .paint(scene, transform, theme, |scene, content_transform| {
+                for (index, line) in lines.iter().enumerate() {
+                    let y = 8.0 + line_height * ui::num::f64_of_usize(index);
+                    if y + line_height < visible.y0 || y > visible.y1 {
+                        continue;
+                    }
+                    tr.draw_style(
+                        scene,
+                        line,
+                        theme.tokens.colors.text_primary,
+                        at(content_transform, 8.0, y),
+                        None,
+                        &style,
+                    );
+                }
+            });
     }
 
     /// Paint the sheet's title, factual scope/count, and latest outcome.
@@ -4803,6 +5142,14 @@ impl RoomActivityPane {
         point: Point,
         tree: &mut impl ActivityTree,
     ) -> Option<RoomActivityOutcome> {
+        if self.task_instruction_detail.is_some() {
+            if self.task_instruction_scroll.content_rect().contains(point) {
+                self.keyboard_focus = Some(ActivityFocus::TaskInstructionScroll);
+                self.task_instruction_scroll.set_focused(true);
+                return Some(handled_outcome());
+            }
+            return None;
+        }
         if self.new_task_rect.is_some_and(|rect| rect.contains(point)) {
             self.keyboard_focus = Some(ActivityFocus::NewTask);
             self.open_task_composer(tree);
@@ -4835,9 +5182,157 @@ impl RoomActivityPane {
         if let Some(id) = hit_value(&self.task_rects, point) {
             self.keyboard_focus = Some(ActivityFocus::Task(id.clone()));
             self.selected_task = (self.selected_task.as_deref() != Some(id.as_str())).then_some(id);
+            self.task_instruction_detail = None;
+            self.task_instruction_scroll
+                .set_offset(vello::kurbo::Vec2::ZERO);
             return Some(handled_outcome());
         }
         None
+    }
+
+    fn apply_task_instruction_button_signals(&mut self, cursor: Option<Point>) -> bool {
+        if self.task_instruction_close_signal.replace(false) {
+            let task = self.task_instruction_detail.take();
+            self.task_instruction_scroll
+                .set_offset(vello::kurbo::Vec2::ZERO);
+            self.keyboard_focus = task.map(ActivityFocus::TaskInstruction);
+            return true;
+        }
+        if self.task_instruction_open_signal.replace(false)
+            && let Some(task) = self.task_instruction_target.clone()
+        {
+            self.task_instruction_detail = Some(task);
+            self.task_instruction_scroll
+                .set_offset(vello::kurbo::Vec2::ZERO);
+            if let Some(cursor) = cursor {
+                self.task_instruction_scroll.set_pointer_position(cursor);
+            }
+            self.keyboard_focus = Some(ActivityFocus::TaskInstructionScroll);
+            return true;
+        }
+        false
+    }
+
+    fn route_task_instruction_button_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: Modifiers,
+        cursor: Option<Point>,
+        tree: &mut impl ActivityTree,
+    ) -> bool {
+        let mut handled = false;
+        let root = automerge::ROOT;
+        if self.task_instruction_detail.is_some() {
+            self.task_instruction_close_button
+                .widget_mut()
+                .set_focus(self.keyboard_focus == Some(ActivityFocus::TaskInstructionClose));
+            self.task_instruction_close_button.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                &mut ui::widget::Edits::lend(tree.document_mut()),
+                &root,
+                &mut handled,
+            );
+            if self.task_instruction_close_button.take_focus_request() {
+                self.keyboard_focus = Some(ActivityFocus::TaskInstructionClose);
+            }
+        } else if self.task_instruction_target.is_some() {
+            let focused = matches!(self.keyboard_focus, Some(ActivityFocus::TaskInstruction(_)));
+            self.task_instruction_open_button
+                .widget_mut()
+                .set_focus(focused);
+            self.task_instruction_open_button.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                &mut ui::widget::Edits::lend(tree.document_mut()),
+                &root,
+                &mut handled,
+            );
+            if self.task_instruction_open_button.take_focus_request()
+                && let Some(task) = self.task_instruction_target.clone()
+            {
+                self.keyboard_focus = Some(ActivityFocus::TaskInstruction(task));
+            }
+        }
+        self.apply_task_instruction_button_signals(cursor) || handled
+    }
+
+    fn route_task_instruction_scroll_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &Modifiers,
+        tree: &mut impl ActivityTree,
+    ) -> bool {
+        let Some(theme) = self
+            .task_instruction_detail
+            .as_ref()
+            .and(self.task_instruction_theme.clone())
+        else {
+            return false;
+        };
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut scratch: taffy::TaffyTree<()> = taffy::TaffyTree::new();
+        let Ok(node) = scratch.new_leaf(taffy::Style::default()) else {
+            return false;
+        };
+        let root = automerge::ROOT;
+        let changed = self.task_instruction_scroll.handle_event(
+            event,
+            &mut ui::widget::EventCtx {
+                scale_factor,
+                modifiers,
+                state: ui::widget::Edits::lend(tree.document_mut()),
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &scratch,
+            },
+            &theme,
+        );
+        handled || changed
+    }
+
+    fn route_task_list_scroll_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &Modifiers,
+        tree: &mut impl ActivityTree,
+    ) -> bool {
+        if self.view != ActivityView::Tasks || self.task_instruction_detail.is_some() {
+            return false;
+        }
+        let Some(theme) = self.task_list_theme.clone() else {
+            return false;
+        };
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut scratch: taffy::TaffyTree<()> = taffy::TaffyTree::new();
+        let Ok(node) = scratch.new_leaf(taffy::Style::default()) else {
+            return false;
+        };
+        let root = automerge::ROOT;
+        let changed = self.task_list_scroll.handle_event(
+            event,
+            &mut ui::widget::EventCtx {
+                scale_factor,
+                modifiers,
+                state: ui::widget::Edits::lend(tree.document_mut()),
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &scratch,
+            },
+            &theme,
+        );
+        handled || changed
     }
 
     fn open_task_composer(&mut self, tree: &impl ActivityTree) {
@@ -4845,7 +5340,6 @@ impl RoomActivityPane {
             return;
         }
         self.task_compose_open = true;
-        self.task_draft.clear();
         self.task_route = WorkspaceTaskRoute::Manual;
         self.task_agent = tree
             .active_workspace()
@@ -5307,6 +5801,25 @@ impl RoomActivityPane {
         tree: &mut impl ActivityTree,
         records: Option<&RecordStore>,
     ) -> Option<RoomActivityOutcome> {
+        if self.task_instruction_detail.is_some()
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: KeyEvent {
+                        logical_key: Key::Named(NamedKey::Escape),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                    ..
+                }
+            )
+        {
+            let task = self.task_instruction_detail.take();
+            self.task_instruction_scroll
+                .set_offset(vello::kurbo::Vec2::ZERO);
+            self.keyboard_focus = task.map(ActivityFocus::TaskInstruction);
+            return Some(handled_outcome());
+        }
         if self.task_compose_open {
             let WindowEvent::KeyboardInput {
                 event:
@@ -5388,6 +5901,16 @@ impl RoomActivityPane {
             return handled_outcome();
         }
         let mut out = RoomActivityOutcome::default();
+
+        if self.route_task_instruction_button_event(event, scale_factor, *modifiers, cursor, tree) {
+            return handled_outcome();
+        }
+        if self.route_task_instruction_scroll_event(event, scale_factor, modifiers, tree) {
+            return handled_outcome();
+        }
+        if self.route_task_list_scroll_event(event, scale_factor, modifiers, tree) {
+            return handled_outcome();
+        }
 
         // The inline group-name editor owns every unchorded key until it
         // commits or cancels; Tab included, so a half-typed name cannot be
@@ -5503,6 +6026,19 @@ impl RoomActivityPane {
                 );
             }
             ActivityView::Tasks => {
+                if self.task_instruction_detail.is_some() {
+                    if self
+                        .task_instruction_close_button
+                        .widget()
+                        .get_rect()
+                        .area()
+                        > 0.0
+                    {
+                        order.push(ActivityFocus::TaskInstructionClose);
+                    }
+                    order.push(ActivityFocus::TaskInstructionScroll);
+                    return order;
+                }
                 if self.new_task_rect.is_some() {
                     order.push(ActivityFocus::NewTask);
                 }
@@ -5524,6 +6060,9 @@ impl RoomActivityPane {
                         .iter()
                         .map(|(id, _)| ActivityFocus::Task(id.clone())),
                 );
+                if let Some(id) = &self.task_instruction_target {
+                    order.push(ActivityFocus::TaskInstruction(id.clone()));
+                }
                 order.extend(
                     self.task_action_rects
                         .iter()
@@ -5616,6 +6155,17 @@ impl RoomActivityPane {
                 .task_rects
                 .iter()
                 .find_map(|(id, rect)| (id == value).then_some(*rect)),
+            ActivityFocus::TaskInstruction(value) => {
+                self.task_instruction_target.as_ref().and_then(|id| {
+                    (id == value).then_some(self.task_instruction_open_button.widget().get_rect())
+                })
+            }
+            ActivityFocus::TaskInstructionClose => {
+                Some(self.task_instruction_close_button.widget().get_rect())
+            }
+            ActivityFocus::TaskInstructionScroll => {
+                Some(self.task_instruction_scroll.content_rect())
+            }
             ActivityFocus::TaskRoute(value) => self
                 .task_route_rects
                 .iter()
@@ -5678,6 +6228,33 @@ impl RoomActivityPane {
             .set_focus(self.keyboard_focus == Some(ActivityFocus::Timeline));
     }
 
+    fn activate_task_instruction_focus(
+        &mut self,
+        focus: &ActivityFocus,
+        tree: &mut impl ActivityTree,
+    ) -> bool {
+        let button = match focus {
+            ActivityFocus::TaskInstruction(id)
+                if self.task_instruction_target.as_ref() == Some(id) =>
+            {
+                &mut self.task_instruction_open_button
+            }
+            ActivityFocus::TaskInstructionClose => &mut self.task_instruction_close_button,
+            ActivityFocus::TaskInstructionScroll | ActivityFocus::TaskInstruction(_) => {
+                return true;
+            }
+            _ => return false,
+        };
+        let root = automerge::ROOT;
+        let _ = button.widget_mut().perform_action(
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(tree.document_mut()),
+            &root,
+        );
+        self.apply_task_instruction_button_signals(None);
+        true
+    }
+
     fn activate_focus(
         &mut self,
         tree: &mut impl ActivityTree,
@@ -5690,6 +6267,9 @@ impl RoomActivityPane {
             handled: true,
             ..RoomActivityOutcome::default()
         };
+        if self.activate_task_instruction_focus(&focus, tree) {
+            return outcome;
+        }
         match focus {
             ActivityFocus::Scope(value) => self.set_scope(value, tree),
             ActivityFocus::View(value) => self.set_view(value),
@@ -5713,7 +6293,13 @@ impl RoomActivityPane {
             ActivityFocus::Task(id) => {
                 self.selected_task =
                     (self.selected_task.as_deref() != Some(id.as_str())).then_some(id);
+                self.task_instruction_detail = None;
+                self.task_instruction_scroll
+                    .set_offset(vello::kurbo::Vec2::ZERO);
             }
+            ActivityFocus::TaskInstruction(_)
+            | ActivityFocus::TaskInstructionClose
+            | ActivityFocus::TaskInstructionScroll => unreachable!("handled above"),
             ActivityFocus::TaskRoute(route) => self.task_route = route,
             ActivityFocus::TaskCreate => return self.create_task_from_draft(tree),
             ActivityFocus::TaskCancelCompose => self.close_task_composer(),
@@ -5855,6 +6441,9 @@ impl RoomActivityPane {
                 .iter()
                 .find(|task| &task.id == id)
                 .map(|task| task.title.clone()),
+            ActivityFocus::TaskInstruction(_) => Some(t("activity-task-read-instruction")),
+            ActivityFocus::TaskInstructionClose => Some(t("activity-task-close-instruction")),
+            ActivityFocus::TaskInstructionScroll => Some(t("activity-task-full-instruction")),
             ActivityFocus::TaskRoute(route) => Some(task_route_label(*route)),
             ActivityFocus::TaskCreate => Some(t("a11y-shell-activity-create-task")),
             ActivityFocus::TaskCancelCompose => Some(t("a11y-shell-activity-cancel-task")),
@@ -6019,6 +6608,31 @@ impl RoomActivityPane {
                         )
                     ),
                 }
+            }
+            ActivityFocus::TaskInstruction(id) => {
+                let task = self.tasks.iter().find(|task| &task.id == id)?;
+                control(
+                    Role::Button,
+                    false,
+                    Some(self.task_instruction_detail.as_ref() == Some(id)),
+                    task_instruction(task).unwrap_or_default().to_string(),
+                )
+            }
+            ActivityFocus::TaskInstructionClose => control(
+                Role::Button,
+                false,
+                None,
+                t("a11y-shell-activity-task-close-instruction"),
+            ),
+            ActivityFocus::TaskInstructionScroll => {
+                let id = self.task_instruction_detail.as_ref()?;
+                let task = self.tasks.iter().find(|task| &task.id == id)?;
+                control(
+                    Role::Document,
+                    false,
+                    None,
+                    task_instruction(task).unwrap_or_default().to_string(),
+                )
             }
             ActivityFocus::TaskRoute(route) => control(
                 Role::RadioButton,
@@ -6311,6 +6925,17 @@ impl RoomActivityPane {
                 .task_rects
                 .iter()
                 .find_map(|(id, rect)| (id == value).then_some(*rect)),
+            ActivityFocus::TaskInstruction(value) => {
+                self.task_instruction_target.as_ref().and_then(|id| {
+                    (id == value).then_some(self.task_instruction_open_button.widget().get_rect())
+                })
+            }
+            ActivityFocus::TaskInstructionClose => {
+                Some(self.task_instruction_close_button.widget().get_rect())
+            }
+            ActivityFocus::TaskInstructionScroll => {
+                Some(self.task_instruction_scroll.content_rect())
+            }
             ActivityFocus::TaskRoute(value) => self
                 .task_route_rects
                 .iter()
@@ -6376,7 +7001,23 @@ impl RoomActivityPane {
     /// True while the pane's name field has the keyboard, so Escape
     /// cancels the field rather than closing the sheet.
     pub fn wants_keyboard(&self) -> bool {
-        self.task_compose_open || self.timeline.wants_keyboard()
+        self.task_compose_open
+            || self.task_instruction_detail.is_some()
+            || self.timeline.wants_keyboard()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stage_task_instruction_detail_for_route(&mut self, task: &str) {
+        self.task_instruction_target = Some(task.to_owned());
+        self.task_instruction_detail = Some(task.to_owned());
+        self.keyboard_focus = Some(ActivityFocus::TaskInstructionScroll);
+        self.task_instruction_scroll.set_focused(true);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn task_instruction_preview_is_focused(&self, task: &str) -> bool {
+        self.task_instruction_detail.is_none()
+            && self.keyboard_focus == Some(ActivityFocus::TaskInstruction(task.to_owned()))
     }
 
     /// Rewrite the document to the state at `id`, as a **new forward
@@ -6624,6 +7265,66 @@ fn draw_task_button(
     );
 }
 
+#[derive(Clone, Copy, Debug)]
+struct TaskCardLayout {
+    gap: f64,
+    label_height: f64,
+    body_height: f64,
+    caption_height: f64,
+    selected: bool,
+    notice: bool,
+    instruction_lines: usize,
+    instruction_button_height: f64,
+    audit_rows: usize,
+    action_height: f64,
+}
+
+struct PreparedTaskCard {
+    task: WorkspaceTask,
+    selected: bool,
+    execution_notice: Option<String>,
+    instruction: Vec<String>,
+    action_items: Vec<(TaskAction, String)>,
+    layout: TaskCardLayout,
+    y: f64,
+}
+
+impl TaskCardLayout {
+    fn header_height(self) -> f64 {
+        9.0 + self.label_height.max(self.caption_height)
+            + self.gap
+            + self.body_height
+            + self.gap
+            + self.caption_height
+            + self.gap
+    }
+
+    fn height(self) -> f64 {
+        let mut height = self.header_height();
+        if !self.selected {
+            return height;
+        }
+        if self.notice {
+            height += self.caption_height + self.gap;
+        }
+        if self.instruction_lines > 0 {
+            height +=
+                self.label_height + self.gap + self.caption_height * self.instruction_lines as f64;
+        }
+        if self.audit_rows > 0 {
+            height += self.gap + self.label_height + self.caption_height * self.audit_rows as f64;
+        }
+        if self.instruction_button_height > 0.0 {
+            height += self.gap + self.instruction_button_height;
+        }
+        height + self.action_height + 4.0
+    }
+
+    fn instruction_button_top(self) -> f64 {
+        self.header_height() + self.gap
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "task-card rendering needs the shared renderer context and explicit card data together to keep the visible and accessible states aligned"
@@ -6635,14 +7336,16 @@ fn draw_task_card(
     selected: bool,
     now: SystemTime,
     execution_notice: Option<&str>,
+    instruction: &[String],
+    layout: &TaskCardLayout,
 ) {
     let (scene, transform, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-    scene.fill(
-        Fill::NonZero,
+    ui::surface::card(
+        scene,
         transform,
-        theme.tokens.colors.lift(if selected { 0.55 } else { 0.3 }),
-        None,
-        &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
+        rect,
+        f64::from(theme.tokens.radii.control),
+        theme.tokens.colors.surfaces.base,
     );
     if selected {
         scene.stroke(
@@ -6654,15 +7357,16 @@ fn draw_task_card(
         );
     }
     let status = task_status_label(task.status);
+    let mut content_y = rect.y0 + 9.0;
     tr.draw_style(
         scene,
         &status,
         if task.status.is_finished() {
             theme.tokens.colors.text_dim
         } else {
-            theme.tokens.colors.intent.inverted_hover
+            theme.tokens.colors.text_primary
         },
-        at(transform, rect.x0 + 12.0, rect.y0 + 9.0),
+        at(transform, rect.x0 + 12.0, content_y),
         None,
         &theme.text(TextRole::Label),
     );
@@ -6677,11 +7381,12 @@ fn draw_task_card(
         at(
             transform,
             rect.x1 - 12.0 - f64::from(route_width),
-            rect.y0 + 9.0,
+            content_y,
         ),
         None,
         &theme.text(TextRole::Caption),
     );
+    content_y += layout.label_height.max(layout.caption_height) + layout.gap;
     let title = tr.elide_to_width_style(
         &task.title,
         text_width(rect.width() - 24.0),
@@ -6691,12 +7396,13 @@ fn draw_task_card(
         scene,
         &title,
         theme.tokens.colors.text_primary,
-        at(transform, rect.x0 + 12.0, rect.y0 + 31.0),
+        at(transform, rect.x0 + 12.0, content_y),
         None,
         &theme
             .text(TextRole::Body)
             .with_weight(ui::text_render::TextWeight::Medium),
     );
+    content_y += layout.body_height + layout.gap;
     let assignee = task_assignee_label(task);
     let resource = task
         .resource
@@ -6712,33 +7418,68 @@ fn draw_task_card(
         scene,
         &byline,
         theme.tokens.colors.text_dim,
-        at(transform, rect.x0 + 12.0, rect.y0 + 55.0),
+        at(transform, rect.x0 + 12.0, content_y),
         None,
         &theme.text(TextRole::Caption),
     );
     if selected {
-        let mut audit_y = rect.y0 + 80.0;
+        let mut audit_y = rect.y0 + layout.header_height();
+        let caption_style = theme.text(TextRole::Caption);
+        let label_style = theme.text(TextRole::Label);
+        let text_gap = f64::from(theme.tokens.spacing.s1);
+        if layout.instruction_button_height > 0.0 {
+            audit_y += layout.gap + layout.instruction_button_height;
+        }
         if let Some(notice) = execution_notice {
+            let notice =
+                tr.elide_to_width_style(notice, text_width(rect.width() - 24.0), &caption_style);
             tr.draw_style(
                 scene,
-                notice,
+                &notice,
                 theme.tokens.colors.intent.inverted_hover,
                 at(transform, rect.x0 + 12.0, audit_y),
-                Some(text_width(rect.width() - 24.0)),
-                &theme.text(TextRole::Caption),
+                None,
+                &caption_style,
             );
-            audit_y += 18.0;
+            audit_y +=
+                f64::from(caption_style.line_height_px()) * f64::from(theme.text_scale) + text_gap;
         }
-        tr.draw_style(
-            scene,
-            &t("activity-task-audit-trail"),
-            theme.tokens.colors.text_dim,
-            at(transform, rect.x0 + 12.0, audit_y),
-            None,
-            &theme.text(TextRole::Label),
-        );
-        audit_y += 20.0;
-        for event in task.audit.iter().rev().take(3) {
+        if !instruction.is_empty() {
+            tr.draw_style(
+                scene,
+                &t("activity-task-instruction"),
+                theme.tokens.colors.text_dim,
+                at(transform, rect.x0 + 12.0, audit_y),
+                None,
+                &label_style,
+            );
+            audit_y +=
+                f64::from(label_style.line_height_px()) * f64::from(theme.text_scale) + text_gap;
+            for line in instruction {
+                tr.draw_style(
+                    scene,
+                    line,
+                    theme.tokens.colors.text_primary,
+                    at(transform, rect.x0 + 20.0, audit_y),
+                    None,
+                    &caption_style,
+                );
+                audit_y += f64::from(caption_style.line_height_px()) * f64::from(theme.text_scale);
+            }
+        }
+        if layout.audit_rows > 0 {
+            audit_y += text_gap;
+            tr.draw_style(
+                scene,
+                &t("activity-task-audit-trail"),
+                theme.tokens.colors.text_dim,
+                at(transform, rect.x0 + 12.0, audit_y),
+                None,
+                &theme.text(TextRole::Label),
+            );
+            audit_y += f64::from(label_style.line_height_px()) * f64::from(theme.text_scale);
+        }
+        for event in task.audit.iter().rev().take(layout.audit_rows) {
             let event_time = u64::try_from(event.at)
                 .ok()
                 .and_then(|secs| SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
@@ -6757,7 +7498,7 @@ fn draw_task_card(
                 None,
                 &theme.text(TextRole::Caption),
             );
-            audit_y += 18.0;
+            audit_y += f64::from(caption_style.line_height_px()) * f64::from(theme.text_scale);
         }
     }
 }
@@ -6820,7 +7561,23 @@ fn task_accessibility_description(task: &WorkspaceTask, now: SystemTime) -> Stri
             &[("latest", latest.into())],
         ));
     }
+    if let Some(instruction) = task_instruction(task) {
+        description.push_str("; ");
+        description.push_str(&t_args(
+            "a11y-shell-activity-task-instruction",
+            &[("instruction", instruction.into())],
+        ));
+    }
     description
+}
+
+fn task_instruction(task: &WorkspaceTask) -> Option<&str> {
+    task.resource
+        .as_ref()?
+        .agent_request
+        .as_ref()
+        .map(|request| request.instruction.as_str())
+        .filter(|instruction| !instruction.trim().is_empty())
 }
 
 fn hit_value<T: Clone>(rects: &[(T, Rect)], point: Point) -> Option<T> {

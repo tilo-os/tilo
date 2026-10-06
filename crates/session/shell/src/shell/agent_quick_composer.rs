@@ -467,6 +467,8 @@ pub(crate) struct AgentQuickComposer {
     send_enabled: LocalState<bool>,
     send_requested: LocalState<bool>,
     conversation_requested: LocalState<bool>,
+    task_center_requested: LocalState<bool>,
+    close_requested: LocalState<bool>,
     actions: Option<ui::remote_actions::RemoteActions>,
     tasks: Option<AgentTaskFrontiers>,
     pending_message: Option<PendingMessage>,
@@ -488,9 +490,13 @@ impl Default for AgentQuickComposer {
         let send_enabled = LocalState::new(false);
         let send_requested = LocalState::new(false);
         let conversation_requested = LocalState::new(false);
+        let task_center_requested = LocalState::new(false);
+        let close_requested = LocalState::new(false);
 
         let send_signal = send_requested.clone();
         let conversation_signal = conversation_requested.clone();
+        let task_center_signal = task_center_requested.clone();
+        let close_signal = close_requested.clone();
         let mode = ToggleGroup::from_state(
             vec![
                 (
@@ -527,6 +533,16 @@ impl Default for AgentQuickComposer {
                 )
                 .with_icon(ui::icons::Icon::MessageSquare)
                 .on_click(move || conversation_signal.set(true)),
+            ))
+            .push(Box::new(
+                Button::new("agent-quick-open-tasks", &t("agent-quick-open-tasks"))
+                    .with_icon(ui::icons::Icon::List)
+                    .on_click(move || task_center_signal.set(true)),
+            ))
+            .push(Box::new(
+                Button::new("agent-quick-close", &t("agent-quick-close"))
+                    .with_icon(ui::icons::Icon::X)
+                    .on_click(move || close_signal.set(true)),
             ));
         let body = Column::new()
             .with_rhythm(ui::tokens::Rhythm::Related)
@@ -562,6 +578,8 @@ impl Default for AgentQuickComposer {
             send_enabled,
             send_requested,
             conversation_requested,
+            task_center_requested,
+            close_requested,
             actions: None,
             tasks: None,
             pending_message: None,
@@ -733,11 +751,27 @@ impl AgentQuickComposer {
         requested
     }
 
+    pub(crate) fn take_task_center_request(&self) -> Option<Option<String>> {
+        if !self.task_center_requested.get() {
+            return None;
+        }
+        self.task_center_requested.set(false);
+        let task = self.tasks.as_ref().and_then(|tasks| match tasks.choice() {
+            AgentTaskChoice::One(task) | AgentTaskChoice::Selected(task) => Some(task.task_id),
+            AgentTaskChoice::None | AgentTaskChoice::Choose(_) => None,
+        });
+        Some(task)
+    }
+
     pub(crate) fn target(&self) -> Option<(&str, &str)> {
         self.is_open().then_some((&self.room, &self.agent))
     }
 
     pub(crate) fn tick(&mut self) -> bool {
+        if self.close_requested.get() {
+            self.close_requested.set(false);
+            return self.dismiss();
+        }
         let before = (
             self.draft.revision(),
             self.intent.revision(),
@@ -1356,6 +1390,21 @@ mod tests {
     use ui::remote_actions::RemoteCall;
     use vello::{Scene, kurbo::Affine};
 
+    fn perform_accessible_descendant_action(
+        widget: &mut dyn Widget,
+        target: &str,
+        action: &ui::a11y::Action,
+        edits: &mut ui::widget::Edits<'_>,
+    ) -> bool {
+        if widget.test_id() == Some(target) {
+            return widget.perform_action(action, edits, &automerge::ROOT);
+        }
+        widget
+            .children_mut()
+            .into_iter()
+            .any(|child| perform_accessible_descendant_action(child, target, action, edits))
+    }
+
     struct CompletedTaskHost {
         applied_revision: Arc<AtomicU64>,
     }
@@ -1552,6 +1601,59 @@ mod tests {
     fn logical_dimension(value: f64) -> f32 {
         assert!(value.is_finite() && value >= 0.0 && value <= f64::from(f32::MAX));
         value as f32
+    }
+
+    #[test]
+    fn task_center_button_uses_shared_accessibility_activation() {
+        let mut composer = task_composer(4);
+        let viewport = Rect::new(0.0, 0.0, 900.0, 700.0);
+        layout_panel(
+            &mut composer,
+            Rect::new(300.0, 200.0, 320.0, 220.0),
+            viewport,
+            &Theme::dark(),
+        );
+        let mut doc = automerge::AutoCommit::new();
+        assert!(perform_accessible_descendant_action(
+            &mut composer,
+            "agent-quick-open-tasks",
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+        ));
+        assert_eq!(
+            composer.take_task_center_request(),
+            Some(Some("task-a".into()))
+        );
+        assert_eq!(composer.take_task_center_request(), None);
+    }
+
+    #[test]
+    fn accessible_close_retains_the_private_draft_for_reopen() {
+        let mut composer = task_composer(4);
+        composer.set_draft("Keep the release note wording");
+        let viewport = Rect::new(0.0, 0.0, 900.0, 700.0);
+        layout_panel(
+            &mut composer,
+            Rect::new(300.0, 200.0, 320.0, 220.0),
+            viewport,
+            &Theme::high_contrast(),
+        );
+        let mut doc = automerge::AutoCommit::new();
+        assert!(perform_accessible_descendant_action(
+            &mut composer,
+            "agent-quick-close",
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+        ));
+        assert!(
+            composer.tick(),
+            "the shared close action changes presentation"
+        );
+        assert!(!composer.is_open());
+
+        composer.popover.set_open(true);
+        composer.load_draft_and_rebind_pending_revision();
+        assert_eq!(composer.draft(), "Keep the release note wording");
     }
 
     #[test]

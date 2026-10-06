@@ -201,6 +201,11 @@ impl HistoryOverlay {
         &self.pane
     }
 
+    #[cfg(test)]
+    pub fn pane_mut(&mut self) -> &mut RoomActivityPane {
+        &mut self.pane
+    }
+
     pub fn route(
         &mut self,
         event: &WindowEvent,

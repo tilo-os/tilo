@@ -120,6 +120,8 @@ pub struct ActivityFocus {
     pub resource_id: Option<String>,
     /// App-native immutable version identity, retained for detail renderers.
     pub resource_version: Option<[u8; 16]>,
+    /// Exact room-owned task to select in the existing Task Center.
+    pub task_id: Option<String>,
 }
 
 /// A widget the top bar's centre selector can show.

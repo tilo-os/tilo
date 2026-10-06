@@ -6467,6 +6467,7 @@ mod tests {
                 entry_id: None,
                 resource_id: None,
                 resource_version: None,
+                task_id: None,
             }),
         );
         bar.refresh_status_and_media_state();

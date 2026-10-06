@@ -26,7 +26,7 @@ const MAX_FRAME_BYTES: usize = 1024 * 1024;
     clippy::large_enum_variant,
     reason = "events are moved once through a channel; boxing the message would add an allocation per frame"
 )]
-pub enum FloatingServiceEvent {
+pub(crate) enum FloatingServiceEvent {
     Connected {
         connection: u64,
         app_id: String,
@@ -34,12 +34,19 @@ pub enum FloatingServiceEvent {
     Message {
         connection: u64,
         app_id: String,
+        launch: Option<AuthenticatedLaunch>,
         message: FloatingSurfaceClientMessage,
     },
     Disconnected {
         connection: u64,
         app_id: String,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AuthenticatedLaunch {
+    pub(crate) workspace_id: String,
+    pub(crate) custody: crate::shell::launcher::VerifiedLaunchCustody,
 }
 
 #[derive(Deserialize)]
@@ -51,6 +58,7 @@ struct LauncherHandshake {
 pub struct FloatingSurfaceService {
     events: mpsc::Receiver<FloatingServiceEvent>,
     writers: Arc<Mutex<HashMap<u64, mpsc::Sender<Vec<u8>>>>>,
+    workspace_task_requests: Mutex<HashMap<u64, u64>>,
     stop: Arc<std::sync::atomic::AtomicBool>,
     acceptor: Option<std::thread::JoinHandle<()>>,
     path: PathBuf,
@@ -113,13 +121,14 @@ impl FloatingSurfaceService {
         Ok(Self {
             events: event_rx,
             writers,
+            workspace_task_requests: Mutex::new(HashMap::new()),
             stop,
             acceptor: Some(acceptor),
             path,
         })
     }
 
-    pub fn drain(&self) -> Vec<FloatingServiceEvent> {
+    pub(crate) fn drain(&self) -> Vec<FloatingServiceEvent> {
         self.events.try_iter().collect()
     }
 
@@ -140,6 +149,28 @@ impl FloatingSurfaceService {
         let failed = writer.is_some_and(|writer| writer.send(frame).is_err());
         if failed && let Ok(mut writers) = self.writers.lock() {
             writers.remove(&connection);
+        }
+    }
+
+    pub fn admit_workspace_tasks_request(&self, connection: u64, request: u64) -> bool {
+        if request == 0 {
+            return false;
+        }
+        self.workspace_task_requests
+            .lock()
+            .is_ok_and(|mut requests| {
+                let previous = requests.entry(connection).or_default();
+                if request <= *previous {
+                    return false;
+                }
+                *previous = request;
+                true
+            })
+    }
+
+    pub fn retire_connection_requests(&self, connection: u64) {
+        if let Ok(mut requests) = self.workspace_task_requests.lock() {
+            requests.remove(&connection);
         }
     }
 
@@ -205,6 +236,8 @@ fn serve_connection(
     events: mpsc::Sender<FloatingServiceEvent>,
     writers: Arc<Mutex<HashMap<u64, mpsc::Sender<Vec<u8>>>>>,
 ) {
+    let peer_pid = super::native::wayland_peer_credentials(&stream)
+        .and_then(|credentials| u32::try_from(credentials.pid).ok());
     let Ok(mut writer) = stream.try_clone() else {
         return;
     };
@@ -241,6 +274,17 @@ fn serve_connection(
             }
         });
     let app_id = handshake.app_id;
+    let launch = peer_pid
+        .and_then(crate::shell::launcher::verified_launch_custody_for_descendant)
+        .and_then(|(identity, custody)| {
+            (identity.confined && identity.package_id == app_id)
+                .then_some(identity.workspace_id)
+                .flatten()
+                .map(|workspace_id| AuthenticatedLaunch {
+                    workspace_id,
+                    custody,
+                })
+        });
     let _ = events.send(FloatingServiceEvent::Connected {
         connection,
         app_id: app_id.clone(),
@@ -266,6 +310,7 @@ fn serve_connection(
             .send(FloatingServiceEvent::Message {
                 connection,
                 app_id: app_id.clone(),
+                launch: launch.clone(),
                 message,
             })
             .is_err()
@@ -443,8 +488,9 @@ mod tests {
             crate::shell::host_shell_allow::TERMINAL_APP_ID,
         )
         .unwrap();
-        let FloatingServiceEvent::Connected { connection, app_id } =
-            service.events.recv_timeout(Duration::from_secs(2)).unwrap()
+        let FloatingServiceEvent::Connected {
+            connection, app_id, ..
+        } = service.events.recv_timeout(Duration::from_secs(2)).unwrap()
         else {
             panic!("expected authenticated Terminal connection");
         };
@@ -575,6 +621,25 @@ mod tests {
                 "refused launch retained a writer"
             );
         }
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn workspace_task_requests_are_monotonic_per_exact_connection() {
+        let runtime = tempfile::tempdir().expect("temporary runtime");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
+        let service = FloatingSurfaceService::start().expect("start floating service");
+
+        assert!(service.admit_workspace_tasks_request(7, 1));
+        assert!(!service.admit_workspace_tasks_request(7, 1));
+        assert!(!service.admit_workspace_tasks_request(7, 0));
+        assert!(service.admit_workspace_tasks_request(8, 1));
+        service.retire_connection_requests(7);
+        assert!(
+            service.admit_workspace_tasks_request(7, 1),
+            "a new authenticated connection lifetime may start its own sequence"
+        );
     }
 
     #[test]

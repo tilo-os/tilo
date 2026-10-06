@@ -1959,6 +1959,23 @@ mod tests {
         DesktopSurface::new(tree, 7, Box::new(Notices))
     }
 
+    fn escape_press() -> WindowEvent {
+        // SAFETY: winit keeps part of `KeyEvent` private; every public field
+        // accepts the values assigned immediately below.
+        let mut event: ui::winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        event.logical_key = ui::winit::keyboard::Key::Named(ui::winit::keyboard::NamedKey::Escape);
+        event.physical_key = ui::winit::keyboard::PhysicalKey::Unidentified(
+            ui::winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        event.location = ui::winit::keyboard::KeyLocation::Standard;
+        event.state = ui::winit::event::ElementState::Pressed;
+        WindowEvent::KeyboardInput {
+            device_id: ui::winit::event::DeviceId::dummy(),
+            event,
+            is_synthetic: false,
+        }
+    }
+
     #[test]
     fn shared_snapshot_keeps_stream_tab_and_focus_but_applies_real_closes() {
         let (mut surface, handle) = desktop(3);
@@ -2123,6 +2140,28 @@ mod tests {
         ));
         surface.update(&state, &ui::automerge::ROOT);
         assert_eq!(surface.activity.as_ref().unwrap().pane().entries().len(), 2);
+        {
+            let overlay = surface.activity.as_mut().unwrap();
+            overlay.set_view(navigation::ActivityView::Tasks);
+            overlay
+                .pane_mut()
+                .stage_task_instruction_detail_for_route("task:exact");
+            overlay.route(
+                &WindowEvent::CursorMoved {
+                    device_id: ui::winit::event::DeviceId::dummy(),
+                    position: PhysicalPosition::new(-40.0, -40.0),
+                },
+                1.0,
+                ui::winit::event::Modifiers::default(),
+            );
+            overlay.route(&escape_press(), 1.0, ui::winit::event::Modifiers::default());
+            assert!(!overlay.take_exit().dismissed);
+            assert!(
+                overlay
+                    .pane()
+                    .task_instruction_preview_is_focused("task:exact")
+            );
+        }
         handle
             .dispatch(
                 &Command::CloseWorkspaceActivity {

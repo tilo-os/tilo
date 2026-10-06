@@ -3146,6 +3146,62 @@ impl FrameBuilder {
         visible.next().is_none().then_some(source)
     }
 
+    /// Every currently painted primary surface for an app in one exact room.
+    /// Callers which hold stronger process custody can filter this list
+    /// without falling back to app-id ambiguity.
+    pub(crate) fn foreign_surfaces_for_app_room(
+        &mut self,
+        app_id: &str,
+        room: &str,
+    ) -> Vec<(u64, vello::kurbo::Rect)> {
+        let candidates = {
+            let tree = self.chrome.borrow();
+            tree.tree()
+                .desktop
+                .workspaces
+                .iter()
+                .filter(|workspace| workspace.room.to_string() == room)
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .filter_map(|tab| match &tab.tile {
+                    crate::shell::state::TileContent::Foreign {
+                        app_id: candidate,
+                        surface_id,
+                    } if candidate == app_id => Some(*surface_id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        candidates
+            .into_iter()
+            .filter_map(|surface| {
+                self.host
+                    .foreign_surface_rect(surface)
+                    .map(|rect| (surface, rect))
+            })
+            .collect()
+    }
+
+    pub(crate) fn open_workspace_tasks(&mut self, task_id: Option<String>) {
+        self.chrome.borrow_mut().open_room_activity(Some(
+            crate::shell::chrome_state::ActivityFocus {
+                task_id,
+                ..crate::shell::chrome_state::ActivityFocus::default()
+            },
+        ));
+    }
+
+    pub(crate) fn active_workspace_room(&self) -> Option<String> {
+        let state = self.chrome.borrow();
+        let tree = state.tree();
+        tree.desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == tree.desktop.active)
+            .map(|workspace| workspace.room.to_string())
+    }
+
     /// Resolve one exact activated surface, refusing a same-app sibling in a
     /// different room. This is the deferred navigation counterpart to the
     /// compositor's one-shot input custody.

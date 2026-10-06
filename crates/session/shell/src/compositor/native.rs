@@ -906,8 +906,10 @@ fn public_client_state(stream: &UnixStream) -> Option<Arc<ClientState>> {
     if credentials.uid != unsafe { libc::geteuid() } {
         return None;
     }
-    if let Some(identity) = crate::shell::launcher::verified_launch_for_descendant(pid) {
-        return Some(ClientState::attributed_arc(identity, pid));
+    if let Some((identity, custody)) =
+        crate::shell::launcher::verified_launch_custody_for_descendant(pid)
+    {
+        return Some(ClientState::attributed_arc(identity, Some(custody), pid));
     }
     unattributed_host_client_allowed(credentials.uid, peer_shares_host_security_namespaces(pid))
         .then(|| {
@@ -1370,7 +1372,9 @@ fn pump_floating_surface_service(
     let mut changed = false;
     for event in service.drain() {
         match event {
-            FloatingServiceEvent::Connected { connection, app_id } => {
+            FloatingServiceEvent::Connected {
+                connection, app_id, ..
+            } => {
                 appearance.connected(connection, &app_id);
                 if app_id == crate::shell::host_shell_allow::TERMINAL_APP_ID
                     && let Some(writer) = service.reply_writer(connection)
@@ -1390,6 +1394,7 @@ fn pump_floating_surface_service(
             FloatingServiceEvent::Message {
                 connection,
                 app_id,
+                launch,
                 message,
             } => match message {
                 ui::floating_surface::FloatingSurfaceClientMessage::DeviceShellOutcome {
@@ -1418,6 +1423,62 @@ fn pump_floating_surface_service(
                             },
                         );
                     }
+                    changed = true;
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::ShowWorkspaceTasks {
+                    request,
+                    task_id,
+                    source,
+                } => {
+                    let task_is_bounded = task_id
+                        .as_deref()
+                        .is_none_or(|id| !id.trim().is_empty() && id.len() <= 512);
+                    let opened = launch.as_ref().is_some_and(|launch| {
+                        let custody_is_current =
+                            crate::shell::launcher::launch_custody_is_current(
+                                launch.custody,
+                                &app_id,
+                                &launch.workspace_id,
+                            );
+                        let room_is_active = frame_builder.active_workspace_room().as_deref()
+                            == Some(launch.workspace_id.as_str());
+                        let source_is_current = match &source {
+                            ui::floating_surface::WorkspaceTasksSource::Primary => {
+                                let mut owned = frame_builder
+                                    .foreign_surfaces_for_app_room(&app_id, &launch.workspace_id)
+                                    .into_iter()
+                                    .filter(|(surface, _)| {
+                                        state.surface_launch_custody(*surface)
+                                            == Some(launch.custody)
+                                    });
+                                owned.next().is_some() && owned.next().is_none()
+                            }
+                            ui::floating_surface::WorkspaceTasksSource::Floating { id } => state
+                                .floating_toplevels
+                                .iter()
+                                .any(|surface| {
+                                    surface.connection == connection
+                                        && surface.public_id == *id
+                                        && !surface.suspended
+                                        && surface.presented
+                                }),
+                        };
+                        custody_is_current
+                            && room_is_active
+                            && source_is_current
+                            && task_is_bounded
+                            && service.admit_workspace_tasks_request(connection, request)
+                    });
+                    if opened {
+                        frame_builder.open_workspace_tasks(task_id);
+                    }
+                    service.send(
+                        connection,
+                        &ui::floating_surface::FloatingSurfaceHostMessage::WorkspaceTasksOutcome {
+                            request,
+                            opened,
+                        },
+                    );
                     changed = true;
                 }
                 ui::floating_surface::FloatingSurfaceClientMessage::OpenAgentQuickComposer {
@@ -1880,6 +1941,7 @@ fn pump_floating_surface_service(
                 }
             },
             FloatingServiceEvent::Disconnected { connection, app_id } => {
+                service.retire_connection_requests(connection);
                 frame_builder
                     .host_mut()
                     .disconnect_native_terminal(connection);

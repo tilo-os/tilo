@@ -107,6 +107,17 @@ pub enum AppHostIntent {
         /// an empty resource lens while the durable indexes converge.
         entry: Option<crate::widget::HistoryEntry>,
     },
+    /// Open the existing tiled Task Center, optionally selecting one exact
+    /// room-owned task. This carries navigation only; task mutation remains
+    /// behind the owner's admitted task commands.
+    ShowWorkspaceTasks {
+        task_id: Option<String>,
+        /// Native secondary surface which produced the request. Embedded
+        /// hosts ignore this hint and bind navigation to their source tab;
+        /// the native compositor verifies it against the authenticated
+        /// connection before use.
+        source_surface: Option<String>,
+    },
     /// Open the platform search scoped to this app (or one part of it), with
     /// the query already typed. The shell focuses the source tab first.
     OpenSearch(crate::search::SearchRequest),
@@ -145,6 +156,16 @@ impl PartialEq for AppHostIntent {
                     && left_version == right_version
                     && left_entry == right_entry
             }
+            (
+                Self::ShowWorkspaceTasks {
+                    task_id: left,
+                    source_surface: left_source,
+                },
+                Self::ShowWorkspaceTasks {
+                    task_id: right,
+                    source_surface: right_source,
+                },
+            ) => left == right && left_source == right_source,
             (
                 Self::OpenDocument {
                     path: left_path,

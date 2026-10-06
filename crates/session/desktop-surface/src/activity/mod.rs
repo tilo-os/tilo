@@ -203,6 +203,7 @@ pub struct ActivityDeepLink {
     pub entry_id: Option<[u8; 16]>,
     pub resource_id: Option<String>,
     pub resource_version: Option<[u8; 16]>,
+    pub task_id: Option<String>,
 }
 #[derive(Clone, Debug)]
 pub struct AgentLaunchEvent {

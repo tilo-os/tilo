@@ -176,6 +176,14 @@ pub enum FloatingSurfaceClientMessage {
     },
     /// Terminal asks for the existing host-shell permission prompt.
     AllowHostShell,
+    /// Open the existing workspace Task Center from the exact native surface
+    /// which produced this one-shot request. `source` is only a hint: the
+    /// compositor verifies it against this authenticated connection.
+    ShowWorkspaceTasks {
+        request: u64,
+        task_id: Option<String>,
+        source: WorkspaceTasksSource,
+    },
     /// Claim that an Agent marker was activated. This untrusted payload is
     /// only a navigation hint: the shell must consume compositor-owned input,
     /// derive the room from the exact source surface, and freshly resolve the
@@ -342,6 +350,12 @@ pub enum FloatingSurfaceHostMessage {
     HostShellAllowed {
         allowed: bool,
     },
+    /// Bounded acknowledgement of one Task Center navigation request. A
+    /// refusal leaves app content in place and must not be replayed.
+    WorkspaceTasksOutcome {
+        request: u64,
+        opened: bool,
+    },
     DesktopBounds {
         bounds: [f64; 4],
     },
@@ -398,6 +412,13 @@ pub enum FloatingSurfaceHostMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         your_colour: Option<String>,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorkspaceTasksSource {
+    Primary,
+    Floating { id: String },
 }
 
 impl FloatingSurfaceHostMessage {
@@ -1935,6 +1956,13 @@ mod tests {
             );
 
             for message in [
+                FloatingSurfaceClientMessage::ShowWorkspaceTasks {
+                    request: 7,
+                    task_id: Some("task-7".into()),
+                    source: WorkspaceTasksSource::Floating {
+                        id: "agent:scribe".into(),
+                    },
+                },
                 FloatingSurfaceClientMessage::OpenCaptureStudio {
                     mode: CaptureStudioProtocolMode::PictureInPicture,
                 },
@@ -1953,6 +1981,15 @@ mod tests {
                     message
                 );
             }
+            let outcome = FloatingSurfaceHostMessage::WorkspaceTasksOutcome {
+                request: 7,
+                opened: false,
+            };
+            let json = serde_json::to_string(&outcome).unwrap();
+            assert_eq!(
+                serde_json::from_str::<FloatingSurfaceHostMessage>(&json).unwrap(),
+                outcome
+            );
             let suspended = FloatingSurfaceHostMessage::Suspended { id: "call".into() };
             let json = serde_json::to_string(&suspended).unwrap();
             assert_eq!(

@@ -319,6 +319,7 @@ impl RoomActivityPane {
                 entry_id: focus.entry_id,
                 resource_id: focus.resource_id,
                 resource_version: focus.resource_version,
+                task_id: focus.task_id,
             });
     }
     pub fn observe_agent_launch_event(
