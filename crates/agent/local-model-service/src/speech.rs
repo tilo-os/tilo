@@ -82,6 +82,16 @@ pub fn speech_model_bytes(
         return Err(SpeechError::ModelReceipt);
     }
     let mut bytes = Zeroizing::new(Vec::new());
+    // A signed, bounded receipt gives the exact allocation size. Geometric
+    // read_to_end growth can double a large model buffer and exhaust the
+    // worker's address-space budget before the native loader is ready.
+    bytes
+        .try_reserve_exact(
+            usize::try_from(release.artifact.size_bytes)
+                .map_err(|_| SpeechError::ModelReceipt)?
+                .saturating_add(1),
+        )
+        .map_err(|_| SpeechError::ModelUnavailable)?;
     (&mut file)
         .take(release.artifact.size_bytes.saturating_add(1))
         .read_to_end(&mut bytes)

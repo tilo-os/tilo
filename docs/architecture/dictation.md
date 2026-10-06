@@ -377,7 +377,8 @@ After the candidate is qualified, the concrete release work is:
 
 1. Review `dist/local-models/catalog-source-speech-candidate.json`, the retained
    MIT notice, model receipt, CPU source receipt and public-audio qualification.
-   Non-English recognition quality and older-device timings still need evidence.
+   Public multilingual results below are insufficient for approving this model
+   as an everyday dictation default; older-device timings also remain untested.
 2. Extend the existing protected `release-local-model-catalog.yml` allowlist to
    these **two exact** models, retaining `runtimes: []`, empty chat recommendation,
    immutable URLs, receipt checks and the existing trust key. General arbitrary
@@ -398,3 +399,78 @@ Nothing in this work dispatches the publisher, publishes artifacts, modifies the
 production catalogue, installs a model or approves microphone access. The pending
 operator decision is approval of this exact reviewed release and its later image
 qualification, not a vague grant of model or account access.
+
+The supported publisher already owns `TILO_MODEL_CATALOG_SIGNING_KEY` and
+`RELEASE_TOKEN`, and retains the existing `tilo-local-model-release-2026-10`
+public key. It requires neither a new trust key nor a new account permission.
+Today it permits only U²-Net and publishes catalogue/key bytes, so it cannot
+publish speech unchanged. The exact two-model allowlist, receipt-checked weight
+and notice publication, and first signed-candidate review must be implemented
+before the unchanged reproduction gate can publish new image inputs. Review
+signing must produce an artifact for review first, followed by committing and
+reproducing those signed bytes; removing the comparison is not that workflow.
+The current draft/hold and explicit no-merge/no-deploy scope prohibit dispatching
+this protected-main release during this task. Microphone consent is a separate
+one-session decision after installation; it is not a prerequisite for reviewing
+or releasing the licensed model. Recognition quality is the current model
+selection blocker, rather than missing account or signing access.
+
+## Public multilingual and long-speech qualification
+
+`tools/release/prepare_speech_benchmark.py` stages pinned Google FLEURS test
+audio (CC-BY-4.0, Google FLEURS authors) and receipt-verified MIT models on a
+build machine. It streams a bounded archive prefix without extracting paths,
+rejects insecure redirects, and records original and PCM16-derived receipts.
+`speech_benchmark` runs the production CPU decoder after the same worker
+preparation and full confinement. Three first archive utterances per language
+are scored without recognition-based selection. English, French and Mandarin
+also have unique 70–90 second splices. These are artificial read-speech probes,
+not conversational or population benchmarks. Reproduce with:
+
+```sh
+python3 tools/release/prepare_speech_benchmark.py target/speech-benchmark
+cargo run --locked -p local-model-service --example speech_benchmark -- \
+  --manifest target/speech-benchmark/manifest.json --model tiny > target/tiny.log
+cargo run --locked -p local-model-service --example speech_benchmark -- \
+  --manifest target/speech-benchmark/manifest.json --model base > target/base.log
+python3 tools/release/summarize_speech_benchmark.py target/tiny.log target/base.log
+```
+
+The qualification runs on a build machine with no microphone or model install.
+Results and per-fixture provenance are in `dictation-speech-benchmark.json`.
+Normalization is NFKC/casefold and punctuation/whitespace cleanup only. It does
+not hide number, accent or Chinese script errors. Mandarin uses CER because
+space-token WER is not meaningful; Simplified/Traditional differences count.
+
+| Three short probes | Tiny WER | Base WER |
+| --- | ---: | ---: |
+| English | 16.44% | 10.96% |
+| German | 27.42% | 20.97% |
+| French | 36.70% | 26.61% |
+| Spanish | 16.67% | 9.80% |
+| Arabic | 59.42% | 42.03% |
+| Mandarin CER | 24.69% | 33.33% |
+
+On this remote x86_64 machine, base's median final pass was 1.17–1.33 seconds
+per short language group; auto language took approximately another second.
+These exclude cold loading and capture completion. Draft revision scores align
+a five-second draft to the best final prefix, allowing appended words; they
+measure decoder revisions, not human correction effort. Older CPU and ARM
+timings, natural conversation, noise and accents remain unqualified.
+
+Long English WER was 66.03% (tiny) and 64.74% (base), with substantial omissions;
+French was 53.45%/40.09%, and Mandarin CER 49.02%/42.75%. Globally disabling
+timestamp prediction still omitted English text and worsened French and Mandarin,
+so that experiment was discarded. Both current models fail the quality goal.
+Base is retained as a tested stronger tier candidate, not universally preferred
+or approved as a default. Tiny is an initial lightweight review candidate, not
+proof of Wispr Flow parity.
+
+The pinned multilingual small-q5_1 model (190,085,487 bytes) was also verified
+and tried. It failed native allocation under the unchanged 1 GiB address-space
+limit before decoding. No accuracy claim is made and no limit was raised. A
+future stronger tier needs bounded memory planning and separate device evidence.
+Base initially failed loading with geometric model-buffer growth; reserving the
+exact signed receipt size plus one overflow byte allowed it to load and finish
+all 21 probes under the existing limit. The signed-store qualification separately
+asserts the production loader's bounded capacity, preserving receipt validation.
