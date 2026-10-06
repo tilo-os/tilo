@@ -282,6 +282,10 @@ pub trait Decorator {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
+    fn observe_physical_input(&mut self, input: super::PhysicalInput) {
+        self.inner_mut().observe_physical_input(input);
+    }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         self.inner_mut().handle_event(event, ctx);
     }
@@ -892,6 +896,10 @@ impl<T: Decorator + 'static> Widget for T {
         presence: &PresenceCtx,
     ) {
         Decorator::draw(self, scene, transform, text_renderer, theme, presence);
+    }
+
+    fn observe_physical_input(&mut self, input: super::PhysicalInput) {
+        Decorator::observe_physical_input(self, input);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
