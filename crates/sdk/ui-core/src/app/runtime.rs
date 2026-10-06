@@ -81,6 +81,20 @@ pub(super) struct InputRuntime {
     /// The app is shown inside a host whose focus order continues past it:
     /// Tab at either end of the app's order leaves it for the host.
     pub(super) tab_order_continues_in_host: bool,
+    /// Last primary-surface pointer in logical pixels. Mouse button events do
+    /// not carry coordinates, so the marker gesture reuses the preceding
+    /// platform `CursorMoved` just like retained controls do.
+    pub(super) agent_marker_cursor: Option<vello::kurbo::Point>,
+    /// A marker owns its press through release. This is presentation custody,
+    /// never an action/caller token.
+    pub(super) agent_marker_press: Option<AgentMarkerPress>,
+}
+
+#[derive(Clone)]
+pub(super) struct AgentMarkerPress {
+    pub(super) surface: String,
+    pub(super) viewport: vello::kurbo::Rect,
+    pub(super) targets: Vec<crate::presence::AgentMarkerTarget>,
 }
 
 impl InputRuntime {
@@ -94,6 +108,8 @@ impl InputRuntime {
             tooltip_host: crate::widget::TooltipHost::new(),
             pen: crate::pen::PenInput::default(),
             tab_order_continues_in_host: false,
+            agent_marker_cursor: None,
+            agent_marker_press: None,
         }
     }
 }
@@ -410,6 +426,13 @@ pub(super) struct WindowRuntime {
     pub(super) fullscreen_active: bool,
     pub(super) title: Option<String>,
     pub(super) app_id: Option<String>,
+    /// Exact logical coordinate space used by the last primary action-marker
+    /// paint. Input and accessibility must address this same surface/frame.
+    pub(super) agent_marker_surface: Option<String>,
+    pub(super) agent_marker_viewport: Option<vello::kurbo::Rect>,
+    /// One-shot host navigation, minted only by central input/accessibility.
+    pub(super) pending_agent_navigation:
+        Option<crate::floating_surface::AgentConversationNavigation>,
 }
 
 impl WindowRuntime {
@@ -419,6 +442,9 @@ impl WindowRuntime {
             fullscreen_active: false,
             title: None,
             app_id: None,
+            agent_marker_surface: None,
+            agent_marker_viewport: None,
+            pending_agent_navigation: None,
         }
     }
 }

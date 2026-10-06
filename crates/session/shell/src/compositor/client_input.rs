@@ -1569,6 +1569,13 @@ fn route_mouse_input(
         || (matches!(state.client_input.grab, Some(PointerOwner::Client(_)))
             && state.client_input.pointer_focus.is_some())
         || (chrome_drag && !pressed);
+    let navigation_release =
+        (!pressed && button == MouseButton::Left && state.client_input.participant.is_none())
+            .then_some(match state.client_input.grab {
+                Some(PointerOwner::Client(surface)) => Some(surface),
+                _ => None,
+            })
+            .flatten();
     let consumed = if to_client {
         match evdev_button(button) {
             Some(code) => {
@@ -1587,6 +1594,12 @@ fn route_mouse_input(
     } else {
         false
     };
+    if consumed
+        && !chrome_drag
+        && let Some(surface) = navigation_release
+    {
+        state.note_agent_navigation_pointer_activation(surface, state.client_input.cursor());
+    }
     if state.client_input.buttons_down == 0 {
         state.client_input.grab = None;
         if !pressed {

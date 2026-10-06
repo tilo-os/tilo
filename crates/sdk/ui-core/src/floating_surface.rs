@@ -172,6 +172,13 @@ pub enum FloatingSurfaceClientMessage {
     },
     /// Terminal asks for the existing host-shell permission prompt.
     AllowHostShell,
+    /// Claim that an Agent marker was activated. This untrusted payload is
+    /// only a navigation hint: the shell must consume compositor-owned input,
+    /// derive the room from the exact source surface, and freshly resolve the
+    /// non-mutating Chat View. It conveys no app grant or caller authority.
+    OpenAgentConversation {
+        request: AgentConversationNavigation,
+    },
     /// Ask the trusted session shell to show its ordinary user-confirmed
     /// chooser. This shares the same authenticated channel as floating
     /// surfaces so a separately hosted app and an embedded app have identical
@@ -260,6 +267,25 @@ pub enum FloatingSurfaceClientMessage {
         background: bool,
         instance: Option<u64>,
     },
+}
+
+/// Bounded descriptive target for shell-owned Agent conversation navigation.
+/// A sandboxed app can forge every field on this wire. The shell therefore
+/// treats it only as a hint after consuming its own one-shot physical-input
+/// custody and independently rechecking surface, room, roster and action.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AgentConversationNavigation {
+    pub targets: Vec<AgentConversationNavigationTarget>,
+    /// Source-local logical bounds of the marker(s), used only to place the
+    /// shared chooser/conversation presentation.
+    pub anchor: [f64; 4],
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AgentConversationNavigationTarget {
+    pub agent: String,
+    pub actor: crate::UserId,
+    pub invocation: tilo_actions::InvocationId,
 }
 
 /// Owner-only operations on Terminal's existing device-shell PTY.

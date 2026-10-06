@@ -1723,6 +1723,12 @@ impl AppHandler {
             &app.theme,
             &app.presence_ctx,
         );
+        // Floating action presence is not projected yet, but an earlier frame
+        // under this logical surface must never remain clickable after redraw.
+        let marker_surface = app
+            .presence_ctx
+            .agent_marker_surface_key(&format!("floating:{}", surface.id));
+        app.presence_ctx.clear_agent_marker_surface(&marker_surface);
         if let Some(adapter) = surface.a11y_adapter.as_mut() {
             adapter.update_if_active(|| {
                 let access = app.root_widget.floating_surface_accessibility(&surface.id);
@@ -2199,6 +2205,9 @@ impl AppHandler {
             })
             .unwrap_or_default()
         };
+        let marker_surface = app.presence_ctx.agent_marker_surface_key("primary");
+        app.window.agent_marker_surface = Some(marker_surface.clone());
+        app.window.agent_marker_viewport = Some(window_rect);
         crate::action_locus::draw_action_presence(
             &mut crate::paint::PaintCtx::new(
                 &mut scene,
@@ -2210,7 +2219,7 @@ impl AppHandler {
             &app.accessibility.semantic_tree,
             &bindings,
             window_rect,
-            app.window.app_id.as_deref().unwrap_or("native-primary"),
+            &marker_surface,
             interaction_now,
         );
 

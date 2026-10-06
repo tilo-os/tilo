@@ -230,6 +230,14 @@ impl App {
         let modal_rect = app.root_widget.modal_capture();
 
         if !handled
+            && modal_rect.is_none()
+            && !synthesized_touch
+            && app.handle_agent_marker_gesture(&event, window.scale_factor())
+        {
+            handled = true;
+        }
+
+        if !handled
             && let WindowEvent::KeyboardInput {
                 event:
                     winit::event::KeyEvent {
@@ -616,6 +624,108 @@ impl App {
     /// the app, so Tab at either end of the app's order leaves the app.
     pub fn set_tab_order_continues_in_host(&mut self, continues: bool) {
         self.input.tab_order_continues_in_host = continues;
+    }
+
+    fn handle_agent_marker_gesture(&mut self, event: &WindowEvent, scale: f64) -> bool {
+        use crate::presence::AgentMarkerHit;
+        use winit::event::MouseButton;
+
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.input.agent_marker_cursor =
+                Some(Point::new(position.x / scale, position.y / scale));
+            return false;
+        }
+        if matches!(event, WindowEvent::CursorLeft { .. }) {
+            self.input.agent_marker_cursor = None;
+            return self.input.agent_marker_press.take().is_some();
+        }
+        let WindowEvent::MouseInput {
+            state,
+            button: MouseButton::Left,
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let Some(point) = self.input.agent_marker_cursor else {
+            self.input.agent_marker_press = None;
+            return false;
+        };
+        let (Some(surface), Some(viewport)) = (
+            self.window.agent_marker_surface.clone(),
+            self.window.agent_marker_viewport,
+        ) else {
+            self.input.agent_marker_press = None;
+            return false;
+        };
+        let hit = self
+            .presence_ctx
+            .hit_agent_marker(&surface, viewport, point, crate::time::now());
+        match state {
+            ElementState::Pressed => match hit {
+                AgentMarkerHit::Miss => {
+                    self.input.agent_marker_press = None;
+                    false
+                }
+                AgentMarkerHit::Stale => {
+                    self.input.agent_marker_press = Some(super::runtime::AgentMarkerPress {
+                        surface,
+                        viewport,
+                        targets: Vec::new(),
+                    });
+                    true
+                }
+                AgentMarkerHit::Targets(targets) => {
+                    self.input.agent_marker_press = Some(super::runtime::AgentMarkerPress {
+                        surface,
+                        viewport,
+                        targets,
+                    });
+                    true
+                }
+            },
+            ElementState::Released => {
+                let Some(pressed) = self.input.agent_marker_press.take() else {
+                    return !matches!(hit, AgentMarkerHit::Miss);
+                };
+                let AgentMarkerHit::Targets(targets) = hit else {
+                    return true;
+                };
+                if pressed.surface != surface
+                    || pressed.viewport != viewport
+                    || pressed.targets.len() != targets.len()
+                    || !pressed.targets.iter().zip(&targets).all(|(left, right)| {
+                        left.actor == right.actor
+                            && left.agent_id == right.agent_id
+                            && left.invocation == right.invocation
+                    })
+                {
+                    return true;
+                }
+                let Some(anchor) = targets
+                    .iter()
+                    .map(|target| target.bounds)
+                    .reduce(|left, right| left.union(right))
+                else {
+                    return true;
+                };
+                self.window.pending_agent_navigation =
+                    Some(crate::floating_surface::AgentConversationNavigation {
+                        targets: targets
+                            .into_iter()
+                            .map(|target| {
+                                crate::floating_surface::AgentConversationNavigationTarget {
+                                    agent: target.agent_id,
+                                    actor: target.actor,
+                                    invocation: target.invocation,
+                                }
+                            })
+                            .collect(),
+                        anchor: [anchor.x0, anchor.y0, anchor.x1, anchor.y1],
+                    });
+                true
+            }
+        }
     }
 
     /// Focus the first control of the app's order, or the last with `last`:

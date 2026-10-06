@@ -589,11 +589,13 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
                     .room_names
                     .get(&actor)
                     .map_or(agent.as_str(), String::as_str);
-                LiveRow::new(format!("chat.person:{agent}"), "chat.agent", label).effect(
-                    &ChatEffect::OpenAgentConversation {
+                LiveRow::new(format!("chat.person:{agent}"), "chat.agent", label).operation(
+                    ChatEffect::OpenAgentConversation {
                         workspace: self.context_ws.clone(),
                         agent: agent.clone(),
-                    },
+                    }
+                    .bound()
+                    .launchable_when_closed(),
                 )
             })
             .collect()
@@ -1042,6 +1044,15 @@ mod tests {
                 .as_deref(),
             Some("tide"),
             "the mounted published View action opens the same direct conversation"
+        );
+        let open = on_agent
+            .iter()
+            .find(|action| action.address.action == "open-agent-conversation")
+            .expect("authenticated Agent has one semantic View");
+        assert_eq!(
+            open.contract.discovery,
+            ui::tilo_actions::DiscoveryScope::Launchable,
+            "a cold Chat launch must republish and re-admit this exact current Agent View"
         );
 
         let invocation = app

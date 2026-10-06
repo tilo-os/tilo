@@ -3030,30 +3030,79 @@ impl FrameBuilder {
     /// the first currently visible active tab rather than an off-screen/stale
     /// sibling.
     pub fn foreign_surface_for_app(&mut self, app_id: &str) -> Option<(u64, vello::kurbo::Rect)> {
-        let surface_ids: Vec<u64> = {
+        self.foreign_surface_with_room_for_app(app_id)
+            .map(|(surface, rect, _)| (surface, rect))
+    }
+
+    /// Resolve the visible foreign surface and the room which owns its tab.
+    /// The room is captured from the same tree entry as the surface instead
+    /// of from whichever workspace happens to be active when a deferred
+    /// request arrives.
+    pub fn foreign_surface_with_room_for_app(
+        &mut self,
+        app_id: &str,
+    ) -> Option<(u64, vello::kurbo::Rect, String)> {
+        let surfaces: Vec<(u64, String)> = {
             let tree = self.chrome.borrow();
             tree.tree()
                 .desktop
                 .workspaces
                 .iter()
-                .flat_map(|workspace| &workspace.strips)
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
-                .filter_map(|tab| match &tab.tile {
-                    crate::shell::state::TileContent::Foreign {
-                        app_id: candidate,
-                        surface_id,
-                    } if candidate == app_id => Some(*surface_id),
-                    _ => None,
+                .flat_map(|workspace| {
+                    workspace.strips.iter().flat_map(move |strip| {
+                        strip.window_groups.iter().flat_map(move |group| {
+                            group.tabs.iter().filter_map(move |tab| match &tab.tile {
+                                crate::shell::state::TileContent::Foreign {
+                                    app_id: candidate,
+                                    surface_id,
+                                } if candidate == app_id => {
+                                    Some((*surface_id, workspace.room.to_string()))
+                                }
+                                _ => None,
+                            })
+                        })
+                    })
                 })
                 .collect()
         };
-        for surface_id in surface_ids {
+        for (surface_id, room) in surfaces {
             if let Some(rect) = self.host.foreign_surface_rect(surface_id) {
-                return Some((surface_id, rect));
+                return Some((surface_id, rect, room));
             }
         }
         None
+    }
+
+    /// Resolve one exact activated surface, refusing a same-app sibling in a
+    /// different room. This is the deferred navigation counterpart to the
+    /// compositor's one-shot input custody.
+    pub fn foreign_surface_with_room_for_app_surface(
+        &mut self,
+        app_id: &str,
+        activated_surface: u64,
+    ) -> Option<(u64, vello::kurbo::Rect, String)> {
+        let room = {
+            let tree = self.chrome.borrow();
+            tree.tree().desktop.workspaces.iter().find_map(|workspace| {
+                workspace
+                    .strips
+                    .iter()
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                    .find_map(|tab| match &tab.tile {
+                        crate::shell::state::TileContent::Foreign {
+                            app_id: candidate,
+                            surface_id,
+                        } if candidate == app_id && *surface_id == activated_surface => {
+                            Some(workspace.room.to_string())
+                        }
+                        _ => None,
+                    })
+            })
+        }?;
+        self.host
+            .foreign_surface_rect(activated_surface)
+            .map(|rect| (activated_surface, rect, room))
     }
 
     /// Install/remove the trusted keyboard mirror and anchor it to the output

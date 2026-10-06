@@ -271,6 +271,8 @@ impl App {
     #[cfg(feature = "native")]
     fn drain_unhosted_floating_requests(&mut self) -> bool {
         let mut changed = false;
+        // A local gesture is never replayed into a shell connected later.
+        changed |= self.window.pending_agent_navigation.take().is_some();
         if let Some(reply) = self
             .take_native_host_shell_allow()
             .and_then(|reply| reply.upgrade())
@@ -307,6 +309,14 @@ impl App {
         client: &mut FloatingSurfaceServiceClient,
         changed: &mut bool,
     ) -> Result<(), String> {
+        if let Some(request) = self.window.pending_agent_navigation.take() {
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::OpenAgentConversation {
+                    request,
+                },
+            )?;
+            *changed = true;
+        }
         if let Some(reply) = self.take_native_host_shell_allow() {
             self.floating.host_shell_allow = Some(reply);
             *changed = true;

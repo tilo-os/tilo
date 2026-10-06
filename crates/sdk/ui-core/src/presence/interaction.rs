@@ -114,6 +114,55 @@ pub struct InteractionCardPlacement {
 }
 
 impl PresenceCtx {
+    /// Stable logical key for one presentation owned by this app instance.
+    /// Attached and detached presentations must never share marker geometry.
+    pub fn agent_marker_surface_key(&self, presentation: &str) -> String {
+        let owner = self.surface.as_deref().unwrap_or("unbound-surface");
+        format!("{owner}/{presentation}")
+    }
+
+    /// Current authenticated targets actually painted on `surface`.
+    /// Accessibility uses this exact set rather than inferring geometry from
+    /// semantic action metadata.
+    pub fn agent_marker_targets(&self, surface: &str, now: Instant) -> Vec<AgentMarkerTarget> {
+        let mut targets = self
+            .painted_agent_markers
+            .get(surface)
+            .into_iter()
+            .flat_map(|markers| markers.iter())
+            .filter_map(|(actor, marker)| {
+                let agent = self.authenticated_agent_id(actor)?;
+                (self
+                    .newest_agent_entry(&actor.0, now)
+                    .is_some_and(|entry| entry.interaction.invocation == marker.invocation))
+                .then(|| AgentMarkerTarget {
+                    actor: actor.clone(),
+                    agent_id: agent.into(),
+                    invocation: marker.invocation,
+                    bounds: marker.bounds,
+                })
+            })
+            .collect::<Vec<_>>();
+        targets.sort_by(|left, right| left.actor.0.cmp(&right.actor.0));
+        targets
+    }
+
+    /// Whether `invocation` is still the newest live interaction for this
+    /// exact currently authenticated Agent actor. Hosts use this to reject a
+    /// delayed marker request after roster withdrawal or action replacement;
+    /// it grants no action authority by itself.
+    pub fn is_current_agent_interaction(
+        &self,
+        actor: &UserId,
+        invocation: InvocationId,
+        now: Instant,
+    ) -> bool {
+        self.authenticated_agent_id(actor).is_some()
+            && self
+                .newest_agent_entry(&actor.0, now)
+                .is_some_and(|entry| entry.interaction.invocation == invocation)
+    }
+
     /// Retire a surface's previous hit regions before drawing its next frame,
     /// including empty frames. Also call this when that surface is destroyed.
     /// Pointer/caret presence and motion continuity remain untouched.
@@ -1199,6 +1248,48 @@ mod tests {
             ),
             AgentMarkerHit::Stale
         );
+    }
+
+    #[test]
+    fn marker_navigation_correlation_expires_on_replacement_or_roster_withdrawal() {
+        let now = crate::time::now();
+        let mut presence = PresenceCtx::empty();
+        admit_agents(&mut presence, &["quill"]);
+        let first = canonical_interaction(301, "quill");
+        presence.apply_interaction_at(first.clone(), now).unwrap();
+        assert!(presence.is_current_agent_interaction(
+            &UserId("agent:quill".into()),
+            first.invocation,
+            now,
+        ));
+
+        let replacement = canonical_interaction(302, "quill");
+        presence
+            .apply_interaction_at(replacement.clone(), now + Duration::from_millis(1))
+            .unwrap();
+        assert!(!presence.is_current_agent_interaction(
+            &UserId("agent:quill".into()),
+            first.invocation,
+            now + Duration::from_millis(1),
+        ));
+        assert!(presence.is_current_agent_interaction(
+            &UserId("agent:quill".into()),
+            replacement.invocation,
+            now + Duration::from_millis(1),
+        ));
+
+        presence.apply_collaboration_snapshot(&[crate::collaboration::Collaborator {
+            id: "person:viewer".into(),
+            name: "Viewer".into(),
+            colour: None,
+            is_agent: false,
+            is_self: true,
+        }]);
+        assert!(!presence.is_current_agent_interaction(
+            &UserId("agent:quill".into()),
+            replacement.invocation,
+            now + Duration::from_millis(1),
+        ));
     }
 
     #[test]

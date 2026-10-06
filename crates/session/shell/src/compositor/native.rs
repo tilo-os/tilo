@@ -1136,6 +1136,18 @@ fn app_local_to_desktop(rect: Rect, app_rect: Rect) -> Rect {
     rect + app_rect.origin().to_vec2()
 }
 
+fn valid_agent_navigation_request(
+    request: &ui::floating_surface::AgentConversationNavigation,
+) -> bool {
+    !request.targets.is_empty()
+        && request.targets.len() <= 8
+        && request.anchor.iter().all(|value| value.is_finite())
+        && request.anchor[2] > request.anchor[0]
+        && request.anchor[3] > request.anchor[1]
+        && request.anchor[2] - request.anchor[0] <= 32.0
+        && request.anchor[3] - request.anchor[1] <= 32.0
+}
+
 /// Serve the authenticated, workspace-scoped chooser connection alongside
 /// any desktop portal. Legacy runtimes may use this connection for documents
 /// while using the filtered session bus for notifications. `attended` says whether an
@@ -1280,6 +1292,70 @@ fn pump_floating_surface_service(
                         );
                     }
                     changed = true;
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::OpenAgentConversation {
+                    request,
+                } => {
+                    let bounded = valid_agent_navigation_request(&request);
+                    let source = state
+                        .agent_navigation_activation_surface()
+                        .and_then(|surface| {
+                            frame_builder
+                                .foreign_surface_with_room_for_app_surface(&app_id, surface)
+                        });
+                    let activated = if bounded {
+                        source.as_ref().is_some_and(|(surface, app_rect, _)| {
+                            let marker = app_local_to_desktop(
+                                Rect::new(
+                                    request.anchor[0],
+                                    request.anchor[1],
+                                    request.anchor[2],
+                                    request.anchor[3],
+                                ),
+                                *app_rect,
+                            );
+                            let inside_surface = app_rect.contains(marker.origin())
+                                && app_rect
+                                    .contains(vello::kurbo::Point::new(marker.x1, marker.y1));
+                            let activated =
+                                state.consume_agent_navigation_activation(*surface, marker);
+                            inside_surface && activated
+                        })
+                    } else {
+                        state.discard_agent_navigation_activation();
+                        false
+                    };
+                    if source.is_none() {
+                        state.discard_agent_navigation_activation();
+                    }
+                    let now = ui::time::now();
+                    let current = bounded
+                        && request.targets.iter().all(|target| {
+                            frame_builder
+                                .presence()
+                                .authenticated_agent_id(&target.actor)
+                                == Some(target.agent.as_str())
+                                && frame_builder.presence().is_current_agent_interaction(
+                                    &target.actor,
+                                    target.invocation,
+                                    now,
+                                )
+                        });
+                    if activated
+                        && current
+                        && let Some((_, _, room)) = source
+                    {
+                        let agents = request
+                            .targets
+                            .iter()
+                            .map(|target| target.agent.clone())
+                            .collect::<Vec<_>>();
+                        changed |= frame_builder
+                            .host_mut()
+                            .open_agent_conversation_from_user_navigation(&room, &agents);
+                    } else {
+                        tracing::info!(%app_id, "refused stale or malformed Agent navigation");
+                    }
                 }
                 ui::floating_surface::FloatingSurfaceClientMessage::OpenCaptureStudio { mode } => {
                     let mode = match mode {
@@ -16758,7 +16834,7 @@ mod external_floating_security_tests {
         app_local_to_desktop, app_owned_source_region, app_owned_transfer_region,
         clamp_external_floating_geometry, clamp_external_floating_geometry_to_outputs,
         external_floating_id, external_floating_parts, translate_external_source,
-        validate_app_owned_source,
+        valid_agent_navigation_request, validate_app_owned_source,
     };
     use crate::compositor::backend::{Output, OutputId};
     use ui::floating_surface::FloatingSource;
@@ -16776,6 +16852,36 @@ mod external_floating_security_tests {
             logical_position: position,
             identity: crate::compositor::backend::OutputIdentity::default(),
         }
+    }
+
+    fn agent_navigation(anchor: [f64; 4]) -> ui::floating_surface::AgentConversationNavigation {
+        ui::floating_surface::AgentConversationNavigation {
+            targets: vec![ui::floating_surface::AgentConversationNavigationTarget {
+                agent: "scribe".into(),
+                actor: ui::UserId("agent:scribe".into()),
+                invocation: tilo_actions::InvocationId::new(),
+            }],
+            anchor,
+        }
+    }
+
+    #[test]
+    fn agent_navigation_wire_geometry_is_tiny_finite_and_closed() {
+        assert!(valid_agent_navigation_request(&agent_navigation([
+            100.0, 100.0, 124.0, 124.0,
+        ])));
+        for malformed in [
+            [100.0, 100.0, 100.0, 124.0],
+            [100.0, 100.0, 133.0, 124.0],
+            [f64::NAN, 100.0, 124.0, 124.0],
+        ] {
+            assert!(!valid_agent_navigation_request(&agent_navigation(
+                malformed
+            )));
+        }
+        let mut empty = agent_navigation([100.0, 100.0, 124.0, 124.0]);
+        empty.targets.clear();
+        assert!(!valid_agent_navigation_request(&empty));
     }
 
     #[test]

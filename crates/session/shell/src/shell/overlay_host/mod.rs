@@ -412,6 +412,14 @@ struct PendingLaunchpadAction {
     >,
 }
 
+fn valid_agent_navigation_id(agent: &str) -> bool {
+    tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::RemoveAgent {
+        agent: agent.to_owned(),
+    }
+    .validate()
+    .is_ok()
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independently-toggled, documented piece of overlay/transition \
@@ -7484,6 +7492,86 @@ impl ShellOverlayHost {
         self.pending_launchpad_actions
             .push(PendingLaunchpadAction { title, admission });
         self.poll_pending_launchpad_actions();
+    }
+
+    /// Open one room's canonical Chat conversation after the compositor
+    /// consumed its own one-shot pointer activation. The source app
+    /// contributes no caller or grant: this door reconstructs the selected
+    /// Person from shell custody and lets the broker freshly resolve the
+    /// currently published, non-mutating Chat View action.
+    pub(crate) fn open_agent_conversation_from_user_navigation(
+        &mut self,
+        room: &str,
+        agents: &[String],
+    ) -> bool {
+        use tilo_actions::remote::{InvokeArgument, InvokeRequest, application_action_target};
+
+        if agents.is_empty() {
+            return false;
+        }
+        if agents.len() > 1 {
+            // Overlapping markers are ambiguous. The system palette is the
+            // shared keyboard/screen-reader chooser; never pick by paint order.
+            self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
+            self.palette
+                .set_query(&crate::shell::i18n::t("agent-conversation-search"));
+            return true;
+        }
+        let Some(agent) = agents
+            .first()
+            .filter(|agent| valid_agent_navigation_id(agent))
+        else {
+            return false;
+        };
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let Some(broker) = self.shortcut_triggers.broker() else {
+            return false;
+        };
+        let caller = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            tree.desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room.to_string() == room)
+                .map(|workspace| {
+                    tilo_actions::remote::Caller::local_person(
+                        state.local_user_for_room(&workspace.room),
+                    )
+                    .in_room(room)
+                })
+        };
+        let Some(caller) = caller else {
+            return false;
+        };
+        chrome.borrow_mut().open_target = crate::shell::chrome_state::OpenTarget::Beside;
+        let admission = crate::shell::remote_actions::BrokerActionHost::new(broker).invoke_job(
+            &caller,
+            InvokeRequest {
+                on_behalf_of: None,
+                invocation: tilo_actions::InvocationId::new(),
+                target: application_action_target(
+                    room,
+                    "so.tilo.chat",
+                    format!("chat.person:{agent}"),
+                    "open-agent-conversation",
+                ),
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: None,
+            },
+        );
+        self.pending_launchpad_actions.push(PendingLaunchpadAction {
+            title: crate::shell::i18n::t_args(
+                "agent-conversation-opening",
+                &[("agent", agent.as_str().into())],
+            ),
+            admission,
+        });
+        true
     }
 
     /// Settle launchpad card actions whose admission arrived. One that was

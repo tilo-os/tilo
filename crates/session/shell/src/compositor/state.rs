@@ -567,6 +567,9 @@ pub struct State {
     /// retaining this short bounded history lets us reject fabricated and
     /// stale serials instead of treating the opaque integer as authority.
     pub activation_serials: VecDeque<(Serial, u64, std::time::Instant)>,
+    /// One compositor-observed local primary-button release, consumed once by
+    /// narrow host navigation. App protocol payloads cannot mint this fact.
+    agent_navigation_activation: Option<AgentNavigationActivation>,
     /// Wayland clients (by connection index) the person has sent input to.
     /// A window of one of these may have been closed from inside the app;
     /// a window of any other that goes away unasked was lost.
@@ -794,6 +797,14 @@ pub struct State {
     /// Live app-owned secondary surfaces, outside the normal workspace tree.
     pub(crate) floating_toplevels: Vec<FloatingToplevel>,
     pub(crate) floating_toplevel_events: Vec<FloatingToplevelEvent>,
+}
+
+enum AgentNavigationActivation {
+    Pointer {
+        surface: u64,
+        point: (f64, f64),
+        issued: std::time::Instant,
+    },
 }
 
 pub(crate) fn foreign_root(surface: &WlSurface) -> Option<WlSurface> {
@@ -1278,6 +1289,7 @@ impl State {
             seat,
             serial_counter: 0,
             activation_serials: VecDeque::new(),
+            agent_navigation_activation: None,
             clients_given_input: std::collections::HashSet::new(),
             start_time: std::time::Instant::now(),
             remote_seats: RemoteSeats::new(),
@@ -4988,6 +5000,56 @@ impl State {
     }
 }
 
+impl State {
+    pub(crate) fn note_agent_navigation_pointer_activation(
+        &mut self,
+        surface: u64,
+        point: (f64, f64),
+    ) {
+        self.agent_navigation_activation = Some(AgentNavigationActivation::Pointer {
+            surface,
+            point,
+            issued: std::time::Instant::now(),
+        });
+    }
+
+    pub(crate) fn agent_navigation_activation_surface(&self) -> Option<u64> {
+        self.agent_navigation_activation
+            .as_ref()
+            .map(|activation| match activation {
+                AgentNavigationActivation::Pointer { surface, .. } => *surface,
+            })
+    }
+
+    pub(crate) fn discard_agent_navigation_activation(&mut self) {
+        self.agent_navigation_activation = None;
+    }
+
+    pub(crate) fn consume_agent_navigation_activation(
+        &mut self,
+        surface: u64,
+        marker: vello::kurbo::Rect,
+    ) -> bool {
+        let Some(activation) = self.agent_navigation_activation.take() else {
+            return false;
+        };
+        let (recipient, issued, position_matches) = match activation {
+            AgentNavigationActivation::Pointer {
+                surface,
+                point,
+                issued,
+            } => (
+                surface,
+                issued,
+                marker.contains(vello::kurbo::Point::new(point.0, point.1)),
+            ),
+        };
+        recipient == surface
+            && position_matches
+            && issued.elapsed() <= crate::compositor::activation::MAX_ACTIVATION_AGE
+    }
+}
+
 impl XdgActivationHandler for State {
     fn activation_state(&mut self) -> &mut XdgActivationState {
         &mut self.xdg_activation_state
@@ -6856,6 +6918,51 @@ mod tick_hook_tests {
         let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
         let display: Display<State> = Display::new().expect("display");
         State::new(event_loop.handle(), display.handle())
+    }
+
+    #[test]
+    fn agent_navigation_requires_exact_one_shot_surface_and_marker_activation() {
+        let marker = vello::kurbo::Rect::new(100.0, 200.0, 140.0, 240.0);
+
+        let mut state = make_state();
+        assert!(
+            !state.consume_agent_navigation_activation(7, marker),
+            "an app payload without a compositor-observed pointer release has no custody"
+        );
+        state.note_agent_navigation_pointer_activation(7, (120.0, 220.0));
+        assert!(!state.consume_agent_navigation_activation(8, marker));
+        assert!(
+            !state.consume_agent_navigation_activation(7, marker),
+            "a mismatched attempt consumes the activation"
+        );
+
+        state.note_agent_navigation_pointer_activation(7, (99.0, 220.0));
+        assert!(
+            !state.consume_agent_navigation_activation(7, marker),
+            "an app cannot spend a click outside its reported marker"
+        );
+
+        state.note_agent_navigation_pointer_activation(7, (120.0, 220.0));
+        assert!(state.consume_agent_navigation_activation(7, marker));
+        assert!(
+            !state.consume_agent_navigation_activation(7, marker),
+            "the compositor grant is one-shot"
+        );
+
+        state.agent_navigation_activation = Some(AgentNavigationActivation::Pointer {
+            surface: 7,
+            point: (120.0, 220.0),
+            issued: std::time::Instant::now()
+                .checked_sub(
+                    crate::compositor::activation::MAX_ACTIVATION_AGE
+                        .saturating_add(std::time::Duration::from_millis(1)),
+                )
+                .expect("test clock can represent an expired activation"),
+        });
+        assert!(
+            !state.consume_agent_navigation_activation(7, marker),
+            "a delayed app request cannot spend an expired physical release"
+        );
     }
 
     fn cfg() -> FlatpakShareConfig {
