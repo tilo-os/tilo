@@ -25,6 +25,16 @@ An already built and stripped executable can use the supported
 --output <music-linux-x86_64.tapp>` path without rebuilding. The ISA must match
 the compiler policy; the current workspace uses `x86-64-v3`.
 
+Use the same command with `--dry-run` and without `--identity` to print a
+validated unsigned plan. It reads no publisher secret, generates no key, and
+writes no archive. The plan checks payload size; the final signed wire size
+still needs verification. Native consumers use the canonical signed target's
+size contract and reject foreign platforms or architectures. A desktop target's
+runtime names its linked toolkit release; a targetless Tilo app still requires
+its declared shared runtime. Desktop loader/native-library availability inside
+the sandbox is a separate launch acceptance check, never permission to widen
+filesystem access.
+
 An existing image package whose manifest lacks `music.library` cannot host the
 shared library or publish its action directory. Install the verified updated
 package through the ordinary app installer, preserving the expected publisher
