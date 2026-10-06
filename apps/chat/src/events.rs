@@ -2087,6 +2087,7 @@ mod tests {
         requests: Mutex<Vec<InvokeRequest>>,
         query_parents: Mutex<Vec<Option<String>>>,
         current_unavailable: AtomicBool,
+        current_empty: AtomicBool,
         message_refused: AtomicBool,
         message_catalogue_mode: AtomicU8,
         task_controls_revoked: AtomicBool,
@@ -2103,6 +2104,10 @@ mod tests {
 
         fn make_current_unavailable(&self) {
             self.current_unavailable.store(true, Ordering::Release);
+        }
+
+        fn make_current_empty(&self) {
+            self.current_empty.store(true, Ordering::Release);
         }
 
         fn refuse_message(&self) {
@@ -2372,6 +2377,17 @@ mod tests {
                 .strip_prefix("desktop:task:")
                 .unwrap_or_default();
             let value = match request.target.address.action.as_str() {
+                "read-current-tasks" if self.current_empty.load(Ordering::Acquire) => {
+                    serde_json::json!({
+                        "generation": 9,
+                        "complete": true,
+                        "total": 0,
+                        "tasks": [],
+                        "pending_complete": true,
+                        "pending_total": 0,
+                        "pending": []
+                    })
+                }
                 "read-current-tasks" => serde_json::json!({
                     "generation": 8,
                     "complete": true,
@@ -3125,8 +3141,9 @@ mod tests {
         app.room_agents.push("scribe".into());
         app.room_names
             .insert("agent:scribe".into(), "Scribe".into());
+        let host = Arc::new(TaskControlHost::default());
         app.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
-            Arc::new(TaskControlHost::default()) as Arc<dyn ActionHost + Send + Sync>,
+            Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
             Caller::local_app("so.tilo.chat").in_room("ws_home"),
         );
         app.reload(&doc);
@@ -3151,6 +3168,16 @@ mod tests {
         assert_eq!(snapshot["agent_task"]["task_id"], "task-current");
         assert_eq!(snapshot["agent_task"]["run_epoch"], 7);
         assert!(snapshot["agent_task"].get("title").is_none());
+
+        ui::Widget::mark_drawn(&mut app);
+        _ = ui::Widget::take_structure_dirty(&mut app);
+        host.make_current_empty();
+        std::thread::sleep(std::time::Duration::from_millis(2_100));
+        app.poll_agent_tasks();
+        assert!(
+            ui::Widget::take_structure_dirty(&mut app),
+            "a changed owner projection must schedule pixels, not only update retained state"
+        );
     }
 
     #[test]

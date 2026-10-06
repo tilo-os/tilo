@@ -71,6 +71,29 @@ pub(crate) enum AgentComposerIntent {
     Steer,
 }
 
+/// Everything from the authenticated Task projection that can change the
+/// retained Agent pane. This stays typed so polling does not serialize a JSON
+/// tree on every idle deadline, and so adding a rendered status or receipt
+/// requires the repaint comparison to account for it explicitly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AgentTaskPresentationSnapshot {
+    choice: ui::agent_task_frontier::AgentTaskChoice,
+    pending: Vec<ui::agent_task_frontier::AgentPendingTask>,
+    pending_complete: bool,
+    controls: AgentTaskPresentationControls,
+    discovery: ui::agent_task_frontier::AgentTaskDiscovery,
+    direction: ui::agent_task_frontier::AgentDirectionState,
+    queue: ui::agent_task_frontier::AgentQueueState,
+    stop: ui::agent_task_frontier::AgentStopState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AgentTaskPresentationControls {
+    queue: bool,
+    steer: bool,
+    stop: bool,
+}
+
 #[derive(Clone)]
 pub(crate) struct AgentSubmission {
     pub(crate) text: String,
@@ -2234,10 +2257,96 @@ impl ChatApp {
     }
 
     pub(crate) fn poll_agent_tasks(&mut self) {
+        let before = self.visible_agent_task_presentation();
         for ((workspace, agent), context) in &self.agent_tasks {
             context.borrow_mut().observe(workspace, agent);
         }
         self.settle_agent_submissions();
+        if before != self.visible_agent_task_presentation() {
+            self.canonical_dirty = true;
+            self.request_relayout();
+        }
+    }
+
+    fn agent_task_presentation(view: &Self) -> Option<AgentTaskPresentationSnapshot> {
+        let tasks = view.direct_agent_tasks()?;
+        let tasks = tasks.borrow();
+        Some(AgentTaskPresentationSnapshot {
+            choice: tasks.choice(),
+            pending: tasks.pending_tasks(),
+            pending_complete: tasks.pending_tasks_complete(),
+            controls: AgentTaskPresentationControls {
+                queue: tasks.can_queue(),
+                steer: tasks.can_steer(),
+                stop: tasks.can_stop(),
+            },
+            discovery: tasks.discovery().clone(),
+            direction: tasks.direction_state().clone(),
+            queue: tasks.queue_state().clone(),
+            stop: tasks.stop_state().clone(),
+        })
+    }
+
+    fn agent_task_snapshot(view: &Self) -> serde_json::Value {
+        use ui::agent_task_frontier::AgentTaskChoice;
+
+        let Some(tasks) = view.direct_agent_tasks() else {
+            return serde_json::Value::Null;
+        };
+        let tasks = tasks.borrow();
+        let task = |task: ui::agent_task_frontier::AgentTaskFrontier| {
+            let execution = task.execution.map(|execution| {
+                serde_json::json!({
+                    "run_epoch": execution.run_epoch,
+                    "sequence": execution.sequence,
+                    "phase": execution.phase,
+                })
+            });
+            serde_json::json!({
+                "task_id": task.task_id,
+                "run_epoch": task.run_epoch,
+                "after_revision": task.after_revision,
+                "applied_revision": task.applied_revision,
+                "cancellation_requested": task.cancellation_requested,
+                "execution": execution,
+            })
+        };
+        let choice = match tasks.choice() {
+            AgentTaskChoice::None => serde_json::json!({"kind": "none"}),
+            AgentTaskChoice::One(current) => {
+                serde_json::json!({"kind": "one", "task": task(current)})
+            }
+            AgentTaskChoice::Selected(current) => {
+                serde_json::json!({"kind": "selected", "task": task(current)})
+            }
+            AgentTaskChoice::Choose(choices) => serde_json::json!({
+                "kind": "choose",
+                "tasks": choices.into_iter().map(task).collect::<Vec<_>>(),
+            }),
+        };
+        serde_json::json!({
+            "choice": choice,
+            "pending_count": tasks.pending_tasks().len(),
+            "pending_complete": tasks.pending_tasks_complete(),
+            "can_queue": tasks.can_queue(),
+            "can_steer": tasks.can_steer(),
+            "can_stop": tasks.can_stop(),
+        })
+    }
+
+    fn visible_agent_task_presentation(
+        &self,
+    ) -> Vec<(String, Option<AgentTaskPresentationSnapshot>)> {
+        let mut views = Vec::with_capacity(self.agent_surfaces.len() + 1);
+        views.push(("primary".into(), Self::agent_task_presentation(self)));
+        views.extend(self.agent_surfaces.values().map(|surface| {
+            (
+                surface.id.clone(),
+                Self::agent_task_presentation(&surface.view),
+            )
+        }));
+        views.sort_by(|left, right| left.0.cmp(&right.0));
+        views
     }
 
     pub(crate) fn poll_agent_message_submission(
@@ -4542,7 +4651,11 @@ impl Widget for ChatApp {
                     "execution": execution,
                 })
             });
-        Some(serde_json::json!({"agent_task": current}))
+        Some(serde_json::json!({
+            "app": "so.tilo.chat",
+            "agent_task": current,
+            "agent_task_presentation": Self::agent_task_snapshot(self),
+        }))
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
