@@ -34,7 +34,7 @@ pub enum StreamRequest {
     /// Run a real multi-type YouTube-Music search (songs, albums, artists,
     /// playlists + a top result) in one call.
     Search { query: String, request_id: u64 },
-    /// A deep per-type "see all" search for the given filter tab.
+    /// A deep per-type "see all" search for one kind of result.
     SearchMore {
         query: String,
         kind: SearchKind,
@@ -80,7 +80,7 @@ pub enum StreamUpdate {
         request_id: u64,
         error: String,
     },
-    /// A deep per-type "see all" result for a filter tab.
+    /// A deep per-type "see all" result for one kind of result.
     SearchMore {
         query: String,
         kind: SearchKind,

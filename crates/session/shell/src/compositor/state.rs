@@ -4470,6 +4470,16 @@ fn trusted_osk_identity(surface: &WlSurface, app_id: Option<&str>) -> bool {
     osk_identity_is_trusted(app_id, trusted_osk_connection(surface))
 }
 
+fn observe_toplevel_startup(surface: &ToplevelSurface) {
+    if let Some(pid) = surface
+        .wl_surface()
+        .client()
+        .and_then(|client| client.get_data::<ClientState>().and_then(|state| state.pid))
+    {
+        crate::shell::launcher::record_startup_window(pid);
+    }
+}
+
 fn trusted_osk_connection(surface: &WlSurface) -> bool {
     surface
         .client()
@@ -5406,6 +5416,7 @@ impl XdgShellHandler for State {
 
         // Start the clock the deferred opening configure is bounded against — adoption is when the wait becomes worth giving up on.
         crate::compositor::foreign::store().note_adopted(surface_id);
+        observe_toplevel_startup(&surface);
         if let Some(app_id) = app_id_log.as_deref() {
             crate::shell::launcher::record_host_window_open(surface_id, app_id);
         }

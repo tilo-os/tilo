@@ -289,7 +289,7 @@ impl ResourceSurface<Contacts, ContactsEffect> for ContactsApp {
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
+        self.stage_capture(scenario);
     }
 
     fn live_rows(&self) -> Vec<LiveRow> {
@@ -469,10 +469,7 @@ mod tests {
 
         let mut edit = TestApp::<ContactsShell>::capture(Some("edit")).unwrap();
         assert_eq!(edit.state().contacts.len(), sample_book().len());
-        assert!(
-            has_control(&mut edit, "Save changes"),
-            "the edit form is open"
-        );
+        assert!(has_control(&mut edit, "Save"), "the edit form is open");
 
         let mut duplicates = TestApp::<ContactsShell>::capture(Some("duplicates")).unwrap();
         assert_eq!(duplicates.state().contacts.len(), sample_book().len() + 1);
@@ -483,16 +480,20 @@ mod tests {
         );
 
         let mut groups = TestApp::<ContactsShell>::capture(Some("groups")).unwrap();
-        let options = groups
-            .with_surface::<crate::app::ContactsApp, _>(|app| app.group_filter_options())
-            .unwrap();
+        let options: Vec<_> = groups
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, node)| node.role() == ui::accesskit::Role::TreeItem)
+            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .collect();
         assert_eq!(
             options
                 .iter()
                 .filter(|option| *option == "Favorites")
                 .count(),
             1,
-            "the group menu lists Favorites once: {options:?}"
+            "the shared sidebar lists Favorites once: {options:?}"
         );
 
         let mut detail = TestApp::<ContactsShell>::capture(Some("detail")).unwrap();
@@ -624,7 +625,10 @@ mod tests {
     /// it back.
     #[test]
     fn the_window_edits_the_book_through_its_door() {
-        let mut app = TestApp::<ContactsShell>::capture(None).unwrap();
+        let mut app = TestApp::<ContactsShell>::new().unwrap();
+        for invoke in ContactsShell::scenario(None) {
+            app.invoke(invoke).unwrap();
+        }
         let id = sample_book()[1].id;
         let favorite = |app: &TestApp<ContactsShell>| {
             app.state()
@@ -635,14 +639,18 @@ mod tests {
                 .favorite
         };
         let before = favorite(&app);
-        for target in [
-            format!("contacts.select:{id}"),
-            format!("contacts.detail.favorite:{id}"),
-        ] {
-            app.harness()
-                .perform_semantic_named("contacts", Some(&target), &ui::a11y::Action::Activate)
-                .unwrap();
-        }
+        app.effect_on(
+            &crate::actions::contact_resource_id(id),
+            &ContactsEffect::Open { contact: id },
+        )
+        .unwrap();
+        let favorite_control = app
+            .harness()
+            .a11y_node_named("Favorite")
+            .expect("the shared Favorite control is present");
+        app.harness()
+            .perform_a11y_action(favorite_control, &ui::a11y::Action::Activate)
+            .unwrap();
         app.settle();
         assert_ne!(favorite(&app), before, "the star reached the document");
         assert!(app.undo());

@@ -6,7 +6,6 @@ use tilo_actions::ActionAddress;
 use ui::tilo_resource::SearchEntry;
 
 const MAX_INDEXED_ENTITIES: usize = 100;
-
 /// The videos, creators, playlists and watch history Tube shows, as search
 /// entries, each naming the exact resource and action that opens it. Kept to
 /// the same 100-item ceiling as the published rows, so every hit stays
