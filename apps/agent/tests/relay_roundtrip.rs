@@ -268,12 +268,12 @@ fn drive_peer_to_table(
             } => {
                 // The typed SDK reports the local participant's initial
                 // presence as well as remote arrivals.
-                if user_id == "ada" {
+                if user_id == typed_peer::principal_id() {
                     continue;
                 }
                 assert_eq!(
-                    user_id, "Scribe",
-                    "the relay names presence by the announced handle"
+                    user_id, "agent:scribe",
+                    "presence names the authenticated agent actor, distinct from a person's display name"
                 );
                 saw_scribe_presence = true;
             }
@@ -286,7 +286,7 @@ fn drive_peer_to_table(
                 payload: PresencePayload::Caret { .. },
                 ..
             } => {
-                assert_eq!(user_id, "Scribe");
+                assert_eq!(user_id, "agent:scribe");
             }
             CollabEvent::Invocation {
                 id,
