@@ -292,6 +292,9 @@ pub struct OskWidget {
     gesture_path: Option<Vec<Point>>,
     /// Fingers currently down on the keys, in press order.
     fingers: Vec<Finger>,
+    /// Geometry at contact start. Layout and painting only refresh caches;
+    /// reject stale contacts when they act.
+    contact_geometry: Option<Vec<(KeyId, Rect)>>,
     /// A key held long enough to act on its own: a long press or a repeat.
     hold: Option<Hold>,
     /// How often the typing language uses each accented letter, computed on
@@ -426,6 +429,7 @@ impl OskWidget {
             pointer: None,
             gesture_path: None,
             fingers: Vec::new(),
+            contact_geometry: None,
             hold: None,
             accent_usage: None,
             alternates: None,
@@ -531,7 +535,7 @@ impl OskWidget {
         self.on_output = Some(output);
     }
 
-    /// Imperative toolbar-tap callback.
+    /// Override the default toolbar behavior with a host handler.
     #[must_use]
     pub fn on_toolbar<F: FnMut(OskToolbarAction) + 'static>(mut self, f: F) -> Self {
         self.on_toolbar = Some(Box::new(f));
@@ -654,6 +658,7 @@ impl OskWidget {
     /// the symbols layer, and raises `structure_dirty` so the host relays out
     /// (the row count differs between, say, the dialpad and QWERTY).
     pub fn set_purpose(&mut self, purpose: InputPurpose) {
+        self.cancel_contacts();
         self.close_emoji_panel();
         self.apply_purpose(purpose);
         self.showing_symbols = false;
@@ -740,7 +745,7 @@ impl OskWidget {
         if self.visible != visible {
             self.visible = visible;
             self.structure_dirty = true;
-            self.fingers.clear();
+            self.cancel_contacts();
             self.close_emoji_panel();
         }
     }
@@ -952,7 +957,43 @@ impl OskWidget {
         self.toolbar_log.push_back(action.clone());
         if let Some(cb) = &mut self.on_toolbar {
             cb(action);
+        } else {
+            self.activate_default_tool(&action);
         }
+    }
+
+    fn activate_default_tool(&mut self, action: &OskToolbarAction) {
+        match action {
+            OskToolbarAction::Paste => {
+                if let Some(text) = ui::clipboard_paste() {
+                    self.finish_editing_word();
+                    // Clipboard text is literal and never training input.
+                    self.emit(OskOutput::Commit(text));
+                }
+            }
+            OskToolbarAction::SelectionLeft | OskToolbarAction::SelectionRight => {
+                self.finish_editing_word();
+                self.emit(OskOutput::Key(
+                    if *action == OskToolbarAction::SelectionLeft {
+                        Symbol::Left
+                    } else {
+                        Symbol::Right
+                    },
+                ));
+            }
+            OskToolbarAction::Dismiss => {
+                self.finish_editing_word();
+                self.set_visible(false);
+            }
+            OskToolbarAction::Custom(_) => {}
+        }
+    }
+
+    fn finish_editing_word(&mut self) {
+        self.last_correction = None;
+        self.finish_word_with("", false);
+        self.prev_word = None;
+        self.suggestions.clear();
     }
 
     // --- internals ------------------------------------------------------
@@ -983,6 +1024,9 @@ impl OskWidget {
     fn select_text_layout(&mut self, name: &str) -> bool {
         if name == "symbols" || !self.layouts.contains_key(name) {
             return false;
+        }
+        if self.active_layout_name() != name {
+            self.cancel_contacts();
         }
         self.preferred_text_layout = name.to_string();
         self.active_letter = name.to_string();
@@ -1027,6 +1071,7 @@ impl OskWidget {
         {
             return;
         }
+        self.cancel_contacts();
         self.preferred_text_layout = name.to_string();
         if self.purpose == InputPurpose::Text {
             self.active_letter = name.to_string();
@@ -1317,9 +1362,7 @@ impl OskWidget {
     /// a password typed there must not outlive the field.
     pub fn reset_composition(&mut self) {
         self.close_emoji_panel();
-        self.hold = None;
-        self.alternates = None;
-        self.cursor_drag = None;
+        self.cancel_contacts();
         self.last_correction = None;
         self.current_word.clear();
         self.word_from_swipe = false;
@@ -1333,6 +1376,34 @@ impl OskWidget {
         self.shift = ShiftState::Off;
         self.refresh_next_word_suggestions();
         self.apply_hint_case();
+    }
+
+    /// Cancel input that belonged to a previous field, layout or key geometry. A
+    /// later release must not type, decode a swipe or restart an editing hold.
+    fn cancel_contacts(&mut self) {
+        self.fingers.clear();
+        self.contact_geometry = None;
+        self.gesture_path = None;
+        self.hold = None;
+        self.alternates = None;
+        self.cursor_drag = None;
+        self.pointer = None;
+        self.pressed_key = None;
+        self.pressed_sugg = None;
+        self.pressed_tool = None;
+        self.hovered_key = None;
+        self.hovered_sugg = None;
+        self.hovered_tool = None;
+    }
+
+    fn cancel_stale_contacts(&mut self) {
+        if self
+            .contact_geometry
+            .as_ref()
+            .is_some_and(|geometry| *geometry != self.key_geom)
+        {
+            self.cancel_contacts();
+        }
     }
 
     /// Refill the bar with completions of the in-progress word (biased by the
@@ -1445,7 +1516,11 @@ impl OskWidget {
         let Some(top_cand) = cands.first() else {
             return false;
         };
-        let top = top_cand.word.clone();
+        let shift = self.shift;
+        let top = case_swipe_word(&top_cand.word, shift);
+        if shift == ShiftState::Shift {
+            self.shift = ShiftState::Off;
+        }
         self.last_correction = None;
         if self.word_from_swipe {
             self.finish_word(" ");
@@ -1457,7 +1532,7 @@ impl OskWidget {
         // Show the ranked candidates so the user can correct the pick.
         self.suggestions = cands
             .into_iter()
-            .map(|c| Suggestion::new(c.word, c.score))
+            .map(|c| Suggestion::new(case_swipe_word(&c.word, shift), c.score))
             .collect();
         self.add_emoji_suggestions();
         true
@@ -1719,11 +1794,14 @@ impl OskWidget {
         Some(true)
     }
 
-    /// Average key dimension of the current frame (the swipe/tap threshold
-    /// scale). Falls back to a sane default before the first layout.
+    /// Letter-key dimension shared with the decoder. Non-letter panels use
+    /// their average key size; before layout, use the target key height.
     fn key_scale(&self) -> f64 {
         if self.key_geom.is_empty() {
             return f64::from(self.target_key_height);
+        }
+        if let Some(scale) = crate::swipe::letter_key_scale(&self.key_geom, self.current_layout()) {
+            return scale;
         }
         let sum: f64 = self
             .key_geom
@@ -1738,6 +1816,11 @@ impl OskWidget {
     /// keys without a known pointer position, resolve to themselves.
     fn resolve_letter_tap(&mut self, hit: KeyId, p: Option<Point>) -> KeyId {
         let Some(p) = p else { return hit };
+        // Identifiers and secret fields use the literal hit target. In
+        // particular, password taps must not update personal touch offsets.
+        if !self.autocorrect_allowed() {
+            return hit;
+        }
         let layout = self.current_layout();
         if !layout.key(hit).is_some_and(Key::is_letter) {
             return hit;
@@ -1772,8 +1855,37 @@ impl OskWidget {
         target
     }
 
+    /// A trail is feedback for a solo gesture, never for secret input,
+    /// multi-thumb taps, caret steering or a contact in stale geometry.
+    fn active_swipe_path(&self) -> &[Point] {
+        if self.is_secret_field()
+            || self.emoji_panel.is_open()
+            || self.cursor_drag_active()
+            || self.alternates.is_some()
+            || self
+                .contact_geometry
+                .as_ref()
+                .is_some_and(|geometry| *geometry != self.key_geom)
+        {
+            return &[];
+        }
+        let path = self
+            .fingers
+            .iter()
+            .find(|finger| finger.solo && !finger.spent)
+            .map(|finger| finger.path.as_slice())
+            .or(self.gesture_path.as_deref())
+            .unwrap_or_default();
+        if crate::swipe::is_swipe(path, self.key_scale()) {
+            path
+        } else {
+            &[]
+        }
+    }
+
     /// One raw finger event on the keys (see the module docs on touch).
     fn handle_touch(&mut self, touch: &Touch, scale_factor: f64, handled: &mut bool) {
+        self.cancel_stale_contacts();
         let p = Point::new(
             touch.location.x / scale_factor,
             touch.location.y / scale_factor,
@@ -1785,6 +1897,7 @@ impl OskWidget {
                 if !self.claims_raw_touch(p) {
                     return;
                 }
+                self.contact_geometry = Some(self.key_geom.clone());
                 // A second finger ends any hold, open alternates row or caret
                 // drag of the first: the rows keep typing in press order.
                 self.hold = None;
@@ -1829,13 +1942,7 @@ impl OskWidget {
                 };
                 f.at = p;
                 f.key = key;
-                if f.path.last().is_none_or(|&l| l.distance(p) > 1.0) {
-                    if f.path.len() < MAX_GESTURE_POINTS {
-                        f.path.push(p);
-                    } else if let Some(last) = f.path.last_mut() {
-                        *last = p;
-                    }
-                }
+                record_gesture_point(&mut f.path, p);
                 self.track_hold(Some(touch.id), p, key);
                 *handled = true;
             }
@@ -1843,9 +1950,14 @@ impl OskWidget {
                 let Some(i) = self.fingers.iter().position(|f| f.id == touch.id) else {
                     return;
                 };
+                // The lift is the final position sample; platforms need not
+                // send a separate move before it. Resolve editing gestures at
+                // that position before removing their contact.
+                let finger = Some(touch.id);
+                self.track_hold(finger, p, self.key_at(p));
                 let mut f = self.fingers.remove(i);
                 f.at = p;
-                let finger = Some(touch.id);
+                record_gesture_point(&mut f.path, p);
                 if self.alternates.as_ref().is_some_and(|(o, _)| *o == finger) {
                     self.commit_alternate();
                 } else if !f.spent {
@@ -1958,6 +2070,7 @@ impl OskWidget {
     /// alternates pick, a caret drag or repeat (which already acted), a swipe
     /// or tap on a key, a suggestion or a toolbar item.
     fn pointer_released(&mut self, handled: &mut bool) {
+        self.cancel_stale_contacts();
         let path = self.gesture_path.take();
         let held = self.hold.take().filter(|h| h.finger.is_none());
         let steering = self.cursor_steering(None);
@@ -2035,6 +2148,10 @@ impl OskWidget {
     /// Fire a hold whose time has come. Called when the wake deadline from
     /// [`Widget::next_wake_deadline`] passes.
     fn poll_hold(&mut self, now: Instant) {
+        if self.hold.is_none_or(|hold| now < hold.due) {
+            return;
+        }
+        self.cancel_stale_contacts();
         let Some(hold) = self.hold.as_mut() else {
             return;
         };
@@ -2290,6 +2407,22 @@ struct Finger {
     spent: bool,
 }
 
+/// Shift capitalizes a gesture's first letter; Caps Lock applies to its word.
+fn case_swipe_word(word: &str, shift: ShiftState) -> String {
+    shift.case_word(word)
+}
+
+/// Keep gesture sampling bounded while retaining the latest endpoint.
+fn record_gesture_point(path: &mut Vec<Point>, point: Point) {
+    if path.last().is_none_or(|&last| last.distance(point) > 1.0) {
+        if path.len() < MAX_GESTURE_POINTS {
+            path.push(point);
+        } else if let Some(last) = path.last_mut() {
+            *last = point;
+        }
+    }
+}
+
 /// How long a letter is held before its accented forms appear.
 const LONG_PRESS: Duration = Duration::from_millis(350);
 /// How long Backspace is held before it repeats, and how fast it then does.
@@ -2419,24 +2552,28 @@ impl Widget for OskWidget {
         if !self.visible {
             return;
         }
-        let empty_hint = if self.suggestions_enabled {
-            "Type or swipe to see suggestions"
+        let empty_hint = i18n::t(if self.suggestions_enabled {
+            "osk-suggestions-empty"
         } else {
-            "Suggestions are off"
-        };
+            "osk-suggestions-off"
+        });
         let finger_keys: Vec<KeyId> = self
             .fingers
             .iter()
             .filter(|f| !f.spent)
             .filter_map(|f| f.key)
             .collect();
-        let preview = self.preview_key(&finger_keys);
         let hit_cells = if self.hit_overlay && !self.emoji_panel.is_open() {
             // Sampled every 2 px: a debug resolution, not a layout size.
             self.hit_cells(2.0)
         } else {
             Vec::new()
         };
+        let swipe_path = self.active_swipe_path();
+        let preview = swipe_path
+            .is_empty()
+            .then(|| self.preview_key(&finger_keys))
+            .flatten();
         KeyboardPresentation {
             rect: self.rect,
             layout: self.current_layout(),
@@ -2454,12 +2591,13 @@ impl Widget for OskWidget {
             pressed_tool: self.pressed_tool,
             hovered_sugg: self.hovered_sugg,
             pressed_sugg: self.pressed_sugg,
-            empty_hint,
+            empty_hint: &empty_hint,
             emoji_panel_open: self.emoji_panel.is_open(),
             preview,
             alternates: self.alternates.as_ref().map(|(_, popup)| popup),
             cursor_mode: self.cursor_drag_active(),
             hit_cells: &hit_cells,
+            swipe_path,
         }
         .draw(scene, transform, text_renderer, theme);
 
@@ -2480,11 +2618,13 @@ impl Widget for OskWidget {
                 position.y / ctx.scale_factor,
             ));
         }
+        self.cancel_stale_contacts();
         if self.handle_panel_event(event, ctx.scale_factor, ctx.handled) {
             return;
         }
         match event {
             WindowEvent::Touch(touch) => self.handle_touch(touch, ctx.scale_factor, ctx.handled),
+            WindowEvent::Focused(false) => self.cancel_contacts(),
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.pointer = Some(p);
@@ -2526,6 +2666,7 @@ impl Widget for OskWidget {
                 button: MouseButton::Left,
                 ..
             } => {
+                self.contact_geometry = Some(self.key_geom.clone());
                 // Mirror `Button`: press latches onto whatever the last
                 // CursorMoved hovered.
                 if let Some(id) = self.hovered_key {
@@ -2615,7 +2756,10 @@ impl Widget for OskWidget {
                     )],
                 )
             } else {
-                format!("Insert {}", suggestion.word)
+                i18n::t_args(
+                    "osk-suggestion-insert",
+                    &[("word", suggestion.word.clone().into())],
+                )
             };
             children.push(
                 AccessNode::new(Role::Button)
@@ -2633,10 +2777,25 @@ impl Widget for OskWidget {
                 continue;
             };
             let label = key.display_label(shift);
-            let name = if key.action == KeyAction::Emoji {
-                i18n::t("osk-emoji-key")
-            } else {
-                label.clone()
+            let name = match &key.action {
+                KeyAction::Char(_) => label.clone(),
+                KeyAction::Backspace => i18n::t("osk-key-backspace"),
+                KeyAction::Enter => i18n::t("osk-key-enter"),
+                KeyAction::Space => i18n::t("osk-key-space"),
+                KeyAction::Shift => i18n::t(match shift {
+                    ShiftState::Off => "osk-key-shift-off",
+                    ShiftState::Shift => "osk-key-shift-on",
+                    ShiftState::CapsLock => "osk-key-caps-lock",
+                }),
+                KeyAction::SymbolsToggle => i18n::t(if self.showing_symbols {
+                    "osk-key-letters"
+                } else {
+                    "osk-key-symbols"
+                }),
+                KeyAction::Layout(layout) => {
+                    i18n::t_args("osk-key-layout", &[("layout", layout.clone().into())])
+                }
+                KeyAction::Emoji => i18n::t("osk-emoji-key"),
             };
             children.push(
                 AccessNode::new(Role::Button)
@@ -2653,12 +2812,12 @@ impl Widget for OskWidget {
         children.extend(self.emoji_panel.accessibility());
         Some(
             AccessNode::new(Role::Group)
-                .with_name("On-screen keyboard")
-                .with_description(if self.suggestions_enabled {
-                    "Keyboard keys, suggestions, and input controls"
+                .with_name(i18n::t("osk-name"))
+                .with_description(i18n::t(if self.suggestions_enabled {
+                    "osk-description"
                 } else {
-                    "Keyboard keys and input controls. Suggestions are turned off."
-                })
+                    "osk-description-no-suggestions"
+                }))
                 .with_children(children),
         )
     }
@@ -4410,6 +4569,316 @@ mod tests {
             .find(|(id, _)| layout.key(*id).is_some_and(|k| k.label == label))
             .copied()
             .unwrap()
+    }
+
+    fn touch_swipe(osk: &mut OskWidget, id: u64, word: &str) {
+        let path = path_through(osk, word);
+        finger(osk, id, TouchPhase::Started, path[0]);
+        for &point in path.iter().skip(1).take(path.len().saturating_sub(2)) {
+            finger(osk, id, TouchPhase::Moved, point);
+        }
+        // End owns the final endpoint, rather than repeating a Moved sample.
+        finger(osk, id, TouchPhase::Ended, *path.last().unwrap());
+    }
+
+    #[test]
+    fn swipe_correction_preserves_the_phrase_and_the_next_gesture() {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        touch_swipe(&mut osk, 1, "the");
+        assert_eq!(osk.current_word(), "the");
+        touch_swipe(&mut osk, 2, "quick");
+        assert_eq!(osk.current_word(), "quick");
+        assert_eq!(osk.pending_text(), "the quick");
+        let (index, candidate) = osk
+            .suggestions
+            .iter()
+            .enumerate()
+            .find(|(_, candidate)| candidate.word != "quick")
+            .expect("alternate candidate");
+        let correction = candidate.word.clone();
+        let target = format!("osk:suggestion:{index}:{correction}");
+        assert!(semantic(&mut osk, &target, &AccessibilityAction::Activate));
+        // Swipe corrections remain preedit so another candidate can still
+        // replace them. The next gesture commits exactly one separating space.
+        assert_eq!(osk.pending_text(), format!("the {correction}"));
+        assert_eq!(osk.current_word(), correction);
+        assert!(osk.word_from_swipe);
+        osk.take_output();
+        touch_swipe(&mut osk, 3, "brown");
+        assert_eq!(
+            osk.take_output(),
+            vec![commit(&format!("{correction} ")), pre(osk.current_word()),]
+        );
+        assert!(!osk.current_word().is_empty());
+        assert_eq!(
+            osk.pending_text(),
+            format!("the {correction} {}", osk.current_word())
+        );
+        assert!(
+            osk.active_swipe_path().is_empty(),
+            "release clears the trail"
+        );
+    }
+
+    #[test]
+    fn swipe_typing_obeys_sentence_capitalization_and_caps_lock() {
+        let mut osk = OskWidget::new();
+        osk.set_content_hints(content_hint::AUTO_CAPITALIZATION);
+        lay_out(&mut osk, 720.0, 360.0);
+        touch_swipe(&mut osk, 1, "the");
+        assert_eq!(osk.current_word(), "The");
+        assert_eq!(osk.shift_state(), ShiftState::Off);
+        assert!(
+            osk.suggestions
+                .iter()
+                .all(|s| s.emoji || s.word.chars().next().unwrap().is_uppercase())
+        );
+        touch_swipe(&mut osk, 2, "quick");
+        assert_eq!(osk.pending_text(), "The quick");
+        osk.apply_action(KeyAction::Char(".".into()));
+        osk.apply_action(KeyAction::Space);
+        assert_eq!(osk.shift_state(), ShiftState::Shift);
+        touch_swipe(&mut osk, 3, "the");
+        assert_eq!(osk.current_word(), "The");
+        osk.apply_action(KeyAction::Shift);
+        osk.apply_action(KeyAction::Shift);
+        assert_eq!(osk.shift_state(), ShiftState::CapsLock);
+        touch_swipe(&mut osk, 4, "quick");
+        assert_eq!(osk.current_word(), "QUICK");
+        assert_eq!(osk.shift_state(), ShiftState::CapsLock);
+        assert_eq!(case_swipe_word("été", ShiftState::Shift), "Été");
+    }
+
+    #[test]
+    fn gesture_feedback_is_transient_solo_and_never_secret() {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        let path = path_through(&osk, "quick");
+        finger(&mut osk, 1, TouchPhase::Started, path[0]);
+        for &point in path.iter().skip(1) {
+            finger(&mut osk, 1, TouchPhase::Moved, point);
+        }
+        assert_eq!(osk.active_swipe_path(), path);
+        let last = *path.last().unwrap();
+        osk.reset_composition();
+        assert!(osk.active_swipe_path().is_empty());
+        finger(&mut osk, 1, TouchPhase::Ended, last);
+        assert!(osk.pending_text().is_empty());
+        osk.set_purpose(InputPurpose::Password);
+        finger(&mut osk, 2, TouchPhase::Started, path[0]);
+        for &point in path.iter().skip(1) {
+            finger(&mut osk, 2, TouchPhase::Moved, point);
+        }
+        assert!(
+            osk.active_swipe_path().is_empty(),
+            "secret contacts have no trace"
+        );
+        finger(&mut osk, 2, TouchPhase::Cancelled, last);
+        assert!(osk.take_output().is_empty());
+    }
+
+    #[test]
+    fn secret_touch_typing_never_adapts_the_touch_model() {
+        for (purpose, hints) in [
+            (InputPurpose::Password, 0),
+            (InputPurpose::Text, content_hint::SENSITIVE_DATA),
+            (InputPurpose::Text, content_hint::HIDDEN_TEXT),
+        ] {
+            let mut osk = OskWidget::new();
+            osk.set_purpose(purpose);
+            osk.set_content_hints(hints);
+            lay_out(&mut osk, 720.0, 360.0);
+            let (_, e) = key_rect(&osk, "e");
+            let before = osk.touch_model.clone();
+            finger(&mut osk, 1, TouchPhase::Started, e.center());
+            finger(&mut osk, 1, TouchPhase::Ended, e.center());
+            assert_eq!(osk.take_output(), vec![commit("e")]);
+            assert_eq!(osk.touch_model, before, "secret taps must never be learned");
+            assert!(
+                osk.take_lesson().is_none(),
+                "secret taps must not stage persisted learning"
+            );
+            assert!(osk.suggestions().is_empty());
+        }
+    }
+
+    #[test]
+    fn verbatim_fields_ignore_personal_and_language_touch_bias() {
+        for purpose in [
+            InputPurpose::Email,
+            InputPurpose::Url,
+            InputPurpose::Password,
+        ] {
+            let mut osk = OskWidget::new();
+            osk.set_purpose(purpose);
+            lay_out(&mut osk, 720.0, 360.0);
+            let (e_id, e) = key_rect(&osk, "e");
+            let (_, r) = key_rect(&osk, "r");
+            for _ in 0..20 {
+                osk.touch_model
+                    .learn('r', Point::new(r.x0 + 1.0, r.center().y), r);
+            }
+            let touch = Point::new(e.x1 - 1.0, e.center().y);
+            assert_eq!(osk.resolve_letter_tap(e_id, Some(touch)), e_id);
+        }
+    }
+
+    #[test]
+    fn semantic_toolbar_edits_the_focused_field_and_hides_without_stale_contacts() {
+        let (services, _) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        ui::clipboard_copy("literal clipboard");
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        osk.activate_label("q");
+        osk.take_output();
+        let tool = |osk: &mut OskWidget, name: &str| {
+            let target = osk
+                .accessibility()
+                .unwrap()
+                .children
+                .into_iter()
+                .find(|node| node.name.as_deref() == Some(name))
+                .unwrap()
+                .action_target
+                .unwrap();
+            assert!(semantic(osk, &target, &AccessibilityAction::Activate));
+        };
+        tool(&mut osk, "Move caret left");
+        assert_eq!(
+            osk.take_output(),
+            vec![commit("q"), OskOutput::Key(Symbol::Left)]
+        );
+        tool(&mut osk, "Move caret right");
+        assert_eq!(osk.take_output(), vec![OskOutput::Key(Symbol::Right)]);
+        osk.take_lesson();
+        tool(&mut osk, "Paste");
+        assert_eq!(osk.take_output(), vec![commit("literal clipboard")]);
+        assert!(
+            osk.take_lesson().is_none(),
+            "paste must not train personal predictions"
+        );
+        let (_, e) = key_rect(&osk, "e");
+        finger(&mut osk, 1, TouchPhase::Started, e.center());
+        tool(&mut osk, "Hide keyboard");
+        assert!(!osk.visible);
+        finger(&mut osk, 1, TouchPhase::Ended, e.center());
+        assert!(osk.take_output().is_empty());
+    }
+
+    #[test]
+    fn editing_keys_have_spoken_names_and_shift_announces_its_state() {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        let names = |osk: &OskWidget| {
+            osk.accessibility()
+                .unwrap()
+                .children
+                .iter()
+                .map(|node| node.name.clone())
+                .collect::<Vec<_>>()
+        };
+        let spoken = names(&osk);
+        for name in [
+            "Backspace",
+            "Enter",
+            "Space",
+            "Shift, off",
+            "Switch to symbols",
+            "Move caret left",
+            "Move caret right",
+        ] {
+            assert!(
+                spoken.iter().any(|spoken| spoken.as_deref() == Some(name)),
+                "missing spoken control: {name}"
+            );
+        }
+        let shift_target = osk
+            .accessibility()
+            .unwrap()
+            .children
+            .into_iter()
+            .find(|node| node.name.as_deref() == Some("Shift, off"))
+            .unwrap()
+            .action_target
+            .unwrap();
+        assert!(semantic(
+            &mut osk,
+            &shift_target,
+            &AccessibilityAction::Activate
+        ));
+        assert!(
+            names(&osk)
+                .iter()
+                .any(|name| name.as_deref() == Some("Shift, next letter uppercase"))
+        );
+        assert!(semantic(
+            &mut osk,
+            &shift_target,
+            &AccessibilityAction::Activate
+        ));
+        assert!(
+            names(&osk)
+                .iter()
+                .any(|name| name.as_deref() == Some("Caps lock, on"))
+        );
+    }
+
+    #[test]
+    fn hiding_cancels_a_held_backspace_before_its_deadline() {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        osk.apply_action(KeyAction::Char("keep".into()));
+        let backspace = osk
+            .key_geom
+            .iter()
+            .find(|(id, _)| {
+                osk.current_layout()
+                    .key(*id)
+                    .is_some_and(|key| key.action == KeyAction::Backspace)
+            })
+            .unwrap()
+            .1
+            .center();
+        finger(&mut osk, 1, TouchPhase::Started, backspace);
+        let deadline = osk.next_wake_deadline().expect("repeat armed");
+        osk.set_visible(false);
+        assert_eq!(osk.next_wake_deadline(), None);
+        osk.poll_hold(deadline);
+        osk.set_visible(true);
+        finger(&mut osk, 1, TouchPhase::Ended, backspace);
+        assert_eq!(osk.pending_text(), "keep");
+    }
+
+    #[test]
+    fn field_change_cancels_a_pointer_swipe_and_release() {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        let (id, rect) = key_rect(&osk, "e");
+        osk.pressed_key = Some(id);
+        osk.hovered_key = Some(id);
+        osk.pointer = Some(rect.center());
+        osk.gesture_path = Some(vec![rect.center()]);
+        osk.begin_hold(id, None, Instant::now());
+        osk.reset_composition();
+        osk.pointer_released(&mut false);
+        assert!(osk.pending_text().is_empty());
+        assert!(osk.take_output().is_empty());
+        assert_eq!(osk.next_wake_deadline(), None);
+    }
+
+    #[test]
+    fn lifting_selects_the_accent_at_the_final_contact_position() {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 720.0, 360.0);
+        let (_, e) = key_rect(&osk, "e");
+        finger(&mut osk, 1, TouchPhase::Started, e.center());
+        osk.poll_hold(osk.next_wake_deadline().unwrap());
+        let accent = osk.alternates.as_ref().unwrap().1.cells[1].center();
+        // No intervening Moved event: the Ended event owns the last sample.
+        finger(&mut osk, 1, TouchPhase::Ended, accent);
+        assert_eq!(osk.pending_text(), "é");
     }
 
     #[test]

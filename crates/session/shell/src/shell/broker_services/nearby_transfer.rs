@@ -22,7 +22,7 @@ const NEARBY_TARGET_HANDLE_TTL: Duration = Duration::from_secs(30);
 const NEARBY_TRANSFER_HANDLE_TTL: Duration = Duration::from_secs(120);
 const MAX_NEARBY_TRANSFER_HANDLES: usize = 256;
 const NEARBY_DESTINATION_HANDLE_TTL: Duration = Duration::from_secs(120);
-const FILES_APP_ID: &str = "so.tilo.file-explorer";
+pub(super) const FILES_APP_ID: &str = "so.tilo.file-explorer";
 const EXPIRED_TRANSFER: &str = "Nearby Send transfer expired or belongs to another Files workspace";
 
 /// When a nearby handle issued or refreshed at `now` stops being valid.
@@ -34,7 +34,7 @@ fn nearby_handle_expiry(now: Instant, ttl: Duration) -> Instant {
     now.checked_add(ttl).unwrap_or(now)
 }
 
-fn fresh_handle_bytes() -> [u8; 16] {
+pub(super) fn fresh_handle_bytes() -> [u8; 16] {
     let mut bytes = [0_u8; 16];
     UnwrapErr(SysRng).fill_bytes(&mut bytes);
     bytes
@@ -297,7 +297,7 @@ impl NearbyDestinationRegistry {
     }
 }
 
-fn nearby_source_from_grants(
+pub(super) fn nearby_source_from_grants(
     raw_path: &[u8],
     grants: &[Capability],
 ) -> Result<SecureNearbySource, String> {
@@ -343,14 +343,66 @@ pub struct NativeNearbyTransfer {
     targets: Mutex<NearbyTargetRegistry>,
     transfers: Mutex<NearbyTransferRegistry>,
     destinations: Mutex<NearbyDestinationRegistry>,
+    #[cfg(target_os = "linux")]
+    airdrop: super::airdrop_transfer::NativeAirDropTransfer,
 }
 
 impl NativeNearbyTransfer {
+    #[cfg(target_os = "linux")]
+    fn send_airdrop(
+        &self,
+        context: &NearbyTransferRequestContext,
+        grants: &[Capability],
+        source_path: Vec<u8>,
+        address: String,
+        port: u16,
+    ) -> runtime_collab::NearbyTransferReply {
+        let Some(person) = context.person() else {
+            return rejected(crate::shell::i18n::t("airdrop-error-unavailable"));
+        };
+        let source = match nearby_source_from_grants(&source_path, grants) {
+            Ok(source) => source,
+            Err(reason) => return rejected(reason),
+        };
+        let request = super::airdrop_transfer::AirDropRequest {
+            scope: super::airdrop_transfer::AirDropScope {
+                peer_id: context.peer_id(),
+                channel: context.channel().into(),
+                workspace: context.workspace_id().into(),
+                person: person.into(),
+            },
+            source_path,
+            address,
+            port,
+        };
+        let id = match self.airdrop.start(request, source) {
+            Ok(id) => id,
+            Err(reason) => return rejected(reason),
+        };
+        let handle = self.transfers.lock().ok().and_then(|mut registry| {
+            registry.issue(
+                context.peer_id(),
+                context.channel(),
+                id,
+                runtime_collab::NearbyTransferDirection::Sending,
+                Instant::now(),
+            )
+        });
+        if let Some(handle) = handle {
+            runtime_collab::NearbyTransferReply::Queued { handle }
+        } else {
+            self.airdrop.cancel(id);
+            rejected(crate::shell::i18n::t("airdrop-error-busy"))
+        }
+    }
+
     pub fn new(
         network: Arc<crate::shell::network::ShellNetwork>,
         membership: WorkspaceTreeHandle,
     ) -> Self {
         Self {
+            #[cfg(target_os = "linux")]
+            airdrop: super::airdrop_transfer::NativeAirDropTransfer::session(membership.clone()),
             network,
             membership,
             targets: Mutex::default(),
@@ -361,16 +413,25 @@ impl NativeNearbyTransfer {
 
     /// The Files application's live grants in `workspace_id`.
     fn files_grants(&self, workspace_id: &str) -> Vec<Capability> {
-        self.membership
-            .read()
-            .desktop
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room.to_string() == workspace_id)
-            .and_then(|workspace| workspace.app_grants_snapshot().remove(FILES_APP_ID))
-            .unwrap_or_default()
+        files_grants(&self.membership, workspace_id)
     }
+}
 
+pub(super) fn files_grants(
+    membership: &WorkspaceTreeHandle,
+    workspace_id: &str,
+) -> Vec<Capability> {
+    membership
+        .read()
+        .desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room.to_string() == workspace_id)
+        .and_then(|workspace| workspace.app_grants_snapshot().remove(FILES_APP_ID))
+        .unwrap_or_default()
+}
+
+impl NativeNearbyTransfer {
     fn snapshot(
         &self,
         context: &NearbyTransferRequestContext,
@@ -436,16 +497,24 @@ impl NativeNearbyTransfer {
     ) -> Result<Vec<runtime_collab::NearbyTransferStatus>, String> {
         let (peer_id, channel) = (context.peer_id(), context.channel());
         let raw_transfers = fabric::nearby_transfer_statuses(&self.network);
+        #[cfg(target_os = "linux")]
+        let external = self.airdrop.statuses(peer_id, channel);
         let visible_ids = raw_transfers
             .iter()
             .map(|status| status.transfer_id)
             .collect::<Vec<_>>();
+        #[cfg(target_os = "linux")]
+        let visible_ids = {
+            let mut visible_ids = visible_ids;
+            visible_ids.extend(external.iter().map(|status| status.id));
+            visible_ids
+        };
         let mut registry = self
             .transfers
             .lock()
             .map_err(|_| "Nearby Send transfer authority is unavailable".to_string())?;
         registry.begin_snapshot(peer_id, channel, &visible_ids, now);
-        let issued = raw_transfers
+        let issued: Vec<_> = raw_transfers
             .into_iter()
             .filter_map(|status| {
                 let handle =
@@ -461,6 +530,36 @@ impl NativeNearbyTransfer {
                 })
             })
             .collect();
+        #[cfg(target_os = "linux")]
+        let issued = {
+            let mut issued = issued;
+            for status in external {
+                if let Some(handle) = registry.issue(
+                    peer_id,
+                    channel,
+                    status.id,
+                    runtime_collab::NearbyTransferDirection::Sending,
+                    now,
+                ) {
+                    issued.push(runtime_collab::NearbyTransferStatus {
+                        handle,
+                        name: status.name,
+                        device_label: status.endpoint,
+                        direction: runtime_collab::NearbyTransferDirection::Sending,
+                        phase: status.phase,
+                        total_bytes: status.bytes,
+                        transferred_bytes: if status.phase
+                            == runtime_collab::NearbyTransferPhase::Completed
+                        {
+                            status.bytes
+                        } else {
+                            0
+                        },
+                    });
+                }
+            }
+            issued
+        };
         drop(registry);
         Ok(issued)
     }
@@ -616,11 +715,46 @@ impl NearbyTransferServices for NativeNearbyTransfer {
         context: &NearbyTransferRequestContext,
         command: runtime_collab::NearbyTransferCommand,
     ) -> Result<runtime_collab::NearbyTransferReply, String> {
-        if !nearby_policy_enabled(ContinuityPolicySnapshot::load()) {
+        if !nearby_policy_enabled(ContinuityPolicySnapshot::load())
+            && !matches!(
+                command,
+                runtime_collab::NearbyTransferCommand::AirDropAvailability
+            )
+        {
             return Err("Nearby Send is disabled by continuity privacy settings".into());
         }
         let grants = self.files_grants(context.workspace_id());
         Ok(match command {
+            runtime_collab::NearbyTransferCommand::AirDropAvailability => {
+                runtime_collab::NearbyTransferReply::AirDropAvailability {
+                    available: {
+                        #[cfg(target_os = "linux")]
+                        {
+                            self.airdrop
+                                .available_to(context.workspace_id(), context.person())
+                        }
+                        #[cfg(not(target_os = "linux"))]
+                        {
+                            false
+                        }
+                    },
+                }
+            }
+            runtime_collab::NearbyTransferCommand::SendAirDrop {
+                source_path,
+                address,
+                port,
+            } => {
+                #[cfg(target_os = "linux")]
+                {
+                    self.send_airdrop(context, &grants, source_path, address, port)
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = (source_path, address, port);
+                    rejected("AirDrop lab is unavailable")
+                }
+            }
             runtime_collab::NearbyTransferCommand::Snapshot => self.snapshot(context, &grants)?,
             runtime_collab::NearbyTransferCommand::Send {
                 target,
@@ -633,6 +767,10 @@ impl NearbyTransferServices for NativeNearbyTransfer {
                     runtime_collab::NearbyTransferDirection::Sending,
                 ) {
                     Some(transfer_id) => {
+                        #[cfg(target_os = "linux")]
+                        if self.airdrop.cancel(transfer_id) {
+                            return Ok(runtime_collab::NearbyTransferReply::Accepted);
+                        }
                         outcome(fabric::cancel_nearby_transfer(&self.network, transfer_id))
                     }
                     None => rejected(EXPIRED_TRANSFER),
@@ -651,6 +789,12 @@ impl NearbyTransferServices for NativeNearbyTransfer {
                     runtime_collab::NearbyTransferDirection::Sending,
                 ) {
                     Some(transfer_id) => {
+                        #[cfg(target_os = "linux")]
+                        if self.airdrop.contains(transfer_id) {
+                            return Ok(rejected(crate::shell::i18n::t(
+                                "airdrop-error-fresh-consent",
+                            )));
+                        }
                         outcome(fabric::retry_nearby_transfer(&self.network, transfer_id))
                     }
                     None => rejected(EXPIRED_TRANSFER),
@@ -660,6 +804,8 @@ impl NearbyTransferServices for NativeNearbyTransfer {
     }
 
     fn disconnect(&self, peer_id: u64) {
+        #[cfg(target_os = "linux")]
+        self.airdrop.disconnect(peer_id);
         if let Ok(mut targets) = self.targets.lock() {
             targets.remove_peer(peer_id);
         }

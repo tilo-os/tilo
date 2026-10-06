@@ -516,6 +516,86 @@ impl NearbyTransferStore {
         Ok((0, *blake3::hash(&[]).as_bytes()))
     }
 
+    /// Accept a fresh, explicitly consented offer for the same immutable object.
+    /// A sender restart/retry changes the request ID, not the certified source
+    /// or manifest. Ordinary `begin_incoming` remains exact-request bound.
+    ///
+    /// # Errors
+    /// Returns an error for a changed source/manifest or durable I/O failure.
+    pub(crate) fn accept_incoming_offer(
+        &mut self,
+        manifest: IncomingManifest,
+        now_unix_ms: u64,
+    ) -> Result<(u64, [u8; 32]), String> {
+        let Some(existing) = self
+            .index
+            .inbox
+            .iter()
+            .find(|entry| entry.id == manifest.id)
+            .cloned()
+        else {
+            return self.begin_incoming(manifest, now_unix_ms);
+        };
+        if manifest.request_id == [0; 16] || !same_incoming_object(&existing, &manifest) {
+            return Err("resume manifest does not match the staged transfer".into());
+        }
+        let path = self.partial_path(existing.id);
+        let hash = prefix_hash(&path, existing.committed_offset)?;
+        let partial = OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&path)
+            .map_err(display)?;
+        partial
+            .set_len(existing.committed_offset)
+            .map_err(display)?;
+        partial.sync_data().map_err(display)?;
+        if let Some(entry) = self
+            .index
+            .inbox
+            .iter_mut()
+            .find(|entry| entry.id == existing.id)
+        {
+            entry.request_id = manifest.request_id;
+        }
+        if let Err(error) = self.persist() {
+            if let Some(entry) = self
+                .index
+                .inbox
+                .iter_mut()
+                .find(|entry| entry.id == existing.id)
+            {
+                entry.request_id = existing.request_id;
+            }
+            return Err(error);
+        }
+        Ok((existing.committed_offset, hash))
+    }
+
+    /// Discard a retained checkpoint when its freshly re-offered object is
+    /// declined. A different peer or manifest cannot discard the old receive.
+    ///
+    /// # Errors
+    /// Returns an error when matching retained bytes cannot be removed.
+    pub(crate) fn decline_incoming_offer(
+        &mut self,
+        manifest: &IncomingManifest,
+    ) -> Result<bool, String> {
+        let Some(existing) = self
+            .index
+            .inbox
+            .iter()
+            .find(|entry| entry.id == manifest.id)
+        else {
+            return Ok(false);
+        };
+        if !same_incoming_object(existing, manifest) {
+            return Err("resume manifest does not match the staged transfer".into());
+        }
+        self.cancel_incoming(manifest.id)?;
+        Ok(true)
+    }
+
     /// Append one in-order chunk and durably checkpoint bounded prefixes.
     ///
     /// # Errors
@@ -772,6 +852,15 @@ impl NearbyTransferStore {
         tilo_files::native::atomic::write_with_mode(&self.root.join("index.json"), &bytes, 0o600)
             .map_err(display)
     }
+}
+
+fn same_incoming_object(entry: &InboxEntry, manifest: &IncomingManifest) -> bool {
+    entry.id == manifest.id
+        && entry.source == manifest.source
+        && entry.name == manifest.name
+        && entry.kind == manifest.kind
+        && entry.total_bytes == manifest.total_bytes
+        && entry.content_hash == manifest.content_hash
 }
 
 fn validate_index(index: &StoreIndex) -> Result<(), String> {
@@ -1224,6 +1313,132 @@ fn display(error: impl std::fmt::Display) -> String {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn nearby_fresh_consent_rebinds_retry_and_truncates_only_uncommitted_tail() {
+        let root = TempDir::new().unwrap();
+        let spool = root.path().join("spool");
+        let checkpoint = vec![3; usize::try_from(CHECKPOINT_BYTES).unwrap()];
+        let manifest = IncomingManifest {
+            id: [61; 16],
+            source: "certified-peer".into(),
+            request_id: [62; 16],
+            name: "report.bin".into(),
+            kind: TransferKind::File,
+            total_bytes: CHECKPOINT_BYTES + 20,
+            content_hash: [4; 32],
+        };
+        let mut store = NearbyTransferStore::open(spool.clone(), 10).unwrap();
+        store.begin_incoming(manifest.clone(), 10).unwrap();
+        store.append(manifest.id, 0, &checkpoint).unwrap();
+        store
+            .append(manifest.id, CHECKPOINT_BYTES, b"crash-tail")
+            .unwrap();
+        let before = store.inbox()[0].clone();
+        let mut retry = manifest.clone();
+        retry.request_id = [63; 16];
+        assert!(
+            store.begin_incoming(retry.clone(), 11).is_err(),
+            "ordinary resume cannot rotate consent"
+        );
+        let (offset, hash) = store.accept_incoming_offer(retry.clone(), 11).unwrap();
+        assert_eq!(offset, CHECKPOINT_BYTES);
+        assert_eq!(hash, *blake3::hash(&checkpoint).as_bytes());
+        assert_eq!(
+            fs::read(store.partial_path(manifest.id)).unwrap(),
+            checkpoint
+        );
+        assert_eq!(store.inbox()[0].request_id, retry.request_id);
+        assert_eq!(store.inbox()[0].expires_unix_ms, before.expires_unix_ms);
+        assert!(
+            store.begin_incoming(manifest, 11).is_err(),
+            "old request is now stale"
+        );
+        drop(store);
+        let mut reopened = NearbyTransferStore::open(spool, 12).unwrap();
+        assert_eq!(reopened.begin_incoming(retry, 12).unwrap(), (offset, hash));
+    }
+
+    #[test]
+    fn nearby_reoffer_cannot_change_peer_or_immutable_manifest() {
+        let root = TempDir::new().unwrap();
+        let mut store = NearbyTransferStore::open(root.path().join("spool"), 10).unwrap();
+        let manifest = IncomingManifest {
+            id: [71; 16],
+            source: "certified-peer".into(),
+            request_id: [72; 16],
+            name: "report.bin".into(),
+            kind: TransferKind::File,
+            total_bytes: 20,
+            content_hash: [4; 32],
+        };
+        store.begin_incoming(manifest.clone(), 10).unwrap();
+        store.append(manifest.id, 0, b"uncommitted").unwrap();
+        let before = store.inbox()[0].clone();
+        let mut retry = manifest;
+        retry.request_id = [73; 16];
+        let mut wrong_peer = retry.clone();
+        wrong_peer.source = "other-peer".into();
+        let mut wrong_name = retry.clone();
+        wrong_name.name = "other.bin".into();
+        let mut wrong_kind = retry.clone();
+        wrong_kind.kind = TransferKind::FolderArchive;
+        let mut wrong_size = retry.clone();
+        wrong_size.total_bytes += 1;
+        let mut wrong_hash = retry.clone();
+        wrong_hash.content_hash = [5; 32];
+        let mut zero_request = retry;
+        zero_request.request_id = [0; 16];
+        for changed in [
+            wrong_peer,
+            wrong_name,
+            wrong_kind,
+            wrong_size,
+            wrong_hash,
+            zero_request,
+        ] {
+            assert!(store.accept_incoming_offer(changed, 11).is_err());
+            assert_eq!(store.inbox(), std::slice::from_ref(&before));
+            assert_eq!(
+                fs::read(store.partial_path(before.id)).unwrap(),
+                b"uncommitted"
+            );
+        }
+    }
+
+    #[test]
+    fn nearby_declining_a_fresh_offer_discards_only_its_matching_checkpoint() {
+        let root = TempDir::new().unwrap();
+        let spool = root.path().join("spool");
+        let mut store = NearbyTransferStore::open(spool.clone(), 10).unwrap();
+        let mut offer = IncomingManifest {
+            id: [81; 16],
+            source: "certified-peer".into(),
+            request_id: [82; 16],
+            name: "report.bin".into(),
+            kind: TransferKind::File,
+            total_bytes: 20,
+            content_hash: [4; 32],
+        };
+        store.begin_incoming(offer.clone(), 10).unwrap();
+        store.append(offer.id, 0, b"partial").unwrap();
+        offer.request_id = [83; 16];
+        let mut other_peer = offer.clone();
+        other_peer.source = "other-peer".into();
+        assert!(store.decline_incoming_offer(&other_peer).is_err());
+        assert_eq!(store.inbox().len(), 1);
+        assert_eq!(fs::read(store.partial_path(offer.id)).unwrap(), b"partial");
+        assert!(store.decline_incoming_offer(&offer).unwrap());
+        assert!(store.inbox().is_empty());
+        assert!(!store.partial_path(offer.id).exists());
+        drop(store);
+        assert!(
+            NearbyTransferStore::open(spool, 11)
+                .unwrap()
+                .inbox()
+                .is_empty()
+        );
+    }
 
     #[test]
     #[allow(

@@ -27,6 +27,9 @@ mod qualification {
         manifest: PathBuf,
         #[arg(long, value_parser = ["tiny", "base", "small-q5_1"])]
         model: String,
+        /// Isolate one public clip when investigating the model's load budget.
+        #[arg(long)]
+        single_case: Option<String>,
     }
 
     #[derive(Deserialize)]
@@ -133,6 +136,13 @@ mod qualification {
         let bytes = receipt(root, &model.file, model.size, &model.sha256)?;
         let mut probes = Vec::new();
         for case in manifest.cases {
+            if options
+                .single_case
+                .as_ref()
+                .is_some_and(|id| id != &case.id)
+            {
+                continue;
+            }
             if case.size > u64::try_from(MAX_SAMPLES.saturating_mul(2).saturating_add(4096))?
                 || case.reference.len() > 16 * 1024
             {
@@ -140,6 +150,12 @@ mod qualification {
             }
             let samples = wave(&receipt(root, &case.file, case.size, &case.sha256)?)?;
             probes.push(Probe { case, samples });
+        }
+        if options.single_case.is_some() {
+            if probes.len() != 1 || !probes.first().is_some_and(|probe| probe.case.primary) {
+                return Err("single public primary clip is unavailable".into());
+            }
+            return Ok((bytes, probes));
         }
         // Unique public utterances are spliced; this is not natural conversation.
         for language in ["en", "fr", "zh"] {

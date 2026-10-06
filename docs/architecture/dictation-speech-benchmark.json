@@ -741,7 +741,12 @@
     "sha256": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
     "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
     "license": "MIT",
-    "result": "Verified input; GGML_ASSERT(ctx->mem_buffer != NULL) during native loading under unchanged 1 GiB RLIMIT_AS, before transcript probes. No accuracy or latency claim."
+    "result": "Verified input; GGML_ASSERT(ctx->mem_buffer != NULL) during native loading under unchanged 1 GiB RLIMIT_AS, before transcript probes. No accuracy or latency claim.",
+    "isolated_clip": {
+      "id": "en_us-0",
+      "audio_samples": 168960,
+      "result": "Same native allocation assertion before load with only one 10.56-second clip, ruling out bulk fixture preload as the cause."
+    }
   },
   "loader_regression": {
     "before": "Base worker exited abnormally during native loading with geometrically grown read buffer.",

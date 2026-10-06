@@ -2360,6 +2360,21 @@ nearby-error-folder-too-large = der Ordner überschreitet die Größenbegrenzung
 nearby-error-source-changed = die Quelle hat sich während der Vorbereitung geändert
 nearby-error-name-not-portable = der Name der Quelle ist nicht übertragbar
 
+# AirDrop lab receiver verification
+airdrop-verify-title = AirDrop-Empfänger überprüfen
+airdrop-verify-send-once = Einmal senden
+airdrop-verify-detail = Datei: { $name }
+    Größe: { $bytes } Bytes
+    Empfänger: { $endpoint }
+    Den SHA-256-Fingerabdruck des Empfängerzertifikats als 64 Hexadezimalzeichen von einer vertrauenswürdigen Konsole oder einem unabhängig bestätigten Kanal eingeben. Nur bei Übereinstimmung wird diese vorbereitete Datei einmal gesendet. Ohne Überprüfung abbrechen.
+airdrop-error-unavailable = Das AirDrop-Labor benötigt eine entsperrte lokale Sitzung, Dateiübertragungsrechte und aktuellen Dateizugriff.
+airdrop-error-source = Das AirDrop-Labor unterstützt eine lesbare reguläre Datei bis 16 MiB.
+airdrop-error-busy = Eine AirDrop-Übertragung läuft bereits. Vor einer weiteren Übertragung abbrechen.
+airdrop-error-failed = AirDrop-Übertragung fehlgeschlagen. Den Empfänger vor einem neuen Versuch erneut prüfen.
+airdrop-error-declined = Die AirDrop-Übertragung wurde vor dem Senden abgebrochen.
+airdrop-error-verification = Fingerabdruck stimmt nicht überein. Keine Datei gesendet.
+airdrop-error-fresh-consent = Einen neuen AirDrop-Versuch starten, um Empfänger und Datei erneut zu bestätigen.
+
 # Ein Dokument, das ein Tab nicht wiederherstellen konnte
 hosted-document-unavailable = { $path } ist nicht verfügbar: { $error }
 
@@ -2429,3 +2444,6 @@ search-action-tab-menu-unavailable = Kein fokussierter Tab verfügbar
 dictation-transcript-retained = Mikrofon aus · Der Text ist zu lang für einen Einfügeschritt. Für 10 Minuten privat aufbewahrt. Kopieren überträgt den gesamten Text in die Zwischenablage; Verwerfen entfernt ihn.
 dictation-transcript-copied = Gesamtes Transkript kopiert. Füge es im gewünschten Feld ein. Der private Entwurf bleibt bis zum Verwerfen oder Ablauf der 10 Minuten erhalten.
 dictation-copy-failed = Zwischenablage nicht verfügbar. Dein gesamtes Transkript bleibt privat aufbewahrt; versuche es erneut oder verwirf es.
+search-action-tab-drag-cancel = Tab-Ziehen abbrechen
+search-action-tab-drag-cancel-subtitle = Den gezogenen Tab an seinem ursprünglichen Ort lassen
+search-action-tab-drag-cancel-unavailable = Das Tab-Ziehen kann bei gesperrter Sitzung nicht abgebrochen werden.
