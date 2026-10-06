@@ -2445,6 +2445,34 @@ impl FrameHarness {
         crate::record::capability::record_intent(self.root.as_ref())
     }
 
+    /// Deliver a trusted shell operation through the mounted app adapter.
+    ///
+    /// # Errors
+    /// Returns the app's refusal, or an unavailable error without a mounted app.
+    pub fn device_shell_operation(
+        &mut self,
+        operation: &crate::floating_surface::DeviceShellOperation,
+    ) -> Result<serde_json::Value, String> {
+        let bound = self
+            .root
+            .as_any_mut()
+            .and_then(|root| root.downcast_mut::<crate::widget::BoundAppWidget>())
+            .ok_or("Terminal is not available")?;
+        crate::AppWidget::device_shell_operation(bound, operation)
+    }
+
+    /// Deliver the existing trusted host selection through the mounted canonical adapter.
+    pub fn request_device_shell(&mut self) -> bool {
+        let Some(bound) = self
+            .root
+            .as_any_mut()
+            .and_then(|root| root.downcast_mut::<crate::widget::BoundAppWidget>())
+        else {
+            return false;
+        };
+        crate::AppWidget::request_device_shell(bound)
+    }
+
     /// Consume one device-local shell request through the mounted app's canonical adapter.
     /// This exposes no mutable document or direct surface callback.
     pub fn take_host_intent(&mut self) -> Option<crate::widget::AppHostIntent> {

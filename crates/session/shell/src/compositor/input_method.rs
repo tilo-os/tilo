@@ -166,8 +166,9 @@ pub fn osk_service_wanted(preference: OskPreference, input: OskInput) -> bool {
 ///
 /// In `Auto`, a convertible in tablet mode always gets it: its keyboard is
 /// folded away. Otherwise it is shown only while touch is the input in use:
-/// nothing before the first touch, and a key press or any mouse, touchpad or
-/// pen use hides it until the screen is touched again.
+/// nothing before the first touch. A key press, pointer click, scroll, gesture
+/// or pen use hides it until the screen is touched again; pointer hover does
+/// not dismiss a touch-started keyboard.
 pub fn osk_wanted(preference: OskPreference, input: OskInput) -> bool {
     match preference {
         OskPreference::Always => true,
@@ -423,7 +424,7 @@ mod tests {
         environment.note_used(ui::InputModality::Touch);
         assert!(wanted(&environment));
         environment.note_used(ui::InputModality::Pointer);
-        assert!(!wanted(&environment), "the mouse moved");
+        assert!(!wanted(&environment), "the pointer was activated");
         environment.note_used(ui::InputModality::Touch);
         assert!(wanted(&environment));
         environment.note_used(ui::InputModality::Keyboard);

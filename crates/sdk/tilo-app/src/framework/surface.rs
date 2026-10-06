@@ -88,6 +88,26 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
     /// The resource state to show.
     fn present(&mut self, state: &Rc<R::State>);
 
+    fn supports_device_shell(&self) -> bool {
+        false
+    }
+
+    /// Answer a private owner operation from the authenticated hosting shell.
+    ///
+    /// # Errors
+    /// Refuses unsupported or unavailable device-shell operations.
+    fn device_shell_operation(
+        &mut self,
+        _operation: &ui_core::floating_surface::DeviceShellOperation,
+    ) -> Result<serde_json::Value, String> {
+        Err("This surface has no device shell".into())
+    }
+
+    /// A trusted hosting shell owner selected the device-shell target. No grant is implied.
+    fn request_device_shell(&mut self) -> bool {
+        false
+    }
+
     /// The latest bounded query from the platform's canonical search source.
     /// Runs on the UI thread before sync, coalescing queries between frames.
     /// A surface may refresh remote results through its attached jobs; expose
@@ -263,6 +283,12 @@ pub(crate) trait SurfacePublication<R: Resource> {
     fn live_row(&self, id: &str) -> Option<LiveRow>;
     fn row_declarations(&self, row: &str) -> Vec<ActionDecl<R>>;
     fn search_entries(&self) -> Vec<SearchEntry>;
+    fn supports_device_shell(&self) -> bool;
+    fn device_shell_operation(
+        &mut self,
+        operation: &ui_core::floating_surface::DeviceShellOperation,
+    ) -> Result<serde_json::Value, String>;
+    fn request_device_shell(&mut self) -> bool;
     fn search_queries(&self) -> SearchQueries;
     fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent>;
     fn take_save_retry(&mut self) -> bool;
@@ -819,6 +845,19 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
 impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfacePublication<R>
     for SurfaceHost<R, S, E>
 {
+    fn supports_device_shell(&self) -> bool {
+        self.surface.supports_device_shell()
+    }
+    fn device_shell_operation(
+        &mut self,
+        operation: &ui_core::floating_surface::DeviceShellOperation,
+    ) -> Result<serde_json::Value, String> {
+        self.surface.device_shell_operation(operation)
+    }
+    fn request_device_shell(&mut self) -> bool {
+        self.surface.request_device_shell()
+    }
+
     fn take_save_retry(&mut self) -> bool {
         self.effects.is_some() && self.surface.take_save_retry()
     }

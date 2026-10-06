@@ -1194,6 +1194,19 @@ impl OffscreenRenderer {
         )
     }
 
+    /// Use stable CPU segment ordering with Vello's production GPU fine
+    /// rasterizer. Exact pixel comparisons can select this per instance
+    /// without changing process-wide renderer settings.
+    ///
+    /// # Errors
+    /// Returns the same adapter and renderer errors as [`Self::try_new`].
+    ///
+    /// # Panics
+    /// Panics on zero dimensions, as [`Self::try_new`] does.
+    pub fn try_new_with_cpu_preprocessing(width: u32, height: u32) -> Result<Self, OffscreenError> {
+        Self::try_new_with_preprocessing(width, height, true)
+    }
+
     /// Exact pixel oracles can use stable CPU segment ordering while keeping
     /// Vello's fine rasterization on the GPU. Avoid process-global env mutation.
     #[cfg(test)]

@@ -2375,3 +2375,23 @@ a11y-speaker-listener = { $group } can calibrate with this microphone
 a11y-speaker-listener-description = Speaker calibration may listen with this microphone; activate to stop
 speaker-calibration-listening-refused = { $microphone } was not allowed to listen, so nothing can be measured from where you sit
 speaker-error-listening-unavailable = choose a microphone that can listen where you sit
+search-action-axis-enable = Enable experimental axis navigation
+search-action-axis-enable-subtitle = This session: step between groups and gather focus into view
+search-action-axis-disable = Disable experimental axis navigation
+search-action-axis-disable-subtitle = Restore ordinary window navigation for this session
+search-action-axis-gather = Gather the focused window into view
+search-action-axis-gather-subtitle = Experimental axis navigation: reveal focus without animation
+axis-navigation-disabled = Experimental axis navigation is disabled
+
+search-provider-device-shell = Device shell
+terminal-request-device-shell = Request this device's own shell
+terminal-device-shell-owner-required = Only the device owner can request its own shell
+
+terminal-inspect-device-shell = Inspect this device's shell session
+terminal-run-device-shell = Run a command in this device's shell
+terminal-read-device-shell = Read this device's shell output
+
+terminal-device-shell-session-param = Exact local session UUID from Inspect
+terminal-device-shell-command-param = One reviewed command in this device shell
+
+terminal-device-shell-confirm-param = Confirm this reviewed device-shell operation

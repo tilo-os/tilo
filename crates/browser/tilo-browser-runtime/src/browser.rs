@@ -844,6 +844,18 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         hydrated,
         status,
     } = request;
+    // Apps can measure shared controls while constructing their views. Publish
+    // the verified browser fonts first: WASM has no system fonts to fall back
+    // to when those constructor-time renderers shape their labels.
+    let system = ui::font_catalog::FontCatalog::product("", "en-US")
+        .load_browser_startup_bytes(|name| {
+            Reflect::get(&fonts, &name.into())
+                .ok()
+                .filter(|v| !v.is_undefined())
+                .map(|v| Uint8Array::new(&v).to_vec())
+        })
+        .map_err(error)?;
+    let text_renderer = ui::TextRenderer::with_browser_font_system(system);
     let definition = definition(config.app.as_deref())?;
     let store = crate::storage::load(&config.profile, &config.device, &hydrated)?;
     let dyn_store: Rc<dyn durable_store::DurableStore> = store.clone();
@@ -861,14 +873,6 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         Some(definition) => present_component(definition, &config, dyn_store, permissions)?,
         None => present_desktop(id, &config, dyn_store, permissions)?,
     };
-    let system = ui::font_catalog::FontCatalog::product("", "en-US")
-        .load_browser_startup_bytes(|name| {
-            Reflect::get(&fonts, &name.into())
-                .ok()
-                .filter(|v| !v.is_undefined())
-                .map(|v| Uint8Array::new(&v).to_vec())
-        })
-        .map_err(error)?;
     let window = Arc::new(
         event_loop
             .create_window(
@@ -892,7 +896,6 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     };
     let viewport = observed.bounded_by(caps);
     let dpr = viewport.dpr;
-    let text_renderer = ui::TextRenderer::with_browser_font_system(system);
     let mut frame = match root {
         Root::Component(component) => {
             let wake = proxy()?;
