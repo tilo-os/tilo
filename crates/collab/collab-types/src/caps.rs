@@ -302,7 +302,8 @@ impl Scope {
 
     /// Does this scope cover `resource`?
     ///
-    /// Scopes nest: `Workspace` covers everything, `App(a)` covers every
+    /// Scopes nest within an enforcement point: `Workspace` covers room
+    /// resources, `App(a)` covers every
     /// artifact/action of `a`, `FsPath(p)` covers every path under `p`. A
     /// scope from a different enforcement point than the resource simply
     /// doesn't match — inert, never permissive.
@@ -322,7 +323,7 @@ impl Scope {
     )]
     pub fn matches_resource(&self, resource: &ResourceRef) -> bool {
         match (self, resource) {
-            (Scope::Workspace, _) => true,
+            (Scope::Workspace, _) => role_base_applies(resource),
 
             (
                 Scope::App(a),
@@ -853,6 +854,46 @@ pub fn decide_capability(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_authorship_cannot_upgrade_external_file_device_or_network_grants() {
+        let actor = Actor::app("so.tilo.books");
+        let caps = vec![
+            CapOverride::grant(Subject::app("so.tilo.books"), Scope::Workspace, Verb::Write),
+            CapOverride::grant(
+                Subject::app("so.tilo.books"),
+                Scope::FsPath("/approved/book.txt".into()),
+                Verb::Read,
+            ),
+        ];
+        assert_eq!(
+            decide_capability(&actor, &ResourceRef::Workspace, Verb::Write, &caps, None),
+            CapDecision::Allow
+        );
+        assert_eq!(
+            decide_capability(
+                &actor,
+                &ResourceRef::FsPath("/approved/book.txt".into()),
+                Verb::Read,
+                &caps,
+                None,
+            ),
+            CapDecision::Allow
+        );
+        for resource in [
+            ResourceRef::FsPath("/approved/book.txt".into()),
+            ResourceRef::FsPath("/approved/sibling.txt".into()),
+            ResourceRef::Device("camera".into()),
+            ResourceRef::NetHost("example.com".into()),
+            ResourceRef::FsRecord("file-1".into()),
+        ] {
+            assert_ne!(
+                decide_capability(&actor, &resource, Verb::Write, &caps, None),
+                CapDecision::Allow,
+                "workspace authorship must not authorize external resource {resource:?}"
+            );
+        }
+    }
 
     /// Verbs imply the ones below them, and each role's cap ceiling matches its verb ceiling.
     #[test]

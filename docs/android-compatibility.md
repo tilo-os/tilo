@@ -34,7 +34,7 @@ The tested private runtime uses signed Alpine edge packages:
 | ART | `0_git20251009-r2`, upstream `e78bf68917bcaaf58fef3960cd88793b3b7f39cc` |
 | Acquired rootfs SHA-256 | `1c5d04f37be46e40ad80efbd01f6e982cc85512bb92f3977c5af673e3c064423` |
 | Original runtime receipt SHA-256 | `804b2c280485ee16b8051a45b43c4a3389260d90ebed78188b9f0dc0b34908ea` |
-| Mediation runtime receipt SHA-256 | `839ed7e5428eb315f1e48b00b8e89435294290ba7b275f009a71efe502704a56` |
+| Mediation runtime receipt SHA-256 | `b139102cb605c839ad4d152c0ee7fd364eb55208000d56b6dd9fcd77473ef090` |
 | APK SHA-256 | `1928e65ced8cbe78be2ff3cb4c321e9e75d138e8e30ea1368fbb772a86827d1d` |
 | APK signer certificate SHA-256 | `830e955c73d02aa077c270fcb3e089a556976afe8e9ab3f9b39c4616fdbd9a6d` |
 
@@ -166,7 +166,7 @@ remote test workspace rather than publishing app-data or identity directories.
 ## Bounded Android mediation slice
 
 The [mediation implementation and acceptance checklist](../tools/android/mediation/README.md)
-adds a private, pinned framework variant. Its three upstream Java inputs are checked
+adds a private, pinned framework variant. Its five upstream Java inputs are checked
 against exact hashes before patching. Android permission checks now deny unqualified
 storage, camera, microphone and location access; `requestPermissions` returns matching
 denied results through the actual UI-thread callback instead of hanging the app.
@@ -181,10 +181,14 @@ or lost transport is permanently unusable; malformed/mismatching replies cannot
 satisfy a later request. A finishing activity receives no late result. Multiple
 selection and persisted Android URI grants remain unimplemented.
 
-Notifications report unavailable and suppress sends/cancels until a qualified
-capability mapping exists. The entrypoint forces GIO's portal backend, preventing
-ATL's default fallback to the raw freedesktop notification service. This does not
-prove notification delivery, actions or cancellation in Tilo's notification centre.
+Notifications use GIO's freedesktop backend through the launcher's existing
+filtered bus. The explicit fixture-only `--notifications` preparation option
+adds only the existing `notifications = "via-host"` portal declaration. Android
+checks the already registered application connection for Tilo's provider, without
+opening another bus or activating a daemon. Without this capability, notification
+APIs report unavailable. With it, actual delivery and withdrawal reach Tilo's
+notification centre and the provider attributes the caller to its authenticated room.
+Notification tags, actions and background persistence remain unqualified.
 
 The owned SDK-built acceptance APK tests the real Android APIs inside ART. It
 requests no Tilo file, network or bus grant. It requires denied permission callbacks,
@@ -201,44 +205,75 @@ new artifact pins. The private framework and transport were built in a bounded
 rootless official Alpine container with signed ART development/JDK packages.
 Nothing was added to the laptop or Tilo OS image.
 
-The earlier `2e3655df6b` CI finished: filesystem and legacy-app workflows passed;
-check, lint and SDK workflows failed because newer main had a real `run.rs` conflict.
-Task-branch reconciliation `4f40142bab` retains the redesign and main's action
-capability Landlock rule alongside the generated account rule. It changes no
-Contacts/Messages ownership or UI split. Current integration checks and execution
-are tracked separately from the older pre-redesign results.
+The final [Android API acceptance record](verification/android-mediation/journey.json)
+and [Arity record](verification/android-arity/journey.json) use the same final runtime
+and production binaries as the successful integration below. Both were rerun after
+the security fix. Earlier checkpoint `ccad09593611` reached terminal green affected,
+quality, SDK, filesystem and legacy workflows; new continuation checks are separate.
 
-The final [Android API acceptance record](verification/android-mediation/journey.json),
-[actual APK frame](verification/android-mediation/android-api.png),
-[callback/confinement excerpt](verification/android-mediation/confinement-and-callbacks.log)
-and refreshed Arity evidence use the redesigned production binaries. The API journey
-completed at `2026-10-06T01:56:01.284409+00:00`; both journeys use the final mediation receipt above.
+## Successful document, notification and accessibility integration
+
+The [complete integration record](verification/android-integration/journey.json),
+[Android results](verification/android-integration/acceptance.txt),
+[external accessibility tree](verification/android-integration/accessibility.json)
+and three original PNGs preserve actual execution evidence. The runner creates only
+new disposable source, destination and sibling-canary documents in its own profile.
+Explicit `--fixture-grants` authorizes only the source read grant and destination
+write grant; it never accepts a user document path or touches the user's bus.
+Android `OPEN_DOCUMENT` selects and reads the exact source bytes through Tilo's
+existing chooser. `CREATE_DOCUMENT` and the picker overwrite confirmation save the
+exact destination bytes through Android `ContentResolver`. Source writes and sibling
+reads fail; blanket Android storage permissions remain denied. Both grants are
+revoked before relaunch; the APK then fails both reads and writes to the former
+URIs and receives chooser cancellation. This proves revocation on relaunch, not
+revocation of already-open descriptors, persisted URI grants or cold P2P hydration.
+
+The first real run found source corruption: automatic app workspace authorship
+matched external filesystem resources and upgraded a nominated read-only bind to
+write. `Scope::Workspace` now matches only room resources, as the capability model's
+enforcement boundary documents. Production-decider and launcher tests preserve
+workspace authorship and explicit file reads while rejecting external writes,
+siblings, devices and network authority. The complete APK run now confirms the
+read-only source and canary remain byte-for-byte unchanged.
+
+The picker is driven through the existing external AT-SPI client, activating the
+real file entry, Save and Replace actions. The shared client now accepts valid GTK
+app-namespaced object paths as well as AccessKit paths. A pinned ATL bridge forwards
+Android content descriptions to GTK's accessible properties, including TextView's
+actual label and preservation after text updates. The external process observes
+`Approved Android document status`; setting an internal Java string alone does not
+satisfy the runner. This is representative TextView accessibility, not a complete
+Android semantic resource/action or system-owned CRDT bridge. Actual close invokes
+pause, stop and destroy; the owned session and bus stop on completion or failure.
 
 Final framework inputs: upstream archive SHA-256
 `be071b16a9b26f8b5feb0f858d2a850947d0e42a19642ad16a04343cf6be1137`,
-patched framework DEX JAR `3afb762e93d87ebd68706124c7fb5c166b6920c4872d9ce5ac21bf101a822359`,
-private chooser library `1ab3004681a434ba4af9017ecadcf081de06bcb676744def7ad5a7e13c48846e`,
-static entrypoint `fb36aff7cbffdf5fcac8eb9104c1cbd3103c530dd6d4b0f0d153ef6852454e08`.
-Fixture APK `83f97d7b1b633159f73dfbcbf18f64fbb93841e2d5aa33cb215f83c463500d9a`
-was verified with signer `b22784b8d3f82408f1fa3c33b99c2bd572318417408dbaf95e30c25e9743e729`.
+patched framework DEX JAR `fe5374cccd21ebb27625121274389914f82c4c1a71cf3406bd72e21e6fd77273`,
+private JNI library `8197a4231a283c3bc5ea6b24f9e210faa3fa31b0df66f0dfb01c70a7cc29dfec`,
+static entrypoint `210e786537dfbed45e669a5f3cc99c99dd89d80d81cf2192d323d5890e69327a`.
+Fixture APK `dedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4`
+was verified with signer `4b6b7db707642374eb5f4f5bb32634240ce2a0db9120d9a330ce41e63fe963a5`.
+The test key stays only in the disposable remote build container and is destroyed
+with that container. No key, runtime or APK binary is committed.
 
-Current redesign validation passed: 21 focused Python admission/archive tests,
-three launcher account/descriptor tests, five production chooser-service tests,
-remote shell/launcher test-target compile, strict remote Clippy, SDK signature
-verification, both final APK journeys and visual inspection of the original API
-PNG. All Rust compilation and testing ran remotely with local fallback disabled.
+Validation includes 21 Python admission/archive tests, 21 remote external AT-SPI
+client tests, focused capability-decider and launcher regressions, mandatory remote
+shell/launcher test-target compilation, strict remote lint, complete framework and
+strict C builds, SDK signature verification, all three actual APK journeys and
+visual inspection of the owned fixture PNGs. All Rust builds/tests run remotely
+with local fallback disabled.
 
 ## Compatibility assessment
 
 | Area | Confirmed | Remaining acceptance |
 | --- | --- | --- |
 | Graphics/input | Actual Arity DEX/ART execution, tiled Wayland tab, OS chrome, software rendering, pointer field focus and keyboard calculation | Real GPU/DRM, resize/rotation, ARM64, touch, IME, Back; ATL focus/widget quirks and unsupported listener methods |
-| Files/state | Actual Android app-private history saves and reopens, separate positive state in two rooms; native canary denial | Actual Android document intent reaches scoped chooser and cancels without a grant; approved hydrated read/save/share, revoke and legacy external storage mapping remain |
-| Notifications | Android unavailable capability and suppressed sends, portal backend forced; existing Tilo service foundation | Android notification identity/actions/cancel mapped to workspace resources; no host D-Bus bypass |
-| Permissions | Strict launcher policy, no requested storage/phone grants, isolated networking | Actual Android unqualified permission denial/callbacks; capability-backed consent, camera/mic/service grants remain |
+| Files/state | App-private history and separate room state; approved local document read/save, read-only and sibling denial; revoked URI read/write denied on relaunch | Cold P2P hydration, sharing, persisted URI authority, immediate running-process revocation and legacy external storage mapping |
+| Notifications | Actual filtered-provider delivery/withdrawal with authenticated room attribution; unavailable without capability | Full Android notification tags, actions, resource mapping and background persistence |
+| Permissions | Strict launcher policy, no requested storage/phone grants, isolated networking | Capability-backed Android permission consent, camera/mic/service grants remain |
 | Lifecycle | Actual Android close/reopen and workspace return, saved state, explicit pause/stop/destroy callbacks, owned compositor teardown | Workspace stop, compositor loss, background workers, service apps, updates and migration |
 | Security | Production launcher and authenticated surface adoption; mandatory fully enforced Landlock and no-new-privileges; negative file/network fixture | Malicious JNI/ART probes, cross-room input/bus/clipboard, broader native attack surface review |
-| Collaboration/accessibility | Existing foreign surface display/streaming and semantic shell actions | APK state is not system-owned CRDT state; Android semantic resource/action and accessibility bridges are required |
+| Collaboration/accessibility | Foreign surface display, semantic shell actions, real picker AT-SPI actions and external Android TextView content description | APK state is not system-owned CRDT state; complete Android semantic resource/action and accessibility coverage |
 
 ATL needs no Binder container or kernel change for this journey. The laptop's
 existing Waydroid remains stopped and unused. A future Waydroid path needs an

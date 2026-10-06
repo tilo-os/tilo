@@ -64,7 +64,9 @@ from dataclasses import dataclass
 
 
 ROOT_PATH = "/org/a11y/atspi/accessible/root"
-PATH_RE = re.compile(r"/org/a11y/atspi/accessible/[0-9/]+")
+# AccessKit exports /org/a11y/...; GTK namespaces UUID keys under its app id.
+# Parse the quoted D-Bus object paths, without assuming a provider's prefix.
+PATH_RE = re.compile(r"'(/[A-Za-z0-9_/]+)'")
 POLL_SECONDS = 0.05
 START_TIMEOUT_SECONDS = 20
 TREE_NODE_LIMIT = 128

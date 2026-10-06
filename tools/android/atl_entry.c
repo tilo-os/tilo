@@ -88,8 +88,9 @@ int main(int argc, char **argv) {
     put("LD_LIBRARY_PATH", libraries);
     put("GDK_BACKEND", "wayland");
     put("ATL_DISABLE_WINDOW_DECORATIONS", "1");
-    // Never fall back to the unfiltered freedesktop notification service.
-    put("GNOTIFICATION_BACKEND", "portal");
+    // Use Tilo's existing authenticated notification provider through the
+    // launcher's filtered bus. No fallback or new bus is opened by mediation.
+    put("GNOTIFICATION_BACKEND", "freedesktop");
     put("TILO_ANDROID_CHOOSER_LIBRARY", join(root, "lib/libtilo-android-chooser.so"));
     // Software rendering makes the first acceptance journey independent of
     // hardware. Hardware rendering requires a separately recorded journey.

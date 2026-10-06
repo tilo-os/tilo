@@ -148,6 +148,7 @@ class Qualification(unittest.TestCase):
         import tomllib
         manifest = tomllib.loads((output / "tilo.toml").read_text())
         self.assertEqual(manifest["sandbox"], {"seccomp": "tilo-default", "net": {"mode": "off"}})
+        self.assertFalse(result["notification_provider_declared"])
         self.assertEqual(qualify.digest(output / "app.apk"), apk_pin)
         self.assertEqual(qualify.runtime_files(output / "runtime"), qualify.runtime_files(root))
         self.assertEqual((output / "activity.txt").read_text(), args.activity + "\n")
@@ -170,6 +171,15 @@ class Qualification(unittest.TestCase):
             offline = qualify.prepare(args)
         self.assertIsNone(offline["launcher_argv"])
         self.assertEqual(offline["desktop_action"], result["desktop_action"])
+        args.output = self.root / "explicit notification fixture"
+        args.notifications = True
+        with patch.object(qualify, "verify_signer"):
+            declared = qualify.prepare(args)
+        sandbox = tomllib.loads((args.output / "tilo.toml").read_text())["sandbox"]
+        self.assertEqual(sandbox, {"seccomp": "tilo-default", "net": {"mode": "off"},
+                                  "portals": {"notifications": "via-host"}})
+        self.assertTrue(declared["notification_provider_declared"])
+        self.assertFalse(declared["runtime_accepted"])
 
     def test_prepare_refuses_activity_injection_on_the_production_function(self):
         for activity in ("calculator/Calculator\nextra", "--help", "../Calculator"):

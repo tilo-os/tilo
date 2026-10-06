@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "completed_at_utc": "2026-10-06T03:32:08.699115+00:00",
+  "execution": "headless production Tilo, actual ART, x86_64 software graphics",
+  "production_binaries": {
+    "shell": "18d9e6493e16c043243bfeb73ace75ac21d6bcc4fee5a25d3543cb0ac1adbf01",
+    "tilo-launcher": "40a06a23424e9857fd8c734e29cb495313f573e523cdf0f02e768219762dd563"
+  },
+  "apk_sha256": "dedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4",
+  "runtime_receipt_sha256": "b139102cb605c839ad4d152c0ee7fd364eb55208000d56b6dd9fcd77473ef090",
+  "room": "6276f13d-650d-46d1-83d7-546c2aa559af",
+  "presented_frame": {
+    "surface_id": 4294967333,
+    "app_id": "so.tilo.android.qualify.hdedf9add2eebf9cb0b440cb092c346727d9435e874beaa7099ae9ec0b043cab4",
+    "sheets": [],
+    "frame_seq": 1,
+    "last_error": null,
+    "rect": {
+      "x": 265.99998474121094,
+      "y": 128.0,
+      "w": 868.0,
+      "h": 772.0
+    },
+    "buffer": {
+      "w": 868,
+      "h": 772
+    },
+    "presented": true,
+    "opening": false
+  },
+  "notification": {
+    "title": "Android integration fixture",
+    "body": "Approved document round trip",
+    "severity": "Info",
+    "persistent": false
+  },
+  "fixture_document_read": true,
+  "fixture_document_write": true,
+  "read_only_write_denied": true,
+  "ungranted_sibling_denied": true,
+  "notification_delivery": true,
+  "notification_withdrawal": true,
+  "file_grants_revoked": true,
+  "revoked_relaunch_read_denied": true,
+  "revoked_relaunch_write_denied": true,
+  "external_atspi_description": true,
+  "fixture_grants_only": true,
+  "real_device": false,
+  "png_sha256": {
+    "notification-and-picker.png": "707a249eeb6f5de41624cae8d331b0201da84444c7e030780babf1e6e49b999b",
+    "document-complete.png": "04b994d3c0d83ea79523a6b7f56383a7f5c01652aa59cd814fc944f884e1041e",
+    "revocation.png": "1dde09447188baca24f93aa3d525b4e327103773e1fbe3e270bc2b62ed21e226"
+  },
+  "owned_compositor_and_bus_stopped": true
+}
