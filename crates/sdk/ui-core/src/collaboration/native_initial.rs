@@ -215,6 +215,7 @@ impl RecordInitialization {
         }
     }
 }
+#[cfg(feature = "broker-transport")]
 pub(crate) fn take_initialization(
     app: &str,
     room: &str,
@@ -245,6 +246,17 @@ pub(crate) fn take_initialization(
         checkout: checkout.clone(),
     }))
 }
+// Portable hosts cannot receive a native creation capture. Keep the public
+// construction path available without ever fabricating a broker witness.
+#[cfg(not(feature = "broker-transport"))]
+pub(crate) fn take_initialization(
+    _app: &str,
+    _room: &str,
+    _checkout: &crate::record::RecordCheckout,
+) -> Result<Option<RecordInitialization>, String> {
+    Ok(None)
+}
+
 impl Drop for NativeConstruction {
     fn drop(&mut self) {
         CONSTRUCTION.with(|slot| {

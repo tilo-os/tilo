@@ -77,6 +77,12 @@ mod portable_committed {
         never: std::convert::Infallible,
     }
     impl CommittedDocument {
+        pub(crate) fn creation_workspace(
+            &self,
+        ) -> Option<&runtime_collab::committed_document::CreationWorkspace> {
+            match self.never {}
+        }
+
         pub(crate) fn with_mutation<T>(
             &self,
             _apply: impl FnOnce(&collab_types::DocumentMutation) -> T,
