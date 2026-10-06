@@ -21,6 +21,20 @@ use canvas::resource::Look;
 use canvas::{ArtworkResource, CanvasAction, view_ops};
 use ui::prelude::{Invoke, Replica};
 
+#[test]
+fn choosing_pixel_starts_at_one_artwork_cell_on_every_canvas_size() {
+    let tools = canvas::tools::Tools::default();
+    for extent in [32.0, 64.0, 1200.0] {
+        tools.extent.set(extent);
+        tools.size.set(0.8);
+        tools.choose_preset(canvas::brushes::Preset::Pixel);
+        assert_eq!(tools.brush_size(), 1.0);
+        tools.size.set(0.8);
+        tools.choose_preset(canvas::brushes::Preset::PixelEraser);
+        assert_eq!(tools.brush_size(), 1.0);
+    }
+}
+
 fn apply(art: &mut Replica<ArtworkResource>, action: CanvasAction) -> Result<(), String> {
     art.apply(Invoke::apply(&action).unwrap())
         .map(|_| ())

@@ -2992,6 +2992,36 @@ impl DrmDispatchState {
         }
     }
 
+    /// Adopt already queued startup devices without waiting for the first key
+    /// or touch to make libinput's fd readable. Keep physical event translation
+    /// in the registered Smithay backend.
+    fn adopt_initial_input_devices(&mut self, context: &Libinput) -> Result<(), DrmBackendError> {
+        use smithay::reexports::input::{AsRaw, event::EventTrait as _, ffi};
+        let mut context = context.clone();
+        // Do not dispatch or consume a key, contact or switch here: Smithay's
+        // registered backend remains the sole translator of physical input.
+        // This peek preserves any non-device event for that normal route.
+        loop {
+            // SAFETY: the live context is exclusively driven on this thread;
+            // peeking changes neither its queue nor any event's ownership.
+            let next = unsafe { ffi::libinput_next_event_type(context.as_raw_mut()) };
+            if next != ffi::libinput_event_type_LIBINPUT_EVENT_DEVICE_ADDED {
+                return Ok(());
+            }
+            let Some(smithay::reexports::input::Event::Device(
+                smithay::reexports::input::event::DeviceEvent::Added(event),
+            )) = context.next()
+            else {
+                return Err(DrmBackendError::Libinput(
+                    "queued input device could not be adopted".into(),
+                ));
+            };
+            self.handle_libinput_device_event(InputEvent::DeviceAdded {
+                device: event.device(),
+            });
+        }
+    }
+
     /// `InputEvent::DeviceAdded`/`DeviceRemoved` half of
     /// [`Self::handle_libinput_event`] — split out to keep that dispatcher
     /// short. A device appearing is the only moment libinput will accept
@@ -3878,6 +3908,10 @@ impl DrmRuntime {
         // hot-plug takes — and seed the pointer/snapshot; see the helper's
         // doc comment.
         let scanouts = dispatch.finalize_startup_scanouts(scanout_builds);
+        // Seat assignment queues the attached devices immediately, before the
+        // libinput fd becomes readable. Publish/configure those devices through
+        // the ordinary handler before waiting for physical input.
+        dispatch.adopt_initial_input_devices(&libinput)?;
 
         Ok(Self {
             event_loop,

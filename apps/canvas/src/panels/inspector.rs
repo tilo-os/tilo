@@ -51,6 +51,53 @@ fn hex(rgb: u32) -> String {
     format!("#{rgb:06x}")
 }
 
+/// Reuse document paint through the shared picker; changing counts while
+/// painting leaves this subtree in place.
+fn artwork_palette(
+    cx: &ViewCx<ArtworkResource>,
+    id: String,
+    current: impl Fn() -> String + 'static,
+    choose: impl Fn(String) + Clone + 'static,
+) -> Element {
+    let colours = cx.value(crate::palette::swatches);
+    cx.switch(&colours, move |_, colours| {
+        let authored = !colours.is_empty();
+        let colours = if authored {
+            colours.clone()
+        } else {
+            INKS.iter().map(|rgb| hex(*rgb)).collect()
+        };
+        let loaded = current().to_lowercase();
+        let selected = colours.iter().position(|colour| colour == &loaded);
+        let values = colours.clone();
+        let choose = choose.clone();
+        let picker = ColorSwatchPicker::with_palette(
+            colours.iter().filter_map(|colour| packed(colour)).collect(),
+            8,
+        )
+        .with_accessible_labels(colours.clone())
+        .with_cell(SWATCH)
+        .bare()
+        .selecting(selected)
+        .on_change(move |index| {
+            if let Some(colour) = values.get(index) {
+                choose(colour.clone());
+            }
+        });
+        let mut parts: Vec<Element> = Vec::new();
+        if authored {
+            parts.push(heading("canvas-artwork-colours"));
+        }
+        parts.push(Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_id(id.clone())
+                .with_child(Box::new(picker)),
+        ));
+        section(parts)
+    })
+}
+
 /// A pigment's name as words: `burnt-sienna` is "burnt sienna".
 fn words(name: &str) -> String {
     name.replace('-', " ")
@@ -165,7 +212,7 @@ fn brush_and_artwork(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                     // Picking lays no paint: nothing to set.
                     Tool::Select => return Box::new(Spacer::fixed(0.0)) as Element,
                     Tool::Marquee | Tool::Oval | Tool::Lasso | Tool::Wand => {
-                        area_tool(&tools, tool)
+                        area_tool(cx, &tools, tool)
                     }
                     // Where the fill comes from first: it decides what
                     // the bucket fills.
@@ -273,8 +320,17 @@ fn brush(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str, tool: Tool) -
         parts.push(preset_picker(tools));
     }
     let palette = brush_palette(tools, &pigments);
-    parts.push(Box::new(palette.with_cell(SWATCH).bare()));
-    if medium.is_none() {
+    if medium.is_some() {
+        parts.push(Box::new(palette.with_cell(SWATCH).bare()));
+    } else {
+        let chosen = tools.colour.clone();
+        let loaded = tools.clone();
+        parts.push(artwork_palette(
+            cx,
+            "canvas-artwork-colours".into(),
+            move || loaded.hex(),
+            move |value| chosen.set(value),
+        ));
         parts.push(field(
             &ui::i18n::I18nManager::lookup_plain("canvas-colour"),
             Box::new(
@@ -469,23 +525,21 @@ fn sampling(choice: &LocalState<Sampling>, heading_id: &str) -> Element {
 
 /// A selecting tool: how it adds to and takes from the selection, and for
 /// the magic wand how alike the colours it takes in are.
-fn area_tool(tools: &Tools, tool: Tool) -> Element {
+fn area_tool(cx: &ViewCx<ArtworkResource>, tools: &Tools, tool: Tool) -> Element {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let mut parts: Vec<Element> = vec![heading(tool.label())];
     // The photo's subject in one click, found on this device: off the
     // window's thread, so the window keeps drawing; the canvas says it is
     // under way and applies the area as one step.
-    let finding = std::rc::Rc::clone(&tools.finding);
+    let button = Button::new("canvas-select-subject", &lookup("canvas-select-subject"))
+        .with_icon(Icon::Sparkles)
+        .tooltip(lookup("canvas-select-subject-hint"));
+    let effect = crate::resource::ViewOp::FindArea(crate::resource::FindArea {
+        subject: Some(true),
+        ..Default::default()
+    });
     parts.push(Box::new(
-        Button::new("canvas-select-subject", &lookup("canvas-select-subject"))
-            .with_icon(Icon::Sparkles)
-            .tooltip(lookup("canvas-select-subject-hint"))
-            .on_view(move || {
-                finding.borrow_mut().wanted = Some(crate::selection::Select {
-                    subject: Some(true),
-                    ..crate::selection::Select::default()
-                });
-            }),
+        cx.actions().bind_effect_invocation(button, &effect),
     ));
     if tool == Tool::Wand {
         parts.push(tolerance(tools));
@@ -1007,7 +1061,25 @@ fn paints(
             }),
         )),
     };
-    section(vec![Box::new(swatches), field])
+    let mut parts: Vec<Element> = Vec::new();
+    if palette.is_empty() {
+        let dispatch = cx.dispatcher();
+        let ids = ids.to_vec();
+        let paint = paint.clone();
+        let current = current.unwrap_or("none").to_owned();
+        parts.push(artwork_palette(
+            cx,
+            format!("{}-artwork-colours", paint.id()),
+            move || current.clone(),
+            move |value| {
+                dispatch.invoke(paint.invoke(&ids, value));
+            },
+        ));
+    } else {
+        parts.push(Box::new(swatches));
+    }
+    parts.push(field);
+    section(parts)
 }
 
 /// Brush strokes' preset, width and dynamics, and their paths: smoothed,
@@ -1018,7 +1090,7 @@ fn stroke_brush(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, plain
     };
     let mut rows: Vec<Element> = Vec::new();
     let preset = Preset::of(&mark.style);
-    if plain && preset != Preset::Eraser {
+    if plain && !preset.erases() {
         let dispatch = cx.dispatcher();
         let targets = ids.to_vec();
         let ink = mark.style.stroke.clone().unwrap_or_default();

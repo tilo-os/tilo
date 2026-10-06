@@ -102,5 +102,8 @@ interface AppHost {
     flatpakCatalogue @15 (remote :Text, userManaged :Bool) -> (rows :Text);
     # Install only from an existing repository in this account's Flatpak scope.
     flatpakInstallRemote @16 (remote :Text, appId :Text, branch :Text) -> (status :Text);
+    # Verified entries from one enabled host-configured Tilo repository. The
+    # host owns durable rollback checkpoints; callers cannot supply keys/URLs.
+    registryCatalogue @17 (registry :Text) -> (entries :Text);
 
 }
