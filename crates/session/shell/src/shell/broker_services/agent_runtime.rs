@@ -220,26 +220,42 @@ fn run_session(
     }
     let services = endpoints()?;
     let mut session = prepare(owner, request)?;
-    *control
-        .lock()
-        .map_err(|_| "Agent cancellation state poisoned")? = Some(session.cancellation_handle());
-    session.start_with_host_services(services)?;
+    let cancellation = session.cancellation_handle();
+    match control.lock() {
+        Ok(mut slot) => *slot = Some(cancellation),
+        Err(_) => {
+            return retire_after_error(
+                &mut session,
+                broker,
+                request,
+                "Agent cancellation state poisoned".into(),
+            );
+        }
+    }
+    if let Err(error) = session.start_with_host_services(services) {
+        return retire_after_error(&mut session, broker, request, error);
+    }
     tracing::info!(
         managed_context_present = true,
         "native Agent services started"
     );
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(30))
-        .ok_or("native Agent startup deadline exhausted")?;
+    let Some(deadline) = Instant::now().checked_add(Duration::from_secs(30)) else {
+        return retire_after_error(
+            &mut session,
+            broker,
+            request,
+            "native Agent startup deadline exhausted".into(),
+        );
+    };
     let mut ready = false;
     loop {
         if stopping.try_recv().is_ok() {
-            if ready {
-                abandon_active_tasks(broker, request, session.launch_id())?;
-            }
-            return session.stop();
+            return retire_session(&mut session, broker, request);
         }
-        let facade = broker.upgrade()?;
+        let facade = match broker.upgrade() {
+            Ok(facade) => facade,
+            Err(error) => return retire_after_error(&mut session, broker, request, error),
+        };
         match session.poll_broker_attachment(&facade) {
             Ok(true) => {
                 tracing::info!(
@@ -249,10 +265,7 @@ fn run_session(
             }
             Ok(false) => {}
             Err(error) => {
-                if ready {
-                    abandon_active_tasks(broker, request, session.launch_id())?;
-                }
-                return Err(error);
+                return retire_after_error(&mut session, broker, request, error);
             }
         }
         if !ready
@@ -269,7 +282,12 @@ fn run_session(
             ready = true;
         }
         if !ready && Instant::now() >= deadline {
-            return Err("Agent did not negotiate enrolled task service".into());
+            return retire_after_error(
+                &mut session,
+                broker,
+                request,
+                "Agent did not negotiate enrolled task service".into(),
+            );
         }
         drop(facade);
         let delay = if ready {
@@ -279,13 +297,38 @@ fn run_session(
         };
         match stopping.recv_timeout(delay) {
             Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                if ready {
-                    abandon_active_tasks(broker, request, session.launch_id())?;
-                }
-                return session.stop();
+                return retire_session(&mut session, broker, request);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
+    }
+}
+
+fn retire_after_error(
+    session: &mut NativeManagedSession,
+    broker: &WeakAppActionBroker,
+    request: &StartRequest,
+    error: String,
+) -> Result<(), String> {
+    match retire_session(session, broker, request) {
+        Ok(()) => Err(error),
+        Err(retirement) => Err(format!("{error}; Agent retirement failed: {retirement}")),
+    }
+}
+
+fn retire_session(
+    session: &mut NativeManagedSession,
+    broker: &WeakAppActionBroker,
+    request: &StartRequest,
+) -> Result<(), String> {
+    let abandoned = abandon_active_tasks(broker, request, session.launch_id());
+    let stopped = session.stop();
+    match (abandoned, stopped) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(abandon), Err(stop)) => Err(format!(
+            "task retirement failed: {abandon}; process retirement failed: {stop}"
+        )),
     }
 }
 

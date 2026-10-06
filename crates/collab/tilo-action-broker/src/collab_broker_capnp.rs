@@ -834,7 +834,7 @@ fn admit_agent_delegation_at(
         return Err("only a workspace administrator may launch a delegated agent session".into());
     }
     let role = workspace
-        .role_of_agent_at(agent_id, now)
+        .role_of_agent_in_room_at(agent_id, &route.cluster_id, now)
         .filter(|role| *role != CapRole::Denied)
         .ok_or_else(|| "the requested agent is not an active workspace member".to_string())?;
     admitted.role = role;
@@ -3223,7 +3223,7 @@ impl CapnpBrokerState {
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == room)
-            .and_then(|workspace| workspace.role_of_agent_at(agent, now))
+            .and_then(|workspace| workspace.role_of_agent_in_room_at(agent, room, now))
             .is_some_and(|role| role != collab_types::role::Role::Denied))
     }
 
@@ -6094,7 +6094,7 @@ impl CapnpBrokerState {
                 capnp::Error::failed("certified document workspace is no longer available".into())
             })?;
         let mut role = match &admitted.agent_id {
-            Some(agent) => workspace.role_of_agent_at(agent, now),
+            Some(agent) => workspace.role_of_agent_in_room_at(agent, &route.cluster_id, now),
             None => workspace.role_of_at(&admitted.principal_id, now),
         }
         .ok_or_else(|| capnp::Error::failed("current document membership expired".into()))?;
@@ -11001,14 +11001,15 @@ impl enrolled_task_stream::Server for EnrolledTaskStreamServer {
         let rx = self.rx.clone();
         Promise::from_future(async move {
             let envelope = loop {
-                if let Err(error) = HostWorkerReadGuard::check(self.host_guard.as_ref()) {
-                    self.state.close_enrolled_subscription(self.peer);
-                    return Err(error);
-                }
-                if let Err(error) = self.state.revalidate_enrolled_peer(self.peer) {
-                    self.state.close_enrolled_subscription(self.peer);
-                    return Err(capnp::Error::failed(error));
-                }
+                // Keep the exact launch's retained run until the owning
+                // runtime retires it. Removing it here would lose the only
+                // pre-acceptance lease evidence before durable abandonment.
+                HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+                // The stream is refused immediately, but its owner-bound
+                // lease remains available only to exact launch cleanup.
+                self.state
+                    .revalidate_enrolled_peer(self.peer)
+                    .map_err(capnp::Error::failed)?;
                 let received = {
                     let mut guard = rx.lock().await;
                     tokio::time::timeout(Duration::from_millis(250), guard.recv()).await
@@ -14651,9 +14652,9 @@ pub mod tests {
             crate::test_support::Workspace::new(crate::test_support::WorkspaceId(44), "Agent room");
         workspace.owner = Some(principal);
         let route = CrdtRoute::cluster(workspace.room.to_string());
-        let agent_membership = workspace.grant_capability(CapOverride::membership(
+        workspace.grant_capability(CapOverride::membership(
             Subject::agent("scribe"),
-            workspace.room.to_string(),
+            uuid::Uuid::new_v4().to_string(),
             Verb::Comment,
         ));
         let mut tree = WorkspaceTree::default();
@@ -14661,6 +14662,16 @@ pub mod tests {
 
         let mut admitted = admit_verified_join(&tree, &route, verified_device(&root))
             .expect("the owner is admitted before delegation");
+        assert!(
+            admit_agent_delegation(&tree, &route, &mut admitted, "scribe").is_err(),
+            "membership in another room cannot confer Agent custody here"
+        );
+        let room = tree.workspaces[0].room.to_string();
+        let agent_membership = tree.workspaces[0].grant_capability(CapOverride::membership(
+            Subject::agent("scribe"),
+            room,
+            Verb::Comment,
+        ));
         admit_agent_delegation(&tree, &route, &mut admitted, "scribe")
             .expect("the owner may operate an admitted agent");
         assert_eq!(admitted.broker_actor().id, "agent:scribe");

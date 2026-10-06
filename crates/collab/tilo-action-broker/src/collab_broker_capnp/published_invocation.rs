@@ -381,7 +381,7 @@ impl OriginalInvocation {
             .agent_id()
             .ok_or("original invocation caller unavailable")?;
         workspace
-            .role_of_agent_at(agent, seconds)
+            .role_of_agent_in_room_at(agent, &self.data.route.cluster_id, seconds)
             .ok_or("original agent membership expired")?;
         Ok(Actor::agent(agent).in_room(self.data.route.cluster_id.clone()))
     }

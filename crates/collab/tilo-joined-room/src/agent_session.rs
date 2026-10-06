@@ -152,7 +152,7 @@ fn authorize(
         return Err("agent session person lacks current administration authority".into());
     }
     if workspace
-        .role_of_agent_at(&reservation.agent, seconds)
+        .role_of_agent_in_room_at(&reservation.agent, &reservation.room.to_string(), seconds)
         .is_none_or(|role| role == collab_types::Role::Denied)
     {
         return Err("agent session agent is not a canonical room member".into());

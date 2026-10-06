@@ -461,7 +461,9 @@ impl CapnpBrokerState {
                     Some(confined) => confined == room,
                     None => match caller.principal() {
                         CallerPrincipal::Person(id) => workspace.role_of_at(id, now).is_some(),
-                        CallerPrincipal::Agent(id) => workspace.role_of_agent_at(id, now).is_some(),
+                        CallerPrincipal::Agent(id) => workspace
+                            .role_of_agent_in_room_at(id, &workspace.room.to_string(), now)
+                            .is_some(),
                         // An application is always admitted into one room;
                         // unconfined, it is a member of none.
                         CallerPrincipal::App(_) => false,

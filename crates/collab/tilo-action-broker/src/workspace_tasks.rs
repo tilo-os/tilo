@@ -610,14 +610,16 @@ impl CapnpBrokerState {
                 .enrolled_task_subscribers
                 .lock()
                 .map_err(|_| "enrolled task subscription registry unavailable")?;
-            let (peer, subscriber) = subscribers
-                .iter()
-                .find(|(_, subscriber)| {
-                    subscriber.cluster_id == room
-                        && subscriber.agent_id == agent
-                        && subscriber.facts.binding.launch == launch
-                })
-                .ok_or("managed Agent launch has no enrolled subscription")?;
+            let Some((peer, subscriber)) = subscribers.iter().find(|(_, subscriber)| {
+                subscriber.cluster_id == room
+                    && subscriber.agent_id == agent
+                    && subscriber.facts.binding.launch == launch
+            }) else {
+                // No exact subscriber means this launch never acquired an
+                // enrolled task lease. In particular, never fall back to a
+                // legacy subscriber or another launch for the same Agent.
+                return Ok(());
+            };
             let tasks = subscriber
                 .runs
                 .values()
@@ -1636,6 +1638,7 @@ fn start_agent_action() -> PublishedAction {
 fn current_tasks_action() -> PublishedAction {
     PublishedAction {
         resource: COLLECTION.into(),
+        semantic_identity: None,
         action: "read-current-tasks".into(),
         resource_kind: "task.collection".into(),
         resource_label: "Tasks".into(),
@@ -1693,6 +1696,7 @@ fn queue_action() -> PublishedAction {
 fn task_read_action(task: &tilo_desktop_model::WorkspaceTask) -> PublishedAction {
     PublishedAction {
         resource: format!("{TASK_PREFIX}{}", task.id),
+        semantic_identity: None,
         action: "read-task".into(),
         resource_kind: "task".into(),
         resource_label: task.title.clone(),
@@ -1721,6 +1725,7 @@ fn effect_action(
 ) -> PublishedAction {
     PublishedAction {
         resource: resource.into(),
+        semantic_identity: None,
         action: action.into(),
         resource_kind: "task".into(),
         resource_label: label.into(),
@@ -2268,6 +2273,81 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn retirement_abandons_a_pre_readiness_lease_for_only_the_exact_launch() {
+        let NativeRunFixture {
+            _directory,
+            service,
+            state,
+            caller,
+            ..
+        } = native_run_fixture();
+        let room = tilo_joined_room::testing::ROOM;
+        let task_id = queue_native_task(service.as_ref(), room, caller).await;
+        let epoch = 1;
+        let (task, control) =
+            start_owner_task_run(room, &task_id, "scribe", epoch, service.as_ref())
+                .await
+                .unwrap();
+        let facts = test_enrolled_facts(room, "launch-exact");
+        let envelope =
+            enrolled_task_envelope(&facts, room, &task, &control, "scribe", epoch).unwrap();
+        let (tx, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        state.enrolled_task_subscribers.lock().unwrap().insert(
+            91,
+            super::super::EnrolledTaskSubscription {
+                agent_id: "scribe".into(),
+                cluster_id: room.into(),
+                facts,
+                tx,
+                runs: std::collections::HashMap::from([(
+                    envelope.message_id.clone(),
+                    super::super::EnrolledTaskRun {
+                        envelope,
+                        task_epoch: epoch,
+                        acceptance: None,
+                        report_sequence: 0,
+                        reports: std::collections::HashMap::new(),
+                    },
+                )]),
+            },
+        );
+
+        state
+            .abandon_managed_agent_tasks(room, "scribe", "another-launch")
+            .await
+            .unwrap();
+        assert_eq!(
+            service.snapshot(room).unwrap().tasks[0].status,
+            tilo_desktop_model::WorkspaceTaskStatus::InProgress,
+            "another launch and every legacy lane are ineligible to retire this lease"
+        );
+        assert!(
+            state
+                .enrolled_task_subscribers
+                .lock()
+                .unwrap()
+                .contains_key(&91)
+        );
+
+        state
+            .abandon_managed_agent_tasks(room, "scribe", "launch-exact")
+            .await
+            .unwrap();
+        assert_eq!(
+            service.snapshot(room).unwrap().tasks[0].status,
+            tilo_desktop_model::WorkspaceTaskStatus::Waiting,
+            "retirement must abandon a lease even before the shell observes readiness"
+        );
+        assert!(
+            !state
+                .enrolled_task_subscribers
+                .lock()
+                .unwrap()
+                .contains_key(&91)
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn native_current_read_retains_stopping_until_owner_terminal() {
         let NativeRunFixture {
             _directory,
@@ -2337,11 +2417,11 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn native_owner_run_delivers_direction_ack_and_exact_stop() {
         let NativeRunFixture {
+            _directory,
             service,
             state,
             mut receiver,
             caller,
-            ..
         } = native_run_fixture();
         let room = tilo_joined_room::testing::ROOM;
         let task_id = queue_native_task(service.as_ref(), room, caller.clone()).await;
@@ -2472,6 +2552,29 @@ mod tests {
             },
         );
         receiver
+    }
+
+    fn test_enrolled_facts(room: &str, launch: &str) -> launcher::managed::ChannelProcessFacts {
+        launcher::managed::ChannelProcessFacts {
+            binding: launcher::managed::ManagedBinding {
+                room: room.into(),
+                app: launcher::managed::WORKSPACE_AGENT_PACKAGE_ID.into(),
+                agent: "scribe".into(),
+                scope: launcher::managed::ManagedLaunchScope::AgentSession,
+                launch: launch.into(),
+                generation: 1,
+            },
+            runtime: launcher::managed::ManagedRuntimeFacts {
+                runtime_epoch: "runtime-epoch".into(),
+                package_id: launcher::managed::WORKSPACE_AGENT_PACKAGE_ID.into(),
+                package_hash: "package-hash".into(),
+                executable_hash: "executable-hash".into(),
+                runtime_hash: "runtime-hash".into(),
+            },
+            process: launcher::managed::ProcessIdentity { pid: 91, start: 1 },
+            supervisor: launcher::managed::ProcessIdentity { pid: 90, start: 1 },
+            channel_id: "channel-exact".into(),
+        }
     }
 
     async fn queue_second_native_task(

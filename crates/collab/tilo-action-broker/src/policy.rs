@@ -136,44 +136,10 @@ impl WorkspacePolicy for Workspace {
             .collect()
     }
     fn role_of_agent(&self, agent: &str) -> Option<CapRole> {
-        self.role_of_agent_at(agent, tilo_clock::unix_now())
+        WorkspacePolicy::role_of_agent_at(self, agent, tilo_clock::unix_now())
     }
     fn role_of_agent_at(&self, agent: &str, now: u64) -> Option<CapRole> {
-        let now = Some(now);
-        let mut best: Option<Verb> = None;
-        let mut blocked = false;
-        for c in &self.capabilities {
-            let subject_matches = matches!(
-                &c.subject,
-                Subject::Principal(Principal::Agent(a)) if a == agent
-            );
-            if !subject_matches || !c.is_live_at(now) {
-                continue;
-            }
-            let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
-            if !covers_room {
-                continue;
-            }
-            match c.effect {
-                Effect::Grant => {
-                    best = Some(match best {
-                        Some(prev) if prev.implies(c.verb) => prev,
-                        _ => c.verb,
-                    });
-                }
-                Effect::Restrict if !c.verb.implies(Verb::Read) => blocked = true,
-                Effect::Restrict => {}
-            }
-        }
-        if blocked {
-            return Some(CapRole::Denied);
-        }
-        best.map(|v| match v {
-            Verb::Admin => CapRole::Owner,
-            Verb::Write => CapRole::Editor,
-            Verb::Comment => CapRole::Commenter,
-            Verb::Read | Verb::Invite => CapRole::Viewer,
-        })
+        Workspace::role_of_agent_in_room_at(self, agent, &self.room.to_string(), now)
     }
     fn agent_members(&self) -> Vec<(String, CapRole)> {
         let now = Some(tilo_clock::unix_now());
@@ -193,7 +159,7 @@ impl WorkspacePolicy for Workspace {
             }
         }
         seen.into_iter()
-            .filter_map(|a| self.role_of_agent(&a).map(|r| (a, r)))
+            .filter_map(|a| WorkspacePolicy::role_of_agent(self, &a).map(|r| (a, r)))
             .collect()
     }
     fn shares_of(&self, resource: &ResourceRef) -> Vec<&CapOverride> {
@@ -322,6 +288,31 @@ mod retained_clock_tests {
                 101
             ),
             CapDecision::Allow
+        );
+    }
+
+    #[test]
+    fn broker_agent_policy_requires_the_exact_workspace_room() {
+        let mut workspace =
+            crate::test_support::Workspace::new(crate::test_support::WorkspaceId(3), "Agent room");
+        workspace.grant_capability(CapOverride::membership(
+            Subject::agent("scribe"),
+            uuid::Uuid::new_v4().to_string(),
+            Verb::Write,
+        ));
+        assert_eq!(
+            WorkspacePolicy::role_of_agent_at(&workspace, "scribe", 1),
+            None
+        );
+
+        workspace.grant_capability(CapOverride::membership(
+            Subject::agent("scribe"),
+            workspace.room.to_string(),
+            Verb::Write,
+        ));
+        assert_eq!(
+            WorkspacePolicy::role_of_agent_at(&workspace, "scribe", 1),
+            Some(CapRole::Editor)
         );
     }
 }

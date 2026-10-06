@@ -4,21 +4,24 @@ use collab_types::caps::{CapOverride, Scope, Subject, Verb};
 use tilo_peer_state::TransportOrigin;
 
 pub(crate) fn set_agent_membership(fixture: &Fixture, member: bool) {
+    set_agent_scope(
+        fixture,
+        member.then_some(Scope::Room(crate::testing::ROOM.into())),
+    );
+}
+
+fn set_agent_scope(fixture: &Fixture, scope: Option<Scope>) {
     let room = RoomId::parse(crate::testing::ROOM).unwrap();
     let messages = fixture
         .owner
         .with_current(room, |view| {
             let before = view.peer().clone();
             let mut candidate = before.clone();
-            let capabilities = if member {
-                vec![
-                    CapOverride::grant(Subject::agent("scribe"), Scope::Workspace, Verb::Write)
+            if let Some(scope) = scope {
+                let capabilities = vec![
+                    CapOverride::grant(Subject::agent("scribe"), scope, Verb::Write)
                         .with_id("session-test-agent"),
-                ]
-            } else {
-                Vec::new()
-            };
-            if member {
+                ];
                 candidate.put_governed_capabilities(&capabilities, &fixture.key, fixture.now)?;
             } else {
                 candidate.remove_governed_capabilities(
@@ -46,6 +49,32 @@ pub(crate) fn set_agent_membership(fixture: &Fixture, member: bool) {
             )
             .unwrap();
     }
+}
+
+#[test]
+fn native_agent_session_requires_membership_in_its_exact_room() {
+    let fixture = fixture();
+    let reservation = request(&fixture);
+    set_agent_scope(
+        &fixture,
+        Some(Scope::Room("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into())),
+    );
+    let path = fixture.directory.path().join("owner.json");
+    let before = std::fs::read(&path).unwrap();
+    assert!(
+        fixture
+            .owner
+            .reserve_agent_session(reservation.clone(), fixture.now)
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+
+    set_agent_scope(&fixture, None);
+    set_agent_membership(&fixture, true);
+    fixture
+        .owner
+        .reserve_agent_session(reservation, fixture.now)
+        .expect("the same launch becomes eligible only after exact-room admission");
 }
 
 fn request(fixture: &Fixture) -> AgentSessionReservation {
