@@ -8,7 +8,7 @@ observations, artifact provenance and excluded measurements are in
 ## Fixture
 
 The public `tilo-vm-disk/main-d8718c2-ext4-ci` x86-64 disk was downloaded on
-the remote rcargo runner and verified against its published SHA-256:
+the remote build runner and verified against its published SHA-256:
 `a558d13585d41674dc7f08fca384be6683826fbab770d2071b29311f8a6e85aa`.
 Its source is `d8718c2ab06ec0fc60ef81708d4bfc52816f631c`, not the task's
 current-main base `60f484b76cbde5304535beaac369db7ad5084434`. The development
