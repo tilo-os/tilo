@@ -66,6 +66,9 @@ pub(crate) struct Chrome {
     pub composer_max_h: f64,
     /// Space around the composer field.
     pub composer_pad: f64,
+    /// One direct-Agent task/mode row and the gap between adjacent rows.
+    pub agent_control_h: f64,
+    pub agent_control_gap: f64,
     /// The body text style the composer measures its draft with.
     pub body: TextStyle,
     /// The floating call window around its video: the title bar above it,
@@ -98,6 +101,8 @@ impl Chrome {
             composer_min_h,
             composer_max_h: composer_min_h + 6.0 * body_line,
             composer_pad: f64::from(sp.s4),
+            agent_control_h: ui::widget::SegmentedFace::height(ControlSize::Small, theme),
+            agent_control_gap: f64::from(sp.s2),
             body,
             call_title_h: f64::from(theme.text(TextRole::Label).line_height_px())
                 + 2.0 * f64::from(sp.s3),

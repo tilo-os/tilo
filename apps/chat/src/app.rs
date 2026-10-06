@@ -1333,17 +1333,22 @@ impl ChatApp {
         }
         self.sharing_context = scenario == "live-context";
         self.stage_view(scenario);
-        if matches!(
-            scenario,
-            "agent-direct"
-                | "agent-direct-compact"
-                | "agent-direction-saved"
-                | "agent-direction-saved-closed"
-                | "agent-direction-saved-compact"
-                | "agent-direction-saved-floating"
-                | "agent-stopping"
-                | "agent-stopping-compact"
-        ) {
+        if scenario.starts_with("agent-lifecycle-before")
+            || scenario.starts_with("agent-message-refused")
+            || scenario.starts_with("agent-permission-revoked")
+            || scenario.starts_with("agent-membership-removed")
+            || matches!(
+                scenario,
+                "agent-direct"
+                    | "agent-direct-compact"
+                    | "agent-direction-saved"
+                    | "agent-direction-saved-closed"
+                    | "agent-direction-saved-compact"
+                    | "agent-direction-saved-floating"
+                    | "agent-stopping"
+                    | "agent-stopping-compact"
+            )
+        {
             self.room_agents = vec!["scribe".into()];
             self.room_names
                 .insert("agent:scribe".into(), "Scribe".into());
@@ -1356,10 +1361,45 @@ impl ChatApp {
                 &[("name", "Scribe".into())],
             ));
             self.stage_agent_task_controls(scenario);
+            self.stage_agent_lifecycle_state(scenario);
         }
         self.reselect();
         self.request_relayout();
         self.stage_floating_call(scenario);
+    }
+
+    fn stage_agent_lifecycle_state(&mut self, scenario: &str) {
+        if !scenario.starts_with("agent-lifecycle-before")
+            && !scenario.starts_with("agent-message-refused")
+            && !scenario.starts_with("agent-permission-revoked")
+            && !scenario.starts_with("agent-membership-removed")
+        {
+            return;
+        }
+        let draft = "Keep the private release notes and keyboard evidence here.";
+        self.composer_main.stage_private_text(draft);
+        self.composer_main.select(9, 30);
+        self.focus = Focus::Main;
+        if scenario.starts_with("agent-message-refused") {
+            self.agent_submission_errors.update(|errors| {
+                errors.insert(
+                    ("ws_acme".into(), "scribe".into()),
+                    crate::i18n::t("chat-agent-message-send-failed"),
+                );
+            });
+        } else if scenario.starts_with("agent-permission-revoked") {
+            self.perms = crate::permissions::ChatPermissions::from_context(
+                ui::permissions::PermissionContext::from_capabilities(
+                    ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), model::ME),
+                    Vec::new(),
+                ),
+            );
+            self.composer_main.set_read_only(true);
+        } else if scenario.starts_with("agent-membership-removed") {
+            self.room_agents.clear();
+            self.composer_main.set_read_only(true);
+        }
+        self.set_composer_focus();
     }
 
     fn stage_agent_task_controls(&mut self, scenario: &str) {
@@ -1487,7 +1527,19 @@ impl ChatApp {
                 self.right_flap.snap(false);
                 self.call = CallState::default();
             }
-            "agent-direct"
+            "agent-lifecycle-before"
+            | "agent-lifecycle-before-compact"
+            | "agent-lifecycle-before-floating"
+            | "agent-message-refused"
+            | "agent-message-refused-compact"
+            | "agent-message-refused-floating"
+            | "agent-permission-revoked"
+            | "agent-permission-revoked-compact"
+            | "agent-permission-revoked-floating"
+            | "agent-membership-removed"
+            | "agent-membership-removed-compact"
+            | "agent-membership-removed-floating"
+            | "agent-direct"
             | "agent-direct-compact"
             | "agent-direction-saved"
             | "agent-direction-saved-closed"
@@ -3406,13 +3458,57 @@ impl ChatApp {
     /// The width the composer's draft wraps at inside a field `field_w`
     /// wide: the field less its buttons (attach, emoji, send).
     pub(crate) fn composer_text_width(&self, field_w: f64) -> f64 {
-        let controls = if self.direct_agent.is_some() {
-            7.0
-        } else {
-            4.0
-        };
-        field_w - controls * self.chrome.composer_min_h
+        // A direct-Agent field replaces the attachment button with a labelled
+        // Send button; it does not add another three button columns. Keeping
+        // the same four-control budget as the ordinary composer matches the
+        // geometry painted by `draw_input_box` and avoids wrapping every word
+        // onto its own line at large text sizes.
+        field_w - 4.0 * self.chrome.composer_min_h
     }
+
+    pub(crate) fn direct_agent_status_lines(
+        &self,
+        tasks: &ui::agent_task_frontier::AgentTaskFrontiers,
+        stopping: bool,
+    ) -> crate::render_chat::AgentTaskStatusLines {
+        use ui::agent_task_frontier::AgentTaskChoice;
+
+        let current = match tasks.choice() {
+            AgentTaskChoice::One(task) | AgentTaskChoice::Selected(task) => Some(task),
+            AgentTaskChoice::None | AgentTaskChoice::Choose(_) => None,
+        };
+        let mut lines = crate::render_chat::agent_task_status_lines(tasks, stopping);
+        if !self.direct_agent_is_available() {
+            lines.primary = current.as_ref().map_or_else(
+                || crate::i18n::t("chat-agent-task-unavailable"),
+                |task| {
+                    crate::i18n::t_args(
+                        "chat-agent-task-last-known",
+                        &[("title", task.title.clone().into())],
+                    )
+                },
+            );
+            lines.receipt = Some(crate::i18n::t("chat-agent-unavailable"));
+            lines.queue = None;
+        } else if !self.can_participate() {
+            lines.receipt = Some(crate::i18n::t("chat-conversation-read-only"));
+        } else if let Some(agent) = self.direct_agent.as_ref()
+            && let Some(error) = self
+                .agent_submission_errors
+                .get()
+                .get(&(self.active_ws.clone(), agent.clone()))
+        {
+            lines.receipt = Some(error.clone());
+        } else if self
+            .direct_agent
+            .as_ref()
+            .is_some_and(|agent| self.agent_message_awaiting_confirmation(agent))
+        {
+            lines.receipt = Some(crate::i18n::t("chat-agent-message-awaiting-confirmation"));
+        }
+        lines
+    }
+
     pub(crate) fn composer_height(&self, tr: &mut TextRenderer) -> f64 {
         let field_w = self.center_right() - self.center_left() - 2.0 * self.chrome.gutter;
         let text_w = self.composer_text_width(field_w);
@@ -3420,12 +3516,7 @@ impl ChatApp {
         if self.direct_agent.is_none() {
             return field;
         }
-        let submission_error = self.direct_agent.as_ref().is_some_and(|agent| {
-            self.agent_submission_errors
-                .get()
-                .contains_key(&(self.active_ws.clone(), agent.clone()))
-        });
-        let rows = self.direct_agent_tasks().map_or(2.0, |tasks| {
+        let rows = self.direct_agent_tasks().map_or(2, |tasks| {
             let tasks = tasks.borrow();
             let stopping = matches!(
                 tasks.choice(),
@@ -3440,26 +3531,32 @@ impl ChatApp {
                 tasks.choice(),
                 ui::agent_task_frontier::AgentTaskChoice::Choose(_)
             ));
-            let mut status = crate::render_chat::agent_task_status_lines(&tasks, stopping);
-            let pending_confirmation = self
-                .direct_agent
-                .as_ref()
-                .is_some_and(|agent| self.agent_message_awaiting_confirmation(agent));
-            if submission_error || !self.direct_agent_is_available() || pending_confirmation {
-                status.receipt.get_or_insert_with(String::new);
-            }
-            (choice + status.count() + 1) as f64
+            let status = self.direct_agent_status_lines(&tasks, stopping);
+            choice + status.count() + 1
         });
-        field + rows * self.chrome.composer_min_h + rows * self.chrome.composer_pad
+        let rows = rows.max(1);
+        field
+            + rows as f64 * self.chrome.agent_control_h
+            + rows.saturating_sub(1) as f64 * self.chrome.agent_control_gap
     }
     pub(crate) fn composer_rect(&self, tr: &mut TextRenderer) -> Rect {
-        let h = self.composer_height(tr);
-        let pad = self.chrome.composer_pad;
+        let wanted = self.composer_height(tr);
+        let regular_pad = self.chrome.composer_pad;
+        let regular_room = (self.rect.y1 - regular_pad)
+            - (self.header_rect().y1 + regular_pad).min(self.rect.y1 - regular_pad);
+        let pad = if wanted <= regular_room.max(0.0) {
+            regular_pad
+        } else {
+            self.chrome.agent_control_gap
+        };
+        let bottom = self.rect.y1 - pad;
+        let top_limit = (self.header_rect().y1 + pad).min(bottom);
+        let h = wanted.min((bottom - top_limit).max(0.0));
         Rect::new(
             self.center_left() + self.chrome.gutter,
-            self.rect.y1 - h - pad,
+            bottom - h,
             self.center_right() - self.chrome.gutter,
-            self.rect.y1 - pad,
+            bottom,
         )
     }
 
@@ -4433,6 +4530,9 @@ impl ChatApp {
             .or_else(|| {
                 self.agent_message_awaiting_confirmation(agent)
                     .then(|| crate::i18n::t("chat-agent-message-awaiting-confirmation"))
+            })
+            .or_else(|| {
+                (!self.can_participate()).then(|| crate::i18n::t("chat-conversation-read-only"))
             });
         if let Some(status) = status {
             nodes.push(
@@ -4440,6 +4540,16 @@ impl ChatApp {
                     .with_name(status)
                     .with_hashed_key(("agent-submission-status", &self.active_ws, agent)),
             );
+        }
+        if !self.can_participate() {
+            let draft = self.composer_main.value();
+            if !draft.is_empty() {
+                nodes.push(
+                    AccessNode::new(Role::StaticText)
+                        .with_name(draft)
+                        .with_hashed_key(("agent-read-only-draft", &self.active_ws, agent)),
+                );
+            }
         }
         nodes
     }
@@ -4871,6 +4981,10 @@ impl Widget for ChatApp {
             if composer.is_focused() && composer.rect().width() > 0.0 {
                 composer.draw_overlay(scene, tf, tr, theme, presence);
             }
+        }
+        if self.direct_agent.is_some() && self.composer_main.is_focused() {
+            let mut overlay_hits = Vec::new();
+            self.draw_header(scene, tf, tr, theme, &mut overlay_hits);
         }
         if let Some(menu) = self.menu.as_mut() {
             menu.widget.draw_overlay(scene, tf, tr, theme, presence);

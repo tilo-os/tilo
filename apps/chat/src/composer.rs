@@ -312,7 +312,8 @@ impl DraftComposer {
                 RichTextSurface::over(ComposerSource::new())
                     .with_editor(editor())
                     .with_submit(SubmitKey::Enter),
-            ),
+            )
+            .filling(),
             painted: None,
         }
     }
@@ -355,6 +356,23 @@ impl DraftComposer {
             .widget_mut()
             .source_mut()
             .use_private(agent_draft_key(workspace, agent));
+    }
+
+    /// Put sample text in the attached peer-local draft for a named capture.
+    /// Live input still reaches this store only through the shared editor.
+    pub(crate) fn stage_private_text(&mut self, text: &str) {
+        let blocks = (!text.is_empty()).then(|| vec![BlockContent::paragraph("", text)]);
+        let source = self.host.widget_mut().source_mut();
+        let Some(key) = source.private_key.clone() else {
+            return;
+        };
+        source.private.update(|drafts| {
+            let draft = drafts.entry(key).or_insert_with(Draft::new);
+            draft.reset(blocks.as_deref().unwrap_or_default());
+        });
+        source.observed = None;
+        source.observe();
+        self.host.widget_mut().present_now();
     }
 
     /// Plain text currently held by a direct-agent draft, when attached.

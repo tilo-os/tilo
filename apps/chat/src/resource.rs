@@ -295,6 +295,18 @@ pub struct ChatShell;
 
 /// Every named scenario `--shots --scenario NAME` captures.
 const SCENARIOS: &[&str] = &[
+    "agent-lifecycle-before",
+    "agent-lifecycle-before-compact",
+    "agent-lifecycle-before-floating",
+    "agent-message-refused",
+    "agent-message-refused-compact",
+    "agent-message-refused-floating",
+    "agent-permission-revoked",
+    "agent-permission-revoked-compact",
+    "agent-permission-revoked-floating",
+    "agent-membership-removed",
+    "agent-membership-removed-compact",
+    "agent-membership-removed-floating",
     "agent-direct",
     "agent-direct-compact",
     "agent-direction-saved",

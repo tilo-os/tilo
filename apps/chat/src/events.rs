@@ -3058,9 +3058,64 @@ mod tests {
     }
 
     #[test]
+    fn removed_agent_never_claims_working_even_when_the_room_is_also_read_only() {
+        let (mut app, _doc) = app_with_doc();
+        app.stage_scenario("agent-membership-removed");
+        app.perms = crate::permissions::ChatPermissions::from_context(
+            ui::permissions::PermissionContext::from_capabilities(
+                ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), model::ME),
+                Vec::new(),
+            ),
+        );
+
+        let tasks = app
+            .direct_agent_tasks()
+            .expect("the retained exact task context remains available for audit");
+        let populated = app.direct_agent_status_lines(&tasks.borrow(), false);
+        assert_eq!(populated.primary, "Last known task: Review the release");
+        assert_eq!(
+            populated.receipt.as_deref(),
+            Some("This agent is no longer available here. Your draft is kept on this device.")
+        );
+        assert!(populated.queue.is_none());
+
+        app.messages.clear();
+        let status = app.direct_agent_status_lines(&tasks.borrow(), false);
+        assert_eq!(status.primary, "Last known task: Review the release");
+        assert_eq!(
+            status.receipt.as_deref(),
+            Some("This agent is no longer available here. Your draft is kept on this device.")
+        );
+        assert!(status.queue.is_none());
+
+        let theme = ui::theme::Theme::high_contrast().with_text_scale(2.0);
+        render_frame_with_theme(&mut app, 560.0, 360.0, &theme);
+        let mut text = ui::text_render::TextRenderer::new();
+        let constrained = app.messages_rect(&mut text);
+        assert!(!app.agent_empty_state_will_paint(
+            &mut text,
+            &theme,
+            constrained,
+            "Scribe is unavailable"
+        ));
+        render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
+        let roomy = app.messages_rect(&mut text);
+        assert!(app.agent_empty_state_will_paint(
+            &mut text,
+            &theme,
+            roomy,
+            "Scribe is unavailable"
+        ));
+    }
+
+    #[test]
     fn compact_large_text_agent_controls_keep_header_editor_and_send_in_view() {
         let (mut app, mut doc) = app_with_doc();
         app.stage_scenario("agent-direction-saved-compact");
+        assert!(
+            app.composer_main.value().is_empty(),
+            "legacy Agent status captures must not inherit the adverse-lifecycle draft"
+        );
         type_str(&mut app, &mut doc, "Keep the evidence concise");
         let theme = ui::theme::Theme::high_contrast().with_text_scale(2.0);
         render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
@@ -3075,6 +3130,27 @@ mod tests {
             .find(|(_, hit, ..)| matches!(hit, Hit::Send))
             .expect("Save direction is exported through the semantic action door");
         assert_eq!(send.2, "Save direction");
+    }
+
+    #[test]
+    fn adverse_large_text_agent_composer_stays_below_the_header() {
+        for (width, height) in [(800.0, 600.0), (560.0, 560.0)] {
+            let (mut app, _doc) = app_with_doc();
+            app.stage_scenario("agent-message-refused-floating");
+            let theme = ui::theme::Theme::high_contrast().with_text_scale(2.0);
+            render_frame_with_theme(&mut app, width, height, &theme);
+            render_frame_with_theme(&mut app, width, height, &theme);
+
+            let composer = app.composer_rect(&mut ui::text_render::TextRenderer::new());
+            assert!(
+                composer.y0 >= app.header_rect().y1,
+                "{width}x{height} composer {composer:?} overlaps header {:?}",
+                app.header_rect()
+            );
+            assert_hit_in_view(&app, "header Float", |hit| matches!(hit, Hit::AgentWindow));
+            assert_hit_in_view(&app, "composer editor", |hit| matches!(hit, Hit::FocusMain));
+            assert_hit_in_view(&app, "Send message", |hit| matches!(hit, Hit::Send));
+        }
     }
 
     #[test]
@@ -3378,11 +3454,16 @@ mod tests {
             Some("Keep this view-only draft")
         );
         assert_eq!(surface.view.composer_main.selection(), (5, 14));
-        assert!(
-            surface.view.hits.iter().all(|(_, hit)| {
-                !matches!(hit, Hit::AgentIntent(_) | Hit::FocusMain | Hit::Send)
-            })
-        );
+        assert!(surface.view.hits.iter().all(|(_, hit)| {
+            !matches!(
+                hit,
+                Hit::AgentIntent(_)
+                    | Hit::AgentStop
+                    | Hit::FocusMain
+                    | Hit::ComposerEmoji(_)
+                    | Hit::Send
+            )
+        }));
         let accessible =
             ui::Widget::accessibility(&*surface.view).expect("detached Chat accessibility tree");
         assert!(accessible.children.iter().all(|node| {
@@ -3390,6 +3471,15 @@ mod tests {
                 && node.name.as_deref() != Some("Send message")
                 && node.name.as_deref() != Some("Queue task")
                 && node.name.as_deref() != Some("Send direction")
+        }));
+        assert!(accessible.children.iter().any(|node| {
+            node.role == ui::a11y::Role::StaticText
+                && node.name.as_deref() == Some("Keep this view-only draft")
+        }));
+        assert!(accessible.children.iter().any(|node| {
+            node.role == ui::a11y::Role::StaticText
+                && node.name.as_deref()
+                    == Some("You can read this conversation but not write in it.")
         }));
         let requests_before = host.requests().len();
         app.agent_surfaces
