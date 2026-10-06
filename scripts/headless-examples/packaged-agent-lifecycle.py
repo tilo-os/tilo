@@ -90,6 +90,7 @@ def agent_conversation_accessibility(agent_name, *, detached=False, diagnostic_p
         "heading_matches": 0,
         "composer_matches": 0,
         "control_matches": 0,
+        "drag_handle_matches": 0,
         "private_content_recorded": False,
     }
 
@@ -120,14 +121,17 @@ def agent_conversation_accessibility(agent_name, *, detached=False, diagnostic_p
                 composers = [path for path in client.named(tree, "Message composer")
                              if "org.a11y.atspi.EditableText" in client.interfaces(path)]
                 controls = client.named(tree, control_name)
+                drag_handles = client.named(tree, "Drag conversation")
                 observed["heading_matches"] += len(headings)
                 observed["composer_matches"] += len(composers)
                 observed["control_matches"] += len(controls)
-                if len(headings) == 1 and len(composers) == 1 and len(controls) == 1:
-                    key = (headings[0], composers[0], controls[0])
+                observed["drag_handle_matches"] += len(drag_handles)
+                if (len(headings) == 1 and len(composers) == 1
+                        and len(controls) == 1 and len(drag_handles) == 1):
+                    key = (headings[0], composers[0], controls[0], drag_handles[0])
                     matches.setdefault(key, {"bus": bus, "process": pid, "window": window,
                                              "heading": headings[0], "composer": composers[0],
-                                             "control": controls[0],
+                                             "control": controls[0], "drag": drag_handles[0],
                                              "agent": agent_name, "detached": detached,
                                              "private_content_recorded": False})
             if len(matches) == 1:
@@ -386,6 +390,41 @@ def physically_click_editor(socket, access, geometry):
     }))
 
 
+def component_global_center(access, path, geometry, label):
+    """Translate one real client-local AccessKit extent through the compositor route."""
+    client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
+    rect = atspi.extents_reply(client.call(
+        path, "org.a11y.atspi.Component.GetExtents", "1",
+    ))
+    if rect is None or rect[2] <= 2 or rect[3] <= 2:
+        raise RuntimeError(f"the actual {label} has no clickable on-screen extent")
+    x, y, width, height = rect
+    global_x = geometry["origin"]["x"] + x + width / 2
+    global_y = geometry["origin"]["y"] + y + height / 2
+    content = geometry["content"]
+    placement = geometry["placement"]
+    inside = lambda box: (box["x"] <= global_x < box["x"] + box["w"]
+                          and box["y"] <= global_y < box["y"] + box["h"])
+    if not inside(content) or not inside(placement):
+        raise RuntimeError(f"the actual {label} is outside its routed content box")
+    return global_x, global_y
+
+
+def set_physical_modifiers(socket, *, ctrl=False, shift=False, alt=False, logo=False):
+    require_ok(call(socket, {
+        "op": "modifiers", "ctrl": ctrl, "shift": shift,
+        "alt": alt, "logo": logo,
+    }))
+
+
+def physical_chord(socket, key, **modifiers):
+    set_physical_modifiers(socket, **modifiers)
+    try:
+        require_ok(call(socket, {"op": "key", "key": key}))
+    finally:
+        set_physical_modifiers(socket)
+
+
 def require_chat_keyboard_focus_after_click(socket, output):
     """Refuse key injection unless the exact painted Chat surface owns the seat."""
     frame = presented_primary_frame(
@@ -510,43 +549,87 @@ def floating_surface_presenting(response, app_id, floating_id):
 
 
 def native_float_return(socket, room, record, output, size, process):
-    """Exercise real published Chat doors and authenticated native adoption."""
+    """Exercise the actual seat, IME and native surface handoff end to end."""
     draft = "Keep this private Tide draft"
     access = wait_for("attached Tide editor", lambda: agent_conversation_accessibility("Tide"), process)
-    client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
-    focused = client.call(access["composer"], "org.a11y.atspi.Component.GrabFocus")
-    if focused.strip() != "(true,)":
-        raise RuntimeError("the actual local editor refused keyboard focus")
+    primary = wait_for("Chat's presented primary frame", lambda: presented_primary_frame(
+        call(socket, {"op": "foreign_frames"}), "so.tilo.chat"), process)
+    geometry = presented_content_geometry(primary)
+    physically_click_editor(socket, access, geometry)
+    require_chat_keyboard_focus_after_click(socket, output)
     wait_for("attached Tide editor's accessibility focus",
              lambda: editor_accessibility_focus(access), process)
-    if not client.set_text(access["composer"], draft):
-        raise RuntimeError("the actual local editor refused the private draft")
+    require_ok(call(socket, {"op": "type", "text": draft}))
     wait_for(
-        "the actual local editor to apply the private draft",
+        "physical typing to reach the actual local editor",
         lambda: private_editor_value_matches(access, draft),
         process,
     )
-    # The ordinary local accessibility action reaches the shared editor, not
-    # an app-owned selection setter or a control-socket draft backdoor.
-    selected = client.call(access["composer"], "org.a11y.atspi.Text.AddSelection", "3", "8")
-    if selected.strip() != "(true,)":
-        raise RuntimeError("the actual local editor refused selection")
+
+    # Prove a real physical selection and undo before exercising IME. The
+    # control socket emits the compositor's ordinary key path; it never writes
+    # the editor or its CRDT directly.
+    set_physical_modifiers(socket, shift=True)
+    try:
+        for _ in range(5):
+            require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
+    finally:
+        set_physical_modifiers(socket)
+    selected = private_editor_observation(access, draft)
+    if selected["selection"] != [len(draft) - 5, len(draft)]:
+        raise RuntimeError("physical Shift+ArrowLeft did not select the expected editor range")
+    require_ok(call(socket, {"op": "key", "key": "ArrowRight"}))
+    require_ok(call(socket, {"op": "type", "text": "!"}))
+    wait_for("physical edit before undo",
+             lambda: private_editor_value_matches(access, draft + "!"), process)
+    physical_chord(socket, "z", ctrl=True)
+    wait_for("physical Ctrl+Z to restore the private draft",
+             lambda: private_editor_value_matches(access, draft), process)
+
+    # The desktop emoji picker is the production input-method route:
+    # Super+. → query → Enter commits through zwp_input_method_v2/text_input_v3.
+    physical_chord(socket, ".", logo=True)
+    require_ok(call(socket, {"op": "type", "text": "thumbs"}))
+    require_ok(call(socket, {"op": "key", "key": "Enter"}))
+    draft += "👍"
+    wait_for("real input-method commit in the private editor",
+             lambda: private_editor_value_matches(access, draft), process)
+    set_physical_modifiers(socket, shift=True)
+    try:
+        require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
+    finally:
+        set_physical_modifiers(socket)
     before = private_editor_observation(access, draft)
+    if before["selection"] != [len(draft) - 1, len(draft)]:
+        raise RuntimeError("the IME result could not be selected through physical input")
     if before["accessibility_focused"] is not True:
         raise RuntimeError("the actual local editor lost accessibility focus before Float")
-    if before["selection"] != [3, 8]:
-        raise RuntimeError("the real editor did not adopt the requested selection")
     require_ok(call(socket, {"op": "snapshot", "path": str(output / f"before-float-{size}.png")}))
-    # Editing publishes a fresh AccessKit transaction. Resolve the current
-    # control beside the same editor instead of activating a replaced node.
+    # Editing publishes fresh AccessKit transactions. Resolve the current
+    # drag handle beside the same editor instead of using a retained node.
     access = wait_for(
-        "current attached Tide editor and Float control",
+        "current attached Tide editor and drag handle",
         lambda: agent_conversation_accessibility("Tide"),
         process,
     )
     if private_editor_observation(access, draft) != before:
         raise RuntimeError("refreshing Float changed private editor state")
-    floated = activate_agent_conversation_control(access, "Float conversation")
+    primary = presented_primary_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat")
+    if primary is None:
+        raise RuntimeError("Chat's primary presentation disappeared before drag")
+    geometry = presented_content_geometry(primary)
+    drag_x, drag_y = component_global_center(access, access["drag"], geometry, "drag handle")
+    desktop_width, desktop_height = (int(value) for value in size.split("x", 1))
+    placement = geometry["placement"]
+    if placement["x"] >= 140:
+        drag_to_x = max(8.0, placement["x"] - 96.0)
+    else:
+        drag_to_x = min(desktop_width - 8.0, placement["x"] + placement["w"] + 96.0)
+    drag_to_y = min(desktop_height - 8.0, max(8.0, drag_y + 48.0))
+    require_ok(call(socket, {
+        "op": "drag", "x_from": drag_x, "y_from": drag_y,
+        "x_to": drag_to_x, "y_to": drag_to_y, "steps": 16,
+    }))
 
     def painted_float():
         return presented_floating_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat")
@@ -560,7 +643,11 @@ def native_float_return(socket, room, record, output, size, process):
     before_return = presented_primary_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat")
     if before_return is None:
         raise RuntimeError("Chat's primary presentation disappeared before Return")
-    returned = activate_agent_conversation_control(access, "Return conversation")
+    float_geometry = presented_content_geometry(frame)
+    return_x, return_y = component_global_center(
+        access, access["control"], float_geometry, "Return conversation control"
+    )
+    require_ok(call(socket, {"op": "click_at", "x": return_x, "y": return_y}))
     wait_for("the detached Chat window to stop presenting", lambda: not floating_surface_presenting(
         call(socket, {"op": "foreign_frames"}), "so.tilo.chat", frame["floating_id"]), process)
 
@@ -575,7 +662,9 @@ def native_float_return(socket, room, record, output, size, process):
         raise RuntimeError("Return changed private editor content, caret, selection or keyboard focus")
     require_ok(call(socket, {"op": "snapshot", "path": str(output / f"after-return-{size}.png")}))
     (output / "float-return.json").write_text(json.dumps({
-        "float_terminal": floated, "return_terminal": returned,
+        "physical_typing": True, "physical_selection": True, "physical_undo": True,
+        "input_method_commit": True, "pointer_drag_detach": True,
+        "pointer_return": True,
         "native_floating_id": frame["floating_id"], "frame_seq": frame["frame_seq"],
         "returned_primary_frame_seq": primary["frame_seq"],
         "private_editor": attached, "private_content_recorded": False,

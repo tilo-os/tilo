@@ -1,4 +1,5 @@
 import importlib.util
+import inspect
 import pathlib
 import sys
 import tempfile
@@ -16,6 +17,19 @@ SPEC.loader.exec_module(PROOF)
 
 
 class PresentedEditorTargetTests(unittest.TestCase):
+    def test_float_return_uses_only_physical_editor_and_surface_input(self):
+        source = inspect.getsource(PROOF.native_float_return)
+        for forbidden in ("SetText", "AddSelection", "DoAction", "GrabFocus"):
+            self.assertNotIn(forbidden, source)
+        for required in (
+            '"op": "type"',
+            '"op": "key"',
+            '"op": "drag"',
+            '"op": "click_at"',
+            "physical_chord",
+        ):
+            self.assertIn(required, source)
+
     def test_presented_content_geometry_accepts_only_authoritative_finite_fields(self):
         expected = {
             "rect": {"x": 700.0, "y": 100.0, "w": 600.0, "h": 500.0},
