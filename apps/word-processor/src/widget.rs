@@ -5981,6 +5981,96 @@ impl WordProcessorWidget {
         })
     }
 
+    /// The foreground inspector owns the current UI projection; the document
+    /// remains available through its canonical resource actions.
+    fn styles_page_accessibility_tree(&self) -> A11yTreeNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let mut children = Vec::new();
+        if let Some((rect, _)) = self
+            .panel_hits
+            .iter()
+            .find(|(_, hit)| matches!(hit, PanelHit::Close))
+        {
+            children.push(A11yTreeNode::leaf(
+                AccessNode::new(Role::Button)
+                    .with_name(t("panel-close"))
+                    .with_bounds(*rect)
+                    .with_action_target("word-processor.styles:close")
+                    .with_state(AccessState {
+                        focusable: true,
+                        ..Default::default()
+                    }),
+            ));
+        }
+        if let Some(mut image) = self.image_placement_access_node() {
+            image.node = image
+                .node
+                .with_key(ui::a11y::hash_key(&"word-processor.styles:image-placement"));
+            image.children.retain(|child| {
+                child.node.bounds.is_some_and(|bounds| {
+                    let visible = bounds.to_rect().intersect(self.panel_body);
+                    visible.width() > 0.0 && visible.height() > 0.0
+                })
+            });
+            children.push(image);
+        }
+        let title = if self.selected_image_id().is_some() {
+            t("panel-image")
+        } else {
+            t("toolbar-styles")
+        };
+        A11yTreeNode {
+            node: AccessNode::new(Role::Group)
+                .with_name(title)
+                .with_bounds(self.panel_rect),
+            children,
+        }
+    }
+
+    fn perform_styles_page_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        key_path: &[u64],
+        state: &mut ui::widget::Edits<'_>,
+    ) -> Option<bool> {
+        if !self.styles_panel_full_window() {
+            return None;
+        }
+        {
+            let target = key_path.last().copied();
+            if target == Some(ui::a11y::hash_key(&"word-processor.styles:close")) {
+                return Some(match action {
+                    ui::a11y::Action::Activate => {
+                        self.apply_panel_hit(state, PanelHit::Close);
+                        true
+                    }
+                    ui::a11y::Action::Focus => {
+                        self.set_focus(true);
+                        true
+                    }
+                    _ => false,
+                });
+            }
+            let visible_image_target = self.panel_hits.iter().any(|(_, hit)| {
+                let id = match hit {
+                    PanelHit::ImageInline => "inline",
+                    PanelHit::ImageFreePosition => "free",
+                    PanelHit::ImageWrapLeft => "left",
+                    PanelHit::ImageWrapRight => "right",
+                    _ => return false,
+                };
+                target
+                    == Some(ui::a11y::hash_key(&format!(
+                        "word-processor.image-placement:{id}"
+                    )))
+            });
+            if !visible_image_target {
+                return Some(false);
+            }
+        }
+        None
+    }
+
     /// Assemble the full accessibility node tree: a `Role::Document` root holding
     /// one node per block (headings with level, paragraphs/list items with text,
     /// images with alt text, tables as `Role::Table`/`Role::Cell`), followed by
@@ -5989,6 +6079,9 @@ impl WordProcessorWidget {
     pub fn accessibility_tree(&self) -> A11yTreeNode {
         use ui::a11y::{AccessNode, AccessState, Role};
 
+        if self.styles_panel_full_window() {
+            return self.styles_page_accessibility_tree();
+        }
         let mut children: Vec<A11yTreeNode> = Vec::new();
         let mut i = 0usize;
         while let Some(b) = self.blocks.get(i) {
@@ -9974,6 +10067,9 @@ impl Widget for WordProcessorWidget {
     /// Authored chrome keeps its retained toolkit children available to the
     /// host's normal resource, custody and invocation traversal.
     fn children(&self) -> Vec<&dyn Widget> {
+        if self.styles_panel_full_window() {
+            return Vec::new();
+        }
         let mut children: Vec<&dyn Widget> = vec![&self.tool_bar];
         if let Some(button) = self.window_history.button() {
             children.push(button);
@@ -9982,6 +10078,9 @@ impl Widget for WordProcessorWidget {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if self.styles_panel_full_window() {
+            return Vec::new();
+        }
         let mut children: Vec<&mut (dyn Widget + '_)> = vec![&mut self.tool_bar];
         if let Some(button) = self.window_history.button_mut() {
             children.push(button);
@@ -10276,8 +10375,30 @@ impl Widget for WordProcessorWidget {
     /// children so AccessKit, AT-SPI and the built-in reader all receive it.
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         let mut tree = self.accessibility_tree();
-        tree.node = tree.node.with_name(t("a11y-document-editor"));
+        if !self.styles_panel_full_window() {
+            tree.node = tree.node.with_name(t("a11y-document-editor"));
+        }
         Some(tree.into_access_node())
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::Edits<'_>,
+        path: &ui::widget::ModelPath,
+    ) -> bool {
+        fn published(node: &ui::a11y::AccessNode, target: &str) -> bool {
+            node.action_target.as_deref() == Some(target)
+                || node.children.iter().any(|child| published(child, target))
+        }
+        if !self
+            .accessibility()
+            .is_some_and(|node| published(&node, target))
+        {
+            return false;
+        }
+        self.perform_action_at(action, &[ui::a11y::hash_key(&target)], state, path)
     }
 
     fn perform_action_at(
@@ -10288,6 +10409,9 @@ impl Widget for WordProcessorWidget {
         path: &ui::widget::ModelPath,
     ) -> bool {
         let (state, path) = ui::doc::document(state, path);
+        if let Some(result) = self.perform_styles_page_action(action, key_path, state) {
+            return result;
+        }
         if matches!(action, ui::a11y::Action::Focus) {
             if let Some(target) = key_path.last().copied() {
                 let palette_target = if ui::a11y::hash_key(&"compact-swatch:clear") == target {
