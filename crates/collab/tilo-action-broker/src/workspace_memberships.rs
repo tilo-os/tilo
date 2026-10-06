@@ -413,6 +413,7 @@ fn membership_action(
     params: Vec<tilo_actions::ActionParam>,
 ) -> PublishedAction {
     PublishedAction {
+        semantic_identity: None,
         resource: resource.into(),
         action: action.into(),
         resource_kind: "workspace-membership".into(),
