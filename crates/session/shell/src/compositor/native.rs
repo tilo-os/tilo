@@ -8655,6 +8655,7 @@ pub fn run() {
     let mut credit_transition_hold;
     while !close_requested {
         let iter_t0 = Instant::now();
+        crate::shell::launcher::action_authority::tick(iter_t0);
         let injected_redraw = std::mem::take(&mut injected_redraw_pending);
         metrics.begin_tick(iter_t0);
         if let Some(pipe) = present_pipe.as_ref() {
@@ -12012,6 +12013,10 @@ pub fn run() {
                 ("lock-clock", lock_clock_deadline),
                 ("lock-media", lock_media_deadline),
                 ("run-deadline", run_deadline),
+                (
+                    "app-action-authority",
+                    crate::shell::launcher::action_authority::next_deadline(),
+                ),
                 ("controller-nav", controller_nav.next_deadline(park_now)),
                 ("backend-service", backend.next_service_deadline()),
                 (

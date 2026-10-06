@@ -25,6 +25,7 @@
 )]
 
 pub mod colorimetry;
+pub mod contribution;
 pub mod hdr_metadata;
 pub mod retention;
 
