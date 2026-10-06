@@ -1,5 +1,5 @@
 //! Evaluate the production geometric decoder on a bounded, pinned MIT gesture
-//! validation prefix. Run with rcargo --on-builder; never use private typing.
+//! validation prefix. Run on an approved remote builder; never use private typing.
 use std::error::Error;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};

@@ -12,7 +12,7 @@ use ui::{
 };
 use vello::{
     Scene,
-    kurbo::{Affine, BezPath, Cap, Point, Rect, Stroke},
+    kurbo::{Affine, Point, Rect},
     peniko::{BlendMode, Color, Fill},
 };
 
@@ -130,14 +130,8 @@ pub(crate) struct KeyboardPresentation<'a> {
 
 /// Paint transient gesture feedback from the current theme, clipped to keys.
 fn draw_swipe_trail(ctx: &mut PaintCtx<'_>, points: &[Point], bounds: Rect) {
-    let Some(&first) = points.first() else { return };
     if points.len() < 2 {
         return;
-    }
-    let mut path = BezPath::new();
-    path.move_to(first);
-    for &point in points.iter().skip(1) {
-        path.line_to(point);
     }
     let width = f64::from(ctx.theme.tokens.spacing.s1);
     let color = ctx.theme.tokens.colors.text_primary;
@@ -148,13 +142,26 @@ fn draw_swipe_trail(ctx: &mut PaintCtx<'_>, points: &[Point], bounds: Rect) {
         ctx.transform,
         &bounds,
     );
-    ctx.scene.stroke(
-        &Stroke::new(width).with_caps(Cap::Round),
-        ctx.transform,
-        color,
-        None,
-        &path,
-    );
+    for pair in points.windows(2) {
+        let (Some(&start), Some(&end)) = (pair.first(), pair.last()) else {
+            continue;
+        };
+        let delta = end - start;
+        let length = delta.hypot();
+        let transform = ctx.transform
+            * Affine::translate(start.to_vec2())
+            * Affine::rotate(delta.y.atan2(delta.x));
+        ctx.with_transform(transform).fill_round(
+            Rect::new(
+                -width / 2.0,
+                -width / 2.0,
+                length + width / 2.0,
+                width / 2.0,
+            ),
+            width / 2.0,
+            color,
+        );
+    }
     ctx.scene.pop_layer();
 }
 
