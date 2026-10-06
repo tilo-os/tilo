@@ -2327,6 +2327,8 @@ mod tests {
 
             if query.max_results == 0 && query.target.is_none() {
                 return Pending::ready(Ok(CataloguePage {
+                    revision: "chat-providers-1".into(),
+                    exhausted: true,
                     providers: vec![CatalogueProvider {
                         provider: "chat-peer".into(),
                         app_id: "so.tilo.chat".into(),

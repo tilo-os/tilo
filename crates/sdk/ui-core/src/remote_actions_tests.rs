@@ -115,6 +115,13 @@ fn a_catalogue_read_gathers_every_page_as_the_app() {
         .map(|row| row.resource.id.clone())
         .collect();
     assert_eq!(ids, ["a", "b"]);
+    assert!(
+        page.exhausted,
+        "the aggregate retains authoritative completion"
+    );
+    assert!(page.next_cursor.is_empty());
+    assert!(!page.stale_cursor);
+    assert!(!page.budget_exhausted);
     let seen = host.seen.lock().unwrap();
     assert_eq!(seen.len(), 2, "one request per page");
     assert!(
@@ -123,6 +130,42 @@ fn a_catalogue_read_gathers_every_page_as_the_app() {
         "the app asks as itself"
     );
     assert!(!actions.is_busy());
+}
+
+#[test]
+fn incomplete_or_contradictory_catalogue_pages_never_publish_partial_offers() {
+    for (exhausted, next_cursor) in [(false, Vec::new()), (true, vec![1])] {
+        let mut actions = RemoteActions::session();
+        let answer = actions.catalogue(CatalogueQuery::default());
+        let requests = actions.take_collab_requests();
+        let [
+            CollabRequest::RemoteAction {
+                message: RemoteActionMessage::CatalogueRequest { correlation, .. },
+            },
+        ] = requests.as_slice()
+        else {
+            panic!("first catalogue request");
+        };
+        actions.handle_collab_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::CatalogueResponse {
+                correlation: *correlation,
+                result: Ok(CataloguePage {
+                    revision: "r1".into(),
+                    rows: vec![row("partial-offer")],
+                    exhausted,
+                    next_cursor,
+                    ..CataloguePage::default()
+                }),
+            },
+        });
+        assert!(matches!(
+            answer.get(),
+            RemoteCall::Refused(ActionHostError::Unavailable { reason })
+                if reason.contains("inconsistent completion metadata")
+        ));
+        assert!(!actions.is_busy());
+        assert!(actions.take_collab_requests().is_empty());
+    }
 }
 
 #[test]
