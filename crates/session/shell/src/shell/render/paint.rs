@@ -2307,6 +2307,11 @@ impl VelloDrmBridge {
         (&self.target.device, &self.target.queue)
     }
 
+    #[cfg(test)]
+    pub(crate) fn present_generation_for_test(&self) -> Option<u64> {
+        self.target.present_generation
+    }
+
     /// Import a compositor-owned linear scanout dma-buf (`XRGB8888`, or `XBGR2101010` /
     /// `ABGR16161616F` for HDR) on this bridge's exact wgpu device.
     ///
