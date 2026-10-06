@@ -2338,11 +2338,13 @@ fn decline_bluetooth_pairing() -> Result<(), ActionError> {
 /// Stage a whole-desktop layout through the same confirm-or-restore
 /// transaction as Super+P, and open the display sheet so whoever is at the
 /// machine sees Keep/Revert and the countdown.
-fn stage_display_layout(st: &mut ChromeState, mode: DisplayLayoutMode) -> Result<(), ActionError> {
-    settings_store::display_mode::stage_layout(mode)
-        .map_err(|error| ActionError::Refused(error.to_string()))?;
-    st.overlays.projection = true;
-    Ok(())
+fn stage_display_layout(
+    _st: &mut ChromeState,
+    _mode: DisplayLayoutMode,
+) -> Result<(), ActionError> {
+    Err(ActionError::Refused(
+        "display layouts require lifecycle dispatch".into(),
+    ))
 }
 
 /// Keep or revert the display change that is waiting for confirmation.
@@ -2683,6 +2685,54 @@ impl SearchProvider for ActionsProvider {
                                         )),
                                         Some(Err(error)) => Err(ActionError::Refused(error)),
                                     }
+                                });
+                            Ok(crate::shell::search::InvocationDisposition::Pending(ticket))
+                        },
+                    ) as Rc<crate::shell::search::BeginInvokeFn>;
+                    (on_open, Some(begin))
+                } else if let Some(mode) = action
+                    .id
+                    .strip_prefix("display.layout.")
+                    .and_then(DisplayLayoutMode::from_id)
+                {
+                    let action_id = action.id;
+                    let on_open = Rc::new(
+                        |_doc: &mut ui::widget::Edits<'_>,
+                         _root: &automerge::ObjId,
+                         _chrome: &Chrome,
+                         _args: &ActionArgs| {
+                            Err(ActionError::Refused(
+                                "display layouts require lifecycle dispatch".into(),
+                            ))
+                        },
+                    ) as Rc<crate::shell::search::OpenFn>;
+                    let begin = Rc::new(
+                        move |_doc: &mut ui::widget::Edits<'_>,
+                              _root: &automerge::ObjId,
+                              chrome: &Chrome,
+                              _args: &ActionArgs| {
+                            if !current_shell_action_authorized(&chrome.borrow(), action_id) {
+                                return Err(ActionError::Refused("current workspace authority no longer permits this display layout".into()));
+                            }
+                            let pending = crate::shell::display_persistence::stage_layout(mode)
+                                .map_err(|error| ActionError::Refused(error.to_string()))?;
+                            {
+                                let mut state = chrome.borrow_mut();
+                                state.overlays.projection = true;
+                                state.bump();
+                            }
+                            let chrome = chrome.clone();
+                            let ticket: crate::shell::search::PendingInvocation =
+                                Rc::new(move || {
+                                    pending
+                                        .poll()
+                                        .map(|done| {
+                                            done.map(|_| {
+                                                chrome.borrow_mut().bump();
+                                                crate::shell::search::ActionReceipt::completed()
+                                            })
+                                        })
+                                        .map_err(|error| ActionError::Refused(error.to_string()))
                                 });
                             Ok(crate::shell::search::InvocationDisposition::Pending(ticket))
                         },
