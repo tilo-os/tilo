@@ -711,7 +711,7 @@ fn open_hosted_toolbar_overflow(framed: &mut Framed<WordProcessorWidget>) {
         .into_iter()
         .find(|resource| resource.kind == "tilo.control" && resource.label == "More")
         .expect("the retained More control publishes its actual native View");
-    let address = tilo_actions::ActionAddress::new(resource.id, "invoke");
+    let address = tilo_actions::ActionAddress::new(resource.id.as_str(), "invoke");
     driver
         .invoke_action(&address, &serde_json::Map::new(), false, None)
         .expect("the actual More View is admitted and settled by its host");
