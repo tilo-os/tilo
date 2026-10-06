@@ -5954,6 +5954,19 @@ impl ShellOverlayHost {
         targets
     }
 
+    /// Named hit targets for the visible prompt’s existing one-shot consent choices.
+    #[cfg(any(test, debug_assertions))]
+    pub fn permission_prompt_choice_rects_for_tests(&self) -> Vec<(&'static str, Rect)> {
+        self.permission_prompt
+            .as_ref()
+            .map_or_else(Vec::new, |prompt| {
+                vec![
+                    ("permission_prompt_allow_once", prompt.allow_rect()),
+                    ("permission_prompt_deny", prompt.deny_rect()),
+                ]
+            })
+    }
+
     /// Test-only accessor for the held [`PermissionPrompt`].
     #[cfg(any(test, debug_assertions))]
     pub fn permission_prompt_mut_for_tests(&mut self) -> Option<&mut PermissionPrompt> {

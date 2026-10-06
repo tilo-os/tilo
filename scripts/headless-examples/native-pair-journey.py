@@ -1,0 +1,502 @@
+#!/usr/bin/env python3
+"""Two independent native desktops on a private governed host and audio graph.
+
+Run on the disposable remote builder. No login profile, hardware microphone,
+screen capture, external account or public listener is used. Missing evidence
+fails the journey; a partial receipt never qualifies the pair.
+"""
+from __future__ import annotations
+
+import argparse
+import array
+import importlib.util
+import json
+import math
+import os
+import pathlib
+import signal
+import select
+import shutil
+import subprocess
+import tempfile
+import time
+
+from _control import call, require_ok
+from reaper import die_with_parent
+
+REPO = pathlib.Path(__file__).resolve().parents[2]
+spec = importlib.util.spec_from_file_location(
+    "packaged_native", pathlib.Path(__file__).with_name("packaged-native-bootstrap.py"))
+packaged = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(packaged)
+
+
+class Fixture:
+    def __init__(self, output, binaries, pipewire):
+        self.output, self.binaries, self.pipewire = output, binaries, pipewire
+        self.root_owner = tempfile.TemporaryDirectory(prefix="tilo-native-pair-")
+        self.root = pathlib.Path(self.root_owner.name)
+        self.root.chmod(0o700)
+        self.processes, self.logs, self.stages = [], [], []
+
+    def spawn(self, label, command, env, **kwargs):
+        log = open(self.output / f"{label}.log", "w")
+        self.logs.append(log)
+        process = subprocess.Popen(list(map(str, command)), env=env, stdout=log,
+                                   stderr=log, start_new_session=True,
+                                   preexec_fn=die_with_parent(), **kwargs)
+        self.processes.append(process)
+        return process
+
+    def record(self, stage, **evidence):
+        self.stages.append({"stage": stage, **evidence})
+        print(stage, flush=True)
+
+    def env(self, name):
+        profile = self.root / name
+        for directory in ("home", "config", "data", "state", "cache", "run", "identity"):
+            (profile / directory).mkdir(parents=True, mode=0o700, exist_ok=True)
+        env = {**os.environ, "HOME": str(profile / "home"),
+               **{f"XDG_{kind.upper()}_HOME": str(profile / kind)
+                  for kind in ("config", "data", "state", "cache")},
+               "XDG_RUNTIME_DIR": str(profile / "run"),
+               "TILO_IDENTITY_ROOT": str(profile / "identity"),
+               "TILO_IDENTITY_FILE_SECRETS": "1",
+               "CARGO_BUILD_JOBS": "4",
+               "TILO_PEER_KEY_PATH": str(profile / "identity/device-private/keypair.bin"),
+               "TILO_TEST_CONTROL": str(profile / "run/control.sock"),
+               "TILO_STATE_PATH": str(profile / "config/tilo/state.json"),
+               "TILO_HEADLESS_SIZE": "1280x800",
+               "TILO_LAUNCHER_BIN": str(self.binaries / "tilo-launcher"),
+               "GST_PLUGIN_PATH": str(self.pipewire / "usr/lib64/gstreamer-1.0")}
+        for key in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS",
+                    "PIPEWIRE_REMOTE", "PIPEWIRE_RUNTIME_DIR", "TILO_COLLAB_HOST",
+                    "TILO_COLLAB_HOSTS", "TILO_APPS_SYSTEM_DIR"):
+            env.pop(key, None)
+        return env
+
+    def audio(self, name, env, frequency):
+        profile = self.root / name
+        config = profile / "pipewire"
+        shutil.copytree(self.pipewire / "usr/share/pipewire", config)
+        drop = config / "pipewire.conf.d"
+        drop.mkdir(exist_ok=True)
+        (drop / "99-fixture.conf").write_text('''context.objects = [
+ { factory = adapter args = {
+   factory.name = support.null-audio-sink node.name = fixture-sink
+   node.description = "Fixture output" media.class = Audio/Sink
+   audio.position = [ MONO ]
+ } }
+]
+''')
+        server = self.spawn(f"{name}-pipewire", [self.pipewire / "usr/bin/pipewire"],
+                            {**env, "PIPEWIRE_CONFIG_DIR": str(config)})
+        packaged.wait_for("private audio server", lambda: (profile / "run/pipewire-0").exists(), server)
+        wpconfig = profile / "config/wireplumber/wireplumber.conf.d"
+        wpconfig.mkdir(parents=True)
+        (wpconfig / "99-fixture.conf").write_text('''wireplumber.profiles = {
+ main = { monitor.alsa = disabled monitor.bluez = disabled
+          monitor.v4l2 = disabled monitor.libcamera = disabled }
+}
+''')
+        self.spawn(f"{name}-wireplumber", ["dbus-run-session", "--", "wireplumber"], env)
+        source = self.spawn(f"{name}-tone", [
+            "gst-launch-1.0", "-q", "audiotestsrc", "is-live=true", "wave=sine",
+            f"freq={frequency}", "!", "audioconvert", "!",
+            "audio/x-raw,rate=48000,channels=1", "!", "pipewiresink", "mode=provide",
+            'stream-properties=props,media.class=(string)Audio/Source,node.name=(string)fixture-source,node.description=(string)Fixture-tone',
+        ], env)
+
+        def sources():
+            rows = json.loads(subprocess.check_output(["pw-dump"], env=env, timeout=3))
+            nodes = [row.get("info", {}).get("props", {}) for row in rows
+                     if row.get("type") == "PipeWire:Interface:Node"]
+            audio = [node for node in nodes if node.get("media.class") in {"Audio/Source", "Audio/Sink"}]
+            names = {node.get("node.name") for node in audio}
+            if names - {"fixture-source", "fixture-sink"}:
+                raise RuntimeError("private graph contains an unexpected audio device")
+            return audio if names == {"fixture-source", "fixture-sink"} else None
+
+        nodes = packaged.wait_for("only generated source and null output", sources, source)
+        self.record(f"{name}-isolated-audio", frequency_hz=frequency,
+                    devices=[{"class": n["media.class"], "name": n["node.name"]} for n in nodes])
+
+    def stop_private_buses(self):
+        # Launcher/SDK helpers may fork a bus out of their process group.
+        # Exact private profile evidence plus a pidfd bounds cleanup to this run.
+        homes = {str(self.root / name / "home").encode() for name in ("alice", "bob")}
+        runtimes = {str(self.root / name / "run").encode() for name in ("alice", "bob")}
+        stopped = 0
+        for process in pathlib.Path("/proc").iterdir():
+            if not process.name.isdigit():
+                continue
+            descriptor = None
+            try:
+                if process.stat().st_uid != os.getuid() or (process / "comm").read_text().strip() != "dbus-daemon":
+                    continue
+                descriptor = os.pidfd_open(int(process.name))
+                env = dict(item.split(b"=", 1) for item in (process / "environ").read_bytes().split(b"\0") if b"=" in item)
+                if env.get(b"HOME") not in homes or env.get(b"XDG_RUNTIME_DIR") not in runtimes:
+                    continue
+                signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+                poller = select.poll()
+                poller.register(descriptor, select.POLLIN)
+                if not poller.poll(3000):
+                    signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+                    if not poller.poll(3000):
+                        raise RuntimeError("owned private bus did not exit")
+                stopped += 1
+            except (ProcessLookupError, FileNotFoundError):
+                continue
+            except PermissionError as error:
+                raise RuntimeError("private bus custody cannot be observed") from error
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+        return stopped
+
+    def cleanup_proof(self):
+        with tempfile.TemporaryDirectory(prefix="tilo-neighbor-bus-") as neighbor:
+            directory = pathlib.Path(neighbor)
+            (directory / "home").mkdir(mode=0o700)
+            (directory / "run").mkdir(mode=0o700)
+            owned = self.env("alice")
+            adjacent = {**owned, "HOME": str(directory / "home"), "XDG_RUNTIME_DIR": str(directory / "run")}
+            descriptors = []
+            try:
+                for env in (owned, adjacent):
+                    pid = int(subprocess.check_output([
+                        "dbus-daemon", "--session", "--fork", "--print-pid",
+                        f"--address=unix:path={env['XDG_RUNTIME_DIR']}/fixture-bus",
+                    ], env=env, timeout=3))
+                    descriptors.append(os.pidfd_open(pid))
+                if self.stop_private_buses() != 1:
+                    raise RuntimeError("cleanup did not select exactly the owned private bus")
+                owned_poll, adjacent_poll = select.poll(), select.poll()
+                owned_poll.register(descriptors[0], select.POLLIN)
+                adjacent_poll.register(descriptors[1], select.POLLIN)
+                if not owned_poll.poll(0) or adjacent_poll.poll(0):
+                    raise RuntimeError("private cleanup did not preserve the adjacent bus")
+                self.record("exact-private-bus-cleanup-proved", owned_exited=True, adjacent_survived=True)
+            finally:
+                for descriptor in descriptors:
+                    try:
+                        signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+                        poller = select.poll()
+                        poller.register(descriptor, select.POLLIN)
+                        if not poller.poll(3000):
+                            raise RuntimeError("cleanup proof daemon did not exit")
+                    except ProcessLookupError:
+                        pass
+                    finally:
+                        os.close(descriptor)
+
+    def close(self):
+        for process in reversed(self.processes):
+            if process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    continue
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=5)
+        self.record("private-process-cleanup", escaped_buses_stopped=self.stop_private_buses())
+        for log in self.logs:
+            log.close()
+        self.root_owner.cleanup()
+
+    def operation(self, socket, room, operation, process, resource=None):
+        def offered():
+            rows = [row for row in self.catalogue(socket)
+                    if row.get("application") == "so.tilo.chat"
+                    and row.get("room") == room and row.get("record") == ""
+                    and row.get("operation") == operation
+                    and (resource is None or row.get("resource") == resource)]
+            if len(rows) > 1:
+                raise RuntimeError(f"ambiguous Chat operation {operation}")
+            return rows[0] if rows else None
+        return packaged.wait_for(f"Chat {operation}", offered, process)
+
+    @staticmethod
+    def catalogue(socket):
+        response = call(socket, {"op": "actions_enumerate", "include_programmatic": True})
+        if "err" in response or not isinstance(response.get("answer", {}).get("actions"), list):
+            raise RuntimeError("complete native action catalogue is unavailable")
+        return response["answer"]["actions"]
+
+    def act(self, session, room, operation, args=None, resource=None):
+        socket, process = session
+        row = self.operation(socket, room, operation, process, resource)
+        receipt = packaged.wait_terminal(socket, packaged.invoke(socket, row, args), process,
+                                        public_failure_path=self.output / f"failed-{operation}.json")
+        return receipt.get("update", {}).get("output", {}).get("value")
+
+    def context(self, sessions, room, users):
+        alice, bob = sessions["alice"], sessions["bob"]
+        for session in (alice, bob):
+            report = self.act(session, room, "live-context-status")
+            if report.get("sharing") is not False or report.get("following") is not False or report.get("videoCapture") is not False:
+                raise RuntimeError("native Chat did not start with private context")
+        self.act(alice, room, "new-channel", {"value": "Fixture second conversation"})
+
+        def text_channels(socket):
+            return sorted({row["resource"] for row in self.catalogue(socket)
+                           if row.get("application") == "so.tilo.chat" and row.get("room") == room
+                           and row.get("operation") == "post"})
+
+        channels = packaged.wait_for("two shared text channels", lambda: (
+            channels if len(channels := text_channels(alice[0])) >= 2 else None), alice[1])
+        first, second = channels[:2]
+        packaged.wait_for("native peer sees the same resources", lambda: (
+            set(channels).issubset(text_channels(bob[0]))), bob[1])
+        self.act(alice, room, "open-channel", resource=first)
+        self.act(bob, room, "open-channel", resource=second)
+        require_ok(call(alice[0], {"op": "pointer_move", "x": 350, "y": 220}))
+        require_ok(call(bob[0], {"op": "pointer_move", "x": 640, "y": 300}))
+        self.act(alice, room, "share-live-context")
+        follow = packaged.require_action(bob[0], "presence.follow")
+        packaged.invoke(bob[0], follow, {"collaborator": users[0]})
+
+        def following():
+            report = self.act(bob, room, "live-context-status")
+            expected = first.removeprefix("chat.channel:")
+            return report if report.get("following") is True and report.get("channel") == expected else None
+
+        report = packaged.wait_for("native Chat follows the other native context", following, bob[1])
+        self.record("native-context-follows-opt-in", report=report)
+        for name, session in sessions.items():
+            require_ok(call(session[0], {"op": "snapshot", "path": str(self.output / f"{name}-following.png")}))
+        self.act(alice, room, "stop-sharing-live-context")
+        packaged.wait_for("Stop withdraws native context", lambda: (
+            self.act(bob, room, "live-context-status").get("following") is False), bob[1])
+        self.act(alice, room, "open-channel", resource=second)
+        time.sleep(0.5)
+        report = self.act(bob, room, "live-context-status")
+        if report.get("channel") != first.removeprefix("chat.channel:"):
+            raise RuntimeError("stopped context still moved the other native app")
+        stop = packaged.require_action(bob[0], "presence.follow.stop")
+        packaged.invoke(bob[0], stop)
+        packaged.wait_for("shell follow explicitly released", lambda: (
+            packaged.chrome_state(bob[0]).get("presence", {}).get("following") is None), bob[1])
+        self.record("native-stop-sharing-and-stop-following", report=report)
+
+    def voice(self, sessions, room):
+        for name, session in sessions.items():
+            self.act(session, room, "open-workspace")
+            self.act(session, room, "start-call")
+
+            def live():
+                value = self.act(session, room, "call-status")
+                if not isinstance(value, dict) or not isinstance(value.get("reported"), dict):
+                    raise RuntimeError("native call state is unobservable")
+                snapshot = value["reported"]
+                if snapshot.get("state") == "ended":
+                    (self.output / f"{name}-voice-failure.json").write_text(json.dumps(value, indent=2))
+                    raise RuntimeError(f"native call failed: {snapshot.get('issue')}")
+                return snapshot if snapshot.get("state") == "live" else None
+
+            snapshot = packaged.wait_for("native governed voice connected", live, session[1])
+            if snapshot.get("muted") is not True or snapshot.get("capture_active") is not False:
+                raise RuntimeError("joining acquired capture without fresh consent")
+            self.record(f"{name}-native-call-listening-muted", report=snapshot)
+        for name, session in sessions.items():
+            self.unmute(name, session, room)
+        for name, frequency in (("alice", 1100), ("bob", 700)):
+            self.measure(name, frequency)
+
+    def unmute(self, name, session, room):
+        socket, process = session
+        if packaged.chrome_state(socket).get("pending_grants_count") != 0:
+            raise RuntimeError("unrelated permission request precedes fixture consent")
+        self.act(session, room, "unmute")
+        packaged.wait_for("fresh one-shot capture consent", lambda: packaged.chrome_state(
+            socket).get("pending_grants_count") == 1, process)
+        before = self.act(session, room, "call-status")["reported"]
+        if before.get("capture_active") is not False or before.get("muted") is not True:
+            raise RuntimeError("unmute started capture before explicit consent")
+        require_ok(call(socket, {"op": "snapshot", "path": str(self.output / f"{name}-consent.png")}))
+        require_ok(call(socket, {"op": "click_named", "name": "permission_prompt_allow_once"}))
+
+        def capturing():
+            report = self.act(session, room, "call-status")["reported"]
+            return report if report.get("capture_active") is True and report.get("muted") is False else None
+
+        report = packaged.wait_for("current-generation native capture", capturing, process)
+        self.record(f"{name}-explicit-generated-source-consent", report=report)
+
+    def measure(self, name, frequency):
+        path = self.output / f"{name}-received.raw"
+        result = subprocess.run([
+            "pw-cat", "--record", "--raw", "--target", "fixture-sink",
+            "--properties", "{ stream.capture.sink = true }", "--rate", "48000",
+            "--channels", "1", "--format", "s16", "--sample-count", "96000", str(path),
+        ], env=self.env(name), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=8)
+        if result.returncode:
+            raise RuntimeError("isolated playback observation failed")
+        samples = array.array("h", path.read_bytes())
+        if len(samples) != 96000:
+            raise RuntimeError("isolated playback observation is incomplete")
+        coefficient = 2 * math.cos(math.tau * frequency / 48000)
+        s1 = s2 = energy = 0.0
+        for sample in samples:
+            value = sample / 32768
+            energy += value * value
+            s0 = value + coefficient * s1 - s2
+            s2, s1 = s1, s0
+        share = 0.0 if energy < 1e-4 else 2 * (s1*s1+s2*s2-coefficient*s1*s2) / (len(samples)*energy)
+        if share < 0.5:
+            raise RuntimeError(f"{name} did not receive the other native peer's generated {frequency} Hz tone")
+        self.record(f"{name}-decoded-remote-tone", frequency_hz=frequency, tone_share=share,
+                    samples=len(samples), rms=math.sqrt(energy / len(samples)))
+
+    def audio_streams(self, name, session):
+        rows = json.loads(subprocess.check_output(["pw-dump"], env=self.env(name), timeout=3))
+        if not isinstance(rows, list) or not rows:
+            raise RuntimeError("private native audio graph is unobservable")
+        streams = [row.get("info", {}).get("props", {}) for row in rows
+                   if row.get("type") == "PipeWire:Interface:Node"]
+        return [node for node in streams if node.get("application.process.id") == str(session[1].pid)
+                and node.get("media.class") in {"Stream/Input/Audio", "Stream/Output/Audio"}]
+
+    def no_audio_streams(self, name, session):
+        return not self.audio_streams(name, session)
+
+    def require_audio_streams(self, name, session):
+        packaged.wait_for("owned capture and playback streams are observable", lambda: {
+            node["media.class"] for node in self.audio_streams(name, session)
+        } == {"Stream/Input/Audio", "Stream/Output/Audio"}, session[1])
+
+    def leave_and_revoke(self, sessions, room, host):
+        for name, session in sessions.items():
+            self.require_audio_streams(name, session)
+            self.act(session, room, "leave-call")
+            def left():
+                report = self.act(session, room, "call-status")["reported"]
+                return report if report.get("state") in {"idle", "ended"} and report.get("capture_active") is False else None
+            report = packaged.wait_for("explicit Leave releases the call", left, session[1])
+            packaged.wait_for("Leave removes native audio streams", lambda: self.no_audio_streams(name, session), session[1])
+            self.record(f"{name}-leave-releases-capture-and-playback", report=report)
+            require_ok(call(session[0], {"op": "snapshot", "path": str(self.output / f"{name}-left.png")}))
+        # Rejoin the same generated call with a new explicit one-shot consent.
+        for name, session in sessions.items():
+            self.act(session, room, "join-call")
+            packaged.wait_for("new native call generation", lambda: self.act(session, room, "call-status")["reported"].get("state") == "live", session[1])
+            self.unmute(name, session, room)
+        self.measure("alice", 1100)
+        self.measure("bob", 700)
+        self.require_audio_streams("bob", sessions["bob"])
+        host.stdin.write("revoke\n")
+        host.stdin.flush()
+        packaged.wait_for("host commits Bob removal", lambda: "revoked" in (self.output / "host.log").read_text(), host)
+        bob = sessions["bob"]
+        packaged.wait_for("revocation closes Bob capture and playback", lambda: self.no_audio_streams("bob", bob), bob[1])
+        self.record("governor-revocation-removes-native-audio-streams")
+        require_ok(call(bob[0], {"op": "snapshot", "path": str(self.output / "bob-revoked.png")}))
+        self.act(sessions["alice"], room, "leave-call")
+        packaged.wait_for("remaining participant leaves", lambda: self.no_audio_streams("alice", sessions["alice"]), sessions["alice"][1])
+
+    def run(self):
+        environments = {name: self.env(name) for name in ("alice", "bob")}
+        publisher = self.root / "alice"
+        for name, env in environments.items():
+            env["TILO_APPS_DATA_DIR"] = str(self.root / name / "apps")
+            env["TILO_RUNTIME_BUNDLE_DIR"] = str(publisher / "runtimes")
+        packaged.install_packages(self.binaries, publisher, environments["alice"])
+        environments["bob"]["TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE"] = environments["alice"]["TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE"]
+        packaged.run(self.binaries / "tilo-install", ["install", publisher / "chat.tapp", "--allow-self-signed"], environments["bob"])
+        self.record("ordinary-signed-chat-packages-installed")
+        host = self.spawn("host", [self.binaries / "examples/native_pair_host", self.root],
+                          environments["alice"], stdin=subprocess.PIPE, text=True)
+        bootstrap_path = self.root / "bootstrap.json"
+        packaged.wait_for("private signed host invitations", bootstrap_path.exists, host)
+        bootstrap = json.loads(bootstrap_path.read_text())
+        self.record("two-distinct-certified-native-identities")
+        sessions = {}
+        for name, frequency in (("alice", 700), ("bob", 1100)):
+            env = environments[name]
+            self.audio(name, env, frequency)
+            shell = self.spawn(name, [self.binaries / "shell", "--mode", "native",
+                                      "--backend", "headless", "--enable-peer-sync"], env)
+            socket = env["TILO_TEST_CONTROL"]
+            packaged.wait_for(f"{name} native control socket", lambda: pathlib.Path(socket).exists(), shell)
+            packaged.invoke(socket, packaged.require_action(socket, "peer.connect", "connect"))
+            packaged.wait_for("Connect prompt", lambda: packaged.chrome_state(socket).get(
+                "peer_sync", {}).get("connect_input") is not None, shell)
+            invitation = bootstrap["invitations"][0 if name == "alice" else 1]
+            require_ok(call(socket, {"op": "type", "text": invitation}))
+            require_ok(call(socket, {"op": "key", "key": "Enter"}))
+            packaged.wait_for("signed native join", lambda: (
+                packaged.chrome_state(socket).get("peer_sync", {}).get("status") or "").startswith("Joined"), shell)
+            require_ok(call(socket, {"op": "key", "key": "Escape"}))
+            self.record(f"{name}-governed-native-join")
+            sessions[name] = (socket, shell)
+            require_ok(call(socket, {"op": "snapshot", "path": str(self.output / f"{name}-joined.png")}))
+        for name, (socket, shell) in sessions.items():
+            app = packaged.wait_for("signed Chat offering", lambda: next((
+                row for row in packaged.actions(socket, "Chat")
+                if row.get("provider") == "applications" and row.get("id") == "so.tilo.chat"), None), shell)
+            receipt = packaged.wait_terminal(socket, packaged.invoke(socket, app), shell,
+                                             public_failure_path=self.output / f"{name}-failed-open.json")
+            (self.output / f"{name}-open.json").write_text(json.dumps(receipt, indent=2))
+            try:
+                packaged.wait_for("presented native Chat", lambda: packaged.presented_primary_frame(
+                    call(socket, {"op": "foreign_frames"}), "so.tilo.chat"), shell)
+            except Exception:
+                (self.output / f"{name}-frames.json").write_text(json.dumps(
+                    call(socket, {"op": "foreign_frames"}), indent=2))
+                (self.output / f"{name}-notifications.json").write_text(json.dumps(
+                    packaged.chrome_state(socket).get("notifications"), indent=2))
+                (self.output / f"{name}-actions.json").write_text(json.dumps(
+                    [packaged.public_action_observation(row) for row in self.catalogue(socket)], indent=2))
+                require_ok(call(socket, {"op": "snapshot", "path": str(self.output / f"{name}-failed-launch.png")}))
+                raise
+            self.record(f"{name}-signed-native-chat-presented")
+            (self.output / f"{name}-actions.json").write_text(json.dumps(
+                [packaged.public_action_observation(row) for row in packaged.actions(socket)], indent=2))
+            require_ok(call(socket, {"op": "snapshot", "path": str(self.output / f"{name}-chat.png")}))
+        self.context(sessions, bootstrap["room"], bootstrap["users"])
+        self.voice(sessions, bootstrap["room"])
+        self.leave_and_revoke(sessions, bootstrap["room"], host)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--out", type=pathlib.Path, required=True)
+    parser.add_argument("--binaries", type=pathlib.Path, default=REPO / "target/debug")
+    parser.add_argument("--pipewire", type=pathlib.Path, required=True,
+                        help="private extracted PipeWire server/config/plugin payload")
+    parser.add_argument("--cleanup-proof", action="store_true", help="test exact private daemon cleanup without launching Chat")
+    args = parser.parse_args()
+    args.out.mkdir(parents=True, exist_ok=False, mode=0o700)
+    fixture = Fixture(args.out.resolve(), args.binaries.resolve(), args.pipewire.resolve())
+    qualified, error = False, None
+    try:
+        if args.cleanup_proof:
+            fixture.cleanup_proof()
+        else:
+            fixture.run()
+            qualified = True
+    except Exception as failure:
+        error = str(failure)
+        raise
+    finally:
+        cleanup_error = None
+        try:
+            fixture.close()
+        except Exception as failure:
+            qualified = False
+            cleanup_error = str(failure)
+        (args.out / "journey.json").write_text(json.dumps({
+            "qualified": qualified, "mode": "cleanup-proof" if args.cleanup_proof else "native-pair",
+            "error": error, "cleanup_error": cleanup_error, "stages": fixture.stages,
+            "real_microphone": False, "video_screen_sharing": False,
+        }, indent=2) + "\n")
+        if cleanup_error is not None:
+            raise RuntimeError(f"fixture cleanup failed: {cleanup_error}")
+
+
+if __name__ == "__main__":
+    main()
