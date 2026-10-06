@@ -182,6 +182,100 @@ mod tests {
     }
 
     #[test]
+    fn execution_phase_rechecks_current_agent_membership_before_mutation() {
+        use tilo_desktop_model::WorkspaceTaskExecutionPhase;
+        let (mut peer, governor, _, now) = peer();
+        let (_, queued) = peer
+            .apply_workspace_task_command(
+                uuid::Uuid::from_u128(1),
+                [1; 32],
+                &WorkspaceTaskAuthority::Person {
+                    caller: governor.clone(),
+                },
+                &WorkspaceTaskCommand::Queue {
+                    title: "Private full instruction is not a phase".into(),
+                    assigned_agent: "scribe".into(),
+                    route: WorkspaceTaskRoute::Model,
+                    resource: None,
+                },
+                now,
+            )
+            .unwrap();
+        let tilo_desktop_model::WorkspaceTaskMutationResult::Queued { task_id } = queued else {
+            panic!("queue result")
+        };
+        peer.apply_workspace_task_command(
+            uuid::Uuid::from_u128(2),
+            [2; 32],
+            &WorkspaceTaskAuthority::Host {
+                attestor: governor.clone(),
+            },
+            &WorkspaceTaskCommand::StartRun {
+                task_id: task_id.clone(),
+                agent_id: "scribe".into(),
+            },
+            now,
+        )
+        .unwrap();
+        let authority = WorkspaceTaskAuthority::Agent {
+            attestor: governor.clone(),
+            agent_id: "scribe".into(),
+        };
+        peer.apply_workspace_task_command(
+            uuid::Uuid::from_u128(3),
+            [3; 32],
+            &authority,
+            &WorkspaceTaskCommand::ExecutionPhase {
+                task_id: task_id.clone(),
+                run_epoch: 1,
+                sequence: 0,
+                phase: WorkspaceTaskExecutionPhase::Accepted,
+            },
+            now,
+        )
+        .unwrap();
+        assert!(
+            peer.apply_workspace_membership_command(
+                &governor,
+                &crate::workspace_membership::WorkspaceMembershipCommand::RemoveAgent {
+                    agent: "scribe".into()
+                },
+                &SigningKey::from_bytes(&[2; 32]),
+                now,
+            )
+            .unwrap()
+        );
+        let before = peer.durable().unwrap();
+        assert!(
+            peer.apply_workspace_task_command(
+                uuid::Uuid::from_u128(4),
+                [4; 32],
+                &authority,
+                &WorkspaceTaskCommand::ExecutionPhase {
+                    task_id: task_id.clone(),
+                    run_epoch: 1,
+                    sequence: 1,
+                    phase: WorkspaceTaskExecutionPhase::Planning
+                },
+                now,
+            )
+            .is_err()
+        );
+        assert_eq!(peer.durable().unwrap(), before);
+        let phase = crate::workspace_task::snapshot(peer.admitted_room().unwrap())
+            .unwrap()
+            .controls[&task_id]
+            .execution
+            .clone()
+            .unwrap();
+        assert_eq!(phase.phase, WorkspaceTaskExecutionPhase::Accepted);
+        assert_eq!(phase.sequence, 0);
+        let encoded = serde_json::to_string(&phase).unwrap();
+        assert!(!encoded.contains("Private full instruction"));
+        assert!(!encoded.contains("message"));
+    }
+
+    #[test]
     fn current_owner_with_read_restriction_cannot_queue_a_task() {
         let (mut peer, governor, _, now) = peer();
         let restriction = CapOverride::new(
