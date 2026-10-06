@@ -197,6 +197,7 @@ namespaces but never the contact address. Nothing is approved over HTTP:
 
 ```
 tilo-registry-server applications list
+tilo-registry-server applications show <pubkey> --json
 tilo-registry-server applications approve <pubkey> --reviewer <name>
 tilo-registry-server applications reject <pubkey> --reviewer <name> --reason <text>
 ```
@@ -205,6 +206,24 @@ tilo-registry-server applications reject <pubkey> --reviewer <name> --reason <te
 waited fails the approval and changes nothing. Otherwise it allowlists the key
 with `--can-add-new` for the proven namespaces, adding them to any it already
 had.
+
+For a UI or a script that decides what it previously displayed, take `review_id`
+from `applications show --json` and pass it to either decision:
+
+```
+tilo-registry-server applications approve <pubkey> --reviewer <name> --review-id <id>
+tilo-registry-server applications reject <pubkey> --reviewer <name> --reason <text> --review-id <id>
+```
+
+The id identifies the complete stored application, including its signed claims
+and review state. If the publisher replaces it, refresh and review the new
+request; an old decision changes neither the allowlist nor the replacement.
+Approval also compares the reviewed snapshot under the transaction lock after
+checking proofs, so a replacement arriving during a DNS/HTTPS check cannot be
+overwritten. Rust callers use `applications::approve_reviewed` or
+`applications::reject_reviewed` with the displayed `StoredApplication`.
+The original CLI forms remain supported. These commands use existing local
+operator access; they introduce no remotely callable approval endpoint.
 
 ## Bootstrapping your own instance
 
