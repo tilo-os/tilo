@@ -333,6 +333,9 @@ files-received-link-empty = Link zur freigegebenen Datei ist leer
 
 ## Anwendungsrahmen und Navigation
 files-app-title = Dateien
+files-selection-empty = Wählen Sie zuerst Dateien aus.
+files-selection-unavailable = Ein Eintrag ist nicht mehr im angezeigten Ordner. Die Auswahl wurde nicht geändert.
+files-selection-too-large = Wählen Sie höchstens 256 Einträge pro Anfrage aus oder verwenden Sie „Alles auswählen“.
 files-back = Zurück
 files-forward = Vor
 files-up = Einen Ordner nach oben
