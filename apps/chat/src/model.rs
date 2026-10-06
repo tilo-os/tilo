@@ -56,6 +56,41 @@ impl ChannelKind {
     }
 }
 
+/// What a person explicitly asked an agent to do.
+///
+/// This is authored structure, never inferred from prose. `Queue` and
+/// `Steer` remain closed until their Task owner providers are installed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentIntent {
+    Message,
+    Queue,
+    Steer,
+}
+
+impl std::str::FromStr for AgentIntent {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "message" => Ok(Self::Message),
+            "queue" => Ok(Self::Queue),
+            "steer" => Ok(Self::Steer),
+            _ => Err(()),
+        }
+    }
+}
+
+impl AgentIntent {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Message => "message",
+            Self::Queue => "queue",
+            Self::Steer => "steer",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Presence {
     Online,
@@ -126,6 +161,9 @@ pub struct Channel {
     pub name: String,
     pub topic: String,
     pub kind: ChannelKind,
+    /// Stable address of this direct conversation. Routing metadata is not
+    /// proof that the named participant is an admitted agent.
+    pub conversation_with: Option<Id>,
     pub order: u32,
     /// Unread top-level messages for the local peer. Derived (not stored) —
     /// filled in `crate::app::ChatApp::reload` from the read watermark; the
@@ -333,6 +371,9 @@ pub struct Message {
     pub reference: Option<tilo_reference::ResourceRef>,
     /// Host-resolved existing record provider for this reference.
     pub source_provider: Option<String>,
+    /// Explicit meaning of a direct-agent request. Ordinary messages and old
+    /// records leave this absent.
+    pub agent_intent: Option<AgentIntent>,
     pub attachment: Option<Attachment>,
     /// Pinned messages are flagged in the shared document so every peer sees the
     /// same pins. A plain scalar flag toggled by an action.
@@ -740,6 +781,7 @@ mod tests {
             mentions: vec![],
             reference: None,
             source_provider: None,
+            agent_intent: None,
             attachment: None,
             pinned: false,
             work: None,

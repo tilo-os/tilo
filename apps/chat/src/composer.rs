@@ -9,17 +9,19 @@
 //! for presence, a peer's caret drawn at such an offset — is read from the
 //! editor's blocks here.
 
+use std::collections::HashMap;
+
 use automerge::AutoCommit;
 use tilo_actions::ActionError;
 use tilo_document::{RichText, RichTextAction, RichTextState};
 use tilo_rich_text::{
     Draft, FieldOutcome, RichTextField, RichTextSource, RichTextSurface, SubmitKey,
 };
-use ui::PresenceCtx;
 use ui::framework::Dispatcher;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{BlockContent, BlockEditor, Embedded, PresenceKeyFn, Widget};
+use ui::{LocalState, PresenceCtx};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use winit::event::{Modifiers, WindowEvent};
@@ -115,6 +117,177 @@ impl RichTextSource for DraftField {
     }
 }
 
+/// The one composer source. Ordinary channels use their shared published
+/// draft; a direct-agent conversation uses a peer-local [`Draft`] keyed by
+/// workspace and agent. Switching sources never copies plain text into the
+/// shared chat document.
+pub struct ComposerSource {
+    shared: DraftField,
+    private: LocalState<HashMap<String, Draft>>,
+    private_key: Option<String>,
+    read_only: bool,
+    revision: u64,
+    observed: Option<u64>,
+}
+
+impl ComposerSource {
+    fn new() -> Self {
+        Self {
+            shared: DraftField::new(),
+            private: LocalState::new(HashMap::new()),
+            private_key: None,
+            read_only: false,
+            revision: 0,
+            observed: None,
+        }
+    }
+
+    fn inner_revision(&self) -> Option<u64> {
+        match &self.private_key {
+            Some(key) => self.private.with(|drafts| {
+                drafts
+                    .get(key)
+                    .and_then(tilo_rich_text::RichTextSource::revision)
+            }),
+            None => self.shared.revision(),
+        }
+    }
+
+    fn observe(&mut self) {
+        let current = self.inner_revision();
+        if self.observed != current {
+            self.observed = current;
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
+
+    fn use_private(&mut self, key: String) {
+        if self.private_key.as_ref() == Some(&key) {
+            return;
+        }
+        self.private.update(|drafts| {
+            drafts.entry(key.clone()).or_insert_with(Draft::new);
+        });
+        self.private_key = Some(key);
+        self.observed = None;
+        self.observe();
+    }
+
+    fn use_shared(&mut self) {
+        if self.private_key.take().is_some() {
+            self.observed = None;
+            self.observe();
+        }
+    }
+
+    fn private_plain(&self) -> Option<String> {
+        let key = self.private_key.as_ref()?;
+        self.private
+            .with(|drafts| drafts.get(key).map(Draft::plain_text))
+    }
+
+    fn clear_private(&mut self) -> bool {
+        let Some(key) = self.private_key.as_ref() else {
+            return false;
+        };
+        let mut cleared = false;
+        self.private.update(|drafts| {
+            if let Some(draft) = drafts.get_mut(key) {
+                draft.clear();
+                cleared = true;
+            }
+        });
+        if cleared {
+            self.observed = self.inner_revision();
+            self.revision = self.revision.wrapping_add(1);
+        }
+        cleared
+    }
+}
+
+impl RichTextSource for ComposerSource {
+    fn read_only(&self) -> bool {
+        self.read_only || (self.private_key.is_none() && self.shared.read_only())
+    }
+
+    fn sync(&mut self, doc: &AutoCommit) {
+        if self.private_key.is_none() {
+            self.shared.sync(doc);
+        }
+        self.observe();
+    }
+
+    fn revision(&self) -> Option<u64> {
+        self.inner_revision().map(|_| self.revision)
+    }
+
+    fn read_from(&mut self, doc: &AutoCommit) -> bool {
+        let read = match &self.private_key {
+            Some(key) => self.private.with(|drafts| {
+                drafts
+                    .get(key)
+                    .is_some_and(|draft| draft.with_state(|_| ()).is_some())
+            }),
+            None => self.shared.read_from(doc),
+        };
+        self.observe();
+        read
+    }
+
+    fn with_state<T>(&self, read: impl FnOnce(&RichTextState) -> T) -> Option<T> {
+        match &self.private_key {
+            Some(key) => self
+                .private
+                .with(|drafts| drafts.get(key).and_then(|draft| draft.with_state(read))),
+            None => self.shared.with_state(read),
+        }
+    }
+
+    fn apply(
+        &mut self,
+        edits: &mut ui::widget::Edits<'_>,
+        edit: &RichTextAction,
+    ) -> Result<(), ActionError> {
+        if self.read_only {
+            return Err(ActionError::Refused(
+                "this conversation is open to view only".into(),
+            ));
+        }
+        let result = match &self.private_key {
+            Some(key) => {
+                let mut result = Err(ActionError::Refused(
+                    "the private draft is not attached".into(),
+                ));
+                self.private.update(|drafts| {
+                    if let Some(draft) = drafts.get_mut(key) {
+                        result = draft.apply(edits, edit);
+                        draft.sync(edits);
+                    }
+                });
+                result
+            }
+            None => self.shared.apply(edits, edit),
+        };
+        self.observe();
+        result
+    }
+
+    fn presence_keys(&self) -> Option<PresenceKeyFn> {
+        self.private_key
+            .is_none()
+            .then(|| self.shared.presence_keys())
+            .flatten()
+    }
+}
+
+fn agent_draft_key(workspace: &str, agent: &str) -> String {
+    format!(
+        "agent:{}:{workspace}:{}:{agent}",
+        workspace.len(),
+        agent.len()
+    )
+}
+
 /// The SDK editor as a chat composer.
 pub struct Composer<S: RichTextSource + 'static> {
     host: Embedded<RichTextSurface<S>>,
@@ -123,7 +296,7 @@ pub struct Composer<S: RichTextSource + 'static> {
 }
 
 /// A channel or thread composer over its shared draft.
-pub type DraftComposer = Composer<DraftField>;
+pub type DraftComposer = Composer<ComposerSource>;
 /// The editor for a sent message, local until saved.
 pub type MessageEditor = Composer<Draft>;
 
@@ -136,7 +309,7 @@ impl DraftComposer {
     pub fn shared() -> Self {
         Self {
             host: Embedded::new(
-                RichTextSurface::over(DraftField::new())
+                RichTextSurface::over(ComposerSource::new())
                     .with_editor(editor())
                     .with_submit(SubmitKey::Enter),
             ),
@@ -147,27 +320,55 @@ impl DraftComposer {
     /// Edit through `dispatcher` from now on.
     pub fn attach(&mut self, dispatcher: Dispatcher<Chat>) {
         let source = self.host.widget_mut().source_mut();
-        source.dispatch = Some(dispatcher);
-        source.retarget();
+        source.shared.dispatch = Some(dispatcher);
+        source.shared.retarget();
     }
 
     /// Edit the draft stored under `key` (a channel, or a thread).
     pub fn set_key(&mut self, key: &str) {
         let source = self.host.widget_mut().source_mut();
-        if source.key != key {
-            key.clone_into(&mut source.key);
-            source.retarget();
+        source.use_shared();
+        if source.shared.key != key {
+            key.clone_into(&mut source.shared.key);
+            source.shared.retarget();
         }
     }
 
     /// The draft this composer edits.
     pub fn key(&self) -> String {
-        self.host.widget().source().key.clone()
+        let source = self.host.widget().source();
+        source
+            .private_key
+            .clone()
+            .unwrap_or_else(|| source.shared.key.clone())
     }
 
     /// Whether the participant may only view.
     pub fn set_read_only(&mut self, read_only: bool) {
         self.host.widget_mut().source_mut().read_only = read_only;
+    }
+
+    /// Edit the private draft belonging to one direct-agent conversation.
+    /// The key is a local routing key only; it is never written to the room.
+    pub fn set_agent_draft(&mut self, workspace: &str, agent: &str) {
+        self.host
+            .widget_mut()
+            .source_mut()
+            .use_private(agent_draft_key(workspace, agent));
+    }
+
+    /// Plain text currently held by a direct-agent draft, when attached.
+    pub fn private_plain(&self) -> Option<String> {
+        self.host.widget().source().private_plain()
+    }
+
+    /// Clear only the currently attached direct-agent draft.
+    pub fn clear_private(&mut self) -> bool {
+        let cleared = self.host.widget_mut().source_mut().clear_private();
+        if cleared {
+            self.host.widget_mut().present_now();
+        }
+        cleared
     }
 }
 
@@ -514,5 +715,65 @@ impl<S: RichTextSource + 'static> Composer<S> {
             })
             .flatten()
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_agent_drafts_are_peer_local_and_keyed_by_workspace_and_agent() {
+        let mut room_doc = AutoCommit::new();
+        let before = room_doc.save();
+        let mut composer = DraftComposer::shared();
+
+        composer.set_agent_draft("room-a", "scribe");
+        composer.insert_text(
+            &mut ui::widget::Edits::lend(&mut room_doc),
+            "private for Scribe",
+        );
+        assert_eq!(
+            composer.private_plain().as_deref(),
+            Some("private for Scribe")
+        );
+        assert_eq!(
+            room_doc.save(),
+            before,
+            "private drafts never edit the room"
+        );
+
+        composer.set_agent_draft("room-a", "tide");
+        composer.insert_text(
+            &mut ui::widget::Edits::lend(&mut room_doc),
+            "private for Tide",
+        );
+        assert_eq!(
+            composer.private_plain().as_deref(),
+            Some("private for Tide")
+        );
+
+        composer.set_agent_draft("room-a", "scribe");
+        assert_eq!(
+            composer.private_plain().as_deref(),
+            Some("private for Scribe")
+        );
+        composer.set_agent_draft("room-b", "scribe");
+        assert_eq!(composer.private_plain().as_deref(), Some(""));
+        assert_eq!(room_doc.save(), before);
+    }
+
+    #[test]
+    fn clearing_one_private_draft_does_not_clear_another() {
+        let mut room_doc = AutoCommit::new();
+        let mut composer = DraftComposer::shared();
+        composer.set_agent_draft("room-a", "scribe");
+        composer.insert_text(&mut ui::widget::Edits::lend(&mut room_doc), "Scribe");
+        composer.set_agent_draft("room-a", "tide");
+        composer.insert_text(&mut ui::widget::Edits::lend(&mut room_doc), "Tide");
+        assert!(composer.clear_private());
+        assert_eq!(composer.private_plain().as_deref(), Some(""));
+        composer.set_agent_draft("room-a", "scribe");
+        assert_eq!(composer.private_plain().as_deref(), Some("Scribe"));
     }
 }

@@ -20,6 +20,8 @@ pub struct Message {
     pub parent: String,
     pub edited: bool,
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_intent: Option<crate::model::AgentIntent>,
     pub complete: bool,
 }
 #[derive(Debug, Serialize)]
@@ -145,6 +147,10 @@ fn read_source(
             edited = matches!(value, Value::Scalar(ScalarValueRef::Boolean(true)));
             Ok(())
         })?;
+        let agent_intent = source.string(message, "agent_intent", 16)?;
+        let agent_intent = (!agent_intent.is_empty())
+            .then_some(agent_intent.as_str())
+            .and_then(|intent| intent.parse().ok());
         page.messages.push(Message {
             id: source.string(message, "id", 128)?,
             author: source.string(message, "author", 256)?,
@@ -152,6 +158,7 @@ fn read_source(
             parent: source.string(message, "parent", 128)?,
             edited,
             text: String::new(),
+            agent_intent,
             complete: false,
         });
         let mut continuation = Cursor {

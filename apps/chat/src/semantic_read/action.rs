@@ -133,7 +133,7 @@ fn project(
         .messages
         .iter()
         .map(|message| {
-            serde_json::json!({
+            let mut value = serde_json::json!({
                 "id": message.id,
                 "author": message.author,
                 "ts": message.ts.to_string(),
@@ -141,7 +141,14 @@ fn project(
                 "edited": message.edited,
                 "text": message.text,
                 "complete": message.complete,
-            })
+            });
+            if let (Some(intent), Some(object)) = (message.agent_intent, value.as_object_mut()) {
+                object.insert(
+                    "agentIntent".into(),
+                    serde_json::Value::String(intent.as_str().into()),
+                );
+            }
+            value
         })
         .collect();
     let next_cursor = page
@@ -164,7 +171,7 @@ pub fn result_schema() -> &'static serde_json::Value {
         let content = serde_json::json!({"type":"object","required":["channel","messages"],"additionalProperties":false,"properties":{
             "channel":{"type":"string","minLength":1,"maxLength":128},
             "messages":{"type":"array","maxItems":32,"items":{"type":"object","required":["id","author","ts","parent","edited","text","complete"],"additionalProperties":false,"properties":{
-                "id":{"type":"string","maxLength":128},"author":{"type":"string","maxLength":256},"ts":{"type":"string","pattern":"^-?[0-9]+$"},"parent":{"type":"string","maxLength":128},"edited":{"type":"boolean"},"text":{"type":"string"},"complete":{"type":"boolean"}
+                "id":{"type":"string","maxLength":128},"author":{"type":"string","maxLength":256},"ts":{"type":"string","pattern":"^-?[0-9]+$"},"parent":{"type":"string","maxLength":128},"edited":{"type":"boolean"},"text":{"type":"string"},"complete":{"type":"boolean"},"agentIntent":{"type":"string","enum":["message","queue","steer"]}
             }}}
         }});
         serde_json::json!({"type":"object","required":["version","record","basis","content","nextCursor"],"additionalProperties":false,"properties":{

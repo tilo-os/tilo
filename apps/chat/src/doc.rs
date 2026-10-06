@@ -54,8 +54,8 @@ use tilo_content::ContentStore;
 use uuid::Uuid;
 
 use crate::model::{
-    Attachment, Category, Channel, ChannelKind, EditRecord, Message, Presence, Reaction, User,
-    Workspace,
+    AgentIntent, Attachment, Category, Channel, ChannelKind, EditRecord, Message, Presence,
+    Reaction, User, Workspace,
 };
 
 /// Attachments in the chat CRDT are portable content-addressed descriptors;
@@ -111,6 +111,9 @@ pub struct NewMessage {
     pub reference: Option<tilo_reference::ResourceRef>,
     /// Existing source record provider; no credentials, host URL or grant.
     pub source_provider: Option<String>,
+    /// Explicit meaning for a direct-agent request. Ordinary messages leave
+    /// this absent.
+    pub agent_intent: Option<AgentIntent>,
     /// An agent's record of what it is doing with the message this one
     /// replies to. Written by the agent at the moment it takes a summons, so
     /// the reply exists — and says so — before there is an outcome.
@@ -278,6 +281,23 @@ fn monogram(name: &str) -> String {
 // ---------------------------------------------------------------------------
 
 impl ChatDoc {
+    /// Stable channel identity for one agent conversation in one workspace.
+    /// Stored metadata is checked before this identity is reused.
+    pub fn agent_conversation_channel_id(workspace: &str, agent: &str) -> String {
+        use std::hash::Hasher as _;
+
+        let part = |suffix: u8| {
+            let mut hash = fnv::FnvHasher::default();
+            hash.write(b"tilo.chat.agent-conversation.v1\0");
+            hash.write(workspace.as_bytes());
+            hash.write_u8(0);
+            hash.write(agent.as_bytes());
+            hash.write_u8(suffix);
+            hash.finish()
+        };
+        let identity = u128::from(part(0)) << 64 | u128::from(part(1));
+        format!("c_agent_{}", uuid::Uuid::from_u128(identity).simple())
+    }
     /// Store and verify bytes in `content`. This is deliberately
     /// document-free: callers do it on a bounded worker before `sync` authors
     /// the small hash-only `SendMessage` action.
@@ -1168,6 +1188,7 @@ impl ChatDoc {
             mentions,
             reference,
             source_provider,
+            agent_intent,
             work,
         } = nm;
 
@@ -1197,6 +1218,9 @@ impl ChatDoc {
         {
             let _ = doc.put(&block, "source_provider", provider);
         }
+        if let Some(intent) = agent_intent {
+            let _ = doc.put(&block, "agent_intent", intent.as_str());
+        }
         if let Some(work) = work.as_ref() {
             Self::write_work(doc, &block, work);
         }
@@ -1220,11 +1244,81 @@ impl ChatDoc {
     ) -> bool {
         Self::channel_exists(doc, channel)
             && Self::channel_has_timeline(doc, channel)
-            && Self::valid_message_id(id)
+            && Self::channel_conversation_with(doc, channel).is_none()
+            && Self::accepts_message_payload(doc, id, text, attachment)
+            && Self::valid_parent(doc, channel, parent)
+    }
+
+    fn channel_conversation_with(doc: &AutoCommit, channel: &str) -> Option<String> {
+        let channels = map_at(doc, &ROOT, "channels")?;
+        let row = map_at(doc, &channels, channel)?;
+        read_str(doc, &row, "conversation_with").filter(|agent| !agent.is_empty())
+    }
+
+    fn accepts_message_payload(
+        doc: &AutoCommit,
+        id: &str,
+        text: &str,
+        attachment: Option<&Attachment>,
+    ) -> bool {
+        Self::valid_message_id(id)
             && !Self::message_id_exists(doc, id)
             && text.len() <= MAX_MESSAGE_TEXT_BYTES
             && Self::valid_attachment(attachment)
-            && Self::valid_parent(doc, channel, parent)
+    }
+
+    /// Atomically ensure the canonical direct-agent channel and append one
+    /// top-level Message request. Queueing and steering belong to the Task
+    /// owner and are refused here until that provider exists.
+    pub fn post_agent_message(
+        doc: &mut AutoCommit,
+        workspace: &str,
+        agent: &str,
+        id: &str,
+        message: NewMessage,
+    ) -> bool {
+        if workspace.is_empty()
+            || agent.is_empty()
+            || agent.len() > tilo_actions::MAX_PARTICIPANT_ID_BYTES
+            || agent == message.author
+            || message.author.is_empty()
+            || message.parent.is_some()
+            || message.agent_intent != Some(AgentIntent::Message)
+            || !message.reactions.is_empty()
+            || !message.history.is_empty()
+            || message.edited
+            || message.work.is_some()
+            || !Self::accepts_message_payload(doc, id, &message.text, message.attachment.as_ref())
+            || !Self::list_workspaces(doc)
+                .iter()
+                .any(|candidate| candidate.id == workspace)
+            || !Self::list_users(doc)
+                .iter()
+                .any(|candidate| candidate.id == message.author)
+        {
+            return false;
+        }
+
+        let channel = Self::agent_conversation_channel_id(workspace, agent);
+        if let Some(existing) = Self::list_channels(doc)
+            .into_iter()
+            .find(|candidate| candidate.id == channel)
+        {
+            if existing.workspace != workspace
+                || existing.kind != ChannelKind::Text
+                || existing.conversation_with.as_deref() != Some(agent)
+            {
+                return false;
+            }
+        } else {
+            Self::insert_channel(doc, &channel, workspace, "", agent, ChannelKind::Text);
+            let channels = get_or_map(doc, &ROOT, "channels");
+            let row = get_or_map(doc, &channels, &channel);
+            let _ = doc.put(&row, "conversation_with", agent);
+        }
+
+        Self::push_message_with_id(doc, &channel, id, message);
+        true
     }
 
     /// A message id belongs to one durable row across the whole chat
@@ -2092,6 +2186,8 @@ impl ChatDoc {
                         .unwrap_or_default()
                         .parse()
                         .unwrap_or(ChannelKind::Text),
+                    conversation_with: read_str(doc, &c, "conversation_with")
+                        .filter(|agent| !agent.is_empty()),
                     order: read_i64_coerced(doc, &c, "order").unwrap_or(0) as u32,
                     // Derived per-peer in `ChatApp::reload` from the read
                     // watermark; not stored in the shared document.
@@ -2137,6 +2233,8 @@ impl ChatDoc {
                 reference: Self::read_reference(doc, &m),
                 source_provider: read_str(doc, &m, "source_provider")
                     .filter(|provider| crate::actions::valid_source_provider(provider)),
+                agent_intent: read_str(doc, &m, "agent_intent")
+                    .and_then(|intent| intent.parse().ok()),
                 attachment: Self::read_attachment(doc, &m),
                 work: Self::read_work(doc, &m),
                 pinned: read_bool(doc, &m, "pinned").unwrap_or(false),

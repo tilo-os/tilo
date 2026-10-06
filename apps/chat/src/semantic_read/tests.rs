@@ -207,6 +207,24 @@ fn semantic_read_preserves_existing_numeric_timestamp_projection() {
 }
 
 #[test]
+fn semantic_read_projects_explicit_agent_intent_without_inference() {
+    use automerge::ReadDoc;
+    let mut doc = fixture(&["hello", "ordinary"]);
+    let messages = doc.get(ROOT, "messages").unwrap().unwrap().1;
+    let list = doc.get(&messages, "one").unwrap().unwrap().1;
+    let first = doc.get(&list, 0).unwrap().unwrap().1;
+    doc.put(&first, "agent_intent", "message").unwrap();
+    doc.commit();
+
+    let page = read_messages(&doc, &doc.base_heads(), "one", None, limits(2)).unwrap();
+    assert_eq!(
+        page.messages[0].agent_intent,
+        Some(crate::model::AgentIntent::Message)
+    );
+    assert_eq!(page.messages[1].agent_intent, None);
+}
+
+#[test]
 fn semantic_read_marked_text_keeps_only_text_and_real_embedded_atoms_across_pages() {
     use automerge::{
         ReadDoc,

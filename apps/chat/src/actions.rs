@@ -63,6 +63,27 @@ use crate::model::{Attachment, ChannelKind};
 /// Registry `type_id` for every Chat action.
 pub const CHAT_ACTION_TYPE: &str = "chat.action";
 
+/// The authored payload of one direct-agent request. Its author always comes
+/// from the authenticated action envelope, never this payload.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMessagePayload {
+    /// Local dispatch may supply an id; broker admission replaces it with the
+    /// exact invocation-derived identity.
+    #[serde(default)]
+    pub id: String,
+    pub ts: i64,
+    pub text: String,
+    pub intent: crate::model::AgentIntent,
+    #[serde(default)]
+    pub attachment: Option<Attachment>,
+    #[serde(default)]
+    pub mentions: Vec<crate::mention::Mention>,
+    #[serde(default)]
+    pub reference: Option<tilo_reference::ResourceRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub body: Vec<tilo_document::ClipBlock>,
+}
+
 /// Every collaborative operation Chat exports on the shared workspace.
 ///
 /// Determinism contract: ids/timestamps are minted at authoring time and carried
@@ -111,6 +132,14 @@ pub enum ChatAction {
         /// a release that predates rich bodies.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         body: Vec<tilo_document::ClipBlock>,
+    },
+    /// Atomically create or reuse the deterministic direct channel and append
+    /// a top-level Message addressed to `agent`. Queue and Steer are refused
+    /// until their authoritative Task providers are installed.
+    PostAgentMessage {
+        workspace: String,
+        agent: String,
+        message: AgentMessagePayload,
     },
     /// Replace a message's body, archiving the prior text into its edit history
     /// and flagging it edited. `ts` (the edit time) is minted at authoring.
@@ -286,6 +315,9 @@ pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
         ChatAction::SendMessage { channel, id, .. } => {
             ("Send message", channel, id, "chat.message")
         }
+        ChatAction::PostAgentMessage {
+            workspace, message, ..
+        } => ("Message agent", workspace, &message.id, "chat.message"),
         ChatAction::EditMessage { channel, id, .. } => {
             ("Edit message", channel, id, "chat.message")
         }
@@ -434,8 +466,112 @@ fn apply_seed_workspace(
     .map_err(ActionError::Refused)
 }
 
+/// Canonical request row for one broker-admitted invocation. Re-delivery of
+/// that invocation therefore cannot append a second request.
+#[must_use]
+pub fn agent_request_message_id(invocation: tilo_actions::InvocationId) -> String {
+    format!("m_{}", invocation.0.simple())
+}
+
+/// Build the single canonical Chat mutation for an explicit agent intent.
+/// The public resource decides whether an intent is currently available;
+/// apply independently refuses intents whose authoritative provider is not
+/// installed.
+#[must_use]
+pub fn post_agent_message_action(
+    workspace: &str,
+    agent: &str,
+    text: &str,
+    intent: crate::model::AgentIntent,
+    ts: i64,
+) -> ChatAction {
+    ChatAction::PostAgentMessage {
+        workspace: workspace.to_owned(),
+        agent: agent.to_owned(),
+        message: AgentMessagePayload {
+            id: String::new(),
+            ts,
+            text: text.to_owned(),
+            intent,
+            attachment: None,
+            mentions: Vec::new(),
+            reference: None,
+            body: Vec::new(),
+        },
+    }
+}
+
+fn apply_agent_request(
+    doc: &mut Doc,
+    workspace: &str,
+    agent: &str,
+    message: &AgentMessagePayload,
+) -> Result<(), ActionError> {
+    if message.intent != crate::model::AgentIntent::Message {
+        return Err(ActionError::Refused(
+            "Queue and Steer require the workspace Task owner".into(),
+        ));
+    }
+    let payload = serde_json::to_vec(&ChatAction::PostAgentMessage {
+        workspace: workspace.to_owned(),
+        agent: agent.to_owned(),
+        message: message.clone(),
+    })
+    .map_err(ActionError::Encode)?;
+    let mut cx = ui::tilo_resource::ActionCx::for_write(doc, &payload);
+    let author = cx
+        .author()
+        .map(str::to_owned)
+        .ok_or_else(|| ActionError::Refused("this change needs its author".into()))?;
+    let id = cx.invocation().map_or_else(
+        || {
+            if message.id.is_empty() {
+                format!("m_{}", cx.id())
+            } else {
+                message.id.clone()
+            }
+        },
+        agent_request_message_id,
+    );
+    if message.text.trim().is_empty() || message.text.chars().count() > 8_000 {
+        return Err(ActionError::Refused(
+            "an agent message needs bounded text".into(),
+        ));
+    }
+    if !ChatDoc::post_agent_message(
+        doc,
+        workspace,
+        agent,
+        &id,
+        NewMessage {
+            author,
+            ts: message.ts,
+            text: message.text.clone(),
+            body: message.body.clone(),
+            attachment: message.attachment.clone(),
+            mentions: message.mentions.clone(),
+            reference: message.reference.clone(),
+            agent_intent: Some(message.intent),
+            ..Default::default()
+        },
+    ) {
+        return Err(ActionError::Refused(
+            "the agent message is not valid in this conversation".into(),
+        ));
+    }
+    Ok(())
+}
+
 impl Action for ChatAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        if let ChatAction::PostAgentMessage {
+            workspace,
+            agent,
+            message,
+        } = self
+        {
+            return apply_agent_request(doc, workspace, agent, message);
+        }
         if let ChatAction::EnsureUser {
             name,
             initials,
@@ -764,10 +900,12 @@ impl ChatAction {
     /// text); any other action unchanged.
     #[must_use]
     pub fn with_body(mut self, written: Vec<tilo_document::ClipBlock>) -> Self {
-        if let ChatAction::SendMessage { body, .. } | ChatAction::EditMessage { body, .. } =
-            &mut self
-        {
-            *body = written;
+        match &mut self {
+            ChatAction::SendMessage { body, .. } | ChatAction::EditMessage { body, .. } => {
+                *body = written;
+            }
+            ChatAction::PostAgentMessage { message, .. } => message.body = written,
+            _ => {}
         }
         self
     }
@@ -913,6 +1051,9 @@ pub struct ChannelResource {
     pub kind: ChannelKind,
     pub archived: bool,
     pub workspace: String,
+    /// Stable agent target for a direct conversation. These channels do not
+    /// publish the ordinary free-form channel mutation actions.
+    pub conversation_with: Option<String>,
 }
 
 /// A durable channel grouping published alongside channels. Categories are
@@ -939,6 +1080,10 @@ pub struct MessageResource {
     pub text: String,
     pub pinned: bool,
     pub parent: Option<String>,
+    /// Address of the direct conversation containing this row, when any.
+    pub conversation_with: Option<String>,
+    /// Explicit direct-agent intent; ordinary rows leave it absent.
+    pub agent_intent: Option<crate::model::AgentIntent>,
     /// An attachment is a durable, content-addressed child of the message,
     /// rather than an unsearchable bit of its paint. There can be only one in
     /// the current message schema, so its stable address is keyed by message.
@@ -1028,6 +1173,7 @@ fn channel_resource(channel: &crate::model::Channel) -> ChannelResource {
         kind: channel.kind,
         archived: channel.archived,
         workspace: channel.workspace.clone(),
+        conversation_with: channel.conversation_with.clone(),
     }
 }
 
@@ -1082,56 +1228,60 @@ fn publish_channel(
             ResourceViewSpec::new("conversation", "Conversation", "open-channel")
                 .with_primary(true),
         );
-        channel = channel.with_action(share_resource_spec(&ch.id));
+        if ch.conversation_with.is_none() {
+            channel = channel.with_action(share_resource_spec(&ch.id));
+            channel = channel.with_action(ActionSpec::prompted(
+                "post",
+                "Post message",
+                "Message",
+                "type a message… (@Name mentions a member)",
+                ExecutionLocus::ClientLocal,
+                {
+                    let cid = ch.id.clone();
+                    let room = state.participants();
+                    move |text: &str| {
+                        let id = format!("m_{}", uuid::Uuid::new_v4().simple());
+                        let mentions = crate::mention::resolve(text, &room);
+                        encode(&send_message_action(
+                            &cid,
+                            &id,
+                            unix_now_i64(),
+                            text,
+                            None,
+                            None,
+                            mentions,
+                        ))
+                    }
+                },
+            ));
+        }
+    }
+    if ch.conversation_with.is_none() {
         channel = channel.with_action(ActionSpec::prompted(
-            "post",
-            "Post message",
-            "Message",
-            "type a message… (@Name mentions a member)",
+            "rename",
+            "Rename channel",
+            "Name",
+            "Channel name",
             ExecutionLocus::ClientLocal,
             {
                 let cid = ch.id.clone();
-                let room = state.participants();
-                move |text: &str| {
-                    let id = format!("m_{}", uuid::Uuid::new_v4().simple());
-                    let mentions = crate::mention::resolve(text, &room);
-                    encode(&send_message_action(
-                        &cid,
-                        &id,
-                        unix_now_i64(),
-                        text,
-                        None,
-                        None,
-                        mentions,
-                    ))
-                }
+                move |name: &str| encode(&rename_channel_action(&cid, name.trim()))
             },
         ));
+        channel = channel.with_action(if ch.archived {
+            immediate_spec(
+                "unarchive",
+                "Unarchive channel",
+                &archive_channel_action(&ch.id, false),
+            )
+        } else {
+            immediate_spec(
+                "archive",
+                "Archive channel",
+                &archive_channel_action(&ch.id, true),
+            )
+        });
     }
-    channel = channel.with_action(ActionSpec::prompted(
-        "rename",
-        "Rename channel",
-        "Name",
-        "Channel name",
-        ExecutionLocus::ClientLocal,
-        {
-            let cid = ch.id.clone();
-            move |name: &str| encode(&rename_channel_action(&cid, name.trim()))
-        },
-    ));
-    channel = channel.with_action(if ch.archived {
-        immediate_spec(
-            "unarchive",
-            "Unarchive channel",
-            &archive_channel_action(&ch.id, false),
-        )
-    } else {
-        immediate_spec(
-            "archive",
-            "Archive channel",
-            &archive_channel_action(&ch.id, true),
-        )
-    });
     // The watermark target is the channel's top-level count when the action
     // is built, carried in the payload.
     let top_level = messages
@@ -1143,11 +1293,13 @@ fn publish_channel(
         "Mark as read",
         &mark_read_action(&ch.id, i64::try_from(top_level).unwrap_or(i64::MAX)),
     ));
-    channel = channel.with_action(immediate_spec(
-        "delete",
-        "Delete channel",
-        &delete_channel_action(&ch.id),
-    ));
+    if ch.conversation_with.is_none() {
+        channel = channel.with_action(immediate_spec(
+            "delete",
+            "Delete channel",
+            &delete_channel_action(&ch.id),
+        ));
+    }
     if ch.kind == ChannelKind::Voice {
         channel = channel.with_child(publish_call(ch));
     }
@@ -1848,6 +2000,19 @@ pub(crate) fn apply_as(
 }
 
 #[cfg(test)]
+fn apply_as_with_source(
+    doc: &mut Doc,
+    author: &str,
+    source: tilo_actions::InvocationId,
+    action: &ChatAction,
+) -> Result<(), ActionError> {
+    let context = history_context(action)
+        .with_invoker(tilo_actions::ActionInvoker::actor(author))
+        .with_source_invocation(Some(source));
+    tilo_actions::apply_local_with_context(doc, action, encode(action), None, context).map(|_| ())
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::doc::ChatDoc;
@@ -1870,6 +2035,117 @@ mod tests {
     /// dispatcher applies it.
     fn dispatch(doc: &mut AutoCommit, action: &ChatAction) {
         apply_as(doc, model::ME, action).unwrap();
+    }
+
+    fn agent_message(intent: crate::model::AgentIntent) -> ChatAction {
+        ChatAction::PostAgentMessage {
+            workspace: "ws_acme".into(),
+            agent: "scribe".into(),
+            message: AgentMessagePayload {
+                id: "caller-controlled-id".into(),
+                ts: TS,
+                text: "Review the current proposal".into(),
+                intent,
+                attachment: None,
+                mentions: Vec::new(),
+                reference: None,
+                body: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn admitted_agent_message_uses_exact_source_and_atomically_creates_conversation() {
+        let mut doc = seeded();
+        let source = tilo_actions::InvocationId(uuid::Uuid::from_u128(17));
+        let before = doc.get_heads();
+
+        apply_as_with_source(
+            &mut doc,
+            model::ME,
+            source,
+            &agent_message(crate::model::AgentIntent::Message),
+        )
+        .unwrap();
+
+        let channel = ChatDoc::agent_conversation_channel_id("ws_acme", "scribe");
+        let conversation = ChatDoc::list_channels(&doc)
+            .into_iter()
+            .find(|candidate| candidate.id == channel)
+            .unwrap();
+        assert_eq!(conversation.conversation_with.as_deref(), Some("scribe"));
+        let messages = ChatDoc::list_messages(&doc, &channel);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, agent_request_message_id(source));
+        assert_eq!(messages[0].author, model::ME);
+        assert_eq!(
+            messages[0].agent_intent,
+            Some(crate::model::AgentIntent::Message)
+        );
+        assert_eq!(doc.get_changes(&before).len(), 1);
+        let published = tree(&doc);
+        let direct = find(&published.children, &format!("chat.channel:{channel}"))
+            .expect("the direct conversation is readable as a channel resource");
+        assert!(
+            direct.views.iter().any(|view| {
+                view.id == "conversation" && view.primary && view.open_action == "open-channel"
+            }),
+            "direct conversations retain the normal resource navigation door"
+        );
+        assert!(ids(direct).contains(&"open-channel"));
+        for unavailable in ["post", "rename", "archive", "unarchive", "delete"] {
+            assert!(!ids(direct).contains(&unavailable), "{unavailable}");
+        }
+
+        let ordinary = send_message_action(
+            &channel,
+            "m_ordinary",
+            TS + 1,
+            "bypass intent",
+            None,
+            None,
+            Vec::new(),
+        );
+        let before_bypass = doc.save();
+        apply_as(&mut doc, model::ME, &ordinary).unwrap();
+        assert_eq!(
+            doc.save(),
+            before_bypass,
+            "ordinary post cannot bypass intent"
+        );
+
+        let saved = doc.save();
+        assert!(
+            apply_as_with_source(
+                &mut doc,
+                model::ME,
+                source,
+                &agent_message(crate::model::AgentIntent::Message),
+            )
+            .is_err()
+        );
+        assert_eq!(doc.save(), saved, "a retry cannot append a second row");
+    }
+
+    #[test]
+    fn queue_and_steer_refuse_without_a_task_owner() {
+        for intent in [
+            crate::model::AgentIntent::Queue,
+            crate::model::AgentIntent::Steer,
+        ] {
+            let mut doc = seeded();
+            let before = doc.save();
+            assert!(
+                apply_as_with_source(
+                    &mut doc,
+                    model::ME,
+                    tilo_actions::InvocationId(uuid::Uuid::from_u128(18)),
+                    &agent_message(intent),
+                )
+                .is_err()
+            );
+            assert_eq!(doc.save(), before);
+        }
     }
 
     #[test]

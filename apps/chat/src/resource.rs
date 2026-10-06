@@ -104,7 +104,14 @@ impl Resource for Chat {
             .map(|channel| {
                 let messages = ChatDoc::list_messages(doc, &channel.id)
                     .into_iter()
-                    .map(|message| message_resource(message, &users, &agents))
+                    .map(|message| {
+                        message_resource(
+                            message,
+                            channel.conversation_with.as_deref(),
+                            &users,
+                            &agents,
+                        )
+                    })
                     .collect();
                 (channel.id.clone(), messages)
             })
@@ -232,6 +239,7 @@ impl Resource for Chat {
 /// A message as everyone reads it.
 fn message_resource(
     message: crate::model::Message,
+    conversation_with: Option<&str>,
     users: &[User],
     agents: &std::collections::HashMap<String, String>,
 ) -> MessageResource {
@@ -272,6 +280,8 @@ fn message_resource(
         text: message.text,
         pinned: message.pinned,
         parent: message.parent,
+        conversation_with: conversation_with.map(str::to_owned),
+        agent_intent: message.agent_intent,
         reference: message.reference,
         source_provider: message.source_provider,
     }
