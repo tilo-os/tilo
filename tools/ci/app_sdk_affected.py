@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Whether a change can affect what the app SDK lanes build.
 
-The lanes build tilo-app's CLIs and every app under apps/ (Linux, web). A change
-matters when it touches one of those packages or a workspace package they
-depend on, the workflow itself, or a repository-wide build input. Changes only
-to packages outside that closure (the shell, OS services, tools) skip the lanes.
+The lanes build tilo-app's CLIs, the browser runtime and desktop bundle, and
+every app under apps/ (Linux, web). A change matters when it touches one of
+those packages or a workspace package they depend on, the workflow itself,
+or a repository-wide build input. Changes only to packages outside that
+closure (the shell, OS services, tools) skip the lanes.
 
 Prints `affected=true|false` and, with --github-output, appends it there.
 """
@@ -24,8 +25,12 @@ from ci.workspace_graph import (
     package_maps, reverse_dependencies,
 )
 
-# The CLI builds compute through a subprocess, absent from Cargo dependency edges.
-SDK_PACKAGES = {"tilo-app-cli", "tilo-app-package-cli", "tilo-caps", "tilo-browser-compute"}
+# The CLI builds browser compute, runtime and desktop targets through
+# subprocesses; these build inputs need not have Cargo edges back to any app.
+SDK_PACKAGES = {
+    "tilo-app-cli", "tilo-app-package-cli", "tilo-caps", "tilo-browser-compute",
+    "tilo-browser-runtime", "tilo-web-desktop",
+}
 
 # Paths outside any package that change what the lanes build or how they run.
 GLOBAL_INPUTS = (
