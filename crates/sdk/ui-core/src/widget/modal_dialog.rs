@@ -2096,16 +2096,16 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             return false;
         };
         let node_w = f64::from(l.size.width);
-        let window_w = if self.presented {
-            self.window.width()
+        // Compact presentation depends on both viewport axes. A synthetic
+        // one-pixel height would classify every desktop sheet as a page and
+        // measure its body at the wrong width, leaving it perpetually dirty.
+        let window = if self.presented {
+            self.window
         } else {
-            tree_window(taffy, node).map_or(node_w, |window| window.width())
+            tree_window(taffy, node)
+                .unwrap_or_else(|| Rect::new(0.0, 0.0, node_w, f64::from(l.size.height)))
         };
-        let body_w = body_width(
-            Rect::new(0.0, 0.0, window_w, 1.0),
-            self.max_width,
-            &self.layout_theme,
-        );
+        let body_w = body_width(window, self.max_width, &self.layout_theme);
         let pad = crate::num::f32_of_f64((node_w - body_w).max(0.0));
         let Ok(mut style) = taffy.style(node).cloned() else {
             return false;
