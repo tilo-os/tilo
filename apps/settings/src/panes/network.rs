@@ -1768,7 +1768,7 @@ impl NetworkModel {
             Ok(said) if said.is_empty() => return Ok(Effected::done()),
             Ok(said) | Err(said) => said.clone(),
         });
-        reported.map(Effected::value)
+        reported.map(|_| Effected::done())
     }
 
     /// Report a landed change, putting back what the pane showed if it
@@ -3069,6 +3069,57 @@ mod tests {
                 Effected::Pending => Ok(None),
             },
         }
+    }
+
+    /// The ordinary worker completion must honor the action a caller invoked,
+    /// while keeping its human-readable outcome in the pane.
+    #[test]
+    fn network_workers_complete_their_published_unit_jobs() -> Result<(), String> {
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.networks.lock().map_err(|error| error.to_string())? = networks();
+        let mut model = model(&fake);
+        for (effect, notice) in [
+            (NetworkEffect::RefreshNetworks, t("net-notice-refreshed")),
+            (NetworkEffect::SetWifi { on: true }, t("net-notice-wifi-on")),
+        ] {
+            let contract = NetworkEffect::specs()
+                .into_iter()
+                .find(|spec| spec.id == effect.id())
+                .ok_or("the invoked action must be published")?
+                .contract;
+            if contract.result != ui::tilo_actions::ResultSpec::Job {
+                return Err("the network action must declare a unit job".into());
+            }
+            let Begun::Work(work) = model.begin(effect)? else {
+                return Err("the invoked network action must start real work".into());
+            };
+            let Effected::Done(output) = model.land(work())? else {
+                return Err("finished network work must complete".into());
+            };
+            contract.result.validate(&output)?;
+            if output.value.is_some() || !output.resources.is_empty() {
+                return Err("the unit job must not return a value or resources".into());
+            }
+            if model.notice.as_deref() != Some(notice.as_str()) {
+                return Err("the completed job must retain its status notice".into());
+            }
+            if !shown(&model).contains(&notice) {
+                return Err("the completed job's notice must remain visible".into());
+            }
+        }
+        if model.networks().len() != 3 || !model.wifi_enabled {
+            return Err("the completed workers must adopt networks and enable Wi-Fi".into());
+        }
+        if fake
+            .changes
+            .lock()
+            .map_err(|error| error.to_string())?
+            .as_slice()
+            != ["wifi true"]
+        {
+            return Err("the worker must issue exactly one Wi-Fi enable request".into());
+        }
+        Ok(())
     }
 
     fn shown(model: &NetworkModel) -> Vec<String> {
