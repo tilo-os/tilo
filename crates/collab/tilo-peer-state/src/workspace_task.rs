@@ -440,43 +440,6 @@ fn dispatch_agent_report(
     }
 }
 
-fn dispatch_agent_report(
-    tasks: &mut [WorkspaceTask],
-    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
-    context: &CommandContext<'_>,
-    command: &WorkspaceTaskCommand,
-) -> Result<(String, WorkspaceTaskMutationResult), String> {
-    match command {
-        WorkspaceTaskCommand::AppliedAck {
-            task_id,
-            run_epoch,
-            revision,
-        } => applied(
-            tasks,
-            controls,
-            context.actor,
-            task_id,
-            *run_epoch,
-            *revision,
-            context.now,
-        ),
-        WorkspaceTaskCommand::ExecutionPhase {
-            task_id,
-            run_epoch,
-            sequence,
-            phase,
-        } => report_execution(
-            tasks,
-            controls,
-            context,
-            task_id,
-            (*run_epoch, *sequence),
-            *phase,
-        ),
-        _ => Err("command is not an agent report".into()),
-    }
-}
-
 fn dispatch_retry(
     tasks: &mut [WorkspaceTask],
     controls: &std::collections::BTreeMap<String, WorkspaceTaskControl>,
