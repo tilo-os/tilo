@@ -1361,7 +1361,7 @@ impl MouseKeyboardPane {
             structure_dirty: false,
             composed: None,
             rect: Rect::ZERO,
-            map_cache: Default::default(),
+            map_cache: std::rc::Rc::default(),
             map_input: ui::KeyboardMapInput::default(),
         };
         pane.observe_devices(area.devices().as_ref());
@@ -1402,7 +1402,7 @@ impl MouseKeyboardPane {
             source,
             &self.last.keyboard_model,
             t("input-map-title"),
-            options.clone(),
+            options.as_deref(),
         )?
         .with_input(self.map_input.clone());
         *cache = Some(KeyboardPreviewCache {
@@ -2070,7 +2070,7 @@ impl MouseKeyboardPane {
             source_rows.push(choice_row(
                 &add_label,
                 Box::new(
-                    Dropdown::from_state(available.clone(), &ui::LocalState::new(String::new()))
+                    Dropdown::from_state(available, &ui::LocalState::new(String::new()))
                         .bound(
                             &self.cx,
                             effect(InputEffect::ADD_SOURCE).map({

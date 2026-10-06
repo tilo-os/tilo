@@ -558,7 +558,7 @@ fn dispatch_preview_key(h: &mut Harness, state: ElementState) {
     let logical = winit::keyboard::Key::Character("z".into());
     dispatch_preview_event(
         h,
-        WindowEvent::KeyboardInput {
+        &WindowEvent::KeyboardInput {
             device_id: winit::event::DeviceId::dummy(),
             is_synthetic: false,
             event: winit::event::KeyEvent::synthetic(
@@ -577,12 +577,12 @@ fn dispatch_preview_key(h: &mut Harness, state: ElementState) {
     );
 }
 
-fn dispatch_preview_event(h: &mut Harness, event: WindowEvent) {
+fn dispatch_preview_event(h: &mut Harness, event: &WindowEvent) {
     let mods = Modifiers::default();
     let mut handled = false;
     let mut focus = None;
     h.app.handle_event(
-        &event,
+        event,
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &mods,
@@ -626,9 +626,9 @@ fn keyboard_map_observes_foreground_physical_keys_while_search_keeps_editing() {
     assert_eq!(keyboard_map_pressed(&*h.app, key), Some(false));
     assert_eq!(h.app.search_state.with(Clone::clone), "z");
     dispatch_preview_key(&mut h, ElementState::Pressed);
-    dispatch_preview_event(&mut h, WindowEvent::Focused(false));
+    dispatch_preview_event(&mut h, &WindowEvent::Focused(false));
     assert_eq!(keyboard_map_pressed(&*h.app, key), Some(false));
-    dispatch_preview_event(&mut h, WindowEvent::Focused(true));
+    dispatch_preview_event(&mut h, &WindowEvent::Focused(true));
     dispatch_preview_key(&mut h, ElementState::Pressed);
     h.app.select(Category::About);
     h.rebuild();

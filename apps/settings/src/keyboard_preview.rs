@@ -32,19 +32,19 @@ pub fn preview_layout(
     policy: &settings_store::hardware::RichInputConfig,
     label: String,
 ) -> Result<KeyboardMap, String> {
-    map_with_options(source, model, label, Some(policy.xkb_options().join(",")))
+    map_with_options(source, model, label, Some(&policy.xkb_options().join(",")))
 }
 
 pub(crate) fn map_with_options(
     source: &str,
     model: &str,
     label: String,
-    options: Option<String>,
+    options: Option<&str>,
 ) -> Result<KeyboardMap, String> {
-    let source = settings_store::hardware::KeyboardInputSource::parse(source)
-        .ok_or_else(|| "the source is not an XKB layout".to_owned())?;
     static GEOMETRIES: LazyLock<Result<BTreeMap<String, Geometry>, serde_json::Error>> =
         LazyLock::new(|| serde_json::from_str(include_str!("../data/pc-keyboard-geometry.json")));
+    let source = settings_store::hardware::KeyboardInputSource::parse(source)
+        .ok_or_else(|| "the source is not an XKB layout".to_owned())?;
     let geometries = GEOMETRIES
         .as_ref()
         .map_err(|_| "keyboard geometry is invalid")?;
@@ -74,7 +74,7 @@ fn compile(
     source: &settings_store::hardware::KeyboardInputSource,
     model: &str,
     geometry: &[GeometryKey],
-    options: Option<String>,
+    options: Option<&str>,
 ) -> Result<Vec<KeyboardMapKey>, String> {
     #[cfg(test)]
     COMPILES.with(|count| count.set(count.get() + 1));
@@ -82,7 +82,7 @@ fn compile(
         &source.layout,
         source.variant.as_deref().unwrap_or(""),
         model,
-        options.as_deref().unwrap_or(""),
+        options.unwrap_or(""),
         &geometry
             .iter()
             .map(|key| key.name.clone())
@@ -108,7 +108,7 @@ fn compile(
                             {
                                 symbol.text
                             } else {
-                                named_legend(&caps, &symbol.name)
+                                named_legend(caps, &symbol.name)
                             }
                         })
                         .collect::<Vec<_>>()
@@ -168,7 +168,7 @@ fn dead_legend(name: &str) -> Option<&'static str> {
     })
 }
 
-fn named_legend(caps: &ui::Keycaps, name: &str) -> String {
+fn named_legend(caps: ui::Keycaps, name: &str) -> String {
     use ui::input::KeyboardModifier;
     if let Some(legend) = dead_legend(name) {
         return legend.into();
@@ -215,16 +215,11 @@ mod tests {
         );
         let at = |source: &str, name: &str| {
             let source = settings_store::hardware::KeyboardInputSource::parse(source).unwrap();
-            compile(
-                &source,
-                "pc105",
-                &geometry["pc105"].keys,
-                Some(String::new()),
-            )
-            .unwrap()
-            .into_iter()
-            .find(|key| key.name == name)
-            .unwrap()
+            compile(&source, "pc105", &geometry["pc105"].keys, Some(""))
+                .unwrap()
+                .into_iter()
+                .find(|key| key.name == name)
+                .unwrap()
         };
         let us = at("us", "AD06");
         let de = at("de", "AD06");
@@ -240,10 +235,8 @@ mod tests {
         let dvorak = at("us:dvorak", "AD01");
         assert_eq!(dvorak.physical, PhysicalKey::Code(KeyCode::KeyQ));
         assert_eq!(dvorak.levels.first().map(String::as_str), Some("'"));
-        assert!(map_with_options("ime/rime", "pc105", String::new(), Some(String::new())).is_err());
-        assert!(
-            map_with_options("us", "../../attacker", String::new(), Some(String::new())).is_err()
-        );
+        assert!(map_with_options("ime/rime", "pc105", String::new(), Some("")).is_err());
+        assert!(map_with_options("us", "../../attacker", String::new(), Some("")).is_err());
     }
 }
 
@@ -268,7 +261,7 @@ mod sandbox_tests {
             let catalog = crate::input_sources::installed_catalog();
             assert!(catalog.iter().any(|entry| entry.id == "us"));
             assert!(catalog.iter().any(|entry| entry.id == "de"));
-            super::map_with_options("de", "pc105", String::new(), Some(String::new()))
+            super::map_with_options("de", "pc105", String::new(), Some(""))
                 .expect("the native compiler works inside the ordinary readonly profile");
             assert!(
                 std::fs::read("/run/private-probe").is_err(),
