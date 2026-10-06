@@ -496,6 +496,7 @@ pub enum ExportedInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportedAction {
     pub resource: String,
+    pub semantic_identity: Option<tilo_actions::ResourceSemanticIdentity>,
     pub action: String,
     pub resource_kind: String,
     pub resource_label: String,
@@ -521,6 +522,8 @@ pub struct BrokerActionSurface {
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 pub struct BrokerActionDescriptor {
     pub resource: String,
+    #[serde(default)]
+    pub semantic_identity: Option<tilo_actions::ResourceSemanticIdentity>,
     pub action: String,
     pub resource_kind: String,
     pub resource_label: String,

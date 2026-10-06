@@ -546,6 +546,13 @@ struct ExportedAction {
   # Optional explicit resource-view metadata. Absence means this action is
   # invokable but is not advertised as a view for its resource.
   view @10 :ResourceViewDescriptor;
+  # Descriptive source identity, never permission or an invocation alias.
+  semanticIdentity @11 :ResourceSemanticIdentity;
+}
+
+struct ResourceSemanticIdentity {
+  kind @0 :Text;
+  key @1 :Text;
 }
 
 struct ResourceViewDescriptor {

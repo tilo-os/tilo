@@ -1398,6 +1398,17 @@ impl ChannelHandle {
                 let idx = u32::try_from(i).unwrap_or(u32::MAX);
                 let mut row = list.reborrow().get(idx);
                 row.set_resource(&a.resource);
+                if let Some(identity) = &a.semantic_identity {
+                    if !identity.is_valid() || identity.kind != a.resource_kind {
+                        return Err(capnp::Error::failed(
+                            "invalid resource semantic identity".into(),
+                        )
+                        .into());
+                    }
+                    let mut out = row.reborrow().init_semantic_identity();
+                    out.set_kind(&identity.kind);
+                    out.set_key(&identity.key);
+                }
                 row.set_action(&a.action);
                 row.set_resource_kind(&a.resource_kind);
                 row.set_resource_label(&a.resource_label);
@@ -2406,14 +2417,36 @@ pub struct ExportedViewMount {
     pub view_param: String,
 }
 
-/// One operation an application exports, as inert data.
-///
-/// Everything a caller needs to decide whether to perform it, and
-/// nothing that could perform it — read-only is the shape of this
-/// struct, not a promise about how it is used.
+/// Bounded descriptive source identity; never permission or authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportedResourceSemanticIdentity {
+    pub kind: String,
+    pub key: String,
+}
+
+impl ExportedResourceSemanticIdentity {
+    pub const MAX_KIND_BYTES: usize = 128;
+    pub const MAX_KEY_BYTES: usize = 4096;
+
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        !self.kind.is_empty()
+            && self.kind.len() <= Self::MAX_KIND_BYTES
+            && self
+                .kind
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+            && !self.key.is_empty()
+            && self.key.len() <= Self::MAX_KEY_BYTES
+            && !self.key.chars().any(char::is_control)
+    }
+}
+
+/// One inert operation an application exports, without execution authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportedAction {
     pub resource: String,
+    pub semantic_identity: Option<ExportedResourceSemanticIdentity>,
     pub action: String,
     pub resource_kind: String,
     pub resource_label: String,
@@ -2502,6 +2535,30 @@ fn decode_exported_action(
     row: collab_capnp::exported_action::Reader<'_>,
 ) -> Result<ExportedAction, capnp::Error> {
     let description = capnp_text(row.get_description()?)?;
+    let semantic_identity = if row.has_semantic_identity() {
+        let identity = row.get_semantic_identity()?;
+        let kind = identity.get_kind()?;
+        let key = identity.get_key()?;
+        if kind.len() > ExportedResourceSemanticIdentity::MAX_KIND_BYTES
+            || key.len() > ExportedResourceSemanticIdentity::MAX_KEY_BYTES
+        {
+            return Err(capnp::Error::failed(
+                "oversized resource semantic identity".into(),
+            ));
+        }
+        let identity = ExportedResourceSemanticIdentity {
+            kind: capnp_text(kind)?,
+            key: capnp_text(key)?,
+        };
+        if !identity.is_valid() || identity.kind != capnp_text(row.get_resource_kind()?)? {
+            return Err(capnp::Error::failed(
+                "invalid resource semantic identity".into(),
+            ));
+        }
+        Some(identity)
+    } else {
+        None
+    };
     let input = match row.get_input()?.which()? {
         collab_capnp::action_input::Which::None(()) => ExportedInput::None,
         collab_capnp::action_input::Which::Text(text) => ExportedInput::Text {
@@ -2552,6 +2609,7 @@ fn decode_exported_action(
         .transpose()?;
     Ok(ExportedAction {
         resource: capnp_text(row.get_resource()?)?,
+        semantic_identity,
         action: capnp_text(row.get_action()?)?,
         resource_kind: capnp_text(row.get_resource_kind()?)?,
         resource_label: capnp_text(row.get_resource_label()?)?,
@@ -3367,6 +3425,38 @@ mod certified_join_tests {
 
 #[cfg(all(test, feature = "client"))]
 mod tests {
+    #[cfg(feature = "client")]
+    #[test]
+    fn action_semantic_identity_is_optional_bounded_and_kind_exact() {
+        let decode = |identity: Option<(&str, &str)>| {
+            let mut message = capnp::message::Builder::new_default();
+            let mut row = message.init_root::<collab_capnp::exported_action::Builder<'_>>();
+            row.set_resource("opaque-alias");
+            row.set_resource_kind("store.app");
+            row.set_resource_label("A misleading label");
+            if let Some((kind, key)) = identity {
+                let mut out = row.reborrow().init_semantic_identity();
+                out.set_kind(kind);
+                out.set_key(key);
+            }
+            decode_exported_action(
+                message
+                    .get_root_as_reader::<collab_capnp::exported_action::Reader<'_>>()
+                    .unwrap(),
+            )
+        };
+        assert!(decode(None).unwrap().semantic_identity.is_none());
+        let decoded = decode(Some(("store.app", "app:so.tilo.chat"))).unwrap();
+        assert_eq!(decoded.resource, "opaque-alias");
+        assert_eq!(decoded.semantic_identity.unwrap().key, "app:so.tilo.chat");
+        assert!(decode(Some(("person", "app:so.tilo.chat"))).is_err());
+        assert!(decode(Some(("store.app", ""))).is_err());
+        assert!(decode(Some(("store.app", "key\nsecret"))).is_err());
+        assert!(decode(Some(("store.app", &"x".repeat(4097)))).is_err());
+        assert!(decode(Some((&"x".repeat(129), "key"))).is_err());
+        assert!(decode(Some(("store.app", &"x".repeat(4096)))).is_ok());
+    }
+
     #[test]
     fn airdrop_extension_preserves_old_json_and_accepts_no_application_trust_claim() {
         use super::{NearbyTransferCommand as Command, NearbyTransferReply as Reply};

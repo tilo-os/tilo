@@ -207,6 +207,7 @@ fn exported(
     result: ResultSpec,
 ) -> ExportedAction {
     ExportedAction {
+        semantic_identity: None,
         resource: INBOX.into(),
         action: action.into(),
         resource_kind: "fixture.drafts".into(),

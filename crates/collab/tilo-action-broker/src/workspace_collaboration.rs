@@ -171,6 +171,7 @@ fn collaboration_actions(room: &str, media: bool) -> Vec<PublishedAction> {
                 .flatten(),
         )
         .map(|definition| PublishedAction {
+            semantic_identity: None,
             resource: resource.clone(),
             action: definition.id.into(),
             resource_kind: "workspace".into(),

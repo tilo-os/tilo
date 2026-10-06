@@ -187,6 +187,7 @@ pub fn exported_actions(resources: &[Resource]) -> Vec<ExportedAction> {
     tilo_actions::door::survey(resources)
         .into_iter()
         .map(|descriptor| ExportedAction {
+            semantic_identity: descriptor.semantic_identity.clone(),
             resource: descriptor.address.resource,
             action: descriptor.address.action,
             resource_kind: descriptor.resource_kind,
