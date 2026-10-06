@@ -383,6 +383,16 @@ relative-ago-years = { $count ->
 
 # A software participant in history, presence and activity rows.
 participant-agent = { $name } · Agent
+interaction-agent = Agent
+interaction-collaborator = Collaborator
+interaction-action-status = { $action } ({ $phase }) - { $name }
+interaction-inspecting = Inspecting
+interaction-applying = Applying
+interaction-waiting = Waiting
+interaction-committed = Committed
+interaction-failed = Failed
+interaction-cancelled = Cancelled
+interaction-progress = { $label } - { $done }/{ $total }
 participant-unknown-agent = Unknown agent
 
 # History as published actions, for the palette, scripts, agents and assistive technology.

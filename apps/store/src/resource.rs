@@ -333,12 +333,6 @@ pub enum StoreEffect {
         #[param("HTTPS repository URL")]
         url: String,
     },
-    /// Use Flathub for my apps.
-    #[effect(job, permission = "admin")]
-    UseFlathubForAccount {
-        #[param("Enabled device Flathub repository identity")]
-        remote: String,
-    },
     /// Enable source.
     #[effect(job, permission = "admin")]
     EnableRemote {
@@ -995,6 +989,7 @@ mod tests {
     }
 
     struct CatalogueHost {
+        installs: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         browses: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         registry_gate: Option<std::sync::Arc<CatalogueGate>>,
         account: bool,
@@ -1041,6 +1036,27 @@ mod tests {
     }
 
     impl app_host::app_host_capnp::app_host::Server for CatalogueHost {
+        fn flatpak(
+            self: capnp::capability::Rc<Self>,
+            params: app_host::app_host_capnp::app_host::FlatpakParams,
+            mut results: app_host::app_host_capnp::app_host::FlatpakResults,
+        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            let params = params.get().unwrap();
+            assert_eq!(
+                params.get_action().unwrap(),
+                app_host::app_host_capnp::FlatpakAction::Install
+            );
+            assert_eq!(
+                params.get_app_id().unwrap().to_str().unwrap(),
+                "org.example.Editor"
+            );
+            assert!(params.get_reference().unwrap().is_empty());
+            self.installs
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            results.get().set_status("Installed for this account.");
+            std::future::ready(Ok(()))
+        }
+
         fn list(
             self: capnp::capability::Rc<Self>,
             _params: app_host::app_host_capnp::app_host::ListParams,
@@ -1113,7 +1129,13 @@ mod tests {
         ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
             let mut result = results.get();
             result.set_available(true);
-            result.set_installed("");
+            result.set_installed(
+                if self.installs.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+                    "org.example.Editor\t2.0\tflathub\tuser\n"
+                } else {
+                    ""
+                },
+            );
             let row = if self.registry_gate.is_some() {
                 let scope = if self.account { "user" } else { "system" };
                 let disabled = if self.disabled.load(std::sync::atomic::Ordering::SeqCst) {
@@ -1218,6 +1240,7 @@ mod tests {
         });
         let browses = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let (service, connection) = app_host::testing::ConnectedService::start(CatalogueHost {
+            installs: std::sync::Arc::default(),
             browses: std::sync::Arc::clone(&browses),
             registry_gate: Some(std::sync::Arc::clone(&gate)),
             account: false,
@@ -1361,6 +1384,7 @@ mod tests {
         settle_catalogue_worker(&mut app);
         let gate = std::sync::Arc::new(CatalogueGate::default());
         let (service, connection) = app_host::testing::ConnectedService::start(CatalogueHost {
+            installs: std::sync::Arc::default(),
             browses: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             registry_gate: Some(std::sync::Arc::clone(&gate)),
             account: true,
@@ -1429,6 +1453,7 @@ mod tests {
         settle_catalogue_worker(&mut app);
         let gate = std::sync::Arc::new(CatalogueGate::default());
         let (service, connection) = app_host::testing::ConnectedService::start(CatalogueHost {
+            installs: std::sync::Arc::default(),
             browses: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             registry_gate: Some(std::sync::Arc::clone(&gate)),
             account: false,
@@ -1468,6 +1493,7 @@ mod tests {
         settle_catalogue_worker(&mut app);
         let browses = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let (service, connection) = app_host::testing::ConnectedService::start(CatalogueHost {
+            installs: std::sync::Arc::default(),
             browses: std::sync::Arc::clone(&browses),
             registry_gate: None,
             account: false,
@@ -1527,6 +1553,103 @@ mod tests {
             app.versions().len(),
             versions,
             "Browse writes no shared document"
+        );
+        drop(app);
+        service.shutdown().unwrap();
+    }
+
+    #[test]
+    fn declared_system_flathub_install_uses_the_account_rpc_and_unit_job_receipt() {
+        let _offline = offline();
+        let mut app = TestApp::<StoreShell>::new().unwrap();
+        settle_catalogue_worker(&mut app);
+        let installs = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let gate = std::sync::Arc::new(CatalogueGate::default());
+        gate.release();
+        let (service, connection) = app_host::testing::ConnectedService::start(CatalogueHost {
+            installs: std::sync::Arc::clone(&installs),
+            browses: std::sync::Arc::default(),
+            registry_gate: Some(gate),
+            account: false,
+            disabled: std::sync::atomic::AtomicBool::new(false),
+        })
+        .unwrap();
+        app.with_surface::<StoreApp, _>(|surface| surface.connect_test_host(connection))
+            .unwrap()
+            .unwrap();
+        settle_catalogue_worker(&mut app);
+        let remote = "remote:system:flathub";
+        let resource = find(&app.harness().resources(), remote).unwrap();
+        let contract = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "browse-remote")
+            .unwrap()
+            .contract
+            .clone();
+        let invocation = app
+            .start_effect_on(
+                remote,
+                &StoreEffect::BrowseRemote {
+                    remote: remote.into(),
+                },
+            )
+            .unwrap();
+        assert_valid_unit_job_completion(&mut app, invocation, &contract);
+        let id = "app:org.example.Editor";
+        let resource = find(&app.harness().resources(), id).unwrap();
+        let contract = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "flatpak-install")
+            .unwrap()
+            .contract
+            .clone();
+        let invocation = app
+            .start_effect_on(
+                id,
+                &StoreEffect::FlatpakInstall {
+                    app: "org.example.Editor".into(),
+                },
+            )
+            .unwrap();
+        assert_valid_unit_job_completion(&mut app, invocation, &contract);
+        assert_eq!(installs.load(std::sync::atomic::Ordering::SeqCst), 1);
+        settle_catalogue_worker(&mut app);
+        assert_eq!(
+            app.with_surface::<StoreApp, _>(|surface| surface.status_line().to_owned())
+                .unwrap(),
+            "Installed for this account."
+        );
+        app.with_surface::<StoreApp, _>(|surface| {
+            let item = surface
+                .items()
+                .iter()
+                .find(|item| item.id == "org.example.Editor")
+                .unwrap();
+            assert!(matches!(
+                item.installed,
+                crate::InstalledState::Installed {
+                    user_managed: true,
+                    ..
+                }
+            ));
+            assert_eq!(item.action_kind(true), crate::ActionKind::FlatpakOpen);
+        })
+        .unwrap();
+        let contract = find(&app.harness().resources(), Store::KIND)
+            .unwrap()
+            .actions
+            .into_iter()
+            .find(|action| action.id == "refresh")
+            .unwrap()
+            .contract;
+        let invocation = app.start_effect(&StoreEffect::Refresh).unwrap();
+        assert_valid_unit_job_completion(&mut app, invocation, &contract);
+        assert_eq!(
+            app.with_surface::<StoreApp, _>(|surface| surface.status_line().to_owned())
+                .unwrap(),
+            ui::i18n!("store-catalogue-refreshed")
         );
         drop(app);
         service.shutdown().unwrap();
@@ -1743,9 +1866,17 @@ mod tests {
 
     #[test]
     fn captures_cover_account_setup_search_paging_and_flatpak_actions() {
-        for scenario in ["account-setup", "account-remotes"] {
+        for (scenario, control) in [
+            ("account-setup", "Refresh catalogues"),
+            ("account-remotes", "Refresh remotes"),
+        ] {
             let mut app = TestApp::<StoreShell>::capture(Some(scenario)).unwrap();
-            assert!(frame(&mut app).contains("Use Flathub for my apps"));
+            let shown = frame(&mut app);
+            assert!(!shown.contains("Use Flathub for my apps"));
+            assert!(shown.contains(control), "{scenario} exposes {control}");
+            if scenario == "account-remotes" {
+                assert!(shown.contains("Flathub"));
+            }
             assert!(app.state().reports.is_empty());
         }
         let mut search = TestApp::<StoreShell>::capture(Some("search-notes")).unwrap();

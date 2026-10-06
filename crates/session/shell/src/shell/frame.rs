@@ -3878,6 +3878,10 @@ impl FrameBuilder {
         for (name, rect) in host.trusted_frame_targets(&self.theme) {
             put(name.to_string(), rect);
         }
+        #[cfg(any(test, debug_assertions))]
+        for (name, rect) in host.permission_prompt_choice_rects_for_tests() {
+            put(name.to_string(), rect);
+        }
     }
 }
 
