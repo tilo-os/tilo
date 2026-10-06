@@ -561,6 +561,17 @@ impl StoreApp {
         self.worker = Some(StoreWorker::spawn(self.directory.clone(), wake));
     }
 
+    #[cfg(test)]
+    pub(crate) fn connect_test_host(&mut self, fd: std::os::fd::OwnedFd) -> Result<(), String> {
+        let current = self
+            .worker
+            .take()
+            .ok_or_else(|| "the live surface must already have its mounted worker".to_owned())?;
+        self.worker = Some(current.with_connected_host(self.directory.clone(), fd));
+        self.set_worker_busy(true);
+        Ok(())
+    }
+
     /// Edit reports through `dispatcher`.
     pub(crate) fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Store>) {
         self.dispatcher = Some(dispatcher);
@@ -1793,7 +1804,8 @@ impl StoreApp {
                 Finish::Package | Finish::Status => {}
             }
         }
-        Ok(Effected::value(finished.status))
+        self.set_status_line(finished.status);
+        Ok(Effected::done())
     }
 
     fn start_application_launch(

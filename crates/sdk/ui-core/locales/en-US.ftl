@@ -23,6 +23,8 @@ standalone-history-restore-unavailable = This version can't be restored here.
 standalone-history-preview-resource = Document
 host-search = Search…
 host-search-placeholder = Search
+dropdown-search-placeholder = Search choices
+dropdown-search-description = Type to filter choices. Use the arrow keys to choose and Enter to select.
 host-undo = Undo
 host-undo-named = Undo { $change }
 host-redo = Redo
@@ -531,5 +533,10 @@ music-spotify-unfollow-artist = Unfollow artist on Spotify
 
 music-spotify-playlist-actions = Spotify playlist actions
 
+widget-sidebar-resize = Resize sidebar
+widget-inspector-resize = Resize inspector
+
 dictation-copy-transcript = Copy transcript
 dictation-discard-transcript = Discard transcript
+
+dropdown-no-matches = No matching choices

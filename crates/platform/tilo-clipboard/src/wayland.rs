@@ -138,7 +138,6 @@ enum ClipboardCommand {
     SetText(Vec<u8>, std::sync::mpsc::Sender<bool>, tilo_clock::Instant),
     SetImage(Vec<u8>, std::sync::mpsc::Sender<bool>, tilo_clock::Instant),
     Exit,
-    #[cfg(test)]
     Fence(std::sync::mpsc::Sender<()>),
     #[cfg(test)]
     CommandProcessed(std::sync::mpsc::Sender<()>),
@@ -211,10 +210,39 @@ impl WaylandClipboard {
     pub fn new_for_wayland_test(
         connection: smithay_client_toolkit::reexports::client::Connection,
     ) -> Self {
-        Self::new_test_connection(connection, CLIPBOARD_READ_BUDGET)
+        Self::new_for_wayland_test_with_read_budget(connection, CLIPBOARD_READ_BUDGET)
     }
 
-    fn new_test_connection(
+    /// Wait until the compositor has processed this worker's seat and device
+    /// bindings before a protocol fixture maps its window and acquires focus.
+    #[doc(hidden)]
+    pub fn wait_ready_for_wayland_test(&self, budget: tilo_clock::Duration) -> bool {
+        let Some(end) = tilo_clock::now().checked_add(budget) else {
+            return false;
+        };
+        // The first reply follows seat capabilities; their callbacks bind the
+        // keyboard and data device. The second follows those new requests.
+        for _ in 0..2 {
+            let (reply, received) = std::sync::mpsc::channel();
+            if self
+                .publication
+                .sender
+                .send(ClipboardCommand::Fence(reply))
+                .is_err()
+                || recv_bounded(&received, end.saturating_duration_since(tilo_clock::now()))
+                    .is_none()
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Use the production worker with an explicit transfer deadline in protocol
+    /// tests. Cancellation tests must finish before this deadline, so expiry
+    /// cannot satisfy an assertion that focus loss or NULL cleared an offer.
+    #[doc(hidden)]
+    pub fn new_for_wayland_test_with_read_budget(
         connection: smithay_client_toolkit::reexports::client::Connection,
         rich_read_budget: tilo_clock::Duration,
     ) -> Self {
@@ -460,7 +488,6 @@ mod image_worker_impl {
                     ClipboardCommand::CommandProcessed(reply) => {
                         let _ = reply.send(());
                     }
-                    #[cfg(test)]
                     ClipboardCommand::Fence(reply) => {
                         // A protocol sync reply shares the worker's event queue.
                         // It proves earlier selection/focus events were handled,
@@ -1408,7 +1435,6 @@ mod image_worker_impl {
         }
     }
 
-    #[cfg(test)]
     impl
         Dispatch<
             sctk::reexports::client::protocol::wl_callback::WlCallback,

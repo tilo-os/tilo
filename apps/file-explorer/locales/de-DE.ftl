@@ -333,6 +333,9 @@ files-received-link-empty = Link zur freigegebenen Datei ist leer
 
 ## Anwendungsrahmen und Navigation
 files-app-title = Dateien
+files-selection-empty = Wählen Sie zuerst Dateien aus.
+files-selection-unavailable = Ein Eintrag ist nicht mehr im angezeigten Ordner. Die Auswahl wurde nicht geändert.
+files-selection-too-large = Wählen Sie höchstens 256 Einträge pro Anfrage aus oder verwenden Sie „Alles auswählen“.
 files-back = Zurück
 files-forward = Vor
 files-up = Einen Ordner nach oben
@@ -592,3 +595,7 @@ files-airdrop-verifying = Empfängerüberprüfung und Erlaubnis zum Senden diese
 files-airdrop-address = IP-Adresse des Empfängers
 files-airdrop-port = TLS-Port des Empfängers
 files-airdrop-action-detail = Den gewählten Laborempfänger auf dem Bestätigungsdialog des Systems prüfen, bevor diese Datei einmal gesendet wird.
+
+files-nearby-status = Übertragungsstatus
+files-nearby-transfer-unavailable = Diese Übertragung ist in diesem Dateienfenster nicht mehr verfügbar.
+files-nearby-status-detail = Phase und bestätigte Byteanzahl dieser Übertragung anzeigen.

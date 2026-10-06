@@ -17,6 +17,32 @@ type PrimaryA11yAdapter = accesskit_winit::Adapter;
 #[cfg(target_os = "android")]
 type PrimaryA11yAdapter = crate::accesskit_android_adapter::Adapter;
 
+#[cfg(not(target_os = "android"))]
+fn create_accessibility_adapter(
+    event_loop: &ActiveEventLoop,
+    window: &Window,
+    proxy: EventLoopProxy<UserEvent>,
+) -> Option<PrimaryA11yAdapter> {
+    Some(PrimaryA11yAdapter::with_event_loop_proxy(
+        event_loop, window, proxy,
+    ))
+}
+
+#[cfg(target_os = "android")]
+fn create_accessibility_adapter(
+    event_loop: &ActiveEventLoop,
+    window: &Window,
+    proxy: EventLoopProxy<UserEvent>,
+) -> Option<PrimaryA11yAdapter> {
+    match PrimaryA11yAdapter::new(event_loop, window, proxy) {
+        Ok(adapter) => Some(adapter),
+        Err(error) => {
+            crate::diag!("tilo: no TalkBack access: {error}");
+            None
+        }
+    }
+}
+
 /// wgpu `RenderContext`, `RenderSurface`, and `vello::Renderer` live on a
 /// dedicated worker thread (see [`crate::render_thread`]) — this struct
 /// keeps only the channel ends to ship frames and recycle scene buffers.
@@ -115,6 +141,195 @@ struct AppHandler {
     /// Lives for the event loop so an idle app still hears Theme Studio
     /// and compositor appearance writes.
     _settings_watch: Option<settings_store::watch::SettingsWatch>,
+}
+
+#[cfg(test)]
+mod floating_source_focus_tests {
+    use super::*;
+
+    type FocusEvents = std::rc::Rc<std::cell::RefCell<Vec<(Option<String>, bool)>>>;
+
+    #[derive(Default)]
+    struct FocusProbe {
+        events: FocusEvents,
+    }
+
+    impl crate::widget::AppWidget for FocusProbe {
+        fn app_kind(&self) -> crate::widget::AppKind {
+            crate::widget::AppKind::Editor
+        }
+        fn app_title(&self) -> &str {
+            "Focus probe"
+        }
+        fn app_icon(&self) -> crate::widget::IconDescriptor {
+            crate::widget::IconDescriptor::Named("chat".into())
+        }
+        fn permission_hint(&self) -> Option<crate::widget::AppKind> {
+            None
+        }
+    }
+
+    impl crate::widget::FloatingSurfaceProvider for FocusProbe {
+        fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
+            self.events
+                .borrow_mut()
+                .push((id.map(|id| format!("input:{id}")), false));
+        }
+        fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
+            (id == "a").then(|| {
+                crate::a11y::AccessNode::new(crate::a11y::Role::Button)
+                    .with_hashed_key("source-a-send")
+                    .with_action_target("source-a-send")
+            })
+        }
+        fn perform_floating_surface_accessibility_action(
+            &mut self,
+            id: &str,
+            target: &str,
+            action: &crate::a11y::Action,
+            _state: &mut crate::widget::Edits<'_>,
+            _path: &automerge::ObjId,
+        ) -> bool {
+            let accepted = id == "a"
+                && target == "source-a-send"
+                && matches!(action, crate::a11y::Action::Activate);
+            if accepted {
+                self.events.borrow_mut().push((Some(target.into()), true));
+            }
+            accepted
+        }
+        fn floating_surface_ime(&self, id: &str) -> Option<(winit::window::ImePurpose, KurboRect)> {
+            (id == "a").then_some((
+                winit::window::ImePurpose::Normal,
+                KurboRect::new(-700.0, 500.0, -699.0, 520.0),
+            ))
+        }
+        fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
+            self.events
+                .borrow_mut()
+                .push((id.map(str::to_owned), focused));
+        }
+    }
+
+    impl Widget for FocusProbe {
+        crate::provides!(dyn crate::widget::FloatingSurfaceProvider);
+
+        fn sync(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) {}
+
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _: &Theme,
+            _: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            use crate::widget::TaffyTreeExt as _;
+            taffy.leaf_node(taffy::Style::default())
+        }
+
+        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
+        fn draw(
+            &mut self,
+            _: &mut Scene,
+            _: Affine,
+            _: &mut TextRenderer,
+            _: &Theme,
+            _: &PresenceCtx,
+        ) {
+        }
+        fn name(&self) -> &'static str {
+            "FocusProbe"
+        }
+        fn get_rect(&self) -> KurboRect {
+            KurboRect::ZERO
+        }
+    }
+
+    #[test]
+    fn secondary_accessibility_dispatch_reaches_only_the_declared_source_control() {
+        let mut root = crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(
+            FocusProbe::default(),
+        )));
+        let access = root.floating_surface_accessibility("a").unwrap();
+        let tree = crate::accesskit_bridge::surface_tree_update(
+            Some(&access),
+            vello::kurbo::Point::ZERO,
+            1.0,
+        );
+        let target_node = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == accesskit::Role::Button)
+            .map(|(id, _)| *id)
+            .unwrap();
+        let request = accesskit::ActionRequest {
+            action: accesskit::Action::Click,
+            target_node,
+            target_tree: accesskit::TreeId::ROOT,
+            data: None,
+        };
+        let mut state = automerge::AutoCommit::new();
+        assert!(!dispatch_native_surface_accessibility(
+            &mut root,
+            "b",
+            &request,
+            &mut crate::widget::Edits::lend(&mut state),
+            &automerge::ROOT,
+        ));
+        assert!(dispatch_native_surface_accessibility(
+            &mut root,
+            "a",
+            &request,
+            &mut crate::widget::Edits::lend(&mut state),
+            &automerge::ROOT,
+        ));
+    }
+
+    #[test]
+    fn secondary_window_ime_uses_source_focus_and_local_coordinates() {
+        let probe = crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(
+            FocusProbe::default(),
+        )));
+        let source = KurboRect::new(-800.0, 200.0, -300.0, 700.0);
+        let state = secondary_ime_state(&probe, "a", source, true).unwrap();
+        assert_eq!(
+            (state.x, state.y, state.width, state.height),
+            (100, 300, 1, 20)
+        );
+        assert!(secondary_ime_state(&probe, "a", source, false).is_none());
+        assert!(secondary_ime_state(&probe, "b", source, true).is_none());
+    }
+
+    #[test]
+    fn secondary_accesskit_event_keeps_originating_native_window() {
+        let window_id = winit::window::WindowId::dummy();
+        let event: UserEvent = accesskit_winit::Event {
+            window_id,
+            window_event: accesskit_winit::WindowEvent::InitialTreeRequested,
+        }
+        .into();
+        assert!(
+            matches!(event, UserEvent::AccessKit { window_id: source, event: accesskit_winit::WindowEvent::InitialTreeRequested } if source == window_id)
+        );
+    }
+
+    #[test]
+    fn native_focus_forwarding_preserves_surface_identity() {
+        let probe = FocusProbe::default();
+        let events = std::rc::Rc::clone(&probe.events);
+        let mut root =
+            crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(probe)));
+        forward_native_surface_focus(&mut root, Some("agent-a"), &WindowEvent::Focused(true));
+        forward_native_surface_focus(&mut root, Some("agent-b"), &WindowEvent::Focused(true));
+        forward_native_surface_focus(&mut root, Some("agent-a"), &WindowEvent::Focused(false));
+        assert_eq!(
+            *events.borrow(),
+            vec![
+                (Some("agent-a".into()), true),
+                (Some("agent-b".into()), true),
+                (Some("agent-a".into()), false),
+            ]
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -259,6 +474,78 @@ struct NativeFloatingWindow {
     prepared_at: Instant,
     adopted: bool,
     suspended: bool,
+    a11y_adapter: Option<PrimaryA11yAdapter>,
+    ime_state: Option<ImeWindowState>,
+    focused: bool,
+}
+
+fn forward_native_surface_focus(root: &mut dyn Widget, surface: Option<&str>, event: &WindowEvent) {
+    if let WindowEvent::Focused(focused) = event {
+        root.on_floating_surface_focus_changed(surface, *focused);
+    }
+}
+
+fn dispatch_native_surface_accessibility(
+    root: &mut dyn Widget,
+    id: &str,
+    request: &accesskit::ActionRequest,
+    state: &mut crate::widget::Edits<'_>,
+    path: &automerge::ObjId,
+) -> bool {
+    if request.target_tree != accesskit::TreeId::ROOT {
+        return false;
+    }
+    let Some(action) =
+        crate::accesskit_bridge::accesskit_action_to_ours(request.action, request.data.as_ref())
+    else {
+        return false;
+    };
+    let Some(access) = root.floating_surface_accessibility(id) else {
+        return false;
+    };
+    let Some(target) = crate::accesskit_bridge::surface_action_target(&access, request.target_node)
+    else {
+        return false;
+    };
+    root.perform_floating_surface_accessibility_action(id, target, &action, state, path)
+}
+
+fn apply_native_ime(
+    window: &Window,
+    next: Option<ImeWindowState>,
+    previous: &mut Option<ImeWindowState>,
+) {
+    if next == *previous {
+        return;
+    }
+    match next {
+        Some(intent) => {
+            window.set_ime_purpose(intent.purpose);
+            window.set_ime_allowed(true);
+            window.set_ime_cursor_area(
+                winit::dpi::LogicalPosition::new(intent.x, intent.y),
+                winit::dpi::LogicalSize::new(intent.width, intent.height),
+            );
+        }
+        None => window.set_ime_allowed(false),
+    }
+    *previous = next;
+}
+
+fn secondary_ime_state(
+    root: &dyn Widget,
+    id: &str,
+    desktop_rect: KurboRect,
+    focused: bool,
+) -> Option<ImeWindowState> {
+    if !focused {
+        return None;
+    }
+    let (purpose, rect) = root.floating_surface_ime(id)?;
+    Some(ImeWindowState::from_rect(
+        purpose,
+        rect - desktop_rect.origin().to_vec2(),
+    ))
 }
 
 fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
@@ -1019,7 +1306,11 @@ impl AppHandler {
 
     fn sync_ime(&mut self, window: &Window) {
         let _entry = self.app.enter_wake_scope();
-        let next = self.app.ime_window_state();
+        let next = if self.floating_windows.iter().any(|surface| surface.focused) {
+            None
+        } else {
+            self.app.ime_window_state()
+        };
         #[cfg(target_os = "android")]
         if super::android_text_input::bridge::installed() {
             let field = next.and(self.app.focused_node);
@@ -1123,6 +1414,8 @@ impl AppHandler {
                 .create_window(attributes)
                 .map_err(|error| format!("create floating surface window: {error}"))?,
         );
+        let a11y_adapter =
+            create_accessibility_adapter(event_loop, &window, self.a11y_proxy.clone());
         window.set_visible(true);
         window.request_redraw();
         self.floating_windows.push(NativeFloatingWindow {
@@ -1135,6 +1428,9 @@ impl AppHandler {
             prepared_at: crate::time::now(),
             adopted: false,
             suspended: false,
+            a11y_adapter,
+            ime_state: None,
+            focused: false,
         });
         Ok(())
     }
@@ -1149,8 +1445,13 @@ impl AppHandler {
             return false;
         };
         surface.window.set_visible(false);
+        apply_native_ime(&surface.window, None, &mut surface.ime_state);
+        surface.focused = false;
         surface.suspended = true;
         surface.adopted = false;
+        self.app
+            .root_widget
+            .on_floating_surface_focus_changed(Some(id), false);
         true
     }
 
@@ -1165,6 +1466,10 @@ impl AppHandler {
         };
         let mut surface = self.floating_windows.remove(index);
         surface.window.set_visible(false);
+        apply_native_ime(&surface.window, None, &mut surface.ime_state);
+        self.app
+            .root_widget
+            .on_floating_surface_focus_changed(Some(id), false);
         if let Some(mut render) = surface.render.take() {
             render.shutdown_and_join();
         }
@@ -1418,6 +1723,25 @@ impl AppHandler {
             &app.theme,
             &app.presence_ctx,
         );
+        if let Some(adapter) = surface.a11y_adapter.as_mut() {
+            adapter.update_if_active(|| {
+                let access = app.root_widget.floating_surface_accessibility(&surface.id);
+                crate::accesskit_bridge::native_tree_update(
+                    crate::accesskit_bridge::surface_tree_update(
+                        access.as_ref(),
+                        surface.desktop_rect.origin(),
+                        scale,
+                    ),
+                )
+            });
+        }
+        let next = secondary_ime_state(
+            app.root_widget.as_ref(),
+            &surface.id,
+            surface.desktop_rect,
+            surface.focused,
+        );
+        apply_native_ime(&surface.window, next, &mut surface.ime_state);
         app.capture_auxiliary_drawn(&capture_id, secrets.finish());
         if !app.capture_frame_ready() {
             scene.reset();
@@ -1894,9 +2218,8 @@ impl AppHandler {
             p.record_since(crate::profiling::Pass::PresenceOverlay, __prof_presence);
         }
 
-        let mut native_main_stages = (self.native_input_origin.is_some()
-            && crate::render_thread::timing::enabled())
-        .then(MainStages::default);
+        let mut native_main_stages =
+            crate::render_thread::timing::enabled().then(MainStages::default);
         record_main_stage(&mut native_main_stages, MainStage::BeforeProfilerCommit);
 
         // Folds in any `handle_event` time banked since last frame.
@@ -2065,11 +2388,11 @@ impl AppHandler {
             };
             announce_frame(window);
             let (send_result, send_bounds) = crate::render_thread::timing::around(
-                self.native_input_origin.is_some() && crate::render_thread::timing::enabled(),
+                crate::render_thread::timing::enabled(),
                 || render.render_tx.send(req),
             );
             if let Some(bounds) = send_bounds {
-                crate::native_scenario::log::emit_json(
+                crate::native_scenario::log::emit_timing_json(
                     "tilo-native-send",
                     serde_json::json!({
                         "cpu_frame_id": send_cpu_frame_id,
@@ -2083,7 +2406,7 @@ impl AppHandler {
                 );
             }
             if let Some(stages) = native_main_stages {
-                crate::native_scenario::log::emit_json(
+                crate::native_scenario::log::emit_timing_json(
                     "tilo-native-main-stages",
                     stages.row(send_cpu_frame_id),
                 );
@@ -2326,6 +2649,25 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         let _entry = self.app.enter_wake_scope();
         let event = match event {
+            UserEvent::AccessKit { window_id, event }
+                if self
+                    .floating_windows
+                    .iter()
+                    .any(|surface| surface.window.id() == window_id) =>
+            {
+                self.handle_secondary_accessibility_event(window_id, event);
+                return;
+            }
+            UserEvent::AccessKit { window_id, .. }
+                if self
+                    .window
+                    .as_ref()
+                    .is_none_or(|window| window.id() != window_id) =>
+            {
+                // A queued request from a surface that has already closed
+                // must not be reinterpreted against the primary tree.
+                return;
+            }
             UserEvent::RenderReady(id) => {
                 if let Some(window) = self.window.as_ref().filter(|window| window.id() == id) {
                     window.request_redraw();
@@ -2510,7 +2852,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             | UserEvent::RenderReady(_)
             | UserEvent::DevSessionStop
             | UserEvent::DevSessionReload => {}
-            UserEvent::AccessKit(ak_event) => {
+            UserEvent::AccessKit {
+                event: ak_event, ..
+            } => {
                 use accesskit_winit::WindowEvent as AkWindowEvent;
                 match ak_event {
                     AkWindowEvent::InitialTreeRequested => {
@@ -2668,23 +3012,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window.set_window_icon(icon);
 
         // Must be created before the window is shown.
-        #[cfg(not(target_os = "android"))]
-        {
-            self.a11y_adapter = Some(accesskit_winit::Adapter::with_event_loop_proxy(
-                event_loop,
-                &window,
-                self.a11y_proxy.clone(),
-            ));
-        }
         // One provider per view: the previous one must be withdrawn first.
-        #[cfg(target_os = "android")]
-        {
-            self.a11y_adapter = None;
-            match PrimaryA11yAdapter::new(event_loop, &window, self.a11y_proxy.clone()) {
-                Ok(adapter) => self.a11y_adapter = Some(adapter),
-                Err(error) => crate::diag!("tilo: no TalkBack access: {error}"),
-            }
-        }
+        self.a11y_adapter = None;
+        self.a11y_adapter =
+            create_accessibility_adapter(event_loop, &window, self.a11y_proxy.clone());
         crate::widget::mount_native_views(
             self.app.root_widget.as_mut(),
             &crate::widget::NativeViewHost::live(&window, self.app.input.platform),
@@ -3244,13 +3575,91 @@ impl AppHandler {
         }
     }
 
-    fn handle_native_floating_window_event(&mut self, index: usize, event: WindowEvent) {
+    fn handle_secondary_accessibility_event(
+        &mut self,
+        window_id: winit::window::WindowId,
+        event: accesskit_winit::WindowEvent,
+    ) {
+        let Some(index) = self
+            .floating_windows
+            .iter()
+            .position(|surface| surface.window.id() == window_id)
+        else {
+            return;
+        };
         let Some(surface) = self.floating_windows.get(index) else {
             return;
         };
+        if surface.suspended {
+            return;
+        }
+        let id = surface.id.clone();
+        let origin = surface.desktop_rect.origin();
+        let scale = surface.window.scale_factor();
+        let access = self.app.root_widget.floating_surface_accessibility(&id);
+        match event {
+            accesskit_winit::WindowEvent::InitialTreeRequested => {
+                if let Some(surface) = self.floating_windows.get_mut(index) {
+                    if let Some(adapter) = surface.a11y_adapter.as_mut() {
+                        adapter.update_if_active(|| {
+                            crate::accesskit_bridge::native_tree_update(
+                                crate::accesskit_bridge::surface_tree_update(
+                                    access.as_ref(),
+                                    origin,
+                                    scale,
+                                ),
+                            )
+                        });
+                    }
+                    surface.window.request_redraw();
+                }
+            }
+            accesskit_winit::WindowEvent::ActionRequested(request) => {
+                if dispatch_native_surface_accessibility(
+                    self.app.root_widget.as_mut(),
+                    &id,
+                    &request,
+                    &mut crate::widget::Edits::lend(&mut self.app.state.doc),
+                    &self.app.state.root,
+                ) {
+                    self.app.invalidate_widget_resource_cache();
+                    self.app.commit_action();
+                    self.app.needs_sync = true;
+                    if let Some(primary) = self.window.as_ref() {
+                        primary.request_redraw();
+                    }
+                    if let Some(surface) = self.floating_windows.get(index) {
+                        surface.window.request_redraw();
+                    }
+                }
+            }
+            accesskit_winit::WindowEvent::AccessibilityDeactivated => {}
+        }
+    }
+
+    fn handle_native_floating_window_event(&mut self, index: usize, event: WindowEvent) {
+        self.app.root_widget.on_floating_surface_event_source(None);
+        let Some(surface) = self.floating_windows.get(index) else {
+            return;
+        };
+        if surface.suspended {
+            return;
+        }
         let window = surface.window.clone();
         let desktop_rect = surface.desktop_rect;
         let surface_id = surface.id.clone();
+        self.app
+            .root_widget
+            .on_floating_surface_event_source(Some(&surface_id));
+        if let Some(surface) = self.floating_windows.get_mut(index) {
+            if let WindowEvent::Focused(focused) = &event {
+                surface.focused = *focused;
+            }
+            if let Some(adapter) = surface.a11y_adapter.as_mut() {
+                adapter.process_event(&window, &event);
+            }
+        }
+        forward_native_surface_focus(self.app.root_widget.as_mut(), Some(&surface_id), &event);
         match event {
             WindowEvent::CloseRequested => {
                 if let Some(client) = self.app.floating.client.as_mut() {
@@ -3278,6 +3687,20 @@ impl AppHandler {
             WindowEvent::ModifiersChanged(modifiers) => self.app.input.modifiers = modifiers,
             other => self.dispatch_floating_event(&window, desktop_rect, other),
         }
+        self.app.root_widget.on_floating_surface_event_source(None);
+        if let Some(surface) = self
+            .floating_windows
+            .iter_mut()
+            .find(|surface| surface.id == surface_id)
+        {
+            let next = secondary_ime_state(
+                self.app.root_widget.as_ref(),
+                &surface.id,
+                surface.desktop_rect,
+                surface.focused,
+            );
+            apply_native_ime(&surface.window, next, &mut surface.ime_state);
+        }
     }
 
     fn handle_primary_window_event(
@@ -3286,6 +3709,8 @@ impl AppHandler {
         window: &Arc<Window>,
         event: WindowEvent,
     ) {
+        self.app.root_widget.on_floating_surface_event_source(None);
+        forward_native_surface_focus(self.app.root_widget.as_mut(), None, &event);
         if let Some(adapter) = self.a11y_adapter.as_mut() {
             adapter.process_event(window, &event);
         }

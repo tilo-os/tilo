@@ -1,5 +1,5 @@
-//! Serialized package/catalog actor. All blocking package and network work
-//! crosses this one queue; the UI only performs non-blocking snapshot drains.
+//! Serialized package actor with cooperative catalogue refreshes. Independent
+//! source reads share its authenticated connection; the UI drains snapshots.
 
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -25,6 +25,8 @@ use crate::sources::{
     tilo_to_store_item_on_channel,
 };
 use crate::{FlatpakRef, StoreItem};
+
+mod refresh;
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(900);
 const CACHE_CAP: NonZeroUsize = match NonZeroUsize::new(128) {
@@ -127,12 +129,34 @@ pub struct Snapshot {
 struct QueuedRequest {
     request: Request,
     done: Option<Done>,
+    locale: LocaleContext,
+}
+
+struct LocaleContext {
+    selected: String,
+    pseudo: ui::i18n::PseudoLocale,
+}
+
+impl LocaleContext {
+    fn capture() -> Self {
+        Self {
+            selected: ui::i18n::I18nManager::current_locale(),
+            pseudo: ui::i18n::I18nManager::pseudo_locale(),
+        }
+    }
+
+    fn apply(&self) {
+        crate::resource::STORE_CATALOG.set_locale(&self.selected);
+        ui::i18n::I18nManager::set_pseudo_locale(self.pseudo);
+    }
 }
 
 pub struct StoreWorker {
     requests: mpsc::Sender<QueuedRequest>,
     snapshots: mpsc::Receiver<Snapshot>,
     pending: Arc<AtomicUsize>,
+    #[cfg(test)]
+    wake: WakeHandle,
 }
 
 impl StoreWorker {
@@ -141,25 +165,43 @@ impl StoreWorker {
     /// # Panics
     /// Panics if the OS refuses to spawn a thread (extreme resource
     /// exhaustion): a live Store without its worker has nothing to show.
+    pub fn spawn(directory: StoreDirectory, wake: WakeHandle) -> Self {
+        Self::spawn_with_host(
+            directory,
+            wake,
+            app_host::client::BlockingClient::from_service,
+        )
+    }
+
     #[allow(
         clippy::expect_used,
         reason = "thread spawn failure means the OS is out of resources; the surface attaching the worker has no fallible path to report it on"
     )]
-    pub fn spawn(directory: StoreDirectory, wake: WakeHandle) -> Self {
+    fn spawn_with_host(
+        directory: StoreDirectory,
+        wake: WakeHandle,
+        connect: impl FnOnce() -> Result<app_host::client::BlockingClient, String> + Send + 'static,
+    ) -> Self {
         let (request_tx, request_rx) = mpsc::channel();
         let (snapshot_tx, snapshot_rx) = mpsc::channel();
         let pending = Arc::new(AtomicUsize::new(1));
+        let locale = LocaleContext::capture();
+        #[cfg(test)]
+        let retained_wake = wake.clone();
         std::thread::Builder::new()
             .name("store-worker".into())
             .spawn({
                 let pending = Arc::clone(&pending);
                 move || {
+                    // Fluent managers are thread-local. Worker status must
+                    // use the same selected app catalogue as its live view.
+                    locale.apply();
                     let snapshots = Snapshots {
                         sender: snapshot_tx,
                         wake,
                         pending,
                     };
-                    run(&request_rx, &snapshots, directory);
+                    run(&request_rx, &snapshots, directory, connect());
                 }
             })
             .expect("spawn store worker");
@@ -167,7 +209,20 @@ impl StoreWorker {
             requests: request_tx,
             snapshots: snapshot_rx,
             pending,
+            #[cfg(test)]
+            wake: retained_wake,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_connected_host(
+        &self,
+        directory: StoreDirectory,
+        fd: std::os::fd::OwnedFd,
+    ) -> Self {
+        Self::spawn_with_host(directory, self.wake.clone(), move || {
+            app_host::client::BlockingClient::from_connected_fd(fd)
+        })
     }
 
     /// Queue `request`; whether the worker is still there to take it.
@@ -183,7 +238,15 @@ impl StoreWorker {
 
     fn queue(&self, request: Request, done: Option<Done>) -> bool {
         self.pending.fetch_add(1, Ordering::Relaxed);
-        if self.requests.send(QueuedRequest { request, done }).is_ok() {
+        if self
+            .requests
+            .send(QueuedRequest {
+                request,
+                done,
+                locale: LocaleContext::capture(),
+            })
+            .is_ok()
+        {
             true
         } else {
             self.pending.fetch_sub(1, Ordering::Relaxed);
@@ -230,6 +293,7 @@ impl Snapshots {
 }
 
 struct State {
+    refresh_requested: bool,
     host: Option<app_host::client::BlockingClient>,
     opened_ref: Option<FlatpakRef>,
     base_items: Vec<StoreItem>,
@@ -250,12 +314,18 @@ struct State {
     item_index: ui::search::ListIndex,
 }
 
-fn run(requests: &mpsc::Receiver<QueuedRequest>, snapshots: &Snapshots, directory: StoreDirectory) {
+fn run(
+    requests: &mpsc::Receiver<QueuedRequest>,
+    snapshots: &Snapshots,
+    directory: StoreDirectory,
+    host: Result<app_host::client::BlockingClient, String>,
+) {
     let staging = crate::actions::tapp_staging_dir()
         .unwrap_or_else(|| std::env::temp_dir().join("tilo-store-staged"));
     let _ = std::fs::create_dir_all(&staging);
     let mut state = State {
-        host: app_host::client::BlockingClient::from_service()
+        refresh_requested: false,
+        host: host
             .map_err(|error| {
                 tracing::error!(%error, "required app-host capability unavailable");
                 error
@@ -274,20 +344,27 @@ fn run(requests: &mpsc::Receiver<QueuedRequest>, snapshots: &Snapshots, director
         directory,
         item_index: ui::search::ListIndex::default(),
     };
-    refresh(&mut state);
-    if !send(
-        snapshots,
-        &state,
-        state.base_items.clone(),
-        "Store refreshed.",
-        None,
-        None,
-    ) {
-        return;
-    }
+    let mut refresh = Some(refresh::Refresh::start(&state, None));
     loop {
-        match requests.recv_timeout(REFRESH_INTERVAL) {
-            Ok(QueuedRequest { request, done }) => {
+        if !poll_refresh(&mut refresh, &mut state, snapshots) {
+            break;
+        }
+        let wait = if refresh.is_some() {
+            Duration::from_millis(25)
+        } else {
+            REFRESH_INTERVAL
+        };
+        match requests.recv_timeout(wait) {
+            Ok(QueuedRequest {
+                request,
+                done,
+                locale,
+            }) => {
+                locale.apply();
+                if matches!(request, Request::Refresh) && refresh.is_none() {
+                    refresh = Some(refresh::Refresh::start(&state, done));
+                    continue;
+                }
                 let (alive, outcome) = handle(request, &mut state, snapshots, &staging);
                 if let (Some(done), Some(outcome)) = (done, outcome) {
                     let _ = done.send(outcome);
@@ -295,23 +372,73 @@ fn run(requests: &mpsc::Receiver<QueuedRequest>, snapshots: &Snapshots, director
                 if !alive {
                     break;
                 }
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                refresh(&mut state);
-                if !send(
-                    snapshots,
-                    &state,
-                    state.base_items.clone(),
-                    "Store refreshed.",
-                    None,
-                    None,
-                ) {
-                    break;
+                if state.refresh_requested {
+                    state.refresh_requested = false;
+                    if let Some(previous) = refresh.as_mut() {
+                        previous.retire();
+                    } else {
+                        snapshots.pending.fetch_add(1, Ordering::Relaxed);
+                        refresh = Some(refresh::Refresh::start(&state, None));
+                    }
                 }
             }
+            Err(mpsc::RecvTimeoutError::Timeout) if refresh.is_none() => {
+                snapshots.pending.fetch_add(1, Ordering::Relaxed);
+                refresh = Some(refresh::Refresh::start(&state, None));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
+}
+
+fn poll_refresh(
+    active: &mut Option<refresh::Refresh>,
+    state: &mut State,
+    snapshots: &Snapshots,
+) -> bool {
+    let Some(refresh) = active.as_mut() else {
+        return true;
+    };
+    let (changed, finished) = refresh.poll(state);
+    if finished && refresh.is_retired() {
+        if let Some(previous) = active.take() {
+            *active = Some(previous.restart(state));
+        }
+        return true;
+    }
+    if finished {
+        let done = refresh.done.take();
+        *active = None;
+        let label = ui::i18n!("store-catalogue-refreshed");
+        let alive = send(
+            snapshots,
+            state,
+            state.base_items.clone(),
+            &label,
+            None,
+            None,
+        );
+        if let Some(done) = done {
+            // A refresh reports each source's error in the snapshot; it
+            // completes once every source has been attempted, independently
+            // of whether a particular source is offline.
+            let outcome = Ok(Finished::status(label));
+            let _ = done.send(outcome);
+        }
+        return alive;
+    }
+    !changed
+        || snapshots.progress(Snapshot {
+            items: state.base_items.clone(),
+            status_line: ui::i18n!("store-catalogue-loading"),
+            query: None,
+            detail: None,
+            remotes: state.remotes.clone(),
+            flatpak_available: state.flatpak_available,
+            flatpak_error: state.flatpak_error.clone(),
+            operation_error: state.catalogue_error.clone(),
+        })
 }
 
 /// Carry out `request`: whether the UI is still there, and how it ended
@@ -328,16 +455,17 @@ fn handle(
 ) -> (bool, Option<Outcome>) {
     match request {
         Request::Refresh => {
-            refresh(state);
-            let alive = send(
+            let error = ui::i18n!("store-refresh-in-progress");
+            let alive = send_tracked(
                 snapshots,
                 state,
                 state.base_items.clone(),
-                "Store refreshed.",
+                &error,
                 None,
                 None,
+                Some(error.clone()),
             );
-            (alive, Some(Ok(Finished::status("Store refreshed."))))
+            (alive, Some(Err(error)))
         }
         Request::BrowseRemote(id) => browse_remote(&id, state, snapshots),
         Request::Search(query) => (search(&query, state, snapshots), None),
@@ -1006,16 +1134,7 @@ fn refresh_flatpak(state: &mut State) {
 
 fn refresh(state: &mut State) {
     refresh_flatpak(state);
-    (state.base_items, state.catalogue_error) = collect_items(
-        state.opened_ref.as_ref(),
-        &state.installed,
-        state.host.as_ref(),
-        &state.remotes,
-        &state.installed_origins,
-    );
-    state.searches.clear();
-    state.details.clear();
-    sync_authoritative_catalogue(state);
+    state.refresh_requested = true;
 }
 
 /// Publish the one authoritative catalogue directory. Presentation snapshots
@@ -1025,129 +1144,6 @@ fn refresh(state: &mut State) {
 /// after a true `base_items` refresh, never on the UI thread.
 fn sync_authoritative_catalogue(state: &State) {
     state.directory.sync(&state.base_items);
-}
-
-fn verified_registry_entries(
-    host: Option<&app_host::client::BlockingClient>,
-    registry: &str,
-) -> Result<Vec<crate::registry_client::VerifiedEntry>, String> {
-    let host = host.ok_or_else(|| "App service unavailable.".to_string())?;
-    let json = host.registry_catalogue(registry)?;
-    serde_json::from_str(&json).map_err(|error| format!("Invalid verified catalogue: {error}"))
-}
-
-fn collect_items(
-    opened_ref: Option<&FlatpakRef>,
-    installed: &[(String, String)],
-    host: Option<&app_host::client::BlockingClient>,
-    remotes: &[Remote],
-    origins: &std::collections::HashMap<String, (String, bool)>,
-) -> (Vec<StoreItem>, Option<String>) {
-    let mut errors = Vec::new();
-    let registries = match crate::config::repositories(host) {
-        Ok(file) => file.registries,
-        Err(error) => {
-            errors.push(format!("Could not read app repositories: {error}"));
-            Vec::new()
-        }
-    };
-    let installed_tilo = match host.map(app_host::client::BlockingClient::list) {
-        Some(Ok(items)) => items,
-        Some(Err(error)) => {
-            errors.push(format!("Could not read apps on this device: {error}"));
-            Vec::new()
-        }
-        None => {
-            errors.push("App service unavailable.".into());
-            Vec::new()
-        }
-    };
-    let mut tilo_items = Vec::new();
-    for registry in registries.iter().filter(|registry| registry.enabled) {
-        match verified_registry_entries(host, &registry.name) {
-            Ok(entries) => tilo_items.extend(entries.iter().map(|entry| {
-                tilo_to_store_item_on_channel(
-                    entry,
-                    &registry.name,
-                    &installed_tilo,
-                    registry.channel,
-                )
-            })),
-            Err(error) => errors.push(format!("Could not load {}: {error}", registry.name)),
-        }
-    }
-    // The Store's action surface is also the recovery path for software that
-    // is already here. Never make installed Tilo apps vanish merely because a
-    // configured registry is offline or no longer carries an older package.
-    // Catalogue rows win whenever present because they carry the signed
-    // download/update metadata; these local rows intentionally cannot update.
-    for installed in &installed_tilo {
-        if !tilo_items.iter().any(|item| item.id == installed.id) {
-            tilo_items.push(installed_tilo_to_store_item(installed));
-        }
-    }
-    let flatpak_records = match crate::flathub_client::fetch_popular(200) {
-        Ok(records) => records,
-        Err(error) => {
-            errors.push(format!("Could not load Flathub: {error}"));
-            Vec::new()
-        }
-    };
-    let mut flatpak_items = flatpak_records
-        .iter()
-        .map(|entry| flathub_record_to_item(entry, installed))
-        .collect::<Vec<_>>();
-    // One repository failing must never hide another repository's catalogue.
-    if let Some(host) = host {
-        for remote in remotes.iter().filter(|remote| !remote.disabled) {
-            match host.flatpak_catalogue(&remote.name, remote.user_managed) {
-                Ok(rows) => {
-                    for item in crate::sources::remote_catalogue_items(&rows, remote, installed) {
-                        if !flatpak_items.iter().any(|existing| existing.id == item.id) {
-                            flatpak_items.push(item);
-                        }
-                    }
-                }
-                Err(error) => errors.push(crate::flathub_client::remote_error(remote, &error)),
-            }
-        }
-    }
-    // Popular is a discovery feed, not an installed-app inventory. Preserve
-    // every locally reported Flatpak so launch/remove remain possible during
-    // an API outage and for apps that were never popular.
-    for (app_id, version) in installed {
-        if !flatpak_items.iter().any(|item| item.id == *app_id) {
-            flatpak_items.push(installed_flatpak_to_item(app_id, version));
-        }
-    }
-    if let Some(reference) = opened_ref
-        && !flatpak_items.iter().any(|item| item.id == reference.app_id)
-    {
-        let version = installed
-            .iter()
-            .find_map(|(id, version)| (id == &reference.app_id).then(|| version.clone()));
-        flatpak_items.insert(0, reference.clone().into_store_item(version));
-    }
-    for item in &mut flatpak_items {
-        crate::sources::apply_flatpak_origin(item, origins);
-    }
-    tracing::debug!("{}", registries_summary(&registries));
-    (
-        merge(tilo_items, flatpak_items),
-        (!errors.is_empty()).then(|| errors.join("\n")),
-    )
-}
-
-fn registries_summary(registries: &[RegistryConfig]) -> String {
-    let enabled = registries
-        .iter()
-        .filter(|registry| registry.enabled)
-        .count();
-    format!(
-        "configured registries: {} total / {} enabled",
-        registries.len(),
-        enabled
-    )
 }
 
 #[cfg(test)]
@@ -1201,6 +1197,7 @@ mod tests {
 
     fn state_with_items(items: Vec<StoreItem>, directory: StoreDirectory) -> State {
         State {
+            refresh_requested: false,
             host: None,
             opened_ref: None,
             base_items: items,

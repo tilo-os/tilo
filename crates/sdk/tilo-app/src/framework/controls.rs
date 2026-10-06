@@ -140,6 +140,7 @@ impl<R: Resource> Actions<R> {
         let published = self.published.borrow();
         Some(tilo_actions::Resource {
             id: published.id.clone(),
+            semantic_identity: published.semantic_identity.clone(),
             kind: published.kind.clone(),
             label: published.label.clone(),
             presentation: None,

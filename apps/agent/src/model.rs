@@ -1138,6 +1138,7 @@ mod tests {
             app: "calculator".to_string(),
             broker_peer_id: None,
             descriptor: ActionDescriptor {
+                semantic_identity: None,
                 address: ActionAddress::new("calculator.range:main", "sample"),
                 resource_kind: "calculator.range".into(),
                 resource_label: "Main range".into(),

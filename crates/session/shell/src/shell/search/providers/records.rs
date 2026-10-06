@@ -441,6 +441,8 @@ mod tests {
         let state = chrome.borrow();
         let doc = automerge::AutoCommit::new();
         provider.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle,
             wanted: &[ResourceKind::Record],
             chrome: &state,
@@ -460,6 +462,8 @@ mod tests {
         let doc = automerge::AutoCommit::new();
         provider.query_page(
             SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle,
                 wanted: &[ResourceKind::Record],
                 chrome: &state,
@@ -638,6 +642,8 @@ mod tests {
             let chrome_state = chrome.borrow();
             let doc = automerge::AutoCommit::new();
             let context = || SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "note",
                 wanted: &[ResourceKind::Record],
                 chrome: &chrome_state,
@@ -938,6 +944,8 @@ mod tests {
             let state = chrome.borrow();
             let doc = automerge::AutoCommit::new();
             let out = provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "a.odt",
                 wanted: &[ResourceKind::File],
                 chrome: &state,

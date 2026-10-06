@@ -115,7 +115,11 @@ containerfile="$repo/os/Containerfile"
 # The public /usr/bin/ush symlink deliberately exposes the same confined
 # runtime already installed at /usr/libexec/tilo-ush.
 # The confined speech worker and its full MIT notice are deliberate additions.
-expected_contract=77b63523d930dac813189a4c1f1173351798e25b385e9ce342c089a7015b26bb
+# Cisco requires the complete OpenH264 binary license notice in a licensing
+# information location. Only that text is added to extension-files; Cisco
+# binaries remain separately downloaded by opted-in devices.
+# The offline, signed Flathub descriptor is the one additional payload row.
+expected_contract=574499b721f83b97f1d4ed8e665e0b09800f54982cffebb38f32aa2a601c13a1
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -160,8 +164,9 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # Redeclaring RPMS_REF before the first snapshot install, for the same reason,
 # adds one more (154).
 # NetworkManager's Wake-on-LAN drop-in adds one COPY (155).
-[ "$instructions" -le 155 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 155)" >&2
+# The offline predefined Flathub descriptor adds one reviewed COPY (156).
+[ "$instructions" -le 156 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 156)" >&2
   exit 1
 }
 

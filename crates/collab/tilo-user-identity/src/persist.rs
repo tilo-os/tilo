@@ -428,8 +428,9 @@ pub fn write_public_key(path: &Path, pubkey: &[u8; 32]) -> io::Result<()> {
 }
 
 /// The directories public identity files live in get this mode whatever the
-/// writer's umask, keeping a setgid bit inherited from their parent: under
-/// `sudo tilo-enroll install-cert` a new `device/certs` was otherwise `0700`.
+/// writer's umask, keeping a setgid bit inherited from their parent. The
+/// machine's group-writable device tree must also allow later login users
+/// in that same trust group to publish their own root-signed certificates.
 const PUBLIC_DIR_MODE: u32 = 0o755;
 
 fn create_public_dir(path: &Path) -> io::Result<()> {
@@ -442,10 +443,17 @@ fn create_public_dir(path: &Path) -> io::Result<()> {
     {
         use std::os::unix::fs::PermissionsExt as _;
         let inherited = fs::metadata(path)?.permissions().mode() & 0o7000;
-        fs::set_permissions(
-            path,
-            fs::Permissions::from_mode(inherited | PUBLIC_DIR_MODE),
-        )?;
+        let parent_mode = path
+            .parent()
+            .map(fs::metadata)
+            .transpose()?
+            .map(|metadata| metadata.permissions().mode() & 0o7777);
+        let mode = if parent_mode == Some(0o2770) {
+            0o770
+        } else {
+            PUBLIC_DIR_MODE
+        };
+        fs::set_permissions(path, fs::Permissions::from_mode(inherited | mode))?;
     }
     Ok(())
 }
@@ -1918,6 +1926,35 @@ mod tests {
                 seed
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn public_certificates_preserve_the_device_directory_trust_group() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let dir = tempfile::tempdir().unwrap();
+        let paths = IdentityPaths::under(dir.path());
+        paths.ensure_directories().unwrap();
+        let device_dir = paths.device_cert.parent().unwrap();
+        fs::set_permissions(device_dir, fs::Permissions::from_mode(0o2770)).unwrap();
+        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: [3; 32],
+            device_label: "laptop".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        crate::sign_device_cert(&mut cert, &root).unwrap();
+        let cert_path = paths.device_cert_for_user(&cert.user_public_key);
+        write_device_cert(&cert_path, &cert).unwrap();
+        let metadata = fs::metadata(cert_path.parent().unwrap()).unwrap();
+        assert_eq!(metadata.permissions().mode() & 0o7777, 0o2770);
+        assert_eq!(metadata.gid(), fs::metadata(device_dir).unwrap().gid());
+        assert_eq!(read_device_cert(&cert_path).unwrap(), cert);
+        assert!(!paths.device_privkey.exists());
     }
 
     #[cfg(unix)]

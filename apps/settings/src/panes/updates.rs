@@ -2463,6 +2463,9 @@ mod tests {
             "hardware video on AMD and Intel",
             "screen sharing and calls",
             "Tilo does not host or distribute",
+            "OpenH264 Video Codec provided by Cisco Systems, Inc.",
+            "remove this pack and install it again",
+            "/usr/share/licenses/tilo-openh264/BINARY_LICENSE.txt",
         ] {
             assert!(explanation.contains(needle), "{needle}: {explanation}");
         }

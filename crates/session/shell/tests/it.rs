@@ -239,3 +239,6 @@ mod window_transfer_flow;
 mod workspace_settings_state_test;
 #[path = "xdg_activation.rs"]
 mod xdg_activation;
+
+#[path = "vulkan_present_damage.rs"]
+mod vulkan_present_damage;

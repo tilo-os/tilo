@@ -143,6 +143,28 @@ pub struct WorkspaceTaskActiveRun {
     pub applied_direction_revision: u64,
 }
 
+/// Public execution milestones, not model reasoning or action output.
+/// A host-created run lease alone is not any of these milestones.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceTaskExecutionPhase {
+    Accepted,
+    Planning,
+    Executing,
+}
+
+/// Latest authenticated phase of the exact active run. Zero is reserved for
+/// the acceptance transaction; later sequences belong to that run's admitted
+/// report stream, not the custody-history ordinal or a presentation timer.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceTaskExecution {
+    pub run_epoch: u64,
+    pub sequence: u64,
+    pub phase: WorkspaceTaskExecutionPhase,
+    pub updated_at: i64,
+}
+
 /// Result retained beside a task command so an exact retry is deterministic.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -153,6 +175,7 @@ pub enum WorkspaceTaskMutationResult {
     DirectionApplied { task_id: String, revision: u64 },
     Finished { task_id: String },
     Abandoned { task_id: String },
+    ExecutionReported { task_id: String, sequence: u64 },
 }
 
 /// Exact replay record for one owner-admitted task mutation.
@@ -174,6 +197,9 @@ pub struct WorkspaceTaskControl {
     pub run_epoch: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_run: Option<WorkspaceTaskActiveRun>,
+    /// Missing means no authenticated phase is known, not "working".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<WorkspaceTaskExecution>,
     #[serde(default)]
     pub directions: Vec<WorkspaceTaskDirection>,
     #[serde(default)]

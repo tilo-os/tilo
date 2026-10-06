@@ -665,6 +665,115 @@ mod tests {
         app.settle();
     }
 
+    #[test]
+    fn published_batch_copy_is_one_undoable_operation_and_cut_requires_write() {
+        let home = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap();
+        let root = tempfile::tempdir_in(home).unwrap();
+        let destination = root.path().join("destination");
+        std::fs::create_dir(&destination).unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(root.path().join(name), name.as_bytes()).unwrap();
+        }
+        let mut app =
+            TestApp::<FileExplorerShell>::launched(&[root.path().to_str().unwrap()]).unwrap();
+        let entries = ["a.txt", "c.txt"]
+            .map(|name| crate::search_provider::entry_resource_id(&root.path().join(name)))
+            .to_vec();
+        app.effect(&FilesEffect::SelectEntries { entries }).unwrap();
+        app.effect(&FilesEffect::CopySelection).unwrap();
+        app.effect(&FilesEffect::ClearSelection).unwrap();
+        app.effect(&FilesEffect::GoTo {
+            path: destination.display().to_string(),
+        })
+        .unwrap();
+        app.effect(&FilesEffect::Paste).unwrap();
+        app.settle();
+        for name in ["a.txt", "c.txt"] {
+            assert_eq!(
+                std::fs::read(destination.join(name)).unwrap(),
+                name.as_bytes()
+            );
+        }
+        assert!(!destination.join("b.txt").exists());
+        assert!(app.undo());
+        app.settle();
+        for name in ["a.txt", "c.txt"] {
+            assert!(!destination.join(name).exists());
+            assert_eq!(
+                std::fs::read(root.path().join(name)).unwrap(),
+                name.as_bytes()
+            );
+        }
+
+        let mut viewer =
+            TestApp::<FileExplorerShell>::with_role(collab_types::Role::Viewer).unwrap();
+        viewer
+            .effect(&FilesEffect::GoTo {
+                path: root.path().display().to_string(),
+            })
+            .unwrap();
+        viewer.effect(&FilesEffect::SelectAll).unwrap();
+        viewer.effect(&FilesEffect::CopySelection).unwrap();
+        assert!(viewer.effect(&FilesEffect::CutSelection).is_err());
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            assert!(root.path().join(name).exists());
+        }
+    }
+
+    #[test]
+    fn published_selection_capture_observes_the_real_selected_rows() {
+        let guard = crate::model::fixture_io_guard::DenyAmbientIo::new();
+        let mut app = TestApp::<FileExplorerShell>::capture(Some("selection-actions")).unwrap();
+        assert_eq!(
+            app.with_surface(|files: &mut FileExplorerWidget| files.selected_indices().len()),
+            Some(2)
+        );
+        let frame = app.harness().inspection_json().unwrap();
+        assert!(frame.contains("Notes.txt"), "{frame}");
+        assert!(frame.contains("Recipes.md"), "{frame}");
+        assert_eq!(guard.attempts(), 0, "a capture read ambient state");
+    }
+
+    #[test]
+    fn published_selection_changes_stay_in_the_addressed_files_window() {
+        let root = tempfile::tempdir().unwrap();
+        for name in ["a.txt", "b.txt"] {
+            std::fs::write(root.path().join(name), name.as_bytes()).unwrap();
+        }
+        let launch = [root.path().to_str().unwrap()];
+        let mut source = TestApp::<FileExplorerShell>::launched(&launch).unwrap();
+        let mut other = TestApp::<FileExplorerShell>::launched(&launch).unwrap();
+        source.effect(&FilesEffect::SelectAll).unwrap();
+        other
+            .effect(&FilesEffect::SelectEntries {
+                entries: vec![crate::search_provider::entry_resource_id(
+                    &root.path().join("b.txt"),
+                )],
+            })
+            .unwrap();
+        assert_eq!(
+            source.with_surface(|files: &mut FileExplorerWidget| files.selected_indices().len()),
+            Some(2)
+        );
+        assert_eq!(
+            other.with_surface(|files: &mut FileExplorerWidget| files.selected_indices().len()),
+            Some(1)
+        );
+        source.effect(&FilesEffect::ClearSelection).unwrap();
+        assert_eq!(
+            source.with_surface(|files: &mut FileExplorerWidget| files.selected_indices().len()),
+            Some(0)
+        );
+        assert_eq!(
+            other.with_surface(|files: &mut FileExplorerWidget| files.selected_indices().len()),
+            Some(1)
+        );
+        assert!(source.state().ops.is_empty());
+        assert!(other.state().ops.is_empty());
+    }
+
     /// Copying and pasting are queued and undoable like every filesystem
     /// change: undo moves a copy to Trash and a cut-and-paste back. A row
     /// offers rename, move and trash on its entry; undoing the trash puts

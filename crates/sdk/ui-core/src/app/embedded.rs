@@ -387,6 +387,14 @@ impl Widget for EmbeddedApp {
         self.wants_frame.get()
     }
 
+    fn has_pending_visual_work(&self) -> bool {
+        self.app.root_widget.has_pending_visual_work()
+    }
+
+    fn has_transient_feedback(&self) -> bool {
+        self.app.root_widget.has_transient_feedback()
+    }
+
     /// The host's presentation preferences are the app's.
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.app.set_reduce_motion(reduced);

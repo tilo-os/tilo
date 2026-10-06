@@ -173,6 +173,7 @@ enum Command {
     ActionsList {
         query: String,
         json: bool,
+        include_programmatic: bool,
     },
     /// Invoke one enumerated action by its stable `(provider, id)`
     /// address — no synthetic input, no window, no scene.
@@ -437,6 +438,7 @@ fn run_read(stream: &mut UnixStream, app: &str, item: Option<&str>, json: bool) 
         if response.get("err").is_some() {
             return print_response(
                 &Command::ActionsList {
+                    include_programmatic: false,
                     query: "read".into(),
                     json,
                 },
@@ -683,10 +685,13 @@ fn parse_actions_command<'a>(
             // query, so `actions list open settings` works without
             // the caller having to quote it.
             let mut json = false;
+            let mut include_programmatic = false;
             let mut words: Vec<String> = Vec::new();
             for rest in iter.by_ref() {
                 if rest == "--json" {
                     json = true;
+                } else if rest == "--programmatic" {
+                    include_programmatic = true;
                 } else {
                     words.push(rest.clone());
                 }
@@ -694,6 +699,7 @@ fn parse_actions_command<'a>(
             Ok(Command::ActionsList {
                 query: words.join(" "),
                 json,
+                include_programmatic,
             })
         }
         "invoke" => parse_action_invocation(iter),
@@ -802,6 +808,14 @@ fn action_arguments(
         .map(|value| value.unwrap_or_else(|| serde_json::json!({})))
 }
 
+fn actions_list_wire(query: &str, include_programmatic: bool) -> serde_json::Value {
+    if include_programmatic {
+        serde_json::json!({ "op": "actions_enumerate", "query": query, "include_programmatic": true })
+    } else {
+        serde_json::json!({ "op": "actions_enumerate", "query": query })
+    }
+}
+
 fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
     use serde_json::json;
     let value = match cmd {
@@ -858,9 +872,11 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
         Command::Watch { watching } => json!({ "op": "watch", "watching": watching }),
         Command::StateDump { .. } | Command::Windows { .. } => json!({ "op": "state_dump" }),
         Command::Read { .. } => json!({ "op": "actions_enumerate", "query": "read" }),
-        Command::ActionsList { query, .. } => {
-            json!({ "op": "actions_enumerate", "query": query })
-        }
+        Command::ActionsList {
+            query,
+            include_programmatic,
+            ..
+        } => actions_list_wire(query, *include_programmatic),
         Command::ActionsInvoke {
             provider,
             id,
@@ -1200,7 +1216,7 @@ fn print_usage() {
          instead.\n\
          \n\
          Action model (admin control socket):\n\
-         \x20 actions list [QUERY] [--json] search: list actions as `PROVIDER:ID  KIND  TITLE`\n\
+         \x20 actions list [QUERY] [--json] [--programmatic] search: list actions as `PROVIDER:ID  KIND  TITLE`\n\
          \x20                               (read-only; empty QUERY lists everything;\n\
          \x20                               --json adds params, contract and hierarchy)\n\
          \x20 actions invoke PROVIDER ID [--device DEVICE] [--args-json OBJECT | --args-stdin]\n\
@@ -1387,6 +1403,39 @@ mod tests {
     //! socket protocol itself is covered in
     //! `compositor::test_control::tests` and `tests/control_socket_test.rs`.
     use super::*;
+
+    #[test]
+    fn programmatic_discovery_is_explicit_and_uses_the_normal_actions_wire() {
+        let normal = parse(&["actions", "list", "so.tilo.browser", "--json"]).unwrap();
+        assert_eq!(
+            wire(&normal.command),
+            serde_json::json!({
+                "op": "actions_enumerate", "query": "so.tilo.browser"
+            })
+        );
+        let machine = parse(&[
+            "actions",
+            "list",
+            "--programmatic",
+            "so.tilo.browser",
+            "--json",
+        ])
+        .unwrap();
+        assert_eq!(
+            wire(&machine.command),
+            serde_json::json!({
+                "op": "actions_enumerate", "query": "so.tilo.browser", "include_programmatic": true
+            })
+        );
+        assert!(matches!(
+            machine.command,
+            Command::ActionsList {
+                json: true,
+                include_programmatic: true,
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn stdin_arguments_use_the_normal_wire_and_redact_local_failures() {

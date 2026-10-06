@@ -2643,6 +2643,15 @@ impl ShellNetwork {
         let _ = self.publish_message(msg);
     }
 
+    /// Promptly drive the already-durable native owner's outgoing custody,
+    /// including signed governance checkpoints. Queue admission is not a
+    /// commit acknowledgement; heartbeat/reconnect retries a full queue.
+    pub(crate) fn schedule_native_owner_publication(&self, room: RoomId) {
+        let _ = self.cmd_tx.try_send(NetCmd::NativePublish {
+            ws: room_topic_id(room),
+        });
+    }
+
     /// Remember that a local app holds `record_id`, so peers' traffic for
     /// its sealed wire name can be routed to it. Returns the wire name.
     pub fn register_local_record(&self, app_id: &str, cluster_id: &str, record_id: &str) -> String {
@@ -8473,6 +8482,7 @@ mod tests {
                 app_id: "so.tilo.files".into(),
                 route: CrdtRoute::app("so.tilo.files", room.to_string()),
                 actions: vec![PublishedAction {
+                    semantic_identity: None,
                     resource: "files.entry:/tmp/report".into(),
                     action: "refresh".into(),
                     resource_kind: "files.entry".into(),

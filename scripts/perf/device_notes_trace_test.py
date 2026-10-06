@@ -21,7 +21,7 @@ class LocalSlot:
         return result.stdout
 
 
-def sample(number):
+def sample(number, render_phases=False):
     page = "new-scratch-page"
     session = "2bd78136-4c17-4853-9d7c-7442274a7059"
     worker = dict(process_id=123, observer_session=session)
@@ -45,10 +45,44 @@ def sample(number):
         ("tilo-display-frame ", dict(**worker, backend="wayland", cpu_frame_id=number,
             clock_id=1, flags=7, discarded=False, presented_time_ns=start + 10_000_000)),
     ]
+    if render_phases:
+        for tag in ("tilo-native-send", "tilo-native-main-stages", "tilo-native-worker",
+                    "tilo-native-worker-handoff", "tilo-native-present-call"):
+            records.append((tag + " ", dict(**worker, cpu_frame_id=number,
+                host_clock="clock_monotonic_seconds", before_host_lo_s=start / 1e9)))
     return "\n".join(tag + json.dumps(row) for tag, row in records)
 
 
 class RollingCollection(unittest.TestCase):
+    def test_render_phases_keep_exact_frame_and_observer_lifetime(self):
+        slot = LocalSlot()
+        captured = {}
+        identity = dict(process_id=123,
+                        observer_session="2bd78136-4c17-4853-9d7c-7442274a7059",
+                        cpu_frame_id=1)
+        tags = ("tilo-native-send", "tilo-native-main-stages", "tilo-native-worker",
+                "tilo-native-worker-handoff", "tilo-native-present-call")
+        rows = []
+        for tag in tags:
+            row = dict(identity, host_clock="clock_monotonic_seconds", before_host_lo_s=0.102)
+            rows.append(tag + " " + json.dumps(row))
+            for changes in (dict(observer_session="another-sandbox-lifetime"),
+                            dict(process_id=456), dict(cpu_frame_id=2), dict(cpu_frame_id=None)):
+                rows.append(tag + " " + json.dumps(dict(row, **changes)))
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "latest.log"
+            log.write_text(sample(1) + "\n" + "\n".join(rows))
+            collect_trace(slot, str(log), "new-scratch-page", captured)
+        phases = [line for line in captured if line.startswith("tilo-native-")]
+        self.assertEqual(len(phases), len(tags))
+        for line in phases:
+            row = json.loads(line.split(" ", 1)[1])
+            for key, value in identity.items():
+                self.assertEqual(row[key], value)
+        report = summarize_physical_notes_latency(list(captured), "new-scratch-page")
+        self.assertEqual(len(report["samples"]), 1)
+        self.assertTrue(report["latency_complete"])
+
     def test_complete_hundred_inputs_survive_rollover_and_the_rpc_limit(self):
         slot = LocalSlot()
         captured = {}
@@ -56,7 +90,7 @@ class RollingCollection(unittest.TestCase):
             log = Path(directory) / "latest.log"
             previous = ""
             for number in range(1, 101):
-                current = sample(number)
+                current = sample(number, render_phases=True)
                 # Replace the retained file, keeping only two input cohorts.
                 # Unrelated renderer output alone exceeds slot exec's1MiB cap.
                 log.write_text("renderer diagnostic " + "x" * 4194304 + "\n"
@@ -67,6 +101,7 @@ class RollingCollection(unittest.TestCase):
         self.assertEqual(len(report["samples"]), 100)
         self.assertEqual([row["input_id"] for row in report["samples"]], list(range(1, 101)))
         self.assertTrue(report["latency_complete"])
+        self.assertEqual(sum(line.startswith("tilo-native-") for line in captured), 500)
         self.assertLess(max(slot.output_sizes), 1048576)
 
     def test_conflicting_duplicate_input_is_preserved_and_rejected(self):

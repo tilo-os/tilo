@@ -255,6 +255,7 @@ pub fn descriptors() -> Vec<ActionDescriptor> {
     ACTIONS
         .iter()
         .map(|(action, label, description)| ActionDescriptor {
+            semantic_identity: None,
             address: ActionAddress::new(RESOURCE_ID, *action),
             resource_kind: AGENT_TRANSFORM_KIND.to_string(),
             resource_label: "AI transforms".to_string(),
@@ -273,6 +274,7 @@ pub fn descriptors() -> Vec<ActionDescriptor> {
 fn exported(descriptor: &ActionDescriptor) -> ExportedAction {
     ExportedAction {
         resource: descriptor.address.resource.clone(),
+        semantic_identity: descriptor.semantic_identity.clone(),
         action: descriptor.address.action.clone(),
         resource_kind: descriptor.resource_kind.clone(),
         resource_label: descriptor.resource_label.clone(),

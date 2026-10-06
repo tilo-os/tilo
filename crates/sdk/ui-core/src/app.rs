@@ -187,7 +187,10 @@ pub enum UserEvent {
     DevSessionReload,
     /// No `WindowEvent` analogue, so accesskit events get their own variant.
     #[cfg(feature = "native")]
-    AccessKit(accesskit_winit::WindowEvent),
+    AccessKit {
+        window_id: winit::window::WindowId,
+        event: accesskit_winit::WindowEvent,
+    },
     /// The soft keyboard queued edits for the focused field.
     #[cfg(all(feature = "native", target_os = "android"))]
     PlatformTextInput,
@@ -196,7 +199,10 @@ pub enum UserEvent {
 #[cfg(feature = "native")]
 impl From<accesskit_winit::Event> for UserEvent {
     fn from(e: accesskit_winit::Event) -> Self {
-        UserEvent::AccessKit(e.window_event)
+        UserEvent::AccessKit {
+            window_id: e.window_id,
+            event: e.window_event,
+        }
     }
 }
 use crate::collaboration::{
@@ -1755,6 +1761,7 @@ impl App {
         action: &tilo_actions::ActionSpec,
     ) -> tilo_actions::ActionDescriptor {
         tilo_actions::ActionDescriptor {
+            semantic_identity: resource.semantic_identity.clone(),
             address: tilo_actions::ActionAddress::new(resource.id.as_str(), &action.id),
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),

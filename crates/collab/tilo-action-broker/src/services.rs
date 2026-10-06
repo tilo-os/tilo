@@ -10,6 +10,31 @@ pub use crate::collab_broker_capnp::{
     NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices,
 };
 
+/// One read-only host view lookup. The original admitted channel and exact
+/// source record are retained in the existing committed-read context.
+pub type NativeResourceViewFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = Result<
+                    tilo_actions::remote::CataloguePage,
+                    tilo_actions::remote::ActionHostError,
+                >,
+            > + Send,
+    >,
+>;
+
+/// Host-installed bridge to the room's authenticated resource publisher.
+/// Implementations revalidate the original caller and exact record Read
+/// before requesting metadata and before returning it. No action is invoked.
+pub trait NativeResourceViews: Send + Sync {
+    /// Read one existing resource's inert views and current host locator.
+    fn query(
+        &self,
+        context: NativeDocumentReadContext,
+        query: tilo_actions::remote::CatalogueQuery,
+    ) -> NativeResourceViewFuture;
+}
+
 /// Reads a fresh immutable projection from the host's committed authority.
 /// Mutations go back to that host; this interface owns no replica or persistence.
 pub trait WorkspaceAuthority: Send + Sync {
@@ -53,6 +78,26 @@ pub trait LegacyWorkspaceProjection: Send + Sync {
     ) -> Result<(), String>;
 }
 pub type WorkspaceAuthorityHandle = Arc<dyn WorkspaceAuthority>;
+
+/// Native room membership owner. Public callers choose only a closed typed
+/// command; this host service supplies the private governor signing custody.
+pub trait WorkspaceMemberships: Send + Sync {
+    fn requires_room(&self, room: &str) -> bool;
+
+    /// Confirm that the canonical owner's durable store is still usable.
+    ///
+    /// # Errors
+    ///
+    /// Returns a diagnostic while owner continuity is unavailable or fenced.
+    fn health(&self) -> Result<(), String> {
+        Err("workspace membership owner continuity is unavailable".into())
+    }
+
+    fn execute(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+    ) -> tilo_peer_state::owner_commit::CommitFuture;
+}
 
 pub type DesktopCommandFuture = std::pin::Pin<
     Box<
@@ -133,6 +178,30 @@ pub struct LaunchContent<'a> {
     pub author: Option<&'a str>,
 }
 
+/// Original signed package evidence retained by the host for an actual launch.
+/// This has no wire decoder and is never supplied by the joining application.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApplicationCreationEvidence {
+    pub package_hash: String,
+    pub declared_kinds: Vec<String>,
+}
+
+impl ApplicationCreationEvidence {
+    #[must_use]
+    pub fn valid(&self) -> bool {
+        self.package_hash.len() == 64
+            && self
+                .package_hash
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            && !self.declared_kinds.is_empty()
+            && self.declared_kinds.len() <= 256
+            && self.declared_kinds.iter().all(|kind| {
+                !kind.is_empty() && kind.len() <= 256 && !kind.chars().any(char::is_control)
+            })
+    }
+}
+
 /// One admitted launch's actual startup observation. Dropping an unanswered
 /// observation retires its host-side subscription; enqueueing a worker is
 /// never sufficient to produce this receipt.
@@ -171,6 +240,60 @@ impl Drop for LaunchReadiness {
     }
 }
 
+/// Host-retained original custody for one exact observed application launch.
+/// No public constructor or wire representation exists. It never grants rights:
+/// the canonical membership action independently checks current administration.
+#[derive(Clone)]
+pub struct ObservedApplicationLaunch {
+    room: String,
+    app: String,
+    package_root: Option<String>,
+    check: Arc<dyn Fn() -> Result<tilo_user_identity::DeviceCert, String> + Send + Sync>,
+    grant: Arc<ObservedAuthorshipGrant>,
+}
+
+type ObservedAuthorshipGrant = dyn Fn(&tilo_user_identity::DeviceCert) -> Result<crate::collab_broker_capnp::InvocationJob, String>
+    + Send
+    + Sync;
+
+impl ObservedApplicationLaunch {
+    pub(crate) fn new(
+        room: String,
+        app: String,
+        package_root: Option<String>,
+        check: Arc<dyn Fn() -> Result<tilo_user_identity::DeviceCert, String> + Send + Sync>,
+        grant: Arc<ObservedAuthorshipGrant>,
+    ) -> Self {
+        Self {
+            room,
+            app,
+            package_root,
+            check,
+            grant,
+        }
+    }
+
+    pub fn matches(&self, app: &str, root: Option<&str>, workspace: &Workspace) -> bool {
+        self.app == app
+            && self.package_root.as_deref() == root
+            && self.room == workspace.room.to_string()
+    }
+
+    /// Recheck the actual original caller, pending invocation and policy clock.
+    /// # Errors
+    /// Refuses retired, cancelled, replaced or no-longer-authorized custody.
+    pub fn certificate(&self) -> Result<tilo_user_identity::DeviceCert, String> {
+        (self.check)()
+    }
+
+    /// Submit this bound app's authorship through the normal published door.
+    /// # Errors
+    /// Refuses missing custody or unavailable/ambiguous membership publication.
+    pub fn delegate_authorship(&self) -> Result<crate::collab_broker_capnp::InvocationJob, String> {
+        (self.grant)(&self.certificate()?)
+    }
+}
+
 pub trait LauncherServices: Send + Sync {
     fn applications(&self) -> Vec<LaunchableApplication>;
     /// Launches `app` into `workspace`.
@@ -195,6 +318,25 @@ pub trait LauncherServices: Send + Sync {
         let _ = (app, package_root, workspace, author);
         Err("observed application startup is unavailable on this host".into())
     }
+    /// Observe startup with host-retained original custody, when available.
+    /// # Errors
+    /// Refuses stale original custody or startup failures.
+    fn begin_launch_from_original(
+        &self,
+        app: &str,
+        package_root: Option<&str>,
+        workspace: &Workspace,
+        author: Option<&str>,
+        original: Option<ObservedApplicationLaunch>,
+    ) -> Result<LaunchReadiness, String> {
+        if let Some(original) = original {
+            if !original.matches(app, package_root, workspace) {
+                return Err("original launch target changed".into());
+            }
+            original.certificate()?;
+        }
+        self.begin_launch(app, package_root, workspace, author)
+    }
     /// Launch `app` into `workspace`, opening the content-addressed bytes
     /// `content` names read-only, read through the calling application's own
     /// scope. An empty hash is a plain launch. A host that cannot stage
@@ -216,6 +358,21 @@ pub trait LauncherServices: Send + Sync {
         }
     }
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool;
+    /// Original declarations of this exact live launch, not the currently
+    /// installed replacement package. Unsupported hosts grant no creation.
+    ///
+    /// # Errors
+    ///
+    /// The launch record, process start time or signed package custody changed.
+    fn application_creation_evidence(
+        &self,
+        pid: u32,
+        app: &str,
+        room: &str,
+    ) -> Result<Option<ApplicationCreationEvidence>, String> {
+        let _ = (pid, app, room);
+        Ok(None)
+    }
     /// An action invocation reached `app` in `room`. A person, an agent or
     /// another device drives an app through its actions as much as through
     /// keys and clicks, so a window the app closes after one was closed on
@@ -589,9 +746,13 @@ pub trait AppActionGrants: Send + Sync {
 }
 #[derive(Clone, Default)]
 pub struct HostServices {
+    /// Read-only existing-resource discovery, absent unless the native host
+    /// can carry it over its current authenticated room connection.
+    pub resource_views: Option<Arc<dyn NativeResourceViews>>,
     pub committed_documents: Option<Arc<dyn NativeDocumentReads>>,
     pub native_media: Option<Arc<dyn NativeMediaServices>>,
     pub desktop_commands: Option<Arc<dyn DesktopCommands>>,
+    pub workspace_memberships: Option<Arc<dyn WorkspaceMemberships>>,
     /// Documents proposed into the room and the owner's answers. Without it
     /// nothing can be proposed.
     pub document_imports: Option<Arc<dyn DocumentImports>>,

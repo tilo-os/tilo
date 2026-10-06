@@ -350,7 +350,7 @@ impl SplitHandle {
                 .trim_end_matches('%')
                 .trim()
                 .parse::<f32>()
-                .is_ok_and(|percent| self.ratio.set(percent / 100.0)),
+                .is_ok_and(|percent| percent.is_finite() && self.ratio.set(percent / 100.0)),
             _ => return false,
         };
         self.place();
@@ -504,10 +504,25 @@ impl Widget for SplitHandle {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         let mut node = SplitHandle::accessibility(self);
         if let Some(id) = &self.test_id {
-            node = node.with_semantic_key(id);
+            node = node.with_action_target(id);
         }
         Some(node)
     }
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &crate::widget::ModelPath,
+    ) -> bool {
+        if self.test_id.as_deref() != Some(target) {
+            return false;
+        }
+        let moved = SplitHandle::perform_action(self, action);
+        self.layout_dirty |= moved;
+        moved
+    }
+
     fn get_rect(&self) -> Rect {
         self.divider
     }
@@ -977,8 +992,11 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        if self.handle.test_id.is_some() {
-            Some(crate::a11y::AccessNode::new(crate::a11y::Role::Group))
+        if let Some(id) = &self.handle.test_id {
+            Some(
+                crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+                    .with_semantic_key(format!("resizable-split:{id}")),
+            )
         } else {
             Some(self.handle.accessibility())
         }
@@ -1445,6 +1463,39 @@ mod tests {
                 crate::a11y::Role::Separator
             );
             assert!(!root.is_focusable());
+            let resources = harness.resources();
+            let separator = resources
+                .iter()
+                .find(|resource| {
+                    resource
+                        .actions
+                        .iter()
+                        .any(|action| action.id == "set-value")
+                })
+                .expect("named shared divider publishes its canonical resize door");
+            for verb in ["increment", "decrement", "set-value"] {
+                assert!(separator.actions.iter().any(|action| action.id == verb));
+            }
+            harness
+                .perform_named(
+                    "request-divider",
+                    &crate::a11y::Action::SetValue("40%".into()),
+                )
+                .expect("canonical named divider dispatch");
+            assert!(
+                (harness
+                    .root::<ResizableSplit<TestLeaf, TestLeaf>>()
+                    .split_position()
+                    - 0.4)
+                    .abs()
+                    < f32::EPSILON
+            );
+            harness
+                .perform_named(
+                    "request-divider",
+                    &crate::a11y::Action::SetValue("50%".into()),
+                )
+                .expect("restore through the same public control");
             harness.click_named("request-divider").unwrap();
             harness.key(if orientation == SplitOrientation::Horizontal {
                 "ArrowRight"

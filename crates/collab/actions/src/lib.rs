@@ -148,7 +148,8 @@ pub use resource::{
     ActionBinding, ActionBindingError, ActionInput, ActionSpec, ArgsBuilder, Collects,
     ContinuationArguments, ContinuationEvidence, ContinuationKey, ContinuationQuery,
     ControlInvocation, FlatAction, KEY_SEP, PROMPTED_PARAM, Resource, ResourceId,
-    ResourcePresentation, ResourceViewMountSpec, ResourceViewSpec, flatten,
+    ResourcePresentation, ResourceSemanticIdentity, ResourceViewMountSpec, ResourceViewRangeSpec,
+    ResourceViewSpec, flatten,
 };
 pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,

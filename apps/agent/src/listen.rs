@@ -393,6 +393,7 @@ mod tests {
             reactions: vec![],
             mentions: vec![],
             reference: None,
+            source_provider: None,
             attachment: None,
             pinned: false,
             work: None,

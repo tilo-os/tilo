@@ -1689,6 +1689,12 @@ impl FrameHarness {
         self.root.as_ref()
     }
 
+    /// Deliver an authenticated transport answer through the native widget tree.
+    pub fn handle_collaboration_event(&mut self, event: &crate::collaboration::CollabEvent) {
+        crate::widget::handle_collab_event(self.root.as_mut(), event);
+        self.relayout();
+    }
+
     /// The live document, read-only.
     #[must_use]
     pub fn state(&self) -> &State {
@@ -2732,6 +2738,7 @@ impl FrameHarness {
                 if self.history.is_none() && self.history_chrome_enabled {
                     self.document_history
                         .place_in_app_header(self.root.as_mut());
+                    self.document_history.remove_fallback_bar();
                 }
                 self.child_node = if let Some(history) = &mut self.history {
                     history.build_composition(
@@ -5843,6 +5850,7 @@ impl FrameHarness {
                 confirmed,
                 broker_admitted: false,
                 invocation,
+                source_invocation: None,
                 ambient,
                 scope: None,
             },
@@ -6045,6 +6053,7 @@ impl FrameHarness {
                 confirmed: false,
                 broker_admitted: false,
                 invocation,
+                source_invocation: None,
                 ambient: acting.as_ref().and_then(|acting| acting.context.as_ref()),
                 scope: None,
             },
@@ -6391,6 +6400,7 @@ impl FrameHarness {
                         confirmed,
                         broker_admitted: false,
                         invocation: invocation_id,
+                        source_invocation: None,
                         ambient: None,
                         scope: None,
                     },
@@ -6534,6 +6544,7 @@ impl FrameHarness {
                         local_author: &self.author.0,
                         broker_admitted: false,
                         invocation: invocation_id,
+                        source_invocation: None,
                         ambient: None,
                         scope: None,
                     },
@@ -6674,6 +6685,7 @@ impl FrameHarness {
                         local_author: &self.author.0,
                         broker_admitted: false,
                         invocation,
+                        source_invocation: None,
                         ambient: acting.as_ref().and_then(|acting| acting.context.as_ref()),
                         scope: None,
                     },
@@ -6778,6 +6790,7 @@ impl FrameHarness {
                 local_author: &self.author.0,
                 broker_admitted: false,
                 invocation,
+                source_invocation: None,
                 ambient: None,
                 scope: None,
             },
@@ -7684,6 +7697,7 @@ impl FrameHarness {
                 confirmed,
                 broker_admitted: false,
                 invocation,
+                source_invocation: None,
                 ambient: None,
                 scope: None,
             },
