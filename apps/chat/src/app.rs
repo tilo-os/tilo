@@ -4414,7 +4414,10 @@ impl ChatApp {
         };
         let mut nodes = vec![
             AccessNode::new(Role::Heading { level: 1 })
-                .with_name(format!("{}, agent", self.agent_display_name(agent)))
+                .with_name(crate::i18n::t_args(
+                    "chat-agent-roster-label",
+                    &[("name", self.agent_display_name(agent).into())],
+                ))
                 .with_bounds(self.header_rect())
                 .with_hashed_key(("agent-conversation-heading", agent)),
         ];
