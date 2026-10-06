@@ -1,0 +1,72 @@
+{
+  "method": "paired donor-cluster percentile bootstrap, gesture-weighted",
+  "seed": 483217,
+  "repetitions": 10000,
+  "sessions": 697,
+  "baseline_alignment": "classic",
+  "candidate_alignment": "elastic",
+  "candidate_prior_hundredths": 100,
+  "fixture_sha256": "268a612a2e943c1714e96dacdb81b6bef885740066d9e76b05a0cf26bc5646d5",
+  "metrics": {
+    "literal_top1": {
+      "eligible": 48682,
+      "baseline_accuracy": 0.6553551620722238,
+      "candidate_accuracy": 0.7307629103159279,
+      "paired_gain": 0.07540774824370404,
+      "gain_95_percent_interval": [
+        0.07115099404884825,
+        0.0796498221753234
+      ]
+    },
+    "literal_top3": {
+      "eligible": 48682,
+      "baseline_accuracy": 0.7517768374347809,
+      "candidate_accuracy": 0.788279035372417,
+      "paired_gain": 0.03650219793763609,
+      "gain_95_percent_interval": [
+        0.03358387278967719,
+        0.03944537413339708
+      ]
+    },
+    "literal_top8": {
+      "eligible": 48682,
+      "baseline_accuracy": 0.7847253605028552,
+      "candidate_accuracy": 0.8014050367692371,
+      "paired_gain": 0.016679676266381824,
+      "gain_95_percent_interval": [
+        0.014980750433863278,
+        0.018458284277532776
+      ]
+    },
+    "lexical_top1": {
+      "eligible": 48660,
+      "baseline_accuracy": 0.7407110563090834,
+      "candidate_accuracy": 0.8305795314426634,
+      "paired_gain": 0.08986847513357994,
+      "gain_95_percent_interval": [
+        0.08512509159426358,
+        0.09460450913128829
+      ]
+    },
+    "lexical_top3": {
+      "eligible": 48660,
+      "baseline_accuracy": 0.8537196876284423,
+      "candidate_accuracy": 0.8997739416358406,
+      "paired_gain": 0.04605425400739827,
+      "gain_95_percent_interval": [
+        0.04260386345594073,
+        0.04957599478147423
+      ]
+    },
+    "lexical_top8": {
+      "eligible": 48660,
+      "baseline_accuracy": 0.894471845458282,
+      "candidate_accuracy": 0.9160295930949445,
+      "paired_gain": 0.021557747636662558,
+      "gain_95_percent_interval": [
+        0.019511458939697735,
+        0.023663511531795762
+      ]
+    }
+  }
+}

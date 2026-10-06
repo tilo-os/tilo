@@ -24,6 +24,8 @@ const DEFAULTS: &str = include_str!("../oauth-clients.toml");
 pub struct Scopes {
     pub files: Vec<String>,
     pub mail: Vec<String>,
+    pub music: Vec<String>,
+    pub music_streaming: Vec<String>,
 }
 
 impl Scopes {
@@ -31,6 +33,8 @@ impl Scopes {
         match capability {
             Capability::Files => &self.files,
             Capability::Mail => &self.mail,
+            Capability::Music => &self.music,
+            Capability::MusicStreaming => &self.music_streaming,
         }
     }
 }
@@ -54,6 +58,7 @@ pub struct ClientTable {
     pub google: ClientEntry,
     pub microsoft: ClientEntry,
     pub dropbox: ClientEntry,
+    pub spotify: ClientEntry,
 }
 
 impl ClientTable {
@@ -82,6 +87,7 @@ impl ClientTable {
             OAuthIssuer::Google => &self.google,
             OAuthIssuer::Microsoft => &self.microsoft,
             OAuthIssuer::Dropbox => &self.dropbox,
+            OAuthIssuer::Spotify => &self.spotify,
         }
     }
 
@@ -189,6 +195,10 @@ mod tests {
         assert!(table.microsoft.redirect_ports.is_empty());
         assert!(!table.dropbox.redirect_ports.is_empty());
         assert!(table.dropbox.paste_code_fallback);
+        assert_eq!(table.spotify.client_id, "fc7bc68792734157a2c9857cba652df7");
+        assert!(table.spotify.client_secret.is_empty());
+        assert_eq!(table.spotify.redirect_ports, [47654]);
+        assert!(!table.spotify.paste_code_fallback);
     }
 
     #[test]

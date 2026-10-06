@@ -10,9 +10,11 @@
 //! 2. For each candidate word, build its *ideal* polyline through its
 //!    letters' key centres.
 //! 3. Resample both the user path and each ideal polyline to a fixed number
-//!    of points, then score by mean point-to-point distance (shape match),
-//!    blended with the word's dictionary frequency.
-//! 4. Prune aggressively first (first/last key proximity, length window) so
+//!    of points, then form a coarse shortlist by location and word frequency.
+//! 4. Rerank its first 64 words with band-limited dynamic alignment, endpoint
+//!    location and the same dictionary prior. The alignment tolerates uneven
+//!    progress along curved traces without learned weights.
+//! 5. Prune aggressively first (first/last key proximity, length window) so
 //!    only a few hundred candidates are scored — keeps decode < ~30 ms over a
 //!    30k-word dictionary.
 //!
@@ -31,7 +33,7 @@ use std::collections::HashMap;
 use vello::kurbo::{Point, Rect};
 
 use crate::dict::{Dictionary, Language, fold_char};
-use crate::layout::{KeyAction, KeyId, KeyboardLayout};
+use crate::layout::{Key, KeyAction, KeyId, KeyboardLayout};
 
 /// Number of points each path (user + ideal) is resampled to before scoring.
 /// SHARK² uses ~100; a smaller count is plenty for a phone-width keyboard and
@@ -66,21 +68,25 @@ pub trait SwipeModel {
     fn set_language(&mut self, _language: Language) {}
 }
 
-/// SHARK²-style geometric + dictionary swipe decoder (the shipping path).
+/// Offline geometric + dictionary swipe decoder with bounded elastic reranking.
 pub struct GeometricSwipeModel {
     dict: Dictionary,
+    /// Folded first/last-letter buckets avoid scanning the full vocabulary
+    /// for every gesture. The same location prune selects these candidates.
+    endpoints: HashMap<(char, char), Vec<usize>>,
     /// The embedded language `dict` holds; `None` for a custom dictionary,
     /// which a language switch leaves alone.
     language: Option<Language>,
+    /// Frequency prior in hundredths; `None` reproduces the original matcher.
+    elastic: Option<u8>,
 }
 
 impl GeometricSwipeModel {
     /// Build a decoder over the embedded dictionary of `language`.
     pub fn for_language(language: Language) -> Self {
-        Self {
-            dict: Dictionary::for_language(language),
-            language: Some(language),
-        }
+        let mut model = Self::with_dictionary(Dictionary::for_language(language));
+        model.language = Some(language);
+        model
     }
 
     /// Build a decoder over the embedded English dictionary.
@@ -90,14 +96,53 @@ impl GeometricSwipeModel {
 
     /// Build a decoder over a custom dictionary (tests / other locales).
     pub fn with_dictionary(dict: Dictionary) -> Self {
+        let endpoints = index_endpoints(&dict);
         Self {
             dict,
+            endpoints,
             language: None,
+            elastic: Some(100),
         }
     }
 
     pub fn dictionary(&self) -> &Dictionary {
         &self.dict
+    }
+
+    /// Rerank the coarse shortlist with bounded elastic path alignment.
+    /// This keeps inference offline and uses the same deployment dictionary.
+    #[must_use]
+    pub fn with_elastic_alignment(mut self) -> Self {
+        self.elastic = Some(100);
+        self
+    }
+
+    /// Keep the original scoring rule for reproducible baseline comparisons.
+    /// User-facing keyboards use bounded elastic alignment by default.
+    #[must_use]
+    pub fn with_classic_alignment(mut self) -> Self {
+        self.elastic = None;
+        self
+    }
+
+    /// Select the bounded lexical-prior weight for repeatable qualification.
+    /// The weight is expressed in hundredths; no text data is learned here.
+    #[must_use]
+    pub fn with_elastic_prior(mut self, hundredths: u8) -> Self {
+        self.elastic = Some(hundredths);
+        self
+    }
+
+    fn endpoint_candidates(&self, starts: &[char], ends: &[char]) -> Vec<usize> {
+        let mut indices = Vec::new();
+        for first in starts {
+            for last in ends {
+                if let Some(bucket) = self.endpoints.get(&(*first, *last)) {
+                    indices.extend_from_slice(bucket);
+                }
+            }
+        }
+        indices
     }
 
     /// Convenience over the trait method with a fixed top-N.
@@ -110,12 +155,51 @@ impl GeometricSwipeModel {
     ) -> Vec<Candidate> {
         self.decode(path, key_geom, layout, top_n)
     }
+    fn rerank_elastic(
+        &self,
+        scored: &mut Vec<Candidate>,
+        user: &[Point],
+        centres: &HashMap<char, Point>,
+        key_scale: f64,
+    ) {
+        let Some(prior_weight) = self.elastic else {
+            return;
+        };
+        scored.truncate(64);
+        for candidate in scored.iter_mut() {
+            let chars: Vec<_> = candidate.word.chars().map(fold_char).collect();
+            if let Some(ideal) = ideal_polyline(&chars, centres) {
+                let ideal = resample(&ideal, RESAMPLE_N);
+                let distance = elastic_distance(user, &ideal) / (key_scale * key_scale);
+                let ends = user
+                    .first()
+                    .zip(ideal.first())
+                    .map_or(0.0, |(&a, &b)| dist2(a, b))
+                    + user
+                        .last()
+                        .zip(ideal.last())
+                        .map_or(0.0, |(&a, &b)| dist2(a, b));
+                let prior = 1.0 - f64::from(self.dict.frequency(&candidate.word));
+                let cost = distance
+                    + 0.15 * ends / (key_scale * key_scale)
+                    + f64::from(prior_weight) / 100.0 * prior;
+                candidate.score = (-cost).exp() as f32;
+            }
+        }
+        scored.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then_with(|| a.word.cmp(&b.word))
+        });
+    }
 }
 
 impl SwipeModel for GeometricSwipeModel {
     fn set_language(&mut self, language: Language) {
         if self.language.is_some_and(|current| current != language) {
+            let elastic = self.elastic;
             *self = Self::for_language(language);
+            self.elastic = elastic;
         }
     }
 
@@ -137,7 +221,7 @@ impl SwipeModel for GeometricSwipeModel {
         }
         // Average key dimension → the scoring distance scale (so a "near miss"
         // is judged relative to key size, not absolute pixels).
-        let key_scale = avg_key_size(key_geom).max(1.0);
+        let key_scale = letter_key_scale(key_geom, layout).unwrap_or(1.0).max(1.0);
 
         let user = resample(path, RESAMPLE_N);
         let user_bbox = bbox_diag(&user).max(1.0);
@@ -157,7 +241,10 @@ impl SwipeModel for GeometricSwipeModel {
         let approx_letters = (path_len / key_scale).round() as i32;
 
         let mut scored: Vec<Candidate> = Vec::new();
-        for entry in self.dict.words() {
+        for index in self.endpoint_candidates(&start_letters, &end_letters) {
+            let Some(entry) = self.dict.words().get(index) else {
+                continue;
+            };
             let word = &entry.word;
             // Accented letters are swiped through their base key (é on e).
             let chars: Vec<char> = word.chars().map(fold_char).collect();
@@ -217,9 +304,48 @@ impl SwipeModel for GeometricSwipeModel {
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| a.word.cmp(&b.word))
         });
+        if self.elastic.is_some() {
+            self.rerank_elastic(&mut scored, &user, &centres, key_scale);
+        }
         scored.truncate(top_n);
         scored
     }
+}
+
+/// Dynamic alignment accommodates curved traces and uneven progress along
+/// an ideal path. A fixed band bounds both deformation and computation.
+fn elastic_distance(user: &[Point], ideal: &[Point]) -> f64 {
+    const BAND: usize = 6;
+    let mut previous = [f64::INFINITY; RESAMPLE_N + 1];
+    previous[0] = 0.0;
+    for (i, &a) in user.iter().enumerate() {
+        let mut current = [f64::INFINITY; RESAMPLE_N + 1];
+        let lower = i.saturating_sub(BAND);
+        let upper = (i + BAND + 1).min(ideal.len());
+        for (j, &b) in ideal.iter().enumerate().take(upper).skip(lower) {
+            if let (Some(&diagonal), Some(&vertical), Some(horizontal), Some(cell)) = (
+                previous.get(j),
+                previous.get(j + 1),
+                current.get(j).copied(),
+                current.get_mut(j + 1),
+            ) {
+                *cell = dist2(a, b) + diagonal.min(vertical).min(horizontal);
+            }
+        }
+        previous = current;
+    }
+    previous.get(ideal.len()).copied().unwrap_or(f64::INFINITY) / RESAMPLE_N as f64
+}
+
+fn index_endpoints(dict: &Dictionary) -> HashMap<(char, char), Vec<usize>> {
+    let mut index: HashMap<(char, char), Vec<usize>> = HashMap::new();
+    for (position, entry) in dict.words().iter().enumerate() {
+        let mut letters = entry.word.chars().map(fold_char);
+        if let (Some(first), Some(last)) = (letters.next(), letters.next_back()) {
+            index.entry((first, last)).or_default().push(position);
+        }
+    }
+    index
 }
 
 // --- geometry helpers -----------------------------------------------------
@@ -245,16 +371,19 @@ fn letter_centres(key_geom: &[(KeyId, Rect)], layout: &KeyboardLayout) -> HashMa
     out
 }
 
-/// Average of key width+height across the geometry (the scoring length unit).
-fn avg_key_size(key_geom: &[(KeyId, Rect)]) -> f64 {
-    if key_geom.is_empty() {
-        return 1.0;
-    }
+/// Letter-key width and height define the scoring unit. Wide editing keys
+/// must not change recognition of a path through otherwise identical letters.
+pub(crate) fn letter_key_scale(key_geom: &[(KeyId, Rect)], layout: &KeyboardLayout) -> Option<f64> {
+    let mut count = 0;
     let sum: f64 = key_geom
         .iter()
-        .map(|(_, r)| (r.width() + r.height()) * 0.5)
+        .filter(|(id, _)| layout.key(*id).is_some_and(Key::is_letter))
+        .map(|(_, rect)| {
+            count += 1;
+            (rect.width() + rect.height()) * 0.5
+        })
         .sum();
-    sum / key_geom.len() as f64
+    (count != 0).then(|| sum / f64::from(count))
 }
 
 /// Letters whose key centre is within `radius` of `p`.
@@ -414,7 +543,7 @@ fn dist2(a: Point, b: Point) -> f64 {
 /// `key_scale` is the average key dimension. Returns true when the path's
 /// total travel exceeds ~0.9× a key (i.e. it crossed into a neighbour).
 pub fn is_swipe(path: &[Point], key_scale: f64) -> bool {
-    if path.len() < 3 {
+    if path.len() < 2 {
         return false;
     }
     polyline_length(path) > key_scale * 0.9
@@ -458,6 +587,112 @@ mod tests {
             }
         }
         pts
+    }
+
+    #[test]
+    fn editing_key_width_does_not_change_letter_path_recognition() {
+        for (layout, model, word) in [
+            (
+                KeyboardLayout::qwerty(),
+                GeometricSwipeModel::english(),
+                "quick",
+            ),
+            (
+                KeyboardLayout::azerty(),
+                GeometricSwipeModel::for_language(Language::French),
+                "été",
+            ),
+        ] {
+            let geometry = key_rects(&layout, Rect::new(0.0, 0.0, 720.0, 260.0), ShiftState::Off);
+            let path = path_through(
+                &word.chars().map(fold_char).collect::<String>(),
+                &geometry,
+                &layout,
+            );
+            let letters: Vec<_> = geometry
+                .iter()
+                .copied()
+                .filter(|(id, _)| layout.key(*id).is_some_and(Key::is_letter))
+                .collect();
+            let mut wide = geometry.clone();
+            for (id, rect) in &mut wide {
+                if layout.key(*id).is_some_and(|key| !key.is_letter()) {
+                    *rect = Rect::new(rect.x0, rect.y0, rect.x1 + 10_000.0, rect.y1);
+                }
+            }
+            let model = model.with_elastic_alignment();
+            let expected = model.decode_top(&path, &letters, &layout, 8);
+            assert!(
+                expected.iter().any(|candidate| candidate.word == word),
+                "missing {word}"
+            );
+            for actual in [&geometry, &wide] {
+                let actual = model.decode_top(&path, actual, &layout, 8);
+                assert_eq!(actual.len(), expected.len());
+                for (actual, expected) in actual.iter().zip(&expected) {
+                    assert_eq!(actual.word, expected.word);
+                    assert_eq!(actual.score, expected.score);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn elastic_recognition_follows_scaled_translated_geometry_and_language() {
+        let (layout, geometry) = qwerty_geom();
+        let model = GeometricSwipeModel::english().with_elastic_alignment();
+        let path = path_through("quick", &geometry, &layout);
+        let expected = model.decode_top(&path, &geometry, &layout, 8);
+        assert_eq!(
+            expected.first().map(|candidate| candidate.word.as_str()),
+            Some("quick")
+        );
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let transform =
+                vello::kurbo::Affine::translate((71.0, 43.0)) * vello::kurbo::Affine::scale(scale);
+            let geometry: Vec<_> = geometry
+                .iter()
+                .map(|(id, rect)| (*id, transform.transform_rect_bbox(*rect)))
+                .collect();
+            let path: Vec<_> = path.iter().map(|point| transform * *point).collect();
+            let actual = model.decode_top(&path, &geometry, &layout, 8);
+            assert_eq!(actual.len(), expected.len());
+            for (actual, expected) in actual.iter().zip(&expected) {
+                assert_eq!(actual.word, expected.word);
+                assert!((actual.score - expected.score).abs() < 0.000_01);
+            }
+        }
+        let mut model = model;
+        model.set_language(Language::French);
+        let layout = KeyboardLayout::azerty();
+        let geometry = key_rects(&layout, Rect::new(0.0, 0.0, 390.0, 220.0), ShiftState::Off);
+        let path = path_through("bonjour", &geometry, &layout);
+        assert_eq!(
+            model
+                .decode_top(&path, &geometry, &layout, 8)
+                .first()
+                .map(|candidate| candidate.word.as_str()),
+            Some("bonjour")
+        );
+    }
+
+    #[test]
+    fn indexed_swipes_follow_language_switches_and_folded_accents() {
+        let layout = KeyboardLayout::azerty();
+        let geom = key_rects(&layout, Rect::new(0.0, 0.0, 390.0, 224.0), ShiftState::Off);
+        let mut model = GeometricSwipeModel::english();
+        model.set_language(Language::French);
+        let path = path_through("bonjour", &geom, &layout);
+        let candidates = model.decode_top(&path, &geom, &layout, 8);
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.word == "bonjour")
+        );
+        let model =
+            GeometricSwipeModel::with_dictionary(Dictionary::from_str("été\t8000\nétude\t7000\n"));
+        let path = path_through("ete", &geom, &layout);
+        assert_eq!(model.decode_top(&path, &geom, &layout, 1)[0].word, "été");
     }
 
     #[test]
@@ -518,8 +753,8 @@ mod tests {
 
         eprintln!("phase is_swipe_distinguishes_tap_from_drag");
         {
-            let (_layout, geom) = qwerty_geom();
-            let scale = avg_key_size(&geom);
+            let (layout, geom) = qwerty_geom();
+            let scale = letter_key_scale(&geom, &layout).expect("QWERTY has letter keys");
             // A tap: a few samples all in the same spot.
             let tap = vec![
                 Point::new(100.0, 100.0),

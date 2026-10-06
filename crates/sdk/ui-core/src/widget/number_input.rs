@@ -1109,6 +1109,11 @@ impl Widget for NumberInput {
         self.is_focused || self.field.is_focused()
     }
 
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.ime_cursor_rect()?;
+        self.field.ime_edit_fingerprint(key)
+    }
+
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         // Winit has no numeric purpose yet. Normal still activates the
         // standard text-input-v3 lifecycle; the field continues to validate

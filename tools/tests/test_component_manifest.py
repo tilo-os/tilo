@@ -98,6 +98,41 @@ class ComponentManifestPolicyTests(unittest.TestCase):
 
 
 class InstallerTests(unittest.TestCase):
+    def test_image_component_stage_carries_the_speech_workers_license(self):
+        # Reconstruct checked-in COPY inputs from the actual component-files
+        # stage, then execute the production installer against that manifest.
+        # A host-checkout install alone cannot observe missing image inputs.
+        copies = [pair
+                  for instruction in check.instructions(REPO / "os/Containerfile")
+                  if instruction.stage == check.INSTALL_STAGE
+                  and instruction.words[0].upper() == "COPY"
+                  for pair in check.copy_pairs(instruction)[1]
+                  if pair[1].startswith("/tilo-components/")]
+        license_source = "os/usr/share/licenses/tilo-speech-worker/LICENSE"
+        for include_license in (True, False):
+            with self.subTest(staged_license=include_license), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                for source, destination in copies:
+                    if not include_license and source == license_source:
+                        continue
+                    target = root / destination.lstrip("/")
+                    if destination.endswith("/"):
+                        target /= Path(source).name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(REPO / source, target)
+                out = self.build_outputs(root)
+                layer = root / "image"
+                with contextlib.redirect_stderr(io.StringIO()):
+                    status = self.run_installer(
+                        "--manifest", str(root / "tilo-components/components.toml"),
+                        "--from", str(out), "--dest", str(layer), "--by-layer", "model-manager")
+                self.assertEqual(status, 0 if include_license else 1)
+                if include_license:
+                    notice = layer / "desktop-binaries/usr/share/licenses/tilo-speech-worker/LICENSE"
+                    self.assertEqual(notice.read_bytes(), (REPO / license_source).read_bytes())
+                    self.assertEqual(notice.stat().st_mode & 0o777, 0o644)
+                    self.assertTrue((layer / "desktop-binaries/usr/bin/tilo-speech-worker").is_file())
+
     def build_outputs(self, root: Path) -> Path:
         out = root / "out"
         out.mkdir(parents=True)

@@ -496,6 +496,9 @@ pub struct NearbyTransferRequestContext {
     app_id: String,
     workspace_id: String,
     channel: String,
+    /// Sealed admission identity, never supplied by the command JSON. An
+    /// agent is absent here: a local person must answer external trust sheets.
+    person: Option<String>,
 }
 
 impl NearbyTransferRequestContext {
@@ -504,12 +507,14 @@ impl NearbyTransferRequestContext {
         app_id: impl Into<String>,
         workspace_id: impl Into<String>,
         channel: impl Into<String>,
+        person: Option<String>,
     ) -> Self {
         Self {
             peer_id,
             app_id: app_id.into(),
             workspace_id: workspace_id.into(),
             channel: channel.into(),
+            person,
         }
     }
 
@@ -533,6 +538,11 @@ impl NearbyTransferRequestContext {
     #[must_use]
     pub fn channel(&self) -> &str {
         &self.channel
+    }
+
+    #[must_use]
+    pub fn person(&self) -> Option<&str> {
+        self.person.as_deref()
     }
 }
 

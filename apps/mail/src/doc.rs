@@ -306,6 +306,13 @@ impl MailDoc {
 
     pub fn store_draft(doc: &mut AutoCommit, draft: &Draft) {
         let d = Self::map(doc, &ROOT, "draft");
+        if let Some(sender) = &draft.sender {
+            if let Ok(value) = serde_json::to_string(sender) {
+                ui::doc::put_if_changed(doc, &d, "sender", value.as_str());
+            }
+        } else if doc.get(&d, "sender").ok().flatten().is_some() {
+            let _ = doc.delete(&d, "sender");
+        }
         ui::doc::put_if_changed(doc, &d, "to", draft.to.as_str());
         ui::doc::put_if_changed(doc, &d, "cc", draft.cc.as_str());
         ui::doc::put_if_changed(doc, &d, "bcc", draft.bcc.as_str());
@@ -330,6 +337,7 @@ impl MailDoc {
             return Draft::default();
         };
         Draft {
+            sender: read_str(doc, &d, "sender").and_then(|raw| serde_json::from_str(&raw).ok()),
             to: read_str(doc, &d, "to").unwrap_or_default(),
             cc: read_str(doc, &d, "cc").unwrap_or_default(),
             bcc: read_str(doc, &d, "bcc").unwrap_or_default(),
@@ -402,6 +410,7 @@ impl MailDoc {
             "body",
             "html_body",
             "calendar_ics",
+            "sender",
             "attachments",
             RICH_BODY,
         ] {

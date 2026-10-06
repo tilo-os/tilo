@@ -5,6 +5,8 @@
 
 pub(crate) mod governor_lane;
 pub(crate) mod native_ingress;
+#[cfg(test)]
+mod nearby_transfer_tests;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};

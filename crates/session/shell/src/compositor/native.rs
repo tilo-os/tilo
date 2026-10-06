@@ -1136,8 +1136,9 @@ fn app_local_to_desktop(rect: Rect, app_rect: Rect) -> Rect {
     rect + app_rect.origin().to_vec2()
 }
 
-/// Serve the shell's own file choosers when apps have no portal to reach: no
-/// session bus, as on a provider's headless guest. `attended` says whether an
+/// Serve the authenticated, workspace-scoped chooser connection alongside
+/// any desktop portal. Legacy runtimes may use this connection for documents
+/// while using the filtered session bus for notifications. `attended` says whether an
 /// agent is driving the screen; an unattended session (one that saves into
 /// `TILO_SAVE_DIRECTORY`) otherwise leaves its choosers to the apps.
 fn start_chooser_service(
@@ -1145,9 +1146,6 @@ fn start_chooser_service(
     attended: Arc<AtomicBool>,
     wake: crate::session_runtime::Wake,
 ) -> Option<crate::compositor::chooser_service::ChooserService> {
-    if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some_and(|address| !address.is_empty()) {
-        return None;
-    }
     let portal = portal?;
     let save_directory = std::env::var_os(tilo_dialogs::portal::SAVE_DIRECTORY_ENV)
         .filter(|directory| !directory.is_empty())
@@ -2875,6 +2873,14 @@ impl ControlState for FrameBuilderControlState<'_> {
             // The input hardware and last-used modality the chrome adapts
             // to, and the language the desktop help overlay is written in.
             "input": input_environment_json(self.fb.host().interaction_environment(), self.fb.host().shortcut_help_modality()),
+            "input_capture": {
+                "onboarding": self.fb.host().onboarding_active(),
+                "chrome": client_input::chrome_captures_input(self.fb),
+                "inner_surface": self.fb.host().inner_surface_captures_input(),
+                "maximized_controls": self.fb.host().maximized_chrome_captures_pointer(),
+                "shortcut_help": overlays.shortcut_help,
+                "projection": overlays.projection,
+            },
             // The on-screen keyboard: whether its service has a surface,
             // and where it is painted while it serves the focused field.
             "on_screen_keyboard": {
@@ -10289,7 +10295,14 @@ pub fn run() {
             }
         }
         if let Some(proxy) = shell_text_input.as_mut() {
-            let mut typed = proxy.sync(&mut state, shell_field);
+            let identity = if frame_builder.host().palette_visible() {
+                Some(crate::compositor::shell_text_input::NativeFieldId::Palette)
+            } else {
+                test_control_ctx.focus.map(|node| {
+                    crate::compositor::shell_text_input::NativeFieldId::Widget(u64::from(node))
+                })
+            };
+            let mut typed = proxy.sync_for_field(&mut state, shell_field, identity);
             state.shell_field_active = proxy.holds_focus(&state);
             typed.append(&mut state.shell_field_keys);
             for event in &typed {
@@ -10304,6 +10317,11 @@ pub fn run() {
             if !typed.is_empty() {
                 injected_redraw_pending = true;
             }
+            if state.has_dictation_target() && shell_field.is_some() {
+                let stamp = frame_builder
+                    .focused_ime_edit_stamp(test_control_ctx.focus, &test_control_ctx.doc);
+                proxy.observe_edit_stamp(&mut state, stamp);
+            }
         }
         frame_builder.set_osk_surface(
             state.osk_surface,
@@ -10311,6 +10329,50 @@ pub fn run() {
             state.shell_field_active.then_some(shell_field).flatten(),
             state.text_input_active() && input_methods.osk_shown(),
         );
+        let dictation_blocked =
+            session.is_locked() || !frame_builder.host().dictation_input_available();
+        let dictation_changed = {
+            let surface = frame_builder.host_mut().dictation_surface_mut();
+            crate::compositor::dictation::frontend::service(
+                &mut state,
+                surface,
+                Instant::now(),
+                dictation_blocked,
+            );
+            surface.take_changed()
+        };
+        if dictation_changed {
+            frame_builder.with_chrome(crate::shell::chrome_state::ChromeState::bump);
+        }
+        if state.take_native_dictation_commit() {
+            let events = display.flush_clients().ok().and_then(|()| {
+                shell_text_input.as_mut().and_then(
+                    crate::compositor::shell_text_input::ShellTextInput::drain_dictation_commit,
+                )
+            });
+            if let Some(events) = events {
+                for event in &events {
+                    frame_builder.dispatch_event(
+                        event,
+                        &test_control_ctx.modifiers,
+                        &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
+                        &test_control_ctx.root_obj,
+                        &mut test_control_ctx.focus,
+                    );
+                }
+                injected_redraw_pending = true;
+            } else {
+                // Disconnect the old bridge so an incomplete result cannot
+                // arrive next turn after the target's selection has changed.
+                shell_text_input = None;
+                state.shell_field_active = false;
+                frame_builder
+                    .host_mut()
+                    .dictation_surface_mut()
+                    .failure(crate::compositor::dictation::DictationError::RecognizerUnavailable);
+                frame_builder.with_chrome(crate::shell::chrome_state::ChromeState::bump);
+            }
+        }
         frame_builder.set_osk_commits(state.osk_commits);
         pump_checkpoint!("session-focus-and-surfaces");
         let floating_surfaces = state
@@ -12069,6 +12131,10 @@ pub fn run() {
                     wayland_client_service_deadline(wayland_client_wake, park_now),
                 ),
                 ("text-commit", state.text_commit_deadline()),
+                (
+                    "dictation-service",
+                    state.dictation_service_deadline(park_now),
+                ),
                 (
                     "presentation-feedback",
                     state.presentation_feedback.next_deadline(),
