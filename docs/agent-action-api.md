@@ -27,8 +27,9 @@ tilo-control actions invoke session lock
 
 Nothing about the session changes because the socket exists: first-use
 onboarding, the lock screen and the capability gate behave exactly as with no
-client attached. While the session is locked every invocation is refused with
-`session_locked`; unlock happens at the device.
+client attached. While the session is locked, ordinary app invocations are
+refused with `session_locked`. The authenticated owner's `session-lock`
+provider remains available for the normal PAM unlock conversation.
 
 Who may use it is decided by the system's own identity and process model, not
 by a token:
@@ -50,6 +51,34 @@ by a token:
   development socket that serves them.
 - **Every invocation passes the same capability gate** as the palette, as the
   person at this session.
+
+### Unlocking the owner's session remotely
+
+Use the owner's existing unconfined login and the owner socket. Discover the
+current `session-lock` actions, then submit the `password` Secret parameter to
+`unlock@session-lock` as a private JSON object on standard input:
+
+```bash
+env -u TILO_TEST_CONTROL tilo-control \
+  --socket "$XDG_RUNTIME_DIR/tilo-session/admin-control.sock" \
+  actions list session-lock --json
+env -u TILO_TEST_CONTROL tilo-control \
+  --socket "$XDG_RUNTIME_DIR/tilo-session/admin-control.sock" \
+  actions invoke session-lock unlock@session-lock --args-stdin
+```
+
+Supply stdin through the existing private credential channel, never a password
+in arguments, receipts or logs. The invocation starts the same PAM verifier
+as the lock screen; its acknowledgement does not prove authentication succeeded.
+Inspect `chrome.session_locked` and `chrome.lock_auth` in `state-dump` to observe
+completion. An incorrect credential leaves the session locked.
+
+The management transport `tilo-vm vm ssh` executes commands as root. When using
+that transport, run the control client as the actual session owner with
+`runuser -u OWNER --`, set that owner's `XDG_RUNTIME_DIR`, and keep the secret on
+stdin. Root itself does not pass the owner socket's peer checks. This unlocks an
+existing login session; the pre-session greeter has its separate sign-in action
+below, and encrypted-disk unlock is a separate boundary.
 
 Permission requests use that same authenticated session surface. When a portal
 or Terminal is waiting for consent, query `actions list permission-prompts` and
@@ -393,6 +422,18 @@ refuses it again at run time.
 | Console apps (installer, greeter) | `crates/session/console-control` |
 | Socket framing, other ops | `docs/headless-testing.md` |
 
+### Unlocking the device-owner session
+
+The existing device-owner `admin-control.sock` publishes the `session-lock`
+resource while locked. Invoke `unlock@session-lock` with a Secret `password`,
+using `tilo-control actions invoke session-lock unlock@session-lock --args-stdin`.
+Supply the JSON object through private stdin; never place a credential in argv.
+The reply acknowledges asynchronous verification, rather than claiming unlock.
+Wait for the ordinary `state-dump` `chrome.session_locked` transition and
+`chrome.lock_auth.verifying`/non-leaky error fields. The normal PAM helper
+verifies the existing session owner; no caller may replace the username.
+Agent-scoped and enrolled-device actions do not receive this local capability.
+Other app actions remain refused while locked.
 ## This device's shell
 
 A live launcher-authenticated Terminal exposes owner operations through the
