@@ -2,7 +2,9 @@
 //! history, undo, collaboration, permissions, palette/agent/script exposure,
 //! search and replay without writing any of them.
 
-use std::sync::Arc;
+use std::any::TypeId;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -920,12 +922,65 @@ fn apply_param<R: Resource>() -> ActionParam {
         ParamType::Object,
         format!("A {} action, as JSON", R::LABEL),
     );
-    match R::action_schema() {
-        Some(schema) => {
-            param.with_schema(crate::schema::fold_declared(&schema, &declared_args::<R>()))
-        }
+    let schema = per_type::<R>(TypeSchema::Apply, || {
+        R::action_schema()
+            .map(|schema| crate::schema::fold_declared(&schema, &declared_args::<R>()))
+    });
+    match schema {
+        Some(schema) => param.with_schema(schema),
         None => param,
     }
+}
+
+/// The schemas a publication derives from the resource type alone.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum TypeSchema {
+    Apply,
+    Group,
+}
+
+#[derive(Default)]
+struct CompiledSchemas {
+    epoch: u64,
+    entries: HashMap<(TypeId, TypeSchema), Option<serde_json::Value>>,
+}
+
+static SCHEMAS: OnceLock<Mutex<CompiledSchemas>> = OnceLock::new();
+
+/// Forget schemas derived by the previous app code before an in-place reload.
+/// Hosts also call this when a reload is rejected, so the retained app rebuilds
+/// its own definitions. Document and view changes do not invalidate type schemas.
+#[doc(hidden)]
+pub fn reset_type_schemas() {
+    if let Some(cache) = SCHEMAS.get() {
+        let mut store = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        store.epoch = store.epoch.wrapping_add(1);
+        store.entries.clear();
+    }
+}
+
+/// `build`'s schema for `R`, retained for this generation of app code.
+fn per_type<R: Resource>(
+    schema: TypeSchema,
+    build: impl FnOnce() -> Option<serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let cache = SCHEMAS.get_or_init(Mutex::default);
+    let key = (TypeId::of::<R>(), schema);
+    let epoch = {
+        let store = cache.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(found) = store.entries.get(&key) {
+            return found.clone();
+        }
+        store.epoch
+    };
+    // Build outside the lock: a schema may publish another resource's.
+    let value = build();
+    let mut store = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    // A build started before a code reload cannot repopulate the new cache.
+    if store.epoch == epoch {
+        store.entries.insert(key, value.clone());
+    }
+    value
 }
 
 /// A JSON action value as [`APPLY`] reads it. A value naming a declared
@@ -952,29 +1007,33 @@ fn group_param<R: Resource>() -> ActionParam {
         array, constant, describe, nullable, object, one_of, string_enum, undescribed,
     };
 
-    let ids: Vec<&str> = R::declarations().iter().map(|decl| decl.id).collect();
-    let mut members = Vec::new();
-    if !ids.is_empty() {
-        members.push(describe(
-            object(vec![
-                ("action", string_enum(&ids), true),
-                (
-                    "args",
-                    nullable(serde_json::json!({"type": "object"})),
-                    false,
-                ),
-            ]),
-            "A named action, args as it takes them",
-        ));
-    }
-    let action = apply_param::<R>().schema.map_or_else(
-        || serde_json::json!({"type": "object"}),
-        |schema| undescribed(&schema),
-    );
-    members.push(object(vec![
-        ("action", constant(APPLY), true),
-        ("args", object(vec![(APPLY_PARAM, action, true)]), true),
-    ]));
+    let schema = per_type::<R>(TypeSchema::Group, || {
+        let ids: Vec<&str> = R::declarations().iter().map(|decl| decl.id).collect();
+        let mut members = Vec::new();
+        if !ids.is_empty() {
+            members.push(describe(
+                object(vec![
+                    ("action", string_enum(&ids), true),
+                    (
+                        "args",
+                        nullable(serde_json::json!({"type": "object"})),
+                        false,
+                    ),
+                ]),
+                "A named action, args as it takes them",
+            ));
+        }
+        let action = apply_param::<R>().schema.map_or_else(
+            || serde_json::json!({"type": "object"}),
+            |schema| undescribed(&schema),
+        );
+        members.push(object(vec![
+            ("action", constant(APPLY), true),
+            ("args", object(vec![(APPLY_PARAM, action, true)]), true),
+        ]));
+        Some(array(one_of(members)))
+    })
+    .unwrap_or_else(|| serde_json::json!({"type": "array"}));
     ActionParam::required_owned(
         crate::GROUP_PARAM,
         ParamType::Array,
@@ -983,7 +1042,7 @@ fn group_param<R: Resource>() -> ActionParam {
             R::LABEL
         ),
     )
-    .with_schema(array(one_of(members)))
+    .with_schema(schema)
 }
 
 fn apply_spec<R: Resource>() -> ActionSpec {

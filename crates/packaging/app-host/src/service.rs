@@ -7,7 +7,7 @@
 //! work (fs IO, content-store sessions, materialisation) is routed through
 //! `tokio::task::spawn_blocking` so the capnp event loop stays responsive.
 
-use std::sync::Arc;
+use std::{io::Write as _, sync::Arc};
 
 use capnp::Error;
 
@@ -339,6 +339,81 @@ fn flatpak_install_remote_from(
         &format!("{app_id}//{branch}"),
     ]);
     run_host_command(command)
+}
+
+/// Install from the configured official source into this person's installation.
+/// An account source takes precedence over the immutable device default.
+fn flatpak_install_flathub_from(binary: &std::path::Path, app_id: &str) -> Result<String, Error> {
+    require_flatpak_selector(app_id)?;
+    let mut query = std::process::Command::new(binary);
+    query.args(["remotes", "--columns=name,url,title,options"]);
+    let output =
+        bounded_command::run_prepared(query, None, 1024 * 1024, std::time::Duration::from_secs(5))
+            .map_err(failed)?;
+    if !output.status.success() {
+        return Err(Error::failed(format!(
+            "Could not read configured Flatpak sources: {}",
+            safe_host_diagnostic(&output.stderr)
+        )));
+    }
+    require_enabled_flathub(&String::from_utf8_lossy(&output.stdout))?;
+    let mut remote = std::process::Command::new(binary);
+    remote.args([
+        "remote-add",
+        "--user",
+        "--if-not-exists",
+        "flathub",
+        "https://dl.flathub.org/repo/flathub.flatpakrepo",
+    ]);
+    run_host_command(remote)?;
+    let mut install = std::process::Command::new(binary);
+    install.args([
+        "install",
+        "--user",
+        "--noninteractive",
+        "--",
+        "flathub",
+        app_id,
+    ]);
+    run_host_command(install)
+}
+
+fn require_enabled_flathub(rows: &str) -> Result<(), Error> {
+    let mut device_enabled = false;
+    for row in rows.lines() {
+        let columns: Vec<_> = row.split('\t').collect();
+        if columns.first().copied() != Some("flathub") {
+            continue;
+        }
+        let url = columns.get(1).copied().unwrap_or("").trim_end_matches('/');
+        let options: Vec<_> = columns
+            .get(3)
+            .copied()
+            .unwrap_or("")
+            .split(',')
+            .map(str::trim)
+            .collect();
+        let official = matches!(
+            url,
+            "https://dl.flathub.org/repo" | "https://flathub.org/repo"
+        );
+        let enabled = !options.contains(&"disabled") && !options.contains(&"no-gpg-verify");
+        if !options.contains(&"system") {
+            return if official && enabled {
+                Ok(())
+            } else {
+                Err(Error::failed("The account Flathub source must be enabled, verify signatures and use the official repository.".into()))
+            };
+        }
+        device_enabled |= official && enabled;
+    }
+    if device_enabled {
+        Ok(())
+    } else {
+        Err(Error::failed(
+            "No enabled official Flathub source is configured.".into(),
+        ))
+    }
 }
 
 /// The person's app repositories, as `app repo list --json` prints them.
@@ -746,31 +821,18 @@ impl app_host::Server for AppHostServer {
                     WireFlatpakAction::Install => {
                         command.args(["install", "--user", "--noninteractive"]);
                         if reference.is_empty() {
-                            // The image may have a system Flathub remote, while
-                            // this operation deliberately installs for this user.
-                            // Establish its official remote on first use; an
-                            // existing user remote is never replaced.
-                            let mut remote = std::process::Command::new("/usr/bin/flatpak");
-                            remote.args([
-                                "remote-add",
-                                "--user",
-                                "--if-not-exists",
-                                "flathub",
-                                "https://dl.flathub.org/repo/flathub.flatpakrepo",
-                            ]);
-                            run_host_command(remote)?;
-                            command.args(["flathub", &app_id]);
-                        } else {
-                            use std::io::Write as _;
-                            let mut staged = tempfile::NamedTempFile::new().map_err(|e| {
-                                Error::failed(format!("stage Flatpak reference: {e}"))
-                            })?;
-                            staged.write_all(&reference).map_err(|e| {
-                                Error::failed(format!("stage Flatpak reference: {e}"))
-                            })?;
-                            command.arg(staged.path());
-                            return run_host_command(command);
+                            return flatpak_install_flathub_from(
+                                std::path::Path::new("/usr/bin/flatpak"),
+                                &app_id,
+                            );
                         }
+                        let mut staged = tempfile::NamedTempFile::new()
+                            .map_err(|e| Error::failed(format!("stage Flatpak reference: {e}")))?;
+                        staged
+                            .write_all(&reference)
+                            .map_err(|e| Error::failed(format!("stage Flatpak reference: {e}")))?;
+                        command.arg(staged.path());
+                        return run_host_command(command);
                     }
                     WireFlatpakAction::Update => {
                         command.args(["update", "--user", "--noninteractive", &app_id]);
@@ -1213,6 +1275,76 @@ exit 1
                 .to_string()
                 .contains("repository is unavailable")
         );
+    }
+
+    #[test]
+    fn official_system_flathub_install_materializes_only_the_account_descriptor() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = flathub_install_fixture(dir.path());
+        std::fs::write(
+            dir.path().join("rows"),
+            "flathub\thttps://dl.flathub.org/repo/\tFlathub\tsystem\n",
+        )
+        .unwrap();
+        assert_eq!(
+            super::flatpak_install_flathub_from(&binary, "org.example.Editor")
+                .unwrap()
+                .trim(),
+            "Installed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("calls")).unwrap(),
+            concat!(
+                "remotes --columns=name,url,title,options\n",
+                "remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo\n",
+                "install --user --noninteractive -- flathub org.example.Editor\n"
+            )
+        );
+    }
+
+    #[test]
+    fn official_flathub_install_preserves_disabled_foreign_and_missing_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = flathub_install_fixture(dir.path());
+        for rows in [
+            "flathub\thttps://dl.flathub.org/repo/\tFlathub\tsystem\nflathub\thttps://dl.flathub.org/repo/\tFlathub\tuser,disabled\n",
+            "flathub\thttps://dl.flathub.org/repo/\tFlathub\tsystem\nflathub\thttps://foreign.example/repo\tOther\tuser\n",
+            "flathub\thttps://dl.flathub.org/repo/\tFlathub\tsystem,disabled\n",
+            "flathub\thttps://dl.flathub.org/repo/\tFlathub\tsystem\nflathub\thttps://dl.flathub.org/repo/\tFlathub\tuser,no-gpg-verify\n",
+            "",
+        ] {
+            std::fs::write(dir.path().join("rows"), rows).unwrap();
+            std::fs::write(dir.path().join("calls"), "").unwrap();
+            let error =
+                super::flatpak_install_flathub_from(&binary, "org.example.Editor").unwrap_err();
+            assert!(error.to_string().contains("Flathub source"), "{error}");
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("calls")).unwrap(),
+                "remotes --columns=name,url,title,options\n"
+            );
+        }
+        assert!(super::flatpak_install_flathub_from(&binary, "--no-gpg-verify").is_err());
+    }
+
+    fn flathub_install_fixture(dir: &std::path::Path) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+        let binary = dir.join("flatpak");
+        std::fs::write(
+            &binary,
+            r#"#!/bin/sh
+fixture_dir=$(dirname "$0")
+printf '%s\n' "$*" >> "$fixture_dir/calls"
+case "$1" in
+  remotes) cat "$fixture_dir/rows";;
+  remote-add) exit 0;;
+  install) echo Installed;;
+  *) exit 11;;
+esac
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        binary
     }
 
     #[test]

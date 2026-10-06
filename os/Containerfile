@@ -1478,6 +1478,11 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && dnf clean all && ${FINALIZE_RPMDB} \
     && rm -rf /var/cache/swcatalog
 
+# Flatpak applies predefined remotes to the default system installation offline,
+# importing their embedded GPG key. Its applied-remotes history preserves an
+# owner's disabled or removed default instead of recreating it on each boot.
+COPY os/usr/share/flatpak/remotes.d/flathub.flatpakrepo /usr/share/flatpak/remotes.d/flathub.flatpakrepo
+
 # xdg-desktop-portal — the frontend that proxies sandboxed-app
 # capability requests (FileChooser, ScreenCast, Camera) to our
 # Tilo backend (Sandbox Phase 4.3).

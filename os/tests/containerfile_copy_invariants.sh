@@ -118,7 +118,8 @@ containerfile="$repo/os/Containerfile"
 # Cisco requires the complete OpenH264 binary license notice in a licensing
 # information location. Only that text is added to extension-files; Cisco
 # binaries remain separately downloaded by opted-in devices.
-expected_contract=37864ff82a6627989e4520842138fb72a55530846ceb93c93021f05b048d00f4
+# The offline, signed Flathub descriptor is the one additional payload row.
+expected_contract=574499b721f83b97f1d4ed8e665e0b09800f54982cffebb38f32aa2a601c13a1
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -163,8 +164,9 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # Redeclaring RPMS_REF before the first snapshot install, for the same reason,
 # adds one more (154).
 # NetworkManager's Wake-on-LAN drop-in adds one COPY (155).
-[ "$instructions" -le 155 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 155)" >&2
+# The offline predefined Flathub descriptor adds one reviewed COPY (156).
+[ "$instructions" -le 156 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 156)" >&2
   exit 1
 }
 

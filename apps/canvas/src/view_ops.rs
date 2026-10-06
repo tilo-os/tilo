@@ -1027,6 +1027,7 @@ fn layer_entry(art: &Artwork, layer: &Layer) -> Value {
     let mut entry = json!({
         "id": layer.id,
         "name": layer.name,
+        "group": layer.group,
         "medium": if layer.medium.is_empty() { "plain" } else { layer.medium.as_str() },
         "marks": art.marks_of(&layer.id).count(),
     });
@@ -1260,6 +1261,7 @@ fn mark_fields(old: &Mark, new: &Mark) -> Vec<String> {
 fn layer_fields(old: &Layer, new: &Layer) -> Vec<String> {
     [
         (old.name != new.name, "name"),
+        (old.group != new.group, "group"),
         (old.order != new.order, "stacking"),
         (old.medium != new.medium, "medium"),
         (old.opacity.to_bits() != new.opacity.to_bits(), "opacity"),

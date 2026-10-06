@@ -62,11 +62,14 @@ impl ImageCache {
                 px.swap(0, 2);
             }
         }
+        // Knowing an image is opaque lets a move of it be a move of pixels;
+        // one pass when the image is first seen.
+        let opaque = data.chunks_exact(4).all(|px| px[3] == u8::MAX);
         let pixmap = Arc::new(Pixmap::from_parts(
             data,
             width,
             height,
-            PixelMetadata::new(image.alpha_type, true),
+            PixelMetadata::new(image.alpha_type, !opaque),
         ));
         self.entries.insert(key, (pixmap.clone(), frame));
         Some(pixmap)

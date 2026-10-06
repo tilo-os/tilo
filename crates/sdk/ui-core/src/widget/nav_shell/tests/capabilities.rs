@@ -625,6 +625,7 @@ fn typed_access_controls_and_the_filter_reach_the_apps_widgets() {
         inner: Probe {
             id: "overview",
             deadline: None,
+            animating: false,
             rect: Rect::ZERO,
             events: SharedRc::new(Cell::new(0)),
         },
