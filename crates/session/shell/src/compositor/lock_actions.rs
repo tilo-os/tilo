@@ -100,7 +100,7 @@ pub(super) fn dispatch(
                     },
                     None => Response::Err {
                         code: "invalid_arguments".into(),
-                        message: "A password is required".into(),
+                        message: crate::shell::i18n::t("lock-screen-enter-password"),
                     },
                 },
             })
