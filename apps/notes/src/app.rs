@@ -54,9 +54,8 @@ thread_local! {
 }
 
 /// Test seam: keep the shell out of the tree the window offers its History
-/// control to, so the window draws its own History bar instead. A headless
-/// component host opens History from that bar; it does not serve a click on
-/// the shell's glyph.
+/// control to. The published host History door remains available without
+/// adding a second toolbar; the component host can invoke that door directly.
 #[doc(hidden)]
 pub fn present_history_in_shell_for_test(present: bool) {
     SHELL_PRESENTS_HISTORY.set(present);

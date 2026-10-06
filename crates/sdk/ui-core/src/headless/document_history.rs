@@ -971,9 +971,9 @@ mod tests {
     }
 
     /// A modal is presented in the window's top layer: its scrim dims the
-    /// History bar too, not only the pane the dialog is mounted in.
+    /// top of app content too, not only the pane the dialog is mounted in.
     #[test]
-    fn a_modal_scrim_covers_the_history_bar() {
+    fn a_modal_scrim_covers_the_top_of_app_content() {
         fn bar_pixel(open: bool) -> [u8; 4] {
             let body = crate::widget::Column::new()
                 .push(Box::new(crate::widget::Text::new("Draft")))
@@ -995,7 +995,7 @@ mod tests {
             driver.enable_document_history_chrome();
             driver.relayout();
             let rgba = driver.render_rgba();
-            // Inside the History bar, clear of its button.
+            // At the top of app content, outside the centered dialog.
             let (x, y) = (880_usize, 8_usize);
             let at = (y * 900 + x) * 4;
             [rgba[at], rgba[at + 1], rgba[at + 2], rgba[at + 3]]
@@ -1004,7 +1004,7 @@ mod tests {
         let dimmed = bar_pixel(true);
         assert!(
             u16::from(dimmed[0]) + 20 < u16::from(plain[0]),
-            "the History bar is under the scrim: {plain:?} -> {dimmed:?}"
+            "the top of app content is under the scrim: {plain:?} -> {dimmed:?}"
         );
     }
 
@@ -1042,6 +1042,17 @@ mod tests {
         driver.relayout();
 
         let targets = driver.targets();
+        assert_eq!(
+            driver
+                .a11y_nodes()
+                .into_iter()
+                .filter(|(_, node)| {
+                    node.label() == Some("History") && node.role() == accesskit::Role::Button
+                })
+                .count(),
+            1,
+            "one integrated History button"
+        );
         assert!(
             !targets.contains_key(crate::standalone_history_host::BAR_BUTTON_ID),
             "the window draws no History bar above a header row"
@@ -1073,18 +1084,28 @@ mod tests {
         assert_eq!(history_toggled(&driver), Some(accesskit::Toggled::False));
     }
 
-    /// An app without a header row keeps the window's bar, with the same one
-    /// glyph at its trailing edge.
+    /// The host door remains available without adding a second app header.
     #[test]
-    fn an_app_without_a_header_row_gets_the_glyph_in_the_window_bar() {
+    fn an_app_without_a_history_slot_starts_at_zero_and_opens_the_published_door() {
         let (mut driver, _, _) = fixture();
         driver.relayout();
-        let control = driver.targets()[crate::standalone_history_host::BAR_BUTTON_ID];
-        assert!(control.x1 > 1200.0 - 24.0, "trailing: {control:?}");
         assert!(
-            control.width() <= control.height() + 1.0,
-            "an icon, not a labelled button: {control:?}"
+            !driver
+                .targets()
+                .contains_key(crate::standalone_history_host::BAR_BUTTON_ID)
         );
+        assert_eq!(
+            driver.targets()["app-operation"].y0.total_cmp(&0.0),
+            std::cmp::Ordering::Equal
+        );
+        assert!(driver.history_layout.unwrap().toolbar.is_none());
+        let open = open_address();
+        let action = crate::accesskit_bridge::resource_action_node_id(&open.resource, &open.action);
+        driver
+            .perform_a11y_action(action, &crate::a11y::Action::Activate)
+            .unwrap();
+        assert!(driver.document_history.is_open());
+        assert!(driver.targets().contains_key("standalone-history"));
     }
 
     fn open_address() -> tilo_actions::ActionAddress {
@@ -1132,7 +1153,7 @@ mod tests {
             assert_eq!(json["root"]["test_id"], "app-operation");
             assert!(json["root"]["children"].as_array().unwrap().is_empty());
             let visible = serde_json::to_string(&json["presentation"]).unwrap();
-            assert!(visible.contains("standalone-history-open"));
+            assert!(!visible.contains("standalone-history-open"));
             assert!(visible.contains("standalone-history-close"));
             assert!(
                 !visible.contains("app-operation"),
@@ -1153,9 +1174,21 @@ mod tests {
                 .into_iter()
                 .map(|resource| resource.id)
                 .collect();
-            assert!(driver.targets()["standalone-history-open"].width() > 0.0);
-            assert!(driver.targets()["standalone-history-open"].height() > 0.0);
-            assert!(driver.a11y_node_named("History").is_some());
+            assert!(!driver.targets().contains_key("standalone-history-open"));
+            assert_eq!(
+                driver.targets()["app-operation"].y0.total_cmp(&0.0),
+                std::cmp::Ordering::Equal
+            );
+            assert!(
+                driver
+                    .local_history_resources()
+                    .unwrap()
+                    .iter()
+                    .any(|resource| {
+                        resource.id.as_str() == open_address().resource
+                            && resource.actions.iter().any(|action| action.id == "open")
+                    })
+            );
             let open = open_address();
             let accesskit_open =
                 crate::accesskit_bridge::resource_action_node_id(&open.resource, &open.action);
@@ -1201,19 +1234,18 @@ mod tests {
         }
         // phase: headless_history_retained_nodes_survive_host_move
         {
-            let (driver, _, _) = fixture();
-            let original = driver.node_map[&driver.history_layout.unwrap().toolbar.unwrap()];
+            let (mut driver, _, _) = fixture();
+            driver
+                .invoke_local_history_action(&open_address(), None)
+                .unwrap();
+            let original = driver.node_map[&driver.history_layout.unwrap().pane.unwrap()];
             let mut moved = Box::new(driver);
-            let actual = std::ptr::from_mut(
-                moved.document_history.toolbar_mut().unwrap() as &mut dyn Widget
-            );
+            let actual =
+                std::ptr::from_mut(moved.document_history.pane_mut().unwrap() as &mut dyn Widget);
             assert!(
                 std::ptr::addr_eq(original, actual),
                 "admission still names the actually retained widget"
             );
-            moved
-                .perform_named("standalone-history-open", &crate::a11y::Action::Activate)
-                .unwrap();
             assert!(moved.document_history.is_open());
             moved
                 .perform_named("standalone-history-close", &crate::a11y::Action::Activate)
@@ -1239,7 +1271,9 @@ mod tests {
             driver
                 .perform_named("app-operation", &crate::a11y::Action::Focus)
                 .unwrap();
-            driver.click_named("standalone-history-open").unwrap();
+            driver
+                .invoke_local_history_action(&open_address(), None)
+                .unwrap();
             assert!(driver.targets().contains_key("app-operation"));
             driver.resize((640, 700)).unwrap();
             driver.presentation(|root, node| paired(root, node, &driver.taffy));
@@ -1299,7 +1333,9 @@ mod tests {
                 );
                 driver.enable_document_history_chrome();
                 observed.enqueue("run");
-                driver.click_named("standalone-history-open").unwrap();
+                driver
+                    .invoke_local_history_action(&open_address(), None)
+                    .unwrap();
                 assert!(driver.document_history.is_open());
                 assert!(driver.wait_until(tilo_test_env::hang_bound(), |driver| {
                     driver.pending_control_invocations.is_empty()
@@ -1320,9 +1356,17 @@ mod tests {
                 .unwrap();
             let pending = driver.state.doc.pending_ops();
             assert!(pending > 0);
-            driver.click_named("standalone-history-open").unwrap();
+            driver
+                .invoke_local_history_action(&open_address(), None)
+                .unwrap();
             assert!(driver.document_history.is_open());
             assert_eq!(driver.state.doc.pending_ops(), pending);
+            driver.click_named("standalone-history-close").unwrap();
+            assert!(!driver.document_history.is_open());
+            assert_eq!(driver.state.doc.pending_ops(), pending);
+            driver
+                .invoke_local_history_action(&open_address(), None)
+                .unwrap();
             driver.key("Tab");
             assert_eq!(driver.state.doc.pending_ops(), pending);
             driver
@@ -1331,7 +1375,7 @@ mod tests {
             assert!(!driver.document_history.is_open());
             assert_eq!(driver.state.doc.pending_ops(), pending);
             driver
-                .perform_named("standalone-history-open", &crate::a11y::Action::Activate)
+                .invoke_local_history_action(&open_address(), None)
                 .unwrap();
             assert!(driver.document_history.is_open());
             assert_eq!(driver.state.doc.pending_ops(), pending);

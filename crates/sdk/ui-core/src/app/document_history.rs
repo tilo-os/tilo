@@ -532,6 +532,9 @@ impl App {
         if self.history_chrome_enabled {
             self.document_history
                 .place_in_app_header(self.root_widget.as_mut());
+            // Shared services belong in the existing header or the platform
+            // action door; never add a second toolbar above the app.
+            self.document_history.remove_in_window_controls();
         }
         let app = self.root_widget.build_layout(
             &mut self.layout.taffy,
@@ -1176,7 +1179,18 @@ mod tests {
                 crate::standalone_history_host::HISTORY_RESOURCE,
                 "open",
             );
-            assert!(!app.action_ui_routes(&open).is_empty());
+            assert!(
+                app.action_ui_routes(&open).is_empty(),
+                "no generic in-window toolbar"
+            );
+            assert!(app.history_layout.unwrap().toolbar.is_none());
+            assert_eq!(
+                app.root_widget.get_rect().y0.total_cmp(&0.0),
+                std::cmp::Ordering::Equal
+            );
+            native_open_history(&mut app);
+            layout(&mut app, 1024);
+            assert!(app.document_history.is_open());
         }
 
         // Case `host_owned_chrome_draws_no_history_button_but_keeps_history`:
@@ -1376,6 +1390,16 @@ mod tests {
         }
     }
 
+    fn native_open_history(app: &mut App) {
+        let address = tilo_actions::ActionAddress::new(
+            crate::standalone_history_host::HISTORY_RESOURCE,
+            "open",
+        );
+        app.invoke_history_address_local(&address, None)
+            .expect("published History door")
+            .expect("admitted History open");
+    }
+
     fn native_click(app: &mut App, id: &str) {
         let node = *app
             .layout
@@ -1481,7 +1505,7 @@ mod tests {
 
         let mut app = reopen(dir.path());
         assert_eq!(title(&app).as_deref(), Some("v3"));
-        native_click(&mut app, "standalone-history-open");
+        native_open_history(&mut app);
         layout(&mut app, 1200);
         app.select_document_history(&[versions[0]]).unwrap();
         layout(&mut app, 1200);
@@ -1595,7 +1619,7 @@ mod tests {
             app.state.doc.put(ROOT, "title", "pending typing").unwrap();
             let pending = app.state.doc.pending_ops();
             assert!(pending > 0);
-            native_click(&mut app, "standalone-history-open");
+            native_open_history(&mut app);
             assert!(app.document_history.is_open());
             assert_eq!(app.state.doc.pending_ops(), pending);
             layout(&mut app, 1200);
@@ -1624,8 +1648,8 @@ mod tests {
             layout(&mut app, 1200);
             app.open_document_history().unwrap();
             layout(&mut app, 1200);
-            let toolbar = app.history_layout.unwrap().toolbar.unwrap();
-            app.set_focused_node(Some(toolbar));
+            let pane = app.history_layout.unwrap().pane.unwrap();
+            app.set_focused_node(Some(pane));
             app.state.doc.put(ROOT, "title", "pending typing").unwrap();
             let pending = app.state.doc.pending_ops();
             let key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab);
@@ -1651,10 +1675,10 @@ mod tests {
             let mut focus = None;
             let history_handled =
                 app.presentation_handle_event(&event, 1.0, &mut handled, &mut focus);
-            assert!(!handled, "toolbar leaves Tab to host navigation");
+            assert!(!handled, "History pane leaves Tab to host navigation");
             assert!(app.focus_tab(false));
             app.finalize_handled_native_event(&event, false, history_handled);
-            assert_ne!(app.focused_node, Some(toolbar));
+            assert_ne!(app.focused_node, Some(pane));
             assert_eq!(app.state.doc.pending_ops(), pending);
         }
 
@@ -1668,29 +1692,23 @@ mod tests {
             app.state.commit_action(None, None);
             app.enable_document_history_chrome();
             app.init_layout();
-            let toolbar = app.history_layout.unwrap().toolbar.unwrap();
-            let admitted = app.layout.node_map[&toolbar];
+            native_open_history(&mut app);
+            layout(&mut app, 1200);
+            let pane = app.history_layout.unwrap().pane.unwrap();
+            let admitted = app.layout.node_map[&pane];
             let mut moved = Box::new(app);
-            let retained = std::ptr::from_mut(
-                moved.document_history.toolbar_mut().unwrap() as &mut dyn Widget
-            );
+            let retained =
+                std::ptr::from_mut(moved.document_history.pane_mut().unwrap() as &mut dyn Widget);
             assert!(
                 std::ptr::addr_eq(admitted, retained),
-                "admitted pointer must still name the actual retained toolbar after App moves"
+                "admitted pointer must still name the actual retained pane after App moves"
             );
-            let handled = moved
-                .dispatch_node(toolbar, |widget, document, path| {
-                    widget.perform_action(
-                        &crate::a11y::Action::Activate,
-                        &mut crate::widget::Edits::lend(document),
-                        path,
-                    )
-                })
-                .unwrap();
-            assert!(handled);
-            assert_eq!(moved.dispatch_history_controls(), 1);
-            assert!(moved.document_history.is_open());
-            // The open pane and its inline children must remain stable too.
+            native_click(&mut moved, "standalone-history-close");
+            assert!(
+                !moved.document_history.is_open(),
+                "retained pane handles a real pointer click"
+            );
+            native_open_history(&mut moved);
             moved.rebuild_structure();
             let pane = moved.history_layout.unwrap().pane.unwrap();
             let admitted_pane = moved.layout.node_map[&pane];

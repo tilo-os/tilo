@@ -23,8 +23,10 @@
 //! modal_dialog::paint_actions(scene, transform, text_renderer, theme, &layout, &spec);
 //! ```
 //!
-//! The sheet is a floating Panel ([`super::floating_surface`]): panel radius,
-//! the blurred material, one soft shadow. Its height follows its content;
+//! On a roomy viewport the sheet is a floating Panel ([`super::floating_surface`]):
+//! panel radius, the blurred material, one soft shadow. On a compact viewport
+//! it is an opaque full-window page with no floating edge. A floating sheet
+//! follows its content height;
 //! its title is a `Title`; its actions are Regular buttons anchored to the
 //! footer in the platform's order. Dialog callbacks are host-supplied
 //! closures and do not flow through the document.
@@ -38,7 +40,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Vec2};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -352,11 +354,22 @@ fn pad(theme: &Theme) -> f64 {
     f64::from(theme.tokens.spacing.s6)
 }
 
+/// A small viewport presents a modal as a page instead of a floating card.
+/// The sheet-width role grows with the theme's UI and text scale; checking
+/// both axes also keeps phone landscape and short viewports usable.
+pub fn uses_full_window(window: Rect, theme: &Theme) -> bool {
+    window.width().min(window.height()) < f64::from(theme.tokens.metrics.panel_width_sheet)
+}
+
 /// Width of the sheet for `max_width` (design pixels) inside `window`,
 /// knowable before any body row is measured. Widths grow with the text
-/// scale, because what fills a sheet is text; the sheet keeps the content
-/// gutter clear of every window edge.
+/// scale, because what fills a sheet is text. A floating sheet keeps the
+/// content gutter clear of every window edge; a compact page fills the window
+/// and keeps that gutter inside its body.
 pub fn card_width(window: Rect, max_width: f64, theme: &Theme) -> f64 {
+    if uses_full_window(window, theme) {
+        return window.width().max(0.0);
+    }
     let scale = f64::from(theme.text_scale);
     let avail = (window.width() - pad(theme) * 2.0).max(0.0);
     (max_width * scale)
@@ -401,6 +414,9 @@ fn title_lines(
 /// taller one takes the whole window inside the gutter: its own content
 /// and footer matter more than the header row it covers.
 fn sheet_room(window: Rect, wanted_h: f64, theme: &Theme) -> Rect {
+    if uses_full_window(window, theme) {
+        return window;
+    }
     let pad = pad(theme);
     let header = f64::from(theme.tokens.metrics.header_height);
     let bottom = (window.y1 - pad).max(window.y0);
@@ -455,14 +471,22 @@ pub fn layout(
     let wanted_h = chrome_h + spec.body_height.max(0.0);
     let room = sheet_room(window, wanted_h, theme);
     let avail_h = room.height();
-    let h = wanted_h.min(avail_h);
+    let h = if uses_full_window(window, theme) {
+        avail_h
+    } else {
+        wanted_h.min(avail_h)
+    };
     // The sheet never grows past the window: a footer nobody can reach is
     // worse than a body that scrolls.
     let body_overflows = wanted_h > avail_h + 0.5;
 
     let c = window.center();
     let top = (c.y - h / 2.0).max(room.y0);
-    let card = Rect::new(c.x - w / 2.0, top, c.x + w / 2.0, top + h);
+    let card = if uses_full_window(window, theme) {
+        window
+    } else {
+        Rect::new(c.x - w / 2.0, top, c.x + w / 2.0, top + h)
+    };
     let title_top = card.y0 + pad;
 
     let close = spec.closable.then(|| {
@@ -641,8 +665,26 @@ pub fn paint_backdrop(
     layout: &ModalLayout,
     spec: &ModalSpec<'_>,
 ) {
-    crate::overlay::scrim::modal(scene, transform, layout.scrim, 1.0, theme);
-    floating_surface::paint(scene, transform, layout.card, theme);
+    if layout.card == layout.scrim {
+        // A full-window modal is the foreground page. It does not sample or
+        // dim the displaced page and has no floating shadow or rounded edge.
+        crate::floating_surface::paint_material(
+            scene,
+            transform,
+            &layout.card,
+            crate::floating_surface::Material::Opaque,
+            theme,
+        );
+    } else {
+        crate::overlay::scrim::behind_panel(
+            scene,
+            transform,
+            layout.scrim,
+            RoundedRect::from_rect(layout.card, floating_surface::radius(theme)),
+            theme,
+        );
+        floating_surface::paint(scene, transform, layout.card, theme);
+    }
 
     if !spec.title.is_empty() {
         let (ink, _) = ink(theme);
