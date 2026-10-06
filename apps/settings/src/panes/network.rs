@@ -1079,10 +1079,13 @@ impl NetworkModel {
         let (sender, receiver) = std::sync::mpsc::channel();
         let service = Arc::clone(&self.service);
         let initial = !self.loaded;
+        let wake = ui::WakeHandle::new();
         let started = std::thread::Builder::new()
             .name("settings-network-read".into())
             .spawn(move || {
-                let _ = sender.send(service.snapshot(initial));
+                if sender.send(service.snapshot(initial)).is_ok() {
+                    wake.wake();
+                }
             });
         match started {
             Ok(_) => self.snapshot = Some(receiver),
@@ -2924,10 +2927,6 @@ impl PaneModel for NetworkModel {
     fn name(&self) -> &'static str {
         "NetworkPane"
     }
-
-    fn busy(&self) -> bool {
-        self.snapshot.is_some() || self.ca_picker.is_some()
-    }
 }
 
 impl NetworkModel {
@@ -3102,6 +3101,97 @@ mod tests {
         Ok(())
     }
 
+    struct SnapshotGate {
+        started: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    }
+
+    struct ReleaseSnapshot(Option<std::sync::mpsc::Sender<()>>);
+
+    impl Drop for ReleaseSnapshot {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+
+    fn pending_network() -> Result<(Shared<NetworkModel>, ReleaseSnapshot), String> {
+        let (started, starts) = std::sync::mpsc::channel();
+        let (release, releases) = std::sync::mpsc::channel();
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.snapshot_gate.lock().unwrap() = Some(SnapshotGate {
+            started,
+            release: releases,
+        });
+        let profile = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let mut network =
+            NetworkModel::with_service(PaneCx::in_file(profile.path().join("settings.json")), fake);
+        let release = ReleaseSnapshot(Some(release));
+        network.start_snapshot();
+        starts
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .map_err(|error| format!("the actual network read must start: {error}"))?;
+        Ok((Rc::new(std::cell::RefCell::new(network)), release))
+    }
+
+    #[test]
+    fn pending_network_read_does_not_animate_the_pane() -> Result<(), String> {
+        use crate::panes::model::ModelPane;
+        use ui::headless::{Framed, viewport};
+
+        let (network, _release) = pending_network()?;
+        let pane = ModelPane::new(network);
+        let app = Framed::new(
+            ui::State::new(),
+            pane,
+            viewport((1200.0, 1800.0)),
+            ui::Theme::dark(),
+        );
+        if Framed::harness(&app).frame_schedule().needs_animation_frame {
+            return Err(
+                "waiting for a network read must not request continuous animation frames".into(),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn completed_network_read_wakes_the_owner_and_updates_the_pane() -> Result<(), String> {
+        use crate::panes::model::ModelPane;
+        use ui::headless::{Framed, viewport};
+
+        let mut scope = ui::WakeScope::new();
+        let (woke, wakes) = std::sync::mpsc::channel();
+        scope
+            .bind(move |_| {
+                let _ = woke.send(());
+            })
+            .map_err(|error| error.to_string())?;
+        let _entry = scope.enter();
+        let (network, release) = pending_network()?;
+        let pane = ModelPane::new(Rc::clone(&network));
+        let mut app = Framed::new(
+            ui::State::new(),
+            pane,
+            viewport((1200.0, 1800.0)),
+            ui::Theme::dark(),
+        );
+        drop(release);
+        wakes
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .map_err(|error| {
+                format!("a completed network read must wake its real owner: {error}")
+            })?;
+        Framed::harness_mut(&mut app)
+            .relayout_at(viewport((1200.0, 1800.0)))
+            .map_err(|error| error.to_string())?;
+        if !network.borrow().loaded {
+            return Err("the awakened production pane must adopt its completed snapshot".into());
+        }
+        Ok(())
+    }
+
     /// A device whose `NetworkManager` answers from what the test sets,
     /// recording each change.
     #[derive(Default)]
@@ -3114,10 +3204,18 @@ mod tests {
         continuity: Mutex<Vec<WifiContinuityCommand>>,
         vpns: Mutex<Vec<VpnInfo>>,
         profiles: Mutex<Vec<SavedNetworkProfile>>,
+        snapshot_gate: Mutex<Option<SnapshotGate>>,
     }
 
     impl NetworkService for FakeNetwork {
         fn snapshot(&self, _initial: bool) -> NetworkSnapshot {
+            let gate = self.snapshot_gate.lock().unwrap().take();
+            if let Some(gate) = gate {
+                gate.started.send(()).unwrap();
+                gate.release
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+            }
             let unreadable = self.unreadable.lock().unwrap().clone();
             if let Some(reason) = unreadable {
                 fn failed<T>(reason: &str) -> Result<T, String> {
