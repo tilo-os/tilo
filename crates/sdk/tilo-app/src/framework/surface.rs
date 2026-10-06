@@ -88,6 +88,23 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
     /// The resource state to show.
     fn present(&mut self, state: &Rc<R::State>);
 
+    /// The latest bounded query from the platform's canonical search source.
+    /// Runs on the UI thread before sync, coalescing queries between frames.
+    /// A surface may refresh remote results through its attached jobs; expose
+    /// their entries through `search_entries`, rather than another provider.
+    /// Never called for a History view and lends no document.
+    fn search_query(&mut self, query: &ui_core::search::SearchQuery) {
+        let _ = query;
+    }
+
+    /// Consume a request to retry this window's failed record save, once.
+    /// The framework's record owner performs the retry after releasing its
+    /// document loan; the surface never writes or flushes storage itself.
+    /// History surfaces cannot request a retry.
+    fn take_save_retry(&mut self) -> bool {
+        false
+    }
+
     /// A pending device-local request for the hosting shell, consumed once.
     /// The host answers it through its permission flow; this callback lends no document.
     fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent> {
@@ -246,7 +263,41 @@ pub(crate) trait SurfacePublication<R: Resource> {
     fn live_row(&self, id: &str) -> Option<LiveRow>;
     fn row_declarations(&self, row: &str) -> Vec<ActionDecl<R>>;
     fn search_entries(&self) -> Vec<SearchEntry>;
+    fn search_queries(&self) -> SearchQueries;
     fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent>;
+    fn take_save_retry(&mut self) -> bool;
+}
+
+/// Coalesced query delivery owned by the canonical provider and surface host.
+#[derive(Clone, Default)]
+pub(crate) struct SearchQueries(Rc<RefCell<QueryDelivery>>);
+
+#[derive(Default)]
+struct QueryDelivery {
+    last: Option<ui_core::search::SearchQuery>,
+    pending: Option<ui_core::search::SearchQuery>,
+}
+
+impl SearchQueries {
+    pub(crate) fn submit(&self, query: &ui_core::search::SearchQuery) {
+        if query
+            .text()
+            .chars()
+            .nth(ui_core::search::MAX_SEARCH_QUERY_SCALARS)
+            .is_some()
+        {
+            return;
+        }
+        let mut delivery = self.0.borrow_mut();
+        if delivery.last.as_ref() != Some(query) {
+            delivery.last = Some(query.clone());
+            delivery.pending = Some(query.clone());
+        }
+    }
+
+    fn take(&self) -> Option<ui_core::search::SearchQuery> {
+        self.0.borrow_mut().pending.take()
+    }
 }
 
 /// What a surface receives when attached.
@@ -338,6 +389,12 @@ impl<R: Resource> SurfaceCx<R> {
     /// past version.
     pub fn me(&self) -> Option<&str> {
         self.dispatch.me()
+    }
+
+    /// Whether the surface shows a past version in History mode
+    /// ([`ViewCx::is_past`](super::ViewCx::is_past)).
+    pub fn is_past(&self) -> bool {
+        self.dispatch.is_past()
     }
 
     /// Whether the record's latest edits are durable, as
@@ -574,6 +631,7 @@ impl From<tilo_resource::Place> for ResourceSelection {
 #[repr(C)]
 pub(crate) struct SurfaceHost<R: Resource, S, E> {
     surface: S,
+    search_queries: SearchQueries,
     live: Live<R>,
     presented: u64,
     dispatch: Dispatcher<R>,
@@ -620,6 +678,7 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceHost<R, 
             statuses,
             jobs: OwnedJobs::new(jobs),
             surface,
+            search_queries: SearchQueries::default(),
         }
     }
 
@@ -673,6 +732,11 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
         let staged = self.staging.borrow_mut().take();
         if let Some(scenario) = staged {
             self.surface.stage(scenario.as_deref());
+        }
+        if let Some(query) = self.search_queries.take()
+            && self.effects.is_some()
+        {
+            self.surface.search_query(&query);
         }
         self.jobs.poll(&mut self.surface);
         self.surface.sync(state, path);
@@ -755,6 +819,10 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
 impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfacePublication<R>
     for SurfaceHost<R, S, E>
 {
+    fn take_save_retry(&mut self) -> bool {
+        self.effects.is_some() && self.surface.take_save_retry()
+    }
+
     fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent> {
         self.surface.take_host_intent()
     }
@@ -781,6 +849,10 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfacePublicat
 
     fn search_entries(&self) -> Vec<SearchEntry> {
         self.surface.search_entries()
+    }
+
+    fn search_queries(&self) -> SearchQueries {
+        self.search_queries.clone()
     }
 }
 

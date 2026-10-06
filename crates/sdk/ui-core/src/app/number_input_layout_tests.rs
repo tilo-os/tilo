@@ -47,7 +47,11 @@ fn number_input_value_change_resizes_retained_control_on_same_viewport_app_frame
         );
         let value = app.root_widget.accessibility().unwrap().value.unwrap();
         assert_eq!(value, "123456789012345 min");
-        let (text_width, _) = app.text_renderer.measure(&value, 16.0, None);
+        let (text_width, _) = app.text_renderer.measure(
+            &value,
+            crate::tokens::typography::stock().size(crate::tokens::TextRole::Body),
+            None,
+        );
         assert!(
             after.width()
                 >= f64::from(text_width)

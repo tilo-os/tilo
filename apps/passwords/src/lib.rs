@@ -10,12 +10,18 @@ use accounts::{
 use std::collections::HashMap;
 
 pub mod actions;
+mod demo;
+mod list_pane;
+mod pages;
 pub mod resource;
-mod showcase;
+mod search;
 mod transfer;
+mod vault;
+mod window;
+pub use crate::vault::Screen;
 pub use actions::PasswordsEffect;
 pub use resource::{Passwords, PasswordsShell};
-pub use showcase::PasswordsSurface;
+pub use window::PasswordsSurface;
 
 /// The items of this device's vault, or none for a window that must not
 /// open it (a past version: the vault keeps no history).
@@ -33,48 +39,51 @@ pub struct VaultHealth {
     pub older_than_year: usize,
 }
 
-pub(crate) fn analyze_health(items: &[SecretItem]) -> VaultHealth {
-    let candidates: Vec<&SecretItem> = items
-        .iter()
-        .filter(|item| !item.password.is_empty())
-        .collect();
+/// Whether an item holds a password a person chose: a login or a Wi-Fi
+/// key, not an issued API key or licence code.
+fn is_password(item: &SecretItem) -> bool {
+    matches!(
+        item.kind,
+        accounts::SecretItemKind::Login | accounts::SecretItemKind::Wifi
+    ) && !item.password.is_empty()
+}
+
+/// Per-item facts of the password review: which passwords are shared, weak
+/// or old. Only facts the local vault can prove; no breach claims.
+pub(crate) fn findings(items: &[SecretItem]) -> Vec<vault::Finding> {
+    let candidates: Vec<&SecretItem> = items.iter().filter(|item| is_password(item)).collect();
     let mut frequencies = HashMap::<&str, usize>::new();
     for password in candidates.iter().map(|item| item.password.as_str()) {
         let count = frequencies.entry(password).or_default();
         *count = count.saturating_add(1);
     }
-    let reused = candidates
-        .iter()
-        .filter(|item| {
-            frequencies
-                .get(item.password.as_str())
-                .copied()
-                .unwrap_or(0)
-                > 1
-        })
-        .count();
-    let weak = candidates
-        .iter()
-        .filter(|item| {
-            let password = item.password.as_str();
-            password.len() < 12
-                || !password.chars().any(char::is_uppercase)
-                || !password.chars().any(char::is_lowercase)
-                || !password.chars().any(|character| character.is_ascii_digit())
-        })
-        .count();
-    let now = ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs());
+    let now = vault::now_unix();
     let one_year = 365 * 24 * 60 * 60;
+    candidates
+        .iter()
+        .map(|item| {
+            let password = item.password.as_str();
+            vault::Finding {
+                id: item.id.clone(),
+                reused: frequencies.get(password).copied().unwrap_or(0) > 1,
+                weak: password.len() < 12
+                    || !password.chars().any(char::is_uppercase)
+                    || !password.chars().any(char::is_lowercase)
+                    || !password.chars().any(|character| character.is_ascii_digit()),
+                old: now.saturating_sub(item.updated_unix) > one_year,
+            }
+        })
+        .filter(|finding| finding.reused || finding.weak || finding.old)
+        .collect()
+}
+
+pub(crate) fn analyze_health(items: &[SecretItem]) -> VaultHealth {
+    let found = findings(items);
     VaultHealth {
-        total: candidates.len(),
-        reused,
-        weak,
-        older_than_year: candidates
-            .iter()
-            .filter(|item| now.saturating_sub(item.updated_unix) > one_year)
-            .count(),
+        total: items.iter().filter(|item| is_password(item)).count(),
+        reused: found.iter().filter(|finding| finding.reused).count(),
+        weak: found.iter().filter(|finding| finding.weak).count(),
+        older_than_year: found.iter().filter(|finding| finding.old).count(),
     }
 }
 

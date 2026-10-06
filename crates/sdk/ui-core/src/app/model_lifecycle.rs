@@ -91,9 +91,9 @@ impl super::App {
         // A completion produced below is polled on the following host pass.
         let invocations = self.poll_model_invocations();
         let record = self.record_tick();
-        // An unbound worker scope retains wakes that no event loop consumed.
-        // Unobservable wakes (bound sink, detached or closed scope) count as
-        // model-dirty, which keeps the previous forced behaviour there.
+        // The owner retains wake flags even when its sink schedules a frame.
+        // A presentation-only frame must not force model synchronization.
+        // Detached or closed scopes remain conservatively model-dirty.
         let wakes = self.take_hosted_wakes();
         let authority_changed = self.refresh_hosted_authority();
         let in_flight = !self.actions.directed_invocations.is_empty()
@@ -164,7 +164,7 @@ impl super::App {
     fn take_hosted_wakes(&self) -> Option<(bool, bool)> {
         self.wake_scope
             .as_ref()
-            .and_then(crate::wake::WakeScope::take_unbound)
+            .and_then(crate::wake::WakeScope::take_pending)
     }
 
     /// Returns true when policy meaning changed since the previous hosted pump

@@ -394,6 +394,12 @@ impl ResourceApp for TypstEditorShell {
     const ID: &'static str = "so.tilo.typst-editor";
     const TITLE: &'static str = "Typst";
     const ICON: Option<&'static str> = Some("typst-editor");
+    /// The narrow-window scenarios are captured at a phone width.
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        scenario
+            .and_then(|name| matches!(name, "preview" | "documents").then_some((520, 820)))
+            .unwrap_or((1280, 800))
+    }
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<TypstEditor>) -> Element {
@@ -435,9 +441,10 @@ impl ResourceApp for TypstEditorShell {
     fn scenarios() -> &'static [&'static str] {
         &[
             "preview",
-            "menu",
+            "documents",
+            "pages",
             "problems",
-            "scrolled",
+            "long-line",
             "errors",
             "editor-select",
             "preview-zoom",
@@ -446,10 +453,6 @@ impl ResourceApp for TypstEditorShell {
             "stale",
             "status",
         ]
-    }
-
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
     }
 
     fn fixture(fixture: &mut Fixture<TypstEditor>) {

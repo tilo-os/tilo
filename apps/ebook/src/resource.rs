@@ -93,12 +93,9 @@ impl Resource for Ebook {
         state
             .entries
             .iter()
-            .map(|entry| SearchEntry {
-                anchor: Some(format!("ebook.book:{}", entry.id)),
-                title: entry.title.clone(),
-                text: entry.author.clone(),
-                action: None,
-                ..Default::default()
+            .map(|entry| {
+                SearchEntry::new(entry.title.clone(), entry.author.clone())
+                    .anchored(format!("ebook.book:{}", entry.id))
             })
             .collect()
     }

@@ -8,8 +8,8 @@ use ui::launch::LaunchError;
 use ui::record::RecordKind;
 use ui::theme::Theme;
 use ui::ui_graph::{
-    UiBuildContext, UiButtonStyle, UiDocument, UiDocumentExt as _, UiNode, UiTextRole,
-    UiTextSource, UiValues,
+    UiBuildContext, UiButtonRole, UiDocument, UiDocumentExt as _, UiNode, UiTextRole, UiTextSource,
+    UiValues,
 };
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
@@ -262,7 +262,6 @@ fn surface() -> UiDocument {
                     path: "title".into(),
                 },
                 role: UiTextRole::Title,
-                size: None,
             },
             UiNode::TextInput {
                 id: "title-input".into(),
@@ -283,7 +282,7 @@ fn surface() -> UiDocument {
                 click_value: Some("yes".into()),
                 navigate: None,
                 enabled: true,
-                style: UiButtonStyle::Primary,
+                role: UiButtonRole::Primary,
             },
         ],
         gap: Some(8.0),

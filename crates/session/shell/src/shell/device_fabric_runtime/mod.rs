@@ -7031,13 +7031,13 @@ mod tests {
         // A winner from another device reaches this process's readers and the
         // copy the compositor boots from and apps read.
         apply_roaming_settings(&BTreeMap::from([(
-            "tilo.appearance.theme".to_string(),
-            Value::from("Light"),
+            "tilo.appearance.mode".to_string(),
+            Value::from("light"),
         )]));
-        assert_eq!(settings_store::load_section("appearance")["theme"], "Light");
+        assert_eq!(settings_store::load_section("appearance")["mode"], "light");
         assert_eq!(
-            settings_store::load_section_at(&paths.copy, "appearance")["theme"],
-            "Light"
+            settings_store::load_section_at(&paths.copy, "appearance")["mode"],
+            "light"
         );
 
         // Settings, in its own process, writes the copy; the fabric publishes
@@ -7045,7 +7045,7 @@ mod tests {
         settings_store::update_section_at(
             &paths.copy,
             "appearance",
-            serde_json::json!({"theme": "Dark", "wallpaper_path": "/home/ada/sea.png"})
+            serde_json::json!({"mode": "dark", "wallpaper_path": "/home/ada/sea.png"})
                 .as_object()
                 .unwrap()
                 .clone(),
@@ -7053,7 +7053,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             roaming_setting_values(),
-            BTreeMap::from([("tilo.appearance.theme".to_string(), Value::from("Dark"))])
+            BTreeMap::from([("tilo.appearance.mode".to_string(), Value::from("dark"))])
         );
 
         // A restarted session reads the same records.
@@ -7062,14 +7062,14 @@ mod tests {
         open();
         assert_eq!(
             settings_store::load_section("appearance"),
-            serde_json::json!({"theme": "Dark", "wallpaper_path": "/home/ada/sea.png"})
+            serde_json::json!({"mode": "dark", "wallpaper_path": "/home/ada/sea.png"})
                 .as_object()
                 .unwrap()
                 .clone()
         );
         assert_eq!(
-            settings_store::load_section_at(&paths.copy, "appearance")["theme"],
-            "Dark"
+            settings_store::load_section_at(&paths.copy, "appearance")["mode"],
+            "dark"
         );
         settings_store::install_source(None);
     }
@@ -7132,7 +7132,7 @@ mod tests {
             clipboard: Vec::new(),
             settings: setting
                 .map(|value| RoamingSetting {
-                    key: "tilo.appearance.theme".into(),
+                    key: "tilo.appearance.mode".into(),
                     value,
                     stamp,
                 })
@@ -7734,7 +7734,7 @@ mod tests {
                 media: Vec::new(),
                 clipboard: Vec::new(),
                 settings: vec![RoamingSetting {
-                    key: "tilo.appearance.theme".into(),
+                    key: "tilo.appearance.mode".into(),
                     value: Value::Bool(false),
                     stamp: old_stamp,
                 }],
@@ -7745,10 +7745,10 @@ mod tests {
             };
             let next_stamp = FabricStamp { counter: 9, device };
             let applied_remote =
-                BTreeMap::from([("tilo.appearance.theme".into(), Value::Bool(true))]);
+                BTreeMap::from([("tilo.appearance.mode".into(), Value::Bool(true))]);
 
             let received = reconcile_roaming_settings(
-                BTreeMap::from([("tilo.appearance.theme".into(), Value::Bool(true))]),
+                BTreeMap::from([("tilo.appearance.mode".into(), Value::Bool(true))]),
                 Some(&previous),
                 &applied_remote,
                 &next_stamp,
@@ -7756,7 +7756,7 @@ mod tests {
             assert_eq!(received, previous.settings);
 
             let edited = reconcile_roaming_settings(
-                BTreeMap::from([("tilo.appearance.theme".into(), Value::Bool(false))]),
+                BTreeMap::from([("tilo.appearance.mode".into(), Value::Bool(false))]),
                 Some(&previous),
                 &applied_remote,
                 &next_stamp,
@@ -7766,7 +7766,7 @@ mod tests {
 
             previous.settings.clear();
             let bootstrap = reconcile_roaming_settings(
-                BTreeMap::from([("tilo.appearance.theme".into(), Value::Bool(true))]),
+                BTreeMap::from([("tilo.appearance.mode".into(), Value::Bool(true))]),
                 Some(&previous),
                 &applied_remote,
                 &next_stamp,
@@ -7989,7 +7989,7 @@ mod tests {
             let document = serde_json::json!({
                 "locale": {"currency": "EUR", "time_format": "H24"},
                 "appearance": {
-                    "theme": "Nord",
+                    "mode": "light",
                     "studio": {"id": "aurora"},
                     "wallpaper_path": "/home/person/private.png"
                 },
@@ -8014,7 +8014,7 @@ mod tests {
             for key in [
                 "tilo.locale.currency",
                 "tilo.locale.time_format",
-                "tilo.appearance.theme",
+                "tilo.appearance.mode",
                 "tilo.appearance.studio",
                 "tilo.input.keyboard_layouts",
                 "tilo.audio.mono_output",
