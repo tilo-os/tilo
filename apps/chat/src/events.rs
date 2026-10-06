@@ -973,7 +973,7 @@ impl ChatApp {
                 self.history_anchor = anchor;
             }
             Hit::EmojiChoice(e) => self.on_hit_emoji_choice(&e, doc),
-            Hit::FocusMain if self.focused_composer_can_edit() => {
+            Hit::FocusMain if self.main_composer_can_edit() => {
                 self.focus = Focus::Main;
                 self.set_composer_focus();
             }
@@ -3152,6 +3152,36 @@ mod tests {
         settle_agent_submissions(&mut app);
         assert_one_agent_message(&host, "Message remains a Chat action");
         assert_eq!(app.composer_main.private_plain().as_deref(), Some(""));
+    }
+
+    #[test]
+    fn agent_main_composer_recovers_focus_from_a_stale_thread_focus() {
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        app.room_names
+            .insert("agent:scribe".into(), "Scribe".into());
+        app.reload(&doc);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        app.focus = Focus::Thread;
+        render_frame(&mut app, 1280.0, 800.0);
+        assert_eq!(count_hits(&app, |hit| matches!(hit, Hit::FocusMain)), 1);
+
+        app.on_hit(Hit::FocusMain, &mut ui::widget::Edits::lend(&mut doc));
+        type_str(&mut app, &mut doc, "One exact draft");
+        assert!(matches!(app.focus, Focus::Main));
+        assert_eq!(
+            app.composer_main.private_plain().as_deref(),
+            Some("One exact draft")
+        );
+        assert!(
+            app.thread_open.is_none(),
+            "Agent chat never creates a thread"
+        );
     }
 
     #[test]

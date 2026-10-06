@@ -2244,12 +2244,15 @@ impl ChatApp {
     }
 
     pub(crate) fn focused_composer_can_edit(&self) -> bool {
-        (matches!(self.focus, Focus::Main)
-            && self
-                .direct_agent
-                .as_ref()
-                .is_some_and(|_| self.direct_agent_intent_allowed(self.direct_agent_intent())))
+        (matches!(self.focus, Focus::Main) && self.main_composer_can_edit())
             || (self.direct_agent.is_none() && self.can_participate())
+    }
+
+    pub(crate) fn main_composer_can_edit(&self) -> bool {
+        self.direct_agent.as_ref().map_or_else(
+            || self.can_participate(),
+            |_| self.direct_agent_intent_allowed(self.direct_agent_intent()),
+        )
     }
 
     pub(crate) fn agent_message_awaiting_confirmation(&self, agent: &str) -> bool {
