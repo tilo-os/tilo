@@ -38,10 +38,11 @@ pub enum KeycapLanguage {
     Nordic,
     Swiss,
     Japanese,
+    Korean,
 }
 
 impl KeycapLanguage {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::English,
         Self::German,
         Self::French,
@@ -52,6 +53,7 @@ impl KeycapLanguage {
         Self::Nordic,
         Self::Swiss,
         Self::Japanese,
+        Self::Korean,
     ];
 
     /// The legend language of XKB layout `layout` (`de`, `fr`, `ch`, …).
@@ -67,6 +69,7 @@ impl KeycapLanguage {
             "se" | "no" | "dk" | "fi" | "is" => Self::Nordic,
             "ch" | "lu" => Self::Swiss,
             "jp" => Self::Japanese,
+            "kr" => Self::Korean,
             _ => Self::English,
         }
     }
@@ -83,6 +86,7 @@ impl KeycapLanguage {
             Self::Nordic => 7,
             Self::Swiss => 8,
             Self::Japanese => 9,
+            Self::Korean => 10,
         }
     }
 
@@ -170,6 +174,30 @@ impl Keycaps {
         }
     }
 
+    /// Format native keysym metadata without composing text or applying Ctrl
+    /// transformations. Shared by static previews and the focused-seat map.
+    pub fn native_symbol(self, name: &str, text: &str) -> String {
+        if !text.is_empty() && !text.chars().any(char::is_control) {
+            return text.to_owned();
+        }
+        if let Some(dead) = dead_legend(name) {
+            return dead.into();
+        }
+        match name {
+            "Shift_L" | "Shift_R" => self.modifier(KeyboardModifier::Shift).into(),
+            "Control_L" | "Control_R" => self.modifier(KeyboardModifier::Control).into(),
+            "Alt_L" | "Alt_R" => self.modifier(KeyboardModifier::Alt).into(),
+            "ISO_Level3_Shift" => self.modifier(KeyboardModifier::AltGr).into(),
+            "Super_L" | "Super_R" => self.modifier(KeyboardModifier::System).into(),
+            "Prior" | "KP_Prior" => self.key("pageup"),
+            "Next" | "KP_Next" => self.key("pagedown"),
+            "Caps_Lock" => self.key("capslock"),
+            "ISO_Left_Tab" => self.key("tab"),
+            "Print" => self.key("printscreen"),
+            _ => self.key(name),
+        }
+    }
+
     /// What is printed on the key with canonical name `name` (`pageup`,
     /// `escape`, `f4`, `k`): a single character upper-cased (unless its
     /// capital is more than one letter, like `ß`), a function key
@@ -178,6 +206,10 @@ impl Keycaps {
         let lower = name.trim().to_ascii_lowercase();
         let canonical = match lower.as_str() {
             "esc" => "escape",
+            "muhenkan" => "nonconvert",
+            "henkan" | "henkan_mode" => "convert",
+            "hiragana_katakana" => "kanamode",
+            "hangul_hanja" => "hanja",
             "return" | "kp_enter" => "enter",
             "del" | "kp_delete" => "delete",
             "ins" | "kp_insert" => "insert",
@@ -264,7 +296,18 @@ impl Keycaps {
             L::French => french_key(name),
             L::Spanish => spanish_key(name),
             L::Italian => italian_key(name),
-            L::English | L::Portuguese | L::Dutch | L::Nordic | L::Swiss | L::Japanese => None,
+            L::Japanese => match name {
+                "nonconvert" => Some("無変換"),
+                "convert" => Some("変換"),
+                "kanamode" => Some("かな"),
+                _ => None,
+            },
+            L::Korean => match name {
+                "hangul" => Some("한/영"),
+                "hanja" => Some("한자"),
+                _ => None,
+            },
+            L::English | L::Portuguese | L::Dutch | L::Nordic | L::Swiss => None,
         };
         localized.or_else(|| english_key(name))
     }
@@ -339,6 +382,11 @@ fn english_key(name: &str) -> Option<&'static str> {
         "sysreq" => "SysRq",
         "clear" => "Clear",
         "capslock" => "Caps Lock",
+        "nonconvert" => "Non-convert",
+        "convert" => "Convert",
+        "kanamode" => "Kana",
+        "hangul" => "Hangul",
+        "hanja" => "Hanja",
         "left" => "Left",
         "right" => "Right",
         "up" => "Up",
@@ -628,6 +676,19 @@ mod tests {
     }
 
     #[test]
+    fn native_language_keys_and_dead_symbols_use_shared_legends() {
+        let japanese = Keycaps::from_xkb("jp", "");
+        assert_eq!(japanese.native_symbol("Muhenkan", ""), "無変換");
+        assert_eq!(japanese.native_symbol("Henkan_Mode", ""), "変換");
+        assert_eq!(japanese.native_symbol("Hiragana_Katakana", ""), "かな");
+        let korean = Keycaps::from_xkb("kr", "");
+        assert_eq!(korean.native_symbol("Hangul", ""), "한/영");
+        assert_eq!(korean.native_symbol("Hangul_Hanja", ""), "한자");
+        assert_eq!(Keycaps::US.native_symbol("dead_acute", ""), "◌́");
+        assert_eq!(Keycaps::US.native_symbol("Greek_alpha", "α"), "α");
+    }
+
+    #[test]
     fn tokens_and_unknown_keys_pass_through() {
         let de = Keycaps::from_xkb("de", "");
         assert_eq!(de.token("Ctrl"), "Strg");
@@ -675,4 +736,41 @@ mod tests {
         }
         set_active(before);
     }
+}
+
+fn dead_legend(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "dead_grave" => "◌̀",
+        "dead_acute" => "◌́",
+        "dead_circumflex" => "◌̂",
+        "dead_tilde" => "◌̃",
+        "dead_macron" => "◌̄",
+        "dead_breve" => "◌̆",
+        "dead_abovedot" => "◌̇",
+        "dead_diaeresis" => "◌̈",
+        "dead_abovering" => "◌̊",
+        "dead_doubleacute" => "◌̋",
+        "dead_caron" => "◌̌",
+        "dead_cedilla" => "◌̧",
+        "dead_ogonek" => "◌̨",
+        "dead_iota" => "◌ͅ",
+        "dead_voiced_sound" => "◌゙",
+        "dead_semivoiced_sound" => "◌゚",
+        "dead_belowdot" => "◌̣",
+        "dead_hook" => "◌̉",
+        "dead_horn" => "◌̛",
+        "dead_stroke" => "◌̵",
+        "dead_abovecomma" => "◌̓",
+        "dead_abovereversedcomma" => "◌̔",
+        "dead_doublegrave" => "◌̏",
+        "dead_belowring" => "◌̥",
+        "dead_belowmacron" => "◌̱",
+        "dead_belowcircumflex" => "◌̭",
+        "dead_belowtilde" => "◌̰",
+        "dead_belowbreve" => "◌̮",
+        "dead_belowdiaeresis" => "◌̤",
+        "dead_invertedbreve" => "◌̑",
+        "dead_belowcomma" => "◌̦",
+        _ => return None,
+    })
 }

@@ -898,7 +898,7 @@ impl Widget for SettingsApp {
             }
             let mut visible = false;
             for child in widget.children_mut() {
-                visible |= observe_map(child, input);
+                visible |= observe_map(child, input.clone());
             }
             visible
         }
@@ -906,8 +906,9 @@ impl Widget for SettingsApp {
             && self
                 .shell
                 .as_mut()
-                .is_some_and(|shell| observe_map(shell, input));
+                .is_some_and(|shell| observe_map(shell, input.clone()));
         if !visible {
+            self.keyboard_map_input.observe_configuration(&input);
             self.keyboard_map_input.clear();
         }
     }

@@ -204,6 +204,8 @@ pub struct InputPrefs {
     pub keyboard_preview: Option<String>,
     /// Inspect the higher native XKB levels without changing typed input.
     pub keyboard_preview_extra_levels: bool,
+    /// Ordered native level inspected without changing the live seat.
+    pub keyboard_preview_level: usize,
     /// Per-tablet mapping, pressure and buttons, keyed by device identity.
     #[serde(deserialize_with = "settings_store::hardware::lenient_tablets")]
     pub tablets: std::collections::BTreeMap<String, settings_store::hardware::TabletConfig>,
@@ -243,6 +245,7 @@ impl Default for InputPrefs {
             keyboard_model: "pc105".into(),
             keyboard_preview: None,
             keyboard_preview_extra_levels: false,
+            keyboard_preview_level: 0,
             tablets: std::collections::BTreeMap::new(),
         }
     }

@@ -61,7 +61,7 @@ pub fn compile(
 ) -> Result<Vec<Key>, Error> {
     if !valid_name(layout, false)
         || !valid_name(variant, true)
-        || !matches!(model, "pc104" | "pc105")
+        || !matches!(model, "pc104" | "pc105" | "jp106" | "kr106")
         || options.len() > 512
         || !options
             .bytes()
@@ -73,6 +73,18 @@ pub fn compile(
         return Err(Error::InvalidRequest);
     }
     backend::compile(layout, variant, model, options, names)
+}
+
+/// Whether a validated layout has its symbols file in the same fixed public
+/// root used by the compiler. Missing user-defined templates are not installed.
+///
+/// # Errors
+/// Fails on invalid names, inaccessible metadata or unsupported platforms.
+pub fn is_installed(layout: &str) -> Result<bool, Error> {
+    if !valid_name(layout, false) {
+        return Err(Error::InvalidRequest);
+    }
+    backend::is_installed(layout)
 }
 
 fn valid_name(name: &str, empty: bool) -> bool {
@@ -90,6 +102,9 @@ mod backend;
 #[cfg(not(target_os = "linux"))]
 mod backend {
     use super::{Error, Key};
+    pub(super) fn is_installed(_layout: &str) -> Result<bool, Error> {
+        Err(Error::Unsupported)
+    }
     pub(super) fn compile(
         _layout: &str,
         _variant: &str,

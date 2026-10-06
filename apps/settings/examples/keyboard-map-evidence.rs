@@ -39,7 +39,12 @@ fn main() -> Result<(), String> {
         ("high-contrast", Theme::high_contrast()),
     ] {
         for (width, height) in [(600, 240), (1100, 440)] {
-            for (source, model, pressed) in [("us", "pc104", false), ("de", "pc105", true)] {
+            for (source, model, pressed) in [
+                ("us", "pc104", false),
+                ("de", "pc105", true),
+                ("jp", "jp106", true),
+                ("kr", "kr106", true),
+            ] {
                 let map = keyboard_preview::preview_layout(
                     source,
                     model,
@@ -49,14 +54,18 @@ fn main() -> Result<(), String> {
                 let mut frame =
                     FrameHarness::for_root(State::new(), map, (width, height), theme.clone());
                 frame.click_named("input.keyboard_map")?;
+                let code = match model {
+                    "jp106" => KeyCode::IntlYen,
+                    "kr106" => KeyCode::Lang1,
+                    _ => KeyCode::KeyY,
+                };
                 if pressed {
-                    // German Z arrives at the physical US Y position. Neither the
-                    // logical character nor current layout controls the highlight.
-                    frame.send(&event(KeyCode::KeyY, "z", ElementState::Pressed));
+                    // The physical position, rather than logical text, controls highlighting.
+                    frame.send(&event(code, "z", ElementState::Pressed));
                     frame.send(&event(KeyCode::ShiftLeft, "", ElementState::Pressed));
                     if !frame
                         .root::<KeyboardMap>()
-                        .is_pressed(PhysicalKey::Code(KeyCode::KeyY))
+                        .is_pressed(PhysicalKey::Code(code))
                     {
                         return Err("the retained physical key did not highlight".into());
                     }
@@ -70,7 +79,10 @@ fn main() -> Result<(), String> {
                 frame.send(&WindowEvent::Focused(false));
                 if frame
                     .root::<KeyboardMap>()
-                    .is_pressed(PhysicalKey::Code(KeyCode::KeyY))
+                    .is_pressed(PhysicalKey::Code(code))
+                    || frame
+                        .root::<KeyboardMap>()
+                        .is_pressed(PhysicalKey::Code(KeyCode::ShiftLeft))
                 {
                     return Err("window blur retained physical input feedback".into());
                 }

@@ -18,7 +18,7 @@ struct GeometryKey {
 }
 
 pub(crate) fn valid_model(model: &str) -> bool {
-    matches!(model, "pc104" | "pc105")
+    matches!(model, "pc104" | "pc105" | "jp106" | "kr106")
 }
 
 /// Build a visual map from installed native XKB data and the same bounded
@@ -103,14 +103,7 @@ fn compile(
                 .map(|symbols| {
                     symbols
                         .into_iter()
-                        .map(|symbol| {
-                            if !symbol.text.is_empty() && !symbol.text.chars().any(char::is_control)
-                            {
-                                symbol.text
-                            } else {
-                                named_legend(caps, &symbol.name)
-                            }
-                        })
+                        .map(|symbol| caps.native_symbol(&symbol.name, &symbol.text))
                         .collect::<Vec<_>>()
                         .join(" ")
                 })
@@ -129,70 +122,70 @@ fn compile(
         .collect()
 }
 
-// Canonical XKB dead-key names denote these combining marks. A dotted circle
-// makes the non-spacing mark visible without pretending it types immediately.
-fn dead_legend(name: &str) -> Option<&'static str> {
-    Some(match name {
-        "dead_grave" => "◌̀",
-        "dead_acute" => "◌́",
-        "dead_circumflex" => "◌̂",
-        "dead_tilde" => "◌̃",
-        "dead_macron" => "◌̄",
-        "dead_breve" => "◌̆",
-        "dead_abovedot" => "◌̇",
-        "dead_diaeresis" => "◌̈",
-        "dead_abovering" => "◌̊",
-        "dead_doubleacute" => "◌̋",
-        "dead_caron" => "◌̌",
-        "dead_cedilla" => "◌̧",
-        "dead_ogonek" => "◌̨",
-        "dead_iota" => "◌ͅ",
-        "dead_voiced_sound" => "◌゙",
-        "dead_semivoiced_sound" => "◌゚",
-        "dead_belowdot" => "◌̣",
-        "dead_hook" => "◌̉",
-        "dead_horn" => "◌̛",
-        "dead_stroke" => "◌̵",
-        "dead_abovecomma" => "◌̓",
-        "dead_abovereversedcomma" => "◌̔",
-        "dead_doublegrave" => "◌̏",
-        "dead_belowring" => "◌̥",
-        "dead_belowmacron" => "◌̱",
-        "dead_belowcircumflex" => "◌̭",
-        "dead_belowtilde" => "◌̰",
-        "dead_belowbreve" => "◌̮",
-        "dead_belowdiaeresis" => "◌̤",
-        "dead_invertedbreve" => "◌̑",
-        "dead_belowcomma" => "◌̦",
-        _ => return None,
-    })
-}
-
-fn named_legend(caps: ui::Keycaps, name: &str) -> String {
-    use ui::input::KeyboardModifier;
-    if let Some(legend) = dead_legend(name) {
-        return legend.into();
-    }
-    match name {
-        "Shift_L" | "Shift_R" => caps.modifier(KeyboardModifier::Shift).into(),
-        "Control_L" | "Control_R" => caps.modifier(KeyboardModifier::Control).into(),
-        "Alt_L" | "Alt_R" => caps.modifier(KeyboardModifier::Alt).into(),
-        "ISO_Level3_Shift" => caps.modifier(KeyboardModifier::AltGr).into(),
-        "Super_L" | "Super_R" => caps.modifier(KeyboardModifier::System).into(),
-        "Prior" | "KP_Prior" => caps.key("pageup"),
-        "Next" | "KP_Next" => caps.key("pagedown"),
-        "Caps_Lock" => caps.key("capslock"),
-        "ISO_Left_Tab" => caps.key("tab"),
-        "KP_Enter" => caps.key("enter"),
-        "Print" => caps.key("printscreen"),
-        _ => caps.key(name),
-    }
-}
-
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use winit::keyboard::{KeyCode, PhysicalKey};
+    #[test]
+    fn jis_and_korean_models_preserve_the_native_language_key_positions() {
+        let geometry: BTreeMap<String, Geometry> =
+            serde_json::from_str(include_str!("../data/pc-keyboard-geometry.json")).unwrap();
+        for (source, model, positions) in [
+            (
+                "jp",
+                "jp106",
+                vec![
+                    ("AE13", KeyCode::IntlYen),
+                    ("AB11", KeyCode::IntlRo),
+                    ("MUHE", KeyCode::NonConvert),
+                    ("HENK", KeyCode::Convert),
+                    ("HKTG", KeyCode::KanaMode),
+                ],
+            ),
+            (
+                "kr",
+                "kr106",
+                vec![("HNGL", KeyCode::Lang1), ("HJCV", KeyCode::Lang2)],
+            ),
+        ] {
+            assert_eq!(geometry[model].keys.len(), 106);
+            let source = settings_store::hardware::KeyboardInputSource::parse(source).unwrap();
+            let keys = compile(&source, model, &geometry[model].keys, Some("")).unwrap();
+            for (name, physical) in positions {
+                let key = keys.iter().find(|key| key.name == name).unwrap();
+                assert_eq!(key.physical, PhysicalKey::Code(physical));
+                assert!(
+                    !key.levels.is_empty(),
+                    "{model}/{name} must have native symbols"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_actual_installed_xkb_source_compiles_for_each_offered_physical_model() {
+        assert!(
+            crate::input_sources::layout_catalog_error().is_none(),
+            "missing installed catalogue must not become fallback success"
+        );
+        let catalog = crate::input_sources::installed_catalog();
+        let mut observed = 0;
+        for entry in catalog {
+            if settings_store::hardware::KeyboardInputSource::parse(&entry.id).is_none() {
+                continue;
+            }
+            for model in ["pc104", "pc105", "jp106", "kr106"] {
+                map_with_options(&entry.id, model, String::new(), Some(""))
+                    .unwrap_or_else(|error| panic!("{}/{model}: {error}", entry.id));
+            }
+            observed += 1;
+        }
+        assert!(
+            observed > 100,
+            "the proof must observe the installed full catalogue"
+        );
+    }
+
     #[test]
     fn installed_xkb_legends_keep_physical_positions_across_layouts_and_models() {
         let geometry: BTreeMap<String, Geometry> =
