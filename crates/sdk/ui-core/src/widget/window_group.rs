@@ -2572,6 +2572,13 @@ impl Widget for WindowGroup {
         (!self.external_navigation && self.bar.layout_needs_measure())
             || self.active_host().is_some_and(Widget::layout_needs_measure)
     }
+    fn has_pending_visual_work(&self) -> bool {
+        // Inactive retained owners do not paint. Their record writes must not
+        // prevent a still of the active presentation from reaching rest.
+        self.children()
+            .into_iter()
+            .any(Widget::has_pending_visual_work)
+    }
     fn needs_animation_frame(&self) -> bool {
         // Include group and inactive closing-host animations beyond the active presentation.
         let spawn_in_flight = !self.reduce_motion
@@ -2894,6 +2901,9 @@ mod tests {
                 .set(self.hits.resources_mut.get() + 1);
             Ok(())
         }
+        fn has_pending_visual_work(&self) -> bool {
+            self.pending_control
+        }
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -3018,6 +3028,16 @@ mod tests {
                 &mut crate::bound_dispatch::legacy_document::ResourceRequest::Discard,
             )
             .unwrap();
+
+        assert!(
+            !group.has_pending_visual_work(),
+            "inactive work must not hold the active scene unsettled"
+        );
+        group.bar.set_active(2);
+        assert!(
+            group.has_pending_visual_work(),
+            "the same work counts when its tab becomes visible"
+        );
 
         for hits in [active, inactive] {
             assert_eq!(hits.unsaved.get(), 1);

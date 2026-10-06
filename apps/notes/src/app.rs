@@ -2470,6 +2470,24 @@ impl Widget for NotesApp {
             || !self.transfer_toasts.is_empty()
     }
 
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        let mut earliest = self.save_surface.next_wake_deadline();
+        for child in self.children() {
+            if let Some(deadline) = child.next_wake_deadline() {
+                earliest = Some(earliest.map_or(deadline, |old| old.min(deadline)));
+            }
+        }
+        earliest
+    }
+
+    fn has_pending_visual_work(&self) -> bool {
+        self.save_surface.needs_frame(ui::time::now())
+            || self
+                .children()
+                .iter()
+                .any(|child| child.has_pending_visual_work())
+    }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // An open note menu owns input before shortcuts and the narrow drawer,
         // including the click that dismisses it.
@@ -3688,6 +3706,14 @@ mod tests {
             assert!(
                 !app.needs_animation_frame(),
                 "reduced motion must not keep the compositor awake for a decorative fade"
+            );
+            assert!(
+                app.next_wake_deadline().is_some(),
+                "the reduced-motion chip must still schedule its removal"
+            );
+            assert!(
+                app.has_pending_visual_work(),
+                "a transient chip is not a settled scene"
             );
         }
 
