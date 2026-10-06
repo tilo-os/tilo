@@ -20178,14 +20178,16 @@ impl Widget for ShellOverlayHost {
 
     fn next_wake_deadline(&self) -> Option<Instant> {
         self.wake_deadline_sources(Instant::now())
-            .into_iter()
             .filter_map(|(_, deadline)| deadline)
             .min()
     }
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 10] {
+    fn wake_deadline_sources(
+        &self,
+        now: Instant,
+    ) -> impl Iterator<Item = (&'static str, Option<Instant>)> {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -20243,6 +20245,7 @@ impl ShellOverlayHost {
                 self.agent_quick_composer.next_wake_deadline(),
             ),
         ]
+        .into_iter()
     }
 
     /// Which of the host's sources hold a wake deadline at or before `due`;

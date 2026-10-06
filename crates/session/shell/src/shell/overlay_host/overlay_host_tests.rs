@@ -513,7 +513,6 @@ fn accessible_agent_marker_expiry_wakes_idle_host_and_clears_focus_on_update() {
     host.publish_accessible_agent_markers(7, vec![marker]);
     assert_eq!(
         host.wake_deadline_sources(now)
-            .into_iter()
             .find(|(name, _)| *name == "agent-marker-expiry")
             .expect("idle semantic wake source")
             .1,
