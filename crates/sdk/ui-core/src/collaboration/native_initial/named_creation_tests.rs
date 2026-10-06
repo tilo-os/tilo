@@ -189,3 +189,73 @@ async fn named_creation_does_not_adopt_modified_or_foreign_local_cache() {
     assert!(restored.open_records().is_empty());
     assert!(restored.admission_route(&fixture.checkout).is_err());
 }
+
+async fn receiptless_refresh(read: &CommittedDocument, changed: bool) -> CommittedDocument {
+    let mut document = read
+        .with_mutation(|mutation| {
+            let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
+                panic!("original capture must be a snapshot");
+            };
+            AutoCommit::load(bytes).unwrap()
+        })
+        .unwrap();
+    if changed {
+        document.put(ROOT, "new_owner_history", true).unwrap();
+        document.commit();
+    }
+    let bytes = document.save();
+    let reply = Reply::Chunk {
+        capture: 2,
+        // Even a falsely unchanged revision cannot mask a different graph.
+        revision: [3; 32],
+        total: u32::try_from(bytes.len()).unwrap(),
+        offset: 0,
+        bytes,
+        token: [9; 16],
+    };
+    read_capture_using(reply, &ByteBudget::new(), async |_| Ok(Reply::Cancelled))
+        .await
+        .unwrap()
+        .0
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn named_original_receipt_survives_same_graph_refresh_but_never_masks_new_history() {
+    let fixture = fixture(true, false).await;
+    let directory = tempfile::tempdir().unwrap();
+    let mut owners = RecordOwners::new(directory.path().to_owned());
+    let store = owners.open("so.tilo.store", &fixture.room).unwrap();
+    store.try_open_record(&fixture.checkout).unwrap();
+    let initialization = take_initialization("so.tilo.store", &fixture.room, &fixture.checkout)
+        .unwrap()
+        .unwrap();
+    assert!(
+        take_initialization("so.tilo.store", &fixture.room, &fixture.checkout)
+            .unwrap()
+            .is_none(),
+        "construction custody remains one-shot"
+    );
+    let bridge = fixture._construction.state.bridge.as_ref().unwrap();
+    let key = RouteSpec::record(
+        "so.tilo.store",
+        bridge.route.cluster_id,
+        fixture.checkout.id.as_str(),
+    )
+    .channel_id();
+    let same = receiptless_refresh(&fixture.read, false).await;
+    assert!(same.creation_workspace().is_none());
+    bridge.state.document_reads.refresh_for_test(&key, same);
+    assert!(store.admission_route(&fixture.checkout).is_ok());
+    assert!(
+        store.route(&fixture.checkout).is_err(),
+        "not Ready without Initialize ACK"
+    );
+    assert!(initialization.workspace().is_some());
+    let changed = receiptless_refresh(&fixture.read, true).await;
+    bridge.state.document_reads.refresh_for_test(&key, changed);
+    assert!(store.admission_route(&fixture.checkout).is_err());
+    assert!(store.route(&fixture.checkout).is_err());
+    fixture.read.initialized();
+    assert!(initialization.workspace().is_none());
+    assert!(store.admission_route(&fixture.checkout).is_err());
+}
