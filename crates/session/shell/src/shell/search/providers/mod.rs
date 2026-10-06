@@ -13,6 +13,7 @@ pub mod now_playing;
 pub mod records;
 pub mod session_actions;
 pub mod shortcuts;
+pub mod terminal_device_shell;
 pub mod tray_items;
 pub mod unavailable_applications;
 
