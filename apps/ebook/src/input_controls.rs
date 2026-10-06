@@ -22,7 +22,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
     BlockEditor, Button, ButtonFace, ButtonRole, ChipFace, ChipLead, ColorPicker,
-    ColorPickerOutcome, ColorSwatch, ControlSize, CursorPlacement, Embedded, NumberInput, Widget,
+    ColorPickerOutcome, ColorSwatch, ControlSize, CursorPlacement, NumberInput, Widget,
 };
 
 use crate::model::{Annotation, FontEntry, Settings};
@@ -37,7 +37,7 @@ use crate::resource::Ebook;
 /// [`EbookAction::EditNoteText`]: crate::actions::EbookAction::EditNoteText
 pub(crate) struct NoteEditor {
     id: Uuid,
-    host: Embedded<RichTextSurface<RichTextField>>,
+    host: tilo_rich_text::RichTextComposer<RichTextField>,
     /// The caret has been placed at the end of the note, once it was read.
     placed: bool,
 }
@@ -61,7 +61,7 @@ impl NoteEditor {
         surface.set_focus(true);
         Self {
             id,
-            host: Embedded::new(surface),
+            host: tilo_rich_text::RichTextComposer::new(surface),
             placed: false,
         }
     }
