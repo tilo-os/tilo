@@ -158,3 +158,20 @@ test('read queries without a declared navigation view cannot open a resource', a
       mount: () => assert.fail('must not mount')}), /view unavailable/);
   } finally { actions.dispose(); }
 });
+
+test('optional embedded-view metadata does not replace the declared ordinary open action', async () => {
+  const embedded = {...view, view: {...view.view, mount: {action: 'embed',
+    capability_param: 'capability', view_param: 'view'}}};
+  const {actions} = endpoints(() => ({revision: 'r1', rows: [{...row, action: embedded}]}));
+  let invoked = 0;
+  try {
+    const opened = {actions: () => [embedded], cleanup: async () => {},
+      invokeAction: (id, action) => {
+        assert.equal(id, reference.id); assert.equal(action, 'show'); invoked += 1;
+        return {state: 'completed'};
+      }};
+    assert.equal(await openResourceReference({reference, provider, action: 'show', actions,
+      current: () => true, waitRecord: async () => {}, mount: async () => opened}), opened);
+    assert.equal(invoked, 1);
+  } finally { actions.dispose(); }
+});
