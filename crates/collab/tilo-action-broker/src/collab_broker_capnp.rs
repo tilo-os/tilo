@@ -6276,7 +6276,7 @@ impl CapnpBrokerState {
             .ok_or("native context workspace is unavailable")?;
         let mut agents = workspace.agent_members_in_room_at(&route.cluster_id, now);
         agents.sort_by(|left, right| left.0.cmp(&right.0));
-        let mut people = workspace.roster_at(now);
+        let mut people = workspace.roster_in_room_at(&route.cluster_id, now);
         people.sort_by(|left, right| left.0.cmp(&right.0));
         let mut collaborators =
             Vec::with_capacity(agents.len().saturating_add(people.len()).saturating_add(1));
@@ -13888,6 +13888,11 @@ pub mod tests {
             room.clone(),
             Verb::Read,
         ));
+        workspace.grant_capability(CapOverride::membership(
+            Subject::person("person-in-other-room"),
+            uuid::Uuid::new_v4().to_string(),
+            Verb::Read,
+        ));
         let collision = workspace.grant_capability(CapOverride::membership(
             Subject::agent(&person),
             room.clone(),
@@ -13935,6 +13940,7 @@ pub mod tests {
         );
         assert_eq!(roster.iter().filter(|row| row.is_self).count(), 1);
         assert!(roster.iter().any(|row| row.id == person && !row.is_agent));
+        assert!(roster.iter().all(|row| row.id != "person-in-other-room"));
         assert!(
             roster
                 .iter()

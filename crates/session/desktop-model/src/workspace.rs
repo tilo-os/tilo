@@ -698,9 +698,36 @@ impl Workspace {
     /// room-scoped capabilities only — someone with a capability on one
     /// file and nothing else is **not** here. See [`Self::shares_of_at`].
     pub fn roster_at(&self, now: u64) -> Vec<(UserId, CapRole)> {
+        self.roster_from_capabilities_at(&self.capabilities, now)
+    }
+
+    /// Owner-backed people in this exact durable room, excluding grants for
+    /// other rooms while retaining the historical broad reader above.
+    pub fn roster_in_room_at(&self, room: &str, now: u64) -> Vec<(UserId, CapRole)> {
+        if room != self.room.to_string() {
+            return Vec::new();
+        }
+        let capabilities = self
+            .capabilities
+            .iter()
+            .filter(|capability| match &capability.scope {
+                Scope::Workspace => true,
+                Scope::Room(scope) => scope == room,
+                _ => false,
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        self.roster_from_capabilities_at(&capabilities, now)
+    }
+
+    fn roster_from_capabilities_at(
+        &self,
+        capabilities: &[CapOverride],
+        now: u64,
+    ) -> Vec<(UserId, CapRole)> {
         let live_at = Some(now);
         let mut seen: Vec<UserId> = Vec::new();
-        for c in &self.capabilities {
+        for c in capabilities {
             if !c.is_live_at(live_at) || c.effect != Effect::Grant {
                 continue;
             }
@@ -720,7 +747,10 @@ impl Workspace {
             seen.insert(0, owner.clone());
         }
         seen.into_iter()
-            .filter_map(|u| self.role_of_at(&u, now).map(|r| (u, r)))
+            .filter_map(|u| {
+                Self::role_for_membership_at(self.owner.as_deref(), capabilities, &u, now)
+                    .map(|r| (u, r))
+            })
             .collect()
     }
 
