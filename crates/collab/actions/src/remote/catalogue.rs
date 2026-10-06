@@ -55,10 +55,25 @@ pub struct ResourceViewLocator {
     pub browser_page: Option<String>,
 }
 
+/// Exact document route whose broker-owned live publisher is requested.
+/// This selects custody, not permission: ordinary caller authorization still applies.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CanonicalActionRoute {
+    pub room: String,
+    pub app_id: String,
+    /// Empty names the package-primary record, never any record.
+    pub record_id: String,
+}
+
 /// One bounded request for catalogue rows. Every field narrows; the empty
 /// query lists the first page of everything offered.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogueQuery {
+    /// Provider-only lookup of one exact route's custodian. Cannot accompany
+    /// a provider, cursor, target, view lookup, or row filter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_route: Option<CanonicalActionRoute>,
     /// Only rows from this provider (a token a previous page issued).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
@@ -95,6 +110,7 @@ pub struct CatalogueQuery {
 impl Default for CatalogueQuery {
     fn default() -> Self {
         Self {
+            canonical_route: None,
             provider: None,
             view_resource: None,
             parent_resource: None,

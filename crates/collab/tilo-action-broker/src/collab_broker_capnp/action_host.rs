@@ -391,6 +391,17 @@ impl CapnpBrokerState {
     /// seen by the `person` using it.
     fn app_owns(&self, person: &Caller, app_id: &str, request: &InvokeRequest) -> bool {
         let target = &request.target;
+        if target
+            .provider
+            .starts_with(super::canonical_route::PROVIDER_PREFIX)
+        {
+            return self
+                .canonical_token_directory(&target.provider)
+                .is_ok_and(|root| {
+                    root.app_id == app_id
+                        && self.directory_root_for(person, root.peer_id).as_ref() == Some(&root)
+                });
+        }
         if target.provider == OWN_PROVIDER
             || (workspace_provider_room(&target.provider).is_some()
                 && target
@@ -784,6 +795,38 @@ impl CapnpBrokerState {
         if let Err(error) = check_execution(caller) {
             return Pending::ready(Err(error));
         }
+        if query.canonical_route.is_some() {
+            return Pending::ready(self.canonical_provider_page(caller, query));
+        }
+        if let Some(token) = query
+            .provider
+            .as_deref()
+            .filter(|provider| provider.starts_with(super::canonical_route::PROVIDER_PREFIX))
+        {
+            let root = match self.canonical_token_directory(token) {
+                Ok(root)
+                    if self.directory_root_for(caller, root.peer_id).as_ref() == Some(&root) =>
+                {
+                    root
+                }
+                Ok(_) => return Pending::ready(Err(ActionHostError::NotPermitted)),
+                Err(error) => return Pending::ready(Err(error)),
+            };
+            let state = self.clone();
+            let token = token.to_owned();
+            return self
+                .query_directory(caller, &root, query)
+                .map(move |result| {
+                    let mut page = result?;
+                    if state.canonical_token_directory(&token)? != root {
+                        return Err(ActionHostError::UnknownAction);
+                    }
+                    for row in &mut page.rows {
+                        row.provider.clone_from(&token);
+                    }
+                    Ok(page)
+                });
+        }
         if let Some(root) = query
             .provider
             .as_deref()
@@ -808,6 +851,53 @@ impl CapnpBrokerState {
             page.providers = providers;
         }
         Pending::ready(Ok(page))
+    }
+
+    fn canonical_provider_page(
+        &self,
+        caller: &Caller,
+        query: &CatalogueQuery,
+    ) -> Result<CataloguePage, ActionHostError> {
+        let route = query
+            .canonical_route
+            .as_ref()
+            .ok_or(ActionHostError::UnknownAction)?;
+        if query.max_results != 0
+            || query.provider.is_some()
+            || query.view_resource.is_some()
+            || query.parent_resource.is_some()
+            || !query.needle.is_empty()
+            || query.target.is_some()
+            || query.revision.is_some()
+            || !query.cursor.is_empty()
+            || query.limits.is_some()
+        {
+            return Err(ActionHostError::InvalidRequest {
+                reason: "a canonical route lookup must request only its provider".into(),
+            });
+        }
+        if !self
+            .workspaces_for(caller)
+            .iter()
+            .any(|(workspace, _, _)| workspace.room.to_string() == route.room)
+        {
+            return Err(ActionHostError::NotPermitted);
+        }
+        let mut page = CataloguePage {
+            exhausted: true,
+            revision: "canonical-route-v1".into(),
+            ..CataloguePage::default()
+        };
+        if let Some((root, token)) = self.canonical_directory(route)? {
+            page.providers.push(CatalogueProvider {
+                provider: token,
+                app_id: root.app_id,
+                room: root.cluster_id,
+                record_id: root.record_id,
+                browsable: true,
+            });
+        }
+        Ok(page)
     }
 
     fn query_directory(
@@ -896,6 +986,34 @@ impl CapnpBrokerState {
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         if let Err(error) = check_execution(caller) {
             return Pending::ready(Err(error));
+        }
+        if request
+            .target
+            .provider
+            .starts_with(super::canonical_route::PROVIDER_PREFIX)
+        {
+            // Exact UUID/request replay precedes live selection checks. A retired
+            // custodian must not turn an admitted request into another dispatch.
+            if let Some(job) = self.remote_job(caller, &request.invocation) {
+                let replay = self
+                    .remote_invocations
+                    .lock()
+                    .map_err(|_| ActionHostError::Unavailable {
+                        reason: "the invocation ledger is unavailable".into(),
+                    })
+                    .and_then(|mut ledger| ledger.reserve(caller, request));
+                return Pending::ready(replay.map(|_| self.receipt_for(request.invocation, job)));
+            }
+            let root = match self.canonical_token_directory(&request.target.provider) {
+                Ok(root)
+                    if self.directory_root_for(caller, root.peer_id).as_ref() == Some(&root) =>
+                {
+                    root
+                }
+                Ok(_) => return Pending::ready(Err(ActionHostError::NotPermitted)),
+                Err(error) => return Pending::ready(Err(error)),
+            };
+            return self.invoke_directory(caller, root, origin, request);
         }
         if is_launchable_provider(&request.target.provider)
             || application_provider(&request.target.provider).is_some()
@@ -1451,7 +1569,21 @@ impl CapnpBrokerState {
             actions: vec![offered.clone()],
             live: true,
         };
-        self.start_invocation_from_offered_origin(
+        let _admission = self
+            .admission_lock
+            .lock()
+            .map_err(|_| ActionHostError::Unavailable {
+                reason: "invocation admission unavailable".into(),
+            })?;
+        if request
+            .target
+            .provider
+            .starts_with(super::canonical_route::PROVIDER_PREFIX)
+            && self.canonical_token_directory(&request.target.provider)? != *root
+        {
+            return Err(ActionHostError::UnknownAction);
+        }
+        self.dispatch_invocation_from_offered_owned(
             root.peer_id,
             (surface, offered),
             InvocationInputs {
@@ -1463,8 +1595,12 @@ impl CapnpBrokerState {
                 confirmation_token: token.as_deref(),
                 context: request.context.clone(),
             },
-            request.revision.as_deref(),
-            origin.cloned(),
+            super::AdmissionProvenance {
+                durable: None,
+                revision: request.revision.as_deref(),
+                origin: origin.cloned(),
+                retained_time: None,
+            },
         )
         .map(|job| job.id)
         .map_err(refusal)
