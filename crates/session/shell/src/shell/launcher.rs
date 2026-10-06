@@ -2800,7 +2800,7 @@ pub(crate) fn queue_native_authoring_launch(
         .read()
         .installed_native_owner()
         .ok_or_else(|| LaunchError::IdentityUnavailable {
-            detail: "native app owner unavailable".into(),
+            detail: crate::shell::i18n::t("launch-error-identity-unavailable"),
         })?
         .with_current(room, |view| Ok(view.device().clone()))
         .map_err(|detail| LaunchError::IdentityUnavailable { detail })?;
