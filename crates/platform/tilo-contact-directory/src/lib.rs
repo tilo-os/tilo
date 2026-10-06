@@ -121,6 +121,48 @@ impl ContactDirectory {
         self.associate(&person, endpoint, service, scope, recipient, revision)
     }
 
+    /// Replace an address after review, clearing unavailable identity evidence.
+    #[action(destructive)]
+    pub fn replace_endpoint(
+        &mut self,
+        person: Id,
+        previous: Id,
+        endpoint: Id,
+        service: String,
+        recipient: String,
+    ) -> Result<(), Refusal> {
+        if endpoint == previous {
+            return Err(refused());
+        }
+        let mut candidate = self.clone();
+        candidate.forget_endpoint(person.clone(), previous)?;
+        candidate.confirm_endpoint(person, endpoint, service, recipient)?;
+        *self = candidate;
+        Ok(())
+    }
+
+    /// Replace a reviewed association atomically, retaining the old tombstone.
+    #[action(destructive)]
+    pub fn replace_account(
+        &mut self,
+        person: Id,
+        previous: Id,
+        endpoint: Id,
+        service: String,
+        scope: String,
+        recipient: String,
+        revision: String,
+    ) -> Result<(), Refusal> {
+        if endpoint == previous {
+            return Err(refused());
+        }
+        let mut candidate = self.clone();
+        candidate.forget_endpoint(person.clone(), previous)?;
+        candidate.confirm_account(person, endpoint, service, scope, recipient, revision)?;
+        *self = candidate;
+        Ok(())
+    }
+
     /// Project phone hints from Contacts. These can suggest candidates only.
     #[action(external)]
     pub fn project_phones(&mut self, person: Id, phones: Vec<String>) -> Result<(), Refusal> {

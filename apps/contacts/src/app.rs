@@ -1314,6 +1314,7 @@ pub struct ContactsApp {
     /// The surface's own jobs: an export of the contacts chosen in the
     /// export dialog runs here.
     pub(crate) jobs: Option<ui::framework::Jobs<Contacts>>,
+    pub(crate) account_editor: Option<crate::account_editor::Editor>,
     pub(crate) identity_directory:
         Option<ui::framework::PersonRecord<tilo_contact_directory::ContactDirectory>>,
     /// The form of the last save, until the book presents it: a save the
@@ -1387,6 +1388,7 @@ impl ContactsApp {
             dispatcher: None,
             jobs: None,
             identity_directory: None,
+            account_editor: None,
             unconfirmed_save: None,
         }
     }

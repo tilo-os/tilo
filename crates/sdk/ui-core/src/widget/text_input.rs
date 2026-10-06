@@ -5062,9 +5062,9 @@ impl TextInput {
         handled: &mut bool,
     ) {
         let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
-        if self.update_pointer_position(logical_pos) {
-            *handled = true;
-        }
+        // Hover is repaint state, not consumed input. A move leaving this
+        // field must reach later siblings so their next press sees hover.
+        self.update_pointer_position(logical_pos);
 
         if !self.is_dragging {
             return;
