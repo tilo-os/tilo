@@ -12098,6 +12098,14 @@ impl ShellOverlayHost {
     ///
     /// [`ChromeState::request_shortcut_action`]: crate::shell::chrome_state::ChromeState::request_shortcut_action
     pub fn run_requested_shortcut_actions(&mut self) {
+        let cancel = self
+            .chrome
+            .as_ref()
+            .is_some_and(|chrome| chrome.borrow_mut().take_tab_drag_cancel_request());
+        if cancel {
+            self.cancel_tab_drags();
+        }
+
         let gather = self
             .chrome
             .as_ref()
@@ -12652,6 +12660,10 @@ impl ShellOverlayHost {
     /// The Escape dismissal ladder. Priority matches z-order: palette >
     /// overview > ws settings > quick settings.
     fn handle_shell_escape_chord(&mut self, handled: &mut bool) -> bool {
+        if self.cancel_tab_drags() {
+            *handled = true;
+            return true;
+        }
         if self.palette_visible {
             if let Some(chrome) = self.chrome.clone() {
                 let mut state = chrome.borrow_mut();
@@ -15946,6 +15958,23 @@ impl ShellOverlayHost {
         );
         self.layers.tab_menu.focus_first_action();
         true
+    }
+
+    /// Abandon tab gestures and cross-strip feedback, preserving durable state.
+    pub fn cancel_tab_drags(&mut self) -> bool {
+        let mut cancelled = false;
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: live rows are visited sequentially under the field's
+            // stable-pointer contract, without retaining a borrowed row.
+            cancelled |= unsafe { &mut *ptr }.cancel_tab_drag();
+        }
+        if cancelled {
+            for &ptr in self.group_row_ptrs.values() {
+                // SAFETY: the same sequential stable-row contract as above.
+                unsafe { &mut *ptr }.set_cross_strip_tab_drag_hover(None);
+            }
+        }
+        cancelled
     }
 
     /// A menu whose tab or group has gone has nothing left to act on.

@@ -514,17 +514,17 @@ impl StoreApp {
                     .with_flex_grow()
                     .with_child(Box::new(identity)),
             ));
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_rhythm(ui::tokens::Rhythm::Section)
-                .push(Box::new(hero))
-                .push(self.detail_actions(item))
-                .push(Box::new(
-                    Text::new(&item.description).with_role(TextRole::Body),
-                )),
-        )
+        let mut summary = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_rhythm(ui::tokens::Rhythm::Section)
+            .push(Box::new(hero));
+        if !item.tagline.trim().is_empty() {
+            summary = summary.push(Box::new(
+                Text::new(item.tagline.trim()).with_role(TextRole::Body),
+            ));
+        }
+        Box::new(summary.push(self.detail_actions(item)))
     }
 
     /// The details page of the focused app.
@@ -536,20 +536,6 @@ impl StoreApp {
             children.push(notice);
         }
         children.push(self.detail_summary(item, theme));
-        // One property list for the whole page, so every value starts at the
-        // same edge: each list measures its own label column.
-        children.push(Box::new(Section::titled(
-            "Details",
-            vec![Box::new(PropertyList::new(detail_properties(item)))],
-        )));
-        let locally_retained = matches!(
-            &item.source,
-            StoreSource::Tilo { registry_name } if registry_name == "Installed on this device"
-        );
-        children.push(Box::new(Section::titled(
-            "Trust",
-            vec![Self::prose(trust_explanation(item, locally_retained))],
-        )));
         if let Some(store) = &self.images
             && !item.screenshot_urls.is_empty()
         {
@@ -572,10 +558,34 @@ impl StoreApp {
             children.push(Box::new(Section::titled(
                 "Previews",
                 vec![Box::new(
-                    MediaGrid::new(previews).with_size(MediaSize::Regular),
+                    MediaGrid::new(previews).with_size(MediaSize::Small),
                 )],
             )));
         }
+        if !item.description.trim().is_empty() && item.description.trim() != item.tagline.trim() {
+            children.push(Box::new(Section::titled(
+                ui::i18n!("store-about-app"),
+                vec![Box::new(
+                    Text::new(item.description.trim())
+                        .with_id("store.detail.description")
+                        .with_role(TextRole::Body),
+                )],
+            )));
+        }
+        // One property list for the whole page, so every value starts at the
+        // same edge: each list measures its own label column.
+        children.push(Box::new(Section::titled(
+            "Details",
+            vec![Box::new(PropertyList::new(detail_properties(item)))],
+        )));
+        let locally_retained = matches!(
+            &item.source,
+            StoreSource::Tilo { registry_name } if registry_name == "Installed on this device"
+        );
+        children.push(Box::new(Section::titled(
+            "Trust",
+            vec![Self::prose(trust_explanation(item, locally_retained))],
+        )));
         children.push(self.technical_details(item));
         children.push(Self::report_section(item));
         Some(self.page(theme, Measure::Reading, false, children))
@@ -924,6 +934,12 @@ fn detail_properties(item: &StoreItem) -> Vec<Property> {
 /// The package's facts: identity, version and what it weighs.
 fn package_properties(item: &StoreItem) -> Vec<Property> {
     let mut rows = Vec::new();
+    if !item.supported_languages.is_empty() {
+        rows.push(Property::new(
+            ui::i18n!("store-supported-languages"),
+            item.supported_languages.join(", "),
+        ));
+    }
     if !item.categories.is_empty() {
         rows.push(Property::new(
             "Categories",

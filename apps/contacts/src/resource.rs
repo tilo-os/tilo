@@ -337,7 +337,20 @@ impl ContactsApp {
                 .get(&id)
                 .is_none_or(|person| !person.removed && person.phones.0 != phones)
             {
-                let _ = directory.invoke(&ContactDirectory::PROJECT_PHONES.with((id, phones)));
+                let _ =
+                    directory.invoke(&ContactDirectory::PROJECT_PHONES.with((id.clone(), phones)));
+            }
+            let emails = contact
+                .emails
+                .iter()
+                .map(|email| email.value.clone())
+                .collect::<Vec<_>>();
+            if current
+                .people
+                .get(&id)
+                .is_none_or(|person| !person.removed && person.emails.0 != emails)
+            {
+                let _ = directory.invoke(&ContactDirectory::PROJECT_EMAILS.with((id, emails)));
             }
         }
         for removed in &state.removed {
@@ -368,6 +381,7 @@ mod tests {
         let mut first = Contact::new();
         first.first = "Alex".into();
         first.phones.push(Labeled::new("mobile", "+12025550123"));
+        first.emails.push(Labeled::new("work", "Alex@EXAMPLE.test"));
         let mut second = Contact::new();
         second.first = "Alex".into();
         app.invoke(Invoke::apply(&create_contact_action(&first)).unwrap())
@@ -393,6 +407,11 @@ mod tests {
             projected.phone_candidates("+12025550123"),
             vec![Id::from_raw(first.id.to_string())]
         );
+        assert_eq!(
+            projected.email_candidates("Alex@example.test"),
+            vec![Id::from_raw(first.id.to_string())]
+        );
+        assert!(projected.resolve("email", "Alex@example.test").is_err());
         assert!(projected.resolve("sms", "+12025550123").is_err());
         app.invoke_confirmed(
             Invoke::apply(&ContactsAction::DeleteContact {
@@ -403,6 +422,7 @@ mod tests {
         .unwrap();
         app.settle();
         let projected = directory.get();
+        assert!(projected.email_candidates("Alex@example.test").is_empty());
         assert!(
             projected
                 .people

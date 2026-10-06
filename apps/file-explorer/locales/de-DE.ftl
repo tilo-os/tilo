@@ -572,6 +572,7 @@ files-place-recent = Zuletzt verwendet
 files-empty-recent = Dateien, die Sie öffnen oder erstellen, erscheinen hier
 files-recent-reveal = Enthaltenden Ordner öffnen
 files-recent-forget = Aus „Zuletzt verwendet“ entfernen
+files-recent-action-unavailable = Dieser zuletzt verwendete Eintrag ist nicht mehr verfügbar. Öffnen Sie „Zuletzt verwendet“ und wählen Sie einen aktuellen Eintrag.
 files-recent-not-a-folder = „Zuletzt verwendet“ ist kein Ordner; öffnen Sie einen, um Dateien hinzuzufügen
 
 ## Cloud-Konten

@@ -47,6 +47,39 @@ not certify a live compositor connection, transport between devices, device
 identity authentication or a screenshot in each theme. `for_person` supplies a
 test participant id; it does not sign someone into the real OS.
 
+## Permission-aware views
+
+Bound controls already follow the permissions of their actions. For an entire
+pane or a permission-specific explanation, observe the host instead of copying
+the participant's role into the shared model:
+
+```rust
+let admin = cx.permission_state(PermissionRequirement::Admin);
+let owner_tools = cx.switch(&admin, |_, allowed| {
+    if *allowed {
+        Box::new(Text::new("app-owner-tools"))
+    } else {
+        Box::new(Column::new().with_intrinsic_height().with_no_padding())
+    }
+});
+```
+
+Use your app's Fluent key for the label and put `owner_tools` into its view.
+The state updates when the host changes permission, including Owner to Editor
+(writing stays allowed) and Viewer to Commenter (writing stays denied). No
+resource edit, reopening or app-owned role tracker is needed. Custom surfaces
+can obtain the same state from their dispatcher. History views have no live
+owner authority.
+
+This is presentation state. Resource actions and effects still declare and
+enforce their own permission requirements. Keep device-private review data out
+of the shared resource; hiding a pane does not remove data from a replicated
+document.
+
+The production [`live_permissions` tests](../crates/sdk/tilo-app/tests/live_permissions.rs)
+exercise first-frame restrictions, revocation without a document change,
+restored access, refused owner actions and rendering a past version.
+
 ## Platform lesson and sources
 
 SvelteKit's [form actions](https://svelte.dev/docs/kit/form-actions) use the
@@ -97,7 +130,8 @@ without an unused-helper warning. The no-runner executable boundary also lacked
 the native entry point's documented exception for its intentional failure exit;
 its lint expectation now states that purpose explicitly.
 
-This change is confined to `tilo-app` testing helpers and an example. It does not
-move toolkit types, split the UI crate or modify Contacts. The helpers continue
-to delegate to the existing component harness, so the UI split can preserve that
-boundary while changing its internal crate layout.
+The walkthrough uses the SDK's action and view contracts. Testing delegates to
+the existing component harness, and permission-aware presentation observes the
+host's existing permission checks. These contracts let the UI split change its
+internal crate layout without requiring applications to rebuild platform
+services.

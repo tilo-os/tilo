@@ -1,0 +1,8 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.tilo.android.acceptance.documents">
+  <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="23" />
+  <application android:icon="@drawable/icon" android:label="Android document resource acceptance">
+    <activity android:name="org.tilo.android.acceptance.DocumentActivity" android:exported="true">
+      <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+    </activity>
+  </application>
+</manifest>
