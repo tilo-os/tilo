@@ -3134,6 +3134,70 @@ mod tests {
     }
 
     #[test]
+    fn hidden_agent_task_context_stops_polling_without_losing_private_draft() {
+        let clock = ui::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let mut doc = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
+        let mut app = peer("u_alice", "Alice", "AL", 0);
+        app.room_agents.push("scribe".into());
+        let host = Arc::new(TaskControlHost::default());
+        app.agent_task_actions = ui::remote_actions::RemoteActions::with_host(
+            Arc::clone(&host) as Arc<dyn ActionHost + Send + Sync>,
+            Caller::local_app("so.tilo.chat").in_room("ws_home"),
+        );
+        app.reload(&doc);
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        app.poll_agent_tasks();
+        let tasks = app.direct_agent_tasks().expect("retained task context");
+        let channel = app.active_channel.clone();
+        type_str(&mut app, &mut doc, "Keep this private while hidden");
+        let editor = app.composer_main.key();
+        app.on_hit(
+            Hit::Channel("c_general".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        assert!(app.direct_agent.is_none());
+        app.poll_agent_tasks();
+        let requests = host.requests().len();
+        assert_eq!(ui::Widget::next_wake_deadline(&app), None);
+        for _ in 0..5 {
+            clock.advance(std::time::Duration::from_secs(10));
+            app.poll_agent_tasks();
+            assert_eq!(host.requests().len(), requests);
+            assert_eq!(ui::Widget::next_wake_deadline(&app), None);
+            assert_eq!(
+                app.composer_main
+                    .private_plain_for("ws_home", "scribe")
+                    .as_deref(),
+                Some("Keep this private while hidden")
+            );
+        }
+        app.on_hit(
+            Hit::Agent("scribe".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        assert_eq!(app.active_channel, channel);
+        assert_eq!(app.composer_main.key(), editor);
+        assert_eq!(
+            app.composer_main.private_plain().as_deref(),
+            Some("Keep this private while hidden")
+        );
+        assert!(std::rc::Rc::ptr_eq(
+            &tasks,
+            &app.direct_agent_tasks().unwrap()
+        ));
+        assert_eq!(
+            host.requests().len(),
+            requests + 1,
+            "reopen must request a fresh owner projection"
+        );
+    }
+
+    #[test]
     fn agent_task_refresh_deadline_reaches_the_production_widget_host() {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");

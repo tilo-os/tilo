@@ -219,6 +219,7 @@ struct ConfirmedFrontier {
 /// One shared Task Center reader for Chat and marker-adjacent controls.
 pub struct AgentTaskFrontiers {
     remote: RemoteActions,
+    observation_active: bool,
     workspace: String,
     agent: String,
     current: Option<LocalState<InvocationCall>>,
@@ -273,6 +274,7 @@ impl AgentTaskFrontiers {
     pub fn with_actions(remote: RemoteActions) -> Self {
         Self {
             remote,
+            observation_active: true,
             workspace: String::new(),
             agent: String::new(),
             current: None,
@@ -343,6 +345,27 @@ impl AgentTaskFrontiers {
         self.poll();
     }
 
+    /// Suspend collection reads when no presentation needs this context.
+    /// Exact submitted mutations and their receipts remain retained and are
+    /// settled normally. Resuming requires a fresh owner read, without silently
+    /// accepting a changed steering frontier or clearing the caller's draft.
+    pub fn set_observation_active(&mut self, active: bool) {
+        if self.observation_active == active {
+            return;
+        }
+        self.observation_active = active;
+        self.current = None;
+        self.current_consumed = true;
+        self.controls.clear();
+        self.control_response_until = None;
+        self.next_refresh = None;
+        self.snapshot_complete = false;
+        if active {
+            self.discovery = AgentTaskDiscovery::Loading;
+            self.start_current_refresh(false);
+        }
+    }
+
     /// Explicitly acknowledge a changed owner frontier and re-read it.
     ///
     /// Private draft text is owned by the caller and is never cleared here.
@@ -350,7 +373,7 @@ impl AgentTaskFrontiers {
     /// or revision; this explicit operation permits the next complete owner
     /// snapshot to become its new steering context.
     pub fn refresh(&mut self) {
-        if self.workspace.is_empty() || self.agent.is_empty() {
+        if !self.observation_active || self.workspace.is_empty() || self.agent.is_empty() {
             return;
         }
         if matches!(self.direction_state, AgentDirectionState::Saved { .. }) {
@@ -378,6 +401,17 @@ impl AgentTaskFrontiers {
     /// in the production compositor's deadline-driven loop.
     #[must_use]
     pub fn next_wake_deadline(&self) -> Option<Instant> {
+        if !self.observation_active {
+            return (self.direction.is_some()
+                || self.queue.is_some()
+                || self.stop.is_some()
+                || self
+                    .saved_direction
+                    .as_ref()
+                    .is_some_and(|saved| saved.read.is_some()))
+            .then(|| self.remote.next_observation_deadline())
+            .flatten();
+        }
         let now = crate::background::Background::current().now();
         let control = self
             .controls
@@ -741,11 +775,13 @@ impl AgentTaskFrontiers {
     }
 
     fn poll_at(&mut self, now: Instant) {
-        if self.current_consumed && self.next_refresh.is_some_and(|deadline| deadline <= now) {
-            self.start_current_refresh(false);
+        if self.observation_active {
+            if self.current_consumed && self.next_refresh.is_some_and(|deadline| deadline <= now) {
+                self.start_current_refresh(false);
+            }
+            self.collect_current_tasks(now);
+            self.refresh_control_offers();
         }
-        self.collect_current_tasks(now);
-        self.refresh_control_offers();
         let controls_pending = self.controls.values().any(|call| call.get().is_pending());
         if !controls_pending
             || self
@@ -800,7 +836,11 @@ impl AgentTaskFrontiers {
     }
 
     fn start_current_refresh(&mut self, accepts_frontier_change: bool) {
-        if self.workspace.is_empty() || self.agent.is_empty() || !self.current_consumed {
+        if !self.observation_active
+            || self.workspace.is_empty()
+            || self.agent.is_empty()
+            || !self.current_consumed
+        {
             return;
         }
         self.current_issued = self.issue_observation();
@@ -2761,6 +2801,101 @@ mod tests {
         };
         assert_eq!(frontier.after_revision, 5);
         assert_eq!(frontier.applied_revision, 5);
+    }
+
+    #[test]
+    fn suspended_task_context_is_idle_and_resumes_with_a_fresh_frontier() {
+        let clock = crate::background::Pumped::new();
+        let _entered = clock.background().enter();
+        let host = Arc::new(FrontierHost::with_snapshots(vec![
+            current_snapshot(1, vec![current_task("one", "Original", "agent-a", 4, 4)]),
+            current_snapshot(2, vec![current_task("one", "Original", "agent-a", 5, 4)]),
+        ]));
+        let mut model = model(host.clone(), "room", "agent-a");
+        assert!(matches!(model.choice(), AgentTaskChoice::One(_)));
+        let original = model.context_task().expect("original observed context");
+        model.set_observation_active(false);
+        let requests = host.requests().len();
+        assert_eq!(model.next_wake_deadline(), None);
+        assert!(!model.can_steer());
+        for _ in 0..5 {
+            clock.advance(std::time::Duration::from_secs(10));
+            model.observe("room", "agent-a");
+            model.refresh();
+            assert_eq!(host.requests().len(), requests);
+            assert_eq!(model.next_wake_deadline(), None);
+        }
+        assert_eq!(model.context_task(), Some(original));
+        model.set_observation_active(true);
+        model.observe("room", "agent-a");
+        assert_eq!(host.requests().len(), requests + 1);
+        assert!(model.needs_frontier_confirmation());
+        assert!(
+            !model.can_steer(),
+            "resuming never silently retargets an old draft"
+        );
+    }
+
+    #[test]
+    fn suspended_task_context_settles_exact_queue_without_collection_polling() {
+        use crate::collaboration::CollabEvent;
+        use tilo_actions::remote::RemoteActionMessage;
+
+        let remote = RemoteActions::session();
+        let mut model = AgentTaskFrontiers::with_actions(remote.clone());
+        model.workspace = "room".into();
+        model.agent = "agent-a".into();
+        let invocation = InvocationId::new();
+        model.queue = Some(QueueCall {
+            invocation,
+            call: remote.invoke_with_id(
+                invocation,
+                task_collection_target("room", QUEUE_TASK_ACTION),
+                InvokeArgument::None,
+                None,
+            ),
+        });
+        model.queue_state = AgentQueueState::Submitting;
+        let requests = model.take_collab_requests();
+        assert_eq!(requests.len(), 1);
+        model.set_observation_active(false);
+        assert_eq!(model.queue.as_ref().unwrap().invocation, invocation);
+        assert!(model.next_wake_deadline().is_some());
+        model.handle_collab_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::Update {
+                invocation,
+                state: None,
+            },
+        });
+        assert_eq!(model.queue_state(), &AgentQueueState::Uncertain);
+        assert_eq!(model.queue.as_ref().unwrap().invocation, invocation);
+        assert_eq!(model.next_wake_deadline(), None);
+        assert!(model.take_collab_requests().is_empty());
+        model.handle_collab_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation,
+                status: ReceiptStatus::Completed {
+                    output: ActionOutput {
+                        value: Some(
+                            serde_json::json!({"result": {"queued": {"task_id": "same-original"}}}),
+                        ),
+                        resources: Vec::new(),
+                    },
+                },
+            }),
+        });
+        assert_eq!(
+            model.queue_state(),
+            &AgentQueueState::Queued {
+                task_id: "same-original".into()
+            }
+        );
+        assert!(model.queue.is_none());
+        assert_eq!(model.next_wake_deadline(), None);
+        assert!(
+            model.take_collab_requests().is_empty(),
+            "settlement must not start hidden collection refresh or another effect"
+        );
     }
 
     #[test]

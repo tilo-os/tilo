@@ -2178,7 +2178,11 @@ impl ChatApp {
                 ))
             })
             .clone();
-        context.borrow_mut().observe(workspace, agent);
+        {
+            let mut tasks = context.borrow_mut();
+            tasks.set_observation_active(true);
+            tasks.observe(workspace, agent);
+        }
         context
     }
 
@@ -2258,6 +2262,29 @@ impl ChatApp {
 
     pub(crate) fn poll_agent_tasks(&mut self) {
         let before = self.visible_agent_task_presentation();
+        // The parent owns demand for the shared contexts. A detached view must
+        // not suspend its siblings merely because they aren't its own route.
+        if !self.conversation_surface {
+            let mut visible = std::collections::HashSet::new();
+            if let Some(agent) = &self.direct_agent {
+                visible.insert((self.active_ws.clone(), agent.clone()));
+            }
+            for surface in self.agent_surfaces.values() {
+                if !surface.is_closed()
+                    && surface
+                        .presentation(self.desktop_floating_bounds())
+                        .is_some()
+                    && let Some(agent) = &surface.view.direct_agent
+                {
+                    visible.insert((surface.view.active_ws.clone(), agent.clone()));
+                }
+            }
+            for (key, context) in &self.agent_tasks {
+                context
+                    .borrow_mut()
+                    .set_observation_active(visible.contains(key));
+            }
+        }
         for ((workspace, agent), context) in &self.agent_tasks {
             context.borrow_mut().observe(workspace, agent);
         }
@@ -4659,10 +4686,20 @@ impl Widget for ChatApp {
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        self.agent_tasks
+        let tasks = self
+            .agent_tasks
             .values()
             .filter_map(|tasks| tasks.borrow().next_wake_deadline())
-            .min()
+            .min();
+        let messages = self.agent_submissions.with(|submissions| {
+            submissions
+                .values()
+                .filter(|submission| submission.intent == AgentComposerIntent::Message)
+                .map(|submission| submission.give_up_at)
+                .min()
+        });
+        let receipts = messages.and_then(|_| self.agent_task_actions.next_observation_deadline());
+        [tasks, messages, receipts].into_iter().flatten().min()
     }
 
     fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
