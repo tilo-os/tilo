@@ -261,10 +261,17 @@ stamps now come from the shared host input contract described above.
    system undo. Current actor, worker-core and Wayland tests prove separate
    production boundaries, not a complete assembled microphone journey.
    Browser address fields use the shared input contract, but Chromium page DOM
-   fields currently fail closed as `NoEditableField`. They need a backend bridge
-   that atomically validates the original document, element, selection and value
-   before insertion; asynchronous unguarded IME or simulated paste would violate
-   the focus and sensitive-field boundary.
+   fields still fail closed as `NoEditableField`. The backend now implements
+   private leased text transactions in its isolated world: real CEF tests prove
+   original selection replacement, native undo/redo, focus/content/selection
+   invalidation, canceled/repeated leases, hidden-view and read-only revocation,
+   and rejection of protected fields or page handlers that redirect the edit.
+   `apps/browser/chromium/README.md` documents this independent boundary. The
+   SDK/compositor still needs to retain the transcript through asynchronous
+   commit acknowledgement and recover it on rejection. Iframes, selection-less
+   email/number inputs, closed shadow roots and composition already active when
+   the isolated world starts need renderer lifecycle support before admission.
+   Unguarded asynchronous IME or simulated paste would violate the focus boundary.
 3. Extend the public six-language read-speech qualification below to noisy
    natural conversation, and measure an older CPU and Arm device. Three short
    probes per language and artificial long splices remain narrow evidence.

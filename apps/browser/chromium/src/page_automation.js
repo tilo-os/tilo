@@ -524,11 +524,130 @@ globalThis.__tiloPage ||= (() => {
     return {ok: true, message: `Focused ${summary(element)}`};
   }
 
+  // Private text-input leases share this isolated world, not the page's agent
+  // log. Preparation never focuses a field or exports its contents. A final
+  // edit consumes its lease before page handlers run and uses Chromium's undo
+  // path; unlike fill(), it must never fall back to setting another value.
+  let textLease = null, committingTextLease = null, composing = false;
+  const retireTextLease = () => {
+    if (textLease) {
+      textLease.revoked = true; clearTimeout(textLease.timer); textLease.observer.disconnect();
+    }
+    textLease = null;
+    if (committingTextLease) committingTextLease.revoked = true;
+  };
+  addEventListener('blur', retireTextLease);
+  addEventListener('focusout', retireTextLease, true);
+  addEventListener('input', retireTextLease, true);
+  addEventListener('compositionstart', () => { composing = true; retireTextLease(); }, true);
+  addEventListener('compositionend', () => { composing = false; }, true);
+
+  function activeTextElement() {
+    let element = document.activeElement;
+    while (element?.shadowRoot?.activeElement) element = element.shadowRoot.activeElement;
+    return element;
+  }
+  function textSnapshot(element) {
+    if (!element?.isConnected || !document.hasFocus() || activeTextElement() !== element || composing)
+      throw failure('text_input_changed', 'The original text field is no longer available');
+    const textSecurity = getComputedStyle(element).webkitTextSecurity;
+    if (secret(element) || /(^|\s)(cc-[a-z-]+|one-time-code)(\s|$)/i.test(element.getAttribute('autocomplete') || '') ||
+        (textSecurity && textSecurity !== 'none'))
+      throw failure('secret_field', 'This field cannot accept deferred text input');
+    if (element.matches(':disabled') || element.readOnly ||
+        element.closest('[inert],[aria-readonly="true"],[aria-disabled="true"]'))
+      throw failure('not_editable', 'This field is disabled or read-only');
+    const field = element.localName === 'textarea' ||
+      (element.localName === 'input' && ['text', 'search', 'email', 'url', 'tel'].includes(type(element)));
+    if (field) {
+      if (!Number.isInteger(element.selectionStart) || !Number.isInteger(element.selectionEnd))
+        throw failure('not_editable', 'This field does not expose an editable selection');
+      if (element.value.length > 262144) throw failure('text_input_large', 'This field is too large for deferred input');
+      return {field: true, value: element.value, start: element.selectionStart,
+        end: element.selectionEnd, direction: element.selectionDirection};
+    }
+    if (!element.isContentEditable || element.innerHTML.length > 262144)
+      throw failure('not_editable', 'The focused element is not an editable text field');
+    const selection = getSelection();
+    if (!selection || selection.rangeCount !== 1 || !element.contains(selection.anchorNode) ||
+        !element.contains(selection.focusNode))
+      throw failure('not_editable', 'The focused editor has no local editable selection');
+    return {field: false, value: element.innerHTML, anchor: selection.anchorNode,
+      focus: selection.focusNode, start: selection.anchorOffset, end: selection.focusOffset};
+  }
+  function sameTextSnapshot(lease) {
+    if (lease.revoked || performance.now() >= lease.expires) return false;
+    if (lease.observer.takeRecords().some(record => touchesTextLease(lease, record))) return false;
+    const current = textSnapshot(lease.element), original = lease.snapshot;
+    return Object.keys(original).every(key => current[key] === original[key]);
+  }
+  function touchesTextLease(lease, record) {
+    return record.target === lease.element || record.target.contains(lease.element) ||
+      lease.element.contains(record.target);
+  }
+  addEventListener('selectionchange', () => {
+    if (textLease) {
+      try { if (!sameTextSnapshot(textLease)) retireTextLease(); }
+      catch (_) { retireTextLease(); }
+    }
+  }, true);
+  function guardedTextInput(command) {
+    if (textLease && performance.now() >= textLease.expires) retireTextLease();
+    if (command.action === 'prepare_text_input') {
+      if (textLease || committingTextLease) throw failure('busy', 'A text-input lease is already active');
+      const element = activeTextElement(), snapshot = textSnapshot(element);
+      const bytes = crypto.getRandomValues(new Uint8Array(16));
+      const lease = [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('');
+      textLease = {element, snapshot, lease, expires: performance.now() + 180000, revoked: false};
+      const owned = textLease;
+      owned.observer = new MutationObserver(records => {
+        if ((textLease === owned || committingTextLease === owned) &&
+            records.some(record => touchesTextLease(owned, record))) retireTextLease();
+      });
+      const options = {subtree: true, childList: true, characterData: true, attributes: true,
+        attributeFilter: ['type', 'readonly', 'disabled', 'autocomplete', 'contenteditable',
+          'aria-readonly', 'aria-disabled', 'inert']};
+      owned.observer.observe(document, options);
+      if (element.getRootNode() !== document) owned.observer.observe(element.getRootNode(), options);
+      owned.timer = setTimeout(() => { if (textLease === owned) retireTextLease(); }, 180000);
+      return {ok: true, message: 'Text input prepared', data: {lease}};
+    }
+    if (!textLease || command.lease !== textLease.lease)
+      throw failure('text_input_retired', 'This text-input lease is no longer active');
+    const owned = textLease;
+    if (command.action === 'cancel_text_input') {
+      retireTextLease();
+      return {ok: true, message: 'Text input canceled'};
+    }
+    let unchanged;
+    try { unchanged = sameTextSnapshot(owned); }
+    catch (error) { retireTextLease(); throw error; }
+    if (!unchanged) {
+      retireTextLease();
+      throw failure('text_input_changed', 'The original text field or selection changed');
+    }
+    if (typeof command.text !== 'string' || !command.text ||
+        new TextEncoder().encode(command.text).length > 4096)
+      throw failure('invalid_request', 'The final text is empty or too large');
+    textLease = null; clearTimeout(owned.timer); committingTextLease = owned;
+    try {
+      const event = new InputEvent('beforeinput', {bubbles: true, composed: true,
+        cancelable: true, inputType: 'insertText', data: command.text});
+      if (!owned.element.dispatchEvent(event) || !sameTextSnapshot(owned))
+        throw failure('text_input_changed', 'The page rejected or changed the original field');
+      if (!document.execCommand('insertText', false, command.text))
+        throw failure('rejected', 'The original field did not accept the text');
+      return {ok: true, message: 'Text input committed'};
+    } finally { owned.observer.disconnect(); committingTextLease = null; }
+  }
+
   return {
     run(command) {
       try {
         if (!doc) doc = command.doc;
         switch (command.action) {
+          case 'prepare_text_input': case 'commit_text_input': case 'cancel_text_input':
+            return guardedTextInput(command);
           case 'outline': return outline();
           case 'changes': return changes();
           case 'at': return at(command.x, command.y);

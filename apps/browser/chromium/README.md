@@ -160,6 +160,38 @@ Not yet covered: cross-origin and same-origin iframe content (listed as
 python3 apps/browser/chromium/tests/page_actions.py target/chromium/tilo-chromium-host
 ```
 
+### Private guarded text input
+
+`text_input` is a separate backend protocol; it does not activate page-agent
+logging. `prepare_text_input` leases the currently focused editable element and
+selection, returning only a random opaque `data.lease`. `commit_text_input`
+requires that lease and at most 4096 UTF-8 bytes of `text`;
+`cancel_text_input` retires it. Each request has a positive `request_id` and
+answers with a private `text_input_result`, rather than `page_result`.
+
+The isolated world retains the original contents locally for at most three
+minutes. Focus loss, navigation, input, composition and observed eligibility
+changes retire the lease; a stale cancel cannot retire a successor. Final
+validation includes the current value and selection. Page `beforeinput` handlers
+may cancel the edit; their changes are revalidated before Chromium's synchronous
+`insertText` command. That path preserves native undo/redo. There is no fallback
+to setting a value, focusing another field, clipboard or synthetic keys.
+
+Real-host regressions cover text inputs, textareas, open-shadow inputs and rich
+contenteditable selections, including Unicode replacement, undo/redo, changed
+focus/content/selection, cancellation, navigation and protected-field rejection:
+
+```sh
+python3 apps/browser/chromium/tests/guarded_text_input.py target/chromium/tilo-chromium-host
+```
+
+This is the backend boundary, not assembled OS browser dictation. The WebView
+still fails closed until the SDK/compositor bridge can retain the transcript
+through asynchronous commit acknowledgement and recover it on rejection. Frame
+selection, fields without a DOM selection API (including email/number inputs),
+closed shadow roots and an already-active composition at isolated-world startup
+need additional renderer lifecycle support before they can be admitted.
+
 What an agent host relies on — the process budget (the browser, its storage
 service and one renderer per site; Linux adds its sandbox zygotes), hidden
 pages painting nothing yet answering page actions, and the paint stream's

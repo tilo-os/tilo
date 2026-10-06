@@ -39,7 +39,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   void Request(CefRefPtr<CefDictionaryValue> command) {
     const int request=command->GetInt("request_id");
     if(!browser_) return;
-    if(pending_) { Reply(request,Failure("busy","Another page action is still running in this tab"));return; }
+    if(pending_) { Reply(request,Failure("busy","Another page action is still running in this tab"),command->GetString("op")=="text_input");return; }
     pending_=Pending{request,++token_,navigations_,false,command->Copy(false),{}};
     CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,uint64_t token) {
       if(self->pending_ && self->pending_->token==token) self->Fail("timeout","The page did not answer in time");
@@ -130,7 +130,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     const auto action=Action();
     command->SetString("action",action=="click"?"locate":action=="press"?"focus":action);
     command->SetInt("doc",document_);
-    for(const char* key:{"element","text","key"}) if(pending_->command->HasKey(key)) command->SetString(key,pending_->command->GetString(key));
+    for(const char* key:{"element","text","key","lease"}) if(pending_->command->HasKey(key)) command->SetString(key,pending_->command->GetString(key));
     for(const char* key:{"cross_origin","secret"}) if(pending_->command->HasKey(key)) command->SetBool(key,pending_->command->GetBool(key));
     for(const char* key:{"x","y"}) if(pending_->command->HasKey(key)) command->SetDouble(key,Number(pending_->command,key));
     for(const char* key:{"quiet_ms","timeout_ms"}) if(pending_->command->HasKey(key)) command->SetInt(key,pending_->command->GetInt(key));
@@ -147,7 +147,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   void Act(CefRefPtr<CefDictionaryValue> value) {
     const auto action=Action();
     if(action=="outline" || action=="changes") { Succeed(Text(value,"message"),Text(value,"outline"));return; }
-    if(action=="at" || action=="settle") {
+    if(action=="at" || action=="settle" || action=="prepare_text_input" || action=="commit_text_input" || action=="cancel_text_input") {
       Succeed(Text(value,"message"),std::nullopt,value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr);return;
     }
     if(action=="click") {
@@ -199,9 +199,10 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   }
   void Fail(const std::string& code,const std::string& message) { Finish(Failure(code,message)); }
   void Finish(CefRefPtr<CefDictionaryValue> fields) {
-    const int request=pending_->request;pending_.reset();call_=0;Reply(request,fields);
+    const int request=pending_->request;const bool text_input=pending_->command->GetString("op")=="text_input";
+    pending_.reset();call_=0;Reply(request,fields,text_input);
   }
-  void Reply(int request,CefRefPtr<CefDictionaryValue> fields) { fields->SetInt("request_id",request);emit_("page_result",fields); }
+  void Reply(int request,CefRefPtr<CefDictionaryValue> fields,bool text_input=false) { fields->SetInt("request_id",request);emit_(text_input?"text_input_result":"page_result",fields); }
   CefRefPtr<CefBrowser> browser_;CefRefPtr<CefRegistration> registration_;
   Emit emit_;Click click_;Key key_;
   std::optional<Pending> pending_;Stage stage_=Stage::FrameTree;int call_=0;
