@@ -2168,6 +2168,7 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
                             confirmed: true,
                             broker_admitted: false,
                             invocation: tilo_actions::InvocationId::new(),
+                            source_invocation: None,
                             ambient: None,
                             scope: None,
                         },
