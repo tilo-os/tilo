@@ -318,16 +318,35 @@ fn spawn_change_monitor(name: &'static str, argv: &'static [&'static str], tx: S
 }
 
 fn monitor_until_exit(program: &str, args: &[&str], tx: &Sender<()>) -> Result<(), ()> {
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .process_group(0)
-        .spawn()
-        .map_err(|_| ())?;
+        .process_group(0);
+    #[cfg(target_os = "linux")]
+    {
+        let owner = i32::try_from(std::process::id()).map_err(|_| ())?;
+        // SAFETY: the post-fork hook uses only async-signal-safe kernel calls.
+        // No lock, allocation or application state is accessed before exec.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // Close the race where the shell exits before prctl is armed.
+                if libc::getppid() != owner {
+                    return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+                }
+                Ok(())
+            });
+        }
+    }
+    let mut child = command.spawn().map_err(|_| ())?;
     let Some(stdout) = child.stdout.take() else {
         let _ = child.kill();
+        let _ = child.wait();
         return Err(());
     };
     for line in BufReader::new(stdout).lines() {
@@ -583,3 +602,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "status_monitor_tests.rs"]
+mod monitor_tests;
