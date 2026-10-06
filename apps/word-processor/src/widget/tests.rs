@@ -1982,6 +1982,198 @@ fn compact_styles_publishes_only_foreground_ui_and_retains_document_actions() {
     assert_eq!(app.peer_document().get_heads(), heads);
 }
 
+#[test]
+fn compact_styles_accessibility_edits_real_style_and_refuses_viewers() {
+    let mut app =
+        ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
+    app.harness().resize((390, 844)).unwrap();
+    app.effect(&WordProcessorEffect::Styles).unwrap();
+    app.settle();
+    let audit = app.harness().native_app_audit();
+    assert!(audit.is_certified(), "{:?}", audit.issues);
+    let before = app.peer_document().get_heads();
+    let serif = app
+        .harness()
+        .a11y_node_named(&t("panel-font-serif"))
+        .unwrap();
+    app.harness()
+        .perform_a11y_action(serif, &ui::a11y::Action::Focus)
+        .unwrap();
+    app.harness()
+        .perform_a11y_action(serif, &ui::a11y::Action::Activate)
+        .unwrap();
+    app.settle();
+    assert_ne!(app.peer_document().get_heads(), before);
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.sheet.get("body").font)
+            .unwrap(),
+        "serif"
+    );
+    let size = app.harness().a11y_node_named(&t("panel-num-size")).unwrap();
+    app.harness()
+        .perform_a11y_action(size, &ui::a11y::Action::Focus)
+        .unwrap();
+    app.harness()
+        .perform_a11y_action(size, &ui::a11y::Action::SetValue("26".into()))
+        .unwrap();
+    app.settle();
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.sheet.get("body").size)
+            .unwrap(),
+        26.0
+    );
+    app.harness().key("Enter");
+    app.settle();
+    assert!(app.undo());
+    app.settle();
+    assert_ne!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.sheet.get("body").size)
+            .unwrap(),
+        26.0
+    );
+    app.set_role(ui::permissions::Role::Viewer);
+    app.settle();
+    let protected = app.peer_document().get_heads();
+    let mono = app
+        .harness()
+        .a11y_node_named(&t("panel-font-mono"))
+        .unwrap();
+    assert!(
+        app.harness()
+            .perform_a11y_action(mono, &ui::a11y::Action::Activate)
+            .is_err()
+    );
+    let size = app.harness().a11y_node_named(&t("panel-num-size")).unwrap();
+    assert!(
+        app.harness()
+            .perform_a11y_action(size, &ui::a11y::Action::SetValue("40".into()))
+            .is_err()
+    );
+    app.settle();
+    assert_eq!(app.peer_document().get_heads(), protected);
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.sheet.get("body").font)
+            .unwrap(),
+        "serif"
+    );
+}
+
+#[test]
+fn compact_styles_accessibility_tracks_scrolled_foreground_controls() {
+    let mut app =
+        ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
+    app.harness().resize((844, 390)).unwrap();
+    app.effect(&WordProcessorEffect::Styles).unwrap();
+    app.settle();
+    let align = app
+        .harness()
+        .a11y_node_named(&t("panel-align-left"))
+        .unwrap();
+    assert!(
+        app.harness()
+            .a11y_node_named(&t("panel-num-indent"))
+            .is_none()
+    );
+    let before = app.peer_document().get_heads();
+    let document_scroll = app
+        .with_surface::<WordProcessorWidget, _>(|widget| widget.scroll_y)
+        .unwrap();
+    let region = app
+        .harness()
+        .root_widget()
+        .primary_vertical_scroll()
+        .expect("the hosted root publishes the foreground scroll region");
+    assert_eq!(region.key, "styles");
+    assert!(region.metrics.max_scroll() > 0.0);
+    let result = app
+        .with_surface::<WordProcessorWidget, _>(|widget| {
+            widget.apply_primary_vertical_scroll(ui::widget::PrimaryScrollAction::End)
+        })
+        .unwrap();
+    assert!(matches!(
+        result,
+        ui::widget::PrimaryScrollResult::Changed(_)
+    ));
+    app.settle();
+    assert_eq!(app.peer_document().get_heads(), before);
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.scroll_y)
+            .unwrap(),
+        document_scroll
+    );
+    assert!(
+        app.harness()
+            .a11y_node_named(&t("panel-align-left"))
+            .is_none()
+    );
+    assert!(
+        app.harness()
+            .a11y_node_named(&t("panel-num-indent"))
+            .is_some()
+    );
+    assert!(
+        app.harness()
+            .a11y_node_named(&t("panel-new-style"))
+            .is_some()
+    );
+    let audit = app.harness().native_app_audit();
+    assert!(audit.is_certified(), "{:?}", audit.issues);
+    let heads = app.peer_document().get_heads();
+    assert!(
+        app.harness()
+            .perform_a11y_action(align, &ui::a11y::Action::Activate)
+            .is_err()
+    );
+    assert_eq!(app.peer_document().get_heads(), heads);
+}
+
+#[test]
+fn compact_styles_accessibility_focus_routes_the_real_spacing_dropdown() {
+    let mut app =
+        ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
+    app.harness().resize((390, 844)).unwrap();
+    app.effect(&WordProcessorEffect::Styles).unwrap();
+    app.settle();
+    let before = app.peer_document().get_heads();
+    let spacing = app
+        .harness()
+        .a11y_node_named(&t("panel-line-spacing"))
+        .unwrap();
+    app.harness()
+        .perform_a11y_action(spacing, &ui::a11y::Action::Focus)
+        .unwrap();
+    app.harness().key("ArrowDown");
+    app.settle();
+    assert!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.line_spacing.is_open())
+            .unwrap()
+    );
+    app.harness().key("Escape");
+    app.settle();
+    assert!(
+        !app.with_surface::<WordProcessorWidget, _>(|widget| widget.line_spacing.is_open())
+            .unwrap()
+    );
+    assert_eq!(app.peer_document().get_heads(), before);
+    let spacing = app
+        .harness()
+        .a11y_node_named(&t("panel-line-spacing"))
+        .unwrap();
+    app.harness()
+        .perform_a11y_action(
+            spacing,
+            &ui::a11y::Action::SetValue(line_spacing_label(2.0)),
+        )
+        .unwrap();
+    app.settle();
+    assert_eq!(
+        app.with_surface::<WordProcessorWidget, _>(|widget| widget.current_line_spacing())
+            .unwrap(),
+        2.0
+    );
+    assert_ne!(app.peer_document().get_heads(), before);
+}
+
 fn assert_styles_page_scrolls_to_its_last_real_action(
     app: &mut ui::framework::testing::TestApp<crate::framework::WordProcessorApp>,
 ) {
