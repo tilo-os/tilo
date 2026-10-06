@@ -7,11 +7,13 @@
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
-use tilo_actions::remote::{InvokeArgument, RemoteActionTarget, workspace_provider};
+use tilo_actions::remote::{
+    CatalogueQuery, InvokeArgument, RemoteActionTarget, workspace_provider,
+};
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 
 use crate::LocalState;
-use crate::remote_actions::{InvocationCall, RemoteActions, RemoteCall};
+use crate::remote_actions::{CatalogueCall, InvocationCall, RemoteActions, RemoteCall};
 use crate::time::{Duration, Instant};
 use crate::widget::Collaborative;
 
@@ -197,6 +199,9 @@ pub struct AgentTaskFrontiers {
     workspace: String,
     agent: String,
     current: Option<LocalState<InvocationCall>>,
+    /// The current caller's offered actions, not permissions inferred from
+    /// task visibility. Refreshed on the same authenticated transport.
+    controls: BTreeMap<(String, String), LocalState<CatalogueCall>>,
     current_consumed: bool,
     current_issued: u64,
     current_accepts_frontier_change: bool,
@@ -247,6 +252,7 @@ impl AgentTaskFrontiers {
             workspace: String::new(),
             agent: String::new(),
             current: None,
+            controls: BTreeMap::new(),
             current_consumed: false,
             current_issued: 0,
             current_accepts_frontier_change: false,
@@ -282,6 +288,7 @@ impl AgentTaskFrontiers {
         workspace.clone_into(&mut self.workspace);
         agent.clone_into(&mut self.agent);
         self.current = None;
+        self.controls.clear();
         self.current_consumed = true;
         self.current_issued = 0;
         self.current_accepts_frontier_change = false;
@@ -424,12 +431,57 @@ impl AgentTaskFrontiers {
     }
 
     /// Whether the current complete owner snapshot names exactly one selected
-    /// run and no direction is already awaiting its receipt.
+    /// run, the caller is offered its exact Direct action, and no direction
+    /// is already awaiting its receipt. Invocation still rechecks authority.
     #[must_use]
     pub fn can_steer(&self) -> bool {
         matches!(self.actionable_frontier(), Some(frontier)
-            if frontier.route == "model" && !frontier.cancellation_requested)
+            if frontier.route == "model" && !frontier.cancellation_requested
+                && self.offers(&task_target(&self.workspace, &frontier.task_id, DIRECT_TASK_ACTION)))
             && !matches!(self.direction_state, AgentDirectionState::Submitting)
+    }
+
+    /// An affordance only: the owner rechecks authority when invoked.
+    #[must_use]
+    pub fn can_queue(&self) -> bool {
+        self.snapshot_complete
+            && !self.invalidated
+            && !self.agent.is_empty()
+            && self.queue.is_none()
+            && self.offers(&task_collection_target(&self.workspace, QUEUE_TASK_ACTION))
+    }
+
+    #[must_use]
+    pub fn can_stop(&self) -> bool {
+        self.stop.is_none()
+            && self.actionable_frontier().is_some_and(|frontier| {
+                matches!(frontier.route.as_str(), "model" | "rules_only")
+                    && !frontier.cancellation_requested
+                    && self.offers(&task_target(
+                        &self.workspace,
+                        &frontier.task_id,
+                        STOP_TASK_ACTION,
+                    ))
+            })
+    }
+
+    fn offers(&self, target: &RemoteActionTarget) -> bool {
+        let key = (
+            target.address.resource.clone(),
+            target.address.action.clone(),
+        );
+        let Some(RemoteCall::Done(page)) = self.controls.get(&key).map(LocalState::get) else {
+            return false;
+        };
+        !page.revision.is_empty()
+            && page.exhausted
+            && page.next_cursor.is_empty()
+            && !page.stale_cursor
+            && !page.budget_exhausted
+            && page.rows.len() == 1
+            && page.rows.iter().any(|row| {
+                row.resource.id == target.address.resource && row.target().as_ref() == Some(target)
+            })
     }
 
     #[must_use]
@@ -448,6 +500,8 @@ impl AgentTaskFrontiers {
             self.invalidated = false;
             self.stale_frontier = false;
             self.direction_state = AgentDirectionState::Draft;
+            self.controls.clear();
+            self.refresh_control_offers();
             Ok(())
         } else {
             Err("select a current task returned by Task Center".into())
@@ -489,6 +543,9 @@ impl AgentTaskFrontiers {
         if frontier.cancellation_requested {
             return Err("the task cancellation state is unavailable or stopping".into());
         }
+        if !self.can_steer() {
+            return Err("the current caller is not offered task steering".into());
+        }
         let invocation = InvocationId::new();
         let target = task_target(&self.workspace, &frontier.task_id, DIRECT_TASK_ACTION);
         let argument = InvokeArgument::Json(serde_json::Map::from_iter([
@@ -524,6 +581,9 @@ impl AgentTaskFrontiers {
         }
         if self.queue.is_some() {
             return Err("a task is already being queued".into());
+        }
+        if !self.can_queue() {
+            return Err("the current caller is not offered task queueing".into());
         }
         let invocation = InvocationId::new();
         let mut argument = serde_json::Map::from_iter([
@@ -561,6 +621,9 @@ impl AgentTaskFrontiers {
         }
         if frontier.cancellation_requested {
             return Err("this task is already stopping or its state is unavailable".into());
+        }
+        if !self.can_stop() {
+            return Err("the current caller is not offered task stopping".into());
         }
         let invocation = InvocationId::new();
         let call = self.remote.invoke_with_id(
@@ -619,10 +682,43 @@ impl AgentTaskFrontiers {
             self.start_current_refresh(false);
         }
         self.collect_current_tasks(now);
+        self.refresh_control_offers();
         self.poll_direction();
         self.poll_saved_direction();
         self.poll_queue();
         self.poll_stop();
+    }
+
+    fn refresh_control_offers(&mut self) {
+        if self.current_consumed && self.snapshot_complete && !self.invalidated {
+            let mut targets = vec![task_collection_target(&self.workspace, QUEUE_TASK_ACTION)];
+            if let Some(frontier) = self.actionable_frontier() {
+                targets.push(task_target(
+                    &self.workspace,
+                    &frontier.task_id,
+                    DIRECT_TASK_ACTION,
+                ));
+                targets.push(task_target(
+                    &self.workspace,
+                    &frontier.task_id,
+                    STOP_TASK_ACTION,
+                ));
+            }
+            for target in targets {
+                let key = (
+                    target.address.resource.clone(),
+                    target.address.action.clone(),
+                );
+                self.controls.entry(key).or_insert_with(|| {
+                    self.remote.catalogue_page(CatalogueQuery {
+                        provider: Some(target.provider),
+                        target: Some(target.address),
+                        max_results: 1,
+                        ..CatalogueQuery::default()
+                    })
+                });
+            }
+        }
     }
 
     fn start_current_refresh(&mut self, accepts_frontier_change: bool) {
@@ -630,6 +726,9 @@ impl AgentTaskFrontiers {
             return;
         }
         self.current_issued = self.issue_observation();
+        // Discard old grants immediately while a fresh observation is pending.
+        // Browse only this room's Task Center surface; labels never grant access.
+        self.controls.clear();
         self.current_accepts_frontier_change = accepts_frontier_change;
         self.current = Some(self.remote.invoke(
             task_collection_target(&self.workspace, READ_CURRENT_TASKS_ACTION),
@@ -846,6 +945,7 @@ impl AgentTaskFrontiers {
     }
 
     fn invalidate_snapshot(&mut self, discovery: AgentTaskDiscovery) {
+        self.controls.clear();
         self.invalidated = true;
         self.snapshot_complete = false;
         self.frontiers.clear();
@@ -1215,6 +1315,7 @@ mod tests {
         current: Mutex<VecDeque<serde_json::Value>>,
         reads: Mutex<BTreeMap<String, VecDeque<serde_json::Value>>>,
         invocations: Mutex<Vec<InvokeRequest>>,
+        control_page: Mutex<Option<CataloguePage>>,
     }
 
     impl FrontierHost {
@@ -1230,6 +1331,7 @@ mod tests {
                 current: Mutex::new(VecDeque::from([current_snapshot(1, current)])),
                 reads: Mutex::new(reads),
                 invocations: Mutex::new(Vec::new()),
+                control_page: Mutex::new(None),
             }
         }
 
@@ -1238,6 +1340,7 @@ mod tests {
                 current: Mutex::new(snapshots.into()),
                 reads: Mutex::new(BTreeMap::new()),
                 invocations: Mutex::new(Vec::new()),
+                control_page: Mutex::new(None),
             }
         }
 
@@ -1258,6 +1361,7 @@ mod tests {
                 })])),
                 reads: Mutex::new(BTreeMap::new()),
                 invocations: Mutex::new(Vec::new()),
+                control_page: Mutex::new(None),
             }
         }
     }
@@ -1266,11 +1370,51 @@ mod tests {
         fn query(
             &self,
             _caller: &Caller,
-            _query: CatalogueQuery,
+            query: CatalogueQuery,
         ) -> Pending<Result<CataloguePage, ActionHostError>> {
+            if let Some(mut page) = self.control_page.lock().unwrap().clone() {
+                // Keep adversarial resource/provider fields, but answer only
+                // the requested operation so each negative exercises its
+                // own invariant rather than an unrelated oversized page.
+                page.rows.retain(|row| {
+                    row.action.as_ref().is_some_and(|action| {
+                        query
+                            .target
+                            .as_ref()
+                            .is_some_and(|target| target.action == action.address.action)
+                    })
+                });
+                return Pending::ready(Ok(page));
+            }
+            let provider = query.provider.as_deref().expect("room-scoped catalogue");
+            let mut resources = std::collections::BTreeSet::new();
+            for snapshot in self.current.lock().unwrap().iter() {
+                for task in snapshot["tasks"].as_array().into_iter().flatten() {
+                    if let Some(id) = task["task_id"].as_str() {
+                        resources.insert(format!("{TASK_RESOURCE_PREFIX}{id}"));
+                    }
+                }
+            }
+            resources.extend(
+                self.reads
+                    .lock()
+                    .unwrap()
+                    .keys()
+                    .map(|id| format!("{TASK_RESOURCE_PREFIX}{id}")),
+            );
+            let mut rows = vec![control_row(provider, TASK_COLLECTION, QUEUE_TASK_ACTION)];
+            for resource in resources {
+                rows.push(control_row(provider, &resource, DIRECT_TASK_ACTION));
+                rows.push(control_row(provider, &resource, STOP_TASK_ACTION));
+            }
+            rows.retain(|row| {
+                row.action
+                    .as_ref()
+                    .is_some_and(|action| query.target.as_ref() == Some(&action.address))
+            });
             Pending::ready(Ok(CataloguePage {
                 revision: "task-frontier-1".into(),
-                rows: Vec::new(),
+                rows,
                 exhausted: true,
                 ..CataloguePage::default()
             }))
@@ -1355,6 +1499,40 @@ mod tests {
             Err(ActionHostError::NotCancellable {
                 reason: "fixture invocations settle immediately".into(),
             })
+        }
+    }
+
+    fn control_row(
+        provider: &str,
+        resource: &str,
+        action: &str,
+    ) -> tilo_actions::remote::CatalogueRow {
+        tilo_actions::remote::CatalogueRow {
+            provider: provider.into(),
+            app_id: "task-center".into(),
+            parent_resource: String::new(),
+            resource: tilo_actions::remote::CatalogueResource {
+                id: resource.into(),
+                kind: "desktop.task".into(),
+                label: "Task".into(),
+                presentation: None,
+            },
+            action: Some(tilo_actions::ActionDescriptor {
+                address: ActionAddress::new(resource, action),
+                semantic_identity: None,
+                resource_kind: "desktop.task".into(),
+                resource_label: "Task".into(),
+                action_label: action.into(),
+                description: None,
+                locus: tilo_actions::ExecutionLocus::ClientLocal,
+                kind: tilo_actions::OperationKind::Document,
+                contract: tilo_actions::ActionContract::default(),
+                input: tilo_actions::InputSpec::None,
+                params: Vec::new(),
+                view: None,
+            }),
+            has_children: false,
+            visibility: None,
         }
     }
 
@@ -1450,6 +1628,143 @@ mod tests {
         ));
         model.observe(workspace, agent);
         model
+    }
+
+    #[test]
+    fn reading_tasks_does_not_grant_task_controls() {
+        let host = Arc::new(FrontierHost::new(
+            vec![current_task("one", "Current task", "agent-a", 4, 4)],
+            [],
+        ));
+        *host.control_page.lock().unwrap() = Some(CataloguePage {
+            revision: "read-only".into(),
+            exhausted: true,
+            ..CataloguePage::default()
+        });
+        let mut model = model(host.clone(), "room", "agent-a");
+        assert!(matches!(model.choice(), AgentTaskChoice::One(_)));
+        assert!(!model.can_queue());
+        assert!(!model.can_steer());
+        assert!(!model.can_stop());
+        assert!(model.queue("Keep this draft", None).is_err());
+        assert!(model.steer("Keep this direction").is_err());
+        assert!(model.stop().is_err());
+        assert!(
+            host.requests()
+                .iter()
+                .all(|request| request.target.address.action == READ_CURRENT_TASKS_ACTION)
+        );
+    }
+
+    #[test]
+    fn control_catalogue_requires_complete_fresh_exact_room_and_task() {
+        for condition in ["partial", "stale", "budget", "wrong-room", "wrong-task"] {
+            let host = Arc::new(FrontierHost::new(
+                vec![current_task("one", "Current task", "agent-a", 4, 4)],
+                [],
+            ));
+            let provider = workspace_provider(if condition == "wrong-room" {
+                "other"
+            } else {
+                "room"
+            });
+            let resource = if condition == "wrong-task" {
+                "desktop:task:other"
+            } else {
+                "desktop:task:one"
+            };
+            *host.control_page.lock().unwrap() = Some(CataloguePage {
+                revision: "controls".into(),
+                rows: vec![
+                    control_row(&provider, resource, DIRECT_TASK_ACTION),
+                    control_row(&provider, resource, STOP_TASK_ACTION),
+                ],
+                exhausted: condition != "partial",
+                stale_cursor: condition == "stale",
+                budget_exhausted: condition == "budget",
+                ..CataloguePage::default()
+            });
+            let model = model(host, "room", "agent-a");
+            assert!(!model.can_steer(), "{condition}");
+            assert!(!model.can_stop(), "{condition}");
+        }
+    }
+
+    #[test]
+    fn each_control_requires_its_own_offered_action() {
+        let host = Arc::new(FrontierHost::new(
+            vec![current_task("one", "Current task", "agent-a", 4, 4)],
+            [],
+        ));
+        *host.control_page.lock().unwrap() = Some(CataloguePage {
+            revision: "queue-only".into(),
+            rows: vec![control_row(
+                &workspace_provider("room"),
+                TASK_COLLECTION,
+                QUEUE_TASK_ACTION,
+            )],
+            exhausted: true,
+            ..CataloguePage::default()
+        });
+        let model = model(host, "room", "agent-a");
+        assert!(model.can_queue());
+        assert!(!model.can_steer());
+        assert!(!model.can_stop());
+    }
+
+    #[test]
+    fn switching_tasks_discards_previously_offered_controls() {
+        let host = Arc::new(FrontierHost::new(
+            vec![
+                current_task("one", "First", "agent-a", 4, 4),
+                current_task("two", "Second", "agent-a", 4, 4),
+            ],
+            [],
+        ));
+        let mut model = model(host.clone(), "room", "agent-a");
+        assert!(!model.can_steer());
+        model.select("one").unwrap();
+        assert!(model.can_steer());
+        assert!(model.can_stop());
+        model.select("two").unwrap();
+        assert!(model.can_steer());
+        *host.control_page.lock().unwrap() = Some(CataloguePage {
+            revision: "viewer".into(),
+            exhausted: true,
+            ..CataloguePage::default()
+        });
+        model.select("one").unwrap();
+        assert!(!model.can_steer());
+        assert!(!model.can_stop());
+        assert!(!model.can_queue());
+        assert!(model.steer("Do not use the old grant").is_err());
+        assert!(
+            host.requests()
+                .iter()
+                .all(|request| request.target.address.action == READ_CURRENT_TASKS_ACTION)
+        );
+    }
+
+    #[test]
+    fn permission_downgrade_revokes_controls_without_losing_task_context() {
+        let host = Arc::new(FrontierHost::new(
+            vec![current_task("one", "Current task", "agent-a", 4, 4)],
+            [],
+        ));
+        let mut model = model(host.clone(), "room", "agent-a");
+        assert!(model.can_queue());
+        assert!(model.can_steer());
+        assert!(model.can_stop());
+        *host.control_page.lock().unwrap() = Some(CataloguePage {
+            revision: "viewer".into(),
+            exhausted: true,
+            ..CataloguePage::default()
+        });
+        model.refresh();
+        assert!(matches!(model.choice(), AgentTaskChoice::One(_)));
+        assert!(!model.can_queue());
+        assert!(!model.can_steer());
+        assert!(!model.can_stop());
     }
 
     #[test]
@@ -1772,6 +2087,7 @@ mod tests {
                 VecDeque::from([exact_task_at(2, "one", "Current task", "agent-a", 5, 5)]),
             )])),
             invocations: Mutex::new(Vec::new()),
+            control_page: Mutex::new(None),
         });
         let mut model = model(host, "room", "agent-a");
         model.steer("Use the final reviewed wording").unwrap();
@@ -1905,6 +2221,7 @@ mod tests {
                 ]),
             )])),
             invocations: Mutex::new(Vec::new()),
+            control_page: Mutex::new(None),
         });
         let mut model = model(host.clone(), "room", "agent-a");
         model.steer("Use the final reviewed wording").unwrap();
@@ -1959,6 +2276,7 @@ mod tests {
                 ]),
             )])),
             invocations: Mutex::new(Vec::new()),
+            control_page: Mutex::new(None),
         });
         let mut model = model(host, "room", "agent-a");
         model.steer("Saved for the original run").unwrap();
