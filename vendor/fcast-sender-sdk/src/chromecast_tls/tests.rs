@@ -1,107 +1,51 @@
 //! Real TLS handshakes exercise the production verifier and cancellation path.
-//! Keys are generated per test and deleted, never committed or device-issued.
+//! Keys are generated per test in memory, never committed or device-issued.
+use super::super::certificates;
 use super::*;
 use pki::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::{
     server::{ClientHello, ResolvesServerCert},
     sign::CertifiedKey,
 };
-use std::{
-    path::{Path, PathBuf},
-    process::Command as ProcessCommand,
-    sync::atomic::{AtomicU64, Ordering},
-};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
-
-struct Fixture(PathBuf);
+// In-memory P-256 transport credentials exercise both TLS versions without
+// depending on executables or writing private keys to a shared filesystem.
+struct Fixture {
+    certificate: CertificateDer<'static>,
+    receiver: Arc<dyn rustls::sign::SigningKey>,
+    attacker: Arc<dyn rustls::sign::SigningKey>,
+}
 impl Fixture {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "tilo-cast-tls-{}-{}",
-            std::process::id(),
-            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
-        ));
-        let mut directory = std::fs::DirBuilder::new();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            directory.mode(0o700);
+        let receiver = certificates::KeyPair::generate().expect("ephemeral receiver key");
+        let attacker = certificates::KeyPair::generate().expect("ephemeral attacker key");
+        let params = certificates::CertificateParams::new(vec!["isolated-cast-fixture".into()])
+            .expect("fixture certificate parameters");
+        let certificate = params
+            .self_signed(&receiver)
+            .expect("self-signed fixture leaf")
+            .der()
+            .clone();
+        Self {
+            certificate,
+            receiver: signing_key(&receiver),
+            attacker: signing_key(&attacker),
         }
-        directory
-            .create(&path)
-            .expect("exclusive private fixture directory");
-        let fixture = Self(path);
-        for name in ["receiver", "attacker"] {
-            run(
-                &fixture.0,
-                &[
-                    "req",
-                    "-x509",
-                    "-newkey",
-                    "rsa:2048",
-                    "-nodes",
-                    "-keyout",
-                    &format!("{name}.pem"),
-                    "-out",
-                    &format!("{name}.der"),
-                    "-outform",
-                    "DER",
-                    "-days",
-                    "1",
-                    "-subj",
-                    "/CN=isolated-cast-fixture",
-                ],
-            );
-            run(
-                &fixture.0,
-                &[
-                    "pkcs8",
-                    "-topk8",
-                    "-nocrypt",
-                    "-in",
-                    &format!("{name}.pem"),
-                    "-out",
-                    &format!("{name}.key"),
-                    "-outform",
-                    "DER",
-                ],
-            );
-        }
-        fixture
     }
     fn certified_key(&self, wrong_signer: bool) -> CertifiedKey {
-        let cert = CertificateDer::from(
-            std::fs::read(self.0.join("receiver.der")).expect("fixture certificate"),
-        );
-        let signer = if wrong_signer {
-            "attacker.key"
+        let key = if wrong_signer {
+            &self.attacker
         } else {
-            "receiver.key"
+            &self.receiver
         };
-        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-            std::fs::read(self.0.join(signer)).expect("fixture key"),
-        ));
-        let signing_key =
-            rustls::crypto::ring::sign::any_supported_type(&key).expect("RSA signing key");
         // Deliberately bypass with_single_cert's key-match validation: a malicious
         // receiver can send any leaf and sign CertificateVerify with another key.
-        CertifiedKey::new(vec![cert], signing_key)
+        CertifiedKey::new(vec![self.certificate.clone()], key.clone())
     }
 }
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).expect("remove ephemeral keys");
-    }
-}
-fn run(path: &Path, args: &[&str]) {
-    let result = ProcessCommand::new("openssl")
-        .args(args)
-        .current_dir(path)
-        .output()
-        .expect("openssl is required; fixture must not skip");
-    assert!(result.status.success(), "openssl fixture generation failed");
+fn signing_key(key: &certificates::KeyPair) -> Arc<dyn rustls::sign::SigningKey> {
+    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
+    rustls::crypto::ring::sign::any_supported_type(&key).expect("fixture signing key")
 }
 #[derive(Debug)]
 struct Resolver(Arc<CertifiedKey>);

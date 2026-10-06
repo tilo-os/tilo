@@ -21,6 +21,7 @@ zbus = { workspace = true, features = ["tokio", "p2p"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+rcgen.workspace = true
 tokio-rustls = { workspace = true }
 rustls-pki-types = "1.14"
 futures-util.workspace = true

@@ -17186,6 +17186,7 @@ dependencies = [
  "hex",
  "mdns-sd",
  "rand 0.10.1",
+ "rcgen",
  "rustls-pki-types",
  "serde",
  "serde_json",
