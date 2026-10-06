@@ -31,7 +31,7 @@ use std::sync::{Mutex, PoisonError};
 use serde_json::{Map, Value};
 
 use crate::continuity::{SettingScope, classify};
-use crate::{SettingsSource, load_at, merge_section, write_atomic};
+use crate::{ConditionalUpdate, SettingsSource, load_at, merge_section, write_atomic};
 
 mod view;
 
@@ -100,7 +100,9 @@ fn copy_identity(path: &Path) -> Option<CopyIdentity> {
 /// both; then its contents do.
 fn copy_changed(path: &Path, state: &State) -> bool {
     let identity = copy_identity(path);
-    if identity != state.copy_identity {
+    // A failed copy rewrite forgets its identity. If the obstruction is
+    // removed, both identities can be absent; refresh must still repair it.
+    if identity != state.copy_identity || identity.is_none() {
         return true;
     }
     let recent = identity.is_some_and(|identity| {
@@ -336,23 +338,25 @@ impl SessionSettings {
     }
 }
 
-impl SettingsSource for SessionSettings {
-    fn load(&self) -> Map<String, Value> {
-        self.refresh();
-        self.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .projection()
-    }
-
+impl SessionSettings {
     #[allow(
         clippy::significant_drop_tightening,
-        reason = "the state stays locked while the copy is, so one change is taken in and written at a time"
+        reason = "canonical state and external-copy locks cover comparison, durable merge and publication"
     )]
-    fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()> {
+    fn update_section_if(
+        &self,
+        name: &str,
+        expected: Option<&Map<String, Value>>,
+        values: Map<String, Value>,
+    ) -> std::io::Result<ConditionalUpdate> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let _lock = lock_copy(&self.paths.copy)?;
         self.take_in_copy(&mut state)?;
+        if expected.is_some_and(|expected| {
+            state.projection().get(name) != Some(&Value::Object(expected.clone()))
+        }) {
+            return Ok(ConditionalUpdate::Superseded);
+        }
         let (person, device) = (state.person.clone(), state.device.clone());
         let mut touched = Touched::default();
         for (leaf, value) in values {
@@ -368,7 +372,42 @@ impl SettingsSource for SessionSettings {
         }
         // The records keep the change even when the copy cannot be written;
         // the next change or refresh writes it again.
-        write_copy(&self.paths, &mut state)
+        Ok(match write_copy(&self.paths, &mut state) {
+            Ok(()) => ConditionalUpdate::Stored,
+            Err(error) => ConditionalUpdate::StoredWithCopyRepair(error),
+        })
+    }
+}
+
+impl SettingsSource for SessionSettings {
+    fn load(&self) -> Map<String, Value> {
+        self.refresh();
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .projection()
+    }
+
+    fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()> {
+        self.update_section_if(name, None, values)?
+            .into_sync_result()
+    }
+
+    fn update_section_report(
+        &self,
+        name: &str,
+        values: Map<String, Value>,
+    ) -> std::io::Result<ConditionalUpdate> {
+        self.update_section_if(name, None, values)
+    }
+
+    fn compare_update_section(
+        &self,
+        name: &str,
+        expected: &Map<String, Value>,
+        values: Map<String, Value>,
+    ) -> std::io::Result<ConditionalUpdate> {
+        self.update_section_if(name, Some(expected), values)
     }
 
     fn revision(&self) -> u64 {

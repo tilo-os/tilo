@@ -410,18 +410,35 @@ impl DisplayTransaction {
     ///
     /// Returns an error if the transaction can't be serialised or written.
     pub fn request(set: DisplaySet, candidate: DisplayConfig) -> std::io::Result<Self> {
+        let transaction = Self::prepare_request(set, candidate)?;
+        transaction.save()?;
+        Ok(transaction)
+    }
+
+    /// Construct an admitted request without writing storage. Its identity
+    /// stays unique among requests in this process even within one clock tick.
+    /// The request becomes effective only after its normal durable save.
+    ///
+    /// # Errors
+    /// Returns an error if the request identity counter is exhausted.
+    pub fn prepare_request(set: DisplaySet, candidate: DisplayConfig) -> std::io::Result<Self> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static LAST_REQUEST: AtomicU64 = AtomicU64::new(0);
         let now = unix_now_ms();
-        let transaction = Self {
-            id: now,
+        let previous = LAST_REQUEST
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |previous| {
+                previous.checked_add(1).map(|next| next.max(now))
+            })
+            .map_err(|_| std::io::Error::other("display request identities exhausted"))?;
+        Ok(Self {
+            id: previous.saturating_add(1).max(now),
             state: DisplayTransactionState::Requested,
             previous: DisplayConfig::load_for(&set),
             set,
             candidate,
             deadline_unix_ms: None,
             message: None,
-        };
-        transaction.save()?;
-        Ok(transaction)
+        })
     }
 
     pub fn load() -> Option<Self> {
