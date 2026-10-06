@@ -2379,3 +2379,9 @@ a11y-speaker-listener = { $group } kann mit diesem Mikrofon kalibrieren
 a11y-speaker-listener-description = Die Lautsprecherkalibrierung darf mit diesem Mikrofon hören; aktivieren, um das zu beenden
 speaker-calibration-listening-refused = { $microphone } durfte nicht zuhören, daher kann an deinem Platz nichts gemessen werden
 speaker-error-listening-unavailable = wähle ein Mikrofon, das an deinem Platz zuhören kann
+
+search-provider-permission-prompts = Berechtigungsanfragen
+permission-request-expired = Diese Berechtigungsanfrage ist nicht mehr offen
+permission-request-owner-required = Nur der aktuelle Eigentümer kann über Berechtigungen entscheiden
+permission-request-permanent-owner-required = Eine dauerhafte Berechtigung kann nur der aktuelle Eigentümer erteilen
+permission-request-confirm = Entscheidung über die Berechtigung bestätigen
