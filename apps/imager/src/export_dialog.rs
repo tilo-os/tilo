@@ -211,6 +211,40 @@ mod tests {
         }
     }
 
+    /// Compact pages follow the shorter window axis and resolved UI scale;
+    /// accessibility must describe the same full-window surface.
+    #[test]
+    fn export_dialog_compact_layout_and_accessibility_fill_the_window() {
+        let cases = vec![
+            (Rect::new(0.0, 0.0, 800.0, 480.0), Theme::dark()),
+            (Rect::new(0.0, 0.0, 320.0, 640.0), Theme::light()),
+            (Rect::new(0.0, 0.0, 320.0, 640.0), Theme::high_contrast()),
+            (
+                Rect::new(0.0, 0.0, 1280.0, 800.0),
+                Theme::dark().with_ui_scale(1.5),
+            ),
+        ];
+        let mut dialog = ExportDialog::new();
+        dialog.show("[install]\nhostname = tilo".into());
+        for (viewport, theme) in cases {
+            dialog.layout_in(viewport, &theme, &mut TextRenderer::new());
+            assert_eq!(dialog.dialog_rect(), viewport);
+            let update =
+                ui::accesskit_bridge::build_tree_update(&dialog.dialog, &HashMap::new(), None, 1.0);
+            let modal = update
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some(TITLE))
+                .expect("the open modal is exported");
+            let bounds = modal.1.bounds().expect("exported modal bounds");
+            assert_eq!(
+                Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1),
+                viewport,
+                "exported accessibility bounds follow the shared-modal layout"
+            );
+        }
+    }
+
     /// Export dialog layout, dismissal and read-only accessibility.
     #[test]
     #[allow(
@@ -249,13 +283,11 @@ mod tests {
                 &Theme::dark(),
                 &mut TextRenderer::new(),
             );
-            let compact = dialog.dialog_rect();
             assert_eq!(
-                compact.width(),
-                (320.0 * COMPACT_WIDTH_FRACTION)
-                    .min(320.0 - 2.0 * f64::from(Theme::dark().tokens.spacing.rhythm.group),),
+                dialog.dialog_rect(),
+                Rect::new(0.0, 0.0, 320.0, 640.0),
+                "compact shared modals fill the whole window"
             );
-            assert!(compact.height() <= 640.0 * 0.8);
         }
 
         // Phase `escape_and_any_left_click_are_captured_and_dismiss`.
