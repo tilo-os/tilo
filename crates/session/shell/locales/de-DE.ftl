@@ -2460,3 +2460,12 @@ display-confirm-answer-pending = Die Antwort zur Anzeige wird gespeichert…
 display-confirm-answer-failed = Die Antwort zur Anzeige konnte nicht gespeichert werden: { $reason }
 
 display-sheet-saving-layout = Anordnung wird gespeichert…
+
+session-diagnostics-title = Zeitdiagnose der Sitzung
+session-diagnostics-configure = Zeitdiagnose für folgende App-Starts konfigurieren
+session-diagnostics-inspect = Zeitdiagnose der Sitzung ansehen
+session-diagnostics-presentation = Inhaltsfreie Eingabe- und Präsentationszeiten erfassen
+session-diagnostics-gpu_stages = Zeiten der GPU-Verarbeitungsschritte erfassen
+session-diagnostics-gpu_timestamps = GPU-Zeitstempel aktivieren
+session-diagnostics-gpu_dispatch_timestamps = Zeitstempel der GPU-Aufträge aktivieren
+session-diagnostics-dispatch-requires-timestamps = Die Zeitdiagnose der GPU-Aufträge benötigt GPU-Zeitstempel.

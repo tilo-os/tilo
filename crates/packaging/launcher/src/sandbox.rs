@@ -198,6 +198,7 @@ pub fn push_clean_environment(argv: &mut Vec<String>) {
     // injector or output path. Keep arbitrary profiling/scenario environment stripped.
     for name in [
         "TILO_PROFILE_PRESENTATION",
+        "TILO_PROFILE_GPU_STAGES",
         "VELLO_GPU_TIMESTAMPS",
         "VELLO_GPU_DISPATCH_TIMESTAMPS",
     ] {
@@ -1370,7 +1371,8 @@ mod tests {
                 .set("TILO_NATIVE_INPUT_GATE", "private-approval")
                 .set("TILO_PROFILE_OUT", "/private/log")
                 .set("VELLO_GPU_DISPATCH_TIMESTAMPS", value)
-                .set("VELLO_GPU_TIMESTAMPS", value);
+                .set("VELLO_GPU_TIMESTAMPS", value)
+                .set("TILO_PROFILE_GPU_STAGES", value);
             let argv = build_bwrap_argv(
                 &mk_manifest("off"),
                 Path::new("/host/pkg"),
@@ -1385,7 +1387,11 @@ mod tests {
                 setenv_value(&argv, "TILO_PROFILE_PRESENTATION"),
                 (value == "1").then_some("1")
             );
-            for key in ["VELLO_GPU_TIMESTAMPS", "VELLO_GPU_DISPATCH_TIMESTAMPS"] {
+            for key in [
+                "VELLO_GPU_TIMESTAMPS",
+                "VELLO_GPU_DISPATCH_TIMESTAMPS",
+                "TILO_PROFILE_GPU_STAGES",
+            ] {
                 assert_eq!(setenv_value(&argv, key), (value == "1").then_some("1"));
             }
             for key in [

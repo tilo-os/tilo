@@ -12,6 +12,8 @@
 //! forks/execs and blocks for the child's lifetime; outcomes come back
 //! through [`drain_events`], drained once per frame.
 
+pub(crate) mod diagnostics;
+
 use crate::shell::state::WorkspaceAuthority as _;
 pub(crate) mod action_authority;
 use std::collections::VecDeque;
@@ -1021,6 +1023,7 @@ pub(crate) struct LaunchSession(std::sync::Arc<SessionLaunches>);
 
 pub(crate) struct SessionLaunches {
     events: Mutex<Vec<LaunchEvent>>,
+    pub(crate) diagnostics: Mutex<Option<diagnostics::Options>>,
     pub(super) startup: super::launch_readiness::StartupObservations,
     /// `package_id` -> where its next window should land; claimed (not
     /// consumed) by [`placement_for_toplevel`] since the compositor tracks
@@ -1069,6 +1072,7 @@ impl Default for SessionLaunches {
     fn default() -> Self {
         Self {
             events: Mutex::default(),
+            diagnostics: Mutex::default(),
             startup: super::launch_readiness::StartupObservations::default(),
             pending: Mutex::default(),
             launched: Mutex::default(),
@@ -1105,6 +1109,21 @@ thread_local! {
 }
 
 impl LaunchSession {
+    pub(crate) fn presentation_observer_enabled(&self) -> bool {
+        lock(&self.diagnostics).map_or_else(
+            || std::env::var_os("TILO_PROFILE_PRESENTATION").is_some(),
+            |options| options.0[0],
+        )
+    }
+
+    pub(crate) fn diagnostic_options(&self) -> diagnostics::Options {
+        lock(&self.diagnostics).unwrap_or_else(diagnostics::Options::inherited)
+    }
+
+    pub(crate) fn configure_diagnostics(&self, options: diagnostics::Options) {
+        *lock(&self.diagnostics) = Some(options);
+    }
+
     /// The session launches started on this thread belong to.
     pub(crate) fn current() -> Self {
         THREAD_SESSION.with(|slot| {
@@ -3408,6 +3427,10 @@ fn start_launch(
         let mut cmd = Command::new(&command.program);
         cmd.args(&command.args);
         apply_launch_env(&mut cmd, &command.env);
+        let diagnostic_options = *lock(&events.diagnostics);
+        if let Some(options) = diagnostic_options {
+            options.apply(&mut cmd);
+        }
         // Not a terminal job: no stdin, and output is relayed (not
         // inherited) so it can be quoted back in a failure notification.
         cmd.stdin(Stdio::null());

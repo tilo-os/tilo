@@ -473,7 +473,7 @@ impl State {
         let delivery_time_ns = (forward
             && has_focus
             && pressed
-            && std::env::var_os("TILO_PROFILE_PRESENTATION").is_some())
+            && crate::shell::launcher::LaunchSession::current().presentation_observer_enabled())
         .then(monotonic_time_ns)
         .flatten();
         let intercepted: Option<()> = keyboard.input(
