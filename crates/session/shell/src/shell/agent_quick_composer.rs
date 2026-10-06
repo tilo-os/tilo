@@ -1323,7 +1323,7 @@ mod tests {
         );
         let actions = ui::remote_actions::RemoteActions::session();
         composer.pending_message_offer = Some(PendingMessageOffer {
-            state: ui::agent_message_action::begin(&actions),
+            state: ui::agent_message_action::begin(&actions, "room-a"),
             deadline,
             pages_remaining: 1,
         });

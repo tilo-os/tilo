@@ -12965,7 +12965,7 @@ mod tests {
         use ui::widget::Collaborative;
 
         let mut actions = ui::remote_actions::RemoteActions::session();
-        let submission = ui::agent_message_action::begin(&actions);
+        let submission = ui::agent_message_action::begin(&actions, "room-a");
         let requests = actions.take_collab_requests();
         let [
             CollabRequest::RemoteAction {
