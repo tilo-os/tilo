@@ -14088,6 +14088,7 @@ dependencies = [
  "serial_test",
  "settings-store",
  "sha2 0.11.0",
+ "signal-hook-registry",
  "smithay",
  "smithay-client-toolkit",
  "sysinfo 0.32.1",
