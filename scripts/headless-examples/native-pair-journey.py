@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import uuid
 
 from _control import call, require_ok
 from reaper import die_with_parent
@@ -235,7 +236,7 @@ class Fixture:
                                         public_failure_path=self.output / f"failed-{operation}.json")
         return receipt.get("update", {}).get("output", {}).get("value")
 
-    def context(self, sessions, room, users):
+    def context(self, sessions, room, presence_ids):
         alice, bob = sessions["alice"], sessions["bob"]
         for session in (alice, bob):
             report = self.act(session, room, "live-context-status")
@@ -244,14 +245,29 @@ class Fixture:
         self.act(alice, room, "new-channel", {"value": "Fixture second conversation"})
 
         def text_channels(socket):
-            return sorted({row["resource"] for row in self.catalogue(socket)
-                           if row.get("application") == "so.tilo.chat" and row.get("room") == room
-                           and row.get("operation") == "post"})
+            channels = {}
+            for row in self.catalogue(socket):
+                if (row.get("application") != "so.tilo.chat" or row.get("room") != room
+                        or row.get("operation") != "post"):
+                    continue
+                resource = row["resource"]
+                # BoundPublication aliases include a host and component lifetime;
+                # only the UTF-8 domain resource identifies shared CRDT state.
+                prefix, version, host, lifetime, encoded = resource.split(":", 4)
+                if prefix != "tilo-ui-bound" or version != "v1" or len(resource) > 4096:
+                    raise RuntimeError("unexpected native resource publication")
+                uuid.UUID(host)
+                uuid.UUID(lifetime)
+                logical = bytes.fromhex(encoded).decode("utf-8")
+                if not logical.startswith("chat.channel:") or logical in channels:
+                    raise RuntimeError("ambiguous native Chat channel identity")
+                channels[logical] = resource
+            return channels
 
         channels = packaged.wait_for("two shared text channels", lambda: (
             channels if len(channels := text_channels(alice[0])) >= 2 else None), alice[1])
-        first, second = channels[:2]
-        self.record("alice-new-channel-committed", channels=channels)
+        first, second = sorted(channels)[:2]
+        self.record("alice-new-channel-committed", channels=sorted(channels))
         try:
             packaged.wait_for("native peer sees the same resources", lambda: (
                 set(channels).issubset(text_channels(bob[0]))), bob[1])
@@ -261,14 +277,30 @@ class Fixture:
                     [packaged.public_action_observation(row) for row in self.catalogue(session[0])], indent=2))
                 require_ok(call(session[0], {"op": "snapshot", "path": str(self.output / f"{name}-convergence.png")}))
             raise
-        self.record("both-native-resource-catalogues-converged", channels=channels)
-        self.act(alice, room, "open-channel", resource=first)
-        self.act(bob, room, "open-channel", resource=second)
+        self.record("both-native-resource-catalogues-converged", channels=sorted(channels))
+        self.act(alice, room, "open-channel", resource=channels[first])
+        self.act(bob, room, "open-channel", resource=text_channels(bob[0])[second])
         require_ok(call(alice[0], {"op": "pointer_move", "x": 350, "y": 220}))
         require_ok(call(bob[0], {"op": "pointer_move", "x": 640, "y": 300}))
         self.act(alice, room, "share-live-context")
+
+        def connected():
+            response = call(bob[0], {"op": "state_dump"})
+            tree = response.get("state", {}).get("workspace_tree", {})
+            (self.output / "bob-follow-roster.json").write_text(json.dumps({
+                "expected_certified_session": presence_ids[0],
+                "workspaces": [{"room": workspace.get("room"),
+                                "collaborators": workspace.get("collaborators")}
+                               for workspace in tree.get("workspaces", [])],
+                "presence": response.get("state", {}).get("chrome", {}).get("presence"),
+                "peers": response.get("state", {}).get("peers")}, indent=2))
+            return any(row.get("id") == presence_ids[0] and row.get("invited") is False
+                       for workspace in tree.get("workspaces", []) if workspace.get("room") == room
+                       for row in workspace.get("collaborators", []))
+
+        packaged.wait_for("Alice's certified session is present in Bob's roster", connected, bob[1])
         follow = packaged.require_action(bob[0], "presence.follow")
-        packaged.invoke(bob[0], follow, {"collaborator": users[0]})
+        packaged.invoke(bob[0], follow, {"collaborator": presence_ids[0]})
 
         def following():
             report = self.act(bob, room, "live-context-status")
@@ -282,7 +314,7 @@ class Fixture:
         self.act(alice, room, "stop-sharing-live-context")
         packaged.wait_for("Stop withdraws native context", lambda: (
             self.act(bob, room, "live-context-status").get("following") is False), bob[1])
-        self.act(alice, room, "open-channel", resource=second)
+        self.act(alice, room, "open-channel", resource=channels[second])
         time.sleep(0.5)
         report = self.act(bob, room, "live-context-status")
         if report.get("channel") != first.removeprefix("chat.channel:"):
@@ -467,7 +499,7 @@ class Fixture:
             (self.output / f"{name}-actions.json").write_text(json.dumps(
                 [packaged.public_action_observation(row) for row in packaged.actions(socket)], indent=2))
             require_ok(call(socket, {"op": "snapshot", "path": str(self.output / f"{name}-chat.png")}))
-        self.context(sessions, bootstrap["room"], bootstrap["users"])
+        self.context(sessions, bootstrap["room"], bootstrap["presence_ids"])
         self.voice(sessions, bootstrap["room"])
         self.leave_and_revoke(sessions, bootstrap["room"], host)
 

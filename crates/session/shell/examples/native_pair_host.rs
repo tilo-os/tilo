@@ -104,7 +104,8 @@ async fn invitations(
     }
     Ok(
         serde_json::json!({"room": room.room, "host": relay.node_addr(), "invitations": invitations,
-            "users": identities.iter().map(|cert| hex::encode(cert.user_public_key)).collect::<Vec<_>>()}),
+            "users": identities.iter().map(|cert| hex::encode(cert.user_public_key)).collect::<Vec<_>>(),
+            "presence_ids": identities.iter().map(|cert| format!("peer@{}", neighbour_wire::peer_handle(&cert.device_public_key))).collect::<Vec<_>>()}),
     )
 }
 
