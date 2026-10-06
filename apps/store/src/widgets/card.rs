@@ -97,9 +97,7 @@ pub fn store_card(
         .with_rhythm(ui::tokens::Rhythm::Sibling)
         .push(Box::new(header))
         .push(Box::new(
-            Text::new(&item.description)
-                .with_role(TextRole::Body)
-                .dimmed(),
+            Text::new(item.summary()).with_role(TextRole::Body).dimmed(),
         ));
 
     let action_label = if operation_active {

@@ -185,6 +185,89 @@ impl AccountRoot {
         Ok(())
     }
 
+    /// Publish public metadata through Settings' existing personal record.
+    ///
+    /// # Errors
+    /// Refuses a missing personal record or invalid public identity metadata.
+    /// No fallback file or credential registry is created outside a host.
+    pub fn publish_browser_identity(
+        &self,
+        root: String,
+        origin: String,
+        display_name: String,
+    ) -> Result<(), String> {
+        let Some(PersonAccountsRecord(record)) = &self.person else {
+            return Err("Settings' personal account record is unavailable".into());
+        };
+        record
+            .invoke(
+                &accounts::person::PersonAccounts::PUBLISH_BROWSER_IDENTITY.with((
+                    root,
+                    origin,
+                    display_name,
+                )),
+            )
+            .map_err(|error| error.to_string())
+    }
+
+    /// Change browser picker visibility in the existing public account record.
+    ///
+    /// # Errors
+    /// Refuses a missing record, a non-identity account or a refused edit.
+    pub fn set_browser_identity_enabled(
+        &self,
+        account: String,
+        enabled: bool,
+    ) -> Result<(), String> {
+        let Some(PersonAccountsRecord(record)) = &self.person else {
+            return Err("Settings' personal account record is unavailable".into());
+        };
+        let current = record
+            .get()
+            .store()
+            .get(&account.clone().into())
+            .cloned()
+            .ok_or("No such account")?;
+        if current.type_id.as_str() != accounts::person::TILO_IDENTITY_TYPE {
+            return Err("Not a browser identity account".into());
+        }
+        record
+            .invoke(&accounts::person::PersonAccounts::SAVE_ACCOUNT.with((
+                account,
+                current.type_id.as_str().to_owned(),
+                current.display_name,
+                current.config,
+                enabled,
+                current.tint,
+            )))
+            .map_err(|error| error.to_string())
+    }
+
+    /// Remove public picker metadata; existing sign-in custody is untouched.
+    ///
+    /// # Errors
+    /// Refuses a missing record, a non-identity account or a refused edit.
+    pub fn remove_browser_identity(&self, account: String) -> Result<(), String> {
+        let Some(PersonAccountsRecord(record)) = &self.person else {
+            return Err("Settings' personal account record is unavailable".into());
+        };
+        let current = record
+            .get()
+            .store()
+            .get(&account.clone().into())
+            .cloned()
+            .ok_or("No such account")?;
+        if current.type_id.as_str() != accounts::person::TILO_IDENTITY_TYPE {
+            return Err("Not a browser identity account".into());
+        }
+        record
+            .invoke(
+                &accounts::person::PersonAccounts::REMOVE_ACCOUNT
+                    .with(ui::tilo_resource::Id::from_raw(account)),
+            )
+            .map_err(|error| error.to_string())
+    }
+
     /// Keep this device's account file the projection of the person's
     /// accounts, for the services outside any app that read it. Nothing to
     /// do outside a host, where the file is the store.
@@ -1134,6 +1217,105 @@ pub fn sample_directory() -> AccountDirectory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_identity_publication_is_a_settings_owned_personal_record_action() {
+        use accounts::person::PersonAccounts;
+        let root_key = "ab".repeat(32);
+        let mut app =
+            ui::framework::testing::TestApp::<crate::resource::SettingsShell>::for_person(
+                &root_key,
+            )
+            .unwrap();
+        let record = app.person::<PersonAccounts>().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let root = AccountRoot::at(dir.path()).with_person(record.clone());
+        root.publish_browser_identity(
+            root_key.clone(),
+            "https://host.example".into(),
+            "Work".into(),
+        )
+        .unwrap();
+        assert_eq!(
+            record
+                .get()
+                .browser_accounts(&root_key, "https://host.example")
+                .len(),
+            1
+        );
+        assert!(
+            record
+                .get()
+                .browser_accounts(&"cd".repeat(32), "https://host.example")
+                .is_empty()
+        );
+        let choice = record
+            .get()
+            .browser_accounts(&root_key, "https://host.example")[0]
+            .id
+            .clone();
+        let actions = app.actions().unwrap();
+        assert!(actions.iter().any(|action| action.address.resource
+            == format!("settings.browser-identity:{choice}")
+            && action.address.action == "set-browser-identity-enabled"));
+        app.call_on(
+            &format!("settings.browser-identity:{choice}"),
+            "set-browser-identity-enabled",
+            serde_json::json!({}),
+        )
+        .unwrap();
+        assert!(
+            record
+                .get()
+                .browser_accounts(&root_key, "https://host.example")
+                .is_empty()
+        );
+        // Republishing is idempotent and never silently restores a hidden choice.
+        root.publish_browser_identity(
+            root_key.clone(),
+            "https://host.example".into(),
+            "Another name".into(),
+        )
+        .unwrap();
+        assert!(
+            record
+                .get()
+                .browser_accounts(&root_key, "https://host.example")
+                .is_empty()
+        );
+        app.call_on(
+            &format!("settings.browser-identity:{choice}"),
+            "set-browser-identity-enabled",
+            serde_json::json!({}),
+        )
+        .unwrap();
+        assert_eq!(
+            record
+                .get()
+                .browser_accounts(&root_key, "https://host.example")
+                .len(),
+            1
+        );
+        app.call_confirmed_on(
+            &format!("settings.browser-identity:{choice}"),
+            "remove-browser-identity",
+            serde_json::json!({}),
+        )
+        .unwrap();
+        assert!(
+            record
+                .get()
+                .browser_accounts(&root_key, "https://host.example")
+                .is_empty()
+        );
+        // Public metadata never provisions this device's credential vault.
+        assert!(!dir.path().join("accounts").exists());
+        assert!(
+            AccountRoot::at(dir.path())
+                .publish_browser_identity(root_key, "https://host.example".into(), "Work".into())
+                .is_err()
+        );
+    }
 
     /// In a host the accounts are the person's record: saving edits it,
     /// reading reads it, and this device's file follows as its projection.

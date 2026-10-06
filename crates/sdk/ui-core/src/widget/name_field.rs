@@ -159,6 +159,13 @@ impl NameField {
 
     /// Exact shaped caret rectangle from the most recent draw, suitable for
     /// positioning the platform IME candidate window.
+    /// Private equality for a deferred input into this shared name control.
+    pub fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        (!self.core.has_preedit()).then(|| {
+            crate::ime::edit_fingerprint(&self.buffer, self.core.anchor(), self.core.caret(), key)
+        })
+    }
+
     pub fn ime_cursor_rect(&self) -> Option<Rect> {
         self.visual.borrow().caret
     }

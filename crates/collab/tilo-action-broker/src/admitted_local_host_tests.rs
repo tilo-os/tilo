@@ -279,7 +279,7 @@ async fn certified_local_host_directory_wait_cannot_refresh_original_authority()
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn execution_uuid_requires_stable_delivery_and_leaves_unscoped_legacy_unchanged() {
+async fn execution_uuid_requires_stable_delivery_and_preserves_unscoped_requests() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let env = Environment::new();
@@ -334,23 +334,41 @@ async fn execution_uuid_requires_stable_delivery_and_leaves_unscoped_legacy_unch
                 *caller.device_public_key().unwrap(),
             )
             .in_room(&env.route.cluster_id);
-            local_host_answer(rig.state.action_invoke(
-                &legacy,
-                None,
-                None,
-                &local_host_request(false),
-            ))
-            .await
-            .unwrap();
+            let legacy_request = local_host_request(false);
+            let legacy_receipt =
+                local_host_answer(
+                    rig.state
+                        .action_invoke(&legacy, None, None, &legacy_request),
+                )
+                .await
+                .unwrap();
             let delivered =
                 tokio::time::timeout(Duration::from_secs(2), rig.stream.as_ref().unwrap().read())
                     .await
                     .expect("unscoped legacy delivery timed out")
                     .unwrap();
             assert_eq!(
-                uuid::Uuid::from_bytes(delivered.invocation_uuid).as_u128(),
+                delivered.invocation_uuid,
+                *legacy_request.invocation.0.as_bytes(),
+                "an explicit request identity is independent of execution authority"
+            );
+            assert_eq!(legacy_receipt.invocation, legacy_request.invocation);
+            assert_ne!(
+                legacy_request.invocation.0.as_u128(),
                 u128::from(delivered.id)
             );
+            // A legacy subscriber can still complete using its numeric wire
+            // handle. The broker maps it to the original lifecycle identity.
+            rig.worker
+                .handle
+                .complete_invocation(delivered.id, "", "")
+                .await
+                .unwrap();
+            assert!(matches!(
+                rig.state.invocation_status(delivered.id),
+                Some(tilo_actions::InvocationUpdate::Succeeded { invocation, .. })
+                    if invocation == legacy_request.invocation
+            ));
             rig.stop().await;
         })
         .await;

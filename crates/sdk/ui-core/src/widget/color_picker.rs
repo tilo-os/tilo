@@ -365,8 +365,22 @@ impl ColorPicker {
             .ceil()
     }
 
-    /// Lay every part out in `rect`, from the top.
+    /// Keep the colour field flexible while reserving the real heights of
+    /// the hex input, channels, swatches and confirmation controls. Natural
+    /// measurement supplies an unbounded height and remains unchanged.
     fn layout_in(&self, rect: Rect) -> PickerLayout {
+        let side = Self::sv_size(rect.width());
+        let natural = self.layout_with_sv(rect, side);
+        if natural.bottom <= rect.height() {
+            return natural;
+        }
+        let minimum = token(crate::tokens::Metrics::BASE.min_pointer_target);
+        let side = (side - (natural.bottom - rect.height())).max(minimum.min(side));
+        self.layout_with_sv(rect, side)
+    }
+
+    /// Lay every part out with the allocated saturation/value square.
+    fn layout_with_sv(&self, rect: Rect, sv: f64) -> PickerLayout {
         let (x0, x1) = (rect.x0, rect.x1);
         let width = x1 - x0;
         let mut layout = PickerLayout::default();
@@ -375,7 +389,6 @@ impl ColorPicker {
             layout.title = Rect::new(x0, y0, x1, y0 + TITLE_HEIGHT);
             y0 = layout.title.y1 + COMPONENT_GAP;
         }
-        let sv = Self::sv_size(width);
         layout.sv = Rect::new(x0, y0, x0 + sv, y0 + sv);
         let hue_x0 = layout.sv.x1 + COMPONENT_GAP;
         layout.hue = Rect::new(hue_x0, y0, hue_x0 + HUE_STRIP_WIDTH, y0 + sv);
@@ -1247,6 +1260,11 @@ impl Widget for ColorPicker {
         Widget::ime_cursor_rect(&self.hex_input)
     }
 
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.ime_cursor_rect()?;
+        self.hex_input.ime_edit_fingerprint(key)
+    }
+
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         Widget::ime_purpose(&self.hex_input)
     }
@@ -1731,6 +1749,40 @@ mod tests {
         let (w, h) = picker.preferred_size();
         picker.apply_layout_external(Rect::new(0.0, 0.0, w, h));
         picker
+    }
+
+    #[test]
+    fn compact_confirm_picker_reserves_the_actual_footer_in_portrait_and_landscape() {
+        for area in [
+            Rect::new(24.0, 24.0, 336.0, 776.0),
+            Rect::new(24.0, 24.0, 776.0, 336.0),
+        ] {
+            let mut picker = ColorPicker::new(Color::from_rgb8(50, 100, 150))
+                .with_swatches((0..10).map(|_| ColorSwatch::new(Color::from_rgb8(150, 100, 50))))
+                .confirming("Choose colour");
+            let natural = picker.preferred_height(area.width());
+            picker.apply_layout_external(area);
+            for (target, rect) in picker.test_rects() {
+                assert!(
+                    area.contains_rect(rect),
+                    "{target} escapes the real compact picker: {rect:?}"
+                );
+            }
+            assert!(
+                picker.sv_rect.width() >= token(crate::tokens::Metrics::BASE.min_pointer_target)
+            );
+            assert_eq!(
+                picker.preferred_height(area.width()),
+                natural,
+                "height allocation never changes natural measurement"
+            );
+            let done = picker.done_rect.center();
+            click(&mut picker, done);
+            assert!(matches!(
+                picker.take_outcome(),
+                Some(ColorPickerOutcome::Confirmed(_))
+            ));
+        }
     }
 
     fn click(p: &mut ColorPicker, at: Point) {

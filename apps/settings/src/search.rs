@@ -136,4 +136,55 @@ mod tests {
         let rows = [current];
         assert!(tilo_actions::door::resolve(&rows, &stale_action).is_none());
     }
+
+    /// Search addresses must work on the mounted `ResourceApp`, including the
+    /// narrow navigation stack, rather than merely resolving a bare row.
+    #[test]
+    fn every_pane_search_hit_opens_its_mounted_live_surface() {
+        let provider = source();
+        for width in [1200, 440] {
+            let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new()
+                .expect("Settings mounts in its production resource host");
+            app.harness()
+                .resize((width, 900))
+                .expect("Settings lays out at this window width");
+            for category in Category::ALL.iter().copied() {
+                let expected = crate::effects::open_pane_address(category);
+                let hit = provider
+                    .search(&category.label())
+                    .into_iter()
+                    .find(|hit| hit.action_address().as_ref() == Some(&expected))
+                    .expect("the pane is found by its displayed name");
+                let address = hit.action_address().expect("search addresses an action");
+                let resources = app.harness().resources();
+                let spec = tilo_actions::door::resolve(&resources, &address)
+                    .expect("the mounted app publishes the search action");
+                let result = app
+                    .harness()
+                    .invoke_action(&address, &serde_json::Map::new(), false, None)
+                    .expect("the host admits the real search action");
+                spec.contract
+                    .result
+                    .validate(
+                        &result
+                            .completed()
+                            .expect("navigation completes immediately"),
+                    )
+                    .expect("navigation satisfies its published result contract");
+                app.harness().relayout();
+                assert_eq!(
+                    app.surface::<crate::SettingsApp, _>(|surface| surface.selected()),
+                    Some(category),
+                    "search opens {category:?} at width {width}"
+                );
+                if width == 440 {
+                    assert_eq!(
+                        app.surface::<crate::SettingsApp, _>(|surface| surface.sidebar_open()),
+                        Some(false),
+                        "the narrow search result opens content rather than the category list"
+                    );
+                }
+            }
+        }
+    }
 }

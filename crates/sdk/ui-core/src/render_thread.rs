@@ -1403,6 +1403,15 @@ fn render_one_frame(
     let submit_us = t_submit.map(|t| t.elapsed().as_secs_f64() * 1e6);
 
     let t_present = present_dbg.then(crate::time::now);
+    let damage = bounded_present_damage(width, height, frame.damage_regions).filter(|_| {
+        !frame.full_redraw
+            && !POST_PROCESSOR_ACTIVE.load(std::sync::atomic::Ordering::Acquire)
+            && frame.backdrop.is_empty()
+    });
+    tilo_presentation::set_next_present_damage(
+        &surface.surface,
+        damage.as_deref().unwrap_or_default(),
+    );
     if frame_ix == 0 {
         tilo_startup_metrics::mark("render-worker-first-present-start");
     }
@@ -1468,6 +1477,111 @@ fn render_one_frame(
         tilo_startup_metrics::mark("render-worker-first-poll-done");
     }
     FrameOutcome::Presented
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "finite framebuffer bounds are rounded outward and clamped to their u32 extent before narrowing"
+)]
+fn bounded_present_damage(
+    width: u32,
+    height: u32,
+    damage: &[Rect],
+) -> Option<Vec<tilo_presentation::DamageRect>> {
+    if width == 0 || height == 0 || damage.is_empty() || damage.len() > 128 {
+        return None;
+    }
+    let mut regions = Vec::with_capacity(damage.len());
+    for rect in damage {
+        if !rect.is_finite() || rect.x1 < rect.x0 || rect.y1 < rect.y0 {
+            return None;
+        }
+        let x = rect.x0.floor().clamp(0.0, f64::from(width)) as u32;
+        let y = rect.y0.floor().clamp(0.0, f64::from(height)) as u32;
+        let x1 = rect.x1.ceil().clamp(0.0, f64::from(width)) as u32;
+        let y1 = rect.y1.ceil().clamp(0.0, f64::from(height)) as u32;
+        if x1 > x && y1 > y {
+            regions.push(Region {
+                x,
+                y,
+                width: x1.saturating_sub(x),
+                height: y1.saturating_sub(y),
+            });
+        }
+    }
+    if regions.is_empty() {
+        return None;
+    }
+    Some(
+        coalesce_regions(regions)
+            .into_iter()
+            .map(|rect| tilo_presentation::DamageRect {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+            })
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+mod present_damage_tests {
+    use super::{Rect, bounded_present_damage};
+
+    #[test]
+    fn presentation_hints_cover_every_changed_framebuffer_pixel() {
+        let changed = [
+            Rect::new(-4.5, 1.2, 5.1, 7.8),
+            Rect::new(10.7, 12.4, 23.8, 29.2),
+            Rect::new(22.6, 28.1, 35.0, 37.0),
+        ];
+        let hints = bounded_present_damage(32, 32, &changed).expect("bounded damage");
+        // Pixel-cell intersection, independently of the outward-rounding
+        // implementation: every pixel touched by any submitted damage must
+        // be included, including fractional edges and output clipping.
+        for y in 0_u32..32 {
+            for x in 0_u32..32 {
+                let cell = Rect::new(
+                    f64::from(x),
+                    f64::from(y),
+                    f64::from(x.saturating_add(1)),
+                    f64::from(y.saturating_add(1)),
+                );
+                if changed
+                    .iter()
+                    .any(|rect| !rect.intersect(cell).is_zero_area())
+                {
+                    assert!(
+                        hints.iter().any(|hint| {
+                            x >= hint.x
+                                && y >= hint.y
+                                && x < hint.x.saturating_add(hint.width)
+                                && y < hint.y.saturating_add(hint.height)
+                        }),
+                        "changed framebuffer pixel ({x}, {y}) omitted"
+                    );
+                }
+            }
+        }
+        assert!(hints.iter().all(|hint| {
+            hint.x.saturating_add(hint.width) <= 32 && hint.y.saturating_add(hint.height) <= 32
+        }));
+    }
+
+    #[test]
+    fn uncertain_damage_preserves_whole_surface_presentation() {
+        for damage in [
+            vec![],
+            vec![Rect::new(f64::NAN, 0.0, 1.0, 1.0)],
+            vec![Rect::new(0.0, 0.0, f64::INFINITY, 1.0)],
+            vec![Rect::new(3.0, 0.0, 2.0, 1.0)],
+            vec![Rect::new(0.0, 0.0, 1.0, 1.0); 129],
+        ] {
+            assert!(bounded_present_damage(32, 32, &damage).is_none());
+        }
+    }
 }
 
 #[cfg(test)]

@@ -1783,7 +1783,7 @@ onboarding-codecs-enables-hardware = Hardwarebeschleunigtes Video auf AMD- und I
 onboarding-codecs-enables-playback = Wiedergabe von H.264 und HEVC in Videos, die du öffnest.
 onboarding-codecs-enables-encoding = Kodierung in H.264 und HEVC für Bildschirmfreigabe, Aufnahmen und Anrufe.
 onboarding-codecs-source-title = Woher sie kommen
-onboarding-codecs-source = Dieser Computer lädt sie direkt von RPM Fusion und von Cisco (OpenH264) unter den Lizenzen dieser Projekte herunter und prüft die Signatur jedes Pakets. Tilo stellt sie weder bereit noch verteilt es sie. Du kannst sie jederzeit unter Einstellungen, Updates entfernen.
+onboarding-codecs-source = Dieser Computer lädt sie direkt von RPM Fusion und von Cisco (OpenH264) unter den Lizenzen dieser Projekte herunter und prüft die Signatur jedes Pakets. Tilo stellt sie weder bereit noch verteilt es sie. Du kannst sie jederzeit unter Einstellungen, Updates entfernen. OpenH264 Video Codec provided by Cisco Systems, Inc. Die vollständige Cisco-Binärlizenz steht unter /usr/share/licenses/tilo-openh264/BINARY_LICENSE.txt und https://www.openh264.org/BINARY_LICENSE.txt.
 onboarding-codecs-background = Die Einrichtung kann weiterlaufen, während der Download läuft. Du erhältst eine Benachrichtigung, sobald die Codecs bereit sind.
 onboarding-codecs-progress = Fortschritt: { $percent } %
 onboarding-codecs-starting = Wird gestartet …
@@ -2360,6 +2360,21 @@ nearby-error-folder-too-large = der Ordner überschreitet die Größenbegrenzung
 nearby-error-source-changed = die Quelle hat sich während der Vorbereitung geändert
 nearby-error-name-not-portable = der Name der Quelle ist nicht übertragbar
 
+# AirDrop lab receiver verification
+airdrop-verify-title = AirDrop-Empfänger überprüfen
+airdrop-verify-send-once = Einmal senden
+airdrop-verify-detail = Datei: { $name }
+    Größe: { $bytes } Bytes
+    Empfänger: { $endpoint }
+    Den SHA-256-Fingerabdruck des Empfängerzertifikats als 64 Hexadezimalzeichen von einer vertrauenswürdigen Konsole oder einem unabhängig bestätigten Kanal eingeben. Nur bei Übereinstimmung wird diese vorbereitete Datei einmal gesendet. Ohne Überprüfung abbrechen.
+airdrop-error-unavailable = Das AirDrop-Labor benötigt eine entsperrte lokale Sitzung, Dateiübertragungsrechte und aktuellen Dateizugriff.
+airdrop-error-source = Das AirDrop-Labor unterstützt eine lesbare reguläre Datei bis 16 MiB.
+airdrop-error-busy = Eine AirDrop-Übertragung läuft bereits. Vor einer weiteren Übertragung abbrechen.
+airdrop-error-failed = AirDrop-Übertragung fehlgeschlagen. Den Empfänger vor einem neuen Versuch erneut prüfen.
+airdrop-error-declined = Die AirDrop-Übertragung wurde vor dem Senden abgebrochen.
+airdrop-error-verification = Fingerabdruck stimmt nicht überein. Keine Datei gesendet.
+airdrop-error-fresh-consent = Einen neuen AirDrop-Versuch starten, um Empfänger und Datei erneut zu bestätigen.
+
 # Ein Dokument, das ein Tab nicht wiederherstellen konnte
 hosted-document-unavailable = { $path } ist nicht verfügbar: { $error }
 
@@ -2377,6 +2392,37 @@ a11y-speaker-listener = { $group } kann mit diesem Mikrofon kalibrieren
 a11y-speaker-listener-description = Die Lautsprecherkalibrierung darf mit diesem Mikrofon hören; aktivieren, um das zu beenden
 speaker-calibration-listening-refused = { $microphone } durfte nicht zuhören, daher kann an deinem Platz nichts gemessen werden
 speaker-error-listening-unavailable = wähle ein Mikrofon, das an deinem Platz zuhören kann
+
+search-provider-permission-prompts = Berechtigungsanfragen
+permission-request-expired = Diese Berechtigungsanfrage ist nicht mehr offen
+permission-request-owner-required = Nur der aktuelle Eigentümer kann über Berechtigungen entscheiden
+permission-request-permanent-owner-required = Eine dauerhafte Berechtigung kann nur der aktuelle Eigentümer erteilen
+permission-request-confirm = Entscheidung über die Berechtigung bestätigen
+
+shortcut-name-dictation-toggle = Diktat starten oder beenden
+shortcut-name-dictation-finish = Diktat beenden
+shortcut-name-dictation-cancel = Diktat abbrechen
+dictation-title = Diktat
+dictation-consent = Mikrofon für dieses Diktat aufnehmen? Audio bleibt auf diesem Gerät.
+dictation-preparing = Aktives Eingabefeld wird geprüft…
+dictation-loading = Lokale Spracherkennung wird geladen. Das Mikrofon ist aus.
+dictation-listening = Mikrofon an · Sprechen und zum Einfügen beenden.
+dictation-finishing = Mikrofon aus · Text wird fertiggestellt…
+dictation-stopping = Diktat wird angehalten…
+dictation-editable-required = Ein Eingabefeld fokussieren. Passwörter erlauben kein Diktat.
+dictation-busy = Das vorherige Diktat wird noch angehalten. Gleich erneut versuchen.
+dictation-target-changed = Das Feld hat sich geändert. Diktat ohne Texteingabe abgebrochen.
+dictation-timeout = Zeitüberschreitung beim Diktat. Kein Text wurde eingefügt.
+dictation-unavailable = Lokales Diktat nicht verfügbar. Kein Text wurde eingefügt.
+dictation-model-required = Vor dem Diktat ein freigegebenes lokales Sprachmodell installieren.
+dictation-language-unavailable = Das Sprachmodell unterstützt die gewählte Sprache nicht.
+dictation-microphone-unavailable = Mikrofon nicht verfügbar. Eingabegerät prüfen.
+dictation-audio-interrupted = Mikrofonaufnahme unterbrochen. Kein Text wurde eingefügt.
+dictation-action-start-detail = Einmalige Mikrofonfreigabe für das aktive Feld anfragen oder die Aufnahme beenden.
+dictation-action-finish-detail = Mikrofon anhalten und den korrigierten Text ins ursprüngliche Feld einfügen.
+dictation-action-cancel-detail = Diktat anhalten und den privaten Entwurf verwerfen.
+dictation-stopping-microphone = Mikrofon wird angehalten…
+
 search-action-axis-enable = Experimentelle Achsennavigation aktivieren
 search-action-axis-enable-subtitle = In dieser Sitzung zwischen Gruppen wechseln und den Fokus sichtbar machen
 search-action-axis-disable = Experimentelle Achsennavigation deaktivieren
@@ -2396,3 +2442,15 @@ terminal-read-device-shell = Ausgabe der Shell dieses Geräts lesen
 terminal-device-shell-session-param = Genaue lokale Sitzungs-UUID aus der Sitzungsprüfung
 terminal-device-shell-command-param = Ein geprüfter Befehl in der Shell dieses Geräts
 terminal-device-shell-confirm-param = Diesen geprüften Vorgang in der Geräte-Shell bestätigen
+
+shortcut-name-tab-menu = Tab-Menü öffnen
+search-action-tab-menu = Tab-Menü öffnen
+search-action-tab-menu-subtitle = Aktionen für den fokussierten Tab
+search-action-tab-menu-unavailable = Kein fokussierter Tab verfügbar
+
+dictation-transcript-retained = Mikrofon aus · Der Text ist zu lang für einen Einfügeschritt. Für 10 Minuten privat aufbewahrt. Kopieren überträgt den gesamten Text in die Zwischenablage; Verwerfen entfernt ihn.
+dictation-transcript-copied = Gesamtes Transkript kopiert. Füge es im gewünschten Feld ein. Der private Entwurf bleibt bis zum Verwerfen oder Ablauf der 10 Minuten erhalten.
+dictation-copy-failed = Zwischenablage nicht verfügbar. Dein gesamtes Transkript bleibt privat aufbewahrt; versuche es erneut oder verwirf es.
+search-action-tab-drag-cancel = Tab-Ziehen abbrechen
+search-action-tab-drag-cancel-subtitle = Den gezogenen Tab an seinem ursprünglichen Ort lassen
+search-action-tab-drag-cancel-unavailable = Das Tab-Ziehen kann bei gesperrter Sitzung nicht abgebrochen werden.

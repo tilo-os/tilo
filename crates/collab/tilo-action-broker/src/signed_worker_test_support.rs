@@ -401,7 +401,7 @@ impl OriginalRoom {
             PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(owner_handle));
         let mut services = membership.services();
         services.record_content = record_content;
-        let (state, _) = CapnpBrokerState::new_configured(
+        let (state, bridge_rx) = CapnpBrokerState::new_configured(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
             publisher,
@@ -421,7 +421,7 @@ impl OriginalRoom {
             membership,
             state,
             authority,
-            directories: empty_directories(),
+            directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
             _clock: clock,
             _owner_mailbox: owner_mailbox,
         }

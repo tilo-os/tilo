@@ -1,4 +1,4 @@
-//! The `YouTube Music` catalogue as a slow platform-search source.
+//! The selected remote music catalogue as a slow platform-search source.
 //!
 //! Search belongs to the platform: Music draws no field. The library is
 //! answered at once by [`crate::search_type::LibrarySearchProvider`]; the
@@ -29,7 +29,7 @@ const MAX_FOUND: usize = 256;
 /// What activating a live hit does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LiveHit {
-    /// Play the song with this library id (`yt:<video id>`).
+    /// Play the song with its stable provider-specific library id.
     Track(String),
     Album(String),
     Artist(String),
@@ -54,7 +54,7 @@ impl LiveHit {
 pub fn rows_of(bundle: &SearchBundle) -> Vec<SearchResult> {
     let mut rows = Vec::new();
     for hit in &bundle.tracks {
-        let id = format!("yt:{}", hit.video_id);
+        let id = crate::app::live_track_id(&hit.video_id);
         let mut row = SearchRow::media(&hit.title).byline(&hit.artist);
         if hit.duration_s > 0 {
             row = row.duration(ui::format::timecode(u64::from(hit.duration_s)));
@@ -232,7 +232,7 @@ impl LiveCatalogProvider {
 
 impl ui::search::SearchProvider for LiveCatalogProvider {
     fn name(&self) -> &'static str {
-        "YouTube Music"
+        "Music catalogue"
     }
 
     /// The catalogue never answers synchronously; see [`Self::search_page`].
@@ -379,5 +379,29 @@ mod tests {
             .expect("the answered album resolves");
         assert_eq!(page.label, "Paper Boats");
         assert!(live.found(&address.resource));
+    }
+    #[test]
+    fn spotify_search_keeps_provider_identity_in_platform_actions() {
+        let mut reply = bundle();
+        reply.tracks[0].video_id = "spotify:track:1234567890123456789012".into();
+        reply.albums[0].id = "spotify:album:2234567890123456789012".into();
+        let rows = rows_of(&reply);
+        assert_eq!(
+            rows[0].action_address(),
+            Some(crate::actions::play_track_address(
+                "spotify:track:1234567890123456789012"
+            ))
+        );
+        let address = crate::actions::open_album_address("spotify:album:2234567890123456789012");
+        assert_eq!(rows[1].action_address(), Some(address.clone()));
+        let live = LiveSearch::default();
+        live.answer("glass", &rows);
+        assert_eq!(
+            live.provider()
+                .resolve_action_resource(&address)
+                .expect("provider album resolves through platform search")
+                .label,
+            "Paper Boats"
+        );
     }
 }

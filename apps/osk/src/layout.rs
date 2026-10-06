@@ -128,7 +128,7 @@ impl Key {
     /// everything else is unaffected.
     pub fn display_label(&self, shift: ShiftState) -> String {
         if self.is_letter() && shift.is_upper() {
-            self.label.to_uppercase()
+            ShiftState::CapsLock.case_word(&self.label)
         } else {
             self.label.clone()
         }
@@ -140,7 +140,7 @@ impl Key {
     pub fn emit_action(&self, shift: ShiftState) -> KeyAction {
         match &self.action {
             KeyAction::Char(s) if self.is_letter() && shift.is_upper() => {
-                KeyAction::Char(s.to_uppercase())
+                KeyAction::Char(ShiftState::CapsLock.case_word(s))
             }
             other => other.clone(),
         }
@@ -167,7 +167,7 @@ impl Key {
         ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         let case = |c: char| {
             let form = c.to_string();
-            let upper = form.to_uppercase();
+            let upper = ShiftState::CapsLock.case_word(&form);
             // Casing must not change the length (ß → SS): keep such forms.
             if shift.is_upper() && upper.chars().count() == 1 {
                 upper
@@ -213,6 +213,18 @@ pub enum ShiftState {
 }
 
 impl ShiftState {
+    /// Apply typing case to a decoded word: one-shot Shift changes its first
+    /// Unicode character; Caps Lock changes the whole word. This is the same
+    /// casing policy used for key labels, emitted letters and accent choices.
+    #[must_use]
+    pub fn case_word(self, word: &str) -> String {
+        match self {
+            Self::Off => word.to_owned(),
+            Self::Shift => ui::format::capitalize_first(word),
+            Self::CapsLock => word.to_uppercase(),
+        }
+    }
+
     /// Whether letters should render / emit upper-case in this state.
     pub fn is_upper(self) -> bool {
         matches!(self, ShiftState::Shift | ShiftState::CapsLock)
@@ -768,6 +780,14 @@ mod tests {
             let space = Key::action("space", KeyAction::Space, 5.0);
             assert_eq!(space.emit_action(ShiftState::Shift), KeyAction::Space);
         }
+
+        eprintln!("phase unicode_typing_case_preserves_word_and_expands_letters");
+        assert_eq!(ShiftState::Off.case_word("élève"), "élève");
+        assert_eq!(ShiftState::Shift.case_word("élève"), "Élève");
+        assert_eq!(ShiftState::CapsLock.case_word("élève"), "ÉLÈVE");
+        assert_eq!(ShiftState::Shift.case_word("ßeta"), "SSeta");
+        assert_eq!(ShiftState::CapsLock.case_word("straße"), "STRASSE");
+        assert_eq!(ShiftState::Shift.case_word(""), "");
 
         eprintln!("phase shift_state_cycles");
         {

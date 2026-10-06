@@ -781,6 +781,7 @@ impl App {
     ) -> crate::collaboration::ExportedAction {
         crate::collaboration::ExportedAction {
             resource: descriptor.address.resource.clone(),
+            semantic_identity: descriptor.semantic_identity.clone(),
             action: descriptor.address.action.clone(),
             resource_kind: descriptor.resource_kind.clone(),
             resource_label: descriptor.resource_label.clone(),
@@ -888,6 +889,12 @@ impl App {
     ) -> runtime_collab::ExportedAction {
         runtime_collab::ExportedAction {
             resource: descriptor.address.resource.clone(),
+            semantic_identity: descriptor.semantic_identity.as_ref().map(|identity| {
+                runtime_collab::ExportedResourceSemanticIdentity {
+                    kind: identity.kind.clone(),
+                    key: identity.key.clone(),
+                }
+            }),
             action: descriptor.address.action.clone(),
             resource_kind: descriptor.resource_kind.clone(),
             resource_label: descriptor.resource_label.clone(),
@@ -905,6 +912,15 @@ impl App {
                     description: view.description.clone(),
                     open_action: view.open_action.clone(),
                     primary: view.primary,
+                    range: view
+                        .range
+                        .as_ref()
+                        .map(|range| runtime_collab::ExportedViewRange {
+                            action: range.action.clone(),
+                            start_param: range.start_param.clone(),
+                            end_param: range.end_param.clone(),
+                            unit_param: range.unit_param.clone(),
+                        }),
                     mount: view
                         .mount
                         .as_ref()
@@ -1782,6 +1798,12 @@ impl App {
             // What the effect submitted is applied for its invoker before
             // its caller learns it finished.
             self.dispatch_control_invocations();
+            if let Some(scope) = &authorization {
+                // Submitted continuations already carry their original broker
+                // custody. A retained handler clone must not submit more work
+                // once this handler has answered, even while those edits settle.
+                scope.cancel();
+            }
             self.actions.acting_for.remove(&invocation)
         };
         let update = match result {
@@ -2057,7 +2079,9 @@ impl App {
             argument,
             broker_admitted,
             confirmation_evidence,
+            invocation,
             ambient_context,
+            scope,
             ..
         } = *invocation;
         if spec.deferred_invocation_type().is_some()
@@ -2071,6 +2095,12 @@ impl App {
                 confirmation_evidence,
             );
         }
+        let source_invocation = broker_admitted.then_some(invocation).flatten();
+        debug_assert!(
+            !broker_admitted || source_invocation.is_some(),
+            "admitted document request lost its invocation before dispatch: {invocation:?}"
+        );
+        let operation_invocation = invocation.unwrap_or_else(tilo_actions::InvocationId::new);
         let encoded = Self::encode_resource_action(resources, address, typed_arguments, argument)?;
         let action = self
             .actions
@@ -2111,9 +2141,10 @@ impl App {
                         actor,
                         local_author: &self.collaboration.local_author.0,
                         broker_admitted,
-                        invocation: tilo_actions::InvocationId::new(),
+                        invocation: operation_invocation,
+                        source_invocation,
                         ambient: ambient_context,
-                        scope: None,
+                        scope,
                     },
                 )
             })?;
@@ -2275,6 +2306,7 @@ impl App {
                 confirmed,
                 broker_admitted,
                 invocation: id,
+                source_invocation: broker_admitted.then_some(invocation).flatten(),
                 ambient,
                 scope,
             },
@@ -2546,9 +2578,12 @@ impl App {
         if kind == tilo_actions::OperationKind::Document {
             let request = ResourceInvocation::new(address, actor)
                 .argument(argument)
+                .confirmed(confirmation_satisfied)
                 .broker_admitted(broker_admitted)
                 .evidence(confirmation_evidence)
-                .ambient_context(ambient_context);
+                .invocation(invocation)
+                .ambient_context(ambient_context)
+                .scope(scope);
             return self.invoke_document_resource_action(
                 &request,
                 &resources,
@@ -2783,6 +2818,7 @@ impl App {
                         local_author: &self.collaboration.local_author.0,
                         broker_admitted,
                         invocation: operation_invocation,
+                        source_invocation: broker_admitted.then_some(operation_invocation),
                         ambient: ambient_context,
                         scope: None,
                     },
@@ -3619,6 +3655,9 @@ impl App {
                 Ok(Some(update)) => update,
                 Ok(None) => continue,
                 Err(_) => {
+                    if let Some(scope) = &pending.authorization {
+                        scope.cancel();
+                    }
                     self.actions.bound_invocations.remove(&invocation);
                     self.actions.directed_invocations.remove(&invocation);
                     continue;
@@ -3643,6 +3682,9 @@ impl App {
                 self.dispatch_control_invocations();
                 if let Some(continuation) = self.actions.acting_for.get_mut(&invocation) {
                     if !continuation.outstanding.is_empty() {
+                        if let Some(scope) = &pending.authorization {
+                            scope.cancel();
+                        }
                         // It answers once the host admitted its edits.
                         continuation.deferred = Some((pending.wire_id, update));
                         self.actions.bound_invocations.remove(&invocation);
@@ -3660,6 +3702,9 @@ impl App {
                 break;
             }
             if update.is_terminal() {
+                if let Some(scope) = &pending.authorization {
+                    scope.cancel();
+                }
                 self.actions.bound_invocations.remove(&invocation);
                 self.actions.directed_invocations.remove(&invocation);
                 self.actions.acting_for.remove(&invocation);
@@ -4570,6 +4615,9 @@ pub(crate) fn directory_row_wire_bytes(row: &runtime_collab::ActionDirectoryRow)
         };
         STRUCT
             + text(&descriptor.resource)
+            + descriptor.semantic_identity.as_ref().map_or(0, |identity| {
+                STRUCT + text(&identity.kind) + text(&identity.key)
+            })
             + text(&descriptor.action)
             + text(&descriptor.resource_kind)
             + text(&descriptor.resource_label)

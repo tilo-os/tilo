@@ -143,7 +143,16 @@ when pending, use `actions status INVOCATION_ID` until it reaches a terminal
 state. Then read back the affected resource or desktop state to verify the
 effect. A descriptor alone does not prove execution; a visible tile alone does
 not prove the app has rendered. `raw '{"op":"foreign_frames"}'` exposes the
-presented app identity, surface, frame count, and rendering errors.
+presented app identity, surface, frame count, and rendering errors for foreign
+Wayland clients. It does not observe apps mounted inside the compositor:
+`actions:window.new.terminal` mounts Terminal in-process, with `AppPlaceholder`
+as its persisted tile kind. Neither that kind nor an empty `foreign_frames`
+reply proves the hosted app failed to render. Verify its exported
+`inspect-session` operation to completion, its laid-out `terminal` target and
+a private headless snapshot. Process startup additionally requires an open
+session with input available; rendering a missing-runtime explanation is not
+a working PTY. The separately discovered `applications:so.tilo.terminal`
+launches the packaged app and should be checked with foreign-frame counters.
 
 `scripts/headless-examples/action-api-demo.py` exercises discovery and semantic
 invocation against an isolated compositor. `app-launch-proof.py` selects native

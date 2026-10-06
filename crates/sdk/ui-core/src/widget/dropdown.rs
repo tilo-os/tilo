@@ -15,8 +15,8 @@
 //! highlight; Enter selects + closes; Esc dismisses. In a list of
 //! [`FILTER_MIN_OPTIONS`] or more, printable characters drive an
 //! incremental, case-insensitive substring filter (Backspace edits it) so
-//! hundred-entry lists stay usable without endless scrolling; the query
-//! takes the field only once typed, and the value shows until then. A
+//! hundred-entry lists stay usable without endless scrolling. Opening a
+//! searchable list shows its search prompt and caret immediately. A
 //! shorter list never filters: a typed letter arms the next option starting
 //! with it.
 //!
@@ -35,6 +35,7 @@
 //! container routes all events to it exclusively — how the out-of-layout
 //! list becomes hit-testable and click-outside dismissal works.
 
+use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::widget::{AppModel, ModelPath};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -140,6 +141,8 @@ pub struct Dropdown {
     /// Mirror of the bound value. Empty when unset.
     selected: String,
     open: bool,
+    /// An accepted interaction opened this popup, rather than a shot seed.
+    interactive_open: bool,
     /// Position (0-based) into the *filtered* list of the highlighted row.
     highlight: usize,
     /// Incremental substring filter; empty shows every option.
@@ -147,6 +150,10 @@ pub struct Dropdown {
     filter_selection: Selection,
     filter_composition: QueryComposition,
     scroll: f32,
+    scrollbar: Scrollbar,
+    scrollbar_gutter: f64,
+    scrollbar_track: Rect,
+    query_rect: Rect,
 
     /// One-shot: align `highlight` to the selected option on the next
     /// `sync`. Set by the `open()` builder, where `selected` isn't known
@@ -293,11 +300,16 @@ impl Dropdown {
             placeholder: String::new(),
             selected: String::new(),
             open: false,
+            interactive_open: false,
             highlight: 0,
             filter: String::new(),
             filter_selection: Selection::collapsed(0),
             filter_composition: QueryComposition::new(),
             scroll: 0.0,
+            scrollbar: Scrollbar::vertical(),
+            scrollbar_gutter: 0.0,
+            scrollbar_track: Rect::ZERO,
+            query_rect: Rect::ZERO,
             align_highlight_on_sync: false,
             rect: Rect::ZERO,
             outer: Rect::ZERO,
@@ -347,6 +359,8 @@ impl Dropdown {
         [self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y1]
             .map(f64::to_bits)
             .hash(&mut hasher);
+        self.scrollbar.is_active().hash(&mut hasher);
+        (self.filter_selection.anchor, self.filter_selection.cursor).hash(&mut hasher);
         crate::i18n::I18nManager::revision().hash(&mut hasher);
         hasher.finish()
     }
@@ -667,7 +681,21 @@ impl Dropdown {
         let caption = self.caption.as_deref().map_or(0.0, |caption| {
             f64::from(text.measure_style(caption, None, &self.caption_style).0).ceil()
         });
-        field.max(caption)
+        let search = if self.supports_filter() {
+            field_width_for(
+                [crate::i18n!("dropdown-search-placeholder").as_str()],
+                true,
+                &self.label_style,
+                text,
+            )
+        } else {
+            0.0
+        };
+        field.max(caption).max(search)
+    }
+
+    fn supports_filter(&self) -> bool {
+        self.menu.is_none() && self.options.len() >= FILTER_MIN_OPTIONS
     }
 
     /// Lay the widget out in `outer`: the caption on top, the field below.
@@ -732,6 +760,10 @@ impl Dropdown {
             .unwrap_or(0)
     }
 
+    fn has_selected_value(&self) -> bool {
+        !self.selected.is_empty() || self.values.contains(&self.selected)
+    }
+
     /// Presentation label for the selected stable value.
     fn selected_label(&self) -> &str {
         self.values
@@ -744,21 +776,46 @@ impl Dropdown {
     /// Height of the open list box for `n` filtered rows (>=1 so the
     /// "no matches" row has a box to live in).
     fn list_box_height(&self, n: usize) -> f64 {
-        self.rows_height(n) + 2.0 * LIST_PAD
+        let inset = self.viewport.map_or(2.0 * LIST_PAD, |viewport| {
+            [
+                crate::widget::PopoverSide::Above,
+                crate::widget::PopoverSide::Below,
+            ]
+            .into_iter()
+            .map(|side| {
+                crate::widget::floating_surface::anchored_room(self.rect, side, LIST_GAP, viewport)
+            })
+            .fold(0.0, f64::max)
+            .min(2.0 * LIST_PAD)
+        });
+        self.rows_height(n) + inset
     }
 
     /// Height of the visible rows of the open list, inside its inset.
     fn rows_height(&self, n: usize) -> f64 {
-        (count_f64(n.max(1)) * self.item_h).min(MAX_LIST_HEIGHT.max(self.item_h))
+        let authored = (count_f64(n.max(1)) * self.item_h).min(MAX_LIST_HEIGHT.max(self.item_h));
+        let Some(viewport) = self.viewport else {
+            return authored;
+        };
+        let room = [
+            crate::widget::PopoverSide::Above,
+            crate::widget::PopoverSide::Below,
+        ]
+        .into_iter()
+        .map(|side| {
+            crate::widget::floating_surface::anchored_room(self.rect, side, LIST_GAP, viewport)
+        })
+        .fold(0.0, f64::max);
+        authored.min((room - 2.0 * LIST_PAD).max(0.0))
     }
 
     /// The rows' box inside the open `list`.
     fn rows_rect(list: Rect) -> Rect {
         Rect::new(
             list.x0 + LIST_PAD,
-            list.y0 + LIST_PAD,
+            list.y0 + LIST_PAD.min(list.height() / 2.0),
             list.x1 - LIST_PAD,
-            list.y1 - LIST_PAD,
+            list.y1 - LIST_PAD.min(list.height() / 2.0),
         )
     }
 
@@ -807,6 +864,8 @@ impl Dropdown {
             .iter()
             .map(|option| f64::from(text.measure_style(option, None, &style).0))
             .fold(0.0, f64::max);
+        let hint = crate::i18n!("dropdown-no-matches");
+        let widest = widest.max(f64::from(text.measure_style(&hint, None, &style).0));
         let check = f64::from(theme.tokens.metrics.icon_sm);
         self.list_width = (widest + 3.0 * LIST_PAD + check + 2.0 * LIST_PAD).ceil();
     }
@@ -816,9 +875,25 @@ impl Dropdown {
         px((content - self.rows_height(n)).max(0.0))
     }
 
+    fn scroll_metrics(&self, n: usize) -> ScrollMetrics {
+        ScrollMetrics::new(
+            count_f64(n) * self.item_h,
+            self.rows_height(n),
+            f64::from(self.scroll),
+        )
+    }
+
+    fn option_rows(&self, list: Rect, n: usize) -> Rect {
+        let mut rows = Self::rows_rect(list);
+        if self.scroll_metrics(n).overflows() {
+            rows.x1 = (rows.x1 - self.scrollbar_gutter).max(rows.x0);
+        }
+        rows
+    }
+
     /// Filtered-list row index under `pos`, or `None` outside `list`/`n` rows.
     fn row_at(&self, pos: Point, list: Rect, n: usize) -> Option<usize> {
-        let rows = Self::rows_rect(list);
+        let rows = self.option_rows(list, n);
         if !rows.contains(pos) {
             return None;
         }
@@ -873,6 +948,7 @@ impl Dropdown {
     /// Open the list and align highlight + scroll to the current value.
     fn do_open(&mut self) {
         self.open = true;
+        self.interactive_open = true;
         self.filter.clear();
         self.filter_selection = Selection::collapsed(0);
         self.filter_composition.clear();
@@ -906,6 +982,9 @@ impl Dropdown {
     /// Close the options overlay without changing its selected value.
     pub fn close(&mut self) {
         self.open = false;
+        self.interactive_open = false;
+        self.scrollbar.release();
+        self.scrollbar_track = Rect::ZERO;
         self.filter.clear();
         self.filter_selection = Selection::collapsed(0);
         self.filter_composition.clear();
@@ -966,6 +1045,14 @@ impl Dropdown {
         if self.open {
             let filtered = self.filtered();
             let list = self.list_rect(filtered.len());
+            let metrics = self.scroll_metrics(filtered.len());
+            if let Some(offset) = self.scrollbar.drag_to(self.scrollbar_track, metrics, pos) {
+                self.scroll = px(offset);
+                *handled = true;
+                return;
+            }
+            self.scrollbar
+                .update_hover(self.scrollbar_track, metrics, pos);
             if let Some(vi) = self.row_at(pos, list, filtered.len())
                 && vi != self.highlight
             {
@@ -990,14 +1077,38 @@ impl Dropdown {
             let filtered = self.filtered();
             let list = self.list_rect(filtered.len());
             if list.contains(pos) {
+                match self.scrollbar.press(
+                    self.scrollbar_track,
+                    self.scroll_metrics(filtered.len()),
+                    pos,
+                ) {
+                    PressOutcome::Thumb => {
+                        *handled = true;
+                        return;
+                    }
+                    PressOutcome::Page(offset) => {
+                        self.scroll = px(offset);
+                        *handled = true;
+                        return;
+                    }
+                    PressOutcome::Miss => {}
+                }
                 if let Some(vi) = self.row_at(pos, list, filtered.len()) {
                     self.highlight = vi;
                     self.select_highlighted(state, root);
                 }
                 *handled = true;
             } else if self.rect.contains(pos) {
-                // Click the control again → close.
-                self.close();
+                if self.supports_filter() && self.query_rect.contains(pos) {
+                    *focus_target = Some(node_id);
+                    if let Some(selection) =
+                        self.filter_composition.pointer_selection(&self.filter, pos)
+                    {
+                        self.filter_selection = selection;
+                    }
+                } else {
+                    self.close();
+                }
                 *handled = true;
             } else {
                 // Click-outside dismissal.
@@ -1290,14 +1401,11 @@ impl Widget for Dropdown {
             self.place(self.outer);
         }
         let disabled = !self.effectively_enabled();
-        // While open the field keeps showing the value; the query replaces
-        // it only once the person has typed, and never shows a prompt.
-        let filtering =
-            self.open && (!self.filter.is_empty() || self.filter_composition.is_composing());
-        let (label, placeholder) = if self.selected.is_empty() {
-            (self.placeholder.clone(), true)
-        } else {
+        let filtering = self.open && self.supports_filter();
+        let (label, placeholder) = if self.has_selected_value() {
             (self.selected_label().to_string(), false)
+        } else {
+            (self.placeholder.clone(), true)
         };
         let content = paint_face(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
@@ -1305,7 +1413,11 @@ impl Widget for Dropdown {
                 outer: self.outer,
                 field: self.rect,
                 caption: self.caption.as_deref(),
-                icon: self.leading_icon,
+                icon: if filtering {
+                    Some(crate::icons::Icon::Search)
+                } else {
+                    self.leading_icon
+                },
                 label: (!filtering).then_some((label.as_str(), placeholder)),
                 size: self.control_size,
                 open: self.open,
@@ -1314,13 +1426,14 @@ impl Widget for Dropdown {
                 disabled,
             },
         );
+        self.query_rect = if filtering { content } else { Rect::ZERO };
         if filtering {
             self.filter_composition.draw(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 QueryView {
                     text: &self.filter,
                     selection: &self.filter_selection,
-                    placeholder: "",
+                    placeholder: &crate::i18n!("dropdown-search-placeholder"),
                     show_caret: self.is_focused,
                 },
                 content,
@@ -1363,18 +1476,26 @@ impl Widget for Dropdown {
         crate::surface::panel(scene, transform, list, radius, theme);
 
         // Rows sit inside the menu inset and scroll inside it.
-        let rows = Self::rows_rect(list);
+        self.scrollbar_gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
+        let inset = Self::rows_rect(list);
+        let rows = self.option_rows(list, filtered.len());
+        self.scrollbar_track = if self.scroll_metrics(filtered.len()).overflows() {
+            self.scrollbar
+                .track_in(Rect::new(rows.x1, inset.y0, inset.x1, inset.y1), theme)
+        } else {
+            Rect::ZERO
+        };
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &rows);
 
         if filtered.is_empty() {
             // Centre on the measured line, not the font size (the face's
             // ascent/descent otherwise sits the label low in the row).
-            let (_, hint_h) =
-                text_renderer.measure_style("No matches", None, &theme.text(TextRole::Body));
+            let hint = crate::i18n!("dropdown-no-matches");
+            let (_, hint_h) = text_renderer.measure_style(&hint, None, &theme.text(TextRole::Body));
             let ty = rows.y0 + (self.item_h - f64::from(hint_h)) / 2.0;
             text_renderer.draw_style(
                 scene,
-                "No matches",
+                &hint,
                 theme.text_dim,
                 translated(transform, rows.x0 + LIST_PAD, ty),
                 None,
@@ -1474,6 +1595,14 @@ impl Widget for Dropdown {
             }
         }
         scene.pop_layer();
+        self.scrollbar.draw(
+            scene,
+            transform,
+            self.scrollbar_track,
+            self.scroll_metrics(filtered.len()),
+            theme,
+            false,
+        );
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -1509,6 +1638,8 @@ impl Widget for Dropdown {
             // resting hover veneer would otherwise stay painted.
             WindowEvent::CursorLeft { .. } => {
                 self.is_hovered = false;
+                self.scrollbar
+                    .update_hover(Rect::ZERO, self.scroll_metrics(0), self.last_cursor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1522,6 +1653,13 @@ impl Widget for Dropdown {
                     ctx.focus_target,
                     ctx.node_id,
                 );
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if self.open => {
+                *ctx.handled |= self.scrollbar.release();
             }
             WindowEvent::MouseWheel { delta, .. } if self.open => {
                 self.on_wheel(delta, ctx.handled);
@@ -1581,6 +1719,12 @@ impl Widget for Dropdown {
             .then(|| self.filter_composition.ime_cursor_rect())
             .flatten()
     }
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.ime_cursor_rect()?;
+        self.filter_composition
+            .ime_edit_fingerprint(&self.filter, &self.filter_selection, key)
+    }
+
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         Some(winit::window::ImePurpose::Normal)
     }
@@ -1600,7 +1744,7 @@ impl Widget for Dropdown {
             })
         } else if let Some(caption) = &self.caption {
             Some(caption.clone())
-        } else if !self.selected.is_empty() {
+        } else if self.has_selected_value() {
             Some(self.selected_label().to_string())
         } else if !self.placeholder.is_empty() {
             Some(self.placeholder.clone())
@@ -1610,7 +1754,8 @@ impl Widget for Dropdown {
         let value = if self.open && !self.filter.is_empty() {
             Some(self.filter.clone())
         } else {
-            (!self.selected.is_empty()).then(|| self.selected_label().to_string())
+            self.has_selected_value()
+                .then(|| self.selected_label().to_string())
         };
         let role = if self.menu.is_some() {
             Role::Button
@@ -1634,6 +1779,9 @@ impl Widget for Dropdown {
         }
         if self.action.is_none() && self.on_change.is_none() {
             node = node.with_action_target(self.test_id().unwrap_or("dropdown"));
+        }
+        if self.open && self.supports_filter() {
+            node = node.with_description(crate::i18n!("dropdown-search-description"));
         }
         Some(node)
     }
@@ -1671,7 +1819,12 @@ impl Widget for Dropdown {
                 true
             }
             Action::SetValue(value) => {
-                let Some(index) = self.options.iter().position(|option| option == value) else {
+                let Some(index) = self
+                    .values
+                    .iter()
+                    .position(|option| option == value)
+                    .or_else(|| self.options.iter().position(|option| option == value))
+                else {
                     return false;
                 };
                 let Some(value) = self.values.get(index).cloned() else {
@@ -1683,6 +1836,13 @@ impl Widget for Dropdown {
             }
             _ => false,
         }
+    }
+
+    // An open selector is a foreground query/list, so navigation containers
+    // defer Escape and other global shortcuts to it before going back.
+    fn modal_capture(&self) -> Option<Rect> {
+        self.open
+            .then(|| self.rect.union(self.list_rect(self.visible_count())))
     }
 
     /// While open, grabs every event — see module docs.
@@ -1731,6 +1891,9 @@ impl crate::widget::controls::ActionControls for Dropdown {
     ) {
         if let Some(action) = &mut self.action {
             action.refresh_availability(allowed);
+        }
+        if self.interactive_open && !self.effectively_enabled() {
+            self.close();
         }
     }
 }
@@ -2150,6 +2313,196 @@ mod tests {
             n += 1;
         }
         options
+    }
+
+    #[test]
+    fn dropdown_language_popup_stays_visible_in_a_short_scaled_window() {
+        let mut frame = crate::headless::FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(
+                Dropdown::from_state(zones(), &crate::LocalState::new(String::new()))
+                    .with_id("language-picker"),
+            ),
+            (420, 180),
+            Theme::light().with_ui_scale(1.5),
+        );
+        frame.click_named("language-picker").unwrap();
+        frame.render_png(
+            &std::env::current_exe()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("dropdown-review/shared-short.png"),
+        );
+        let popup = frame
+            .with_widget_mut::<Dropdown, _>(|dropdown| {
+                assert!(dropdown.is_open());
+                dropdown.list_rect(dropdown.visible_count())
+            })
+            .unwrap();
+        assert!(
+            popup.y0 >= 0.0 && popup.y1 <= 180.0,
+            "the actual painted and hit-tested popup must fit its viewport: {popup:?}"
+        );
+    }
+
+    #[test]
+    fn dropdown_language_shared_scrollbar_and_search_field_are_interactive() {
+        let mut frame = crate::headless::FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(
+                Dropdown::from_state(zones(), &crate::LocalState::new(String::new()))
+                    .with_id("language-picker"),
+            ),
+            (420, 180),
+            Theme::dark().with_ui_scale(1.5),
+        );
+        frame.click_named("language-picker").unwrap();
+        let (thumb, track) = frame
+            .with_widget_mut::<Dropdown, _>(|dropdown| {
+                let metrics = dropdown.scroll_metrics(dropdown.visible_count());
+                (
+                    dropdown
+                        .scrollbar
+                        .thumb_rect(dropdown.scrollbar_track, metrics)
+                        .unwrap(),
+                    dropdown.scrollbar_track,
+                )
+            })
+            .unwrap();
+        frame.drag_at(
+            (thumb.center().x, thumb.center().y),
+            (track.center().x, track.y1),
+        );
+        frame
+            .with_widget_mut::<Dropdown, _>(|dropdown| {
+                assert!(
+                    dropdown.scroll > 0.0,
+                    "the actual shared scrollbar must scroll the list"
+                );
+                assert!(!dropdown.scrollbar.is_dragging());
+                assert!(dropdown.is_open(), "dragging must not select an option");
+            })
+            .unwrap();
+        frame.type_text("Europe");
+        let query = frame
+            .with_widget_mut::<Dropdown, _>(|dropdown| dropdown.query_rect)
+            .unwrap();
+        frame.click_at(query.x0 + 1.0, query.center().y);
+        frame.type_text("X");
+        let mut text = TextRenderer::new();
+        let hint_width = f64::from(
+            text.measure_style(
+                &crate::i18n!("dropdown-no-matches"),
+                None,
+                &frame.theme().text(TextRole::Body),
+            )
+            .0,
+        );
+        frame
+            .with_widget_mut::<Dropdown, _>(|dropdown| {
+                assert!(
+                    dropdown.is_open(),
+                    "the painted search field remains editable when clicked"
+                );
+                assert_eq!(
+                    dropdown.filter, "XEurope",
+                    "pointer caret uses the shaped query layout"
+                );
+                assert_eq!(dropdown.visible_count(), 0);
+                let rows = dropdown.option_rows(dropdown.list_rect(0), 0);
+                assert!(
+                    rows.width() - LIST_PAD >= hint_width,
+                    "the localized empty-result text must fit its actual painted clip"
+                );
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn dropdown_language_accessibility_selects_stable_ids_with_duplicate_labels() {
+        let state = crate::LocalState::new(String::new());
+        let mut dropdown = Dropdown::from_state(Vec::new(), &state);
+        dropdown.set_value_options(vec![
+            ("first".into(), "Same label".into()),
+            ("second".into(), "Same label".into()),
+        ]);
+        let (mut document, root) = doc_with_tz("");
+        assert!(Widget::perform_action(
+            &mut dropdown,
+            &crate::a11y::Action::SetValue("second".into()),
+            &mut crate::widget::Edits::lend(&mut document),
+            &root
+        ));
+        assert_eq!(state.get(), "second");
+        assert!(!Widget::perform_action(
+            &mut dropdown,
+            &crate::a11y::Action::SetValue("foreign".into()),
+            &mut crate::widget::Edits::lend(&mut document),
+            &root
+        ));
+        assert_eq!(state.get(), "second");
+    }
+
+    #[test]
+    fn dropdown_language_empty_stable_value_keeps_its_human_label() {
+        let state = crate::LocalState::new(String::new());
+        let mut dropdown = Dropdown::from_state(Vec::new(), &state);
+        dropdown.set_value_options(vec![
+            (String::new(), "Session language".into()),
+            ("de_DE".into(), "German".into()),
+        ]);
+        let mut frame =
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(dropdown), (420, 180));
+        frame
+            .with_widget_mut::<Dropdown, _>(|dropdown| {
+                assert!(dropdown.has_selected_value());
+                assert_eq!(dropdown.selected_label(), "Session language");
+                let node = Widget::accessibility(dropdown).unwrap();
+                assert_eq!(node.value.as_deref(), Some("Session language"));
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn dropdown_language_revoked_action_releases_modal_capture() {
+        let mut dropdown =
+            Dropdown::new(opts(), "legacy").on_action(crate::widget::test_string_action_binding());
+        let allowed = std::collections::HashSet::from([tilo_actions::ActionAddress::new(
+            "test:control",
+            "set",
+        )]);
+        crate::widget::controls::refresh_control_action_availability(&mut dropdown, &allowed);
+        let mut doc = AutoCommit::new();
+        assert!(Widget::perform_action(
+            &mut dropdown,
+            &crate::a11y::Action::Expand,
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        assert!(Widget::modal_capture(&dropdown).is_some());
+        crate::widget::controls::refresh_control_action_availability(
+            &mut dropdown,
+            &std::collections::HashSet::new(),
+        );
+        assert!(!Widget::is_enabled(&dropdown));
+        assert!(!dropdown.is_open());
+        assert!(Widget::modal_capture(&dropdown).is_none());
+        assert!(crate::widget::controls::take_control_invocation(&mut dropdown).is_none());
+
+        // Unavailable capture-only fixtures retain their authored open state.
+        let mut capture = Dropdown::new(opts(), "legacy")
+            .on_action(crate::widget::test_string_action_binding())
+            .open();
+        crate::widget::controls::refresh_control_action_availability(
+            &mut capture,
+            &std::collections::HashSet::new(),
+        );
+        assert!(capture.is_open());
     }
 
     /// The open list's rows sit inside the menu inset every menu shares,

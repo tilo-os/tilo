@@ -306,7 +306,10 @@ fn private_engines_own_and_remove_their_disposable_roots() {
     }
     // phase: private_process_exit_waits_for_helper_and_root_cleanup
     {
-        let (_fixture, host) = helper_fixture("exec cat >/dev/null");
+        // Keep the protocol output open while stdin is consumed. Redirecting
+        // stdout alone sends EOF to the production frame reader, which can
+        // reap this supposedly-live helper before the child checks its root.
+        let (_fixture, host) = helper_fixture("exec 3>&1; exec cat >/dev/null");
         let root = private_root();
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args([

@@ -301,7 +301,7 @@ fn app_row(item: &StoreItem, flatpak_available: bool, error: Option<&str>) -> Li
     // The row feeds system search, history and assistive clients, which do
     // not see the card layout. Keep its summary short rather than exporting
     // a second, unbounded copy of catalogue metadata.
-    let detail = resource_detail_excerpt(&item.description);
+    let detail = resource_detail_excerpt(item.summary());
     let latest = item.latest_version();
     let badge = if latest.is_empty() {
         source.to_string()
@@ -436,6 +436,7 @@ pub struct StoreApp {
     /// Keyed by [`StoreItem::id`] and retained across window rebuilds so the
     /// document-backed route does not disappear during a responsive reflow.
     focused_detail: Option<String>,
+    technical_details_open: bool,
     /// Marked dirty when a chip / category selection flips so the
     /// host re-runs `build_layout`.
     structure_dirty: bool,
@@ -504,6 +505,7 @@ impl StoreApp {
             flatpak_error: Some(ui::i18n!("store-flatpak-checking")),
             flatpak_checking: true,
             focused_detail: None,
+            technical_details_open: false,
             structure_dirty: true,
             rect: Rect::ZERO,
             root: None,
@@ -560,6 +562,17 @@ impl StoreApp {
         self.worker = Some(StoreWorker::spawn(self.directory.clone(), wake));
     }
 
+    #[cfg(test)]
+    pub(crate) fn connect_test_host(&mut self, fd: std::os::fd::OwnedFd) -> Result<(), String> {
+        let current = self
+            .worker
+            .take()
+            .ok_or_else(|| "the live surface must already have its mounted worker".to_owned())?;
+        self.worker = Some(current.with_connected_host(self.directory.clone(), fd));
+        self.set_worker_busy(true);
+        Ok(())
+    }
+
     /// Edit reports through `dispatcher`.
     pub(crate) fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Store>) {
         self.dispatcher = Some(dispatcher);
@@ -611,16 +624,35 @@ impl StoreApp {
     pub fn stage_scene(&mut self, scenario: Option<&str>) {
         match scenario {
             Some("search") => self.set_query("te".into()),
-            Some("detail" | "detail-narrow") => self.focus_detail("so.tilo.notes"),
+            Some("search-notes") => self.set_query("Notes".into()),
+            Some("detail" | "detail-narrow" | "detail-technical") => {
+                self.focus_detail("so.tilo.notes");
+                self.technical_details_open = scenario == Some("detail-technical");
+            }
             Some("detail-update") => self.focus_detail("so.tilo.files"),
             Some("detail-flatpak") => self.focus_detail("org.inkscape.Inkscape"),
-            Some("remotes") => {
-                self.show_remotes();
+            Some("flatpak-detail") => self.focus_detail("org.gnome.Chess"),
+            Some("flatpak-installed") => self.focus_detail("org.videolan.VLC"),
+            Some("paging") => self.catalog_page = 1,
+            Some("account-setup" | "account-remotes") => {
                 self.set_remotes(vec![crate::flathub_client::Remote {
                     name: "flathub".into(),
                     url: "https://dl.flathub.org/repo/".into(),
                     title: "Flathub".into(),
                     disabled: false,
+                    user_managed: false,
+                }]);
+                if scenario == Some("account-remotes") {
+                    self.show_remotes();
+                }
+            }
+            Some("remotes" | "remotes-disabled") => {
+                self.show_remotes();
+                self.set_remotes(vec![crate::flathub_client::Remote {
+                    name: "flathub".into(),
+                    url: "https://dl.flathub.org/repo/".into(),
+                    title: "Flathub".into(),
+                    disabled: scenario == Some("remotes-disabled"),
                     user_managed: true,
                 }]);
             }
@@ -678,6 +710,7 @@ impl StoreApp {
     /// Return to the catalogue from whichever page is open.
     fn show_catalogue(&mut self) {
         self.focused_detail = None;
+        self.pending_detail = None;
         self.remotes_open = false;
         self.safety_open = false;
         self.structure_dirty = true;
@@ -690,6 +723,7 @@ impl StoreApp {
 
     pub fn focus_detail(&mut self, id: &str) {
         self.focused_detail = Some(id.to_string());
+        self.technical_details_open = false;
         self.remotes_open = false;
         self.safety_open = false;
         self.structure_dirty = true;
@@ -699,6 +733,7 @@ impl StoreApp {
         self.remotes_open = true;
         self.safety_open = false;
         self.focused_detail = None;
+        self.pending_detail = None;
         self.structure_dirty = true;
     }
 
@@ -706,6 +741,7 @@ impl StoreApp {
         self.safety_open = true;
         self.remotes_open = false;
         self.focused_detail = None;
+        self.pending_detail = None;
         self.structure_dirty = true;
     }
 
@@ -732,15 +768,24 @@ impl StoreApp {
     /// Apply a detail snapshot whose retained search projection was already
     /// prepared by the serialized Store worker.  Catalogue-wide indexing is
     /// intentionally never part of a frame-time snapshot drain.
-    fn set_detail_from_worker(&mut self, detail: StoreItem) {
+    fn set_detail_from_worker(&mut self, update: crate::worker::DetailUpdate) {
+        let (detail, open_reference) = match update {
+            crate::worker::DetailUpdate::Requested { item, .. } => (item, false),
+            crate::worker::DetailUpdate::OpenedReference(item) => (Some(item), true),
+        };
+        let Some(detail) = detail else {
+            return;
+        };
         if let Some(item) = self.items.iter_mut().find(|item| item.id == detail.id) {
             *item = detail.clone();
         } else {
             self.items.push(detail.clone());
         }
-        self.focused_detail = Some(detail.id);
-        self.remotes_open = false;
-        self.safety_open = false;
+        if open_reference {
+            self.focused_detail = Some(detail.id);
+            self.remotes_open = false;
+            self.safety_open = false;
+        }
         self.structure_dirty = true;
     }
 
@@ -1221,23 +1266,39 @@ impl StoreApp {
         let snapshots: Vec<_> = std::iter::from_fn(|| worker.try_snapshot()).collect();
         let busy = worker.has_pending();
         for snap in snapshots {
-            let applies_items = match snap.query.as_deref() {
-                Some(query) => query == self.query(),
-                None => snap.detail.is_none(),
-            };
-            if applies_items {
-                self.set_items_from_worker(snap.items);
+            self.apply_worker_snapshot(snap);
+        }
+        self.set_worker_busy(busy);
+    }
+
+    fn apply_worker_snapshot(&mut self, snap: crate::worker::Snapshot) {
+        let current_query = snap
+            .query
+            .as_deref()
+            .is_none_or(|query| query == self.query());
+        let current_detail = snap.detail.as_ref().is_none_or(|update| match update {
+            crate::worker::DetailUpdate::OpenedReference(_) => true,
+            crate::worker::DetailUpdate::Requested { id, .. } => {
+                self.focused_detail.as_deref() == Some(id.as_str())
             }
-            if let Some(detail) = snap.detail {
-                self.set_detail_from_worker(detail);
-            }
-            self.set_flatpak_available(snap.flatpak_available);
-            self.flatpak_error = snap.flatpak_error;
-            self.set_remotes(snap.remotes);
+        });
+        let applies_items = match snap.query.as_deref() {
+            Some(_) => current_query,
+            None => snap.detail.is_none(),
+        };
+        if applies_items {
+            self.set_items_from_worker(snap.items);
+        }
+        if let Some(detail) = snap.detail {
+            self.set_detail_from_worker(detail);
+        }
+        self.set_flatpak_available(snap.flatpak_available);
+        self.flatpak_error = snap.flatpak_error;
+        self.set_remotes(snap.remotes);
+        if current_detail && current_query {
             self.set_status_line(snap.status_line);
             self.set_operation_error(snap.operation_error);
         }
-        self.set_worker_busy(busy);
     }
 
     /// Ask the worker for the search results and details the window now
@@ -1266,10 +1327,35 @@ impl StoreApp {
                 self.items
                     .iter()
                     .find(|item| item.id == id)
-                    .map(|item| {
-                        inspect_item(item, self.flatpak_available, self.flatpak_error.as_deref())
-                    })
                     .ok_or_else(|| "App is not in the current catalogue.".to_string())
+                    .and_then(|item| {
+                        let mut detail = inspect_item(
+                            item,
+                            self.flatpak_available,
+                            self.flatpak_error.as_deref(),
+                        );
+                        // Language metadata belongs to an explicit app read,
+                        // not every row of a catalogue listing. Bound it even
+                        // when the model was supplied by a legacy source.
+                        let fields = detail.as_object_mut().ok_or_else(|| {
+                            "App inspection did not produce a metadata object.".to_string()
+                        })?;
+                        fields.insert(
+                            "supported_languages".into(),
+                            serde_json::json!(
+                                item.supported_languages
+                                    .iter()
+                                    .take(128)
+                                    .map(|tag| tag.chars().take(64).collect::<String>())
+                                    .collect::<Vec<_>>()
+                            ),
+                        );
+                        fields.insert(
+                            "supported_language_count".into(),
+                            serde_json::json!(item.supported_languages.len()),
+                        );
+                        Ok(detail)
+                    })
             })
             .transpose()?;
         let visible = self.visible_items();
@@ -1300,7 +1386,8 @@ impl StoreApp {
             "query": self.query, "source": self.active_filter.label(),
             "category": self.active_category, "page": page, "pages": pages,
             "total": self.items.len(), "matching": visible.len(), "items": items,
-            "detail": detail, "selected_app": self.focused_detail, "flatpak_available": self.flatpak_available,
+            "detail": detail, "selected_app": self.focused_detail,
+            "technical_details_open": self.technical_details_open, "flatpak_available": self.flatpak_available,
             "flatpak_checking": self.flatpak_checking,
             "flatpak_error": self.flatpak_error.as_deref().map(resource_detail_excerpt),
             "worker_attached": self.worker.is_some(), "worker_busy": self.worker_busy,
@@ -1446,6 +1533,10 @@ impl StoreApp {
                 self.structure_dirty = true;
             }
             StoreEffect::ShowCatalogue => self.show_catalogue(),
+            StoreEffect::SetTechnicalDetails { expanded } => {
+                self.technical_details_open = expanded;
+                self.structure_dirty = true;
+            }
             StoreEffect::PreviousPage => {
                 self.catalog_page = self.catalog_page.saturating_sub(1);
                 self.scroll_offset.set((0.0, 0.0));
@@ -1725,7 +1816,8 @@ impl StoreApp {
                 Finish::Package | Finish::Status => {}
             }
         }
-        Ok(Effected::value(finished.status))
+        self.set_status_line(finished.status);
+        Ok(Effected::done())
     }
 
     fn start_application_launch(
@@ -1775,7 +1867,7 @@ impl StoreApp {
                     Ok(status) => {
                         app.status_line.clone_from(&status);
                         app.operation_error = None;
-                        Ok(Effected::value(status))
+                        Ok(Effected::done())
                     }
                     Err(error) => {
                         app.show_failure(&error);
@@ -2259,6 +2351,7 @@ fn inspect_item(
     serde_json::json!({
         "resource": format!("app:{}", item.id), "id": item.id,
         "name": resource_detail_excerpt(&item.name),
+        "tagline": resource_detail_excerpt(&item.tagline),
         "description": resource_detail_excerpt(&item.description),
         "source": item.source.short_label(),
         "repository": resource_detail_excerpt(item.source.distribution_name()),
@@ -2274,6 +2367,172 @@ mod tests {
     use super::*;
     use crate::bindings;
 
+    #[test]
+    fn late_detail_metadata_preserves_the_declared_navigation_destination() {
+        for destination in [
+            StoreEffect::ShowCatalogue,
+            StoreEffect::ShowRemotes,
+            StoreEffect::ShowDetails {
+                app: "id.chess".into(),
+            },
+        ] {
+            let mut app = seeded_app();
+            app.admit(StoreEffect::ShowDetails {
+                app: "id.notes".into(),
+            })
+            .unwrap();
+            let mut response = app
+                .items
+                .iter()
+                .find(|item| item.id == "id.notes")
+                .unwrap()
+                .clone();
+            response.description = "Enriched catalogue description".into();
+            app.admit(destination).unwrap();
+            let selected = app.focused_detail.clone();
+            let remotes = app.remotes_open;
+            app.apply_worker_snapshot(crate::worker::Snapshot {
+                items: app.items.clone(),
+                status_line: "Loaded an earlier app".into(),
+                query: None,
+                detail: Some(crate::worker::DetailUpdate::Requested {
+                    id: response.id.clone(),
+                    item: Some(response),
+                }),
+                remotes: Vec::new(),
+                flatpak_available: true,
+                flatpak_error: None,
+                operation_error: Some("Earlier detail request failed".into()),
+            });
+            assert_eq!(
+                app.focused_detail, selected,
+                "metadata cannot navigate away from the current destination"
+            );
+            assert_eq!(
+                app.remotes_open, remotes,
+                "metadata cannot close repositories"
+            );
+            assert_ne!(
+                app.status_line, "Loaded an earlier app",
+                "stale metadata cannot replace current feedback"
+            );
+            assert!(
+                app.operation_error.is_none(),
+                "stale detail errors cannot report failure for the current destination"
+            );
+            assert_eq!(
+                app.items
+                    .iter()
+                    .find(|item| item.id == "id.notes")
+                    .unwrap()
+                    .description,
+                "Enriched catalogue description",
+                "the response still enriches the catalogue"
+            );
+        }
+    }
+
+    #[test]
+    fn current_detail_feedback_and_opened_references_keep_their_navigation() {
+        let mut app = seeded_app();
+        app.admit(StoreEffect::ShowDetails {
+            app: "id.notes".into(),
+        })
+        .unwrap();
+        let response = app
+            .items
+            .iter()
+            .find(|item| item.id == "id.notes")
+            .unwrap()
+            .clone();
+        let snapshot = |detail, error| crate::worker::Snapshot {
+            items: Vec::new(),
+            status_line: "Detail response".into(),
+            query: None,
+            detail: Some(detail),
+            remotes: Vec::new(),
+            flatpak_available: true,
+            flatpak_error: None,
+            operation_error: error,
+        };
+        app.apply_worker_snapshot(snapshot(
+            crate::worker::DetailUpdate::Requested {
+                id: "id.notes".into(),
+                item: Some(response.clone()),
+            },
+            None,
+        ));
+        assert_eq!(app.focused_detail.as_deref(), Some("id.notes"));
+        assert_eq!(app.status_line, "Detail response");
+        app.apply_worker_snapshot(snapshot(
+            crate::worker::DetailUpdate::Requested {
+                id: "id.notes".into(),
+                item: None,
+            },
+            Some("Could not load this app".into()),
+        ));
+        assert_eq!(
+            app.operation_error.as_deref(),
+            Some("Could not load this app")
+        );
+        app.admit(StoreEffect::ShowRemotes).unwrap();
+        app.apply_worker_snapshot(snapshot(
+            crate::worker::DetailUpdate::OpenedReference(response),
+            None,
+        ));
+        assert_eq!(app.focused_detail.as_deref(), Some("id.notes"));
+        assert!(
+            !app.remotes_open,
+            "an explicitly opened reference still navigates to its app"
+        );
+        assert!(app.operation_error.is_none());
+    }
+
+    #[test]
+    fn late_search_feedback_preserves_the_current_declared_query() {
+        let mut app = seeded_app();
+        app.admit(StoreEffect::SetSearch {
+            query: "notes".into(),
+        })
+        .unwrap();
+        app.admit(StoreEffect::SetSearch {
+            query: "chess".into(),
+        })
+        .unwrap();
+        let retained_status = app.status_line.clone();
+        let retained_count = app.items.len();
+        let snapshot = |query: &str, items, error: Option<&str>| crate::worker::Snapshot {
+            items,
+            status_line: "Received search results".into(),
+            query: Some(query.into()),
+            detail: None,
+            remotes: Vec::new(),
+            flatpak_available: true,
+            flatpak_error: None,
+            operation_error: error.map(str::to_owned),
+        };
+        app.apply_worker_snapshot(snapshot("notes", Vec::new(), Some("Earlier search failed")));
+        assert_eq!(
+            app.status_line, retained_status,
+            "stale results cannot replace the current query feedback"
+        );
+        assert!(
+            app.operation_error.is_none(),
+            "stale errors cannot report failure for the current query"
+        );
+        assert_eq!(app.items.len(), retained_count);
+        let current = app
+            .items
+            .iter()
+            .find(|item| item.id == "id.chess")
+            .unwrap()
+            .clone();
+        app.apply_worker_snapshot(snapshot("chess", vec![current], None));
+        assert_eq!(app.status_line, "Received search results");
+        assert_eq!(app.items.len(), 1);
+        assert_eq!(app.items[0].id, "id.chess");
+    }
+
     fn inspected_store() -> (
         tilo_test_env::ScopedEnv,
         tempfile::TempDir,
@@ -2283,13 +2542,261 @@ mod tests {
         std::fs::write(directory.path().join("registries.toml"),
             "[[registry]]\nname = \"off\"\nbase_url = \"https://registry.invalid\"\nowner_pubkey_hex = \"ab\"\nenabled = false\n").unwrap();
         let mut environment = tilo_test_env::ScopedEnv::new();
+        let runtime = directory.path().join("runtime");
+        std::fs::create_dir(&runtime).unwrap();
         environment
+            .set("XDG_RUNTIME_DIR", runtime)
             .set("TILO_STORE_CONFIG_DIR", directory.path())
             .set("TILO_STORE_CACHE_DIR", directory.path().join("cache"))
             .set("FLATHUB_API_BASE", "http://127.0.0.1:9")
             .set("TILO_STORE_HTTP_TIMEOUT", "1");
         let app = ui::framework::testing::TestApp::<crate::resource::StoreShell>::new().unwrap();
         (environment, directory, app)
+    }
+
+    #[test]
+    fn ordinary_owner_store_controls_and_optional_offscreen_review() {
+        let output = std::env::var_os("TILO_STORE_REVIEW_DIR").map(std::path::PathBuf::from);
+        for (scenario, action) in [
+            ("wide", "Refresh catalogues"),
+            ("account-setup", "Use Flathub for my apps"),
+            ("account-remotes", "Use Flathub for my apps"),
+            ("remotes", "Browse apps"),
+            ("remotes-disabled", "Enable source"),
+            ("search-notes", "Notes"),
+            ("paging", "Previous"),
+            ("detail", "Show technical details"),
+            ("detail-technical", "Hide technical details"),
+            ("flatpak-detail", "Install"),
+            ("flatpak-installed", "Open"),
+            ("error", "Refresh catalogues"),
+            ("offline", "Refresh catalogues"),
+        ] {
+            let (_environment, _directory, mut app) = inspected_store();
+            app.with_surface(|store: &mut StoreApp| {
+                store.worker = None;
+                store.set_operation_error(None);
+                store.set_worker_busy(false);
+                store.show_capture_catalogue(crate::fixture::capture_catalog(Some(scenario)));
+                store.stage_scene(Some(scenario));
+            })
+            .unwrap();
+            for theme in ["light", "dark", "high-contrast"] {
+                app.harness().set_theme(Theme::named(theme).unwrap());
+                for (width, height) in [(1472, 920), (420, 860)] {
+                    app.harness().resize((width, height)).unwrap();
+                    let control = app
+                        .harness()
+                        .controls()
+                        .into_iter()
+                        .find(|control| control.name.as_deref() == Some(action))
+                        .unwrap_or_else(|| panic!("{scenario}: missing {action}"));
+                    assert!(
+                        !control.disabled,
+                        "{scenario}: the ordinary owner can use {action} at {width} in {theme}"
+                    );
+                    let additional = match scenario {
+                        "account-remotes" => &["Browse apps"][..],
+                        "remotes" => &["Disable source"][..],
+                        "wide" => &["Search"][..],
+                        "detail" => &["Open"][..],
+                        _ => &[][..],
+                    };
+                    for name in additional {
+                        let control = app
+                            .harness()
+                            .controls()
+                            .into_iter()
+                            .find(|control| control.name.as_deref() == Some(name))
+                            .unwrap_or_else(|| panic!("{scenario}: missing {name}"));
+                        assert!(
+                            !control.disabled,
+                            "{scenario}: {name} unavailable in {theme}/{width}"
+                        );
+                    }
+                    if let Some(directory) = &output {
+                        std::fs::create_dir_all(directory).unwrap();
+                        let name = format!("{theme}-{width}-{scenario}");
+                        app.harness()
+                            .render_png(&directory.join(format!("{name}.png")));
+                        std::fs::write(
+                            directory.join(format!("{name}.json")),
+                            app.harness().inspection_json().unwrap(),
+                        )
+                        .unwrap();
+                    }
+                    review_store_interactions(
+                        &mut app,
+                        scenario,
+                        output.as_deref(),
+                        &format!("{theme}-{width}-{scenario}"),
+                        (width, height),
+                    );
+                }
+            }
+        }
+    }
+
+    fn review_store_interactions(
+        app: &mut ui::framework::testing::TestApp<crate::resource::StoreShell>,
+        scenario: &str,
+        output: Option<&std::path::Path>,
+        name: &str,
+        viewport: (u32, u32),
+    ) {
+        if matches!(scenario, "remotes" | "remotes-disabled") {
+            let rect = app
+                .harness()
+                .targets()
+                .get("store.remote:flathub.enabled")
+                .copied()
+                .unwrap();
+            assert!(
+                rect.width() > 0.0
+                    && rect.height() > 0.0
+                    && rect.x0 >= 0.0
+                    && rect.x1 <= f64::from(viewport.0)
+                    && rect.y0 >= 0.0
+                    && rect.y1 <= f64::from(viewport.1),
+                "persistent account control is visible without hover: {rect:?}"
+            );
+        }
+        let move_pointer = |x, y| winit::event::WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        };
+        if scenario == "detail-technical" {
+            app.harness().send(&move_pointer(
+                f64::from(viewport.0) / 2.0,
+                f64::from(viewport.1) / 2.0,
+            ));
+            app.harness().scroll(0.0, -100.0);
+            let rect = app
+                .harness()
+                .targets()
+                .get("store.detail.technical")
+                .copied()
+                .unwrap();
+            assert!(
+                rect.y0 >= 0.0 && rect.y1 <= f64::from(viewport.1),
+                "ordinary wheel reveals the technical control: {rect:?}"
+            );
+            if let Some(directory) = output {
+                app.harness()
+                    .render_png(&directory.join(format!("{name}-scrolled.png")));
+            }
+            app.harness().scroll(0.0, 100.0);
+        }
+        let target = match scenario {
+            "account-remotes" => Some("store.remote:system:flathub"),
+            "remotes" | "remotes-disabled" => Some("store.remote:flathub"),
+            _ => None,
+        };
+        if let Some(target) = target {
+            let rect = app.harness().targets().get(target).copied().unwrap();
+            let center = rect.center();
+            app.harness().send(&move_pointer(center.x, center.y));
+            if let Some(directory) = output {
+                app.harness()
+                    .render_png(&directory.join(format!("{name}-actions.png")));
+            }
+        }
+    }
+
+    #[test]
+    fn account_source_controls_preserve_viewer_admin_denial() {
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            store.show_capture_catalogue(crate::fixture::fixture_catalog());
+            store.stage_scene(Some("remotes-disabled"));
+        })
+        .unwrap();
+        app.set_role(ui::permissions::Role::Viewer);
+        let snapshot = app
+            .effect(&StoreEffect::InspectCatalogue { app: None })
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(snapshot["remote_count"], 1);
+        let refused = app
+            .effect(&StoreEffect::EnableRemote {
+                remote: "remote:flathub".into(),
+            })
+            .unwrap_err();
+        // Admin effects are removed from a viewer's public door; unlike a
+        // retained read effect submitting a forbidden edit, lookup itself refuses.
+        assert!(
+            matches!(&refused, tilo_actions::DoorError::Unknown(_)),
+            "{refused:?}"
+        );
+        assert!(!app.harness().controls().iter().any(|control| matches!(
+            control.name.as_deref(),
+            Some("Enable source" | "Disable source")
+        ) && !control.disabled));
+        let audit = app.harness().native_app_audit();
+        assert!(
+            !audit
+                .issues
+                .iter()
+                .any(|issue| issue.code == "stale-action-binding"),
+            "viewer bindings resolve against the complete production surface: {:?}",
+            audit.issues
+        );
+    }
+
+    #[test]
+    fn technical_package_details_use_the_declared_read_action_for_owner_and_viewer() {
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            store.show_capture_catalogue(crate::fixture::fixture_catalog());
+            store.focus_detail("so.tilo.notes");
+        })
+        .unwrap();
+        for role in [ui::permissions::Role::Owner, ui::permissions::Role::Viewer] {
+            app.set_role(role);
+            app.effect(&StoreEffect::SetTechnicalDetails { expanded: false })
+                .unwrap();
+            let collapsed = app.harness().inspection_json().unwrap();
+            assert!(collapsed.contains("Latest version"));
+            assert!(collapsed.contains("On this device"));
+            assert!(!collapsed.contains("App ID"));
+            let control = app
+                .harness()
+                .controls()
+                .into_iter()
+                .find(|control| control.name.as_deref() == Some("Show technical details"))
+                .unwrap();
+            assert!(!control.disabled, "readers can inspect technical identity");
+            app.effect(&StoreEffect::SetTechnicalDetails { expanded: true })
+                .unwrap();
+            let expanded = app.harness().inspection_json().unwrap();
+            assert!(expanded.contains("App ID"));
+            assert!(expanded.contains("Package digest"));
+            assert!(expanded.contains("Publisher key"));
+            let audit = app.harness().native_app_audit();
+            assert!(
+                !audit
+                    .issues
+                    .iter()
+                    .any(|issue| issue.code == "stale-action-binding"),
+                "full app and host-door bindings must resolve for {role:?}: {:?}",
+                audit.issues
+            );
+            let snapshot = app
+                .effect(&StoreEffect::InspectCatalogue {
+                    app: Some("so.tilo.notes".into()),
+                })
+                .unwrap()
+                .value
+                .unwrap();
+            assert_eq!(snapshot["technical_details_open"], true);
+            assert!(
+                snapshot["detail"].is_object(),
+                "full metadata remains inspectable"
+            );
+        }
     }
 
     #[test]

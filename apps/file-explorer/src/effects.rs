@@ -22,6 +22,25 @@ pub enum FilesEffect {
     /// Refresh folder.
     #[effect(permission = "read", idempotent)]
     Refresh,
+    /// Select entries.
+    ///
+    /// Replaces this window's selection with the currently published rows.
+    #[effect(view, returns)]
+    SelectEntries {
+        #[param("Published entry row ids in the folder shown; at most 256")]
+        entries: Vec<String>,
+    },
+    /// Select all.
+    #[effect(view, returns)]
+    SelectAll,
+    /// Clear selection.
+    #[effect(view, returns)]
+    ClearSelection,
+    /// Copy selection.
+    #[effect(permission = "read")]
+    CopySelection,
+    /// Cut selection.
+    CutSelection,
     /// Paste.
     ///
     /// Copies (or moves, after Cut) what the window holds into the folder
@@ -116,6 +135,20 @@ pub enum FilesEffect {
     Reveal {
         #[param("The collaborative record's id")]
         record: String,
+    },
+    /// Open containing folder.
+    #[effect(view, row)]
+    RevealRecent {
+        #[param("The Recent entry's published row id")]
+        entry: String,
+    },
+    /// Remove from Recent.
+    ///
+    /// Forgets this device's recent-use entry. The file remains untouched.
+    #[effect(view, row)]
+    ForgetRecent {
+        #[param("The Recent entry's published row id")]
+        entry: String,
     },
     /// New file from template.
     ///
@@ -228,6 +261,18 @@ pub enum FilesEffect {
         #[param("The nearby device")]
         target: NearbyTargetHandle,
     },
+    /// Send a file to an independently verified `AirDrop` lab receiver.
+    /// The compositor, rather than this application's parameters, collects
+    /// the receiver fingerprint and approves exactly one staged file.
+    #[effect(row, job, privileged, permission = "read")]
+    SendAirDrop {
+        #[param("The entry's row id")]
+        entry: String,
+        #[param("The receiver's literal IP address")]
+        address: String,
+        #[param("The receiver's TLS port")]
+        port: u16,
+    },
     /// Create one-time share link.
     #[effect(row, job)]
     ShareLink {
@@ -242,10 +287,16 @@ pub enum FilesEffect {
         #[param("Where to save it")]
         destination: NearbyDestinationHandle,
     },
-    /// Decline an incoming transfer.
-    #[effect(row)]
+    /// Decline an incoming transfer and discard its retained partial bytes.
+    #[effect(row, destructive)]
     DeclineNearby {
         #[param("The incoming transfer")]
+        transfer: NearbyTransferHandle,
+    },
+    /// Inspect a transfer's current phase and confirmed byte progress.
+    #[effect(row, permission = "read", returns, idempotent)]
+    InspectNearby {
+        #[param("The visible transfer")]
         transfer: NearbyTransferHandle,
     },
     /// Retry a transfer.

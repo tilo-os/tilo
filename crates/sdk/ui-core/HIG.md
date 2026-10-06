@@ -62,7 +62,9 @@ shortcut (`HostShortcut::History`), in the window's top-trailing corner after
 the column's actions and the inspector toggle. While History shows it reads
 as on (the selection lift) and closes History; the History pane or bar shows
 the mode itself. It is the same door as the shortcut, the palette and agents.
-An app never adds a History button, text or glyph, of its own. Where the
+An app never adds a History button, text or glyph, of its own. A host whose
+root has no header slot keeps the shortcut, palette and resource action;
+it never inserts a second toolbar above the app. Where the
 host's chrome presents History (the Tilo shell, a native menu bar) the row
 shows none.
 
@@ -533,11 +535,15 @@ pixels.
 anchored transient (an option menu, a small form next to its control) is a
 `Popover`. Both are floating Panels (§9.1) and both paint only in the window's
 top layer (`Widget::draw_overlay`), which the host runs after the app *and*
-after the window's own chrome. So a modal's `surfaces.scrim` scrim covers the
-whole window, the History bar and the sidebars included, wherever the dialog
-is mounted, and a popover is never clipped by the pane it was opened from. A
-modal sheet's height follows its content, its title is a `Title`, and its
-actions are Regular buttons anchored to its footer in the platform's order.
+after the window's own chrome. A modal's `surfaces.scrim` dims the background
+throughout the window, including sidebars, while excluding its foreground.
+Its floating material must not sample its own scrim or shadow. A popover is
+never clipped by the pane it was opened from. On compact viewports (either
+axis below `panel_width_sheet`) a modal fills the window as an opaque page,
+without rounded floating edges, shadow or scrim; its body scrolls while its
+footer stays reachable. On larger viewports a sheet follows its content
+height. Its title is a `Title`, and its actions are Regular buttons anchored
+to its footer in the platform's order.
 Immediate-mode hosts use the same chrome through `modal_dialog::layout`,
 `paint_backdrop` and `paint_actions`.
 

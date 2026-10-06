@@ -80,13 +80,7 @@ impl ResourceApp for App {
             recents: recents.state(),
             ..tools::Tools::default()
         };
-        let canvas = cx.surface(surface::CanvasSurface::new(tools.clone()));
-        let canvas: Element = Box::new(preview::VersionPreview::new(
-            canvas,
-            tools.preview.clone(),
-            cx.content(),
-        ));
-        let canvas = menu::over(canvas, &tools, cx.live(), cx.dispatcher());
+        let compact = LocalState::new(false);
         let dock = LocalState::new(Dock::Layers);
         let staged = dock.clone();
         cx.on_stage(move |scenario| {
@@ -94,18 +88,10 @@ impl ResourceApp for App {
                 staged.set(Dock::History);
             }
         });
-        // The tools stand at the canvas's leading edge; the strip of what to
-        // do with a selection lies over its top.
-        let work = Row::new()
-            .no_wrap()
-            .with_gap(0.0)
-            .with_fill_remaining_height()
-            .push(rail(cx, &tools))
-            .push(Box::new(
-                ui::widget::Stack::new()
-                    .push(canvas)
-                    .push(panels::header::context_bar(cx, &tools)),
-            ));
+        let work_tools = tools.clone();
+        let work = cx.switch(&compact, move |cx, compact| {
+            work_area(cx, &work_tools, *compact)
+        });
         // The narrow capture shows the inspector as the drawer it is there.
         let inspector_open = tools.sidebar.clone();
         let stage_open = inspector_open.clone();
@@ -118,24 +104,26 @@ impl ResourceApp for App {
             NavShell::new()
                 .with_id("canvas-shell")
                 .with_inspector_state(&inspector_open)
-                .content(Box::new(work))
-                .content_header("", panels::header::header(cx, &tools))
+                .content(work)
+                .content_header_leading(panels::header::title(cx, &tools, &compact))
+                .content_header("", panels::header::header(cx, &tools, &compact))
                 .inspector(Box::new(Group::new(sidebar(cx, &tools, &dock)))),
         );
         // Over a blank artwork, a welcome saying what can be done here and
         // by whom; then the dialogs.
-        let mut layers = Stack::new()
-            .push(window)
-            .push(panels::start::welcome(cx, &tools));
+        let mut layers = Stack::new().push(window);
         for sheet in sheets(cx, &tools) {
             layers = layers.push(sheet);
         }
-        Box::new(panels::files::FileDesk::new(
-            Box::new(layers),
-            tools,
-            recents,
-            cx.live().clone(),
-            cx.dispatcher(),
+        Box::new(panels::layout::ViewportMode::new(
+            panels::files::FileDesk::new(
+                Box::new(layers),
+                tools,
+                recents,
+                cx.live().clone(),
+                cx.dispatcher(),
+            ),
+            compact,
         ))
     }
 
@@ -375,7 +363,7 @@ pub(crate) const RAIL: f32 =
     ui::tokens::Metrics::BASE.min_pointer_target + 2.0 * ui::tokens::Spacing::BASE.s2; // a pointer target and its inset, laid out before a theme is known
 
 /// Recommended tools follow the document; a person can override the suggestion.
-fn rail(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools) -> Element {
+fn rail(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools, compact: bool) -> Element {
     let inferred = cx.value(tools::Workspace::of);
     let tools = tools.clone();
     cx.switch(&inferred, move |cx, inferred| {
@@ -391,16 +379,53 @@ fn rail(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools) -> Element {
             cx.switch(&tools.all_tools.clone(), move |cx, _| {
                 let tools = tools.clone();
                 cx.switch(&tools.tool.clone(), move |_cx, _| {
-                    rail_choices(&tools, workspace)
+                    rail_choices(&tools, workspace, compact)
                 })
             })
         })
     })
 }
 
+/// On a phone the artwork keeps the full width and tools sit below it.
+/// Every tool remains the same shared control and local view action.
+fn work_area(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools, compact: bool) -> Element {
+    let canvas = cx.surface(surface::CanvasSurface::new(tools.clone()));
+    let canvas: Element = Box::new(preview::VersionPreview::new(
+        canvas,
+        tools.preview.clone(),
+        cx.content(),
+    ));
+    let canvas = menu::over(canvas, tools, cx.live(), cx.dispatcher());
+    let canvas: Element = Box::new(
+        Stack::new()
+            .push(canvas)
+            .push(panels::header::context_bar(cx, tools))
+            .push(panels::start::welcome(cx, tools, compact)),
+    );
+    if compact {
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_gap(0.0)
+                .with_fill_remaining_height()
+                .push(canvas)
+                .push(rail(cx, tools, true)),
+        )
+    } else {
+        Box::new(
+            Row::new()
+                .no_wrap()
+                .with_gap(0.0)
+                .with_fill_remaining_height()
+                .push(rail(cx, tools, false))
+                .push(canvas),
+        )
+    }
+}
+
 /// The tools, top to bottom, each with its key, and at the foot the paint
 /// the brush is loaded with.
-fn rail_choices(tools: &tools::Tools, workspace: tools::Workspace) -> Element {
+fn rail_choices(tools: &tools::Tools, workspace: tools::Workspace, compact: bool) -> Element {
     let choices = tools::Tool::ALL
         .iter()
         .filter(|tool| {
@@ -415,9 +440,25 @@ fn rail_choices(tools: &tools::Tools, workspace: tools::Workspace) -> Element {
             (*tool, segment)
         })
         .collect();
-    let rail = ui::widget::ToggleGroup::from_state(choices, &tools.tool)
-        .vertical()
-        .on_view("Tool", |_| {});
+    let rail = ui::widget::ToggleGroup::from_state(choices, &tools.tool).on_view("Tool", |_| {});
+    if compact {
+        return Box::new(
+            Scrollable::new_horizontal()
+                .fit_content_height()
+                .with_child(Box::new(
+                    Row::new()
+                        .no_wrap()
+                        .with_padding_rhythm(
+                            ui::tokens::Rhythm::Related,
+                            ui::tokens::Rhythm::Related,
+                        )
+                        .push(panels::header::add_picture(tools, ControlSize::Large))
+                        .push(Box::new(rail.control_size(ControlSize::Large)))
+                        .push(Box::new(panels::well::Well::new(tools.clone()))),
+                )),
+        );
+    }
+    let rail = rail.vertical();
     Box::new(
         Container::new()
             .with_no_padding()

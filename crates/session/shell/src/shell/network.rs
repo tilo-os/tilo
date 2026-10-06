@@ -12,6 +12,8 @@ mod hosted_topology;
 mod live_identity_tests;
 mod native_enrollment;
 mod native_ingress;
+#[cfg(test)]
+mod paired_continuity_tests;
 mod record_content;
 pub use record_content::InboundRecordContent;
 #[cfg(test)]
@@ -2639,6 +2641,15 @@ impl ShellNetwork {
             envelope: Box::new(envelope),
         };
         let _ = self.publish_message(msg);
+    }
+
+    /// Promptly drive the already-durable native owner's outgoing custody,
+    /// including signed governance checkpoints. Queue admission is not a
+    /// commit acknowledgement; heartbeat/reconnect retries a full queue.
+    pub(crate) fn schedule_native_owner_publication(&self, room: RoomId) {
+        let _ = self.cmd_tx.try_send(NetCmd::NativePublish {
+            ws: room_topic_id(room),
+        });
     }
 
     /// Remember that a local app holds `record_id`, so peers' traffic for
@@ -8471,6 +8482,7 @@ mod tests {
                 app_id: "so.tilo.files".into(),
                 route: CrdtRoute::app("so.tilo.files", room.to_string()),
                 actions: vec![PublishedAction {
+                    semantic_identity: None,
                     resource: "files.entry:/tmp/report".into(),
                     action: "refresh".into(),
                     resource_kind: "files.entry".into(),

@@ -14,13 +14,17 @@ use shell::compositor::surface_readback::{
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::{Client, Display, protocol::wl_buffer};
 use wayland_client::protocol::{
-    wl_buffer as client_buffer, wl_callback, wl_registry, wl_shm, wl_shm_pool,
+    wl_buffer as client_buffer, wl_callback, wl_compositor, wl_registry, wl_shm, wl_shm_pool,
+    wl_surface,
 };
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
+use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
 #[derive(Default)]
 struct Peer {
     shm: Option<wl_shm::WlShm>,
+    compositor: Option<wl_compositor::WlCompositor>,
+    desktop: Option<xdg_wm_base::XdgWmBase>,
     synced: bool,
 }
 
@@ -36,9 +40,13 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Peer {
         if let wl_registry::Event::Global {
             name, interface, ..
         } = event
-            && interface == "wl_shm"
         {
-            peer.shm = Some(registry.bind(name, 1, qh, ()));
+            match interface.as_str() {
+                "wl_shm" => peer.shm = Some(registry.bind(name, 1, qh, ())),
+                "wl_compositor" => peer.compositor = Some(registry.bind(name, 4, qh, ())),
+                "xdg_wm_base" => peer.desktop = Some(registry.bind(name, 1, qh, ())),
+                _ => {}
+            }
         }
     }
 }
@@ -59,6 +67,39 @@ impl Dispatch<wl_callback::WlCallback, ()> for Peer {
 delegate_noop!(Peer: ignore wl_shm::WlShm);
 delegate_noop!(Peer: ignore wl_shm_pool::WlShmPool);
 delegate_noop!(Peer: ignore client_buffer::WlBuffer);
+delegate_noop!(Peer: ignore wl_compositor::WlCompositor);
+delegate_noop!(Peer: ignore wl_surface::WlSurface);
+delegate_noop!(Peer: ignore xdg_toplevel::XdgToplevel);
+
+impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Peer {
+    fn event(
+        _: &mut Self,
+        base: &xdg_wm_base::XdgWmBase,
+        event: xdg_wm_base::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_wm_base::Event::Ping { serial } = event {
+            base.pong(serial);
+        }
+    }
+}
+
+impl Dispatch<xdg_surface::XdgSurface, ()> for Peer {
+    fn event(
+        _: &mut Self,
+        surface: &xdg_surface::XdgSurface,
+        event: xdg_surface::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_surface::Event::Configure { serial } = event {
+            surface.ack_configure(serial);
+        }
+    }
+}
 
 struct Harness {
     display: Display<State>,
@@ -71,6 +112,22 @@ struct Harness {
 }
 
 impl Harness {
+    fn wait_frame(&mut self, id: u64, previous: u64) -> u64 {
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            self.roundtrip();
+            let current = store().frame_seq(id);
+            if current > previous {
+                return current;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "committed SHM frame never captured"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     fn new() -> Self {
         let event_loop = EventLoop::try_new().expect("calloop");
         let display = Display::new().expect("Wayland display");
@@ -122,6 +179,88 @@ impl Harness {
             }
         }
     }
+}
+
+fn wire_buffer(h: &mut Harness, bytes: &[u8]) -> (wl_shm_pool::WlShmPool, client_buffer::WlBuffer) {
+    let mut file = tempfile::tempfile().expect("SHM buffer backing file");
+    file.write_all(bytes).unwrap();
+    let qh = h.queue.handle();
+    let pool = h
+        .peer
+        .shm
+        .as_ref()
+        .unwrap()
+        .create_pool(file.as_fd(), 16_384, &qh, ());
+    let buffer = pool.create_buffer(0, 64, 64, 256, wl_shm::Format::Argb8888, &qh, ());
+    h.roundtrip();
+    (pool, buffer)
+}
+
+#[test]
+fn committed_buffer_damage_stays_bound_to_actual_worker_pixels() {
+    let mut h = Harness::new();
+    let qh = h.queue.handle();
+    let surface = h.peer.compositor.as_ref().unwrap().create_surface(&qh, ());
+    let role = h
+        .peer
+        .desktop
+        .as_ref()
+        .unwrap()
+        .get_xdg_surface(&surface, &qh, ());
+    let toplevel = role.get_toplevel(&qh, ());
+    toplevel.set_app_id("damage-wire".into());
+    surface.commit();
+    h.roundtrip();
+    let server = h.client.object_from_protocol_id::<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>(
+        &h.display.handle(), surface.id().protocol_id()).unwrap();
+    let id = shell::compositor::state::surface_id(&server);
+    let mut bytes = [0, 0, 255, 255].repeat(4096);
+    let (pool, first) = wire_buffer(&mut h, &bytes);
+    surface.attach(Some(&first), 0, 0);
+    surface.damage_buffer(0, 0, 64, 64);
+    surface.commit();
+    let previous = h.wait_frame(id, 0);
+    assert_eq!(&store().snapshot(id).unwrap().rgba[..4], &[255, 0, 0, 255]);
+    for y in 10_usize..14 {
+        for x in 10_usize..14 {
+            let offset = y.saturating_mul(64).saturating_add(x).saturating_mul(4);
+            bytes[offset..offset.saturating_add(4)].copy_from_slice(&[0, 255, 0, 255]);
+        }
+    }
+    let (changed_pool, changed) = wire_buffer(&mut h, &bytes);
+    surface.attach(Some(&changed), 0, 0);
+    surface.damage_buffer(10, 10, 4, 4);
+    surface.commit();
+    let current = h.wait_frame(id, previous);
+    assert_eq!(
+        store().frame_damage_between(id, previous, current, (64, 64)),
+        Some(vec![vello::kurbo::Rect::new(10.0, 10.0, 14.0, 14.0)])
+    );
+    let pixels = store().snapshot(id).unwrap().rgba;
+    assert_eq!(&pixels[..4], &[255, 0, 0, 255]);
+    let inside = 10_usize
+        .saturating_mul(64)
+        .saturating_add(10)
+        .saturating_mul(4);
+    assert_eq!(&pixels[inside..inside.saturating_add(4)], &[0, 255, 0, 255]);
+    surface.attach(Some(&changed), 0, 0);
+    surface.commit();
+    let unknown = h.wait_frame(id, current);
+    assert!(
+        store()
+            .frame_damage_between(id, current, unknown, (64, 64))
+            .is_none(),
+        "a commit without certified damage must remain whole-buffer"
+    );
+    store().forget(id);
+    toplevel.destroy();
+    role.destroy();
+    surface.destroy();
+    changed.destroy();
+    changed_pool.destroy();
+    first.destroy();
+    pool.destroy();
+    h.roundtrip();
 }
 
 #[test]

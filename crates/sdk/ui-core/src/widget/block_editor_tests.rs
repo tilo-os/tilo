@@ -2593,3 +2593,35 @@ fn a_block_fields_suggestion_timer_wakes_the_editor() {
         Some(now + crate::text_edit::SUGGESTION_SETTLE)
     );
 }
+
+#[test]
+fn deferred_input_document_tracks_identical_blocks_cross_block_selection_and_read_only() {
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![Block::paragraph("same"), Block::paragraph("same")]);
+    editor.set_focus(true);
+    editor.focus_block(0, CursorPlacement::End);
+    let first = editor.ime_edit_fingerprint(&[8; 32]).unwrap();
+    editor.focus_block(1, CursorPlacement::End);
+    let second = editor.ime_edit_fingerprint(&[8; 32]).unwrap();
+    assert_ne!(
+        first, second,
+        "identical paragraphs have distinct insertion targets"
+    );
+    editor.select_document_range(
+        DocumentPosition { block: 0, byte: 0 },
+        DocumentPosition { block: 1, byte: 4 },
+    );
+    let selection = editor.ime_edit_fingerprint(&[8; 32]).unwrap();
+    assert_ne!(selection, second);
+    editor.select_document_range(
+        DocumentPosition { block: 1, byte: 0 },
+        DocumentPosition { block: 1, byte: 4 },
+    );
+    assert_ne!(
+        editor.ime_edit_fingerprint(&[8; 32]).unwrap(),
+        selection,
+        "changing the document selection anchor must invalidate at an unchanged caret"
+    );
+    editor.set_read_only(true);
+    assert!(editor.ime_edit_fingerprint(&[8; 32]).is_none());
+}

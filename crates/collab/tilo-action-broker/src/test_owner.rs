@@ -272,7 +272,13 @@ impl SessionOwner {
                 let id = invocation.to_string();
                 match doc.get(&object, &id).map_err(|e| e.to_string())? {
                     Some((Value::Scalar(value), _)) if matches!(value.as_ref(), ScalarValue::Bytes(prior) if prior == redacted) =>
-                        {}
+                    {
+                        return Ok(OwnerCommitReceipt {
+                            binding,
+                            generation: self.generation,
+                            aggregate_hash: self.status().aggregate,
+                        });
+                    }
                     Some(_) => return Err("effect receipt is immutable".into()),
                     None => {
                         doc.put(&object, &id, ScalarValue::Bytes(redacted.clone()))
