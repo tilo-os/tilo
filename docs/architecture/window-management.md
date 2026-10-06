@@ -78,6 +78,17 @@ unless marked fixed.
 | Workspace wheel | `workspace-wheel.toggle` | Super+S (fixed), then ↑ / ↓, Enter | tap the disc | the disc | chord today |
 | Recent windows | — (a held modal) | Alt+Tab, Alt+` (fixed) | — | — | today |
 
+### Discover tab operations
+
+`tab.menu` (shell provider), or the rebindable Super+F10 chord, opens the
+focused tab's context menu at its tab pill. The first action is focused
+immediately; Up/Down choose a row, Enter invokes it, and Escape cancels.
+Right-click still targets the tab under the pointer. A single-tab group offers
+Close only; multi-tab groups also offer Split Right and Move to New Group.
+The menu uses the existing action dispatch, permissions and close history.
+Settings and the shortcut guide publish the same binding. App Context Menu
+and Shift+F10 keys continue to reach the app's resource menu.
+
 ### Carry the focused group
 
 | Operation | Relative action | Keyboard | Touch and pointer | Status |

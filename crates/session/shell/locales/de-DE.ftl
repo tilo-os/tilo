@@ -2388,3 +2388,8 @@ terminal-read-device-shell = Ausgabe der Shell dieses Geräts lesen
 terminal-device-shell-session-param = Genaue lokale Sitzungs-UUID aus der Sitzungsprüfung
 terminal-device-shell-command-param = Ein geprüfter Befehl in der Shell dieses Geräts
 terminal-device-shell-confirm-param = Diesen geprüften Vorgang in der Geräte-Shell bestätigen
+
+shortcut-name-tab-menu = Tab-Menü öffnen
+search-action-tab-menu = Tab-Menü öffnen
+search-action-tab-menu-subtitle = Aktionen für den fokussierten Tab
+search-action-tab-menu-unavailable = Kein fokussierter Tab verfügbar
