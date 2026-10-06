@@ -29,3 +29,8 @@ store-remote-enable = Enable source
 store-remote-disable = Disable source
 store-remote-managed-change = This source is managed by the device. Only sources in your account can be changed here.
 store-launch-opened = App opened.
+
+store-technical-details = Technical details
+store-show-technical-details = Show technical details
+store-hide-technical-details = Hide technical details
+store-publisher-key = Publisher key

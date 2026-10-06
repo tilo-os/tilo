@@ -38,7 +38,8 @@ pub struct Album {
     pub year: u32,
 }
 
-/// One track. `yt_id` is the YouTube-Music video id used to resolve a
+/// One track. The historical `yt_id` field holds a source key: a `YouTube`
+/// video id or a namespaced Spotify URI. `YouTube` keys resolve a
 /// streamable audio URL via the [`crate::backend`] worker; for the offline
 /// sample library it is a synthetic id.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,7 +52,7 @@ pub struct Track {
     pub track_no: u32,
     /// Duration in whole seconds.
     pub duration_s: u32,
-    /// YouTube-Music video id (streaming source key).
+    /// Source key, retained under its historical CRDT name for compatibility.
     pub yt_id: String,
     /// Play count, used by "most played" sorting and stats.
     pub plays: u64,

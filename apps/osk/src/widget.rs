@@ -351,6 +351,9 @@ pub struct OskWidget {
     /// always-visible fallback used when no input method drives auto-show.
     /// When hidden the widget paints nothing.
     visible: bool,
+    /// A session service fills its compositor-assigned panel; embedded
+    /// keyboards keep their intrinsic height in ordinary document flow.
+    fill_surface: bool,
 }
 
 impl Default for OskWidget {
@@ -450,6 +453,7 @@ impl OskWidget {
             forget_learned: false,
             learned: std::rc::Rc::default(),
             visible: true,
+            fill_surface: false,
         };
         // Seed the bar with cold-start (most-common-word) suggestions so it is
         // useful before the first keypress.
@@ -458,6 +462,14 @@ impl OskWidget {
     }
 
     // --- builders -------------------------------------------------------
+
+    /// Use the height assigned by the host's keyboard panel. The key rows
+    /// share the remaining height after the toolbar and suggestions.
+    #[must_use]
+    pub fn with_surface_height(mut self) -> Self {
+        self.fill_surface = true;
+        self
+    }
 
     /// Register an additional layout (e.g. a community AZERTY/Dvorak/emoji
     /// file parsed into a [`KeyboardLayout`]). Letter layouts become
@@ -2359,10 +2371,12 @@ impl Widget for OskWidget {
         let node = match taffy.new_leaf(Style {
             flex_shrink: 0.0,
             size: Size {
-                // Fill the available width (phone → desktop); intrinsic
-                // height from the row count × target key height.
                 width: Dimension::percent(1.0),
-                height: Dimension::length(total_h),
+                height: if self.visible && self.fill_surface {
+                    Dimension::percent(1.0)
+                } else {
+                    Dimension::length(total_h)
+                },
             },
             ..Default::default()
         }) {
@@ -4095,6 +4109,31 @@ mod tests {
             .flat_map(|n| std::iter::once(n.clone()).chain(n.children))
             .filter_map(|n| Some((n.name?, n.action_target?)))
             .collect()
+    }
+
+    #[test]
+    fn accessible_password_backspace_edits_committed_text() {
+        let mut osk = OskWidget::new().with_purpose(InputPurpose::Password);
+        lay_out(&mut osk, 720.0, 360.0);
+        let names = named_nodes(&osk);
+        let (_, letter) = names
+            .iter()
+            .find(|(name, _)| name == "a")
+            .expect("letter key");
+        let (_, backspace) = names
+            .iter()
+            .find(|(name, _)| name == "Backspace")
+            .expect("editing key");
+        assert!(activate(&mut osk, letter));
+        assert_eq!(osk.take_output(), vec![commit("a")]);
+        assert_eq!(osk.pending_text(), "a");
+        assert!(activate(&mut osk, backspace));
+        assert_eq!(osk.take_output(), vec![OskOutput::Key(Symbol::BackSpace)]);
+        assert_eq!(osk.pending_text(), "");
+        assert!(
+            osk.current_word().is_empty(),
+            "secret text is never composed"
+        );
     }
 
     #[test]

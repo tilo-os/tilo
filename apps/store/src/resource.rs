@@ -229,6 +229,12 @@ pub enum StoreEffect {
         #[param("App identity (for example so.tilo.notes)")]
         app: String,
     },
+    /// Show or hide technical package details.
+    #[effect(permission = "read")]
+    SetTechnicalDetails {
+        #[param("Whether to show package identity, digest and publisher key")]
+        expanded: bool,
+    },
     /// Open a Flatpak reference.
     ///
     /// Its app is shown ready to install; installing stays a separate step.
@@ -453,9 +459,17 @@ const SCENARIOS: &[&str] = &[
     "search",
     "detail",
     "detail-narrow",
+    "detail-technical",
     "detail-update",
     "detail-flatpak",
     "remotes",
+    "account-setup",
+    "account-remotes",
+    "remotes-disabled",
+    "search-notes",
+    "paging",
+    "flatpak-detail",
+    "flatpak-installed",
     "progress",
     "error",
     "moderation",
@@ -547,7 +561,7 @@ impl ResourceApp for StoreShell {
         let items = if matches!(fixture.scenario(), Some("empty" | "offline")) {
             Vec::new()
         } else {
-            crate::fixture::fixture_catalog()
+            crate::fixture::capture_catalog(fixture.scenario())
         };
         fixture.provide(CaptureCatalogue { items });
     }
@@ -1003,5 +1017,34 @@ mod tests {
 
         let mut empty = TestApp::<StoreShell>::capture(Some("empty")).unwrap();
         assert!(!frame(&mut empty).contains("Terminal"));
+    }
+
+    #[test]
+    fn captures_cover_account_setup_search_paging_and_flatpak_actions() {
+        for scenario in ["account-setup", "account-remotes"] {
+            let mut app = TestApp::<StoreShell>::capture(Some(scenario)).unwrap();
+            assert!(frame(&mut app).contains("Use Flathub for my apps"));
+            assert!(app.state().reports.is_empty());
+        }
+        let mut search = TestApp::<StoreShell>::capture(Some("search-notes")).unwrap();
+        let shown = frame(&mut search);
+        assert!(shown.contains("Notes"));
+        assert!(!shown.contains("Terminal"));
+
+        let mut paging = TestApp::<StoreShell>::capture(Some("paging")).unwrap();
+        let shown = frame(&mut paging);
+        assert!(shown.contains("Page 2 of 2"));
+        assert!(shown.contains("Capture app 48"));
+        assert!(!shown.contains("Capture app 00"));
+
+        for (scenario, name, action) in [
+            ("flatpak-detail", "Chess", "Install"),
+            ("flatpak-installed", "VLC", "Open"),
+        ] {
+            let mut app = TestApp::<StoreShell>::capture(Some(scenario)).unwrap();
+            let shown = frame(&mut app);
+            assert!(shown.contains(name));
+            assert!(shown.contains(action));
+        }
     }
 }
