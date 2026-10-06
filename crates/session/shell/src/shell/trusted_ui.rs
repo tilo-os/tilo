@@ -22,6 +22,9 @@ pub const FRAME_NAMESPACE: &str = "tilo.shell.trusted-frame";
 /// Seal on the inline permission prompt.
 pub const PERMISSION_PROMPT_TARGET: &str = "tilo.shell.trusted-frame/permission-prompt";
 
+/// Seal on local one-session microphone consent.
+pub const DICTATION_PROMPT_TARGET: &str = "tilo.shell.trusted-frame/dictation-microphone";
+
 /// Seal on a portal sheet (review, authentication, secrets, device choice).
 pub const PORTAL_DIALOG_TARGET: &str = "tilo.shell.trusted-frame/portal-dialog";
 

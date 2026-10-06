@@ -9,6 +9,9 @@ files-shortcuts-title = Keyboard shortcuts
 files-shortcuts-summary = Files controls that work with the current desktop keyboard convention
 files-shortcuts-primary = Primary modifier: Ctrl on most desktops, Command on macOS
 files-shortcuts-navigate = Move selection: ↑ and ↓
+files-selection-empty = Select files first.
+files-selection-unavailable = An entry is no longer in the folder shown. The selection was not changed.
+files-selection-too-large = Select at most 256 entries in one request, or use Select all.
 files-shortcuts-range = Select a range: Shift + ↑ and ↓
 files-shortcuts-grid = Grid navigation: ← / → move across; ↑ / ↓ move by visual row
 files-shortcuts-open = Open selected: Enter
@@ -573,6 +576,7 @@ files-place-recent = Recent
 files-empty-recent = Files you open or create appear here
 files-recent-reveal = Open containing folder
 files-recent-forget = Remove from Recent
+files-recent-action-unavailable = This recent item is no longer available. Open Recent and choose a current item.
 files-recent-not-a-folder = Recent is not a folder; open one to add files
 
 ## Cloud accounts
@@ -592,3 +596,7 @@ files-airdrop-verifying = Waiting for receiver verification and permission to se
 files-airdrop-address = Receiver's literal IP address
 files-airdrop-port = Receiver's TLS port
 files-airdrop-action-detail = Verify a manually selected lab receiver on the compositor's sheet before sending this file once.
+
+files-nearby-status = Transfer status
+files-nearby-transfer-unavailable = This transfer is no longer available in this Files window.
+files-nearby-status-detail = Read this transfer’s phase and confirmed byte counts.

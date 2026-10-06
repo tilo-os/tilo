@@ -520,7 +520,8 @@ fn create<A: ResourceApp>(
     }
     // A record of its own, or the room's record an app keeps one of
     // (`ResourceApp::ROOM_RECORD`), opened for the first time.
-    let created = matches!(target, LaunchTarget::New | LaunchTarget::PrimaryNew);
+    let created = matches!(target, LaunchTarget::New | LaunchTarget::PrimaryNew)
+        || context.creation_workspace().is_some();
     record_content(&mut context);
     let file = context.take_open_file();
     let arguments = context.take_launch_arguments();

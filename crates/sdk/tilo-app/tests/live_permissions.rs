@@ -36,6 +36,12 @@ impl Memo {
     pub fn remark(&mut self, cx: &mut ActionCx, remark: String) {
         self.remarks.push(cx.id(), remark);
     }
+
+    /// Configure the memo as its owner.
+    #[action(permission = "admin")]
+    pub fn configure(&mut self, title: String) {
+        self.title = title;
+    }
 }
 
 type Changes = Rc<RefCell<Vec<bool>>>;
@@ -53,8 +59,31 @@ impl ResourceApp for MemoApp {
     const TITLE: &'static str = "Memo";
 
     fn view(cx: &mut ViewCx<Memo>) -> Element {
+        let admin = cx.permission_state(PermissionRequirement::Admin);
+        let owner_panel = cx.switch(&admin, |cx, allowed| {
+            if *allowed {
+                Box::new(
+                    Column::new()
+                        .with_intrinsic_height()
+                        .with_no_padding()
+                        .with_id("owner-panel")
+                        .push(Box::new(cx.button(
+                            "owner-configure",
+                            Memo::CONFIGURE.with("Configured".into()),
+                        ))),
+                )
+            } else {
+                Box::new(
+                    Column::new()
+                        .with_intrinsic_height()
+                        .with_no_padding()
+                        .with_id("no-owner-panel"),
+                )
+            }
+        });
         Box::new(
             Column::new()
+                .push(owner_panel)
                 .push(Box::new(
                     cx.input(|memo| memo.title.clone(), Memo::RETITLE)
                         .with_id("title"),
@@ -68,6 +97,102 @@ impl ResourceApp for MemoApp {
                 .push(cx.surface(AccessProbe::default())),
         )
     }
+}
+
+#[test]
+fn permission_bound_panes_follow_revocation_without_document_or_write_changes() {
+    let mut app = TestApp::<MemoApp>::new().unwrap();
+    let dispatcher = PROBE_DISPATCHER
+        .with(|probe| probe.borrow().clone())
+        .unwrap();
+    let admin = dispatcher.permission_state(PermissionRequirement::Admin);
+    let comment = dispatcher.permission_state(PermissionRequirement::Comment);
+    assert!(admin.get());
+    assert!(
+        app.harness()
+            .semantic_owner_instance("owner-panel")
+            .is_some()
+    );
+    let unchanged = app.state();
+
+    app.set_role(tilo_app::Role::Editor);
+    assert!(!dispatcher.read_only(), "writing remains allowed");
+    assert!(!admin.get(), "admin access is separately revoked");
+    assert!(comment.get());
+    assert!(
+        app.harness()
+            .semantic_owner_instance("owner-panel")
+            .is_none()
+    );
+    assert!(
+        app.harness()
+            .semantic_owner_instance("no-owner-panel")
+            .is_some()
+    );
+    assert!(app.invoke(Memo::CONFIGURE.with("Denied".into())).is_err());
+    assert_eq!(
+        app.state(),
+        unchanged,
+        "a role change never edits the resource"
+    );
+
+    app.set_role(tilo_app::Role::Viewer);
+    assert!(!comment.get());
+    app.set_role(tilo_app::Role::Commenter);
+    assert!(
+        comment.get(),
+        "comment access updates while writing remains denied"
+    );
+    assert!(!admin.get());
+    app.set_role(tilo_app::Role::Owner);
+    assert!(admin.get());
+    assert!(
+        app.harness()
+            .semantic_owner_instance("owner-panel")
+            .is_some()
+    );
+    app.invoke(Memo::CONFIGURE.with("Configured".into()))
+        .unwrap();
+    assert_eq!(app.state().title, "Configured");
+}
+
+#[test]
+fn an_unprivileged_first_frame_never_presents_the_owner_pane() {
+    let mut app = TestApp::<MemoApp>::with_role(tilo_app::Role::Viewer).unwrap();
+    assert!(
+        app.harness()
+            .semantic_owner_instance("owner-panel")
+            .is_none()
+    );
+    assert!(
+        app.harness()
+            .semantic_owner_instance("no-owner-panel")
+            .is_some()
+    );
+    app.set_role(tilo_app::Role::Owner);
+    assert!(
+        app.harness()
+            .semantic_owner_instance("owner-panel")
+            .is_some()
+    );
+}
+
+#[test]
+fn history_draws_permission_bound_panes_without_live_owner_authority() {
+    let mut app = TestApp::<MemoApp>::new().unwrap();
+    app.invoke(Memo::RETITLE.with("Before".into())).unwrap();
+    let heads = app.read_document(|doc| doc.clone().get_heads());
+    app.invoke(Memo::RETITLE.with("After".into())).unwrap();
+    let past = app.past_version(&heads).unwrap();
+    assert_eq!(past.state().title, "Before");
+    let texts = past.texts();
+    assert!(texts.iter().any(|text| text.contains("Before")));
+    assert!(!texts.iter().any(|text| text.contains("owner-configure")));
+    assert!(
+        app.harness()
+            .semantic_owner_instance("owner-panel")
+            .is_some()
+    );
 }
 
 /// A custom surface that records what it was told about permissions.

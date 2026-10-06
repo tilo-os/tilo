@@ -478,6 +478,11 @@ impl CollabTransport for BrokerTransport {
 }
 
 enum SdkCommand {
+    Initialize {
+        route: RouteSpec,
+        request: runtime_collab::committed_document::Request,
+        reply: mpsc::SyncSender<Result<[u8; 32], String>>,
+    },
     /// Announce the primary route; the shovel abandons the join at `deadline`.
     Hello(PrimaryHello),
     Primary(CollabRequest),
@@ -676,6 +681,10 @@ fn serialized_bytes<T: serde::Serialize>(value: &T, meter: &mut ByteMeter) {
 
 fn exported_action_bytes(action: &ExportedAction, meter: &mut ByteMeter) {
     meter.string_capacity(&action.resource);
+    if let Some(identity) = &action.semantic_identity {
+        meter.string_capacity(&identity.kind);
+        meter.string_capacity(&identity.key);
+    }
     meter.string_capacity(&action.action);
     meter.string_capacity(&action.resource_kind);
     meter.string_capacity(&action.resource_label);
@@ -897,6 +906,21 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
 
 fn command_bytes(command: &SdkCommand) -> Option<usize> {
     match command {
+        SdkCommand::Initialize { route, request, .. } => {
+            let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
+            meter.string_capacity(&route.app_id);
+            if let Some(record) = &route.record {
+                meter.string_capacity(record);
+            }
+            if let runtime_collab::committed_document::Request::Initialize {
+                kind, document, ..
+            } = request
+            {
+                meter.string_capacity(kind);
+                meter.add(document.capacity());
+            }
+            meter.finish()
+        }
         SdkCommand::Hello(hello) => {
             let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
             meter.string_capacity(&hello.route.app_id);
@@ -1058,6 +1082,10 @@ async fn remote_action_round_trip(
 
 fn broker_action_bytes(action: &BrokerActionDescriptor, meter: &mut ByteMeter) {
     meter.string_capacity(&action.resource);
+    if let Some(identity) = &action.semantic_identity {
+        meter.string_capacity(&identity.kind);
+        meter.string_capacity(&identity.key);
+    }
     meter.string_capacity(&action.action);
     meter.string_capacity(&action.resource_kind);
     meter.string_capacity(&action.resource_label);
@@ -1524,15 +1552,70 @@ impl BridgeState {
     }
 
     fn fail_closed(&self, direction: &'static str) {
+        self.fail_closed_with_rpc_error(direction, None);
+    }
+
+    fn fail_closed_with_rpc_error(
+        &self,
+        direction: &'static str,
+        rejected: Option<(u64, &runtime_portal::NotAvailable)>,
+    ) {
         // Latch before withdrawing health or dropping any queued receipt sender.
         self.record_publication_failure(DocumentPublicationError::Failed(direction.into()));
         if self.healthy.swap(false, Ordering::AcqRel) {
-            tracing::error!(
-                direction,
-                "collab: bounded bridge overloaded or disconnected; disabling collaboration"
-            );
+            if let Some((invocation_id, error)) = rejected {
+                let (rpc_kind, rpc_error, rpc_error_truncated) = bounded_rpc_diagnostic(error);
+                tracing::error!(
+                    direction,
+                    invocation_id,
+                    rpc_kind,
+                    rpc_error,
+                    rpc_error_truncated,
+                    "collab: bounded bridge overloaded or disconnected; disabling collaboration"
+                );
+            } else {
+                tracing::error!(
+                    direction,
+                    "collab: bounded bridge overloaded or disconnected; disabling collaboration"
+                );
+            }
             self.notify_events();
         }
+    }
+}
+
+/// Keep the rejected RPC's cause, never its request/update payload. A peer's
+/// diagnostic is untrusted text: bound its allocation and remove control
+/// characters before placing it in the ordinary session log.
+fn bounded_rpc_diagnostic(error: &runtime_portal::NotAvailable) -> (&'static str, String, bool) {
+    match error {
+        runtime_portal::NotAvailable::Capnp(error) => {
+            let mut chars = error.extra.chars();
+            let detail: String = chars
+                .by_ref()
+                .take(512)
+                .map(|ch| if ch.is_control() { ' ' } else { ch })
+                .collect();
+            let kind = match error.kind {
+                capnp::ErrorKind::Failed => "capnp_failed",
+                capnp::ErrorKind::Overloaded => "capnp_overloaded",
+                capnp::ErrorKind::Disconnected => "capnp_disconnected",
+                capnp::ErrorKind::Unimplemented => "capnp_unimplemented",
+                _ => "capnp_protocol_error",
+            };
+            (kind, detail, chars.next().is_some())
+        }
+        runtime_portal::NotAvailable::ServiceFdMissing => {
+            ("service_fd_missing", String::new(), false)
+        }
+        runtime_portal::NotAvailable::ConnectionFailed(error) => {
+            ("connection_failed", format!("{:?}", error.kind()), false)
+        }
+        runtime_portal::NotAvailable::ProtocolMismatch { expected, got } => (
+            "protocol_mismatch",
+            format!("expected {expected}, got {got}"),
+            false,
+        ),
     }
 }
 
@@ -2494,7 +2577,7 @@ impl CollaborationManager {
     }
 
     #[cfg(feature = "native")]
-    pub(crate) fn for_native_launch() -> Result<Self, String> {
+    pub(crate) fn for_native_launch(kind: &crate::record::RecordKind) -> Result<Self, String> {
         if runtime_portal::service_fd("collab").is_none() {
             if crate::host::environment()
                 .identity
@@ -2506,15 +2589,29 @@ impl CollaborationManager {
         }
         let (app, room) = auto_hello_env();
         super::channel_settings::install(&app);
-        Self::for_route_from(
-            SdkConnectSource::Env,
-            app,
-            room,
-            None,
+        Self::connect_native_launch(SdkConnectSource::Env, app, room, kind)
+    }
+
+    #[cfg(feature = "native")]
+    fn connect_native_launch(
+        source: SdkConnectSource,
+        app: String,
+        room: Uuid,
+        kind: &crate::record::RecordKind,
+    ) -> Result<Self, String> {
+        Self::connect_route_kind(
+            source,
+            RouteSpec {
+                app_id: app,
+                cluster_id: room,
+                record: None,
+            },
+            Some(kind.as_str().to_owned()),
             presence_handle_env(),
             None,
             "person",
         )
+        .map(Self::from_connected)
         .map_err(|error| error.to_string())
     }
 
@@ -2588,6 +2685,35 @@ impl CollaborationManager {
         endpoint_identity: Option<SdkJoinIdentity>,
         participant_kind: &'static str,
     ) -> Result<ConnectedBroker, runtime_portal::NotAvailable> {
+        Self::connect_route_kind(
+            source,
+            RouteSpec {
+                app_id,
+                cluster_id,
+                record,
+            },
+            None,
+            handle,
+            endpoint_identity,
+            participant_kind,
+        )
+    }
+
+    /// Initial native creation needs the application's actual root resource
+    /// kind before the broker can open the default document.
+    fn connect_route_kind(
+        source: SdkConnectSource,
+        route: RouteSpec,
+        record_kind: Option<String>,
+        handle: Option<String>,
+        endpoint_identity: Option<SdkJoinIdentity>,
+        participant_kind: &'static str,
+    ) -> Result<ConnectedBroker, runtime_portal::NotAvailable> {
+        let RouteSpec {
+            app_id,
+            cluster_id,
+            record,
+        } = route;
         let mut identity = match endpoint_identity {
             Some(identity) => Some(identity),
             None if matches!(&source, SdkConnectSource::Host(_, _)) => None,
@@ -2614,7 +2740,7 @@ impl CollaborationManager {
             app_id,
             cluster_id,
             record,
-            record_kind: None,
+            record_kind,
             handle,
         }));
         await_primary_route_on(&mut transport, &mut primary_route)?;
@@ -3326,6 +3452,24 @@ async fn drive_shovel(
                     published = false;
                     inbound_tx.state.fail_closed("document route join");
                 }
+            }
+            SdkCommand::Initialize {
+                route,
+                request,
+                reply,
+            } => {
+                let result = if let Some(current) = routes.get(&route.channel_id()) {
+                    match current.channel.committed_document(&request).await {
+                        Ok(runtime_collab::committed_document::Reply::Initialized { revision }) => {
+                            Ok(revision)
+                        }
+                        Ok(_) => Err("application initialization reply invalid".into()),
+                        Err(error) => Err(error.to_string()),
+                    }
+                } else {
+                    Err("application initialization route unavailable".into())
+                };
+                let _ = reply.send(result);
             }
             SdkCommand::PrimaryReady(reply) => {
                 let _ = reply.send(primary_result.clone());
@@ -4888,6 +5032,11 @@ fn write_directory_descriptor(
     descriptor: &runtime_collab::ExportedAction,
 ) {
     out.set_resource(&descriptor.resource);
+    if let Some(identity) = &descriptor.semantic_identity {
+        let mut out = out.reborrow().init_semantic_identity();
+        out.set_kind(&identity.kind);
+        out.set_key(&identity.key);
+    }
     out.set_action(&descriptor.action);
     out.set_resource_kind(&descriptor.resource_kind);
     out.set_resource_label(&descriptor.resource_label);
@@ -5292,6 +5441,12 @@ async fn dispatch_sdk_request(
                 .into_iter()
                 .map(|action| runtime_collab::ExportedAction {
                     resource: action.resource,
+                    semantic_identity: action.semantic_identity.map(|identity| {
+                        runtime_collab::ExportedResourceSemanticIdentity {
+                            kind: identity.kind,
+                            key: identity.key,
+                        }
+                    }),
                     action: action.action,
                     resource_kind: action.resource_kind,
                     resource_label: action.resource_label,
@@ -5306,6 +5461,15 @@ async fn dispatch_sdk_request(
                         description: view.description,
                         open_action: view.open_action,
                         primary: view.primary,
+                        range: view
+                            .range
+                            .as_ref()
+                            .map(|range| runtime_collab::ExportedViewRange {
+                                action: range.action.clone(),
+                                start_param: range.start_param.clone(),
+                                end_param: range.end_param.clone(),
+                                unit_param: range.unit_param.clone(),
+                            }),
                         mount: view.mount.map(|mount| runtime_collab::ExportedViewMount {
                             action: mount.action,
                             capability_param: mount.capability_param,
@@ -5475,9 +5639,10 @@ async fn dispatch_sdk_request(
                     // owner durability acknowledgments. A failed terminal may
                     // follow an effect and must stop subsequent outbound work.
                     if update.is_terminal() {
-                        inbound_tx
-                            .state
-                            .fail_closed("invocation update outcome unknown");
+                        inbound_tx.state.fail_closed_with_rpc_error(
+                            "invocation update outcome unknown",
+                            Some((id, &error)),
+                        );
                     }
                 }
             }
@@ -6043,6 +6208,7 @@ mod tests {
                 resource_presentation_json: text(length),
                 action: Some(text(length)),
                 descriptor: Some(runtime_collab::ExportedAction {
+                    semantic_identity: None,
                     resource: text(length),
                     action: text(length),
                     resource_kind: text(length),
@@ -8317,6 +8483,56 @@ mod tests {
         reply.send(state.publication_result()).unwrap();
         state.record_publication_failure(DocumentPublicationError::Failed("later".into()));
         assert_eq!(receipt.wait(Some(Instant::now())), Ok(()));
+    }
+
+    #[test]
+    fn invocation_update_rpc_diagnostic_keeps_cause_and_existing_fail_closed_latch() {
+        let state = BridgeState::new();
+        let error = runtime_portal::NotAvailable::Capnp(capnp::Error::failed(
+            "unknown invocation id".into(),
+        ));
+        assert_eq!(
+            bounded_rpc_diagnostic(&error),
+            ("capnp_failed", "unknown invocation id".into(), false)
+        );
+        state.fail_closed_with_rpc_error("invocation update outcome unknown", Some((389, &error)));
+        assert!(!state.is_healthy());
+        assert_eq!(
+            state.publication_result(),
+            Err(DocumentPublicationError::Failed(
+                "invocation update outcome unknown".into()
+            ))
+        );
+        state.fail_closed("later failure");
+        assert_eq!(
+            state.publication_result(),
+            Err(DocumentPublicationError::Failed(
+                "invocation update outcome unknown".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn invocation_update_rpc_diagnostic_bounds_untrusted_text_without_logging_io_payload() {
+        let error = runtime_portal::NotAvailable::Capnp(capnp::Error::failed(format!(
+            "refused\n\0{}",
+            "🦀".repeat(1024)
+        )));
+        let (kind, detail, truncated) = bounded_rpc_diagnostic(&error);
+        assert_eq!(kind, "capnp_failed");
+        assert!(detail.starts_with("refused  "));
+        assert_eq!(detail.chars().count(), 512);
+        assert!(detail.len() <= 2048);
+        assert!(!detail.chars().any(char::is_control));
+        assert!(truncated);
+        let io = runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "private transport payload",
+        ));
+        assert_eq!(
+            bounded_rpc_diagnostic(&io),
+            ("connection_failed", "PermissionDenied".into(), false)
+        );
     }
 
     #[test]

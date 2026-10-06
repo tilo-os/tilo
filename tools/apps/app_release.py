@@ -263,6 +263,10 @@ def apps_from_changes(
             and not (path == "Cargo.lock" and lock_affected_packages is not None)
         )
         or path.startswith(GLOBAL_PREFIXES + FULL_REBUILD_PREFIXES)
+        # Thin apps and the runtime resolve the complete collection together.
+        # App dependency/feature changes can alter shared crate hashes even
+        # when the changed app is not a dependency of runtime-dylib itself.
+        or (path.startswith("apps/") and path.endswith("/Cargo.toml"))
         for path in paths
     ):
         return sorted(catalog)

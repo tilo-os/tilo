@@ -61,6 +61,11 @@ pub struct Dispatcher<R: Resource> {
     resource_id: Rc<str>,
     /// Who edits through this dispatcher; `None` in a view of a past version.
     me: Option<Rc<str>>,
+    /// A dispatcher lent to an admitted effect keeps its original custody.
+    /// Clones cannot turn later work into the host participant's invocation.
+    /// Share the immutable scope rather than embedding its owner/lease in every
+    /// view dispatcher: copying the full scope also inflates construction stacks.
+    custody: Option<Rc<ui_core::invocation_scope::ResourceInvocationScope>>,
     /// Each queued invocation with the effect invocation it continues,
     /// when an effect's handler or completion queued it.
     queue: Rc<RefCell<VecDeque<AttributedControlInvocation>>>,
@@ -72,6 +77,7 @@ pub struct Dispatcher<R: Resource> {
     /// Absent outside a host: a past version, which nobody edits, or a
     /// test's detached dispatcher, which may do what writing allows.
     permissions: Rc<RefCell<Option<LivePermissions>>>,
+    permission_states: PermissionStates,
     /// What applying an action needs: the resource's own
     /// [`Resource::permission`], or for a child its parent's action's.
     permission_of: PermissionOf<R>,
@@ -105,6 +111,9 @@ pub struct Dispatcher<R: Resource> {
 /// What applying one action needs.
 type PermissionOf<R> = Rc<dyn Fn(&<R as Resource>::Action) -> PermissionRequirement>;
 
+/// One observable per requested permission, shared by this resource's views.
+type PermissionStates = Rc<RefCell<Vec<(PermissionRequirement, LocalState<bool>)>>>;
+
 /// An immediate action and the serial it was applied at.
 type Serialed<R> = (u64, <R as Resource>::Action);
 
@@ -125,10 +134,12 @@ impl<R: Resource> Clone for Dispatcher<R> {
             app_id: self.app_id,
             resource_id: Rc::clone(&self.resource_id),
             me: self.me.clone(),
+            custody: self.custody.clone(),
             queue: Rc::clone(&self.queue),
             group: Rc::clone(&self.group),
             read_only: self.read_only.clone(),
             permissions: Rc::clone(&self.permissions),
+            permission_states: Rc::clone(&self.permission_states),
             permission_of: Rc::clone(&self.permission_of),
             refused: self.refused.clone(),
             host: Rc::clone(&self.host),
@@ -146,6 +157,37 @@ impl<R: Resource> Clone for Dispatcher<R> {
 }
 
 impl<R: Resource> Dispatcher<R> {
+    pub(crate) fn for_custody(
+        &self,
+        custody: ui_core::invocation_scope::ResourceInvocationScope,
+    ) -> Self {
+        let mut dispatcher = self.clone();
+        dispatcher.custody = Some(Rc::new(custody));
+        // An effect's group cannot absorb the person's unrelated input.
+        dispatcher.group = Rc::default();
+        dispatcher
+    }
+
+    fn queue_invocation(
+        &self,
+        address: ActionAddress,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) {
+        let on_behalf_of = match &self.custody {
+            Some(custody) => {
+                if let Err(error) = custody.check() {
+                    self.refuse(&address.action, error);
+                    return;
+                }
+                Some(custody.invocation())
+            }
+            None => super::effect::acting_for(),
+        };
+        self.queue
+            .borrow_mut()
+            .push_back((ControlInvocation { address, arguments }, on_behalf_of));
+    }
+
     pub(crate) fn new(
         app_id: &'static str,
         resource_id: &str,
@@ -156,10 +198,12 @@ impl<R: Resource> Dispatcher<R> {
             app_id,
             resource_id: Rc::from(resource_id),
             me: me.map(Rc::from),
+            custody: None,
             queue: Rc::default(),
             group: Rc::default(),
             read_only: LocalState::new(read_only),
             permissions: Rc::default(),
+            permission_states: Rc::default(),
             permission_of: Rc::new(R::permission),
             refused: LocalState::new(None),
             host: Rc::default(),
@@ -202,6 +246,7 @@ impl<R: Resource> Dispatcher<R> {
     pub(crate) fn past(mut self) -> Self {
         self.past = true;
         self.read_only.set(true);
+        self.permission_states = Rc::default();
         self
     }
 
@@ -229,6 +274,30 @@ impl<R: Resource> Dispatcher<R> {
     /// Follow the participant's permissions as the host keeps them.
     pub(crate) fn follow(&self, permissions: LivePermissions) {
         *self.permissions.borrow_mut() = Some(permissions);
+        self.refresh_permission_states();
+    }
+
+    /// Whether the host currently grants `requirement`, as observable view
+    /// state. It follows changes even when writing remains allowed and the
+    /// resource document does not change. Bind it to a conditional pane or
+    /// label; action invocation still checks the host's current authority.
+    pub fn permission_state(&self, requirement: PermissionRequirement) -> LocalState<bool> {
+        let mut states = self.permission_states.borrow_mut();
+        if let Some((_, state)) = states.iter().find(|(needed, _)| *needed == requirement) {
+            return state.clone();
+        }
+        let state = LocalState::new(self.may(requirement));
+        states.push((requirement, state.clone()));
+        state
+    }
+
+    pub(crate) fn refresh_permission_states(&self) {
+        for (requirement, state) in self.permission_states.borrow().iter() {
+            let allowed = self.may(*requirement);
+            if state.get() != allowed {
+                state.set(allowed);
+            }
+        }
     }
 
     /// The same dispatcher deciding by `permissions`, for a test of a
@@ -327,13 +396,10 @@ impl<R: Resource> Dispatcher<R> {
     /// checked, then its handler runs. A participant who may only view still
     /// invokes the effects declared `permission = "read"`.
     pub fn effect<E: Effect>(&self, effect: &E) {
-        self.queue.borrow_mut().push_back((
-            ControlInvocation {
-                address: ActionAddress::new(self.resource_id.as_ref(), effect.id()),
-                arguments: effect.arguments(),
-            },
-            super::effect::acting_for(),
-        ));
+        self.queue_invocation(
+            ActionAddress::new(self.resource_id.as_ref(), effect.id()),
+            effect.arguments(),
+        );
     }
 
     /// Invoke `effect` as the live row `row` offers it
@@ -341,19 +407,19 @@ impl<R: Resource> Dispatcher<R> {
     /// contract, so a confirmation the row asks for (typing the name of the
     /// device it erases) is asked here too.
     pub fn effect_on<E: Effect>(&self, row: &str, effect: &E) {
-        self.queue.borrow_mut().push_back((
-            ControlInvocation {
-                address: ActionAddress::new(row, effect.id()),
-                arguments: serde_json::Map::new(),
-            },
-            super::effect::acting_for(),
-        ));
+        self.queue_invocation(ActionAddress::new(row, effect.id()), serde_json::Map::new());
     }
 
     /// Invoke a declared action (`dispatcher.invoke(Note::EDIT.with(text))`),
     /// or an effect ([`Invoke::effect`]), which reaches its handler as
     /// [`Self::effect`] does.
     pub fn invoke(&self, invoke: Invoke<R>) {
+        if let Some(custody) = &self.custody
+            && let Err(error) = custody.check()
+        {
+            self.refuse(invoke.id, error);
+            return;
+        }
         if invoke.is_effect() {
             self.submit(invoke);
             return;
@@ -373,13 +439,10 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     fn submit(&self, invoke: Invoke<R>) {
-        self.queue.borrow_mut().push_back((
-            ControlInvocation {
-                address: ActionAddress::new(self.resource_id.as_ref(), invoke.id),
-                arguments: invoke.arguments,
-            },
-            super::effect::acting_for(),
-        ));
+        self.queue_invocation(
+            ActionAddress::new(self.resource_id.as_ref(), invoke.id),
+            invoke.arguments,
+        );
     }
 
     /// Whether the participant may take `invoke`: what its declaration, or
@@ -420,10 +483,7 @@ impl<R: Resource> Dispatcher<R> {
         if self.read_only() {
             return;
         }
-        self.queue.borrow_mut().push_back((
-            ControlInvocation { address, arguments },
-            super::effect::acting_for(),
-        ));
+        self.queue_invocation(address, arguments);
     }
 
     /// Submit one typed action value — an edit with no named declaration,
@@ -510,6 +570,11 @@ impl<R: Resource> Dispatcher<R> {
         action: &R::Action,
         context: ActionContext,
     ) -> Result<(), ActionError> {
+        if self.custody.is_some() {
+            return Err(ActionError::Refused(
+                "caller-scoped effects submit document changes through queued actions".into(),
+            ));
+        }
         if !self.may_apply(action) {
             return Err(ActionError::Refused(Self::not_allowed((self
                 .permission_of)(
@@ -577,11 +642,13 @@ impl<R: Resource> Dispatcher<R> {
         Dispatcher {
             app_id: self.app_id,
             me: self.me.clone(),
+            custody: self.custody.clone(),
             resource_id: Rc::from(id),
             queue: Rc::clone(&self.queue),
             group: Rc::default(),
             read_only: self.read_only.clone(),
             permissions: Rc::clone(&self.permissions),
+            permission_states: Rc::clone(&self.permission_states),
             permission_of: Rc::new(move |action: &C::Action| {
                 parent_permission(&wrap_for_permission(action.clone()))
             }),

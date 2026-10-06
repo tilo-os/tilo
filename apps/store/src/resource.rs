@@ -849,13 +849,7 @@ mod tests {
         use ui::widget::Collaborative;
         let _offline = offline();
         let mut app = TestApp::<StoreShell>::new().unwrap();
-        tilo_test_env::wait_until("the ordinary catalogue worker settles", || {
-            app.settle();
-            app.with_surface::<StoreApp, _>(|surface| {
-                surface.inspect_catalogue(None).unwrap()["worker_busy"] == false
-            })
-            .unwrap()
-        });
+        settle_catalogue_worker(&mut app);
         let selected = crate::fixture::fixture_catalog()
             .into_iter()
             .find(|item| {
@@ -869,8 +863,18 @@ mod tests {
             surface.set_items(vec![selected]);
         })
         .unwrap();
+        app.settle();
+        let row = format!("app:{id}");
+        let contract = find(&app.harness().resources(), &row)
+            .unwrap()
+            .actions
+            .into_iter()
+            .find(|action| action.id == "flatpak-open")
+            .unwrap()
+            .contract;
+        assert_eq!(contract.result, ui::tilo_actions::ResultSpec::Job);
         let invocation = app
-            .start_effect(&StoreEffect::FlatpakOpen { app: id.clone() })
+            .start_effect_on(&row, &StoreEffect::FlatpakOpen { app: id.clone() })
             .unwrap();
         let mut request = None;
         tilo_test_env::wait_until("the original channel carries the admitted launch", || {
@@ -933,14 +937,262 @@ mod tests {
             });
         })
         .unwrap();
+        assert_valid_launch_job_completion(&mut app, invocation, &contract);
+    }
+
+    #[test]
+    fn declared_refresh_job_completes_through_the_worker_with_its_published_result_contract() {
+        let _offline = offline();
+        let mut app = TestApp::<StoreShell>::new().unwrap();
+        settle_catalogue_worker(&mut app);
+        let contract = find(&app.harness().resources(), Store::KIND)
+            .unwrap()
+            .actions
+            .into_iter()
+            .find(|action| action.id == "refresh")
+            .unwrap()
+            .contract;
+        assert_eq!(contract.result, ui::tilo_actions::ResultSpec::Job);
+        let versions = app.versions().len();
+        let invocation = app.start_effect(&StoreEffect::Refresh).unwrap();
         assert!(
             app.harness()
                 .wait_until(ui::time::Duration::from_secs(5), |harness| {
-                    harness.job_updates(invocation).iter().any(|update| {
-                        matches!(update, ui::tilo_actions::InvocationUpdate::Succeeded { .. })
-                    })
+                    harness
+                        .job_updates(invocation)
+                        .iter()
+                        .any(ui::tilo_actions::InvocationUpdate::is_terminal)
                 })
         );
+        let updates = app.harness().job_updates(invocation);
+        let output = updates
+            .iter()
+            .find_map(|update| match update {
+                ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } => Some(output),
+                _ => None,
+            })
+            .expect("the real catalogue worker refresh succeeds");
+        contract
+            .result
+            .validate(output)
+            .expect("the worker completion honors its actual published job contract");
+        assert!(output.value.is_none() && output.resources.is_empty());
+        assert_eq!(
+            app.with_surface::<StoreApp, _>(|surface| surface.status_line().to_owned()),
+            Some("Store refreshed.".to_owned())
+        );
+        assert_eq!(app.versions().len(), versions, "refresh writes no document");
+    }
+
+    fn settle_catalogue_worker(app: &mut TestApp<StoreShell>) {
+        tilo_test_env::wait_until("the ordinary catalogue worker settles", || {
+            app.settle();
+            app.with_surface::<StoreApp, _>(|surface| {
+                surface.inspect_catalogue(None).unwrap()["worker_busy"] == false
+            })
+            .unwrap()
+        });
+    }
+
+    struct CatalogueHost {
+        browses: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl app_host::app_host_capnp::app_host::Server for CatalogueHost {
+        fn list(
+            self: capnp::capability::Rc<Self>,
+            _params: app_host::app_host_capnp::app_host::ListParams,
+            mut results: app_host::app_host_capnp::app_host::ListResults,
+        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            results.get().init_entries(0);
+            std::future::ready(Ok(()))
+        }
+
+        fn repositories(
+            self: capnp::capability::Rc<Self>,
+            _params: app_host::app_host_capnp::app_host::RepositoriesParams,
+            mut results: app_host::app_host_capnp::app_host::RepositoriesResults,
+        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            results.get().set_json("{\"registry\":[]}");
+            std::future::ready(Ok(()))
+        }
+
+        fn flatpak_status(
+            self: capnp::capability::Rc<Self>,
+            _params: app_host::app_host_capnp::app_host::FlatpakStatusParams,
+            mut results: app_host::app_host_capnp::app_host::FlatpakStatusResults,
+        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            let mut result = results.get();
+            result.set_available(true);
+            result.set_installed("");
+            result.set_remotes("tools\thttps://tools.example/repo\tExample tools\tsystem\n");
+            std::future::ready(Ok(()))
+        }
+
+        fn flatpak_catalogue(
+            self: capnp::capability::Rc<Self>,
+            params: app_host::app_host_capnp::app_host::FlatpakCatalogueParams,
+            mut results: app_host::app_host_capnp::app_host::FlatpakCatalogueResults,
+        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            let params = params.get().unwrap();
+            assert_eq!(params.get_remote().unwrap().to_str().unwrap(), "tools");
+            assert!(
+                !params.get_user_managed(),
+                "the original device scope reaches the host"
+            );
+            self.browses
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            results
+                .get()
+                .set_rows("org.example.Editor\tEditor\tEdit local documents\t2.0\tstable\ttools\n");
+            std::future::ready(Ok(()))
+        }
+    }
+
+    #[test]
+    fn declared_browse_job_completes_through_host_rpc_worker_and_snapshot() {
+        let _offline = offline();
+        let mut app = TestApp::<StoreShell>::new().unwrap();
+        settle_catalogue_worker(&mut app);
+        let browses = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (service, connection) = app_host::testing::ConnectedService::start(CatalogueHost {
+            browses: std::sync::Arc::clone(&browses),
+        })
+        .unwrap();
+        app.with_surface::<StoreApp, _>(|surface| surface.connect_test_host(connection))
+            .unwrap()
+            .unwrap();
+        settle_catalogue_worker(&mut app);
+        let remote = "remote:system:tools";
+        let contract = find(&app.harness().resources(), remote)
+            .unwrap()
+            .actions
+            .into_iter()
+            .find(|action| action.id == "browse-remote")
+            .unwrap()
+            .contract;
+        assert_eq!(contract.result, ui::tilo_actions::ResultSpec::Job);
+        let before = browses.load(std::sync::atomic::Ordering::SeqCst);
+        let versions = app.versions().len();
+        let invocation = app
+            .start_effect_on(
+                remote,
+                &StoreEffect::BrowseRemote {
+                    remote: remote.into(),
+                },
+            )
+            .unwrap();
+        assert_valid_unit_job_completion(&mut app, invocation, &contract);
+        assert_eq!(
+            browses.load(std::sync::atomic::Ordering::SeqCst),
+            before + 1
+        );
+        app.with_surface::<StoreApp, _>(|surface| {
+            assert!(
+                surface.items().iter().any(|item| {
+                    item.id == "org.example.Editor"
+                        && item.name == "Editor"
+                        && item.description == "Edit local documents"
+                }),
+                "the real RPC catalogue reached the live snapshot"
+            );
+            assert!(
+                surface.status_line().contains("Example tools"),
+                "the worker status is a human catalogue message: {:?}",
+                surface.status_line()
+            );
+        })
+        .unwrap();
+        assert_browse_uses_current_locale(&mut app, remote, &contract);
+        assert_eq!(
+            browses.load(std::sync::atomic::Ordering::SeqCst),
+            before + 2
+        );
+        assert_eq!(
+            app.versions().len(),
+            versions,
+            "Browse writes no shared document"
+        );
+        drop(app);
+        service.shutdown().unwrap();
+    }
+
+    fn assert_valid_launch_job_completion(
+        app: &mut TestApp<StoreShell>,
+        invocation: ui::tilo_actions::InvocationId,
+        contract: &ui::tilo_actions::ActionContract,
+    ) {
+        assert_valid_unit_job_completion(app, invocation, contract);
+        assert_eq!(
+            app.with_surface::<StoreApp, _>(|surface| surface.status_line().to_owned()),
+            Some(ui::i18n!("store-launch-opened").as_str().to_owned())
+        );
+    }
+
+    fn assert_valid_unit_job_completion(
+        app: &mut TestApp<StoreShell>,
+        invocation: ui::tilo_actions::InvocationId,
+        contract: &ui::tilo_actions::ActionContract,
+    ) {
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(5), |harness| {
+                    harness
+                        .job_updates(invocation)
+                        .iter()
+                        .any(ui::tilo_actions::InvocationUpdate::is_terminal)
+                })
+        );
+        let updates = app.harness().job_updates(invocation);
+        let output = updates
+            .iter()
+            .find_map(|update| match update {
+                ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } => Some(output),
+                _ => None,
+            })
+            .expect("the declared worker job succeeds");
+        contract
+            .result
+            .validate(output)
+            .expect("the actual published job accepts its terminal output");
+        assert!(output.value.is_none() && output.resources.is_empty());
+    }
+
+    fn assert_browse_uses_current_locale(
+        app: &mut TestApp<StoreShell>,
+        remote: &str,
+        contract: &ui::tilo_actions::ActionContract,
+    ) {
+        let selected = ui::i18n::I18nManager::current_locale();
+        let pseudo = ui::i18n::I18nManager::pseudo_locale();
+        let previous = app
+            .with_surface::<StoreApp, _>(|surface| surface.status_line().to_owned())
+            .unwrap();
+        ui::i18n::I18nManager::set_locale("fr");
+        ui::i18n::I18nManager::set_pseudo_locale(ui::i18n::PseudoLocale::Expanded);
+        let expected = STORE_CATALOG.t_args(
+            "store-remote-results",
+            &[
+                ("name", ui::i18n::ArgValue::Text("Example tools".into())),
+                ("count", ui::i18n::ArgValue::Text("1".into())),
+            ],
+        );
+        assert_ne!(expected, previous, "the selected format must be observable");
+        let invocation = app
+            .start_effect_on(
+                remote,
+                &StoreEffect::BrowseRemote {
+                    remote: remote.into(),
+                },
+            )
+            .unwrap();
+        assert_valid_unit_job_completion(app, invocation, contract);
+        assert_eq!(
+            app.with_surface::<StoreApp, _>(|surface| surface.status_line().to_owned()),
+            Some(expected)
+        );
+        ui::i18n::I18nManager::set_locale(&selected);
+        ui::i18n::I18nManager::set_pseudo_locale(pseudo);
     }
 
     /// Opening a `.flatpakref` shows its app ready to install — and
@@ -1017,6 +1269,61 @@ mod tests {
 
         let mut empty = TestApp::<StoreShell>::capture(Some("empty")).unwrap();
         assert!(!frame(&mut empty).contains("Terminal"));
+    }
+
+    /// Publisher metadata reaches the running view and the same semantic
+    /// door an agent reads, without expanding ordinary catalogue listings.
+    #[test]
+    fn publisher_metadata_reaches_views_and_semantic_inspection() {
+        let _offline = offline();
+        let mut app = TestApp::<StoreShell>::new().unwrap();
+        tilo_test_env::wait_until("the metadata journey's catalogue worker settles", || {
+            app.settle();
+            app.with_surface::<StoreApp, _>(|surface| {
+                surface.inspect_catalogue(None).unwrap()["worker_busy"] == false
+            })
+            .unwrap()
+        });
+        app.with_surface(|store: &mut StoreApp| {
+            store.show_capture_catalogue(crate::fixture::fixture_catalog());
+            store.stage_scene(Some("detail"));
+        })
+        .unwrap();
+        let shown = frame(&mut app);
+        assert!(shown.contains("Ideas worth keeping, together."));
+        assert!(shown.contains("Capture ideas, organise projects"));
+        assert!(shown.contains("Supported languages"));
+        assert!(shown.contains("en, es"));
+        let resources = app.harness().resources();
+        let notes = find(&resources, "app:so.tilo.notes").unwrap();
+        assert_eq!(
+            notes.presentation.unwrap().detail.as_deref(),
+            Some("Ideas worth keeping, together.")
+        );
+        let terminal = find(&resources, "app:so.tilo.terminal").unwrap();
+        assert_eq!(
+            terminal.presentation.unwrap().detail.as_deref(),
+            Some("A fast terminal for commands, scripts, and development tools.")
+        );
+        let inspection = app
+            .effect(&StoreEffect::InspectCatalogue {
+                app: Some("so.tilo.notes".into()),
+            })
+            .unwrap();
+        let value = inspection.value.unwrap();
+        assert_eq!(value["detail"]["tagline"], "Ideas worth keeping, together.");
+        assert_eq!(
+            value["detail"]["supported_languages"],
+            serde_json::json!(["en", "es"])
+        );
+        assert_eq!(value["detail"]["supported_language_count"], 2);
+        assert!(
+            value["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row.get("supported_languages").is_none())
+        );
     }
 
     #[test]

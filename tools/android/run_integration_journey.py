@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
-import re
 import signal
 import subprocess
 import tempfile
@@ -18,10 +17,10 @@ import tomllib
 import sys
 
 from qualify_apk import digest, pinned, verify_runtime
-from run_arity_journey import REPO, Journey, wait_for, require_ok
+from run_arity_journey import REPO, Journey, wait_for, require_ok, checked_output
 
 sys.path.insert(0, str(REPO / 'tools'))
-from atspi_external_client import AtspiClient, GateError, bus_pids
+from journey_support import AccessiblePicker
 
 
 def stop(process):
@@ -79,6 +78,7 @@ def main():
     parser.add_argument('--fixture-grants', action='store_true', required=True,
                         help='explicitly authorize grants only on newly created fixture documents')
     args = parser.parse_args()
+    output = checked_output(args.output)
     payload = args.payload.resolve(strict=True)
     pinned(payload / 'app.apk', args.apk_sha256)
     qualification = json.loads((payload / 'qualification.json').read_text())
@@ -93,7 +93,6 @@ def main():
     parent = args.runtime_parent.resolve(strict=True)
     if parent.stat().st_uid != os.geteuid() or parent.stat().st_mode & 0o077:
         raise RuntimeError('runtime parent must be private and user-owned')
-    output = args.output.absolute()
     output.mkdir(mode=0o700)
     output = output.resolve(strict=True)
     profile = output / 'profile'
@@ -126,34 +125,8 @@ def main():
             process = None
             try:
                 wait_for(lambda: bus_socket.is_socket(), 'owned bus socket')
-                def bus_call(destination, path, method, *arguments):
-                    return subprocess.run(['gdbus', 'call', '--address', env['DBUS_SESSION_BUS_ADDRESS'],
-                        '--dest', destination, '--object-path', path, '--method', method, *arguments],
-                        text=True, capture_output=True, check=True, timeout=10).stdout
-                bus_call('org.a11y.Bus', '/org/a11y/bus', 'org.freedesktop.DBus.Properties.Set',
-                         'org.a11y.Status', 'IsEnabled', '<true>')
-                bus_call('org.a11y.Bus', '/org/a11y/bus', 'org.freedesktop.DBus.Properties.Set',
-                         'org.a11y.Status', 'ScreenReaderEnabled', '<true>')
-                address_reply = bus_call('org.a11y.Bus', '/org/a11y/bus', 'org.a11y.Bus.GetAddress')
-                match = re.search(r"'([^']+)'", address_reply)
-                if not match: raise RuntimeError('owned session has no AT-SPI address')
-                atspi_address = match.group(1)
-                def described(expected, limit=1024):
-                    for bus_name in bus_pids(atspi_address):
-                        client = AtspiClient(atspi_address, bus_name)
-                        try:
-                            tree = client.tree(limit)
-                            paths = client.named(tree, expected)
-                            if len(paths) == 1:
-                                return client, paths[0], tree
-                        except GateError:
-                            continue
-                    return None
-                def activate(expected):
-                    client, path, tree = wait_for(lambda: described(expected),
-                        'external AT-SPI picker control ' + expected)
-                    client.click(tree, expected)
-                    return {'bus_name': client.bus_name, 'path': path, 'tree': tree}
+                picker = AccessiblePicker(env['DBUS_SESSION_BUS_ADDRESS'])
+                described, activate = picker.described, picker.activate
                 process = subprocess.Popen([str(REPO / 'scripts/headless-examples/spawn-headless.sh'), str(socket)],
                     cwd=REPO, env=env, stdout=log, stderr=log, start_new_session=True)
                 wait_for(lambda: socket.is_socket() if process.poll() is None else

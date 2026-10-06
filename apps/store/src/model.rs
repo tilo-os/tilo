@@ -284,6 +284,18 @@ pub struct StoreItem {
 }
 
 impl StoreItem {
+    /// The publisher's short pitch, or the source description when an older
+    /// catalogue does not provide a tagline. Cards and semantic resources
+    /// use the same summary; the details page still shows the full description.
+    pub fn summary(&self) -> &str {
+        let tagline = self.tagline.trim();
+        if tagline.is_empty() {
+            self.description.trim()
+        } else {
+            tagline
+        }
+    }
+
     /// The version the UI advertises as "latest" — the first entry, or
     /// an empty string when the source didn't ship any versions.
     pub fn latest_version(&self) -> &str {

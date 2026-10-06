@@ -7,6 +7,54 @@
 
 use tilo_app::prelude::*;
 
+struct PrivateSketch;
+
+impl ResourceApp for PrivateSketch {
+    type Resource = Sketch;
+    const ID: &'static str = "so.tilo.test-private-sketch";
+    const TITLE: &'static str = "Private sketch";
+    const PRIVATE_WINDOWS: bool = true;
+    const ARGUMENTS: usize = 1;
+
+    fn view(cx: &mut ViewCx<Sketch>) -> Element {
+        Box::new(
+            Text::new(&format!(
+                "Private {}, arguments {}",
+                cx.is_private(),
+                cx.launch_arguments().join(" ")
+            ))
+            .with_id("private-launch"),
+        )
+    }
+}
+
+#[test]
+fn private_headless_launch_uses_a_disposable_profile_and_consumes_its_flag() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut shared = TestApp::<PrivateSketch>::open_data_dir(directory.path()).unwrap();
+    shared
+        .invoke(Sketch::TRACE.with("Personal sketch".into()))
+        .unwrap();
+    let mut private = shared.relaunch(&["--private", "private.png"]).unwrap();
+    assert_eq!(private.state(), Sketch::default());
+    private
+        .harness()
+        .expect(
+            &tilo_app::headless::SemanticExpectation::named("private-launch")
+                .name_contains("Private true, arguments private.png"),
+        )
+        .unwrap();
+    private
+        .invoke(Sketch::TRACE.with("Disposable sketch".into()))
+        .unwrap();
+    let shared = TestApp::<PrivateSketch>::open_data_dir(directory.path()).unwrap();
+    assert_eq!(shared.state().source, "Personal sketch");
+    drop(private);
+    drop(shared);
+    let shared = TestApp::<PrivateSketch>::open_data_dir(directory.path()).unwrap();
+    assert_eq!(shared.state().source, "Personal sketch");
+}
+
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Sketch {
     pub source: String,

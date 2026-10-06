@@ -81,6 +81,7 @@ pub struct ActionHierarchy {
     pub room: String,
     pub record: String,
     pub resource: String,
+    pub semantic_identity: Option<tilo_actions::ResourceSemanticIdentity>,
     pub operation: String,
 }
 
@@ -166,11 +167,25 @@ impl ActionCatalog {
             doc,
             doc_root,
         };
+        Self::build_query(registry, &args, visibility, false)
+    }
+
+    /// Explicit bounded machine discovery uses the same visibility gate.
+    pub fn build_query(
+        registry: &SearchRegistry,
+        args: &QueryArgs<'_>,
+        visibility: &dyn ActionVisibility,
+        include_programmatic: bool,
+    ) -> Self {
         // Remote callers do not open the palette, which normally maintains
         // retained provider indexes. Start/poll that same asynchronous work
         // here so subsequent requests can discover cold sources too.
-        registry.refresh_indexes(&args);
-        let results = registry.query_exhaustive(&args);
+        registry.refresh_indexes(args);
+        let results = if include_programmatic {
+            registry.query_with_programmatic(args)
+        } else {
+            registry.query_exhaustive(args)
+        };
         let visible: Vec<usize> = results
             .iter()
             .enumerate()

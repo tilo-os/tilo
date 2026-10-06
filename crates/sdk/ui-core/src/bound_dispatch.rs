@@ -560,6 +560,10 @@ impl BoundPublication {
         binding: &CallbackBinding,
         mut resource: tilo_actions::Resource,
     ) -> Result<tilo_actions::Resource, BoundActionError> {
+        resource.semantic_identity = tilo_actions::ResourceSemanticIdentity::new(
+            resource.kind.clone(),
+            resource.id.as_str(),
+        );
         resource.id = tilo_actions::ResourceId::new(self.alias(binding, resource.id.as_str())?);
         resource.children = resource
             .children
@@ -3707,6 +3711,48 @@ pub(crate) fn restore_legacy_history(
         })
         .map_err(|error| OwnedRestoreError::Bound(BoundDispatchError::Record(error)))?
 }
+/// A read-only invalidation stamp. It contains no document text and confers no
+/// write authority; an unavailable stamp must invalidate deferred insertion.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DocumentEditStamp {
+    owner: Option<(uuid::Uuid, u64)>,
+    frontier: Vec<ChangeHash>,
+    pending: usize,
+}
+impl DocumentEditStamp {
+    /// Bind an embedded field's private equality check to its record and node.
+    #[cfg(feature = "native")]
+    pub(crate) fn bind_fingerprint(
+        &self,
+        node: NodeId,
+        field: [u8; 32],
+        key: &[u8; 32],
+    ) -> [u8; 32] {
+        let mut hash = blake3::Hasher::new_keyed(key);
+        hash.update(b"tilo.ime.embedded-edit.v1");
+        hash.update(&u64::from(node).to_le_bytes());
+        if let Some((owner, generation)) = self.owner {
+            hash.update(owner.as_bytes());
+            hash.update(&generation.to_le_bytes());
+        }
+        hash.update(&self.pending.to_le_bytes());
+        for head in &self.frontier {
+            hash.update(&head.0);
+        }
+        hash.update(&field);
+        *hash.finalize().as_bytes()
+    }
+
+    /// Snapshot an unbound host document without committing its open action.
+    pub fn for_document(document: &AutoCommit) -> Self {
+        Self {
+            owner: None,
+            frontier: document.base_heads(),
+            pending: document.pending_ops(),
+        }
+    }
+}
+
 /// Admission metadata for precisely one live widget/Taffy layout.
 #[derive(Default)]
 pub struct BoundNodeMap {
@@ -3717,6 +3763,55 @@ pub struct BoundNodeMap {
     a11y_aliases: a11y_owner::OwnerAliases,
 }
 impl BoundNodeMap {
+    /// Read the nearest canonical record owner's monotonic edit generation.
+    /// Local writes, remote merges and undo/redo invalidate it, including an
+    /// edit followed by its inverse. Reading does not open an action or commit.
+    /// # Errors
+    /// Rejects missing/inactive nodes, retired owners, borrowed records and
+    /// exhausted generations; callers must cancel deferred text insertion.
+    pub fn document_edit_stamp(
+        &self,
+        node: NodeId,
+        document: &AutoCommit,
+    ) -> Result<DocumentEditStamp, BoundDispatchError> {
+        let entry = self
+            .nodes
+            .get(&node)
+            .filter(|entry| !entry.inactive)
+            .ok_or(BoundDispatchError::MissingNode)?;
+        let owner = if let Some(binding) = &entry.binding {
+            let generation = binding
+                .generation()?
+                .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+            Some((binding.lifetime_id, generation))
+        } else if let Some(legacy) = &entry.legacy {
+            legacy
+                .validate()
+                .map_err(|_| BoundDispatchError::ClosedLifetime)?;
+            let (store, checkout) = legacy.store_checkout();
+            let generation = store
+                .action_generation(&checkout.id)
+                .map_err(BoundDispatchError::Record)?
+                .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+            Some((
+                legacy
+                    .lifetime_id()
+                    .ok_or(BoundDispatchError::ClosedLifetime)?,
+                generation,
+            ))
+        } else {
+            None
+        };
+        Ok(if owner.is_some() {
+            DocumentEditStamp {
+                owner,
+                frontier: Vec::new(),
+                pending: 0,
+            }
+        } else {
+            DocumentEditStamp::for_document(document)
+        })
+    }
     /// Current admitted layout ancestry, including structural non-widget nodes.
     pub(crate) fn is_descendant(&self, mut node: NodeId, ancestor: NodeId) -> bool {
         while let Some(parent) = self.parents.get(&node) {

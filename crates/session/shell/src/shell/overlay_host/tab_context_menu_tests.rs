@@ -1010,6 +1010,8 @@ fn tab_menu_action_door_uses_the_same_menu_and_refuses_locked_or_stale_focus() {
     let mut h = harness(2);
     let provider = crate::shell::search::providers::actions::ActionsProvider::new();
     let rows = provider.query(SearchContext {
+        query_scope: None,
+        include_programmatic: false,
         needle: "tab.menu",
         wanted: &[crate::shell::search::ResourceKind::Action],
         chrome: &h.chrome.borrow(),
@@ -1125,4 +1127,127 @@ fn tab_menu_keyboard_anchor_stays_on_the_focused_display() {
             .unwrap()
             .contains(h.titles.last().unwrap())
     );
+}
+
+#[test]
+fn tab_drag_escape_cancels_before_release_without_moving_windows() {
+    let mut h = harness(2);
+    let at = h.pill_centre(1);
+    h.move_to(at);
+    assert!(h.send(&WindowEvent::MouseInput {
+        device_id: DeviceId::dummy(),
+        state: ElementState::Pressed,
+        button: MouseButton::Left,
+    }));
+    h.move_to(Point::new(at.x + 40.0, at.y + 80.0));
+    assert!(
+        h.host
+            .group_at_for_tests(h.strip, 0)
+            .unwrap()
+            .bar_mut_for_tests()
+            .drag_in_flight(),
+        "the pointer journey must actually start a tab drag"
+    );
+    assert!(
+        h.key(Key::Named(NamedKey::Escape)),
+        "Escape cancels the live drag"
+    );
+    assert!(
+        !h.host
+            .group_at_for_tests(h.strip, 0)
+            .unwrap()
+            .bar_mut_for_tests()
+            .drag_in_flight(),
+        "the lifted tab is gone before the pointer is released"
+    );
+    h.send(&WindowEvent::MouseInput {
+        device_id: DeviceId::dummy(),
+        state: ElementState::Released,
+        button: MouseButton::Left,
+    });
+    assert_eq!(h.group_ids(), [h.group]);
+    assert_eq!(
+        h.tab_ids(0),
+        h.tabs,
+        "release after cancel cannot commit the drop"
+    );
+}
+
+#[test]
+fn tab_drag_cancel_action_clears_the_gesture_and_refuses_locked_requests() {
+    use crate::shell::search::{SearchContext, SearchProvider as _};
+    let mut h = harness(2);
+    let at = h.pill_centre(1);
+    h.move_to(at);
+    assert!(h.send(&WindowEvent::MouseInput {
+        device_id: DeviceId::dummy(),
+        state: ElementState::Pressed,
+        button: MouseButton::Left,
+    }));
+    h.move_to(Point::new(at.x + 40.0, at.y + 80.0));
+    assert!(
+        h.host
+            .group_at_for_tests(h.strip, 0)
+            .unwrap()
+            .bar_mut_for_tests()
+            .drag_in_flight()
+    );
+    let provider = crate::shell::search::providers::actions::ActionsProvider::new();
+    let rows = provider.query(SearchContext {
+        query_scope: None,
+        include_programmatic: false,
+        needle: "cancel tab drag",
+        wanted: &[crate::shell::search::ResourceKind::Action],
+        chrome: &h.chrome.borrow(),
+        doc: &h.doc,
+        doc_root: &automerge::ROOT,
+    });
+    let action = rows
+        .iter()
+        .find(|row| row.id == "tab.drag.cancel")
+        .expect("search discovers cancellation");
+    assert_eq!(action.operation_kind, tilo_actions::OperationKind::View);
+    (action.on_open)(
+        &mut ui::widget::Edits::lend(&mut h.doc),
+        &automerge::ROOT,
+        &h.chrome,
+        &crate::shell::search::action_api::ActionArgs::none(),
+    )
+    .expect("cancel request is admitted");
+    h.host.run_requested_shortcut_actions();
+    assert!(
+        !h.host
+            .group_at_for_tests(h.strip, 0)
+            .unwrap()
+            .bar_mut_for_tests()
+            .drag_in_flight()
+    );
+    h.move_to(Point::new(at.x + 150.0, at.y + 90.0));
+    h.send(&WindowEvent::MouseInput {
+        device_id: DeviceId::dummy(),
+        state: ElementState::Released,
+        button: MouseButton::Left,
+    });
+    assert_eq!(h.group_ids(), [h.group]);
+    assert_eq!(
+        h.tab_ids(0),
+        h.tabs,
+        "the later release cannot move a cancelled tab"
+    );
+    assert!(
+        !h.host.cancel_tab_drags(),
+        "idle cancellation has no gesture to consume"
+    );
+    h.chrome.borrow_mut().set_session_locked(true);
+    let result = (action.on_open)(
+        &mut ui::widget::Edits::lend(&mut h.doc),
+        &automerge::ROOT,
+        &h.chrome,
+        &crate::shell::search::action_api::ActionArgs::none(),
+    );
+    assert!(matches!(
+        result,
+        Err(crate::shell::search::action_api::ActionError::Refused(_))
+    ));
+    assert!(!h.chrome.borrow_mut().take_tab_drag_cancel_request());
 }

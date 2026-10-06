@@ -17,6 +17,8 @@ standalone-history-restore-unavailable = Diese Version kann hier nicht wiederher
 standalone-history-preview-resource = Dokument
 host-search = Suchen…
 host-search-placeholder = Suchen
+dropdown-search-placeholder = Auswahl durchsuchen
+dropdown-search-description = Zum Filtern tippen. Mit den Pfeiltasten auswählen und mit Eingabe bestätigen.
 host-undo = Widerrufen
 host-undo-named = { $change } widerrufen
 host-redo = Wiederholen
@@ -459,3 +461,10 @@ block-editor-replace-all-help = Alle ersetzen — Umschalt+Enter im Ersetzungsfe
 
 widget-sidebar-resize = Breite der Seitenleiste ändern
 widget-inspector-resize = Breite des Inspektors ändern
+
+dictation-record-once = Einmal aufnehmen
+dictation-finish = Fertig
+dictation-cancel = Abbrechen
+
+dictation-copy-transcript = Transkript kopieren
+dictation-discard-transcript = Transkript verwerfen
