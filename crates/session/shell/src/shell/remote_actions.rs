@@ -135,6 +135,7 @@ mod tests {
 
     fn action(name: &str, contract: tilo_actions::ActionContract) -> PublishedAction {
         PublishedAction {
+            semantic_identity: None,
             resource: "files.entry:/tmp/report".into(),
             action: name.into(),
             resource_kind: "files.entry".into(),

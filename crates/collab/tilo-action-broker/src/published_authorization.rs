@@ -115,6 +115,7 @@ mod tests {
     }
     fn action(action: &str) -> PublishedAction {
         PublishedAction {
+            semantic_identity: None,
             resource: "word-processor.document".into(),
             action: action.into(),
             resource_kind: "word-processor.document".into(),

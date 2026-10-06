@@ -28,6 +28,7 @@ fn fixture() -> (
             record_id: "record-a".into(),
         },
         actions: vec![PublishedAction {
+            semantic_identity: None,
             resource: "test:block-a".into(),
             action: "update".into(),
             resource_kind: "test.block".into(),
@@ -564,6 +565,7 @@ fn continuation_fixture() -> (
         CapnpBrokerState::test_broker_with_authority(membership.authority(), membership.services());
     let state = Arc::clone(broker.state());
     let action = |action: &str, kind: tilo_actions::OperationKind| PublishedAction {
+        semantic_identity: None,
         resource: "test:block-a".into(),
         action: action.into(),
         resource_kind: "test.block".into(),

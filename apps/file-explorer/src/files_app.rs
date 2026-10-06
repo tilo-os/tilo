@@ -43,6 +43,8 @@ use ui::{AppKind, AppWidget, IconDescriptor, SelectionModel};
 use vello::kurbo::Point;
 use vello::peniko::ImageData as PenikoImage;
 
+mod selection_actions;
+
 /// The most lines a detail sheet lists.
 const COLLAB_PANEL_MAX_LINES: usize = 20;
 /// Space kept clear at the bottom of the file viewport for the transient
@@ -1906,6 +1908,31 @@ impl FileExplorerWidget {
         let answer = match effect {
             FilesEffect::Refresh => {
                 self.refresh();
+                None
+            }
+            FilesEffect::SelectEntries { entries } => {
+                self.select_published_entries(&entries)?;
+                Some(self.selection_answer())
+            }
+            FilesEffect::SelectAll => {
+                self.apply_command(FileCommand::SelectAll);
+                self.last_click = None;
+                Some(self.selection_answer())
+            }
+            FilesEffect::ClearSelection => {
+                self.selection.clear();
+                self.last_click = None;
+                Some(self.selection_answer())
+            }
+            FilesEffect::CopySelection | FilesEffect::CutSelection => {
+                if self.selected_paths().is_empty() {
+                    return Err(t("files-selection-empty"));
+                }
+                self.apply_command(if matches!(effect, FilesEffect::CutSelection) {
+                    FileCommand::Cut
+                } else {
+                    FileCommand::Copy
+                });
                 None
             }
             FilesEffect::Paste => {
@@ -4269,6 +4296,7 @@ impl FileExplorerWidget {
             }
             FileCommand::SelectAll => {
                 self.selection.select_all(self.displayed_entries().len());
+                self.last_click = None;
                 true
             }
             FileCommand::OpenTerminal => {
@@ -5197,6 +5225,7 @@ impl FileExplorerWidget {
     pub fn stage_scenario(&mut self, scenario: Option<&str>) {
         let rect = self.rect;
         match scenario {
+            Some("selection-actions") => self.stage_published_selection(),
             Some(name @ ("selection-sort" | "selection-sorted" | "selection-reversed")) => {
                 self.stage_sort_selection(name);
             }
@@ -5318,11 +5347,42 @@ impl FileExplorerWidget {
         }
     }
 
+    fn stage_published_selection(&mut self) {
+        use crate::effects::FilesEffect;
+        let entries = self
+            .displayed_entries()
+            .iter()
+            .filter(|entry| matches!(entry.name.as_str(), "Notes.txt" | "Recipes.md"))
+            .map(Self::entry_resource_id)
+            .collect();
+        for effect in [
+            FilesEffect::List,
+            FilesEffect::SortName,
+            FilesEffect::SortAscending,
+            FilesEffect::SelectEntries { entries },
+            FilesEffect::SortSize,
+        ] {
+            if let Err(error) = self.run_effect(effect) {
+                self.set_external_status(error);
+                return;
+            }
+        }
+    }
+
     /// The filesystem work that cannot be done now, as this window's state
     /// says.
     pub(crate) fn effect_statuses(&self) -> Vec<ui::framework::EffectStatus> {
         use crate::effects::FilesEffect;
         let mut statuses = Vec::new();
+        if self.selected_paths().is_empty() {
+            for id in [FilesEffect::COPY_SELECTION, FilesEffect::CUT_SELECTION] {
+                statuses.push(ui::framework::EffectStatus::unavailable(
+                    id,
+                    "selection_empty",
+                    t("files-selection-empty"),
+                ));
+            }
+        }
         if self.last_trash_undo.is_none() {
             statuses.push(ui::framework::EffectStatus::unavailable(
                 FilesEffect::UNDO_TRASH,
