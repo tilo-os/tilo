@@ -119,7 +119,14 @@ impl ResourceApp for App {
                     .with_gap(0.0)
                     .with_fill_remaining_height()
                     .push(Box::new(Pane::new(rail(cx, &tools), Edge::Right)))
-                    .push(Box::new(work))
+                    .push(Box::new(
+                        Container::new()
+                            .with_no_padding()
+                            .with_flex_grow()
+                            .with_min_width(0.0)
+                            .filling()
+                            .with_child(Box::new(work)),
+                    ))
                     .push(sidebar),
             ));
         // Over a blank artwork, a welcome saying what can be done here and
@@ -427,8 +434,12 @@ fn rail_choices(tools: &tools::Tools, workspace: tools::Workspace) -> Element {
                     .with_vertical_padding(8.0)
                     .with_horizontal_padding(6.0, 6.0)
                     .with_gap(0.0)
-                    .push(Box::new(rail))
-                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(
+                        Scrollable::new_vertical()
+                            .fill_parent_height()
+                            .with_scrollbar(false)
+                            .with_child(Box::new(rail)),
+                    ))
                     .push(Box::new(panels::well::Well::new(tools.clone()))),
             )),
     )
@@ -520,11 +531,15 @@ fn sidebar(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools, dock: &LocalState
                 return Box::new(Spacer::fixed(0.0)) as Element;
             }
             let tools = tools.clone();
-            cx.switch(&dock, move |cx, dock| match dock {
-                Dock::Layers => panels::layers::panel(cx, &tools),
-                Dock::Objects => panels::layers::objects_panel(cx, &tools),
-                Dock::History => panels::history::panel(cx, &tools),
-            })
+            Box::new(
+                Scrollable::new_vertical()
+                    .fill_parent_height()
+                    .with_child(cx.switch(&dock, move |cx, dock| match dock {
+                        Dock::Layers => panels::layers::panel(cx, &tools),
+                        Dock::Objects => panels::layers::objects_panel(cx, &tools),
+                        Dock::History => panels::history::panel(cx, &tools),
+                    })),
+            ) as Element
         })
     };
     Box::new(
