@@ -192,7 +192,7 @@ Steps 3-6 live in `crates/session/shell/src/network/input_firewall.rs`. Every on
 
 ## Host overrides
 
-- **Session lock.** While the lock surface is up, every remote event is refused. A locked machine has no driver.
+- **Session lock.** While the lock surface is up, every peer/workspace remote input event is refused. A locked machine has no driver. The existing local device-owner admin socket may submit a Secret password to the normal asynchronous PAM lock verifier; it cannot choose another account, inject app input, or clear the lock. Only the verifier’s ordinary success result unlocks the session.
   Native compositor restarts retain this state within the authenticated PAM
   login. `tilo-session` initializes `lock-state` in its new private logout-channel
   directory; it does not import this channel into the user manager or D-Bus

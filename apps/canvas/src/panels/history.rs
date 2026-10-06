@@ -46,6 +46,7 @@ fn entries(versions: &[HistoryVersion]) -> Vec<Entry> {
         if let Some(last) = entries.last_mut()
             && version.run.is_some()
             && last.run == version.run
+            && last.author == version.author
         {
             last.steps = last.steps.saturating_add(1);
             last.undone &= version.undone;
@@ -124,6 +125,7 @@ pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                 .with_no_padding()
                 .with_intrinsic_height()
                 .with_gap(0.0)
+                .push(checkpoint_controls(cx, &tools))
                 .push(viewing(cx, &tools))
                 .push(Box::new(
                     Scrollable::new_vertical()
@@ -145,6 +147,37 @@ pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
 
 /// How tall the list of versions grows before it scrolls.
 const LIST_HEIGHT: f32 = 7.0 * ui::tokens::Metrics::BASE.panel_row_height;
+
+/// A person names a meaningful point without committing every typed letter.
+fn checkpoint_controls(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+    let name = tools.checkpoint_name.clone();
+    Box::new(
+        Column::new()
+            .with_intrinsic_height()
+            .with_rhythm(ui::tokens::Rhythm::Tight)
+            .with_padding_rhythm(ui::tokens::Rhythm::Sibling, ui::tokens::Rhythm::Tight)
+            .push(Box::new(
+                TextInput::from_state(&name)
+                    .with_id("canvas-checkpoint-label")
+                    .with_placeholder(&ui::i18n::I18nManager::lookup_plain(
+                        "canvas-checkpoint-label",
+                    ))
+                    .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
+                        "canvas-checkpoint-label",
+                    )),
+            ))
+            .push(cx.switch(&name, |cx, name| {
+                Box::new(
+                    cx.actions().bind_invocation(
+                        ui::widget::Button::new("canvas-checkpoint-save", "canvas-checkpoint-save")
+                            .with_icon(Icon::Flag)
+                            .with_enabled(!name.trim().is_empty()),
+                        ArtworkResource::CHECKPOINT.with(name.trim().to_owned()),
+                    ),
+                )
+            })),
+    )
+}
 
 /// Naming the current version, beside the history tab. Its name counts
 /// the checkpoints there are.
