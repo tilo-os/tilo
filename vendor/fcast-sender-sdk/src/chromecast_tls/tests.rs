@@ -1,11 +1,11 @@
 //! Real TLS handshakes exercise the production verifier and cancellation path.
 //! Keys are generated per test and deleted, never committed or device-issued.
 use super::*;
+use pki::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::{
     server::{ClientHello, ResolvesServerCert},
     sign::CertifiedKey,
 };
-use rustls_pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use std::{
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
@@ -125,7 +125,7 @@ async fn handshake(version: &'static rustls::SupportedProtocolVersion, wrong_sig
     .with_cert_resolver(Arc::new(Resolver(Arc::new(
         fixture.certified_key(wrong_signer),
     ))));
-    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+    let acceptor = tls_runtime::TlsAcceptor::from(Arc::new(config));
     let (client, server) = tokio::io::duplex(16 * 1024);
     let server = tokio::spawn(async move {
         let mut stream = acceptor.accept(server).await?;
