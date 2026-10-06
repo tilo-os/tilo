@@ -47,7 +47,7 @@ pub(crate) enum Brush {
 }
 
 /// How a layer composites when it is popped.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum LayerMode {
     /// A plain clip: no blending, full opacity.
     Clip,
@@ -290,6 +290,24 @@ fn device_bbox(local: Rect, transform: Affine, style: &Style) -> Rect {
         }
     };
     transform.transform_rect_bbox(local)
+}
+
+/// Whether `encoding` opens a layer that blends with what is under it other
+/// than by source over, found by walking the draw tags alone: no paths or
+/// glyphs are decoded.
+pub(crate) fn encoding_reads_backdrop(encoding: &Encoding) -> bool {
+    let mut offset = 0usize;
+    for tag in &encoding.draw_tags {
+        if *tag == DrawTag::BEGIN_CLIP
+            && let Some(&bits) = encoding.draw_data.get(offset)
+            && let LayerMode::Blend(mode, _) = blend_mode(bits)
+            && (mode.mix != Mix::Normal || mode.compose != Compose::SrcOver)
+        {
+            return true;
+        }
+        offset += ((tag.0 >> 2) & 7) as usize;
+    }
+    false
 }
 
 fn blend_mode(bits: u32) -> LayerMode {
