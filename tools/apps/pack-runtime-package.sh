@@ -61,6 +61,15 @@ landlock = "strict"
 [sandbox.net]
 mode = "off"
 TOML
+if [[ $package_id == so.tilo.runtime.chromium ]]; then
+    test -x "$bundle/lib/chromium/tilo-chromium-host"
+    cat >> "$work/manifest.toml" <<'TOML'
+
+[entrypoint]
+type = "cli"
+bin = "lib/chromium/tilo-chromium-host"
+TOML
+fi
 file="${package_id##*.}-$version-$arch.tapp"
 "$bin_dir/tilo-app-package" pack --manifest "$work/manifest.toml" --payload "$bundle" \
     --identity "$identity" --output "$work/$file" >&2

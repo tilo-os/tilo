@@ -166,7 +166,7 @@ impl BrowserWindow {
                             Text::new("Esc to exit full screen")
                                 .with_id("browser.fullscreen-hint")
                                 .with_live(Politeness::Polite)
-                                .with_size(14.0),
+                                .with_role(ui::tokens::TextRole::Body),
                         )),
                 )),
         )
@@ -210,9 +210,11 @@ impl BrowserWindow {
                 } else {
                     "Downloads are still running"
                 })
-                .with_size(18.0),
+                .with_role(ui::tokens::TextRole::Heading),
             ))
-            .push(Box::new(Text::new(&status).with_size(13.0)));
+            .push(Box::new(
+                Text::new(&status).with_role(ui::tokens::TextRole::Caption),
+            ));
         if !cancelling {
             let keep = self.exit_choice.writer();
             let cancel = self.exit_choice.writer();

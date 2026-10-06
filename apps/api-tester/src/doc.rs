@@ -153,6 +153,9 @@ impl ApiDoc {
 
     pub fn delete_environment(doc: &mut AutoCommit, root: &ObjId, id: &str) {
         Self::write_tombstone(doc, root, ENVIRONMENT_TOMBSTONES_KEY, id);
+        if Self::active_env(doc, root).as_deref() == Some(id) {
+            Self::set_active_env(doc, root, None);
+        }
     }
 
     /// Write one variable directly at its stable row address.  Variable values
@@ -1277,7 +1280,7 @@ mod tests {
     /// Case of `records_round_trip_through_the_document`.
     fn url_text_is_live_and_editable() {
         let (mut d, root) = doc();
-        let obj = ApiDoc::url_text(&mut d, &root);
+        let obj = ApiDoc::text_obj(&mut d, &root, "url");
         let _ = d.splice_text(&obj, 0, 0, "https://api.example.com/users");
         assert_eq!(
             ApiDoc::read_text(&d, &root, "url"),
