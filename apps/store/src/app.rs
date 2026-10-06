@@ -40,7 +40,6 @@ use ui::{Theme, permissions::PermissionContext, presence::PresenceCtx, text_rend
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
-use crate::bindings;
 use crate::doc_actions::StoreDocumentAction;
 use crate::model::{ActionKind, SourceFilter, StoreItem, StoreSource};
 use crate::resource::{ReportProjection, Store, StoreEffect};
@@ -1559,17 +1558,6 @@ impl StoreApp {
                 self.reserve_job()?;
                 return Ok(Job::admitted(Request::RefreshRemotes, Finish::Status));
             }
-            StoreEffect::UseFlathubForAccount { remote } => {
-                let source = self.flathub_account_source(&remote)?;
-                self.reserve_job()?;
-                return Ok(Job::admitted(
-                    Request::RemoteAdd {
-                        name: source.name.clone(),
-                        url: "https://dl.flathub.org/repo/flathub.flatpakrepo".into(),
-                    },
-                    Finish::Status,
-                ));
-            }
             StoreEffect::AddRemote { name, url } => {
                 if let Err(error) =
                     validate_remote_name(&name).and_then(|()| validate_remote_url(&url))
@@ -2051,7 +2039,7 @@ impl StoreApp {
                 .remotes
                 .iter()
                 .find(|remote| remote.resource_id() == id)
-                .map(|remote| self.remote_live_row(remote));
+                .map(Self::remote_live_row);
         }
         match id {
             REMOTES_ID => Some(self.remotes_row()),
@@ -2079,46 +2067,6 @@ impl StoreApp {
         )
     }
 
-    fn flathub_account_source(&self, id: &str) -> Result<&crate::flathub_client::Remote, String> {
-        let source = self
-            .remotes
-            .iter()
-            .find(|remote| remote.resource_id() == id)
-            .ok_or_else(|| ui::i18n!("store-flathub-account-missing"))?;
-        if source.user_managed
-            || source.disabled
-            || source.name != "flathub"
-            || source.url != "https://dl.flathub.org/repo/"
-        {
-            return Err(ui::i18n!("store-flathub-account-source"));
-        }
-        validate_remote_url(&source.url)?;
-        if self
-            .remotes
-            .iter()
-            .any(|remote| remote.user_managed && remote.name == source.name)
-        {
-            return Err(ui::i18n!("store-flathub-account-existing"));
-        }
-        Ok(source)
-    }
-
-    fn flathub_account_button(&self) -> Option<Box<dyn Widget>> {
-        let source = self
-            .remotes
-            .iter()
-            .find(|remote| self.flathub_account_source(&remote.resource_id()).is_ok())?;
-        let effect = StoreEffect::UseFlathubForAccount {
-            remote: source.resource_id(),
-        };
-        let binding = bindings::effect(&effect)?;
-        Some(Box::new(
-            ui::widget::Button::new("store.flathub.account", &ui::i18n!("store-flathub-account"))
-                .on_action(binding)
-                .control_size(ui::widget::ControlSize::Small),
-        ))
-    }
-
     fn package_label(&self, action: ActionKind) -> String {
         package_action_label(action, self.flatpak_error.as_deref())
     }
@@ -2141,30 +2089,21 @@ impl StoreApp {
         ))
     }
 
-    fn remote_live_row(&self, remote: &crate::flathub_client::Remote) -> LiveRow {
+    fn remote_live_row(remote: &crate::flathub_client::Remote) -> LiveRow {
         let mut row = remote_row(remote);
         if remote.user_managed {
             row = row.effect(&remote_enabled_effect(remote));
         }
-        if self.flathub_account_source(&remote.resource_id()).is_ok() {
-            row.effect(&StoreEffect::UseFlathubForAccount {
-                remote: remote.resource_id(),
-            })
-        } else {
-            row
-        }
+        row
     }
 
     fn remotes_row(&self) -> LiveRow {
-        self.remotes
-            .iter()
-            .map(|remote| self.remote_live_row(remote))
-            .fold(
-                LiveRow::new(REMOTES_ID, "store.remote-list", "Flatpak remotes")
-                    .effect(&StoreEffect::ShowRemotes)
-                    .effect(&StoreEffect::RefreshRemotes),
-                LiveRow::row,
-            )
+        self.remotes.iter().map(Self::remote_live_row).fold(
+            LiveRow::new(REMOTES_ID, "store.remote-list", "Flatpak remotes")
+                .effect(&StoreEffect::ShowRemotes)
+                .effect(&StoreEffect::RefreshRemotes),
+            LiveRow::row,
+        )
     }
 
     fn moderation_row(&self) -> LiveRow {
@@ -2559,8 +2498,8 @@ mod tests {
         let output = std::env::var_os("TILO_STORE_REVIEW_DIR").map(std::path::PathBuf::from);
         for (scenario, action) in [
             ("wide", "Refresh catalogues"),
-            ("account-setup", "Use Flathub for my apps"),
-            ("account-remotes", "Use Flathub for my apps"),
+            ("account-setup", "Refresh catalogues"),
+            ("account-remotes", "Browse apps"),
             ("remotes", "Browse apps"),
             ("remotes-disabled", "Enable source"),
             ("search-notes", "Notes"),
@@ -2596,7 +2535,7 @@ mod tests {
                         "{scenario}: the ordinary owner can use {action} at {width} in {theme}"
                     );
                     let additional = match scenario {
-                        "account-remotes" => &["Browse apps"][..],
+                        "account-remotes" => &["Refresh remotes"][..],
                         "remotes" => &["Disable source"][..],
                         "wide" => &["Search"][..],
                         "detail" => &["Open"][..],
@@ -2800,7 +2739,98 @@ mod tests {
     }
 
     #[test]
-    fn flathub_account_control_is_enabled_on_the_live_owner_surface_and_inspection_is_truthful() {
+    fn default_flathub_browsing_has_no_account_opt_in_for_owner_editor_or_viewer() {
+        for role in [
+            ui::permissions::Role::Owner,
+            ui::permissions::Role::Editor,
+            ui::permissions::Role::Viewer,
+        ] {
+            let (_environment, _directory, mut app) = inspected_store();
+            app.with_surface(|store: &mut StoreApp| {
+                store.worker = None;
+                store.show_capture_catalogue(crate::fixture::fixture_catalog());
+                store.set_flatpak_available(true);
+                store.set_remotes(vec![crate::flathub_client::Remote {
+                    name: "flathub".into(),
+                    title: "Flathub".into(),
+                    url: "https://dl.flathub.org/repo/".into(),
+                    disabled: false,
+                    user_managed: false,
+                }]);
+            })
+            .unwrap();
+            app.set_role(role);
+            let audit = app.harness().native_app_audit();
+            assert!(
+                !audit
+                    .issues
+                    .iter()
+                    .any(|issue| issue.code == "stale-action-binding"),
+                "default source bindings resolve on the complete native surface for {role:?}: {:?}",
+                audit.issues
+            );
+            assert!(
+                !app.harness()
+                    .controls()
+                    .iter()
+                    .any(|control| control.name.as_deref() == Some("Use Flathub for my apps")),
+                "Flathub browsing is the normal default, not an account opt-in for {role:?}"
+            );
+            let inspected = app
+                .effect(&StoreEffect::InspectCatalogue { app: None })
+                .unwrap()
+                .value
+                .unwrap();
+            assert_eq!(inspected["flatpak_available"], true);
+            assert_eq!(inspected["remote_count"], 1);
+            assert_eq!(inspected["remotes"][0]["disabled"], false);
+        }
+    }
+
+    #[test]
+    fn configured_flathub_controls_have_complete_app_and_host_action_bindings() {
+        for role in [
+            ui::permissions::Role::Viewer,
+            ui::permissions::Role::Editor,
+            ui::permissions::Role::Owner,
+        ] {
+            let (_environment, _directory, mut app) = inspected_store();
+            app.with_surface(|store: &mut StoreApp| {
+                store.worker = None;
+                store.show_capture_catalogue(crate::fixture::fixture_catalog());
+                store.set_flatpak_available(true);
+                store.set_remotes(vec![crate::flathub_client::Remote {
+                    name: "flathub".into(),
+                    title: "Flathub".into(),
+                    url: "https://dl.flathub.org/repo/".into(),
+                    disabled: false,
+                    user_managed: false,
+                }]);
+            })
+            .unwrap();
+            app.set_role(role);
+            let audit = app.harness().native_app_audit();
+            assert!(
+                !audit
+                    .issues
+                    .iter()
+                    .any(|issue| issue.code == "stale-action-binding"),
+                "default source bindings resolve on the complete native surface for {role:?}: {:?}",
+                audit.issues
+            );
+            let inspected = app
+                .effect(&StoreEffect::InspectCatalogue { app: None })
+                .unwrap()
+                .value
+                .unwrap();
+            assert_eq!(inspected["flatpak_available"], true);
+            assert_eq!(inspected["remote_count"], 1);
+            assert_eq!(inspected["remotes"][0]["disabled"], false);
+        }
+    }
+
+    #[test]
+    fn flatpak_observation_errors_are_truthful_on_the_live_owner_surface() {
         let (_environment, _directory, mut app) = inspected_store();
         app.with_surface(|store: &mut StoreApp| {
             store.worker = None;
@@ -2816,18 +2846,6 @@ mod tests {
             store.flatpak_error = Some("The app service is unavailable.".into());
         })
         .unwrap();
-        let control = app
-            .harness()
-            .controls()
-            .into_iter()
-            .find(|control| {
-                control.name.as_deref() == Some(ui::i18n!("store-flathub-account").as_str())
-            })
-            .unwrap();
-        assert!(
-            !control.disabled,
-            "the normal owner can use the declared account setup control"
-        );
         assert!(
             app.harness().controls().iter().any(|control| {
                 control.name.as_deref() == Some(ui::i18n!("store-flatpak-unavailable").as_str())
@@ -3167,7 +3185,7 @@ mod tests {
     }
 
     #[test]
-    fn flathub_account_setup_uses_declared_authorized_descriptor_without_device_mutation() {
+    fn default_flathub_browsing_preserves_disabled_and_managed_source_authority() {
         let mut app = seeded_app();
         let source = crate::flathub_client::Remote {
             name: "flathub".into(),
@@ -3177,79 +3195,73 @@ mod tests {
             user_managed: false,
         };
         app.set_remotes(vec![source.clone()]);
-        let row = app
-            .live_row("remote:system:flathub")
-            .unwrap()
-            .into_resource();
-        let setup = row
-            .actions
-            .iter()
-            .find(|action| action.id == "use-flathub-for-account")
-            .unwrap();
-        assert_eq!(
-            setup.contract.permission,
-            StoreEffect::AddRemote {
-                name: "flathub".into(),
-                url: source.url.clone()
-            }
-            .bound()
-            .contract
-            .permission
-        );
-        assert!(app.flathub_account_button().is_some());
-        let job = admitted_job(
-            &mut app,
-            StoreEffect::UseFlathubForAccount {
-                remote: source.resource_id(),
-            },
-        );
+        let row = app.live_row(&source.resource_id()).unwrap().into_resource();
         assert!(
-            matches!(job.request, Request::RemoteAdd { ref name, ref url }
-            if name == "flathub" && url == "https://dl.flathub.org/repo/flathub.flatpakrepo")
-        );
-        assert!(
-            !row.actions
+            row.actions
                 .iter()
-                .any(|action| action.id == "remove-remote")
+                .any(|action| action.id == "browse-remote")
         );
-        for changed in [
-            crate::flathub_client::Remote {
-                disabled: true,
-                ..source.clone()
-            },
-            crate::flathub_client::Remote {
-                url: "https://example.com/repo/".into(),
-                ..source.clone()
-            },
-            crate::flathub_client::Remote {
-                name: "other".into(),
-                ..source.clone()
-            },
-        ] {
-            app.set_remotes(vec![changed.clone()]);
-            assert!(app.flathub_account_button().is_none());
-            assert!(
-                app.admit(StoreEffect::UseFlathubForAccount {
-                    remote: changed.resource_id()
-                })
-                .is_err()
-            );
-        }
-        app.set_remotes(vec![
-            source.clone(),
-            crate::flathub_client::Remote {
-                user_managed: true,
-                url: "https://example.com/".into(),
-                ..source.clone()
-            },
-        ]);
-        assert!(app.flathub_account_button().is_none());
+        assert!(!row.actions.iter().any(|action| matches!(
+            action.id.as_str(),
+            "remove-remote" | "enable-remote" | "disable-remote" | "use-flathub-for-account"
+        )));
+        app.admit(StoreEffect::BrowseRemote {
+            remote: source.resource_id(),
+        })
+        .unwrap();
         assert!(
-            app.admit(StoreEffect::UseFlathubForAccount {
+            app.admit(StoreEffect::RemoveRemote {
+                name: source.name.clone()
+            })
+            .is_err()
+        );
+        assert!(
+            app.admit(StoreEffect::EnableRemote {
                 remote: source.resource_id()
             })
             .is_err()
         );
+        let disabled = crate::flathub_client::Remote {
+            disabled: true,
+            ..source
+        };
+        app.set_remotes(vec![disabled.clone()]);
+        assert!(
+            !app.live_row(&disabled.resource_id())
+                .unwrap()
+                .into_resource()
+                .actions
+                .iter()
+                .any(|action| action.id == "browse-remote")
+        );
+        assert!(
+            app.admit(StoreEffect::BrowseRemote {
+                remote: disabled.resource_id()
+            })
+            .is_err()
+        );
+        let account = crate::flathub_client::Remote {
+            user_managed: true,
+            ..disabled
+        };
+        app.set_remotes(vec![account.clone()]);
+        let row = app
+            .live_row(&account.resource_id())
+            .unwrap()
+            .into_resource();
+        let enable = row
+            .actions
+            .iter()
+            .find(|action| action.id == "enable-remote")
+            .unwrap();
+        assert_eq!(
+            enable.contract.permission,
+            tilo_actions::PermissionRequirement::Admin
+        );
+        assert!(matches!(
+            admitted_job(&mut app, remote_enabled_effect(&account)).request,
+            Request::RemoteSetEnabled { enabled: true, .. }
+        ));
     }
 
     #[test]
