@@ -2377,6 +2377,14 @@ a11y-speaker-listener = { $group } kann mit diesem Mikrofon kalibrieren
 a11y-speaker-listener-description = Die Lautsprecherkalibrierung darf mit diesem Mikrofon hören; aktivieren, um das zu beenden
 speaker-calibration-listening-refused = { $microphone } durfte nicht zuhören, daher kann an deinem Platz nichts gemessen werden
 speaker-error-listening-unavailable = wähle ein Mikrofon, das an deinem Platz zuhören kann
+search-action-axis-enable = Experimentelle Achsennavigation aktivieren
+search-action-axis-enable-subtitle = In dieser Sitzung zwischen Gruppen wechseln und den Fokus sichtbar machen
+search-action-axis-disable = Experimentelle Achsennavigation deaktivieren
+search-action-axis-disable-subtitle = Die normale Fensternavigation für diese Sitzung wiederherstellen
+search-action-axis-gather = Fokussiertes Fenster sichtbar machen
+search-action-axis-gather-subtitle = Experimentelle Achsennavigation: Fokus ohne Animation anzeigen
+axis-navigation-disabled = Die experimentelle Achsennavigation ist deaktiviert
+
 search-provider-device-shell = Shell dieses Geräts
 terminal-request-device-shell = Eigene Shell dieses Geräts anfordern
 terminal-device-shell-owner-required = Nur der Gerätebesitzer darf die eigene Shell dieses Geräts anfordern

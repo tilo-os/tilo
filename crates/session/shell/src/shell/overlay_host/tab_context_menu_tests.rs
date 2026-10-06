@@ -184,17 +184,17 @@ fn harness_built_with(
 
 impl Harness {
     fn send(&mut self, event: &WindowEvent) -> bool {
-        self.send_with_modifiers(event, &Modifiers::default())
+        self.send_with_modifiers(event, Modifiers::default())
     }
 
-    fn send_with_modifiers(&mut self, event: &WindowEvent, modifiers: &Modifiers) -> bool {
+    fn send_with_modifiers(&mut self, event: &WindowEvent, modifiers: Modifiers) -> bool {
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
         self.host.handle_event(
             event,
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
-                modifiers,
+                modifiers: &modifiers,
                 state: ui::widget::Edits::lend(&mut self.doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
@@ -251,7 +251,7 @@ impl Harness {
                 event,
                 is_synthetic: false,
             },
-            &modifiers.into(),
+            modifiers.into(),
         )
     }
 
@@ -1071,13 +1071,13 @@ fn tab_menu_action_door_uses_the_same_menu_and_refuses_locked_or_stale_focus() {
 #[test]
 fn tab_menu_keyboard_anchor_stays_on_the_focused_display() {
     use crate::shell::output_scene::OutputGeometry;
+    use winit::keyboard::ModifiersState;
     let mut h = harness(2);
     h.host.set_output_geometry(&[
         OutputGeometry::unscaled(0.0, 0.0, 360.0, VH),
         OutputGeometry::unscaled(360.0, 0.0, VW - 360.0, VH).with_id(1),
     ]);
     (h.taffy, h.root) = lay_out_host_with_theme(&mut h.host, VW, VH, &h.theme);
-    use winit::keyboard::ModifiersState;
     // Pointer entry focuses the empty second display. Keyboard navigation
     // then returns to the first display while the pointer stays on the second.
     h.move_to(Point::new(VW - 30.0, VH / 2.0));
