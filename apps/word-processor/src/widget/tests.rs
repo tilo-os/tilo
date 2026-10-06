@@ -743,8 +743,9 @@ fn framework_owner_publishes_retained_toolbar_native_controls() {
 fn toolbar_controls_publish_before_drawing_and_report_retained_replacement() {
     let (mut state, mut wp) = bound();
     assert!(
-        ui::resources::resources(&wp, &state.doc)
+        wp.children()
             .into_iter()
+            .flat_map(|child| ui::resources::resources(child, &state.doc))
             .any(|resource| resource.id.as_str() == "tilo.control:word.toolbar.bold"),
         "sync constructs the native toolbar before the host publishes or draws"
     );
@@ -761,8 +762,9 @@ fn toolbar_controls_publish_before_drawing_and_report_retained_replacement() {
     wp.model_mut().select_all(&state.doc);
     wp.sync(&state.doc, &state.root);
     assert!(
-        ui::resources::resources(&wp, &state.doc)
+        wp.children()
             .into_iter()
+            .flat_map(|child| ui::resources::resources(child, &state.doc))
             .any(|resource| resource.id.as_str() == "tilo.control:word.toolbar.hyperlink"),
         "selection-dependent controls exist before publication"
     );

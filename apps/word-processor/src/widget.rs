@@ -10462,16 +10462,8 @@ impl ui::presence::capability::PublishesPresence for WordProcessorWidget {
 }
 
 impl ui::resources::PublishesResources for WordProcessorWidget {
-    // The framework owns the document publication. SurfaceHost reads this
-    // owning surface's resources directly, so publish its actual retained
-    // controls here as well as exposing them for lifecycle and custody.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        self.children()
-            .into_iter()
-            .flat_map(|child| ui::resources::resources(child, doc))
-            .collect()
-    }
-
+    // The document is the framework's publication; the editor adds only
+    // what an edit answers its caller with.
     fn document_action_result(
         &self,
         doc: &AutoCommit,
