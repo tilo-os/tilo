@@ -20,6 +20,8 @@ const TASK_COLLECTION: &str = "desktop:tasks";
 const READ_CURRENT_TASKS_ACTION: &str = "read-current-tasks";
 const READ_TASK_ACTION: &str = "read-task";
 const DIRECT_TASK_ACTION: &str = "direct";
+const QUEUE_TASK_ACTION: &str = "queue";
+const STOP_TASK_ACTION: &str = "stop";
 const TASK_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,6 +31,16 @@ pub struct AgentTaskFrontier {
     pub run_epoch: u64,
     pub after_revision: u64,
     pub applied_revision: u64,
+    pub route: String,
+    pub cancellation_requested: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentPendingTask {
+    pub task_id: String,
+    pub title: String,
+    pub status: String,
+    pub route: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -69,6 +81,35 @@ pub enum AgentTaskDiscovery {
     Unavailable,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum AgentQueueState {
+    #[default]
+    Ready,
+    Submitting,
+    Queued {
+        task_id: String,
+    },
+    Failed,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum AgentStopState {
+    #[default]
+    Ready,
+    Submitting {
+        task_id: String,
+        run_epoch: u64,
+    },
+    Stopping {
+        task_id: String,
+        run_epoch: u64,
+    },
+    Failed {
+        task_id: String,
+        run_epoch: u64,
+    },
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TaskRead {
@@ -82,6 +123,7 @@ struct TaskRead {
     active_agent: Option<String>,
     after_revision: u64,
     applied_revision: Option<u64>,
+    cancellation_requested: bool,
 }
 
 #[derive(Deserialize)]
@@ -91,6 +133,9 @@ struct CurrentTasksRead {
     complete: bool,
     total: u64,
     tasks: Vec<CurrentTaskRead>,
+    pending_complete: bool,
+    pending_total: u64,
+    pending: Vec<PendingTaskRead>,
 }
 
 #[derive(Deserialize)]
@@ -104,9 +149,30 @@ struct CurrentTaskRead {
     active_agent: String,
     after_revision: u64,
     applied_revision: u64,
+    route: String,
+    cancellation_requested: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PendingTaskRead {
+    task_id: String,
+    title: String,
+    assigned_agent: String,
+    status: String,
+    route: String,
 }
 
 struct DirectionCall {
+    call: LocalState<InvocationCall>,
+    frontier: AgentTaskFrontier,
+}
+
+struct QueueCall {
+    call: LocalState<InvocationCall>,
+}
+
+struct StopCall {
     call: LocalState<InvocationCall>,
     frontier: AgentTaskFrontier,
 }
@@ -145,6 +211,8 @@ pub struct AgentTaskFrontiers {
     /// Newer exact-task reads replace the immutable collection snapshot.
     confirmed: BTreeMap<String, ConfirmedFrontier>,
     frontiers: Vec<AgentTaskFrontier>,
+    pending_tasks: Vec<AgentPendingTask>,
+    pending_complete: bool,
     selected: Option<String>,
     /// Last exact owner-backed task shown in the steering context. Retained
     /// across an invalidation so the UI can say which task changed without
@@ -153,6 +221,10 @@ pub struct AgentTaskFrontiers {
     direction: Option<DirectionCall>,
     saved_direction: Option<SavedDirection>,
     direction_state: AgentDirectionState,
+    queue: Option<QueueCall>,
+    queue_state: AgentQueueState,
+    stop: Option<StopCall>,
+    stop_state: AgentStopState,
     discovery: AgentTaskDiscovery,
     invalidated: bool,
     stale_frontier: bool,
@@ -185,11 +257,17 @@ impl AgentTaskFrontiers {
             snapshot_complete: false,
             confirmed: BTreeMap::new(),
             frontiers: Vec::new(),
+            pending_tasks: Vec::new(),
+            pending_complete: false,
             selected: None,
             context: None,
             direction: None,
             saved_direction: None,
             direction_state: AgentDirectionState::Draft,
+            queue: None,
+            queue_state: AgentQueueState::Ready,
+            stop: None,
+            stop_state: AgentStopState::Ready,
             discovery: AgentTaskDiscovery::Loading,
             invalidated: false,
             stale_frontier: false,
@@ -214,11 +292,17 @@ impl AgentTaskFrontiers {
         self.snapshot_complete = false;
         self.confirmed.clear();
         self.frontiers.clear();
+        self.pending_tasks.clear();
+        self.pending_complete = false;
         self.selected = None;
         self.context = None;
         self.direction = None;
         self.saved_direction = None;
         self.direction_state = AgentDirectionState::Draft;
+        self.queue = None;
+        self.queue_state = AgentQueueState::Ready;
+        self.stop = None;
+        self.stop_state = AgentStopState::Ready;
         self.discovery = AgentTaskDiscovery::Loading;
         self.invalidated = false;
         self.stale_frontier = false;
@@ -297,6 +381,32 @@ impl AgentTaskFrontiers {
         }
     }
 
+    /// Pending work from a complete owner projection. An incomplete bounded
+    /// response is never presented as the whole queue.
+    #[must_use]
+    pub fn pending_tasks(&self) -> Vec<AgentPendingTask> {
+        if self.snapshot_complete && !self.invalidated && self.pending_complete {
+            self.pending_tasks.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    #[must_use]
+    pub const fn pending_tasks_complete(&self) -> bool {
+        self.snapshot_complete && !self.invalidated && self.pending_complete
+    }
+
+    #[must_use]
+    pub fn queue_state(&self) -> &AgentQueueState {
+        &self.queue_state
+    }
+
+    #[must_use]
+    pub fn stop_state(&self) -> &AgentStopState {
+        &self.stop_state
+    }
+
     #[must_use]
     pub fn direction_state(&self) -> &AgentDirectionState {
         &self.direction_state
@@ -317,10 +427,9 @@ impl AgentTaskFrontiers {
     /// run and no direction is already awaiting its receipt.
     #[must_use]
     pub fn can_steer(&self) -> bool {
-        matches!(
-            self.choice(),
-            AgentTaskChoice::One(_) | AgentTaskChoice::Selected(_)
-        ) && !matches!(self.direction_state, AgentDirectionState::Submitting)
+        matches!(self.actionable_frontier(), Some(frontier)
+            if frontier.route == "model" && !frontier.cancellation_requested)
+            && !matches!(self.direction_state, AgentDirectionState::Submitting)
     }
 
     #[must_use]
@@ -374,6 +483,12 @@ impl AgentTaskFrontiers {
             AgentTaskChoice::Choose(_) => return Err("select which current task to steer".into()),
             AgentTaskChoice::None => return Err("this agent has no current task to steer".into()),
         };
+        if frontier.route != "model" {
+            return Err("this task route does not accept model directions".into());
+        }
+        if frontier.cancellation_requested {
+            return Err("the task cancellation state is unavailable or stopping".into());
+        }
         let invocation = InvocationId::new();
         let target = task_target(&self.workspace, &frontier.task_id, DIRECT_TASK_ACTION);
         let argument = InvokeArgument::Json(serde_json::Map::from_iter([
@@ -390,6 +505,89 @@ impl AgentTaskFrontiers {
         self.direction = Some(DirectionCall { call, frontier });
         self.direction_state = AgentDirectionState::Submitting;
         Ok(invocation)
+    }
+
+    /// Queue a new model-assisted task through the canonical Task Center
+    /// collection. The full instruction is sent separately from its bounded
+    /// display title; neither is written into Chat's CRDT.
+    pub fn queue(
+        &mut self,
+        instruction: &str,
+        title: Option<&str>,
+    ) -> Result<InvocationId, String> {
+        self.poll();
+        if instruction.trim().is_empty() {
+            return Err("task instruction is blank".into());
+        }
+        if self.workspace.is_empty() || self.agent.is_empty() {
+            return Err("refresh tasks for an authenticated agent first".into());
+        }
+        if self.queue.is_some() {
+            return Err("a task is already being queued".into());
+        }
+        let invocation = InvocationId::new();
+        let mut argument = serde_json::Map::from_iter([
+            ("instruction".into(), serde_json::json!(instruction)),
+            ("agent".into(), serde_json::json!(self.agent)),
+            ("route".into(), serde_json::json!("model")),
+        ]);
+        if let Some(title) = title.filter(|title| !title.trim().is_empty()) {
+            argument.insert("title".into(), serde_json::json!(title));
+        }
+        let call = self.remote.invoke_with_id(
+            invocation,
+            task_collection_target(&self.workspace, QUEUE_TASK_ACTION),
+            InvokeArgument::Json(argument),
+            None,
+        );
+        self.queue = Some(QueueCall { call });
+        self.queue_state = AgentQueueState::Submitting;
+        Ok(invocation)
+    }
+
+    /// Request cancellation of the exact owner-published run. Success means
+    /// only that cancellation was durably requested; terminal state remains
+    /// owner/Agent reported.
+    pub fn stop(&mut self) -> Result<InvocationId, String> {
+        self.poll();
+        if self.stop.is_some() {
+            return Err("a stop request is already being submitted".into());
+        }
+        let frontier = self
+            .actionable_frontier()
+            .ok_or("select one current task to stop")?;
+        if !matches!(frontier.route.as_str(), "model" | "rules_only") {
+            return Err("the task route is unavailable or not Agent-owned".into());
+        }
+        if frontier.cancellation_requested {
+            return Err("this task is already stopping or its state is unavailable".into());
+        }
+        let invocation = InvocationId::new();
+        let call = self.remote.invoke_with_id(
+            invocation,
+            task_target(&self.workspace, &frontier.task_id, STOP_TASK_ACTION),
+            InvokeArgument::Json(serde_json::Map::from_iter([
+                ("run_epoch".into(), serde_json::json!(frontier.run_epoch)),
+                (
+                    "after_revision".into(),
+                    serde_json::json!(frontier.after_revision),
+                ),
+            ])),
+            None,
+        );
+        self.stop_state = AgentStopState::Submitting {
+            task_id: frontier.task_id.clone(),
+            run_epoch: frontier.run_epoch,
+        };
+        self.stop = Some(StopCall { call, frontier });
+        Ok(invocation)
+    }
+
+    fn actionable_frontier(&self) -> Option<AgentTaskFrontier> {
+        match self.choice() {
+            AgentTaskChoice::One(frontier) | AgentTaskChoice::Selected(frontier) => Some(frontier),
+            AgentTaskChoice::None | AgentTaskChoice::Choose(_) => None,
+        }
     }
 
     /// Re-read the exact task after a saved direction so an agent's later,
@@ -423,6 +621,8 @@ impl AgentTaskFrontiers {
         self.collect_current_tasks(now);
         self.poll_direction();
         self.poll_saved_direction();
+        self.poll_queue();
+        self.poll_stop();
     }
 
     fn start_current_refresh(&mut self, accepts_frontier_change: bool) {
@@ -432,7 +632,7 @@ impl AgentTaskFrontiers {
         self.current_issued = self.issue_observation();
         self.current_accepts_frontier_change = accepts_frontier_change;
         self.current = Some(self.remote.invoke(
-            task_collection_target(&self.workspace),
+            task_collection_target(&self.workspace, READ_CURRENT_TASKS_ACTION),
             InvokeArgument::Json(serde_json::Map::from_iter([(
                 "agent".into(),
                 serde_json::json!(self.agent),
@@ -476,7 +676,10 @@ impl AgentTaskFrontiers {
             self.invalidate_snapshot(AgentTaskDiscovery::Unavailable);
             return;
         };
-        let Ok(total) = usize::try_from(read.total) else {
+        let (Ok(total), Ok(pending_total)) = (
+            usize::try_from(read.total),
+            usize::try_from(read.pending_total),
+        ) else {
             self.invalidate_snapshot(AgentTaskDiscovery::Unavailable);
             return;
         };
@@ -484,7 +687,11 @@ impl AgentTaskFrontiers {
             self.invalidate_snapshot(AgentTaskDiscovery::Incomplete { total: read.total });
             return;
         }
-        if read.generation == 0 || total != read.tasks.len() {
+        if read.generation == 0
+            || total != read.tasks.len()
+            || (read.pending_complete && pending_total != read.pending.len())
+            || (!read.pending_complete && read.pending.len() > pending_total)
+        {
             self.invalidate_snapshot(AgentTaskDiscovery::Unavailable);
             return;
         }
@@ -493,6 +700,25 @@ impl AgentTaskFrontiers {
         {
             return;
         }
+        let mut pending_tasks = Vec::with_capacity(read.pending.len());
+        for task in read.pending {
+            if task.task_id.is_empty()
+                || task.title.trim().is_empty()
+                || task.assigned_agent != self.agent
+                || !matches!(task.status.as_str(), "queued" | "waiting")
+                || !valid_route(&task.route)
+            {
+                self.invalidate_snapshot(AgentTaskDiscovery::Unavailable);
+                return;
+            }
+            pending_tasks.push(AgentPendingTask {
+                task_id: task.task_id,
+                title: task.title,
+                status: task.status,
+                route: task.route,
+            });
+        }
+        pending_tasks.sort_by(|left, right| left.task_id.cmp(&right.task_id));
         let mut frontiers = Vec::with_capacity(read.tasks.len());
         for task in read.tasks {
             if task.task_id.is_empty()
@@ -502,6 +728,7 @@ impl AgentTaskFrontiers {
                 || task.active_agent != self.agent
                 || task.run_epoch == 0
                 || task.applied_revision > task.after_revision
+                || !valid_route(&task.route)
             {
                 self.invalidate_snapshot(AgentTaskDiscovery::Unavailable);
                 return;
@@ -512,6 +739,8 @@ impl AgentTaskFrontiers {
                 run_epoch: task.run_epoch,
                 after_revision: task.after_revision,
                 applied_revision: task.applied_revision,
+                route: task.route,
+                cancellation_requested: task.cancellation_requested,
             });
         }
         let collection_order = (read.generation, self.current_issued);
@@ -562,6 +791,12 @@ impl AgentTaskFrontiers {
         });
         self.stale_frontier = frontier_changed && !self.current_accepts_frontier_change;
         self.frontiers = frontiers;
+        self.pending_tasks = if read.pending_complete {
+            pending_tasks
+        } else {
+            Vec::new()
+        };
+        self.pending_complete = read.pending_complete;
         if !self.stale_frontier {
             if self.frontiers.len() == 1 {
                 self.context = self.frontiers.first().cloned();
@@ -613,7 +848,78 @@ impl AgentTaskFrontiers {
         self.invalidated = true;
         self.snapshot_complete = false;
         self.frontiers.clear();
+        self.pending_tasks.clear();
+        self.pending_complete = false;
         self.discovery = discovery;
+    }
+
+    fn poll_queue(&mut self) {
+        let Some(queue) = &self.queue else {
+            return;
+        };
+        match queue.call.get() {
+            RemoteCall::Pending
+            | RemoteCall::Done(
+                InvocationUpdate::Accepted { .. }
+                | InvocationUpdate::Progress { .. }
+                | InvocationUpdate::Item { .. },
+            ) => {}
+            RemoteCall::Done(InvocationUpdate::Succeeded { output, .. }) => {
+                self.queue_state = queue_task_id(&output)
+                    .map_or(AgentQueueState::Failed, |task_id| AgentQueueState::Queued {
+                        task_id,
+                    });
+                self.queue = None;
+                self.refresh();
+            }
+            RemoteCall::Refused(_)
+            | RemoteCall::Done(
+                InvocationUpdate::Failed { .. } | InvocationUpdate::Cancelled { .. },
+            ) => {
+                self.queue_state = AgentQueueState::Failed;
+                self.queue = None;
+            }
+        }
+    }
+
+    fn poll_stop(&mut self) {
+        let Some(stop) = &self.stop else {
+            return;
+        };
+        match stop.call.get() {
+            RemoteCall::Pending
+            | RemoteCall::Done(
+                InvocationUpdate::Accepted { .. }
+                | InvocationUpdate::Progress { .. }
+                | InvocationUpdate::Item { .. },
+            ) => {}
+            RemoteCall::Done(InvocationUpdate::Succeeded { output, .. }) => {
+                let state = if stop_requested(&output, &stop.frontier) {
+                    AgentStopState::Stopping {
+                        task_id: stop.frontier.task_id.clone(),
+                        run_epoch: stop.frontier.run_epoch,
+                    }
+                } else {
+                    AgentStopState::Failed {
+                        task_id: stop.frontier.task_id.clone(),
+                        run_epoch: stop.frontier.run_epoch,
+                    }
+                };
+                self.stop_state = state;
+                self.stop = None;
+                self.refresh();
+            }
+            RemoteCall::Refused(_)
+            | RemoteCall::Done(
+                InvocationUpdate::Failed { .. } | InvocationUpdate::Cancelled { .. },
+            ) => {
+                self.stop_state = AgentStopState::Failed {
+                    task_id: stop.frontier.task_id.clone(),
+                    run_epoch: stop.frontier.run_epoch,
+                };
+                self.stop = None;
+            }
+        }
     }
 
     fn poll_direction(&mut self) {
@@ -780,11 +1086,15 @@ fn task_target(workspace: &str, task: &str, action: &str) -> RemoteActionTarget 
     }
 }
 
-fn task_collection_target(workspace: &str) -> RemoteActionTarget {
+fn task_collection_target(workspace: &str, action: &str) -> RemoteActionTarget {
     RemoteActionTarget {
         provider: workspace_provider(workspace),
-        address: ActionAddress::new(TASK_COLLECTION, READ_CURRENT_TASKS_ACTION),
+        address: ActionAddress::new(TASK_COLLECTION, action),
     }
+}
+
+fn valid_route(route: &str) -> bool {
+    matches!(route, "manual" | "rules_only" | "model")
 }
 
 enum TaskReadError {
@@ -850,6 +1160,8 @@ fn task_read(
             run_epoch,
             after_revision: read.after_revision,
             applied_revision,
+            route: read.route,
+            cancellation_requested: read.cancellation_requested,
         },
     )))
 }
@@ -859,6 +1171,31 @@ fn direction_revision(output: &ActionOutput, expected_task: &str) -> Option<u64>
     let direction = result.get("direction_added")?;
     (direction.get("task_id")?.as_str()? == expected_task)
         .then(|| direction.get("revision")?.as_u64())?
+}
+
+fn queue_task_id(output: &ActionOutput) -> Option<String> {
+    output
+        .value
+        .as_ref()?
+        .get("result")?
+        .get("queued")?
+        .get("task_id")?
+        .as_str()
+        .filter(|task| !task.is_empty())
+        .map(str::to_owned)
+}
+
+fn stop_requested(output: &ActionOutput, frontier: &AgentTaskFrontier) -> bool {
+    let Some(stop) = output
+        .value
+        .as_ref()
+        .and_then(|value| value.get("result"))
+        .and_then(|result| result.get("cancellation_requested"))
+    else {
+        return false;
+    };
+    stop.get("task_id").and_then(serde_json::Value::as_str) == Some(frontier.task_id.as_str())
+        && stop.get("epoch").and_then(serde_json::Value::as_u64) == Some(frontier.run_epoch)
 }
 
 #[cfg(test)]
@@ -914,6 +1251,9 @@ mod tests {
                     "complete": false,
                     "total": total,
                     "tasks": [],
+                    "pending_complete": true,
+                    "pending_total": 0,
+                    "pending": [],
                 })])),
                 reads: Mutex::new(BTreeMap::new()),
                 invocations: Mutex::new(Vec::new()),
@@ -968,6 +1308,25 @@ mod tests {
                 Some(serde_json::json!({
                     "result": {"direction_added": {"task_id": task, "revision": after + 1}}
                 }))
+            } else if request.target.address.action == QUEUE_TASK_ACTION {
+                Some(serde_json::json!({
+                    "generation": 2,
+                    "result": {"queued": {"task_id": "queued-task"}},
+                    "delivery": "queued"
+                }))
+            } else if request.target.address.action == STOP_TASK_ACTION {
+                let epoch = argument_json(&request.argument)
+                    .and_then(|value| value.get("run_epoch"))
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or_default();
+                Some(serde_json::json!({
+                    "generation": 2,
+                    "result": {"cancellation_requested": {
+                        "task_id": task,
+                        "epoch": epoch
+                    }},
+                    "delivery": "saved"
+                }))
             } else {
                 None
             };
@@ -1013,16 +1372,40 @@ mod tests {
             "run_epoch": 7,
             "active_agent": agent,
             "after_revision": after_revision,
-            "applied_revision": applied_revision
+            "applied_revision": applied_revision,
+            "route": "model",
+            "cancellation_requested": false
         })
     }
 
     fn current_snapshot(generation: u64, tasks: Vec<serde_json::Value>) -> serde_json::Value {
+        current_snapshot_with_pending(generation, tasks, true, Vec::new())
+    }
+
+    fn current_snapshot_with_pending(
+        generation: u64,
+        tasks: Vec<serde_json::Value>,
+        pending_complete: bool,
+        pending: Vec<serde_json::Value>,
+    ) -> serde_json::Value {
         serde_json::json!({
             "generation": generation,
             "complete": true,
             "total": tasks.len(),
             "tasks": tasks,
+            "pending_complete": pending_complete,
+            "pending_total": if pending_complete { pending.len() } else { pending.len() + 1 },
+            "pending": pending,
+        })
+    }
+
+    fn pending_task(task: &str, title: &str, agent: &str, status: &str) -> serde_json::Value {
+        serde_json::json!({
+            "task_id": task,
+            "title": title,
+            "assigned_agent": agent,
+            "status": status,
+            "route": "model",
         })
     }
 
@@ -1047,7 +1430,6 @@ mod tests {
         let mut task = current_task(task, title, agent, after_revision, applied_revision);
         let object = task.as_object_mut().unwrap();
         object.insert("generation".into(), serde_json::json!(generation));
-        object.insert("route".into(), serde_json::json!("workspace"));
         task
     }
 
@@ -1641,6 +2023,127 @@ mod tests {
         ));
         assert_eq!(model.context_task().unwrap().task_id, "one");
         assert!(model.confirmed.is_empty());
+    }
+
+    #[test]
+    fn provider_shape_exposes_only_complete_pending_work_and_exact_stop_state() {
+        let mut stopping = current_task("one", "Review release", "agent-a", 4, 4);
+        stopping["cancellation_requested"] = serde_json::json!(true);
+        let host = Arc::new(FrontierHost::with_snapshots(vec![
+            current_snapshot_with_pending(
+                7,
+                vec![stopping],
+                true,
+                vec![
+                    pending_task("queued", "Prepare notes", "agent-a", "queued"),
+                    pending_task("waiting", "Check tests", "agent-a", "waiting"),
+                ],
+            ),
+            current_snapshot_with_pending(
+                8,
+                vec![current_task("one", "Review release", "agent-a", 4, 4)],
+                false,
+                vec![pending_task(
+                    "bounded",
+                    "Only part of the queue",
+                    "agent-a",
+                    "queued",
+                )],
+            ),
+        ]));
+        let mut model = model(host, "room", "agent-a");
+
+        assert_eq!(model.pending_tasks().len(), 2);
+        assert!(model.pending_tasks_complete());
+        assert!(!model.can_steer());
+        assert_eq!(
+            model.stop(),
+            Err("this task is already stopping or its state is unavailable".into())
+        );
+
+        let deadline = model.next_refresh_deadline().expect("bounded refresh");
+        model.poll_at(deadline);
+        assert!(!model.pending_tasks_complete());
+        assert!(model.pending_tasks().is_empty());
+        assert_eq!(model.discovery(), &AgentTaskDiscovery::Ready);
+    }
+
+    #[test]
+    fn queue_and_stop_use_exact_public_task_actions_without_claiming_terminal_stop() {
+        let host = Arc::new(FrontierHost::new(
+            vec![current_task("one", "Review release", "agent-a", 4, 4)],
+            [],
+        ));
+        let mut model = model(Arc::clone(&host), "room", "agent-a");
+
+        model
+            .queue("Prepare the release notes in full", Some("Release notes"))
+            .unwrap();
+        model.observe("room", "agent-a");
+        assert_eq!(
+            model.queue_state(),
+            &AgentQueueState::Queued {
+                task_id: "queued-task".into()
+            }
+        );
+
+        model.stop().unwrap();
+        model.observe("room", "agent-a");
+        assert_eq!(
+            model.stop_state(),
+            &AgentStopState::Stopping {
+                task_id: "one".into(),
+                run_epoch: 7
+            }
+        );
+
+        let requests = host.requests();
+        let queue = requests
+            .iter()
+            .find(|request| request.target.address.action == QUEUE_TASK_ACTION)
+            .expect("canonical queue action");
+        assert_eq!(queue.target.address.resource, TASK_COLLECTION);
+        assert_eq!(
+            argument_json(&queue.argument).unwrap(),
+            &serde_json::Map::from_iter([
+                ("agent".into(), serde_json::json!("agent-a")),
+                (
+                    "instruction".into(),
+                    serde_json::json!("Prepare the release notes in full"),
+                ),
+                ("route".into(), serde_json::json!("model")),
+                ("title".into(), serde_json::json!("Release notes")),
+            ])
+        );
+        let stop = requests
+            .iter()
+            .find(|request| request.target.address.action == STOP_TASK_ACTION)
+            .expect("canonical stop action");
+        assert_eq!(stop.target.address.resource, "desktop:task:one");
+        assert_eq!(argument_json(&stop.argument).unwrap()["run_epoch"], 7);
+        assert_eq!(argument_json(&stop.argument).unwrap()["after_revision"], 4);
+    }
+
+    #[test]
+    fn undocumented_provider_fields_and_routes_fail_closed() {
+        let mut unknown_field = current_snapshot(
+            1,
+            vec![current_task("one", "Review release", "agent-a", 4, 4)],
+        );
+        unknown_field["authority"] = serde_json::json!("claim-from-json");
+        let mut unknown_route = current_snapshot(
+            1,
+            vec![current_task("one", "Review release", "agent-a", 4, 4)],
+        );
+        unknown_route["tasks"][0]["route"] = serde_json::json!("supervisor");
+
+        for snapshot in [unknown_field, unknown_route] {
+            let host = Arc::new(FrontierHost::with_snapshots(vec![snapshot]));
+            let model = model(host, "room", "agent-a");
+            assert_eq!(model.discovery(), &AgentTaskDiscovery::Unavailable);
+            assert_eq!(model.choice(), AgentTaskChoice::None);
+            assert!(model.pending_tasks().is_empty());
+        }
     }
 
     #[test]

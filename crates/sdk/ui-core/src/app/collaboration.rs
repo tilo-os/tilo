@@ -1077,37 +1077,9 @@ impl App {
     /// a locally-derived id is recognised in a room-keyed roster) and the
     /// host-assigned name; it never enters the roster itself.
     fn apply_collab_context(&mut self, collaborators: Vec<crate::collaboration::Collaborator>) {
-        for participant in &collaborators {
-            self.presence_ctx.set_participant_kind(
-                crate::permissions::UserId(participant.id.clone()),
-                participant.is_agent,
-            );
-        }
-        if let Some(me) = collaborators.iter().find(|c| c.is_self) {
-            self.presence_ctx
-                .set_self_participant(crate::permissions::UserId(me.id.clone()), me.name.clone());
-        }
-        // Filtered to others: letting the self row through would put the
-        // local user in every list built from presence.
-        for c in collaborators.into_iter().filter(|c| !c.is_self) {
-            // Relabel only — the roster doesn't say where a peer's pointer
-            // is, so it must not mint one at the origin.
-            self.presence_ctx
-                .set_display_name(crate::permissions::UserId(c.id.clone()), c.name.clone());
-            // The colour they wear everywhere, once the room has heard it.
-            if let Some(hue) = c.colour {
-                self.presence_ctx
-                    .set_presence_hue(crate::permissions::UserId(c.id.clone()), hue);
-            }
-            self.presence_ctx.set_participant_kind(
-                crate::permissions::UserId(c.id),
-                if c.is_agent {
-                    crate::presence::ParticipantKind::Agent
-                } else {
-                    crate::presence::ParticipantKind::Person
-                },
-            );
-        }
+        self.presence_ctx
+            .apply_collaboration_snapshot(&collaborators);
+        crate::widget::apply_collaboration_context(self.root_widget.as_mut(), &self.presence_ctx);
     }
 
     /// Every app in the room is handed every action; the one whose registry

@@ -477,6 +477,10 @@ pub struct PresenceCtx {
     /// use this in addition to colour so an agent cannot be mistaken for a
     /// person when names are hidden, elided, or inaccessible.
     participant_kinds: HashMap<UserId, ParticipantKind>,
+    /// Canonical Agent actors from the latest complete broker room context.
+    /// Membership is separate from presence: an offline agent remains a room
+    /// member, while pointers and carets keep their independent lifecycle.
+    authenticated_agents: std::collections::HashSet<UserId>,
     /// Short room-level intentions, separate from pointer/caret state. The
     /// origin remains visible so inferred prose is never presented as a quote.
     statuses: HashMap<UserId, crate::live_collaboration::LiveStatus>,
@@ -924,6 +928,44 @@ impl PresenceCtx {
         }
     }
 
+    /// Apply one authenticated broker context frame.
+    ///
+    /// A complete native room context carries exactly one self row. Frames
+    /// without one are incremental person/name announcements and cannot mint
+    /// or withdraw Agent membership. This stays crate-private: application
+    /// state and fixtures cannot promote an arbitrary `is_agent` flag into
+    /// semantic action authority.
+    pub(crate) fn apply_collaboration_snapshot(
+        &mut self,
+        collaborators: &[crate::collaboration::Collaborator],
+    ) {
+        if collaborators.iter().filter(|row| row.is_self).count() == 1 {
+            let next = collaborators
+                .iter()
+                .filter(|row| row.is_agent && !row.is_self)
+                .map(|row| UserId(row.id.clone()))
+                .collect::<std::collections::HashSet<_>>();
+            for removed in self.authenticated_agents.difference(&next) {
+                self.names.remove(removed);
+                // Independently received presence may still be fading. Keep
+                // its typed Agent mark so removal never repaints it as human.
+            }
+            self.authenticated_agents = next;
+        }
+        for participant in collaborators {
+            self.set_participant_kind(UserId(participant.id.clone()), participant.is_agent);
+        }
+        if let Some(me) = collaborators.iter().find(|row| row.is_self) {
+            self.set_self_participant(UserId(me.id.clone()), me.name.clone());
+        }
+        for collaborator in collaborators.iter().filter(|row| !row.is_self) {
+            self.set_display_name(UserId(collaborator.id.clone()), collaborator.name.clone());
+            if let Some(hue) = collaborator.colour {
+                self.set_presence_hue(UserId(collaborator.id.clone()), hue);
+            }
+        }
+    }
+
     pub fn participant_kind(&self, user: &UserId) -> ParticipantKind {
         self.participant_kinds
             .get(user)
@@ -933,6 +975,20 @@ impl PresenceCtx {
 
     pub fn is_agent(&self, user: &UserId) -> bool {
         self.participant_kind(user) == ParticipantKind::Agent
+    }
+
+    /// Resolve a broker-authenticated native Agent actor to its stable bare id.
+    ///
+    /// The typed kind, current complete room roster, and canonical actor
+    /// spelling must all agree. Merely naming a person `agent:…`, setting a
+    /// fixture kind, or retaining an old room's row is insufficient.
+    pub fn authenticated_agent_id<'a>(&self, user: &'a UserId) -> Option<&'a str> {
+        if !self.authenticated_agents.contains(user) || !self.is_agent(user) {
+            return None;
+        }
+        user.0
+            .strip_prefix("agent:")
+            .filter(|agent| !agent.is_empty())
     }
 
     /// The friendly name to show for `user`, falling back to the raw id
@@ -1980,6 +2036,39 @@ mod string_id_wrapper_tests {
             ctx.set_participant_kind(&scribe, false);
             assert!(!ctx.user(&scribe).is_agent);
             assert_eq!(ctx.display_name(&scribe), "Editorial helper");
+        }
+        // phase: only_a_complete_authenticated_context_resolves_an_agent_target
+        {
+            use crate::collaboration::Collaborator;
+
+            let mut ctx = PresenceCtx::empty();
+            let agent = UserId("agent:tide".into());
+            let person = UserId("tide".into());
+            let row = |id: &str, name: &str, is_agent, is_self| Collaborator {
+                id: id.into(),
+                name: name.into(),
+                colour: None,
+                is_agent,
+                is_self,
+            };
+
+            ctx.apply_collaboration_snapshot(&[row("agent:tide", "Tide", true, false)]);
+            assert_eq!(ctx.authenticated_agent_id(&agent), None);
+            ctx.apply_collaboration_snapshot(&[
+                row("tide", "Quinten", false, true),
+                row("agent:tide", "Tide", true, false),
+            ]);
+            assert_eq!(ctx.authenticated_agent_id(&agent), Some("tide"));
+            assert_eq!(ctx.authenticated_agent_id(&person), None);
+            assert_ne!(ctx.display_name(&agent), ctx.display_name(&person));
+
+            let workspace = PresenceKey::Workspace { id: "room".into() };
+            ctx.set_pointer(&workspace, agent.clone(), (20.0, 30.0));
+            ctx.apply_collaboration_snapshot(&[row("tide", "Quinten", false, true)]);
+            assert_eq!(ctx.authenticated_agent_id(&agent), None);
+            assert_eq!(ctx.participant_kind(&agent), ParticipantKind::Agent);
+            assert_eq!(ctx.pointer_for(&workspace, &agent), Some((20.0, 30.0)));
+            assert!(!ctx.names.contains_key(&agent));
         }
         // phase: an_unnamed_peer_is_labelled_with_its_id_and_never_with_a_stand_in
         // Labelled with the raw id, never blank and never a stand-in name — a

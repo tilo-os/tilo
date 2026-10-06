@@ -515,6 +515,13 @@ pub trait Continuable {
 /// Optional session collaboration capability for widgets that own live
 /// broker-backed activity.
 pub trait Collaborative {
+    /// Apply the broker-authenticated room context to local presentation.
+    ///
+    /// This is a read-only projection hook. It must not create document state,
+    /// presence, or authority; the host has already updated `presence` from
+    /// the authenticated channel before calling it.
+    fn apply_collaboration_context(&mut self, _presence: &crate::presence::PresenceCtx) {}
+
     /// Drain session-local requests for the authenticated collaboration host.
     fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
         Vec::new()
@@ -2291,6 +2298,23 @@ pub(crate) fn handle_collab_event(
     }
 }
 
+/// Project the current authenticated room context through retained owners.
+/// This runs when Context arrives, independently of layout or paint.
+pub(crate) fn apply_collaboration_context(
+    widget: &mut dyn Widget,
+    presence: &crate::presence::PresenceCtx,
+) {
+    let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+        return;
+    };
+    if let Some(collaborative) = capability::capability_mut::<dyn Collaborative>(&mut *widget) {
+        collaborative.apply_collaboration_context(presence);
+    }
+    for child in crate::collaboration::participants::collaboration_children(widget) {
+        apply_collaboration_context(child, presence);
+    }
+}
+
 /// Mount native views through each owner's retained lifecycle topology.
 #[cfg(feature = "native")]
 pub(crate) fn mount_native_views(
@@ -2803,6 +2827,10 @@ mod tests {
     }
 
     impl Collaborative for CollabProbe {
+        fn apply_collaboration_context(&mut self, _: &PresenceCtx) {
+            self.events.set(self.events.get().saturating_add(1));
+        }
+
         fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
             vec![crate::collaboration::CollabRequest::ClearContinuation {
                 app_id: "probe".into(),
@@ -2993,6 +3021,8 @@ mod tests {
                 &crate::collaboration::CollabEvent::FollowChanged { peer_id: None },
             );
             assert_eq!(events.get(), 2);
+            apply_collaboration_context(&mut root, &PresenceCtx::empty());
+            assert_eq!(events.get(), 4);
         }
 
         fn audience_presentation_capability_forwards_through_dyn_widget() {
@@ -3045,6 +3075,8 @@ mod tests {
             &crate::collaboration::CollabEvent::FollowChanged { peer_id: None },
         );
         assert_eq!(events.get(), 2);
+        apply_collaboration_context(&mut root, &PresenceCtx::empty());
+        assert_eq!(events.get(), 4);
     }
 }
 

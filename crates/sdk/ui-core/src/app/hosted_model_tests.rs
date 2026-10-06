@@ -1,5 +1,90 @@
 // Included in the real action-door fixture module.
+use crate::widget::TaffyTreeExt;
 use std::rc::Rc;
+
+struct ContextRosterProbe(Rc<RefCell<Vec<String>>>);
+
+impl crate::widget::Collaborative for ContextRosterProbe {
+    fn apply_collaboration_context(&mut self, presence: &crate::presence::PresenceCtx) {
+        let ids = ["agent:tide", "agent:reed"]
+            .into_iter()
+            .filter_map(|id| {
+                presence
+                    .authenticated_agent_id(&crate::permissions::UserId(id.into()))
+                    .map(str::to_owned)
+            })
+            .collect();
+        *self.0.borrow_mut() = ids;
+    }
+}
+
+impl Widget for ContextRosterProbe {
+    crate::provides!(dyn crate::widget::Collaborative);
+
+    fn sync(&mut self, _: &AppModel, _: &ModelPath) {}
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut taffy::TaffyTree<()>,
+        _: &crate::theme::Theme,
+        _: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
+    ) -> taffy::NodeId {
+        taffy.leaf_node(taffy::Style::default())
+    }
+
+    fn apply_layout(&mut self, _: &taffy::TaffyTree<()>, _: taffy::NodeId, _: vello::kurbo::Point) {
+    }
+
+    fn draw(
+        &mut self,
+        _: &mut vello::Scene,
+        _: vello::kurbo::Affine,
+        _: &mut crate::text_render::TextRenderer,
+        _: &crate::theme::Theme,
+        _: &crate::presence::PresenceCtx,
+    ) {
+    }
+
+    fn name(&self) -> &'static str {
+        "ContextRosterProbe"
+    }
+
+    fn get_rect(&self) -> vello::kurbo::Rect {
+        vello::kurbo::Rect::ZERO
+    }
+}
+
+#[test]
+fn broker_context_reaches_the_mounted_owner_and_withdraws_without_draw() {
+    let observed = Rc::new(RefCell::new(Vec::new()));
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(ContextRosterProbe(Rc::clone(&observed))),
+    );
+    let row = |id: &str, name: &str, is_agent, is_self| crate::collaboration::Collaborator {
+        id: id.into(),
+        name: name.into(),
+        colour: None,
+        is_agent,
+        is_self,
+    };
+
+    app.apply_collab_event_for_test(CollabEvent::Context {
+        collaborators: vec![
+            row("person-principal", "Quinten", false, true),
+            row("agent:tide", "Tide", true, false),
+            row("person-principal", "Not Tide", false, false),
+        ],
+        permissions: Vec::new(),
+    });
+    assert_eq!(&*observed.borrow(), &["tide"]);
+
+    app.apply_collab_event_for_test(CollabEvent::Context {
+        collaborators: vec![row("person-principal", "Quinten", false, true)],
+        permissions: Vec::new(),
+    });
+    assert!(observed.borrow().is_empty());
+}
 
 struct HostedModelTransport(Rc<RefCell<Vec<CollabRequest>>>);
 impl crate::collaboration::PeerTransport for HostedModelTransport {
