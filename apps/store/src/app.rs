@@ -2666,6 +2666,48 @@ mod tests {
     }
 
     #[test]
+    fn account_source_controls_preserve_viewer_admin_denial() {
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            store.show_capture_catalogue(crate::fixture::fixture_catalog());
+            store.stage_scene(Some("remotes-disabled"));
+        })
+        .unwrap();
+        app.set_role(ui::permissions::Role::Viewer);
+        let snapshot = app
+            .effect(&StoreEffect::InspectCatalogue { app: None })
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(snapshot["remote_count"], 1);
+        let refused = app
+            .effect(&StoreEffect::EnableRemote {
+                remote: "remote:flathub".into(),
+            })
+            .unwrap_err();
+        // Admin effects are removed from a viewer's public door; unlike a
+        // retained read effect submitting a forbidden edit, lookup itself refuses.
+        assert!(
+            matches!(&refused, tilo_actions::DoorError::Unknown(_)),
+            "{refused:?}"
+        );
+        assert!(!app.harness().controls().iter().any(|control| matches!(
+            control.name.as_deref(),
+            Some("Enable source" | "Disable source")
+        ) && !control.disabled));
+        let audit = app.harness().native_app_audit();
+        assert!(
+            !audit
+                .issues
+                .iter()
+                .any(|issue| issue.code == "stale-action-binding"),
+            "viewer bindings resolve against the complete production surface: {:?}",
+            audit.issues
+        );
+    }
+
+    #[test]
     fn technical_package_details_use_the_declared_read_action_for_owner_and_viewer() {
         let (_environment, _directory, mut app) = inspected_store();
         app.with_surface(|store: &mut StoreApp| {
