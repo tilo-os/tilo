@@ -706,3 +706,87 @@ fn a_late_keyboard_activates_an_already_enabled_chrome_field() {
         winit::event::WindowEvent::Ime(winit::event::Ime::Commit(text)) if text == "q"
     )));
 }
+
+#[test]
+fn dictation_reaches_native_chrome_as_one_corrected_ime_commit() {
+    use shell::compositor::shell_text_input::{FieldRequest, ShellTextInput};
+    let mut h = Harness::new();
+    let mut proxy = ShellTextInput::connect(&mut h.state).expect("native chrome bridge");
+    let field = FieldRequest {
+        purpose: winit::window::ImePurpose::Normal,
+        x: 420,
+        y: 100,
+        width: 1,
+        height: 24,
+    };
+    let deadline = tilo_test_env::hang_deadline();
+    while !proxy.holds_focus(&h.state) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "native field did not take focus"
+        );
+        proxy.sync(&mut h.state, Some(field));
+        h.pump();
+    }
+    let id = h
+        .state
+        .prepare_dictation(std::time::Instant::now())
+        .unwrap();
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "native field did not activate"
+        );
+        h.pump();
+        proxy.sync(&mut h.state, Some(field));
+        if h.state
+            .advance_dictation_preparation(id, std::time::Instant::now())
+            .unwrap()
+        {
+            break;
+        }
+    }
+    h.state
+        .update_dictation(id, "rough".into(), std::time::Instant::now())
+        .unwrap();
+    h.pump();
+    assert!(
+        !proxy
+            .sync(&mut h.state, Some(field))
+            .iter()
+            .any(|event| matches!(
+                event,
+                winit::event::WindowEvent::Ime(winit::event::Ime::Commit(_))
+            ))
+    );
+    h.state
+        .update_dictation(id, "東京 👋".into(), std::time::Instant::now())
+        .unwrap();
+    h.state
+        .finish_dictation(id, std::time::Instant::now())
+        .unwrap();
+    let mut commits = Vec::new();
+    while commits.is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "native commit did not arrive"
+        );
+        h.pump();
+        for event in proxy.sync(&mut h.state, Some(field)) {
+            if let winit::event::WindowEvent::Ime(winit::event::Ime::Commit(text)) = event {
+                commits.push(text);
+            }
+        }
+    }
+    assert_eq!(commits, ["東京 👋"]);
+    assert!(
+        h.state
+            .check_dictation(id, std::time::Instant::now())
+            .is_err()
+    );
+    proxy.sync(&mut h.state, None);
+    h.pump();
+    assert!(!proxy.holds_focus(&h.state));
+    drop(proxy);
+    drop(h);
+}
