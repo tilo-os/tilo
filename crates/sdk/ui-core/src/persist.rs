@@ -213,7 +213,8 @@ fn finish_canonical_read(
             return Err("native canonical snapshot missing".to_string());
         };
         let doc = automerge::AutoCommit::load(bytes).map_err(|error| error.to_string())?;
-        incoming_validator(&doc)?;
+        incoming_validator(&doc)
+            .map_err(|error| format!("incoming canonical history refused: {error}"))?;
         Ok::<_, String>(doc)
     })??;
     let label = store.document_path().to_path_buf();
@@ -221,11 +222,12 @@ fn finish_canonical_read(
         .map_err(|error| error.to_string())?;
     let loaded = store.load_complete().map_err(|error| error.to_string())?;
     let mut doc = if let Some(mut existing) = loaded {
-        validate(&existing)?;
+        validate(&existing)
+            .map_err(|error| format!("existing canonical cache refused: {error}"))?;
         existing
             .merge_incoming(&mut incoming)
             .map_err(|error| error.to_string())?;
-        validate(&existing)?;
+        validate(&existing).map_err(|error| format!("merged canonical cache refused: {error}"))?;
         existing
     } else {
         // The absence is solely in this local cache. Its content comes from
@@ -233,7 +235,8 @@ fn finish_canonical_read(
         incoming.set_actor(store.actor().clone());
         incoming
     };
-    incoming_validator(&doc)?;
+    incoming_validator(&doc)
+        .map_err(|error| format!("final canonical history refused: {error}"))?;
     app_state::validate_canonical_schema_of(&doc, &label).map_err(|error| error.to_string())?;
     if let Some(reason) = store.refusal() {
         return Err(reason.to_string());

@@ -174,8 +174,20 @@ impl NativeConstruction {
 pub(crate) struct RecordInitialization {
     read: CommittedDocument,
     bridge: InitialReadBridge,
+    checkout: crate::record::RecordCheckout,
 }
 impl RecordInitialization {
+    pub(crate) fn validate_original(
+        &self,
+        document: &automerge::AutoCommit,
+        checkout: &crate::record::RecordCheckout,
+        workspace: &str,
+    ) -> Result<(), crate::record::RecordOpenError> {
+        if checkout != &self.checkout {
+            return Err(crate::record::RecordOpenError::IdentityMismatch);
+        }
+        crate::record::validate_creation_capture(document, checkout, workspace, &self.read)
+    }
     pub(crate) fn workspace(
         &self,
     ) -> Option<&runtime_collab::committed_document::CreationWorkspace> {
@@ -230,6 +242,7 @@ pub(crate) fn take_initialization(
     Ok(Some(RecordInitialization {
         read: capture.read.clone(),
         bridge: scoped,
+        checkout: checkout.clone(),
     }))
 }
 impl Drop for NativeConstruction {
