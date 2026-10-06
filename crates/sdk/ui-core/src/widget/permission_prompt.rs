@@ -189,9 +189,47 @@ impl PermissionPrompt {
         self.apply_layout_helper();
     }
 
+    /// Measure the complete local-input explanation, including enlarged text.
+    /// Absolute overlay hosts apply this height before painting and hit testing.
+    pub fn preferred_height(&self, text_renderer: &mut TextRenderer, theme: &Theme) -> f64 {
+        if self.local_input.is_none() {
+            return PROMPT_HEIGHT;
+        }
+        let width = self.label_width(theme);
+        text_renderer.security_surface(|text_renderer| {
+            let title_style = theme.text(TextRole::Caption);
+            let title = text_renderer.elide_to_width_style(&self.app_id, width, &title_style);
+            let (_, title) = text_renderer.measure_style(&title, None, &title_style);
+            let (_, explanation) = text_renderer.measure_style(
+                &self.capability_label,
+                Some(width),
+                &theme.text(TextRole::Body),
+            );
+            (f64::from(title + explanation)
+                + f64::from(theme.tokens.spacing.s1 + theme.tokens.spacing.s4 * 2.0))
+            .max(PROMPT_HEIGHT)
+        })
+    }
+
+    fn label_width(&self, theme: &Theme) -> f32 {
+        let left = self.rect.x0 + PADDING_X + ICON_SIZE + f64::from(theme.tokens.spacing.s2);
+        let right = if self.allow_rect == Rect::ZERO {
+            self.deny_rect.x0
+        } else {
+            self.allow_rect.x0
+        };
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "bounded screen-space width; f32 precision is sufficient for text layout"
+        )]
+        {
+            (right - f64::from(theme.tokens.spacing.s3) - left).max(1.0) as f32
+        }
+    }
+
     /// Exposed so tests can drive layout without a full taffy pass.
     pub fn apply_layout_helper(&mut self) {
-        let by = self.rect.y0 + (PROMPT_HEIGHT - BUTTON_HEIGHT) / 2.0;
+        let by = self.rect.y0 + (self.rect.height() - BUTTON_HEIGHT) / 2.0;
         let by1 = by + BUTTON_HEIGHT;
         // Computed from the right edge inward (Deny, Always, Session, Allow)
         // so a narrower bar keeps the buttons inside; on-screen this reads
@@ -475,7 +513,7 @@ impl Widget for PermissionPrompt {
             // Placeholder pulled from the accent ramp until the portal layer
             // surfaces real icons via the app's desktop-file metadata.
             let icon_x = self.rect.x0 + PADDING_X;
-            let icon_y = self.rect.y0 + (PROMPT_HEIGHT - ICON_SIZE) / 2.0;
+            let icon_y = self.rect.y0 + (self.rect.height() - ICON_SIZE) / 2.0;
             let icon_rect = Rect::new(icon_x, icon_y, icon_x + ICON_SIZE, icon_y + ICON_SIZE);
             let icon_shape =
                 RoundedRect::from_rect(icon_rect, f64::from(theme.tokens.radii.detail));
@@ -502,31 +540,24 @@ impl Widget for PermissionPrompt {
             // draw without a preceding `apply_layout` hit-testing correctly.
             self.apply_layout_helper();
             let label_x = icon_x + ICON_SIZE + f64::from(theme.tokens.spacing.s2);
-            let label_max_w = (if self.allow_rect == Rect::ZERO {
-                self.deny_rect.x0
-            } else {
-                self.allow_rect.x0
-            } - f64::from(theme.tokens.spacing.s3)
-                - label_x)
-                .max(0.0);
+            let label_max_w = self.label_width(theme);
             let app_id_style = theme.text(TextRole::Caption);
             let cap_style = theme.text(TextRole::Body);
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "bounded screen-space width; f32 precision is sufficient for text layout"
-            )]
-            let label_max_w = label_max_w as f32;
             let app_id =
                 text_renderer.elide_to_width_style(&self.app_id, label_max_w, &app_id_style);
-            let capability =
-                text_renderer.elide_to_width_style(&self.capability_label, label_max_w, &cap_style);
+            let wrap_width = self.local_input.as_ref().map(|_| label_max_w);
+            let capability = if wrap_width.is_some() {
+                self.capability_label.clone()
+            } else {
+                text_renderer.elide_to_width_style(&self.capability_label, label_max_w, &cap_style)
+            };
             // Centre the two-line block on its measured line boxes, not on the
             // font sizes, so both lines sit where the band says they are.
             let (_, app_id_h) = text_renderer.measure_style(&app_id, None, &app_id_style);
-            let (_, cap_h) = text_renderer.measure_style(&capability, None, &cap_style);
+            let (_, cap_h) = text_renderer.measure_style(&capability, wrap_width, &cap_style);
             let label_y = centered_text_top(
                 self.rect.y0,
-                PROMPT_HEIGHT,
+                self.rect.height(),
                 f64::from(app_id_h) + 4.0 + f64::from(cap_h),
             );
             text_renderer.draw_style(
@@ -542,7 +573,7 @@ impl Widget for PermissionPrompt {
                 &capability,
                 theme.tokens.colors.text_primary,
                 transform.pre_translate(Vec2::new(label_x, label_y + f64::from(app_id_h) + 4.0)),
-                None,
+                wrap_width,
                 &cap_style,
             );
 
@@ -818,6 +849,36 @@ mod tests {
         // `mem::zeroed`. Same pattern as `quick-tilo_ui::widget::slider`'s
         // own test helpers.
         unsafe { std::mem::zeroed() }
+    }
+
+    #[test]
+    fn local_input_explanation_grows_with_enlarged_text_and_keeps_choices_addressable() {
+        let explanation = "Mikrofon aus · Der Text ist zu lang für einen Einfügeschritt. Für 10 Minuten privat aufbewahrt. Kopieren überträgt den gesamten Text in die Zwischenablage; Verwerfen entfernt ihn.";
+        let mut prompt = PermissionPrompt::for_local_input(
+            "Diktat".into(),
+            explanation.into(),
+            ["dictation-copy-transcript", "dictation-discard-transcript"],
+            true,
+        );
+        prompt.set_rect(Rect::new(16.0, 16.0, 784.0, 96.0));
+        let mut text = TextRenderer::new();
+        let theme = Theme::default().with_text_scale(1.6);
+        let height = prompt.preferred_height(&mut text, &theme);
+        assert!(height > PROMPT_HEIGHT, "the complete explanation must wrap");
+        prompt.set_rect(Rect::new(16.0, 16.0, 784.0, 16.0 + height));
+        prompt.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        assert!(prompt.get_rect().contains(prompt.allow_rect().center()));
+        assert!(prompt.get_rect().contains(prompt.deny_rect().center()));
+        let node = prompt.accessibility().unwrap();
+        assert!(node.name.unwrap().contains(explanation));
+        assert_eq!(node.children.len(), 2);
+        assert_eq!(prompt.pending_choice, None);
     }
 
     #[test]

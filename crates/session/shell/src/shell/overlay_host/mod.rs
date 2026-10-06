@@ -5971,8 +5971,10 @@ impl ShellOverlayHost {
         }
         if self.layers.dictation.is_consent() {
             let outputs = self.layer_outputs();
-            let surface =
-                dictation_layer::DictationSurface::surface_rect(self.layer_geometry(&outputs));
+            let surface = self
+                .layers
+                .dictation
+                .surface_rect(self.layer_geometry(&outputs));
             targets.push((
                 crate::shell::trusted_ui::DICTATION_PROMPT_TARGET,
                 crate::shell::trusted_ui::seal_band(
