@@ -227,7 +227,7 @@ fn settings(scenario: &str) -> Option<Settings> {
         "light" => settings.theme = ReadTheme::Light,
         "sepia" => settings.theme = ReadTheme::Sepia,
         "hicontrast" => settings.theme = ReadTheme::HighContrast,
-        "large-text" => settings.font_scale = Settings::FONT_MAX,
+        "large-text" => settings.font_scale = 2.0,
         "continuous" | "continuous-select" => settings.mode = ReadMode::Continuous,
         "two-up" | "spread" | "two-up-select" | "spread-select" => settings.mode = ReadMode::TwoUp,
         _ => return None,
@@ -282,7 +282,7 @@ fn lived_in_shelf(shelf: &[Book]) -> Vec<EbookAction> {
                 &book.id,
                 Progress {
                     chapter: 0,
-                    page: (fraction * 6.0) as usize,
+                    block: (fraction * 6.0) as usize,
                     fraction,
                     opened: STAGED_AT - index as u64 * 3_600_000,
                 },

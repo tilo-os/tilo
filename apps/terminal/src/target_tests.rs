@@ -340,7 +340,12 @@ fn the_picker_lists_environments_the_host_and_legacy_vms_only_when_reported() {
     let host = ui::i18n::I18nManager::lookup("terminal-target-host", None);
     let manage = ui::i18n::I18nManager::lookup("terminal-target-manage", None);
     assert_eq!(labels[0], "Default");
-    assert_eq!(labels[1], "✓ Work", "the current target is marked");
+    assert_eq!(labels[1], "Work");
+    assert_eq!(
+        widget.target_menu_checked(),
+        Some(vec![false, true, false, false]),
+        "the current target is checked"
+    );
     assert_eq!(labels[2], host);
     assert_eq!(labels.last(), Some(&manage));
     assert!(!labels.iter().any(|l| l.contains("linux")));
@@ -817,6 +822,8 @@ fn approved_owner_host_command_uses_real_pty_and_stale_or_agent_input_is_refused
     app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(sessions))
         .unwrap();
     app.settle();
+    let mounted = mounted_device_shell_operation(&mut app, &O::Inspect);
+    assert_eq!(mounted["target"]["kind"], "environment");
     let selected = app.harness().device_shell_operation(&O::Select).unwrap();
     assert_eq!(selected["lifecycle"], "awaiting_allow");
     let ui::widget::AppHostIntent::AllowHostShell { reply } =
@@ -877,8 +884,20 @@ fn approved_owner_host_command_uses_real_pty_and_stale_or_agent_input_is_refused
     );
     let retained = app
         .harness()
-        .device_shell_operation(&O::Read { session })
+        .device_shell_operation(&O::Read {
+            session: session.clone(),
+        })
         .unwrap();
+    let mounted_retained = mounted_device_shell_operation(
+        &mut app,
+        &O::Read {
+            session: session.clone(),
+        },
+    );
+    assert_eq!(
+        mounted_retained, retained,
+        "mounted view reads the same actual ended PTY"
+    );
     assert!(
         retained["text"]
             .as_str()
@@ -894,6 +913,17 @@ fn approved_owner_host_command_uses_real_pty_and_stale_or_agent_input_is_refused
             })
             .is_err()
     );
+}
+
+fn mounted_device_shell_operation(
+    app: &mut App,
+    operation: &ui::floating_surface::DeviceShellOperation,
+) -> serde_json::Value {
+    app.with_surface(|view: &mut crate::TerminalView| {
+        ui::AppWidget::device_shell_operation(view, operation)
+    })
+    .unwrap()
+    .unwrap()
 }
 
 fn wait_for_owner_shell(app: &mut App, session: &str, ended: bool) {

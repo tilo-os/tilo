@@ -32,6 +32,10 @@ pub struct Workspace {
     pub request: Request,
     /// Completed requests, newest first.
     pub history: Vec<HistoryEntry>,
+    /// Exact resource addresses, rebuilt once with each authoritative projection.
+    pub(crate) index: std::collections::HashMap<String, crate::actions::RecordLocation>,
+    #[cfg(test)]
+    pub(crate) exact_inspected: std::cell::Cell<usize>,
 }
 
 impl Default for Workspace {
@@ -42,6 +46,9 @@ impl Default for Workspace {
             active_env: None,
             request: blank_request(),
             history: Vec::new(),
+            index: std::collections::HashMap::new(),
+            #[cfg(test)]
+            exact_inspected: std::cell::Cell::new(0),
         }
     }
 }
@@ -62,13 +69,18 @@ impl Resource for ApiTester {
     }
 
     fn read(doc: &Doc) -> Result<Workspace, ModelError> {
-        Ok(Workspace {
+        let mut state = Workspace {
             collections: ApiDoc::collections(doc, &ROOT),
             environments: ApiDoc::environments(doc, &ROOT),
             active_env: ApiDoc::active_env(doc, &ROOT).and_then(|id| id.parse().ok()),
             request: ApiDoc::request(doc, &ROOT).unwrap_or_else(blank_request),
             history: ApiDoc::history(doc, &ROOT),
-        })
+            index: std::collections::HashMap::new(),
+            #[cfg(test)]
+            exact_inspected: std::cell::Cell::new(0),
+        };
+        state.index = crate::actions::resource_index(&state);
+        Ok(state)
     }
 
     /// A new workspace opens on one blank request, the same on every device
@@ -162,7 +174,7 @@ impl ResourceApp for ApiTesterShell {
     const ICON: Option<&'static str> = Some("api-tester");
 
     fn view(cx: &mut ViewCx<ApiTester>) -> Element {
-        cx.surface(ApiTesterApp::new(&cx.actions()))
+        cx.surface(ApiTesterApp::new_with_actions(&cx.actions()))
     }
 
     fn scenarios() -> &'static [&'static str] {

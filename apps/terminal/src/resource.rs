@@ -402,7 +402,7 @@ impl ResourceApp for TerminalShell {
             Some(content) => widget.with_content(content),
             None => widget,
         };
-        cx.surface(widget)
+        cx.surface(crate::TerminalView::new(widget))
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -512,6 +512,61 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
     }
 }
 
+impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
+    fn supports_device_shell(&self) -> bool {
+        true
+    }
+
+    fn device_shell_operation(
+        &mut self,
+        operation: &ui::floating_surface::DeviceShellOperation,
+    ) -> Result<serde_json::Value, String> {
+        crate::TerminalWidget::device_shell_operation(self.terminal_mut(), operation)
+    }
+
+    fn request_device_shell(&mut self) -> bool {
+        crate::TerminalWidget::request_device_shell(self.terminal_mut())
+    }
+
+    fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+        self.take_session_intent()
+    }
+    fn present(&mut self, state: &std::rc::Rc<SessionState>) {
+        self.present_session(state);
+    }
+    fn attach(&mut self, cx: SurfaceCx<Terminal>) {
+        self.wake_through(cx.waker());
+        self.bind(cx.dispatcher());
+    }
+    fn stage(&mut self, scenario: Option<&str>) {
+        if let Some(name) = scenario {
+            self.stage_scenario(name);
+        }
+        if scenario == Some("find") {
+            self.set_find_query("build step 042");
+        }
+    }
+    fn effect(
+        &mut self,
+        effect: TerminalEffect,
+        _cx: &mut EffectCx<Terminal, Self>,
+    ) -> EffectAnswer {
+        if effect == TerminalEffect::InspectSession {
+            return Ok(Effected::value(self.inspect_session()));
+        }
+        self.perform(effect).map(|()| Effected::done())
+    }
+    fn effects(&self) -> Vec<EffectStatus> {
+        self.effect_statuses()
+    }
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.link_rows()
+    }
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.link_row(id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -572,7 +627,7 @@ mod tests {
             b"see \x1b]8;;https://example.test/docs\x1b\\docs\x1b]8;;\x1b\\ \
               \x1b]8;;file:///home/me/.ssh/id_ed25519\x1b\\key\x1b]8;;\x1b\\\r\n",
         );
-        app.with_surface(|terminal: &mut TerminalWidget| terminal.feed(&output))
+        app.with_surface(|terminal: &mut crate::TerminalView| terminal.feed(&output))
             .expect("the terminal surface is hosted");
         app.settle();
 
@@ -596,7 +651,7 @@ mod tests {
         app.effect(&TerminalEffect::HistoryTop)
             .expect("history-top is offered while older output is retained");
         let scrolled = app
-            .with_surface(|terminal: &mut TerminalWidget| terminal.scroll_offset())
+            .with_surface(|terminal: &mut crate::TerminalView| terminal.scroll_offset())
             .expect("the terminal surface is hosted");
         assert!(scrolled > 0, "the view scrolled back");
 
@@ -623,7 +678,7 @@ mod tests {
 
     /// A scenario's output on screen through `--shots`' own path, with the
     /// view state staged over it.
-    fn captured<T>(scenario: &str, read: impl FnOnce(&mut TerminalWidget) -> T) -> T {
+    fn captured<T>(scenario: &str, read: impl FnOnce(&mut crate::TerminalView) -> T) -> T {
         let mut app = ui::framework::testing::TestApp::<TerminalShell>::capture(Some(scenario))
             .unwrap_or_else(|error| panic!("{scenario} stages: {error}"));
         app.with_surface(read)
@@ -632,9 +687,15 @@ mod tests {
 
     #[test]
     fn scenarios_stage_their_output_and_view_state() {
-        let (open, matches) = captured("find", |terminal| terminal.find_test_state());
+        let (open, counter) = captured("find", |terminal| {
+            (terminal.find_is_open(), terminal.find_counter())
+        });
         assert!(open, "the find scenario opens the find bar");
-        assert_eq!(matches.len(), 1, "one line matches `build step 042`");
+        assert_eq!(
+            counter,
+            Some(("build step 042".into(), Some((1, 1)))),
+            "one line matches `build step 042`"
+        );
 
         let selected = captured("shell-select", |terminal| terminal.test_selected_text());
         assert_eq!(
@@ -672,7 +733,7 @@ mod tests {
     #[test]
     fn output_reaches_the_session_record_but_is_nobodys_undo_step() {
         let mut app = ui::framework::testing::TestApp::<TerminalShell>::new().expect("terminal");
-        app.with_surface(|terminal: &mut TerminalWidget| {
+        app.with_surface(|terminal: &mut crate::TerminalView| {
             terminal.feed(b"\x1b]2;build\x07first line\r\nsecond \x1b[1;31mred\x1b[0m\r\n");
         })
         .expect("the terminal surface is hosted");
@@ -686,7 +747,7 @@ mod tests {
         assert!(texts(&app.state()).contains("first line"));
 
         // More output records only what changed.
-        app.with_surface(|terminal: &mut TerminalWidget| terminal.feed(b"third\r\n"))
+        app.with_surface(|terminal: &mut crate::TerminalView| terminal.feed(b"third\r\n"))
             .expect("the terminal surface is hosted");
         app.settle();
         let state = app.state();

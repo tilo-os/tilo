@@ -494,6 +494,7 @@ pub struct FrameOutput<'a> {
 }
 
 mod caller_palette;
+mod search_open;
 pub mod system_search;
 pub mod test_support;
 
@@ -509,6 +510,9 @@ pub struct FrameHarness {
     root: Box<dyn Widget>,
     history: Option<Box<crate::history_mode::host::HistoryHost>>,
     action_palette: Option<Box<crate::action_palette::ActionPalette>>,
+    ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
+    /// The open search palette has provider pages left to read.
+    search_pending: bool,
     root_lifetime: uuid::Uuid,
     framework_input: std::rc::Rc<std::cell::Cell<bool>>,
     taffy: TaffyTree<()>,
@@ -528,6 +532,9 @@ pub struct FrameHarness {
     /// Scratch scene for the draw pass. Never rasterised — see
     /// [`Driver::relayout`] for why it is drawn at all.
     scene: Scene,
+    /// The backdrops the scene's floating surfaces were drawn over, which
+    /// the capture renderer blurs under the material as a live window does.
+    backdrop: std::sync::Arc<crate::backdrop::BackdropFrame>,
     presence: PresenceCtx,
     /// Presence changed through [`Self::update_presence`]: the next frame
     /// redraws (the collaborator overlays read presence at draw time) without
@@ -902,6 +909,7 @@ impl FrameHarness {
         self.discard_layout_tree();
         self.focused = None;
         self.focus_before_trap = None;
+        self.ordinary_palette_return_focus = None;
         self.root_type = None;
         self.root = root;
         if let Some(registration) = history
@@ -1011,6 +1019,7 @@ impl FrameHarness {
         self.discard_layout_tree();
         self.focused = None;
         self.focus_before_trap = None;
+        self.ordinary_palette_return_focus = None;
         self.root_type = None;
         self.root = root;
     }
@@ -1394,6 +1403,7 @@ impl FrameHarness {
         } else {
             text.set_text_scale(theme.text_scale);
         }
+        text.apply_typography(&theme.tokens.typography);
         let control_domain = crate::control_custody::ControlDomain::outer();
         let mut root = root;
         crate::widget::controls::install_control_custody(
@@ -1416,6 +1426,8 @@ impl FrameHarness {
             bindings: crate::bound_dispatch::BoundNodeMap::new(),
             history: None,
             action_palette: None,
+            ordinary_palette_return_focus: None,
+            search_pending: false,
             root_lifetime: uuid::Uuid::new_v4(),
             framework_input: std::rc::Rc::new(std::cell::Cell::new(false)),
             component_close_reports: vec![],
@@ -1429,6 +1441,7 @@ impl FrameHarness {
             text,
             theme,
             scene: Scene::new(),
+            backdrop: std::sync::Arc::default(),
             records: None,
             record_persistence: None,
             room_index: None,
@@ -1614,6 +1627,7 @@ impl FrameHarness {
     ) -> Result<(), crate::widget::WidgetLayoutError> {
         self.theme = theme;
         self.text.set_text_scale(self.theme.text_scale);
+        self.text.apply_typography(&self.theme.tokens.typography);
         self.invalidate_layout_tree();
         self.relayout_at(viewport)
     }
@@ -1646,19 +1660,23 @@ impl FrameHarness {
     ) -> RootDispatch {
         let mut handled = false;
         let mut focus_target = None;
-        self.root.handle_event(
-            event,
-            &mut EventCtx {
-                scale_factor: self.input_scale,
-                modifiers,
-                state: crate::widget::Edits::lend(&mut self.state.doc),
-                path: &self.state.root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: self.child_node,
-                taffy: &self.taffy,
-            },
-        );
+        let mut ctx = EventCtx {
+            scale_factor: self.input_scale,
+            modifiers,
+            state: crate::widget::Edits::lend(&mut self.state.doc),
+            path: &self.state.root,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: self.child_node,
+            taffy: &self.taffy,
+        };
+        if let Some(history) = &mut self.history {
+            // child_node is the History composition, not the app's node.
+            // Use its retained mapping without a host frame or focus routing.
+            history.route_event(self.root.as_mut(), event, &mut ctx);
+        } else if self.history_layout.is_none_or(|layout| layout.app_visible) {
+            self.root.handle_event(event, &mut ctx);
+        }
         RootDispatch {
             handled,
             focus_target,
@@ -1956,7 +1974,20 @@ impl FrameHarness {
             None,
         )
         .unwrap_or_default();
-        let _ = crate::bound_dispatch::refresh_bound_controls(self.root.as_mut(), &snapshots);
+        let host_doors = self
+            .host_door_resources()
+            .iter()
+            .flat_map(|resource| {
+                resource.actions.iter().map(|action| {
+                    tilo_actions::ActionAddress::new(resource.id.as_str(), &action.id)
+                })
+            })
+            .collect();
+        let _ = crate::bound_dispatch::refresh_bound_controls(
+            self.root.as_mut(),
+            &snapshots,
+            &host_doors,
+        );
         if let Err(error) = crate::bound_dispatch::legacy_document::refresh_legacy_controls(
             self.root.as_mut(),
             &self.permissions,
@@ -2014,6 +2045,7 @@ impl FrameHarness {
         self.pump_component_wakes();
         self.theme = theme;
         self.text.set_text_scale(self.theme.text_scale);
+        self.text.apply_typography(&self.theme.tokens.typography);
         self.invalidate_layout_tree();
         self.relayout();
     }
@@ -2054,6 +2086,7 @@ impl FrameHarness {
     pub fn frame_schedule(&self) -> FrameSchedule {
         self.drain_component_wakes();
         let queued_work = self.presence_redraw
+            || self.search_pending
             || !self.bound_invocations.is_empty()
             || !self.pending_control_invocations.is_empty()
             || self
@@ -2211,7 +2244,7 @@ impl FrameHarness {
         self.drain_component_wakes();
         FrameRenderInput {
             scene: &self.scene,
-            background: self.theme.bg_app,
+            background: self.theme.tokens.colors.surfaces.content,
         }
     }
 
@@ -2220,7 +2253,7 @@ impl FrameHarness {
         let schedule = self.frame_schedule();
         FrameOutput {
             scene: &self.scene,
-            background: self.theme.bg_app,
+            background: self.theme.tokens.colors.surfaces.content,
             logical_size: self.viewport,
             device_size: (
                 (f64::from(self.viewport.0) * self.input_scale).ceil() as u32,
@@ -2269,40 +2302,42 @@ impl FrameHarness {
         Ok(true)
     }
 
-    /// Rasterise the most recently laid-out frame to a PNG.
+    /// Rasterise the most recently laid-out frame to a PNG over the window
+    /// ground (`surfaces.content`), exactly as a live window clears before
+    /// drawing. `--shots` writes this.
     ///
     /// `new`, input delivery, and `set_theme` all finish with `relayout`, so
     /// this never runs a separate screenshot-only widget pipeline. A browser
     /// page cannot read a frame back synchronously: there nothing is written.
     pub fn render_png(&self, out: &std::path::Path) {
+        self.render_png_on(out, self.theme.tokens.colors.surfaces.content);
+    }
+
+    /// [`FrameHarness::render_png`] over a transparent background, for a
+    /// capture composited onto something else afterwards.
+    pub fn render_png_transparent(&self, out: &std::path::Path) {
         self.render_png_on(out, vello::peniko::Color::TRANSPARENT);
     }
 
-    /// Capture the composited native-window appearance, including its theme
-    /// background. Use this for rendered contrast measurements. Nothing is
-    /// written in a browser page, as for [`FrameHarness::render_png`].
-    pub fn render_window_png(&self, out: &std::path::Path) {
-        self.render_png_on(out, self.theme.bg_app);
-    }
-
-    /// Rasterise the most recently laid-out frame over a transparent
-    /// background, as tightly packed RGBA8 rows `viewport.0` pixels wide.
-    /// Empty in a browser page, which cannot read a frame back synchronously.
+    /// Rasterise the most recently laid-out frame over the window ground, as
+    /// tightly packed RGBA8 rows `viewport.0` pixels wide. Empty in a browser
+    /// page, which cannot read a frame back synchronously.
     pub fn render_rgba(&self) -> Vec<u8> {
-        self.render_rgba_on(vello::peniko::Color::TRANSPARENT)
+        self.render_rgba_on(self.theme.tokens.colors.surfaces.content)
     }
 
-    /// [`FrameHarness::render_rgba`] over the theme background, as the
-    /// native window composites it.
-    pub fn render_window_rgba(&self) -> Vec<u8> {
-        self.render_rgba_on(self.theme.bg_app)
+    /// [`FrameHarness::render_rgba`] over a transparent background.
+    pub fn render_rgba_transparent(&self) -> Vec<u8> {
+        self.render_rgba_on(vello::peniko::Color::TRANSPARENT)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     fn render_rgba_on(&self, background: vello::peniko::Color) -> Vec<u8> {
         self.drain_component_wakes();
-        let (w, h) = self.viewport;
-        crate::offscreen::OffscreenRenderer::new(w, h).render_resilient(&self.scene, background)
+        let (w, h) = self.device_size();
+        let mut renderer = crate::offscreen::OffscreenRenderer::new(w, h);
+        renderer.set_backdrop(Some(self.backdrop.clone()));
+        renderer.render_resilient(&self.scene, background)
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -2322,9 +2357,42 @@ impl FrameHarness {
         if let Some(parent) = out.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let (w, h) = self.viewport;
+        let (w, h) = self.device_size();
         let mut renderer = crate::offscreen::OffscreenRenderer::new(w, h);
+        renderer.set_backdrop(Some(self.backdrop.clone()));
         renderer.render_png(&self.scene, background, out);
+    }
+
+    /// The transform frames are drawn with: the identity, or the capture's
+    /// device scale ([`crate::offscreen::set_capture_device_scale`]).
+    pub(crate) fn capture_draw_transform(&self) -> Affine {
+        crate::scale::composite_transform(f64::from(crate::offscreen::capture_device_scale()))
+    }
+
+    /// The frame's size in device pixels: the viewport at the capture's
+    /// device scale.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a capture's device scale makes the frame larger than
+    /// Vello renders in one pass (256 bins of 256 x 256 px): it would drop
+    /// the bins past that and write a frame with holes.
+    fn device_size(&self) -> (u32, u32) {
+        let scale = crate::offscreen::capture_device_scale();
+        let size = (
+            self.viewport.0.saturating_mul(scale),
+            self.viewport.1.saturating_mul(scale),
+        );
+        assert!(
+            scale == 1 || size.0.div_ceil(256).saturating_mul(size.1.div_ceil(256)) <= 256,
+            "a {}x{} capture at device scale {scale} is {}x{} pixels, more than Vello renders \
+             in one pass (256 bins of 256 x 256); pass a smaller --viewport (1280x768 fits at 4x)",
+            self.viewport.0,
+            self.viewport.1,
+            size.0,
+            size.1
+        );
+        size
     }
 
     /// Drive a record-aware app: the live document is a record's, and the
@@ -2661,6 +2729,10 @@ impl FrameHarness {
                     f64::from(self.viewport.0),
                     None,
                 );
+                if self.history.is_none() && self.history_chrome_enabled {
+                    self.document_history
+                        .place_in_app_header(self.root.as_mut());
+                }
                 self.child_node = if let Some(history) = &mut self.history {
                     history.build_composition(
                         self.root.as_mut(),
@@ -2907,6 +2979,14 @@ impl FrameHarness {
         }
 
         self.update_focus_trap(focus);
+        if self.action_palette.is_none()
+            && let Some(saved) = self.ordinary_palette_return_focus.take()
+            && !self.focus_trap_active
+        {
+            let (allowed, _) = self.history_app_focus_order(self.child_node);
+            // SAFETY: this final layout owns the freshly admitted tree.
+            self.focused = unsafe { saved.restore(&self.node_map, &self.bindings, Some(&allowed)) };
+        }
 
         // After layout (so a control built this pass is in `node_map`) and
         // before draw and any accessibility read — a shot must show the
@@ -2914,7 +2994,14 @@ impl FrameHarness {
         self.publish_undo_status();
 
         let t_draw = self.profiler.as_ref().map(|_| crate::time::now());
+        // Logical layout, rasterised at the capture's device scale, as the
+        // live host draws at its window's scale factor.
+        let transform = self.capture_draw_transform();
         self.scene.reset();
+        // Floating chrome records what lies below it, so a capture blurs it
+        // under the material exactly as the live window's renderer does.
+        let backdrop_recording = crate::backdrop::BackdropRecording::begin();
+        crate::backdrop::layer_scene(&self.scene, 0);
         // Cull against the window exactly as the live host does, so offscreen
         // frames paint (and cost) what a window would.
         let previous_viewport = self.presence.push_viewport(Rect::new(
@@ -2926,12 +3013,11 @@ impl FrameHarness {
         if let Some(history) = &mut self.history {
             history.draw(
                 &mut self.scene,
-                Affine::IDENTITY,
+                transform,
                 &mut self.text,
                 &self.theme,
                 &self.presence,
             );
-            history.mark_drawn();
         }
         if self
             .history
@@ -2942,31 +3028,12 @@ impl FrameHarness {
             crate::widget::native_view_frame_start(self.root.as_mut());
             self.root.draw_with_presence(
                 &mut self.scene,
-                Affine::IDENTITY,
+                transform,
                 &mut self.text,
                 &self.theme,
                 &self.presence,
                 &self.permissions,
             );
-            self.root.draw_overlay(
-                &mut self.scene,
-                Affine::IDENTITY,
-                &mut self.text,
-                &self.theme,
-                &self.presence,
-            );
-            // What the app presents above its window — a navigation card
-            // detached onto the desktop — is stacked over the frame as the
-            // live compositor stacks it, so a capture shows it.
-            crate::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
-                self.root.as_mut(),
-                &mut self.scene,
-                Affine::IDENTITY,
-                &mut self.text,
-                &self.theme,
-                &self.presence,
-            );
-            self.root.mark_drawn();
         }
         if self.history_chrome_enabled {
             let context = crate::standalone_history::HistoryReadContext {
@@ -2980,7 +3047,7 @@ impl FrameHarness {
                 .draw(
                     &context,
                     &mut self.scene,
-                    Affine::IDENTITY,
+                    transform,
                     &mut self.text,
                     &self.theme,
                     &self.presence,
@@ -2988,8 +3055,57 @@ impl FrameHarness {
                 .map_err(|_| crate::widget::WidgetLayoutError::CompositionDidNotSettle);
             if let Err(error) = drawn {
                 self.presence.pop_viewport(previous_viewport);
+                drop(backdrop_recording.finish());
                 return Err(error);
             }
+        }
+        // The window's top layer, after the app and the window's own chrome:
+        // open menus, popovers and modals, so a modal's scrim covers the
+        // History bar and every region of the window.
+        if self
+            .history
+            .as_ref()
+            .is_none_or(|history| history.live_visible())
+            && self.history_layout.is_none_or(|layout| layout.app_visible)
+        {
+            self.root.draw_overlay(
+                &mut self.scene,
+                transform,
+                &mut self.text,
+                &self.theme,
+                &self.presence,
+            );
+            // What the app presents above its window — a navigation card
+            // detached onto the desktop — is stacked over the frame as the
+            // live compositor stacks it, so a capture shows it.
+            crate::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
+                self.root.as_mut(),
+                &mut self.scene,
+                transform,
+                &mut self.text,
+                &self.theme,
+                &self.presence,
+            );
+            self.root.mark_drawn();
+        }
+        if let Some(history) = &mut self.history {
+            history.draw_overlay(
+                &mut self.scene,
+                transform,
+                &mut self.text,
+                &self.theme,
+                &self.presence,
+            );
+            history.mark_drawn();
+        }
+        if self.history_chrome_enabled {
+            self.document_history.draw_overlay(
+                &mut self.scene,
+                transform,
+                &mut self.text,
+                &self.theme,
+                &self.presence,
+            );
         }
         if let Some(palette) = self
             .action_palette
@@ -3009,7 +3125,7 @@ impl FrameHarness {
             );
             palette.draw(
                 &mut self.scene,
-                Affine::IDENTITY,
+                transform,
                 &mut self.text,
                 &self.theme,
                 &self.presence,
@@ -3048,9 +3164,13 @@ impl FrameHarness {
 
         // Focus was already recovered for this tree before draw, with the
         // active-instance filter a second unfiltered pass would undo.
+        self.search_pending = self.advance_search();
         self.draw_caller_palette();
         self.refresh_system_search();
         self.draw_system_search();
+        self.backdrop = std::sync::Arc::new(crate::backdrop::BackdropFrame::from_single_scene(
+            backdrop_recording.finish(),
+        ));
 
         if self
             .action_palette
@@ -3089,6 +3209,19 @@ impl FrameHarness {
     pub fn wait_until(
         &mut self,
         timeout: crate::time::Duration,
+        condition: impl FnMut(&Self) -> bool,
+    ) -> bool {
+        let background = crate::background::Background::current();
+        self.wait_until_on(timeout, || background.now(), condition)
+    }
+
+    /// [`Self::wait_until`] with `timeout` measured on `clock`: the
+    /// executor's clock for background work, the toolkit's clock for what
+    /// widgets animate on.
+    fn wait_until_on(
+        &mut self,
+        timeout: crate::time::Duration,
+        clock: impl Fn() -> crate::time::Instant,
         mut condition: impl FnMut(&Self) -> bool,
     ) -> bool {
         self.relayout();
@@ -3098,11 +3231,11 @@ impl FrameHarness {
             return true;
         }
         let background = crate::background::Background::current();
-        let Some(deadline) = background.now().checked_add(timeout) else {
+        let Some(deadline) = clock().checked_add(timeout) else {
             return false;
         };
         loop {
-            let now = background.now();
+            let now = clock();
             if now >= deadline {
                 return false;
             }
@@ -3120,6 +3253,35 @@ impl FrameHarness {
                 return true;
             }
         }
+    }
+
+    /// Run production frames until the window has settled, as a person sees
+    /// it a moment after it opened: no animation running (a tab's entrance, a
+    /// panel sliding in) and no image load the frame asked for still in
+    /// flight. Waits at most `bound` and returns whether it settled. A
+    /// capture calls this before it writes, so shots match the live window.
+    ///
+    /// Animations run on the toolkit's clock ([`crate::time::now`]), so the
+    /// bound is measured on it too: an executor with a virtual clock (a
+    /// pumped test) cannot run the bound out before an entrance has ended.
+    pub fn settle_for_capture(&mut self, bound: crate::time::Duration) -> bool {
+        let settled = self.wait_until_on(bound, crate::time::now, |driver| {
+            !driver.frame_schedule().needs_animation_frame
+                && !driver.root.has_pending_visual_work()
+                && crate::image_store::loads_in_flight() == 0
+        });
+        if !settled {
+            return false;
+        }
+        // An animation may land at its endpoint during draw, after the
+        // current frame's layout and pixels were produced. Flush that final
+        // invalidation through the normal pipeline before capturing them.
+        if self.try_relayout().is_err() {
+            return false;
+        }
+        !self.frame_schedule().needs_animation_frame
+            && !self.root.has_pending_visual_work()
+            && crate::image_store::loads_in_flight() == 0
     }
 
     /// Run the normal frame pipeline until requested visual work completes.
@@ -3191,28 +3353,7 @@ impl FrameHarness {
                 .as_ref()
                 .and_then(|history| history.review_layout_node())
                 .unwrap_or(self.child_node);
-            let mut pending = vec![root];
-            while let Some(node) = pending.pop() {
-                if crate::history_mode::embedded::allows_focus(
-                    self.root.as_ref(),
-                    node,
-                    &self.taffy,
-                ) && self.history.as_ref().is_none_or(|history| {
-                    !history.captures_input() || history.owns_node(node, &self.taffy)
-                }) && self
-                    .inspect_node(node, |widget| widget.is_focusable() && widget.is_enabled())
-                    .unwrap_or(false)
-                {
-                    order.push(node);
-                }
-                pending.extend(
-                    self.taffy
-                        .children(node)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .rev(),
-                );
-            }
+            order = self.history_app_focus_order(root).0;
         } else {
             order =
                 crate::focus_navigation::order(self.child_node, self.root.as_ref(), &self.taffy).0;
@@ -3220,34 +3361,48 @@ impl FrameHarness {
         order
     }
 
+    fn history_app_focus_order(&self, root: NodeId) -> (Vec<NodeId>, bool) {
+        crate::focus_navigation::mapped_order(root, &self.taffy, |node| {
+            let allowed =
+                crate::history_mode::embedded::allows_focus(self.root.as_ref(), node, &self.taffy)
+                    && self.history.as_ref().is_none_or(|history| {
+                        !history.captures_input() || history.owns_node(node, &self.taffy)
+                    });
+            self.inspect_node(node, |widget| {
+                (
+                    allowed && widget.is_focusable() && widget.is_enabled(),
+                    allowed && widget.traps_focus(),
+                    widget.accessibility().is_some_and(|node| node.state.hidden),
+                )
+            })
+            .unwrap_or((false, false, false))
+        })
+    }
+
     fn update_focus_trap(
         &mut self,
         before_layout: Option<crate::widget::layout::CompositionFocus>,
     ) {
-        if self.history.is_some() || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
+        let (mut order, trapped) = if self.history.is_some()
+            || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
         {
-            // A generic modal can hide retained editors with framework history.
-            // Returning to those editors must restore the exact prior owner;
-            // a resource/workspace switch cannot match an absent owner.
-            if self.focus_trap_active
-                && let Some(saved) = self.focus_before_trap.take()
-            {
-                let order = self.focus_order();
-                if let Some(target) =
-                    unsafe { saved.restore(&self.node_map, &self.bindings, Some(&order)) }
-                {
-                    self.set_focused(Some(target));
-                }
-            }
-            self.focus_trap_active = self
+            let root = self
                 .history
                 .as_ref()
-                .is_some_and(|history| history.review_is_open());
-            self.focus_before_trap = None;
-            return;
-        }
-        let (mut order, trapped) =
-            crate::focus_navigation::order(self.child_node, self.root.as_ref(), &self.taffy);
+                .and_then(|history| history.review_layout_node())
+                .unwrap_or(self.child_node);
+            let (order, app_trap) = self.history_app_focus_order(root);
+            (
+                order,
+                app_trap
+                    || self
+                        .history
+                        .as_ref()
+                        .is_some_and(|history| history.review_is_open()),
+            )
+        } else {
+            crate::focus_navigation::order(self.child_node, self.root.as_ref(), &self.taffy)
+        };
         if !self.focus_trap_active && trapped {
             // Capture a stable semantic/owner identity, never carry a stale Taffy id
             // through the portable host's complete layout rebuilds.
@@ -3263,21 +3418,7 @@ impl FrameHarness {
             // Bound component delegates can be absent from Widget::children's
             // generic order. Eligibility comes from this newly admitted layout,
             // with the same embedded-history restrictions as mapped traversal.
-            let mut allowed = Vec::new();
-            let mut pending = vec![self.child_node];
-            while let Some(node) = pending.pop() {
-                if crate::history_mode::embedded::allows_focus(
-                    self.root.as_ref(),
-                    node,
-                    &self.taffy,
-                ) && self
-                    .inspect_node(node, |widget| widget.is_focusable() && widget.is_enabled())
-                    .unwrap_or(false)
-                {
-                    allowed.push(node);
-                }
-                pending.extend(self.taffy.children(node).unwrap_or_default());
-            }
+            let (allowed, _) = self.history_app_focus_order(self.child_node);
             let restored = self.focus_before_trap.take().and_then(|saved| unsafe {
                 saved.restore(&self.node_map, &self.bindings, Some(&allowed))
             });
@@ -4005,6 +4146,11 @@ impl FrameHarness {
             self.set_focused(Some(taffy_id));
         }
         if !handled {
+            if semantic_target.is_some() && !matches!(action, crate::a11y::Action::Focus) {
+                return Err(format!(
+                    "the current semantic target did not handle {action:?}"
+                ));
+            }
             match action {
                 crate::a11y::Action::Focus => {
                     if !ordinal_path.is_empty() {
@@ -4034,7 +4180,7 @@ impl FrameHarness {
                     let c = rect.center();
                     self.click_at(c.x, c.y);
                 }
-                _ => {}
+                _ => return Err(format!("the current control did not handle {action:?}")),
             }
         }
         // The widget may have mutated the document from `perform_action_at` —
@@ -4709,7 +4855,10 @@ impl FrameHarness {
         use crate::widget::ControlBindingKind;
         self.drain_component_wakes();
 
-        let resources = self.resources();
+        // A control bound to one of the window's doors (opening search,
+        // History) resolves as it does in a window: its host answers it.
+        let mut resources = self.resources();
+        resources.extend(self.host_door_resources());
         let bindings = crate::widget::controls::control_action_bindings(self.root.as_ref());
         let inventoried_controls = bindings
             .iter()
@@ -5720,6 +5869,17 @@ impl FrameHarness {
         let Ok(request) = request else {
             return;
         };
+        if self.action_palette.is_none() {
+            // SAFETY: modal admission has not retired this owned live tree.
+            self.ordinary_palette_return_focus = unsafe {
+                crate::widget::layout::CompositionFocus::capture(
+                    self.focused,
+                    &self.node_map,
+                    &self.bindings,
+                )
+            }
+            .or_else(|| crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref()));
+        }
         self.discard_layout_tree();
         self.focused = None;
         let mut palette = Box::new(crate::action_palette::ActionPalette::with_host_text(
@@ -6411,6 +6571,9 @@ impl FrameHarness {
             .map(|(target, intent)| (target, intent, None))
             .chain(bound.pending)
         {
+            if on_behalf_of.is_none() && self.take_search_invocation(&intent) {
+                continue;
+            }
             self.dispatch_bound_control(target, &intent, on_behalf_of);
         }
 
@@ -6420,7 +6583,11 @@ impl FrameHarness {
             tracing::warn!(%error, "headless legacy drain refused");
         }
         for (target, intent) in registered.legacy.into_iter().chain(batch.controls) {
-            self.dispatch_legacy_control(&target, &intent);
+            if !self.take_search_invocation(&intent)
+                && !self.take_history_invocation(&intent, Some(target.owner.clone()))
+            {
+                self.dispatch_legacy_control(&target, &intent);
+            }
         }
         while let Some((intent, on_behalf_of)) = registered
             .outer
@@ -6430,6 +6597,12 @@ impl FrameHarness {
                 crate::widget::controls::take_attributed_control_invocation(self.root.as_mut())
             })
         {
+            if on_behalf_of.is_none()
+                && (self.take_search_invocation(&intent)
+                    || self.take_history_invocation(&intent, None))
+            {
+                continue;
+            }
             let acting = on_behalf_of.and_then(|id| self.acting_for.get(&id).cloned());
             let author = acting.as_ref().map_or_else(
                 || self.author.clone(),
@@ -6787,11 +6960,13 @@ impl FrameHarness {
     /// widened for exactly these two presses, so a slow host cannot split
     /// them into two single clicks.
     pub fn double_click_at(&mut self, x: f64, y: f64) {
-        let window = crate::gesture::multi_click_interval();
-        crate::gesture::set_multi_click_interval(crate::time::Duration::from_secs(3600));
-        self.click_at(x, y);
-        self.click_at(x, y);
-        crate::gesture::set_multi_click_interval(window);
+        crate::gesture::with_capture_multi_click_interval(
+            crate::time::Duration::from_secs(3600),
+            || {
+                self.click_at(x, y);
+                self.click_at(x, y);
+            },
+        );
     }
 
     /// Press the left button at `from`, move through intermediate points to
@@ -7623,6 +7798,7 @@ fn role_name(role: crate::a11y::Role) -> &'static str {
         Role::RadioButton => "radio_button",
         Role::Switch => "switch",
         Role::Slider => "slider",
+        Role::Separator => "separator",
         Role::SpinButton => "spin_button",
         Role::ComboBox => "combo_box",
         Role::TextInput => "text_input",
@@ -7776,13 +7952,24 @@ fn audit_inspection_node(node: &InspectionNode, issues: &mut Vec<AccessibilityIs
     }
 }
 
+/// Every semantic control a binding may stand behind: the effect-capable
+/// roles, and a focusable list item, which is pressed as a whole (a list
+/// row bound through `ListRow::on_view`).
 fn effect_control_ids(node: &InspectionNode) -> HashSet<String> {
-    effect_control_ids_where(node, &|_| true)
+    effect_control_ids_of(node, &|_| true, true)
 }
 
 fn effect_control_ids_where(
     node: &InspectionNode,
     include: &dyn Fn(&AccessNode) -> bool,
+) -> HashSet<String> {
+    effect_control_ids_of(node, include, false)
+}
+
+fn effect_control_ids_of(
+    node: &InspectionNode,
+    include: &dyn Fn(&AccessNode) -> bool,
+    pressable_items: bool,
 ) -> HashSet<String> {
     let mut controls = HashSet::new();
     if let Some(semantics) = &node.semantics {
@@ -7790,14 +7977,24 @@ fn effect_control_ids_where(
             semantics,
             node.test_id.as_deref(),
             &node.path,
-            include,
+            &EffectFilter {
+                include,
+                pressable_items,
+            },
             &mut controls,
         );
     }
     for child in &node.children {
-        controls.extend(effect_control_ids_where(child, include));
+        controls.extend(effect_control_ids_of(child, include, pressable_items));
     }
     controls
+}
+
+/// Which semantic nodes count as controls.
+struct EffectFilter<'a> {
+    include: &'a dyn Fn(&AccessNode) -> bool,
+    /// Count a focusable list or tree item too.
+    pressable_items: bool,
 }
 
 fn inspection_has_semantics(node: &InspectionNode) -> bool {
@@ -7808,11 +8005,11 @@ fn collect_effect_access_nodes(
     node: &AccessNode,
     retained_id: Option<&str>,
     path: &str,
-    include: &dyn Fn(&AccessNode) -> bool,
+    filter: &EffectFilter<'_>,
     controls: &mut HashSet<String>,
 ) {
-    let effect = include(node)
-        && matches!(
+    let effect = (filter.include)(node)
+        && (matches!(
             node.role,
             Role::Button
                 | Role::ToggleButton
@@ -7824,7 +8021,9 @@ fn collect_effect_access_nodes(
                 | Role::SpinButton
                 | Role::TextInput
                 | Role::MultilineTextInput
-        );
+        ) || (filter.pressable_items
+            && matches!(node.role, Role::ListItem | Role::TreeItem)
+            && node.state.focusable));
     if effect {
         let identity = node
             .action_target
@@ -7839,7 +8038,7 @@ fn collect_effect_access_nodes(
             child,
             None,
             &format!("{path}/semantic[{index}]"),
-            include,
+            filter,
             controls,
         );
     }
@@ -8465,6 +8664,147 @@ mod tests {
                 ("Root/Panel/Spinner".to_owned(), FrameDemand::Animation),
             ]
         );
+    }
+
+    /// Animates for `length` from the first time it is asked whether it
+    /// animates, like a tab's entrance or a sliding panel; `until` records
+    /// when that ends, so a slow harness start cannot end it unseen.
+    struct Entrance {
+        length: crate::time::Duration,
+        until: std::rc::Rc<std::cell::Cell<Option<crate::time::Instant>>>,
+    }
+
+    impl Entrance {
+        fn new() -> (
+            Self,
+            std::rc::Rc<std::cell::Cell<Option<crate::time::Instant>>>,
+        ) {
+            let until = std::rc::Rc::new(std::cell::Cell::new(None));
+            let entrance = Self {
+                length: crate::time::Duration::from_millis(150),
+                until: std::rc::Rc::clone(&until),
+            };
+            (entrance, until)
+        }
+    }
+
+    impl Widget for Entrance {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy.leaf_node(Style::default());
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+        fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+        }
+        fn needs_animation_frame(&self) -> bool {
+            let now = crate::time::now();
+            let until = self
+                .until
+                .get()
+                .unwrap_or_else(|| now.checked_add(self.length).unwrap_or(now));
+            self.until.set(Some(until));
+            now < until
+        }
+        fn name(&self) -> &str {
+            "Entrance"
+        }
+        fn get_rect(&self) -> Rect {
+            Rect::ZERO
+        }
+    }
+
+    #[test]
+    fn capture_settlement_applies_the_final_push_sidebar_geometry() {
+        use crate::widget::{NavItem, NavList, NavMode, NavPane, NavSection, NavShell};
+        for width in [360_u32, 520_u32] {
+            let shell = NavShell::new()
+                .mode(NavMode::Push)
+                .with_pane_state(&crate::LocalState::new(NavPane::Content))
+                .sidebar(Box::new(NavList::new(vec![NavSection::untitled(
+                    "screens",
+                    vec![NavItem::new("world", "World")],
+                )])))
+                .content(Box::new(crate::widget::Spacer::new()));
+            let mut harness =
+                FrameHarness::for_root(State::new(), shell, (width, 820), Theme::dark());
+            harness
+                .perform_named("nav-shell-back", &crate::a11y::Action::Activate)
+                .unwrap();
+            assert!(harness.settle_for_capture(crate::time::Duration::from_secs(1)));
+            let column = harness.root::<NavShell>().geometry().sidebar_column;
+            assert_eq!(column.x0, 0.0, "the final sidebar starts at the viewport");
+            assert_eq!(column.x1, f64::from(width));
+            let (_, row) = harness
+                .a11y_nodes()
+                .into_iter()
+                .find(|(_, node)| node.label() == Some("World"))
+                .expect("the settled visible sidebar publishes its actual row");
+            let bounds = row.bounds().unwrap();
+            assert!(bounds.x0 >= 0.0 && bounds.x1 <= f64::from(width));
+        }
+    }
+
+    #[test]
+    fn a_capture_settles_animations_and_lands_on_the_window_ground() {
+        // Case `capture_waits_until_the_animation_schedule_is_idle`.
+        {
+            let (entrance, until) = Entrance::new();
+            let mut harness = FrameHarness::new(State::new(), Box::new(entrance), (200, 100));
+            assert!(harness.frame_schedule().needs_animation_frame);
+            assert!(harness.settle_for_capture(crate::HANG_BOUND));
+            assert!(!harness.frame_schedule().needs_animation_frame);
+            let until = until.get().expect("the entrance started");
+            assert!(crate::time::now() >= until, "it ran the animation out");
+        }
+
+        // Case `a_virtual_executor_clock_does_not_cut_the_settle_short`.
+        {
+            let pumped = crate::background::Pumped::new();
+            let _entered = pumped.background().enter();
+            let (entrance, until) = Entrance::new();
+            let mut harness = FrameHarness::new(State::new(), Box::new(entrance), (200, 100));
+            assert!(harness.settle_for_capture(crate::time::Duration::from_secs(5)));
+            let until = until.get().expect("the entrance started");
+            assert!(crate::time::now() >= until, "it ran the animation out");
+        }
+
+        // Case `the_corner_pixel_is_the_content_ground`.
+        {
+            for theme in [Theme::dark(), Theme::light()] {
+                let harness = FrameHarness::new_with_theme(
+                    State::new(),
+                    Box::new(crate::widget::Spacer::new()),
+                    (64, 48),
+                    theme.clone(),
+                );
+                let ground = theme.tokens.colors.surfaces.content.to_rgba8();
+                let rgba = harness.render_rgba();
+                assert_eq!(
+                    rgba[..4],
+                    [ground.r, ground.g, ground.b, 255],
+                    "{}: a shot lands on the window ground",
+                    theme.name
+                );
+                assert_eq!(
+                    harness.render_rgba_transparent()[3],
+                    0,
+                    "transparency only when asked for"
+                );
+            }
+        }
     }
 
     #[test]
@@ -9619,6 +9959,53 @@ mod tests {
     }
 
     #[test]
+    fn a_bound_navigation_tree_is_certified_and_invokes_its_live_action() {
+        let resource = crate::widget::resource_actions::resource(
+            "navigation",
+            "Navigation",
+            "open",
+            "Open destination",
+        );
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "open").unwrap();
+        let items = (0..40)
+            .map(|index| {
+                crate::widget::NavItem::new(format!("item-{index}"), format!("Item {index}"))
+            })
+            .collect();
+        let list =
+            crate::widget::NavList::new(vec![crate::widget::NavSection::new("items", "", items)])
+                .with_id("navigation-list")
+                .with_accessible_name("Destinations")
+                .selection_actions((0..40).map(|index| (format!("item-{index}"), binding.clone())));
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let count = calls.clone();
+        let root =
+            crate::widget::resource_actions::immediate(Box::new(list), resource, move |_| {
+                count.set(count.get() + 1);
+                Ok(tilo_actions::ActionOutput::default())
+            });
+        let mut driver = Driver::new(State::new(), root, (280, 360));
+        let audit = driver.native_app_audit();
+        assert!(audit.is_certified(), "{audit:?}");
+        let bindings = crate::widget::controls::control_action_bindings(driver.root_widget());
+        assert!(!bindings.is_empty() && bindings.len() < 40);
+        driver
+            .perform_semantic_named(
+                "navigation-list",
+                Some(&bindings[0].control_id),
+                &crate::a11y::Action::Activate,
+            )
+            .unwrap();
+        assert_eq!(
+            calls.get(),
+            1,
+            "the mounted row invokes its published action"
+        );
+        let audit = driver.native_app_audit();
+        assert!(audit.is_certified(), "{audit:?}");
+    }
+
+    #[test]
     fn audits_certify_action_binding_search_projection_and_accessibility() {
         // Case `native_app_audit_proves_action_binding_and_a11y_together`.
         {
@@ -9944,7 +10331,6 @@ mod tests {
             let fired = Rc::new(Cell::new(0));
             let fired_by_button = Rc::clone(&fired);
             let button = Button::new("save", "Save")
-                .fit_content(32.0)
                 .on_click(move || fired_by_button.set(fired_by_button.get() + 1));
             let mut driver = Driver::new(State::new(), Box::new(button), (400, 200));
 
@@ -11852,6 +12238,22 @@ mod dispatched_action_driver_tests {
             assert!(d.perform_undo(), "and the history actually pops it");
             assert_eq!(body(&mut d), "");
         }
+    }
+
+    #[test]
+    fn unsupported_accessibility_edits_are_refused_without_mutating_document() {
+        let mut driver = action_driver();
+        let target = driver
+            .a11y_node_named("Editor")
+            .expect("the real canvas is published");
+        let heads = driver.state.doc.get_heads();
+        let result = driver.perform_a11y_action(
+            target,
+            &crate::a11y::Action::SetValue("unsupported replacement".into()),
+        );
+        assert!(result.is_err(), "an unhandled edit cannot report success");
+        assert_eq!(driver.state.doc.get_heads(), heads);
+        assert_eq!(body(&mut driver), "");
     }
 
     #[test]

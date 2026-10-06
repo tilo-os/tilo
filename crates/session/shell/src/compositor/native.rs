@@ -1225,6 +1225,7 @@ fn pump_floating_surface_service(
     frame_builder: &mut FrameBuilder,
     capture: &mut CaptureExecutor,
     connection_ids: &mut HashMap<u64, Vec<String>>,
+    appearance: &mut crate::compositor::floating_service::AppearanceDelivery,
     outputs: &[Output],
     fallback_size: (u32, u32),
 ) -> bool {
@@ -1233,6 +1234,7 @@ fn pump_floating_surface_service(
     for event in service.drain() {
         match event {
             FloatingServiceEvent::Connected { connection, app_id } => {
+                appearance.connected(connection, &app_id);
                 if app_id == crate::shell::host_shell_allow::TERMINAL_APP_ID
                     && let Some(writer) = service.reply_writer(connection)
                 {
@@ -1541,12 +1543,16 @@ fn pump_floating_surface_service(
                 }
                 ui::floating_surface::FloatingSurfaceClientMessage::SetCaptureProtection {
                     protected,
+                    generation,
                 } => {
                     // The app id is the one the launcher vouched for, so a
                     // request can only ever withhold the asking app's own
                     // windows. It narrows what leaves the display, never
                     // widens it, so any app may ask.
                     foreign::store().request_app_capture_protection(connection, &app_id, protected);
+                    if let Some(generation) = generation {
+                        service.send(connection, &ui::floating_surface::FloatingSurfaceHostMessage::CaptureProtectionApplied { generation, protected });
+                    }
                     tracing::debug!(connection, %app_id, protected, "capture protection requested");
                     changed = true;
                 }
@@ -1632,6 +1638,21 @@ fn pump_floating_surface_service(
                 frame_builder
                     .host_mut()
                     .disconnect_native_terminal(connection);
+                appearance.disconnected(connection);
+                // Closing the control socket does not destroy the last Wayland
+                // buffer. Preserve its protection until the toplevel dies.
+                let tabs = foreign::foreign_tabs_anywhere(&state.workspace_tree.read());
+                for tab in tabs {
+                    if tab.app_id == app_id {
+                        foreign::store().retain_surface_capture_protection(tab.surface_id, &app_id);
+                    }
+                }
+                for surface in &state.floating_toplevels {
+                    if surface.connection == connection {
+                        foreign::store()
+                            .retain_surface_capture_protection(surface.surface_id, &app_id);
+                    }
+                }
                 for id in connection_ids.remove(&connection).unwrap_or_default() {
                     capture.dismiss_external_floating(id);
                 }
@@ -7307,7 +7328,7 @@ fn build_backend(kind: BackendKind) -> Box<dyn Backend> {
             };
             // Match the FrameBuilder's configured theme so the host window
             // clears to chrome background before the first frame paints.
-            b.set_base_color(ui::theme::Theme::configured().bg_app);
+            b.set_base_color(ui::theme::Theme::configured().tokens.colors.surfaces.base);
             Box::new(b)
         }
         BackendKind::Drm => match DrmBackend::new() {
@@ -7806,6 +7827,7 @@ pub fn run() {
         }
     };
     let mut external_floating_ids: HashMap<u64, Vec<String>> = HashMap::new();
+    let mut window_appearances = crate::compositor::floating_service::AppearanceDelivery::default();
     let (system_audio, microphone) = crate::compositor::capture::recording_audio_availability();
     frame_builder.set_capture_audio_available(system_audio, microphone);
     if let Some(notice) = &state_notice {
@@ -8654,6 +8676,7 @@ pub fn run() {
     let mut credit_transition_hold;
     while !close_requested {
         let iter_t0 = Instant::now();
+        crate::shell::launcher::action_authority::tick(iter_t0);
         let injected_redraw = std::mem::take(&mut injected_redraw_pending);
         metrics.begin_tick(iter_t0);
         if let Some(pipe) = present_pipe.as_ref() {
@@ -8743,11 +8766,20 @@ pub fn run() {
                 &mut frame_builder,
                 &mut capture_executor,
                 &mut external_floating_ids,
+                &mut window_appearances,
                 backend.outputs(),
                 initial_size,
             )
         {
             force_first_paint = true;
+        }
+        // Each app window wears the temperature of the workspace it is in
+        // and the person's colour, told again whenever either moves.
+        if let Some(service) = floating_surface_service.as_ref() {
+            window_appearances.publish(
+                |app_id| frame_builder.window_appearance_for_app(app_id),
+                |connection, message| service.send(connection, message),
+            );
         }
         if let Some(service) = floating_surface_service.as_ref()
             && pump_floating_toplevel_events(service, &mut state)
@@ -11296,7 +11328,9 @@ pub fn run() {
                     frame_builder.paint_with_damage()
                 } else {
                     let scene = frame_builder.paint();
-                    FramePaint::full(scene).with_hdr_layers(frame_builder.take_hdr_layers())
+                    FramePaint::full(scene)
+                        .with_hdr_layers(frame_builder.take_hdr_layers())
+                        .with_backdrop(frame_builder.take_backdrop())
                 };
                 // Audience presentation surfaces bypass WorkspaceTree and
                 // paint only into their requested output rectangles. The DRM
@@ -12000,6 +12034,10 @@ pub fn run() {
                 ("lock-clock", lock_clock_deadline),
                 ("lock-media", lock_media_deadline),
                 ("run-deadline", run_deadline),
+                (
+                    "app-action-authority",
+                    crate::shell::launcher::action_authority::next_deadline(),
+                ),
                 ("controller-nav", controller_nav.next_deadline(park_now)),
                 ("backend-service", backend.next_service_deadline()),
                 (

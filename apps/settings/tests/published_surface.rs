@@ -31,6 +31,34 @@ fn every_pane_publishes_a_surface_that_passes_contract_validation() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+fn navigation_semantics(node: &ui::headless::InspectionNode) -> Option<&ui::a11y::AccessNode> {
+    if node.test_id.as_deref() == Some("settings.nav") {
+        return node.semantics.as_ref();
+    }
+    node.children.iter().find_map(navigation_semantics)
+}
+
+fn admitted_category_rows(node: &ui::a11y::AccessNode, rows: &mut Vec<(String, String)>) {
+    if node.state.hidden {
+        return;
+    }
+    if node.role == ui::a11y::Role::TreeItem
+        && Category::ALL
+            .iter()
+            .any(|category| node.name.as_deref() == Some(category.label().as_str()))
+    {
+        rows.push((
+            node.name.clone().expect("a category has its actual label"),
+            node.action_target
+                .clone()
+                .expect("an admitted row has its actual target"),
+        ));
+    }
+    for child in &node.children {
+        admitted_category_rows(child, rows);
+    }
+}
+
 /// A sidebar row opens its pane through the pane row's open effect, the
 /// one way search and agents open it too.
 #[test]
@@ -43,17 +71,60 @@ fn a_sidebar_click_opens_the_pane_through_its_effect() {
         })
         .expect("the settings surface is mounted");
     let open = open_pane_address(Category::Bluetooth);
-    assert!(
-        bindings.iter().any(|binding| matches!(
-            &binding.kind,
-            ui::widget::ControlBindingKind::Action(address) if address.action == open.action
-        ) && binding.control_id == open.encode()),
-        "the Bluetooth row opens its pane through {}: {bindings:#?}",
-        open.action
+    let navigation = bindings
+        .iter()
+        .filter(|binding| {
+            matches!(
+                &binding.kind,
+                ui::widget::ControlBindingKind::Action(address)
+                    if address.resource == "settings.root" && address.action == open.action
+            )
+        })
+        .collect::<Vec<_>>();
+    // The sidebar virtualizes its control inventory. Match the actual
+    // admitted semantic rows, rather than expecting offscreen categories to
+    // occupy controls in this frame.
+    let frame = app.harness().inspection();
+    let tree = navigation_semantics(&frame.root).expect("the retained navigation list");
+    let mut visible = Vec::new();
+    admitted_category_rows(tree, &mut visible);
+    assert!(!visible.is_empty(), "the sidebar admits category rows");
+    assert_eq!(
+        navigation.len(),
+        visible.len(),
+        "every admitted category row has one typed open-pane binding: {bindings:#?}"
     );
-    app.harness()
-        .click_named(&Category::Bluetooth.label())
-        .expect("the Bluetooth row is on screen");
+    for (label, target) in &visible {
+        assert_eq!(
+            navigation
+                .iter()
+                .filter(|binding| &binding.control_id == target)
+                .count(),
+            1,
+            "{label}'s actual row {target} shares the canonical open-pane door"
+        );
+    }
+    assert!(
+        navigation
+            .iter()
+            .all(|binding| binding.control_id.starts_with("node:")),
+        "shared navigation binds the actual retained row controls"
+    );
+    let bluetooth = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find_map(|(_, node)| {
+            (node.role() == ui::accesskit::Role::TreeItem
+                && node.label() == Some(Category::Bluetooth.label().as_str()))
+            .then(|| node.bounds())
+            .flatten()
+        })
+        .expect("the retained Bluetooth row exposes its actual pointer bounds");
+    app.harness().click_at(
+        f64::midpoint(bluetooth.x0, bluetooth.x1),
+        f64::midpoint(bluetooth.y0, bluetooth.y1),
+    );
     app.settle();
     let selected = app
         .surface::<settings::SettingsApp, _>(|settings| settings.selected())
@@ -71,7 +142,14 @@ fn a_model_link_opens_agent_models() {
         .wait_until(ui::time::Duration::from_secs(20), |harness| {
             harness
                 .inspection_json()
-                .is_ok_and(|frame| frame.contains("Private by design"))
+                .is_ok_and(|frame| frame.contains("Privacy"))
         });
     assert!(shown, "the link opens Agent Models");
+    let category = Category::AgentModels.label();
+    assert!(
+        app.harness().a11y_nodes().iter().any(|(_, node)| {
+            node.label() == Some(category.as_str()) && node.is_selected() == Some(true)
+        }),
+        "the model link selects the canonical Agent Models category"
+    );
 }

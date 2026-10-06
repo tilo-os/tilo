@@ -87,7 +87,18 @@ impl Env {
     /// The `so.tilo.runtime` package of a bundle, saying it provides
     /// `provides`.
     fn runtime_tapp(&self, name: &str, bundle: &Path, provides: &str) -> PathBuf {
-        let manifest = format!(
+        self.runtime_tapp_with_host(name, bundle, provides, None)
+    }
+
+    fn runtime_tapp_with_host(
+        &self,
+        name: &str,
+        bundle: &Path,
+        provides: &str,
+        host: Option<&str>,
+    ) -> PathBuf {
+        use std::fmt::Write as _;
+        let mut manifest = format!(
             r#"
 [package]
 id = "so.tilo.runtime"
@@ -113,6 +124,13 @@ mode = "off"
             isa = isa_line(),
             key = hex_key(&self.publisher),
         );
+        if let Some(host) = host {
+            write!(
+                manifest,
+                "\n[entrypoint]\ntype = \"cli\"\nbin = \"{host}\"\n"
+            )
+            .unwrap();
+        }
         let path = self.path(&format!("runtime-{name}.tapp"));
         write_tapp(&path, &manifest, &self.publisher, bundle);
         path
@@ -255,4 +273,80 @@ fn an_app_installs_only_beside_the_runtime_build_it_links() {
     assert!(out.contains("provides"), "{out}");
     let (_, forged_version) = forged.split_once('/').unwrap();
     assert!(!env.installed_bundle(forged_version).exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn signed_engine_runtime_preserves_executable_permissions_on_install() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new();
+    let (runtime_key, runtime_identity) = identity_file(&env, "engine-publisher");
+    env.trust(&[&runtime_key]);
+    let host = env.path("engine-host-root");
+    let loader = runtime_bundle::host_minimal_paths_for(runtime_bundle::host_arch()).unwrap()[0]
+        .trim_start_matches('/');
+    std::fs::create_dir_all(host.join(loader).parent().unwrap()).unwrap();
+    std::fs::write(host.join(loader), b"loader fixture").unwrap();
+    let engine = env.path("chromium");
+    std::fs::create_dir_all(&engine).unwrap();
+    let executable = engine.join("tilo-chromium-host");
+    std::fs::write(&executable, b"#!/bin/sh\nprintf 'engine started\\n'\n").unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(engine.join("resources.pak"), b"engine resource").unwrap();
+    let bundle = env.path("signed-engine-bundle");
+    let version = "2026.10.2-engine-test";
+    runtime_bundle::build_bundle_with(
+        &bundle,
+        version,
+        &runtime_bundle::BuildOptions {
+            from: Some(&host),
+            arch: Some(runtime_bundle::host_arch()),
+            identity: Some(&runtime_identity),
+            extra_libs: &[engine],
+        },
+    )
+    .unwrap();
+    let tapp = env.runtime_tapp_with_host(
+        "engine",
+        &bundle,
+        &format!("tilo-runtime/{version}"),
+        Some("lib/chromium/tilo-chromium-host"),
+    );
+    let (ok, output) = env.cmd(&[
+        "install",
+        tapp.to_str().unwrap(),
+        "--require-publisher",
+        &hex_key(&env.publisher),
+    ]);
+    assert!(ok, "{output}");
+    let installed = env.installed_bundle(version);
+    runtime_bundle::verify_bundle_with(
+        &installed,
+        &runtime_bundle::VerifyOptions {
+            require_publisher: Some(runtime_key),
+            require_signature: true,
+            require_arch: Some(runtime_bundle::host_arch().to_string()),
+        },
+    )
+    .unwrap();
+    let host = installed.join("lib/chromium/tilo-chromium-host");
+    assert_ne!(
+        std::fs::metadata(&host).unwrap().permissions().mode() & 0o111,
+        0,
+        "signed engine executable lost its execute bits"
+    );
+    assert_eq!(
+        std::fs::metadata(installed.join("lib/chromium/resources.pak"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o111,
+        0,
+        "resource acquired execute bits"
+    );
+    let process = Command::new(host)
+        .output()
+        .expect("installed signed engine must execute");
+    assert!(process.status.success());
+    assert_eq!(process.stdout, b"engine started\n");
 }

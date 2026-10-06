@@ -4,6 +4,7 @@
 
 use crate::sessions::OpenState;
 use crate::target::{EnvironmentSummary, Location, RelaySummary, SessionTarget};
+use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize, TextInput};
 
 /// One row of the target picker.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -116,10 +117,10 @@ fn target_label(
                 );
             match location {
                 Location::ThisDevice => name,
-                Location::Relay { .. } => format!("{name} · {}", location_label(location, relays)),
+                Location::Relay { .. } => format!("{name} on {}", location_label(location, relays)),
             }
         }
-        SessionTarget::Legacy { vm } => format!("{vm} · {}", t("terminal-target-legacy")),
+        SessionTarget::Legacy { vm } => format!("{vm} ({})", t("terminal-target-legacy")),
     }
 }
 
@@ -264,6 +265,8 @@ impl TerminalWidget {
             Ok(backend) => {
                 self.record_relay_session(backend.relay_session.clone());
                 self.attach_backend(backend);
+                // A process stands behind the grid from now on.
+                self.headless = false;
                 self.resize_pty_to_grid();
                 self.sessions.state = OpenState::Open;
                 self.sessions.remember(target);
@@ -469,48 +472,29 @@ impl TerminalWidget {
             self.rect.x1,
             self.rect.y0 + self.header_h(),
         );
-        let pad = f64::from(theme.tokens.spacing.s2);
-        let inner = f64::from(theme.tokens.spacing.s3);
-        let size = tr
-            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.xs))
-            .size;
-        let label = format!("{label}  ▾");
-        let max_w = (header.width() - pad * 2.0 - inner * 2.0).max(0.0) as f32;
-        let label = tr.elide_to_width(&label, size, max_w);
-        let (w, h) = tr.measure(&label, size, None);
-        let chip_h = (f64::from(h) + pad).min(header.height() - 4.0).max(0.0);
+        // The target is a dropdown-like trigger: the shared button face with
+        // a chevron, as wide as its label and never wider than the header.
+        let size = ui::widget::ControlSize::Small;
+        let inset = self.chrome_body_pad;
+        let width = ui::widget::ButtonFace::new(Rect::ZERO, &label)
+            .icon(Icon::ChevronDown)
+            .control_size(size)
+            .intrinsic_width(tr, theme)
+            .min((header.width() - inset * 2.0).max(0.0));
+        let height = ui::widget::ButtonFace::height(size, theme).min(header.height());
         let chip = Rect::new(
-            header.x0 + pad,
-            header.center().y - chip_h / 2.0,
-            header.x0 + pad + f64::from(w) + inner * 2.0,
-            header.center().y + chip_h / 2.0,
+            header.x0 + inset,
+            header.center().y - height / 2.0,
+            header.x0 + inset + width,
+            header.center().y + height / 2.0,
         );
         self.chip_rect = chip;
-        let host = self
-            .sessions
-            .target
-            .as_ref()
-            .is_some_and(SessionTarget::is_host);
-        let (fill, border) = ui::surface::chip_colors(theme, host);
-        let fill = if chip.contains(self.last_cursor_pos) && !host {
-            theme.tokens.colors.overlay_medium
-        } else {
-            fill
-        };
-        ui::surface::pill(scene, transform, chip, fill, border, None);
-        tr.draw_text_weighted(
-            scene,
-            &label,
-            size,
-            theme.text_primary,
-            transform
-                * Affine::translate((
-                    chip.x0 + inner,
-                    chip.y0 + (chip.height() - f64::from(h)) / 2.0,
-                )),
-            None,
-            TextWeight::Medium,
-        );
+        let face = ui::widget::ButtonFace::new(chip, &label)
+            .icon(Icon::ChevronDown)
+            .control_size(size)
+            .hovered(chip.contains(self.last_cursor_pos))
+            .pressed(self.context_menu.is_open() && self.target_menu_rows.is_some());
+        ui::widget::Button::paint(scene, transform, tr, theme, &face);
     }
 
     /// Drop the picker's rows once its menu has closed.
@@ -545,12 +529,7 @@ impl TerminalWidget {
             };
             let current = self.sessions.target.as_ref() == Some(&target);
             let label = target_label(&target, &self.sessions.environments, &self.sessions.relays);
-            let label = if current {
-                format!("✓ {label}")
-            } else {
-                label
-            };
-            menu.push(MenuItem::action(label, || {}));
+            menu.push(MenuItem::action(label, || {}).with_checked(current));
             rows.push(Some(TargetMenuRow::Open(target)));
         }
         // "Run on": this device or one of the person's relays, for the
@@ -581,12 +560,7 @@ impl TerminalWidget {
         rows.push(Some(TargetMenuRow::Manage));
         menu.set_viewport(Some(self.rect));
         let anchor = if self.chip_rect.width() > 0.0 {
-            Rect::new(
-                self.chip_rect.x0,
-                self.chip_rect.y1,
-                self.chip_rect.x0,
-                self.chip_rect.y1,
-            )
+            self.chip_rect
         } else {
             let at = Point::new(
                 self.rect.x0 + self.chrome_body_pad,
@@ -609,6 +583,21 @@ impl TerminalWidget {
                 .iter()
                 .filter_map(MenuItem::label)
                 .map(str::to_owned)
+                .collect(),
+        )
+    }
+
+    /// Which of the picker's rows (as [`Self::target_menu_labels`] lists
+    /// them) carry the check of the current target — for tests.
+    #[cfg(test)]
+    pub(crate) fn target_menu_checked(&self) -> Option<Vec<bool>> {
+        self.target_menu_rows.as_ref()?;
+        Some(
+            self.context_menu
+                .items()
+                .iter()
+                .filter(|item| item.label().is_some())
+                .map(|item| item.checked().unwrap_or(false))
                 .collect(),
         )
     }
@@ -639,7 +628,11 @@ impl TerminalWidget {
     /// Open the environments panel.
     pub fn open_environments_panel(&mut self) {
         self.sessions.refresh_environments();
-        let mut input = TextInput::local().with_id("terminal_environment_name");
+        let placeholder = t("terminal-env-name-placeholder");
+        let mut input = TextInput::local()
+            .with_id("terminal_environment_name")
+            .with_placeholder(&placeholder)
+            .with_accessible_name(placeholder.clone());
         input.set_focus(true);
         self.environments_panel = EnvironmentsPanel {
             open: true,
@@ -850,68 +843,54 @@ impl TerminalWidget {
         if !self.environments_panel.open {
             return;
         }
-        let scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
-        let margin = 12.0 * scale.min(1.25);
-        let gap = 8.0 * scale.min(1.25);
-        let line = 18.0 * scale;
-        let button_h = 28.0 * scale.min(1.25);
-        let title_size = 15.0 * scale as f32;
-        let body_size = 13.0 * scale as f32;
-        let dim_size = 12.0 * scale as f32;
+        let spacing = &theme.tokens.spacing;
+        let metrics = &theme.tokens.metrics;
+        let margin = f64::from(spacing.s4);
+        let gap = f64::from(spacing.s2);
+        let size = ControlSize::Small;
+        let button_h = ButtonFace::height(size, theme);
+        let title_style = theme.text(TextRole::Subheading);
+        let name_style = theme.text(TextRole::Label).strong();
+        let caption = theme.text(TextRole::Caption);
+        // Text on the panel is inked for the panel's own ground.
+        let ink = theme.on_ground(ui::chrome::panel_ground(theme));
         let envs = self.sessions.environments.clone();
-        let panel_w = (600.0 * scale)
+        let top = self.rect.y0 + self.header_h();
+        let panel_w = (f64::from(metrics.panel_width_sheet) * theme.responsive_scale())
             .min(self.rect.width() - margin * 2.0)
             .max(0.0);
         // Everything an environment has is shown in full: the lists wrap to
         // the panel's width rather than being cut off.
-        let text_w = (panel_w - margin * 2.0).max(40.0) as f32;
+        let text_w = (panel_w - margin * 2.0).max(1.0) as f32;
+        let (_, caption_line) = tr.measure_style("Ag", None, &caption);
+        let caption_line = f64::from(caption_line);
         let details: Vec<(String, String)> = envs.iter().map(environment_details).collect();
         let row_heights: Vec<f64> = details
             .iter()
             .map(|(tools, grants)| {
-                let (_, tools_h) = tr.measure(tools, dim_size, Some(text_w));
-                let (_, grants_h) = tr.measure(grants, dim_size, Some(text_w));
+                let (_, tools_h) = tr.measure_style(tools, Some(text_w), &caption);
+                let (_, grants_h) = tr.measure_style(grants, Some(text_w), &caption);
                 button_h + gap / 2.0 + f64::from(tools_h) + f64::from(grants_h) + gap * 2.0
             })
             .collect();
+        let unavailable = t("terminal-env-unavailable");
         let rows_h = if envs.is_empty() {
-            line * 3.0
+            let (_, h) = tr.measure_style(&unavailable, Some(text_w), &caption);
+            f64::from(h) + gap * 2.0
         } else {
             row_heights.iter().sum()
         };
-        let panel_h = (button_h + gap * 3.0 + rows_h + button_h + gap * 2.0 + line)
+        let panel_h = (button_h + gap * 3.0 + rows_h + button_h + gap * 2.0 + caption_line)
             .min(self.rect.height() - margin * 2.0 - self.header_h())
             .max(0.0);
         let x0 = self.rect.center().x - panel_w / 2.0;
-        let y0 = self.rect.y0 + margin + self.header_h();
+        let y0 = top + margin;
         let panel_rect = Rect::new(x0, y0, x0 + panel_w, y0 + panel_h);
         self.environments_panel.rect = panel_rect;
-        let shape = RoundedRect::from_rect(panel_rect, f64::from(theme.tokens.radii.md));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_focus,
-            None,
-            &shape,
-        );
+        ui::widget::floating_surface::paint(scene, transform, panel_rect, theme);
+        let p = self.last_cursor_pos;
 
         // Title and close.
-        tr.draw_text_weighted(
-            scene,
-            &t("terminal-env-title"),
-            title_size,
-            theme.text_primary,
-            transform * Affine::translate((panel_rect.x0 + margin, panel_rect.y0 + gap)),
-            None,
-            TextWeight::Semibold,
-        );
         let close = Rect::new(
             panel_rect.x1 - gap - button_h,
             panel_rect.y0 + gap,
@@ -919,82 +898,118 @@ impl TerminalWidget {
             panel_rect.y0 + gap + button_h,
         );
         self.environments_panel.close_rect = close;
-        draw_icon(
+        let title = t("terminal-env-title");
+        let (_, title_h) = tr.measure_style(&title, None, &title_style);
+        tr.draw_style(
+            scene,
+            &title,
+            ink.text_primary,
+            transform
+                * Affine::translate((
+                    panel_rect.x0 + margin,
+                    close.center().y - f64::from(title_h) / 2.0,
+                )),
+            None,
+            &title_style,
+        );
+        Button::paint(
             scene,
             transform,
-            close.inset(6.0),
-            Icon::X,
-            theme.tokens.colors.text_primary,
-            1.5,
+            tr,
+            theme,
+            &ButtonFace::icon_only(close, Icon::X, "Close")
+                .control_size(size)
+                .hovered(close.contains(p)),
         );
 
-        // One row per environment.
+        // One row per environment; its buttons are as wide as their labels.
+        let row_labels = [
+            t("terminal-env-grant"),
+            t("terminal-env-rename"),
+            t("terminal-env-open"),
+        ];
+        let [grant_w, rename_w, open_w] = row_labels.each_ref().map(|label| {
+            ButtonFace::new(Rect::ZERO, label)
+                .control_size(size)
+                .intrinsic_width(tr, theme)
+        });
         let mut y = panel_rect.y0 + gap * 2.0 + button_h;
         self.environments_panel.rows.clear();
         if envs.is_empty() {
-            tr.draw_text(
+            tr.draw_style(
                 scene,
-                &t("terminal-env-unavailable"),
-                body_size,
-                theme.tokens.colors.text_dim,
+                &unavailable,
+                ink.text_dim,
                 transform * Affine::translate((panel_rect.x0 + margin, y)),
                 Some(text_w),
+                &caption,
             );
         }
-        let bw = 104.0 * scale.min(1.25);
         for ((env, (tools, grants)), row_h) in envs.iter().zip(&details).zip(&row_heights) {
             if y + row_h > panel_rect.y1 - button_h - gap * 2.0 {
                 break;
             }
             let open = Rect::new(
-                panel_rect.x1 - margin - bw,
+                panel_rect.x1 - margin - open_w,
                 y,
                 panel_rect.x1 - margin,
                 y + button_h,
             );
-            let rename = Rect::new(open.x0 - gap - bw, y, open.x0 - gap, y + button_h);
-            let grant = Rect::new(rename.x0 - gap - bw, y, rename.x0 - gap, y + button_h);
+            let rename = Rect::new(open.x0 - gap - rename_w, y, open.x0 - gap, y + button_h);
+            let grant = Rect::new(rename.x0 - gap - grant_w, y, rename.x0 - gap, y + button_h);
             let current = self
                 .sessions
                 .target
                 .as_ref()
                 .and_then(SessionTarget::environment_record)
                 == Some(env.key.as_str());
-            let name = if current {
-                format!("✓ {}", env.name)
-            } else {
-                env.name.clone()
-            };
-            let name_w = (grant.x0 - gap - panel_rect.x0 - margin).max(20.0) as f32;
-            let name = tr.elide_to_width(&name, body_size, name_w);
-            tr.draw_text_weighted(
+            let band = Rect::new(panel_rect.x0 + margin, y, grant.x0 - gap, y + button_h);
+            let mut name_x = band.x0;
+            if current {
+                // The environment this tab runs in carries the check a menu
+                // gives its applied row.
+                let mark_side = f64::from(metrics.icon_sm);
+                let mark = Rect::from_center_size(
+                    Point::new(name_x + mark_side / 2.0, band.center().y),
+                    (mark_side, mark_side),
+                );
+                Icon::Check.draw(scene, transform, mark, ink.text_primary);
+                name_x += mark_side + f64::from(metrics.icon_label_gap);
+            }
+            let name_w = (band.x1 - name_x).max(0.0) as f32;
+            let name = tr.elide_to_width_style(&env.name, name_w, &name_style);
+            let (_, name_h) = tr.measure_style(&name, None, &name_style);
+            tr.draw_style(
                 scene,
                 &name,
-                body_size,
-                theme.text_primary,
-                transform * Affine::translate((panel_rect.x0 + margin, y + gap / 2.0)),
+                ink.text_primary,
+                transform * Affine::translate((name_x, band.center().y - f64::from(name_h) / 2.0)),
                 None,
-                TextWeight::Medium,
+                &name_style,
             );
             let mut text_y = y + button_h + gap / 2.0;
             for text in [tools, grants] {
-                tr.draw_text(
+                tr.draw_style(
                     scene,
                     text,
-                    dim_size,
-                    theme.tokens.colors.text_dim,
+                    ink.text_dim,
                     transform * Affine::translate((panel_rect.x0 + margin, text_y)),
                     Some(text_w),
+                    &caption,
                 );
-                let (_, h) = tr.measure(text, dim_size, Some(text_w));
+                let (_, h) = tr.measure_style(text, Some(text_w), &caption);
                 text_y += f64::from(h);
             }
-            for (rect, label) in [
-                (grant, t("terminal-env-grant")),
-                (rename, t("terminal-env-rename")),
-                (open, t("terminal-env-open")),
-            ] {
-                self.draw_panel_button(scene, transform, tr, theme, rect, &label);
+            for (rect, label) in [grant, rename, open].into_iter().zip(&row_labels) {
+                Button::paint(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    &ButtonFace::new(rect, label)
+                        .control_size(size)
+                        .hovered(rect.contains(p)),
+                );
             }
             self.environments_panel.rows.push(EnvironmentRow {
                 key: env.key.clone(),
@@ -1005,9 +1020,18 @@ impl TerminalWidget {
             y += row_h;
         }
 
-        // The name field: a new environment, or the one being renamed.
+        // The name field: a new environment, or the one being renamed. Making
+        // or renaming one is the panel's main action.
         let field_y = panel_rect.y1 - gap - button_h;
-        let submit_w = 96.0 * scale.min(1.25);
+        let submit_label = if self.environments_panel.renaming.is_some() {
+            t("terminal-env-rename")
+        } else {
+            t("terminal-env-create")
+        };
+        let submit_face = ButtonFace::new(Rect::ZERO, &submit_label)
+            .role(ButtonRole::Primary)
+            .control_size(size);
+        let submit_w = submit_face.intrinsic_width(tr, theme);
         let submit = Rect::new(
             panel_rect.x1 - margin - submit_w,
             field_y,
@@ -1015,24 +1039,34 @@ impl TerminalWidget {
             field_y + button_h,
         );
         self.environments_panel.submit_rect = submit;
-        let submit_label = if self.environments_panel.renaming.is_some() {
-            t("terminal-env-rename")
-        } else {
-            t("terminal-env-create")
-        };
-        self.draw_panel_button(scene, transform, tr, theme, submit, &submit_label);
-        if let Some(error) = self.environments_panel.error.clone() {
-            let error = tr.elide_to_width(&error, dim_size, (panel_w - margin * 2.0) as f32);
-            tr.draw_text(
+        Button::paint(
+            scene,
+            transform,
+            tr,
+            theme,
+            &ButtonFace::new(submit, &submit_label)
+                .role(ButtonRole::Primary)
+                .control_size(size)
+                .hovered(submit.contains(p)),
+        );
+        let error = self.environments_panel.error.clone();
+        if let Some(error) = &error {
+            let error = tr.elide_to_width_style(error, text_w, &caption);
+            tr.draw_style(
                 scene,
                 &error,
-                dim_size,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((panel_rect.x0 + margin, field_y - line)),
+                theme.tokens.colors.semantic.danger,
+                transform
+                    * Affine::translate((
+                        panel_rect.x0 + margin,
+                        field_y - gap / 2.0 - caption_line,
+                    )),
                 None,
+                &caption,
             );
         }
         if let Some(input) = self.environments_panel.input.as_mut() {
+            input.set_invalid(error.is_some());
             input.apply_layout_external(Rect::new(
                 panel_rect.x0 + margin,
                 field_y,
@@ -1040,68 +1074,7 @@ impl TerminalWidget {
                 field_y + button_h,
             ));
             input.draw(scene, transform, tr, theme, presence);
-            if input.value().is_empty() {
-                let r = input.get_rect();
-                tr.draw_text(
-                    scene,
-                    &t("terminal-env-name-placeholder"),
-                    dim_size,
-                    theme.tokens.colors.text_dim,
-                    transform
-                        * Affine::translate((
-                            r.x0 + 10.0,
-                            r.center().y - f64::from(dim_size) / 2.0,
-                        )),
-                    None,
-                );
-            }
         }
-    }
-
-    fn draw_panel_button(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        label: &str,
-    ) {
-        let active = rect.contains(self.last_cursor_pos);
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            if active {
-                theme.tokens.colors.overlay_medium
-            } else {
-                theme.tokens.colors.overlay_subtle
-            },
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &shape,
-        );
-        let size = 12.0_f32;
-        let label = tr.elide_to_width(label, size, (rect.width() - 8.0).max(0.0) as f32);
-        let (w, h) = tr.measure(&label, size, None);
-        tr.draw_text(
-            scene,
-            &label,
-            size,
-            theme.text_primary,
-            transform
-                * Affine::translate((
-                    rect.center().x - f64::from(w) / 2.0,
-                    rect.center().y - f64::from(h) / 2.0,
-                )),
-            None,
-        );
     }
 
     // --- agent and palette operations
