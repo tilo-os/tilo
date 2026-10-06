@@ -1,0 +1,27 @@
+[package]
+name = "registry-review"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+
+[[bin]]
+name = "tilo-registry-review"
+path = "src/main.rs"
+
+[dependencies]
+ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+registry-server = { path = "../../packaging/registry-server" }
+registry-types = { path = "../../packaging/registry-types" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+anyhow.workspace = true
+tempfile.workspace = true
+ed25519-dalek.workspace = true
+hex.workspace = true
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
+
+[lints]
+workspace = true

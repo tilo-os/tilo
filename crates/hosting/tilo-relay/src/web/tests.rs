@@ -713,3 +713,40 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
     guest_native.close().await;
     crate::daemon::Relay::shutdown(relay).await;
 }
+
+#[test]
+fn resource_locator_uses_configured_https_host_and_refuses_wildcards() {
+    let files = |host| TlsSource::Files {
+        certificate_chain: "unused.pem".into(),
+        private_key: "unused.key".into(),
+        host,
+    };
+    let wildcard: SocketAddr = "0.0.0.0:443".parse().unwrap();
+    assert_eq!(
+        browser_locator_origin(&files(None), wildcard).unwrap(),
+        None
+    );
+    assert_eq!(
+        browser_locator_origin(&files(Some("0.0.0.0".into())), wildcard).unwrap(),
+        None
+    );
+    assert_eq!(
+        browser_locator_origin(&files(Some("room.example".into())), wildcard).unwrap(),
+        Some("https://room.example".into())
+    );
+    assert_eq!(
+        browser_locator_origin(&files(None), "[::1]:8443".parse().unwrap()).unwrap(),
+        Some("https://[::1]:8443".into())
+    );
+    for host in ["user@room.example", "room.example/path", "bad host"] {
+        assert!(browser_locator_origin(&files(Some(host.into())), wildcard).is_err());
+    }
+    let development = TlsSource::Development {
+        hosts: vec!["0.0.0.0".into(), "room.example".into()],
+        store: None,
+    };
+    assert_eq!(
+        browser_locator_origin(&development, wildcard).unwrap(),
+        Some("https://room.example".into())
+    );
+}

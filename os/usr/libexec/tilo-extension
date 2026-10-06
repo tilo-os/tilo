@@ -360,6 +360,8 @@ def manifest_part_fits(manifest: "Manifest", part: "Part", base: "Base") -> bool
     """
     if part.state != "available":
         return False
+    if not codec_runtime_complete(part, base):
+        return False
     pinned = manifest.base
     if (pinned.get("os_id"), pinned.get("version_id"), pinned.get("architecture")) != \
             (base.os_id, base.version_id, base.rpm_arch):
@@ -369,6 +371,18 @@ def manifest_part_fits(manifest: "Manifest", part: "Part", base: "Base") -> bool
     if any(base.installed.get(name) != evr for name, evr in part.requires_base.items()):
         return False
     return not any(package_name(a.package) in base.installed for a in part.artifacts)
+
+
+def codec_runtime_complete(part: "Part", base: "Base") -> bool:
+    """A plugin linked against noopenh264 is discoverable but cannot run.
+
+    Old signed parts can contain the plugin without Cisco's implementation.
+    The stub satisfies the SONAME dependency, not the codec capability. Check
+    exact-base parts too; authenticity alone does not make them usable.
+    """
+    names = {package_name(a.package) for a in part.artifacts}
+    return ("gstreamer1-plugin-openh264" not in names
+            or "openh264" in names or "openh264" in base.installed)
 
 
 def extension_release(os_id: str, version_id: str, architecture: str, extra: dict[str, str]) -> str:
@@ -990,6 +1004,8 @@ def read_record(tree: Path, part: str) -> dict:
 
 def build_part(layout: Layout, base: Base, manifest: Manifest, part: Part, files: list[tuple[Artifact, Path]]) -> dict:
     """Assemble a directory sysext next to the live one, then swap it in."""
+    if not codec_runtime_complete(part, base):
+        raise PackError(OPENH264_WAITING_MESSAGE)
     layout.extensions.mkdir(parents=True, exist_ok=True)
     staging = layout.extensions / f".{part.name}.new"
     shutil.rmtree(staging, ignore_errors=True)
@@ -1173,7 +1189,10 @@ def choose_parts(catalogue: Catalogue, base: Base, manifests: list[Manifest]) ->
             if part is None:
                 choices.append(Choice(name, "unsupported"))
             elif part.state == "available":
-                choices.append(Choice(name, "enabled", "", exact, part))
+                if not codec_runtime_complete(part, base):
+                    choices.append(Choice(name, "waiting", OPENH264_WAITING_MESSAGE))
+                else:
+                    choices.append(Choice(name, "enabled", "", exact, part))
             else:
                 choices.append(Choice(name, part.state, part.message))
             continue
@@ -1187,6 +1206,7 @@ def choose_parts(catalogue: Catalogue, base: Base, manifests: list[Manifest]) ->
 
 
 UPDATE_MESSAGE = "Waiting to be downloaded again for this version of Tilo."
+OPENH264_WAITING_MESSAGE = "OpenH264 is waiting for Cisco's codec library; the system compatibility stub cannot encode or decode video."
 
 
 def sysext_masked() -> bool:
@@ -1388,6 +1408,8 @@ def refresh(layout: Layout, ident: str, *, explicit: bool) -> bool:
         store.prepare()
         manifest, data, signature = fetch_manifest(layout, catalogue, base, status)
         wanted = [p for p in manifest.parts if p.state == "available"]
+        if any(not codec_runtime_complete(part, base) for part in wanted):
+            raise PackError(OPENH264_WAITING_MESSAGE)
         total = sum(a.size for p in wanted for a in p.artifacts if not store.have(a))
         done = 0
 
