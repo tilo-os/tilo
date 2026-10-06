@@ -60,3 +60,7 @@ the status-rooted Panel material, quiet idle rows, animation and session policy.
 Before/after fixtures cover dark/light/high contrast, 200% text, combined 150% UI
 and 130% text, and a narrow output. Full action names take precedence over
 secondary copy when height is constrained; complete details remain accessible.
+
+Capture delivery: all 24 representative and matrix PNGs are saved to native ChatGPT
+Library image files. Small evidence manifests retain their identities, dimensions,
+source revisions and checksums; the current source tree contains no capture PNGs.

@@ -13,13 +13,13 @@ description.
 
 | State | Before | After |
 | --- | --- | --- |
-| Dark, normal type | [Before](before-dark-1x-1280x800.png) | [After](after-dark-1x-1280x800.png) |
-| Light, normal type | [Before](before-light-1x-1280x800.png) | [After](after-light-1x-1280x800.png) |
-| Dark, 200% text | [Before](before-dark-2x-1280x800.png) | [After](after-dark-2x-1280x800.png) |
-| Laptop, 200% text | [Before](before-dark-2x-800x700.png) | [After](after-dark-2x-800x700.png) |
-| High contrast | [Before](before-high-contrast-1x-1280x800.png) | [After](after-high-contrast-1x-1280x800.png) |
-| 150% UI, 130% text | [Before](before-dark-ui-1.5-text-1.3-1280x800.png) | [After](after-dark-ui-1.5-text-1.3-1280x800.png) |
-| Narrow, 200% text | [Before](before-dark-2x-480x600.png) | [After](after-dark-2x-480x600.png) |
+| Dark, normal type | [Before](https://code.tilo.so/tilo/tilo/raw/commit/62d251fbc81b088c81b7a3138ee1d1083019ddcd/docs/evidence/power-menu/before-dark-1x-1280x800.png) | [After](https://code.tilo.so/tilo/tilo/raw/commit/62d251fbc81b088c81b7a3138ee1d1083019ddcd/docs/evidence/power-menu/after-dark-1x-1280x800.png) |
+| Light, normal type | [Before](https://code.tilo.so/tilo/tilo/raw/commit/62d251fbc81b088c81b7a3138ee1d1083019ddcd/docs/evidence/power-menu/before-light-1x-1280x800.png) | [After](https://code.tilo.so/tilo/tilo/raw/commit/62d251fbc81b088c81b7a3138ee1d1083019ddcd/docs/evidence/power-menu/after-light-1x-1280x800.png) |
+| Dark, 200% text | [Before](https://code.tilo.so/tilo/tilo/raw/commit/62d251fbc81b088c81b7a3138ee1d1083019ddcd/docs/evidence/power-menu/before-dark-2x-1280x800.png) | [After](https://code.tilo.so/tilo/tilo/raw/commit/62d251fbc81b088c81b7a3138ee1d1083019ddcd/docs/evidence/power-menu/after-dark-2x-1280x800.png) |
+| Laptop, 200% text | [Before](https://code.tilo.so/tilo/tilo/raw/commit/62d251fbc81b088c81b7a3138ee1d1083019ddcd/docs/evidence/power-menu/before-dark-2x-800x700.png) | [After](https://code.tilo.so/tilo/tilo/raw/commit/62d251fbc81b088c81b7a3138ee1d1083019ddcd/docs/evidence/power-menu/after-dark-2x-800x700.png) |
+| High contrast | [Before](https://code.tilo.so/tilo/tilo/raw/commit/62d251fbc81b088c81b7a3138ee1d1083019ddcd/docs/evidence/power-menu/before-high-contrast-1x-1280x800.png) | [After](https://code.tilo.so/tilo/tilo/raw/commit/62d251fbc81b088c81b7a3138ee1d1083019ddcd/docs/evidence/power-menu/after-high-contrast-1x-1280x800.png) |
+| 150% UI, 130% text | [Before](https://code.tilo.so/tilo/tilo/raw/commit/62d251fbc81b088c81b7a3138ee1d1083019ddcd/docs/evidence/power-menu/before-dark-ui-1.5-text-1.3-1280x800.png) | [After](https://code.tilo.so/tilo/tilo/raw/commit/62d251fbc81b088c81b7a3138ee1d1083019ddcd/docs/evidence/power-menu/after-dark-ui-1.5-text-1.3-1280x800.png) |
+| Narrow, 200% text | [Before](https://code.tilo.so/tilo/tilo/raw/commit/62d251fbc81b088c81b7a3138ee1d1083019ddcd/docs/evidence/power-menu/before-dark-2x-480x600.png) | [After](https://code.tilo.so/tilo/tilo/raw/commit/62d251fbc81b088c81b7a3138ee1d1083019ddcd/docs/evidence/power-menu/after-dark-2x-480x600.png) |
 
 The selected action is Switch user. Render tests assert actual Panel and idle-row
 pixels, not just file creation. Focus, label visibility and secondary-copy
@@ -37,3 +37,8 @@ Verification runs remotely with plain locked Cargo:
 Tests inspect returned action intents only. No lock/logout/power effects or
 account/device actions are executed. Live compositor/VM journeys remain a
 separate verification layer.
+
+PNG binaries are stored in ChatGPT Library, with native file identities, dimensions,
+source commits and SHA-256 checksums in [artifacts.json](artifacts.json). The paired
+image links above retain the already-published capture revision as a browser-viewable
+fallback. PNG binaries are removed from the current source tree.
