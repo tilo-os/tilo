@@ -259,6 +259,7 @@ mod device_continuity_service_boundary_tests {
             NEARBY_TRANSFER_APP_ID,
             "workspace-7",
             CrdtRoute::app(NEARBY_TRANSFER_APP_ID, "workspace-7").channel_key(),
+            Some("local-person".into()),
         )
     }
 
@@ -352,6 +353,7 @@ mod device_continuity_service_boundary_tests {
             "so.tilo.browser",
             "workspace-7",
             CrdtRoute::app("so.tilo.browser", "workspace-7").channel_key(),
+            Some("local-person".into()),
         );
         let refused =
             delegate_nearby_transfer_command(&services, &other_app, "so.tilo.browser", &snapshot())
@@ -373,6 +375,49 @@ mod device_continuity_service_boundary_tests {
         );
         assert!(invalid.is_err(), "malformed command refused");
         assert_eq!(service.calls.lock().expect("calls").len(), 1);
+    }
+
+    #[test]
+    fn airdrop_delegation_seals_person_and_rejects_application_trust_claims() {
+        use runtime_collab::{NearbyTransferCommand as Command, NearbyTransferReply as Reply};
+        let service = Arc::new(RecordingNearby::answering(Reply::Accepted));
+        let services = HostServices {
+            nearby_transfer: Some(service.clone()),
+            ..Default::default()
+        };
+        let context = files_context();
+        let command = Command::SendAirDrop {
+            source_path: b"/approved/report".to_vec(),
+            address: "127.0.0.1".into(),
+            port: 443,
+        };
+        let json = serde_json::to_vec(&command).unwrap();
+        delegate_nearby_transfer_command(&services, &context, NEARBY_TRANSFER_APP_ID, &json)
+            .unwrap();
+        let calls = service.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0.person(), Some("local-person"));
+        assert_eq!(calls[0].1, command);
+        drop(calls);
+        let mut spoof = serde_json::from_slice::<serde_json::Value>(&json).unwrap();
+        for key in ["person", "certificate_sha256", "verified", "remember"] {
+            spoof[key] = "app claim".into();
+            assert!(
+                delegate_nearby_transfer_command(
+                    &services,
+                    &context,
+                    NEARBY_TRANSFER_APP_ID,
+                    &serde_json::to_vec(&spoof).unwrap()
+                )
+                .is_err()
+            );
+            spoof.as_object_mut().unwrap().remove(key);
+        }
+        assert_eq!(
+            service.calls.lock().unwrap().len(),
+            1,
+            "spoofed authority never reaches the service"
+        );
     }
 
     #[test]
@@ -1096,6 +1141,26 @@ pub struct PublishedSurface {
     /// closes. Only actions that explicitly opted into launchable/durable
     /// discovery are ever retained this way.
     pub live: bool,
+}
+
+impl PublishedSurface {
+    /// Copy only the selected descriptor and its routing metadata.
+    fn action_projection(&self, resource: &str, action: &str) -> Option<(Self, PublishedAction)> {
+        let descriptor = self
+            .actions
+            .iter()
+            .find(|descriptor| descriptor.resource == resource && descriptor.action == action)?;
+        Some((
+            Self {
+                peer_id: self.peer_id,
+                app_id: self.app_id.clone(),
+                route: self.route.clone(),
+                actions: Vec::new(),
+                live: self.live,
+            },
+            descriptor.clone(),
+        ))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -3482,6 +3547,37 @@ impl CapnpBrokerState {
             ))
         }));
         result
+    }
+
+    /// Resolve against the current selected source, independently of the
+    /// asynchronous search snapshot. A live source shadows its retained
+    /// launchable catalogue even when it no longer offers the selected action.
+    pub fn published_action(
+        &self,
+        route: &CrdtRoute,
+        resource: &str,
+        action: &str,
+    ) -> Option<(PublishedSurface, PublishedAction)> {
+        let surfaces = self.surfaces.lock().ok()?;
+        let mut live_route = false;
+        for surface in surfaces
+            .values()
+            .filter(|surface| surface.app_id == route.app_id && surface.route == *route)
+        {
+            live_route = true;
+            if let Some(selected) = surface.action_projection(resource, action) {
+                return Some(selected);
+            }
+        }
+        let selected = if live_route {
+            None
+        } else {
+            self.launchable.action_for(route, resource, action)
+        };
+        // Keep live-source shadowing coherent with the archive lookup; a
+        // publisher must not install a live replacement between those reads.
+        drop(surfaces);
+        selected
     }
 
     /// Check one live action route without cloning the published catalogue.
@@ -6944,6 +7040,10 @@ impl channel_handle::Server for CapnpChannelHandle {
             route.app_id.clone(),
             route.cluster_id.clone(),
             route.channel_key(),
+            self.verified_identity
+                .agent_id
+                .is_none()
+                .then(|| self.verified_identity.principal_id.clone()),
         );
         let request = match params.get() {
             Ok(request) => request,
@@ -13955,6 +14055,52 @@ pub mod tests {
         assert!(!subscribers.contains_key(&3));
         drop(subscribers);
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn exact_published_action_uses_current_live_routes_before_archived_descriptors() {
+        let broker = CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let state = broker.state();
+        let mut retained = catalogue_surface(7, "room", "notebook");
+        retained.actions[0].contract.discovery = tilo_actions::DiscoveryScope::Launchable;
+        state.launchable.retain(&retained);
+        let route = retained.route.clone();
+        let (archived, descriptor) = state.published_action(&route, "notebook", "open").unwrap();
+        assert!(!archived.live);
+        assert!(
+            archived.actions.is_empty(),
+            "lookup must not clone the source inventory"
+        );
+        assert_eq!(descriptor.resource, "notebook");
+
+        let mut empty = retained.clone();
+        empty.actions.clear();
+        state.replace_published_surfaces_for_test(vec![empty.clone()]);
+        assert!(state.published_action(&route, "notebook", "open").is_none());
+
+        let mut other_peer = retained;
+        other_peer.peer_id = 8;
+        other_peer.actions[0].action_label = "Current live action".into();
+        state.replace_published_surfaces_for_test(vec![empty, other_peer]);
+        let (live, descriptor) = state.published_action(&route, "notebook", "open").unwrap();
+        assert!(live.live);
+        assert_eq!(live.peer_id, 8);
+        assert!(live.actions.is_empty());
+        assert_eq!(descriptor.action_label, "Current live action");
+        let foreign = CrdtRoute::record(&route.app_id, "another-room", &route.record_id);
+        assert!(
+            state
+                .published_action(&foreign, "notebook", "open")
+                .is_none()
+        );
+        state.replace_published_surfaces_for_test(Vec::new());
+        assert!(
+            !state
+                .published_action(&route, "notebook", "open")
+                .unwrap()
+                .0
+                .live
+        );
     }
 
     #[allow(

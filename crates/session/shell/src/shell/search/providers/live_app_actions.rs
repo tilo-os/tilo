@@ -269,22 +269,10 @@ pub struct LiveAppActionsProvider {
     directory_query_probe: RefCell<Option<CatalogueQuery>>,
 }
 
-fn action_addresses(entries: &[(PublishedSurface, PublishedAction)]) -> HashMap<String, usize> {
-    entries
-        .iter()
-        .enumerate()
-        .map(|(index, (surface, action))| {
-            (LiveAppActionsProvider::result_id(surface, action), index)
-        })
-        .collect()
-}
-
 struct SurfaceSnapshot {
     source_generation: u64,
     scope: String,
     entries: Vec<(PublishedSurface, PublishedAction)>,
-    /// Exact addresses built off the frame thread alongside the search index.
-    addresses: HashMap<String, usize>,
     /// The entries' fields keyed by position, best match first. `None` for a
     /// one-row projection of an entry that already matched.
     index: Option<SearchIndex>,
@@ -550,13 +538,11 @@ impl LiveAppActionsProvider {
                     .map(move |action| (surface.clone(), action))
             })
             .collect::<Vec<_>>();
-        let addresses = action_addresses(&entries);
         let index = Some(index_actions(&entries));
         SurfaceSnapshot {
             source_generation,
             scope: scope.key.clone(),
             entries,
-            addresses,
             index,
         }
     }
@@ -652,7 +638,6 @@ impl LiveAppActionsProvider {
             source_generation,
             scope,
             entries: vec![(surface, action)],
-            addresses: HashMap::new(),
             index: None,
         };
         let previous = self.surface_snapshot.replace(Some(temporary));
@@ -2062,16 +2047,35 @@ impl SearchProvider for LiveAppActionsProvider {
             if ctx.chrome.search_resource_scope.is_some() {
                 return None;
             }
-            let candidate = {
-                let snapshot = self.surface_snapshot.borrow();
-                let snapshot = snapshot.as_ref()?;
-                if snapshot.source_generation != self.broker.surfaces_generation()
-                    || snapshot.scope != Self::surface_scope(&ctx)
-                {
-                    return None;
+            let (app, _, cluster, record, resource, action) = Self::result_parts(id)?;
+            let scope = Self::build_scope(&ctx);
+            let in_scope = match scope.scope {
+                crate::shell::chrome_state::SearchScope::All => true,
+                crate::shell::chrome_state::SearchScope::Workspace => {
+                    scope.room.as_deref() == Some(cluster)
                 }
-                snapshot.entries.get(*snapshot.addresses.get(id)?)?.clone()
+                crate::shell::chrome_state::SearchScope::ActiveApp => {
+                    scope.room.as_deref() == Some(cluster)
+                        && scope
+                            .app
+                            .as_deref()
+                            .is_some_and(|active| active.eq_ignore_ascii_case(app))
+                }
             };
+            if !in_scope {
+                return None;
+            }
+            let route = crate::shell::collab_broker::CrdtRoute {
+                app_id: app.into(),
+                cluster_id: cluster.into(),
+                record_id: record.into(),
+            };
+            let candidate = self.broker.published_action(&route, resource, action)?;
+            // The opaque address includes its permission requirement. Never
+            // use an old address with a newly changed contract or route.
+            if Self::result_id(&candidate.0, &candidate.1) != id {
+                return None;
+            }
             return self.materialize_local_action(&ctx, candidate.0, candidate.1, 0);
         }
         let peer_id = fields.next()?.parse::<u64>().ok()?;
@@ -2489,8 +2493,7 @@ mod tests {
     use super::{
         AuxiliaryEntry, AuxiliaryResume, AuxiliarySnapshot, DIRECTORY_PAGE_REPLY_TIMEOUT,
         DirectoryCacheKey, ID_SEPARATOR, LiveAppActionsProvider, PROVIDER_ID, PendingDirectoryPage,
-        SurfaceSnapshot, action_addresses, directory_start_ticket, index_actions,
-        invalidates_directory_cache,
+        SurfaceSnapshot, directory_start_ticket, index_actions, invalidates_directory_cache,
     };
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::collab_broker::CrdtRoute;
@@ -3223,6 +3226,98 @@ mod tests {
         );
     }
 
+    fn exact_catalogue_contains(
+        registry: &crate::shell::search::SearchRegistry,
+        resource: &crate::shell::search::action_api::ResourceRef,
+        chrome: &crate::shell::chrome_state::Chrome,
+        doc: &AutoCommit,
+    ) -> bool {
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible};
+        ActionCatalog::build_for_resource(
+            registry,
+            resource,
+            crate::shell::chrome_state::SearchScope::All,
+            None,
+            &chrome.borrow(),
+            doc,
+            &automerge::ROOT,
+            &AllVisible,
+        )
+        .contains(resource)
+    }
+
+    #[test]
+    fn disclosed_local_address_survives_unrelated_publication_but_not_changed_authority() {
+        use crate::shell::search::SearchRegistry;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
+        let surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.notes".into(),
+            route: CrdtRoute::app("so.tilo.notes", &room),
+            actions: vec![local_action("Read notebook", "read")],
+            live: true,
+        };
+        let resource = ResourceRef::new(
+            PROVIDER_ID,
+            LiveAppActionsProvider::result_id(&surface, &surface.actions[0]),
+        );
+        broker.replace_published_surfaces_for_test(vec![surface.clone()]);
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(LiveAppActionsProvider::new(broker.clone())));
+        let doc = AutoCommit::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let catalogue = ActionCatalog::build(
+                &registry,
+                "Read notebook",
+                crate::shell::chrome_state::SearchScope::All,
+                None,
+                &chrome.borrow(),
+                &doc,
+                &automerge::ROOT,
+                &AllVisible,
+            );
+            if catalogue.contains(&resource) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "ordinary catalogue must disclose the read"
+            );
+            std::thread::yield_now();
+        }
+        let unrelated = PublishedSurface {
+            peer_id: 8,
+            app_id: "so.tilo.settings".into(),
+            route: CrdtRoute::app("so.tilo.settings", &room),
+            actions: vec![local_action("Read settings", "read")],
+            live: true,
+        };
+        broker.replace_published_surfaces_for_test(vec![surface.clone(), unrelated]);
+        assert!(
+            exact_catalogue_contains(&registry, &resource, &chrome, &doc),
+            "another app's publication must not invalidate an unchanged disclosed address"
+        );
+        let mut changed = surface.clone();
+        changed.actions[0].contract.permission = tilo_actions::PermissionRequirement::Admin;
+        broker.replace_published_surfaces_for_test(vec![changed]);
+        assert!(!exact_catalogue_contains(
+            &registry, &resource, &chrome, &doc
+        ));
+        let mut removed = surface;
+        removed.actions.clear();
+        broker.replace_published_surfaces_for_test(vec![removed]);
+        assert!(!exact_catalogue_contains(
+            &registry, &resource, &chrome, &doc
+        ));
+    }
+
     #[test]
     fn a_100001_action_snapshot_reaches_a_unique_tail_without_scanning_the_corpus() {
         let provider = LiveAppActionsProvider::new(
@@ -3252,13 +3347,11 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        let addresses = action_addresses(&entries);
         let index = Some(index_actions(&entries));
         *provider.surface_snapshot.borrow_mut() = Some(SurfaceSnapshot {
             source_generation: provider.broker.surfaces_generation(),
             scope: LiveAppActionsProvider::surface_scope(&ctx),
             entries,
-            addresses,
             index,
         });
         let page = provider.query_page(

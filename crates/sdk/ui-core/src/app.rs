@@ -945,6 +945,9 @@ impl App {
                 ),
             });
         }
+        if behaviour.window == crate::application::WindowRole::InputSurface {
+            app = app.without_native_document_chrome();
+        }
         Ok(app)
     }
 

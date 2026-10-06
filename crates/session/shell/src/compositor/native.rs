@@ -1136,8 +1136,9 @@ fn app_local_to_desktop(rect: Rect, app_rect: Rect) -> Rect {
     rect + app_rect.origin().to_vec2()
 }
 
-/// Serve the shell's own file choosers when apps have no portal to reach: no
-/// session bus, as on a provider's headless guest. `attended` says whether an
+/// Serve the authenticated, workspace-scoped chooser connection alongside
+/// any desktop portal. Legacy runtimes may use this connection for documents
+/// while using the filtered session bus for notifications. `attended` says whether an
 /// agent is driving the screen; an unattended session (one that saves into
 /// `TILO_SAVE_DIRECTORY`) otherwise leaves its choosers to the apps.
 fn start_chooser_service(
@@ -1145,9 +1146,6 @@ fn start_chooser_service(
     attended: Arc<AtomicBool>,
     wake: crate::session_runtime::Wake,
 ) -> Option<crate::compositor::chooser_service::ChooserService> {
-    if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some_and(|address| !address.is_empty()) {
-        return None;
-    }
     let portal = portal?;
     let save_directory = std::env::var_os(tilo_dialogs::portal::SAVE_DIRECTORY_ENV)
         .filter(|directory| !directory.is_empty())
@@ -2857,6 +2855,14 @@ impl ControlState for FrameBuilderControlState<'_> {
             // The input hardware and last-used modality the chrome adapts
             // to, and the language the desktop help overlay is written in.
             "input": input_environment_json(self.fb.host().interaction_environment(), self.fb.host().shortcut_help_modality()),
+            "input_capture": {
+                "onboarding": self.fb.host().onboarding_active(),
+                "chrome": client_input::chrome_captures_input(self.fb),
+                "inner_surface": self.fb.host().inner_surface_captures_input(),
+                "maximized_controls": self.fb.host().maximized_chrome_captures_pointer(),
+                "shortcut_help": overlays.shortcut_help,
+                "projection": overlays.projection,
+            },
             // The on-screen keyboard: whether its service has a surface,
             // and where it is painted while it serves the focused field.
             "on_screen_keyboard": {

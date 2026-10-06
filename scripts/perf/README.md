@@ -62,6 +62,40 @@ executable stand-alone; the higher-level flow is described below.
 4. (optional) `bolt-optimize.sh` — post-link `llvm-bolt` on the PGO'd
    binaries using the same profile signal. Output at `target/bolted/`.
 
+## Physical device Notes latency
+
+Use the ordinary `tilo-vm` device and slot after applying a qualified release
+component with `tilo-vm swap shell --slot device --builder remote`. Update Notes
+through its signed release channel:
+
+```sh
+TILO_VM=yoga tilo-vm slot exec --slot device --timeout 180 -- app update so.tilo.notes
+python3 scripts/perf/device_notes_latency.py --device yoga --slot device \
+  --samples 100 --out target/yoga-notes-after-update
+```
+
+Open the updated Notes app through its normal application action before capture.
+The device session must be unlocked, with one Notes window. Enable the greeter's
+normal `configure-session-diagnostics@greeter` presentation flag before sign-in
+for physical input and presentation evidence. For GPU diagnosis also enable
+`gpu_stages`, `gpu_timestamps` and `gpu_dispatch_timestamps`; stage logging alone
+does not enable GPU timestamp queries. See `docs/agent-action-api.md` for the
+semantic configuration and normal sign-in actions.
+
+The capture creates and opens a fresh scratch note. Before every kernel key it
+checks the actual selected/bound page, adopted canonical and rendered hashes,
+caret, editor focus and compositor keyboard routing. Existing notes receive no
+benchmark input. The scratch note remains available for inspection afterward.
+
+The output contains private raw logs, the exact input/frame/presentation timeline,
+editor observations, scratch identity and `report.json`. Missing, discarded or
+coalesced exact frames fail the capture; a partial run never produces a passing
+latency summary. A small sample count is useful for diagnosis, but does not
+establish a stable p99. Record the deployed component receipt, Notes release and
+device/image identity with comparative runs. The clock starts at the original
+kernel/libinput event and ends at hardware presentation; it excludes peripheral
+scan time and panel pixel response.
+
 ## What's blocked
 
 - Rebuilding the bootc qcow2 to measure the boot-time delta against

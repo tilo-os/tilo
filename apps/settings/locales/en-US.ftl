@@ -1761,3 +1761,5 @@ settings-printers-read-error = Can't list printers: { $error }
 settings-printers-jobs-read-error = Can't list print jobs: { $error }
 settings-printers-scanners-read-error = Can't list scanners: { $error }
 agent-key-read-error = Can't tell whether a key is saved: { $error }
+
+shortcut-name-tab-menu = Show tab menu

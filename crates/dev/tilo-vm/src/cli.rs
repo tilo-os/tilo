@@ -886,11 +886,11 @@ pub struct CreateArgs {
     /// libvirt only: virtio-gpu outputs, e.g. 2 for a two-monitor layout.
     #[arg(long, value_parser = clap::value_parser!(u8).range(1..=16))]
     pub heads: Option<u8>,
-    /// libvirt only: virgl 3D acceleration on the host GPU, so the desktop
+    /// libvirt or QEMU: virgl 3D acceleration on the host GPU, so the desktop
     /// renders on a GPU instead of in software.
     #[arg(long)]
     pub gl: bool,
-    /// libvirt only: the first output's preferred mode, `WIDTHxHEIGHT` (e.g. `5120x2880`).
+    /// libvirt or QEMU: the first output's preferred mode, `WIDTHxHEIGHT` (e.g. `5120x2880`).
     #[arg(long, value_parser = parse_resolution)]
     pub resolution: Option<String>,
     /// Guest CPUs (default: the adapter's).

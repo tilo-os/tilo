@@ -2358,6 +2358,21 @@ nearby-error-folder-too-large = folder exceeds the size limit
 nearby-error-source-changed = nearby transfer source changed while staging
 nearby-error-name-not-portable = source name is not portable
 
+# AirDrop lab receiver verification
+airdrop-verify-title = Verify AirDrop receiver
+airdrop-verify-send-once = Send once
+airdrop-verify-detail = File: { $name }
+    Size: { $bytes } bytes
+    Receiver: { $endpoint }
+    Enter the receiver's SHA-256 certificate fingerprint as 64 hexadecimal digits from its trusted console or another independently verified channel. This sends the staged file once, only if the fingerprint matches. Cancel if you cannot verify the receiver.
+airdrop-error-unavailable = AirDrop lab requires an unlocked local session, file-transfer permission and current Files access.
+airdrop-error-source = AirDrop lab accepts one readable regular file up to 16 MiB.
+airdrop-error-busy = Another AirDrop attempt is still running. Cancel it before starting another.
+airdrop-error-failed = AirDrop transfer failed. Verify the receiver again before a new attempt.
+airdrop-error-declined = AirDrop transfer was cancelled before sending.
+airdrop-error-verification = Fingerprint differs. Check the receiver; nothing sent.
+airdrop-error-fresh-consent = Start a new AirDrop attempt to verify the receiver and approve this file again.
+
 # A document a tab could not restore
 hosted-document-unavailable = { $path } is unavailable: { $error }
 
@@ -2375,6 +2390,14 @@ a11y-speaker-listener = { $group } can calibrate with this microphone
 a11y-speaker-listener-description = Speaker calibration may listen with this microphone; activate to stop
 speaker-calibration-listening-refused = { $microphone } was not allowed to listen, so nothing can be measured from where you sit
 speaker-error-listening-unavailable = choose a microphone that can listen where you sit
+search-action-axis-enable = Enable experimental axis navigation
+search-action-axis-enable-subtitle = This session: step between groups and gather focus into view
+search-action-axis-disable = Disable experimental axis navigation
+search-action-axis-disable-subtitle = Restore ordinary window navigation for this session
+search-action-axis-gather = Gather the focused window into view
+search-action-axis-gather-subtitle = Experimental axis navigation: reveal focus without animation
+axis-navigation-disabled = Experimental axis navigation is disabled
+
 search-provider-device-shell = Device shell
 terminal-request-device-shell = Request this device's own shell
 terminal-device-shell-owner-required = Only the device owner can request its own shell
@@ -2387,3 +2410,12 @@ terminal-device-shell-session-param = Exact local session UUID from Inspect
 terminal-device-shell-command-param = One reviewed command in this device shell
 
 terminal-device-shell-confirm-param = Confirm this reviewed device-shell operation
+
+shortcut-name-tab-menu = Show tab menu
+search-action-tab-menu = Show tab menu
+search-action-tab-menu-subtitle = Actions for the focused tab
+search-action-tab-menu-unavailable = No focused tab is available
+
+search-action-tab-drag-cancel = Cancel tab drag
+search-action-tab-drag-cancel-subtitle = Keep the dragged tab in its original place
+search-action-tab-drag-cancel-unavailable = Tab dragging cannot be cancelled while the session is locked.

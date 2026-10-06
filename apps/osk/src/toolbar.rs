@@ -16,13 +16,11 @@ use vello::kurbo::Rect;
 /// host text field / clipboard / OSK chrome, not on character output.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OskToolbarAction {
-    /// Paste clipboard contents into the focused field. Wires to the
-    /// existing `arboard` clipboard path (via the host) once IM
-    /// injection lands.
+    /// Paste literal text from the shared host clipboard into the focused field.
     Paste,
-    /// Extend/move the selection (or caret) one unit left.
+    /// Move the caret one unit left; a custom host may extend its selection.
     SelectionLeft,
-    /// Extend/move the selection (or caret) one unit right.
+    /// Move the caret one unit right; a custom host may extend its selection.
     SelectionRight,
     /// Dismiss / hide the keyboard.
     Dismiss,
@@ -62,22 +60,27 @@ impl OskToolbarItem {
             OskToolbarItem::new(
                 "paste",
                 Some(Icon::ClipboardPaste),
-                "Paste",
+                &crate::i18n::t("osk-toolbar-paste"),
                 OskToolbarAction::Paste,
             ),
             OskToolbarItem::new(
                 "sel-left",
                 Some(Icon::ArrowLeft),
-                "Select left",
+                &crate::i18n::t("osk-toolbar-left"),
                 OskToolbarAction::SelectionLeft,
             ),
             OskToolbarItem::new(
                 "sel-right",
                 Some(Icon::ArrowRight),
-                "Select right",
+                &crate::i18n::t("osk-toolbar-right"),
                 OskToolbarAction::SelectionRight,
             ),
-            OskToolbarItem::new("dismiss", Some(Icon::X), "Hide", OskToolbarAction::Dismiss),
+            OskToolbarItem::new(
+                "dismiss",
+                Some(Icon::X),
+                &crate::i18n::t("osk-toolbar-hide"),
+                OskToolbarAction::Dismiss,
+            ),
         ]
     }
 }
