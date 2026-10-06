@@ -1118,5 +1118,2408 @@
       "level3_script_restored": true,
       "redundant_raw_deleted": true
     }
+  },
+  "current_dev_isolated_app_startup": {
+    "source": "12f4dfb2d535f0ea9c64278b66a9bef435d2e4b3",
+    "scope": "private current dev COW; TCG software headless; no hardware claim; restricted network; marked dev-only identity",
+    "journey_rc": 1,
+    "journey_stderr": "",
+    "stop_rc": 0,
+    "cow_removed": true,
+    "journey": {
+      "fixture": {
+        "answer": {
+          "created": true,
+          "display_name": "Throwaway test identity",
+          "throwaway": true
+        }
+      },
+      "actions": {
+        "answer": {
+          "query": "",
+          "count": 55,
+          "actions": [
+            {
+              "provider": "actions",
+              "id": "navigation.axis.enable",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Enable experimental axis navigation",
+              "subtitle": "This session: step between groups and gather focus into view",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "navigation.axis.disable",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Disable experimental axis navigation",
+              "subtitle": "Restore ordinary window navigation for this session",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "navigation.axis.gather",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Gather the focused window into view",
+              "subtitle": "Experimental axis navigation: reveal focus without animation",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "overview.toggle",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Toggle workspace overview",
+              "subtitle": "Show all workspaces in the wheel view",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "settings.open",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Open workspace settings",
+              "subtitle": "Identity, people, privacy, apps and files for this workspace",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "settings.members.open",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Open workspace people",
+              "subtitle": "People, roles and invitations in this workspace",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "settings.privacy.open",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Open workspace privacy & security",
+              "subtitle": "App grants and enforced access for this workspace",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "settings.apps.open",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Open workspace apps & files",
+              "subtitle": "Shared app defaults and your workspace overrides",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "identity.connect",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Add an existing identity",
+              "subtitle": "Import identity credentials and use them in this workspace",
+              "score": 0,
+              "params": [
+                {
+                  "name": "path",
+                  "type": "text",
+                  "required": true,
+                  "description": "Absolute path to an exported Tilo identity JSON record.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                },
+                {
+                  "name": "confirm",
+                  "type": "boolean",
+                  "required": true,
+                  "description": "Confirm importing credentials and delegating workspace administration.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "admin",
+                "risk": "privileged",
+                "confirmation": {
+                  "mode": "confirm"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "identity.select",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Use identity in this workspace",
+              "subtitle": "Select one of the identities already connected to this device",
+              "score": 0,
+              "params": [
+                {
+                  "name": "id",
+                  "type": "text",
+                  "required": true,
+                  "description": "The identity's 64-character public-key fingerprint.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                },
+                {
+                  "name": "confirm",
+                  "type": "boolean",
+                  "required": true,
+                  "description": "Confirm delegating workspace administration to this identity.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "admin",
+                "risk": "privileged",
+                "confirmation": {
+                  "mode": "confirm"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "identity.devices.copy",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Copy connected device list",
+              "subtitle": "Copy device names, fingerprints, capabilities, and revocation state",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "admin",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "identity.device.enroll",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Enroll another device",
+              "subtitle": "Copy a device setup code that is valid for five minutes",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "admin",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "identity.home-peer.enroll",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Pair a home server",
+              "subtitle": "Copy a five-minute setup code with always-on full-sync access",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "admin",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "identity.device.revoke",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Revoke an identity device",
+              "subtitle": "Permanently stop trusting a lost, retired, or compromised device",
+              "score": 0,
+              "params": [
+                {
+                  "name": "device",
+                  "type": "text",
+                  "required": true,
+                  "description": "The enrolled device's 64-character public-key fingerprint.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                },
+                {
+                  "name": "reason",
+                  "type": "text",
+                  "required": false,
+                  "description": "lost, stolen, retired, or compromised (defaults to retired).",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                },
+                {
+                  "name": "confirm",
+                  "type": "boolean",
+                  "required": true,
+                  "description": "Explicit confirmation that this permanent administrative revocation should run.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "admin",
+                "risk": "privileged",
+                "confirmation": {
+                  "mode": "confirm"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "quick-settings.open",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Open quick settings",
+              "subtitle": "Brightness, volume, Wi-Fi, Bluetooth, power profile",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "quick-settings.clipboard",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Open clipboard history",
+              "subtitle": "Search, pin, remove, or reuse private clipboard items",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "quick-settings.devices",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Open devices and media",
+              "subtitle": "Certified devices, media routes, remote input, and handoffs",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "projection.open",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Choose where the desktop appears",
+              "subtitle": "Extend, mirror, one screen, or a Miracast, Google Cast, AirPlay or FCast receiver",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "display.layout.extend",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Extend displays",
+              "subtitle": "Use every connected display as one larger desktop",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "display.layout.mirror",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Mirror displays",
+              "subtitle": "Show the same picture on every connected display",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "display.layout.builtin-only",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Show only on this screen",
+              "subtitle": "Turn external displays off and keep the built-in screen",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "display.layout.external-only",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Show only on external displays",
+              "subtitle": "Turn the built-in screen off and use the external displays",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "display.change.keep",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Keep display settings",
+              "subtitle": "Confirm the display layout that was just applied",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "display.change.revert",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Revert display settings",
+              "subtitle": "Restore the display layout from before the last change",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "bluetooth.pairing.decline",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Decline Bluetooth pairing",
+              "subtitle": "Refuse the pairing request on screen, or stop the pairing whose code it shows",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "capture.open",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Capture or float part of the screen",
+              "subtitle": "Screenshot, record, or make PiP from one or more regions",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "capture.screenshot.send",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Send the last screenshot",
+              "subtitle": "To one of your devices, or into this workspace's files",
+              "score": 0,
+              "params": [
+                {
+                  "name": "target",
+                  "type": "text",
+                  "required": true,
+                  "description": "`workspace` to save into this workspace's files, or the id of one of your online devices.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "collaborators.open",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Show collaborators",
+              "subtitle": "Collaborators currently in this workspace",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "presence.follow",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Follow a collaborator",
+              "subtitle": "Keep this view attached to a connected person or visible agent",
+              "score": 0,
+              "params": [
+                {
+                  "name": "collaborator",
+                  "type": "text",
+                  "required": true,
+                  "description": "Stable collaborator id returned by the workspace roster.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "presence.follow.stop",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Stop following",
+              "subtitle": "Return this view to local navigation",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "presence.status.set",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Set workspace status",
+              "subtitle": "Publish an explicit status, or clear it with an empty value",
+              "score": 0,
+              "params": [
+                {
+                  "name": "text",
+                  "type": "text",
+                  "required": false,
+                  "description": "Manual status visible to this workspace; empty clears it.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "presence.status-sharing.set",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Set status privacy",
+              "subtitle": "Choose whether status is off, explicit-only, or automatically inferred",
+              "score": 0,
+              "params": [
+                {
+                  "name": "mode",
+                  "type": "text",
+                  "required": true,
+                  "description": "off, manual, or automatic.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "room.activity.open",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Show workspace activity",
+              "subtitle": "History of this workspace: changes, permissions, who did what and when",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "agent.invite",
+              "kind": "Actions",
+              "operation_kind": "Document",
+              "title": "Invite agent to workspace",
+              "subtitle": "Start a scoped agent setup; choose every surface it may use",
+              "score": 0,
+              "params": [
+                {
+                  "name": "name",
+                  "type": "text",
+                  "required": false,
+                  "description": "The agent's name, as it was launched with. Defaults to `Claude`.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                },
+                {
+                  "name": "preset",
+                  "type": "text",
+                  "required": false,
+                  "description": "Observer, Contributor, Operator, or Custom. Presets never grant access to a surface by themselves.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "invite",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "tab.new.terminal.here",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "New terminal tab here",
+              "subtitle": "Open a terminal as a tab in the focused window group",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "window.new.terminal",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "New terminal window",
+              "subtitle": "Open a terminal beside the focused window",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "tab.duplicate",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Duplicate this tab",
+              "subtitle": "Open a second instance of the focused app beside it",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "tab.open-beside",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Open an app in a new tab",
+              "subtitle": "Open another instance of an app, optionally at an address, as a tab right after the focused one",
+              "score": 0,
+              "params": [
+                {
+                  "name": "app",
+                  "type": "text",
+                  "required": true,
+                  "description": "The installed app's package id, such as `so.tilo.browser`.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                },
+                {
+                  "name": "target",
+                  "type": "text",
+                  "required": false,
+                  "description": "A URI the app declares, such as `https://example.org/`. Omit for an empty instance.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                },
+                {
+                  "name": "background",
+                  "type": "boolean",
+                  "required": false,
+                  "description": "Open behind the focused tab instead of in front of it. Defaults to false.",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "tab.menu",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Show tab menu",
+              "subtitle": "Actions for the focused tab",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "tab.drag.cancel",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Cancel tab drag",
+              "subtitle": "Keep the dragged tab in its original place",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "tab.close",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Close this tab",
+              "subtitle": "Close the focused tab; its window closes with it if it was the last",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "tab.reopen",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Reopen closed tab",
+              "subtitle": "Bring back the tab closed most recently in this workspace, where it was",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "tab.split-right",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Split this tab to the right",
+              "subtitle": "Move the focused tab into a new window group beside its current one",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "window.focus-previous",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Focus the previous window",
+              "subtitle": "Move focus to the window on the left along the strip",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "window.focus-next",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Focus the next window",
+              "subtitle": "Move focus to the window on the right along the strip",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "strip.focus-previous",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Go to the strip above",
+              "subtitle": "Move focus to the strip above in this workspace",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "strip.focus-next",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Go to the strip below",
+              "subtitle": "Move focus to the strip below in this workspace",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "actions",
+              "id": "workspace.previous",
+              "kind": "Actions",
+              "operation_kind": "View",
+              "title": "Go to the previous workspace",
+              "subtitle": "Switch to the workspace before this one",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "none",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "session",
+              "id": "lock",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Lock",
+              "subtitle": "Keep apps running",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "idempotent",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                },
+                "tags": [
+                  "desktop",
+                  "session",
+                  "lock"
+                ]
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "session",
+              "id": "logout",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Log out of Tilo",
+              "subtitle": "End this desktop session cleanly and return to the display manager",
+              "score": 0,
+              "params": [
+                {
+                  "name": "confirm",
+                  "type": "boolean",
+                  "required": true,
+                  "description": "Explicitly confirm this session action",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "admin",
+                "risk": "destructive",
+                "confirmation": {
+                  "mode": "confirm"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                },
+                "tags": [
+                  "desktop",
+                  "session",
+                  "logout"
+                ]
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "shortcuts",
+              "id": "shortcuts#create",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "New shortcut",
+              "subtitle": "Save a shortcut after checking every step against the actions you are offered",
+              "score": 0,
+              "params": [
+                {
+                  "name": "shortcut",
+                  "type": "object",
+                  "required": true,
+                  "description": "The shortcut, as JSON: id, name, inputs, steps, output and grant",
+                  "choices": [],
+                  "schema": {
+                    "type": "object",
+                    "required": [
+                      "id",
+                      "name",
+                      "steps"
+                    ]
+                  },
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "resource",
+                  "resource_kind": "shortcuts.shortcut"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "shortcuts",
+              "id": "shortcuts#update",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Change shortcut",
+              "subtitle": "Replace a saved shortcut after checking it again",
+              "score": 0,
+              "params": [
+                {
+                  "name": "shortcut",
+                  "type": "object",
+                  "required": true,
+                  "description": "The shortcut, as JSON: id, name, inputs, steps, output and grant",
+                  "choices": [],
+                  "schema": {
+                    "type": "object",
+                    "required": [
+                      "id",
+                      "name",
+                      "steps"
+                    ]
+                  },
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "resource",
+                  "resource_kind": "shortcuts.shortcut"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "shortcuts",
+              "id": "shortcuts#delete",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Delete shortcut",
+              "subtitle": "Delete a saved shortcut",
+              "score": 0,
+              "params": [
+                {
+                  "name": "id",
+                  "type": "text",
+                  "required": true,
+                  "description": "Id of the shortcut to delete",
+                  "choices": [],
+                  "schema": null,
+                  "nullable": false
+                }
+              ],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "destructive",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "shortcuts",
+              "id": "shortcuts#list",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "List shortcuts",
+              "subtitle": "Every shortcut saved in this workspace, as JSON",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "read",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "json",
+                  "schema": {
+                    "type": "array",
+                    "items": {
+                      "type": "object"
+                    }
+                  }
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            },
+            {
+              "provider": "shortcuts",
+              "id": "app.so.tilo.shortcuts#open",
+              "kind": "Actions",
+              "operation_kind": "Effect",
+              "title": "Open Shortcuts",
+              "subtitle": "Launch this application into the current workspace",
+              "score": 0,
+              "params": [],
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "permission": "write",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": false,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "discovery": "live",
+                "result": {
+                  "type": "none"
+                }
+              },
+              "application": null,
+              "room": null,
+              "record": null,
+              "resource": null,
+              "operation": null
+            }
+          ]
+        }
+      },
+      "receipt": {
+        "answer": {
+          "action": {
+            "provider": "actions",
+            "id": "window.new.terminal",
+            "kind": "Actions",
+            "title": "New terminal window",
+            "params": [],
+            "contract": {
+              "availability": {
+                "state": "available"
+              },
+              "permission": "write",
+              "risk": "low",
+              "confirmation": {
+                "mode": "none"
+              },
+              "retry": "at_most_once",
+              "reversible": true,
+              "execution": {
+                "mode": "immediate"
+              },
+              "discovery": "live",
+              "result": {
+                "type": "none"
+              }
+            }
+          },
+          "receipt": {
+            "update": {
+              "state": "succeeded",
+              "invocation": "c850e9d3-dfd9-437a-b9f4-55755ef436b3",
+              "output": {}
+            }
+          }
+        }
+      },
+      "invoke_ms": 415.8148890000035,
+      "history": [],
+      "state": {
+        "state": {
+          "workspace_tree": {
+            "native_authority": {
+              "revision": 0,
+              "rooms": {},
+              "pending": {}
+            },
+            "schema_version": 1,
+            "workspaces": [
+              {
+                "id": 6813383286258139137,
+                "room": "b9d75d77-8563-4aa0-b234-ce0168ef477e",
+                "name": "Home",
+                "strips": [
+                  {
+                    "id": 6813383286258139138,
+                    "name": "Main",
+                    "window_groups": [
+                      {
+                        "id": 6813383286258139140,
+                        "tabs": [
+                          {
+                            "id": 6813383286258139139,
+                            "title": "Terminal",
+                            "tile": {
+                              "AppPlaceholder": {
+                                "kind": "Terminal",
+                                "label": "Terminal"
+                              }
+                            }
+                          }
+                        ],
+                        "active_tab": 6813383286258139139,
+                        "width": "Normal",
+                        "maximized": false
+                      }
+                    ]
+                  }
+                ],
+                "collaborators": [],
+                "owner": "c93667527e9ca592bcd7cb16fd375894851b9366e48e8e6770593f3fe37a4042",
+                "pending_ownership_transfer": null,
+                "ownership_transfer_audit": [],
+                "ownership_transfer_cancellations": [],
+                "capabilities": [
+                  {
+                    "subject": {
+                      "Principal": {
+                        "Person": "c93667527e9ca592bcd7cb16fd375894851b9366e48e8e6770593f3fe37a4042"
+                      }
+                    },
+                    "scope": {
+                      "Room": "b9d75d77-8563-4aa0-b234-ce0168ef477e"
+                    },
+                    "effect": "Grant",
+                    "verb": "Admin",
+                    "id": "owner-6813383286258139137",
+                    "expiry": "Never",
+                    "granted_by": null
+                  }
+                ],
+                "permission_profiles": [],
+                "default_apps": {
+                  "policy": {},
+                  "user_choices": {}
+                },
+                "tasks": [],
+                "effect_receipts": [],
+                "shortcuts": [],
+                "schedule_claims": [],
+                "shared_surfaces": {}
+              }
+            ],
+            "active": 6813383286258139137,
+            "active_strip": {
+              "6813383286258139137": 6813383286258139138
+            },
+            "active_group": {
+              "6813383286258139138": 6813383286258139140
+            },
+            "collaborators": [],
+            "room_authority": {},
+            "room_peer_names": {},
+            "room_peer_identities": {},
+            "room_share_floor": {},
+            "continuation_tabs": [],
+            "continuation_rooms": [],
+            "continuation_owned_tabs": {},
+            "continuation_closed_tabs": {},
+            "continuation_file_references": {},
+            "native_document_tabs": {}
+          },
+          "chrome": {
+            "seat_focus": {
+              "keyboard": null,
+              "routed_keyboard_surface": null,
+              "text_input": null,
+              "text_input_active": false,
+              "on_screen_keyboard_surface": null
+            },
+            "overlays": {
+              "overview": false,
+              "quick_settings": false,
+              "ws_settings": false,
+              "collaborators": false,
+              "room_activity": false,
+              "power_menu": false
+            },
+            "pointer": {
+              "kind": "shape",
+              "shape": "default"
+            },
+            "input": {
+              "modality": "pointer",
+              "available": [],
+              "help_modality": "pointer"
+            },
+            "input_capture": {
+              "onboarding": false,
+              "chrome": false,
+              "inner_surface": false,
+              "maximized_controls": false,
+              "shortcut_help": false,
+              "projection": false
+            },
+            "on_screen_keyboard": {
+              "connected": false,
+              "requested": false,
+              "mapped": false,
+              "commits": 0,
+              "serves_shell_field": false,
+              "shown": null
+            },
+            "search_scope": "Workspace",
+            "displays": [
+              {
+                "id": 0,
+                "primary": true,
+                "focused": true,
+                "groups": [
+                  6813383286258139140
+                ]
+              }
+            ],
+            "tray": [],
+            "tab_icons": [],
+            "window_switcher": {
+              "open": false
+            },
+            "search_resource_scope": null,
+            "presence": {
+              "status_sharing": "automatic",
+              "own_status": "Managing workspace access",
+              "following": null
+            },
+            "ws_settings_tab": "General",
+            "revision": 8,
+            "notifications": [],
+            "files_drag": null,
+            "files_drag_handed_off": false,
+            "portal_dialog": null,
+            "editing_workspace_name": null,
+            "pending_grants_count": 0,
+            "session_locked": false,
+            "lock_auth": {
+              "verifying": false,
+              "password_len": 0,
+              "error": null,
+              "keyboard": []
+            },
+            "local_user_id": "c93667527e9ca592bcd7cb16fd375894851b9366e48e8e6770593f3fe37a4042",
+            "may_administer_active": true,
+            "peer_sync": {
+              "invite_token": null,
+              "connect_input": null,
+              "status": null,
+              "invite_name": null,
+              "invite_for": null
+            },
+            "collab": {
+              "available": true,
+              "unavailable_reason": null,
+              "socket": "/run/user/1000/tilo-app-startup-v52shsaw/run/tilo/services/collab.sock"
+            },
+            "ws_grant_draft": {
+              "subject": "Member:c93667527e9ca592bcd7cb16fd375894851b9366e48e8e6770593f3fe37a4042",
+              "capability": "Camera",
+              "expiry": "EndOfSession"
+            },
+            "palette": {
+              "visible": false,
+              "query": "",
+              "selected_id": null,
+              "kind_filter": [],
+              "rows": []
+            },
+            "strip_scroll": [
+              {
+                "strip": 6813383286258139138,
+                "scroll_x": 0.0,
+                "max_scroll_x": 0.0
+              }
+            ],
+            "active_window_controls": {
+              "maximize": {
+                "x": 0.0,
+                "y": 0.0,
+                "w": 0.0,
+                "h": 0.0
+              },
+              "restore": {
+                "x": 0.0,
+                "y": 0.0,
+                "w": 0.0,
+                "h": 0.0
+              }
+            },
+            "wheel_summon": null,
+            "fullscreen_group": null,
+            "fullscreen": false
+          },
+          "peers": {
+            "pointers": [],
+            "roster": []
+          },
+          "sharing": {
+            "exposures": []
+          }
+        }
+      },
+      "error": "No presented Terminal frame matching its tile within 90 seconds",
+      "success": false,
+      "log_tail": "er/1000/tilo-app-startup-v52shsaw/run/pipewire-0: No such file or directory (os error 2)\n\u001b[2m2026-10-06T08:02:53.354673Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mshell::compositor::native\u001b[0m\u001b[2m:\u001b[0m portal: the document store cannot reach sandboxed apps \u2014 a file picked by a bwrap'd app will not be readable by it. Unconfined apps are unaffected.\n\u001b[2m2026-10-06T08:02:53.397099Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mshell::shell::collab_broker\u001b[0m\u001b[2m:\u001b[0m MLS collaboration unavailable: no system secret store answered \u001b[3merror\u001b[0m\u001b[2m=\u001b[0mMLS vault provider unavailable: MLS key storage refused: no secret store: org.freedesktop.DBus.Error.ServiceUnknown: The name is not activatable\ntilo compositor listening on \"wayland-1\"\n  WAYLAND_DISPLAY=wayland-1 \u2014 e.g. `WAYLAND_DISPLAY=wayland-1 cargo run -p terminal`\n  also written to /run/user/1000/tilo-app-startup-v52shsaw/run/tilo-session/wayland-display\n\u001b[2m2026-10-06T08:02:53.500411Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mshell::portal::appearance\u001b[0m\u001b[2m:\u001b[0m dconf refused the appearance keys \u001b[3mstatus\u001b[0m\u001b[2m=\u001b[0mexit status: 1 \u001b[3mstderr\u001b[0m\u001b[2m=\u001b[0merror: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name is not activatable\n\u001b[2m2026-10-06T08:02:53.514951Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mshell::shell::windows_compat\u001b[0m\u001b[2m:\u001b[0m windows compatibility catalogue skipped unsupported Bottles metadata \u001b[3mskipped\u001b[0m\u001b[2m=\u001b[0m39\n\u001b[2m2026-10-06T08:02:53.520391Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mshell::compositor::native\u001b[0m\u001b[2m:\u001b[0m windows compatibility session service unavailable \u001b[3merror\u001b[0m\u001b[2m=\u001b[0mthe compositor has no safe render node to delegate\ntilo compositor privileged socket on tilo-privileged-2295\ntilo compositor test_control listening on /run/user/1000/tilo-app-startup-v52shsaw/run/control.sock\ntilo compositor: backend reports no refresh rate; pacing to 60.000 Hz\n\u001b[2m2026-10-06T08:02:53.749093Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mzbus::proxy\u001b[0m\u001b[2m:\u001b[0m Failed to populate properties cache via GetAll: org.freedesktop.DBus.Error.ServiceUnknown: The name is not activatable. Property change streams will not produce values.\n\u001b[2m2026-10-06T08:02:53.750695Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mtilo::bluetooth\u001b[0m\u001b[2m:\u001b[0m could not preload device names \u001b[3merror\u001b[0m\u001b[2m=\u001b[0morg.freedesktop.DBus.Error.NameHasNoOwner: Could not activate remote peer 'org.bluez': unit failed\n\u001b[2m2026-10-06T08:02:53.822227Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mshell::session_runtime\u001b[0m\u001b[2m:\u001b[0m bluetooth pairing agent: could not register on the bus (bluetoothd refused the pairing agent: org.freedesktop.DBus.Error.NameHasNoOwner: Could not activate remote peer 'org.bluez': unit failed); continuing without it\n\u001b[2m2026-10-06T08:02:53.824112Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mshell::session_runtime\u001b[0m\u001b[2m:\u001b[0m network secret agent: could not register on the bus (org.freedesktop.NetworkManager.AgentManager.PermissionDenied: An agent with this ID is already registered for this user.); continuing without it\nSLOW-ITER total_work=451.821355ms | input=21.805226ms pump=+46.61846ms post_pump_paint=+378.77423ms testctl=+4.527328ms dispatch_clients=+96.111\u00b5s (selection=13.5\u00b5s dispatch=43.24\u00b5s capture_barriers=12.971\u00b5s snapshot=1.96\u00b5s flush=6.08\u00b5s configures=8.99\u00b5s idle_callbacks=8.98\u00b5s)\n\u001b[2m2026-10-06T08:02:54.205206Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mshell::shell::fs_authority\u001b[0m\u001b[2m:\u001b[0m filesystem authority publication failed; retrying quietly \u001b[3mstatus\u001b[0m\u001b[2m=\u001b[0mExitStatus(unix_wait_status(256)) \u001b[3mstderr\u001b[0m\u001b[2m=\u001b[0mError: No such file or directory (os error 2) \u001b[3macl\u001b[0m\u001b[2m=\u001b[0m/run/user/1000/tilo-app-startup-v52shsaw/config/tilo/fs-capabilities.json\nSLOW-ITER total_work=301.550554ms | input=372.814\u00b5s pump=+1.482259ms post_pump_paint=+8.91\u00b5s testctl=+299.567979ms dispatch_clients=+118.592\u00b5s (selection=14.69\u00b5s dispatch=55.971\u00b5s capture_barriers=16.3\u00b5s snapshot=1.95\u00b5s flush=6.41\u00b5s configures=11.391\u00b5s idle_callbacks=9.33\u00b5s)\n\u001b[2m2026-10-06T08:02:54.662006Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2mshell::shell::fs_authority\u001b[0m\u001b[2m:\u001b[0m filesystem authority publication failed; retrying quietly \u001b[3mstatus\u001b[0m\u001b[2m=\u001b[0mExitStatus(unix_wait_status(256)) \u001b[3mstderr\u001b[0m\u001b[2m=\u001b[0mError: No such file or directory (os error 2) \u001b[3macl\u001b[0m\u001b[2m=\u001b[0m/run/user/1000/tilo-app-startup-v52shsaw/config/tilo/fs-capabilities.json\nSLOW-ITER total_work=408.77384ms | input=394.805\u00b5s pump=+4.988703ms post_pump_paint=+11.36\u00b5s testctl=+403.262971ms dispatch_clients=+116.001\u00b5s (selection=14.4\u00b5s dispatch=56.941\u00b5s capture_barriers=14.23\u00b5s snapshot=2.01\u00b5s flush=6.23\u00b5s configures=11.13\u00b5s idle_callbacks=9.27\u00b5s)\nSLOW-ITER total_work=300.643202ms | input=577.927\u00b5s pump=+8.435987ms post_pump_paint=+289.451271ms testctl=+2.081296ms dispatch_clients=+96.721\u00b5s (selection=12.56\u00b5s dispatch=48.631\u00b5s capture_barriers=13.63\u00b5s snapshot=2.07\u00b5s flush=6.63\u00b5s configures=5.18\u00b5s idle_callbacks=7.8\u00b5s)\nSLOW-ITER total_work=146.2252ms | input=92.692\u00b5s pump=+515.616\u00b5s post_pump_paint=+144.118893ms testctl=+1.410218ms dispatch_clients=+87.781\u00b5s (selection=12.42\u00b5s dispatch=43.85\u00b5s capture_barriers=13.051\u00b5s snapshot=1.74\u00b5s flush=5.89\u00b5s configures=3.51\u00b5s idle_callbacks=7.28\u00b5s)\n",
+      "private_compositor_stopped": true
+    }
+  },
+  "image_validation_followup": {
+    "failed_run": 72823,
+    "failed_head": "90694b9ab2f1823a0f3b03cfad2db6f2eed5643f",
+    "failed_job": 489771,
+    "failure": "Music tapp 11396096 bytes exceeds 8388608-byte package limit",
+    "upstream_fix": "ef20159690135eec61cf5f94039a6128e15f2499",
+    "upstream_merge": "12f4dfb2d535f0ea9c64278b66a9bef435d2e4b3",
+    "action": "Rebase task branch onto already-landed Music shared-runtime fix; retain size gate and draft/hold."
   }
 }

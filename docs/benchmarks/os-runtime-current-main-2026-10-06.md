@@ -165,6 +165,27 @@ existing Yoga runtime work owns physical-device measurements. The earlier
 [SHM conversion improvement](../shm-conversion-benchmark.md) is a separate
 matched CPU benchmark, not proof that the full current OS beats Clear Linux.
 
+## Validation follow-up
+
+Exact-head OS image run [72823](https://code.tilo.so/tilo/tilo/actions/runs/72823)
+failed on Music packaging: 11,396,096 bytes exceeded the existing 8,388,608-byte
+limit. Required quality/affected checks passing did not establish image success.
+This branch predates [the landed Music fix](https://code.tilo.so/tilo/tilo/pulls/2948),
+which shares native Spotify playback through the runtime. The branch was rebased
+onto that fix, source `12f4dfb2`, without changing the package-size gate.
+
+A fresh COW of the verified source-`12f4dfb2` developer image also exercised a
+private headless compositor and a private, non-activating D-Bus broker. Its
+marked developer-only throwaway identity was created, and the public Terminal
+action returned a successful receipt in 415.8 ms. No foreign surface appeared
+within the 90-second observation window: the final tile remained
+`AppPlaceholder`. This is a failed journey, not a startup measurement. The
+isolated session logs show an unavailable secret store and filesystem authority;
+the minimal fixture has not established all normal session prerequisites.
+No security check was bypassed to force a frame. The private compositor and
+guest were stopped and the writable COW discarded. Raw response, state and log
+tail are retained in the JSON.
+
 ## Reproduction
 
 Use the recorded immutable OCI digest, rather than a moving main tag. The
