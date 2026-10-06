@@ -44,6 +44,14 @@ pub struct PhysicalPresentation {
 /// Physical outcome associated with one exact producer-frame serial.
 pub type PhysicalOutcome = (u64, Option<PhysicalPresentation>);
 
+/// Opt-in sequential wall-clock phases for the exact frame just handled.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FramePhaseTiming {
+    pub paint: super::render::paint::BridgePhaseTiming,
+    /// Time waiting for actual KMS page-flip retirement, separate from GPU completion.
+    pub kms_retirement_us: u128,
+}
+
 /// The half of a backend that turns a finished scene into photons.
 ///
 /// Split off a `super::backend::Backend` by `super::backend::Backend::take_presenter` and
@@ -66,6 +74,11 @@ pub trait Presenter: Send {
         output: OutputId,
     ) -> Option<PhysicalPresentation> {
         self.present_frame(frame, output);
+        None
+    }
+
+    /// Content-free profiling for the exact preceding observed frame, when enabled.
+    fn frame_phase_timing(&self) -> Option<FramePhaseTiming> {
         None
     }
 
@@ -132,6 +145,51 @@ pub struct PresentPipe {
     handle: Option<JoinHandle<()>>,
 }
 
+#[derive(Clone, Copy)]
+struct FrameLifecycle {
+    queue_wait: Duration,
+    render: Duration,
+    total: Duration,
+    inflight_at_enqueue: usize,
+    input_age_at_enqueue: Option<Duration>,
+    phases: Option<FramePhaseTiming>,
+}
+
+fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
+    let FrameLifecycle {
+        queue_wait,
+        render,
+        total,
+        inflight_at_enqueue,
+        input_age_at_enqueue,
+        phases,
+    } = timing;
+    // Keep the first completed presentation observable even when
+    // it is fast and the event loop then parks indefinitely.
+    if phases.is_some()
+        || serial == 1
+        || queue_wait >= SLOW_FRAME_LIFECYCLE
+        || render >= SLOW_FRAME_LIFECYCLE
+        || total >= SLOW_FRAME_LIFECYCLE
+    {
+        eprintln!(
+            "FRAME-LIFECYCLE serial={serial} event=render-retired queue_wait_us={} render_us={} total_us={} inflight_at_enqueue={inflight_at_enqueue} input_age_at_enqueue_us={} revision={} phase_timing={} encode_submit_us={} gpu_completion_wait_us={} bump_settle_us={} backdrop_us={} kms_retirement_us={}",
+            queue_wait.as_micros(),
+            render.as_micros(),
+            total.as_micros(),
+            input_age_at_enqueue
+                .map_or_else(|| "none".to_owned(), |age| age.as_micros().to_string()),
+            revision,
+            phases.is_some(),
+            phases.map_or(0, |value| value.paint.submit_us),
+            phases.map_or(0, |value| value.paint.completed_readback_map_us),
+            phases.map_or(0, |value| value.paint.settle_us),
+            phases.map_or(0, |value| value.paint.backdrop_us),
+            phases.map_or(0, |value| value.kms_retirement_us),
+        );
+    }
+}
+
 /// How long [`PresentPipe::shutdown`] waits for the render thread before giving up on it.
 ///
 /// Generous enough to cover a frame in flight on any real display (a 24 Hz mode is 42 ms) plus a slow driver's teardown, short enough that a wedged GPU cannot hold the session open.
@@ -179,27 +237,22 @@ impl PresentPipe {
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                                 .push_back((serial, physical));
+                            let phases = presenter.frame_phase_timing();
                             let render_done = Instant::now();
                             let render = render_done.saturating_duration_since(render_started);
                             let total = render_done.saturating_duration_since(enqueued_at);
-                            // Keep the first completed presentation observable even when
-                            // it is fast and the event loop then parks indefinitely.
-                            if serial == 1
-                                || queue_wait >= SLOW_FRAME_LIFECYCLE
-                                || render >= SLOW_FRAME_LIFECYCLE
-                                || total >= SLOW_FRAME_LIFECYCLE
-                            {
-                                eprintln!(
-                                    "FRAME-LIFECYCLE serial={serial} event=render-retired queue_wait_us={} render_us={} total_us={} inflight_at_enqueue={inflight_at_enqueue} input_age_at_enqueue_us={}",
-                                    queue_wait.as_micros(),
-                                    render.as_micros(),
-                                    total.as_micros(),
-                                    input_age_at_enqueue.map_or_else(
-                                        || "none".to_owned(),
-                                        |age| age.as_micros().to_string()
-                                    ),
-                                );
-                            }
+                            log_frame_lifecycle(
+                                serial,
+                                frame.revision,
+                                FrameLifecycle {
+                                    queue_wait,
+                                    render,
+                                    total,
+                                    inflight_at_enqueue,
+                                    input_age_at_enqueue,
+                                    phases,
+                                },
+                            );
                             *thread_last_retirement
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
