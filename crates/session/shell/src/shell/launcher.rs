@@ -6557,6 +6557,8 @@ mod tests {
             let state = chrome.borrow();
             let page = DesktopWindowsProvider::new().query_page(
                 crate::shell::search::SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
                     needle: "",
                     wanted: &[],
                     chrome: &state,
