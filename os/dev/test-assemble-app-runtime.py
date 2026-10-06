@@ -61,6 +61,17 @@ class AssemblyNamespaces(unittest.TestCase):
         finally:
             os.umask(previous)
 
+    def test_selected_app_uses_the_same_catalogue_and_rejects_escape(self):
+        repo = SOURCE.parents[2]
+        rows = ASSEMBLER.applications(repo)
+        selected = ASSEMBLER.selected_applications(repo, 'terminal')
+        self.assertEqual(len(selected), 1)
+        self.assertIn(selected[0], rows)
+        self.assertEqual(selected[0][0], 'terminal')
+        for invalid in ('../terminal', 'terminal/..', 'not-a-real-app'):
+            with self.assertRaises(ValueError):
+                ASSEMBLER.selected_applications(repo, invalid)
+
     def test_catalogue_uses_all_native_manifests_and_one_release(self):
         rows = ASSEMBLER.applications(SOURCE.parents[2])
         self.assertEqual(len(rows), len(list((SOURCE.parents[2]/'apps').glob('*/tilo-app.toml'))))

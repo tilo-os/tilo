@@ -182,6 +182,7 @@ else
     || die "RUNTIME_ID must name the runtime build the apps link (tilo-runtime/<release>+native.<digest>)"
 
 for manifest in "$REPO"/apps/*/tilo-app.toml; do
+    if [ -n "${APP_DIR:-}" ] && [ "$(basename "$(dirname "$manifest")")" != "$APP_DIR" ]; then continue; fi
     [ -e "$manifest" ] || continue
     app="$(basename "$(dirname "$manifest")")"
 
@@ -249,6 +250,10 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
         continue
     fi
 
+    if [ -n "${TAPP_OUT:-}" ]; then
+        [ -n "${APP_DIR:-}" ] || die "TAPP_OUT requires a selected APP_DIR"
+        cp "$tapp" "$TAPP_OUT"
+    fi
     shipped+=("$id ($tapp_bytes bytes)")
 done
 fi
