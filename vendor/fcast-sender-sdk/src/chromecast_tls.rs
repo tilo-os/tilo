@@ -6,9 +6,10 @@
 
 use std::{io, sync::Arc, time::Duration};
 
-use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
+use super::{pki, tls_runtime};
+use pki::{CertificateDer, ServerName, UnixTime};
+use tls_runtime::{TlsConnector, client::TlsStream, rustls};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio_rustls::{TlsConnector, client::TlsStream, rustls};
 
 #[derive(Debug)]
 struct CastTlsVerifier;

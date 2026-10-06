@@ -13,6 +13,7 @@ use google_cast_protocol::{
     prost::Message, protos,
 };
 use log::{debug, error, warn};
+use rustls_pki_types as pki;
 use serde::Serialize;
 use serde_json as json;
 use tokio::{
@@ -21,6 +22,7 @@ use tokio::{
     runtime::Handle,
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
 };
+use tokio_rustls as tls_runtime;
 use tokio_rustls::client::TlsStream;
 
 use crate::{

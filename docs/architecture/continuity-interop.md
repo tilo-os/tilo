@@ -358,7 +358,10 @@ projection must reject an audio-only identity, as
 
 The review must explicitly choose revocation and legacy-signature policy:
 Open Screen's current public entry point uses optional CRLs and allows legacy
-challenge hashes, so claiming it requires CRLs or SHA-256 would be inaccurate.
+challenge hashes. Its pinned header also defaults nonce enforcement to false;
+claiming it requires a matching nonce, CRLs or SHA-256 would be inaccurate.
+Tilo must require the fresh matching nonce and one-use pending state described
+above rather than inheriting those permissive compatibility defaults.
 Proposed Tilo policy is a SHA-256 challenge proof and authenticated revocation
 validation with a defined missing/stale-CRL failure policy. Legacy SHA-1 certificate
 chains and receivers require a documented compatibility decision, not silent
