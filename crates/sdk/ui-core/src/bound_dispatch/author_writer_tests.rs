@@ -6,6 +6,58 @@ use automerge::transaction::Transactable;
 
 const APP: &str = "so.tilo.test";
 
+#[test]
+fn publication_retains_original_typed_identity_not_a_supplied_alias() {
+    let cache = PortableStorage::new("profile", "device").unwrap();
+    let records = RecordOwners::portable(cache).open(APP, "room").unwrap();
+    let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+    records.create_record(&checkout).unwrap();
+    let (binding, _scope, _owner) = mount(&records, &checkout, "You", 1, true);
+    let publication = BoundPublication::default();
+    let mut resource = tilo_actions::Resource::new("app:so.tilo.chat", "store.app", "Chat");
+    resource.semantic_identity = tilo_actions::ResourceSemanticIdentity::new("person", "forged");
+    resource.children.push(tilo_actions::Resource::new(
+        "chat.person:scribe",
+        "chat.agent",
+        "An unrelated display name",
+    ));
+    let projected = publication.project(&binding, resource).unwrap();
+    assert!(projected.id.as_str().starts_with(PUBLICATION_PREFIX));
+    assert_eq!(
+        projected.semantic_identity,
+        tilo_actions::ResourceSemanticIdentity::new("store.app", "app:so.tilo.chat")
+    );
+    assert_eq!(
+        projected.children.first().unwrap().semantic_identity,
+        tilo_actions::ResourceSemanticIdentity::new("chat.agent", "chat.person:scribe")
+    );
+    assert!(
+        publication
+            .target(&tilo_actions::ActionAddress::new(
+                "app:so.tilo.chat",
+                "open"
+            ))
+            .unwrap()
+            .is_none(),
+        "descriptive identity must not become a dispatch-address fallback"
+    );
+    assert!(
+        publication
+            .target(&tilo_actions::ActionAddress::new(
+                projected.id.as_str(),
+                "open"
+            ))
+            .unwrap()
+            .is_some()
+    );
+    binding.closing.set(true);
+    assert!(
+        publication
+            .project(&binding, tilo_actions::Resource::new("x", "store.app", "X"))
+            .is_err()
+    );
+}
+
 /// A mount of `checkout` for `author`, as `HostContext::callback_binding`
 /// makes one.
 pub(super) fn mount(

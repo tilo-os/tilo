@@ -52,6 +52,7 @@ fn row(
             presentation: None,
         },
         action: Some(ActionDescriptor {
+            semantic_identity: None,
             address: ActionAddress::new(resource, action),
             resource_kind: kind.into(),
             resource_label: "Inbox".into(),

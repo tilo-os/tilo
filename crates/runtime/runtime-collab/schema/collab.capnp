@@ -546,6 +546,13 @@ struct ExportedAction {
   # Optional explicit resource-view metadata. Absence means this action is
   # invokable but is not advertised as a view for its resource.
   view @10 :ResourceViewDescriptor;
+  # Descriptive source identity, never permission or an invocation alias.
+  semanticIdentity @11 :ResourceSemanticIdentity;
+}
+
+struct ResourceSemanticIdentity {
+  kind @0 :Text;
+  key @1 :Text;
 }
 
 struct ResourceViewDescriptor {
@@ -556,6 +563,7 @@ struct ResourceViewDescriptor {
   openAction  @3 :Text;
   primary     @4 :Bool;
   mount       @5 :ResourceViewMountSpec;
+  range       @6 :ResourceViewRangeSpec;
 }
 
 struct ResourceViewMountSpec {
@@ -886,4 +894,11 @@ interface AppSettings {
   # `section` (`app_personal` or `app_device_local`), answering the view
   # after the write. Any other section or entry is refused.
   update @1 (section :Text, valuesJson :Data) -> (revision :UInt64, documentJson :Data);
+}
+
+struct ResourceViewRangeSpec {
+  action @0 :Text;
+  startParam @1 :Text;
+  endParam @2 :Text;
+  unitParam @3 :Text;
 }

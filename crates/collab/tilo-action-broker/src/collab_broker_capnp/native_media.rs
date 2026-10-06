@@ -51,6 +51,7 @@ pub trait NativeMediaServices: Send + Sync {
 pub(super) struct LocalAppConnection {
     pub(super) app_id: String,
     pub(super) workspace_id: String,
+    pub(super) creation: Option<crate::services::ApplicationCreationEvidence>,
     process: PeerProcess,
     connected: AtomicBool,
 }
@@ -126,11 +127,13 @@ impl LocalAppConnection {
         app_id: String,
         workspace_id: String,
         process: PeerProcess,
+        creation: Option<crate::services::ApplicationCreationEvidence>,
     ) -> Option<Arc<Self>> {
         process.alive().then(|| {
             Arc::new(Self {
                 app_id,
                 workspace_id,
+                creation,
                 process,
                 connected: AtomicBool::new(true),
             })

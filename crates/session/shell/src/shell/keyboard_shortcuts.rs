@@ -188,6 +188,7 @@ impl ShortcutResource {
         contract: ActionContract,
     ) -> ActionDescriptor {
         ActionDescriptor {
+            semantic_identity: None,
             address: ActionAddress::new(self.id.clone(), action),
             resource_kind: self.kind.into(),
             resource_label: self.label.clone(),
@@ -253,6 +254,7 @@ pub fn descriptors(
         };
         out.push((
             ActionDescriptor {
+                semantic_identity: None,
                 params: chord_param(),
                 ..resource.action(
                     REBIND_ACTION,

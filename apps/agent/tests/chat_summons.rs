@@ -264,6 +264,7 @@ fn scenario_outcome(
                     }
                     CollabEvent::Invocation {
                         id,
+                        invocation,
                         resource,
                         action,
                         argument,
@@ -281,7 +282,7 @@ fn scenario_outcome(
                             &tree,
                             word_processor::actions::register,
                             typed_peer::DocumentInvocation {
-                                id,
+                                invocation,
                                 address: ActionAddress::new(resource, action),
                                 argument: argument.as_deref(),
                                 actor: &actor,

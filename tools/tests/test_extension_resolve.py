@@ -249,6 +249,20 @@ class CodecsPart(unittest.TestCase):
         self.assertIn("noopenh264", excluded)
         self.assertNotIn("openh264", excluded)
 
+    def test_plugin_without_cisco_runtime_waits_even_when_other_codecs_exist(self):
+        offered = {name: values for name, values in self.OFFERED.items() if name != "openh264"}
+        decision = self.decide(base(), offered)
+        self.assertEqual((decision.state, decision.chosen), ("waiting", ()))
+        self.assertIn("Cisco's codec library", decision.message)
+
+    def test_a_codec_already_in_the_base_remains_a_pinned_dependency(self):
+        installed = dict(base().installed)
+        installed["openh264"] = nevra("openh264", "2.6.0", "3.fc44", repo="base")
+        decision = self.decide(base(installed))
+        self.assertEqual(decision.state, "available")
+        self.assertNotIn("openh264", [candidate.name for candidate in decision.chosen])
+        self.assertEqual(decision.requires_base["openh264"], "0:2.6.0-3.fc44")
+
     def test_waiting_when_nothing_matches(self):
         decision = self.decide(base(), {})
         self.assertEqual(decision.state, "waiting")
@@ -451,13 +465,16 @@ class Emission(unittest.TestCase):
                                                 RF_UPDATES, epoch=1)],
             "gstreamer1-plugin-openh264": [package("gstreamer1-plugin-openh264", "1.28.7", "updates",
                                                    FEDORA_UPDATES)],
+            "openh264": [package("openh264", "2.6.0", "fedora-cisco-openh264",
+                                  "https://codecs.fedoraproject.org/openh264/44/x86_64/")],
             "mesa-va-drivers-freeworld": [package("mesa-va-drivers-freeworld", "26.2.3", "rpmfusion-free-updates",
                                                   RF_UPDATES)],
             "x264-libs": [package("x264-libs", "0.165", "rpmfusion-free-updates", RF_UPDATES)],
         })
         # Downloading the codecs part pulls in a dependency the base lacks.
         self.dnf.dependencies = {("gstreamer1-plugin-openh264-1.28.7-1.fc44.x86_64",
-                                  "gstreamer1-plugins-ugly-1:1.28.7-1.fc44.x86_64"): ("x264-libs",)}
+                                  "gstreamer1-plugins-ugly-1:1.28.7-1.fc44.x86_64",
+                                  "openh264-2.6.0-1.fc44.x86_64"): ("x264-libs",)}
         self.keyring = FakeKeyring()
         patch = mock.patch.object(resolver, "rpm_header", fake_header)
         patch.start()
@@ -486,6 +503,7 @@ class Emission(unittest.TestCase):
         self.assertEqual([a["package"] for a in codecs["artifacts"]], [
             "gstreamer1-plugin-openh264-1.28.7-1.fc44.x86_64",
             "gstreamer1-plugins-ugly-1.28.7-1.fc44.x86_64",
+            "openh264-2.6.0-1.fc44.x86_64",
             "x264-libs-0.165-1.fc44.x86_64",
         ])
         ugly = codecs["artifacts"][1]
@@ -502,11 +520,12 @@ class Emission(unittest.TestCase):
         self.assertEqual((mesa["name"], mesa["state"], mesa["requires_base"]),
                          ("tilo-codecs-mesa", "available", {"mesa-dri-drivers": "0:26.2.3-1.fc44"}))
         self.assertEqual(self.dnf.downloads, [
-            ["gstreamer1-plugin-openh264-1.28.7-1.fc44.x86_64", "gstreamer1-plugins-ugly-1:1.28.7-1.fc44.x86_64"],
+            ["gstreamer1-plugin-openh264-1.28.7-1.fc44.x86_64", "gstreamer1-plugins-ugly-1:1.28.7-1.fc44.x86_64",
+             "openh264-2.6.0-1.fc44.x86_64"],
             ["mesa-va-drivers-freeworld-26.2.3-1.fc44.x86_64"],
         ])
         self.assertEqual(sorted({repos for _, repos in self.keyring.verified}),
-                         [("rpmfusion-free-updates",), ("updates",)])
+                         [("fedora-cisco-openh264",), ("rpmfusion-free-updates",), ("updates",)])
 
     def test_output_is_deterministic(self):
         first = resolver.render(self.resolve())
@@ -571,6 +590,20 @@ class Publication(unittest.TestCase):
             change(new)
             self.assertFalse(resolver.same_publication(old, new))
 
+    def test_qualification_hash_ignores_clocks_but_binds_image_and_all_material(self):
+        old = self.manifest()
+        digest = resolver.qualification_digest(old)
+        self.assertEqual(digest, resolver.qualification_digest(self.manifest(
+            revision=20261004120000, created="2026-10-04T12:00:00Z")))
+        changes = [lambda m: m["base"].update(image="registry.tilo.so/tilo/tilo-ci@sha256:" + "01" * 32),
+                   lambda m: m["parts"][0]["artifacts"][0].update(sha256="aa" * 32),
+                   lambda m: m["parts"][0]["artifacts"][0].update(license="GPL-3.0-only"),
+                   lambda m: m["parts"][0]["requires_base"].update(gstreamer1="0:1.28.8-1.fc44")]
+        for change in changes:
+            new = self.manifest()
+            change(new)
+            self.assertNotEqual(digest, resolver.qualification_digest(new))
+
     def test_check_rejects_what_a_device_would(self):
         self.assertEqual(resolver.check_manifest(self.manifest()), [])
         broken = [
@@ -601,6 +634,10 @@ class Publication(unittest.TestCase):
             self.assertEqual((checked.returncode, checked.stdout),
                              (0, f"media-codecs x86_64 {'cd' * 32} 20261004000000\n"))
             self.assertEqual(run("same", str(old), str(new)).returncode, 0)
+            digest = resolver.qualification_digest(self.manifest())
+            self.assertEqual(run("content-sha256", str(old)).stdout.strip(), digest)
+            self.assertEqual(run("check", str(new), "--expected-content-sha256", digest).returncode, 0)
+            self.assertNotEqual(run("check", str(new), "--expected-content-sha256", "00" * 32).returncode, 0)
             changed = self.manifest()
             changed["parts"][0]["state"] = "waiting"
             new.write_bytes(resolver.render(changed))

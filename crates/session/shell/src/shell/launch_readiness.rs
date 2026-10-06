@@ -41,6 +41,22 @@ pub(super) fn attach(command: &mut super::launcher::LaunchCommand) {
     }
 }
 
+/// Move only the existing observation scope to the preflight worker. This is
+/// not startup success: the same PID/start and adoption checks still settle it.
+pub(super) fn inherit<T>(start: impl FnOnce() -> T) -> impl FnOnce() -> T {
+    let token = CURRENT.with(Cell::get);
+    move || {
+        let _scope = Scope(CURRENT.with(|current| current.replace(token)));
+        start()
+    }
+}
+
+pub(super) fn fail_current(detail: String) {
+    super::launcher::LaunchSession::current()
+        .startup
+        .fail(CURRENT.with(Cell::get), detail);
+}
+
 struct Pending {
     process: Option<(u32, u64)>,
     reply: tokio::sync::oneshot::Sender<Result<(), String>>,
@@ -153,6 +169,71 @@ mod tests {
                 .status();
             let _ = self.0.wait();
         }
+    }
+
+    #[tokio::test]
+    async fn preflight_worker_inherits_only_scope_and_still_requires_actual_adoption() {
+        let mut process = ProcessTree(
+            Command::new("/bin/sh")
+                .args(["-c", "sleep 30 & echo $!; wait"])
+                .process_group(0)
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let mut output = BufReader::new(process.0.stdout.take().unwrap());
+        let mut line = String::new();
+        output.read_line(&mut line).unwrap();
+        let descendant: u32 = line.trim().parse().unwrap();
+        let launcher_pid = process.0.id();
+        let session = super::super::launcher::LaunchSession::current();
+        let readiness = observe(|| {
+            let worker = super::super::launcher::spawn_reporting(
+                std::thread::Builder::new(),
+                inherit(move || {
+                    let token = CURRENT
+                        .with(Cell::get)
+                        .expect("worker must retain exact attempt");
+                    super::super::launcher::LaunchSession::current()
+                        .startup
+                        .started(Some(token), launcher_pid);
+                }),
+            )
+            .unwrap();
+            worker.join().unwrap();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(CURRENT.with(Cell::get), None);
+        assert_eq!(session.startup.0.lock().unwrap().len(), 1);
+        session.startup.adopted(std::process::id());
+        assert_eq!(session.startup.0.lock().unwrap().len(), 1);
+        session.startup.adopted(descendant);
+        assert_eq!(readiness.wait().await, Ok(()));
+        assert!(session.startup.0.lock().unwrap().is_empty());
+        drop(process);
+    }
+
+    #[tokio::test]
+    async fn inherited_preflight_failure_is_terminal_without_a_spawn() {
+        let session = super::super::launcher::LaunchSession::current();
+        let readiness = observe(|| {
+            super::super::launcher::spawn_reporting(
+                std::thread::Builder::new(),
+                inherit(|| fail_current("canonical original refused".into())),
+            )
+            .unwrap()
+            .join()
+            .unwrap();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            readiness.wait().await.unwrap_err(),
+            "canonical original refused"
+        );
+        assert_eq!(CURRENT.with(Cell::get), None);
+        assert!(session.startup.0.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

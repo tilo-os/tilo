@@ -80,6 +80,28 @@ The `tab_drag_cancel` offscreen scenario records before, lifted, cancelled and
 released frames. Physical touch, keyboard and screen-reader qualification
 remain separate device checks.
 
+## Published file selection
+
+Files now publishes `select-entries`, `select-all`, `clear-selection`,
+`copy-selection` and `cut-selection` on its folder resource. A caller can select
+the current row IDs, sort, copy the batch, clear its selection, navigate and
+paste through the same handlers as the keyboard and pointer. Explicit batches
+are limited to 256 IDs and validated whole before selection changes; names,
+paths, missing rows and oversized batches are refused. Answers carry a bounded
+list of stable row IDs, count and primary row, never row numbers.
+
+Selection remains local to the addressed window and changes no shared document.
+View/Copy retain Read permission and Cut retains Write. Empty Copy/Cut are
+unavailable and refuse without overwriting the clipboard. Production journeys
+verify exact copied bytes, sorting, atomic refusals, two-window selection
+isolation, Viewer refusal of Cut and one undo removing the whole copied batch
+while retaining its originals. Generated evidence belongs on the PR.
+
+Cross-window file transfer is not implemented by these selection actions. The
+[local file clipboard boundary](../architecture/file-clipboard.md) records the
+observed raw-path replacement problem and the proposed host-owned extension
+that requires architectural review before implementation.
+
 ## Recent files through the resource door
 
 At baseline `12f4dfb2d5`, Recent's pointer menu could open a file's containing
