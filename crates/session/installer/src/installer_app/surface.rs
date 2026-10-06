@@ -17,10 +17,10 @@ use tilo_actions::{
 use zeroize::Zeroizing;
 
 use super::{
-    FILESYSTEMS, InstallMethod, InstallState, InstallerApp, STEP_LABELS, Step, VerifiedBootState,
-    clear_secret_buffer, local_text, prev_step, secret_copy, step_index, valid_full_name,
-    valid_hostname, valid_locale, valid_timezone_name, valid_username, validate_passwords,
-    validate_startup_secret_for,
+    CODECS_DESCRIPTION, FILESYSTEMS, InstallMethod, InstallState, InstallerApp, STEP_LABELS, Step,
+    VerifiedBootState, clear_secret_buffer, local_text, prev_step, secret_copy, step_index,
+    valid_full_name, valid_hostname, valid_locale, valid_timezone_name, valid_username,
+    validate_passwords, validate_startup_secret_for,
 };
 use crate::install::PowerAction;
 use crate::layouts;
@@ -614,9 +614,10 @@ impl InstallerApp {
                 toggle(
                     "set-media-codecs",
                     "Install media codecs",
-                    "Download RPM Fusion and Cisco codecs once the new system is online",
+                    CODECS_DESCRIPTION,
                     |enabled| Operation::SetMediaCodecs { enabled },
-                ),
+                )
+                .with_description(CODECS_DESCRIPTION),
                 on_step.clone(),
             ))
             .with_action(gate(
