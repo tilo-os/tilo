@@ -1793,10 +1793,16 @@ impl App {
                 alternative: "use --hypervisor whpx on Windows ARM64, or omit --headless".into(),
             });
         }
-        if (args.heads.is_some() || args.resolution.is_some() || args.gl) && adapter != "libvirt" {
+        if args.heads.is_some() && adapter != "libvirt" {
             return Err(CliError::Unsupported {
-                what: format!("--heads, --resolution or --gl with the {adapter} adapter"),
-                alternative: "use --hypervisor libvirt, or omit them".into(),
+                what: format!("--heads with the {adapter} adapter"),
+                alternative: "use --hypervisor libvirt, or omit --heads".into(),
+            });
+        }
+        if (args.resolution.is_some() || args.gl) && !matches!(adapter, "libvirt" | "qemu") {
+            return Err(CliError::Unsupported {
+                what: format!("--resolution or --gl with the {adapter} adapter"),
+                alternative: "use --hypervisor libvirt or qemu, or omit them".into(),
             });
         }
         if args.direct_boot_bundle.is_some() && adapter != "whpx" {
@@ -7363,6 +7369,21 @@ mod tests {
             .unwrap();
             assert!(read_direct_boot_bundle(&bundle).is_err());
         }
+    }
+
+    #[test]
+    fn qemu_accepts_display_fixture_options_but_not_multiple_heads() {
+        let mut args = create_args("dev");
+        args.resolution = Some("1920x1080".into());
+        args.gl = true;
+        assert!(App::validate_create_options("qemu", &args).is_ok());
+        assert!(App::validate_create_options("libvirt", &args).is_ok());
+        for adapter in ["whpx", "utm", "hyperv"] {
+            assert!(App::validate_create_options(adapter, &args).is_err());
+        }
+        args.heads = Some(2);
+        assert!(App::validate_create_options("qemu", &args).is_err());
+        assert!(App::validate_create_options("libvirt", &args).is_ok());
     }
 
     #[test]
