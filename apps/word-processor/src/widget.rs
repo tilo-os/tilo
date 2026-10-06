@@ -4856,15 +4856,20 @@ impl WordProcessorWidget {
         self.view.styles_panel_visible
     }
 
-    /// Narrow tiles present the inspector as a sheet over the page; wide
-    /// windows reserve space for it. This keeps the document useful at
-    /// phone/three-column widths without making advanced formatting unreachable.
+    /// Wider compact tiles use a drawer; phones present the inspector as
+    /// the foreground page. Desktop windows reserve space beside the document.
     fn styles_panel_overlay(&self) -> bool {
         self.view.styles_panel_visible && self.inspector_drawer.is_overlay()
     }
 
+    fn styles_panel_full_window(&self) -> bool {
+        self.view.styles_panel_visible
+            && ui::widget::modal_dialog::uses_full_window(self.rect, &self.desk_theme)
+    }
+
     /// The contextual inspector. Docked, it is the window's inspector region;
-    /// over a narrow window it floats as a sheet over a scrim. A header names
+    /// on a phone it fills the window using the shared opaque page surface.
+    /// A header names
     /// what it inspects beside its close button, and below it the image
     /// inspector or the paragraph's two sections scroll as one column.
     fn draw_styles_panel(
@@ -8803,13 +8808,13 @@ impl WordProcessorWidget {
         }
         // A drawer over the page dismisses on a press on its scrim, instead
         // of placing a caret through it.
-        if self.inspector_drawer.press_dismisses(self.pointer) {
+        if !self.styles_panel_full_window() && self.inspector_drawer.press_dismisses(self.pointer) {
             self.view.styles_panel_visible = false;
             self.lifecycle.dirty = true;
             *handled = true;
             return true;
         }
-        if self.outline_drawer.press_dismisses(self.pointer) {
+        if !self.styles_panel_full_window() && self.outline_drawer.press_dismisses(self.pointer) {
             if self.outline.is_open() {
                 self.outline.toggle();
             }
@@ -12370,7 +12375,7 @@ impl WordProcessorWidget {
                     .map(|slot| slot.field)
             })
             .flatten();
-        let zoom = self.zoom_rect.contains(pointer);
+        let zoom = !self.styles_panel_full_window() && self.zoom_rect.contains(pointer);
         self.focus_hosted(field, zoom);
         if let Some(field) = field {
             if let Some(slot) = self.num_inputs.iter_mut().find(|s| s.field == field) {
@@ -12400,7 +12405,7 @@ impl WordProcessorWidget {
                 Self::forward(&mut slot.input, event, ctx);
             }
             true
-        } else if Widget::is_focused(&self.zoom_input) {
+        } else if !self.styles_panel_full_window() && Widget::is_focused(&self.zoom_input) {
             Self::forward(&mut self.zoom_input, event, ctx);
             true
         } else {
@@ -12626,7 +12631,19 @@ impl WordProcessorWidget {
         } else {
             self.outline.clear_frame();
         }
-        if self.inspector_drawer.sidebar_rect().width() > 0.5 {
+        if self.styles_panel_full_window() {
+            // A compact inspector is a page, not floating chrome. Use the
+            // same material and breakpoint as shared full-window dialogs.
+            ui::floating_surface::paint_material(
+                scene,
+                transform,
+                &self.rect,
+                ui::floating_surface::Material::Opaque,
+                theme,
+            );
+            let local = theme.on_ground(ui::chrome::panel_ground(theme));
+            self.draw_styles_panel(scene, transform, text_renderer, &local, self.rect);
+        } else if self.inspector_drawer.sidebar_rect().width() > 0.5 {
             self.inspector_drawer.draw_scrim(scene, transform, theme);
             let local = self.inspector_drawer.paint_panel(scene, transform, theme);
             let panel = self.inspector_drawer.sidebar_rect();
@@ -12726,6 +12743,41 @@ impl WordProcessorWidget {
         }
         self.toolbar
             .push((ToolAction::ToggleStyles, self.inspector_toggle));
+    }
+
+    /// Hosted controls receive input first; the foreground Styles page
+    /// consumes remaining text instead of editing the displaced document.
+    fn route_styles_page_key(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        if !self.styles_panel_full_window() {
+            return false;
+        }
+        match event {
+            // Explicit application shortcuts retain their existing action
+            // routes; only unclaimed text belongs to the foreground page.
+            WindowEvent::KeyboardInput { .. }
+                if ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key() =>
+            {
+                false
+            }
+            WindowEvent::KeyboardInput { event: key, .. } => {
+                if key.state == ElementState::Pressed
+                    && key.logical_key == Key::Named(NamedKey::Escape)
+                {
+                    self.apply_panel_hit(&mut ctx.state, PanelHit::Close);
+                }
+                *ctx.handled = true;
+                true
+            }
+            WindowEvent::Ime(_) | WindowEvent::DroppedFile(_) => {
+                *ctx.handled = true;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Route an event to the toolbar: hover always, presses inside its band,
@@ -12986,10 +13038,13 @@ impl WordProcessorWidget {
         if comment_thread_handled {
             return;
         }
-        if self.route_toolbar_event(event, ctx) {
+        if !self.styles_panel_full_window() && self.route_toolbar_event(event, ctx) {
             return;
         }
         if self.route_hosted_fields(event, ctx) {
+            return;
+        }
+        if self.route_styles_page_key(event, ctx) {
             return;
         }
         let tb_h = self.tool_band.height();
