@@ -4644,6 +4644,11 @@ fn narrow_sort_row_has_full_aligned_control_without_extra_gutters() {
         assert!(control.x0 >= row.x0 && control.x1 <= row.x1);
         assert!(control.y0 >= row.y0 && control.y1 <= row.y1);
         assert_eq!(control.x0, row.x0, "sort aligns with its overview rail");
+        assert_eq!(
+            control.y0 - row.y0,
+            f64::from(Theme::light().tokens.spacing.s2),
+            "the sort row is separated from the header divider"
+        );
         assert!(control.x0 >= 0.0 && control.x1 <= 390.0);
         assert!(app.sort_choice.with(|value| value == "name"));
     }

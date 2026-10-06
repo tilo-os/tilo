@@ -3275,7 +3275,22 @@ impl Widget for CameraApp {
     }
 
     fn claims_raw_touch(&self, point: Point) -> bool {
-        self.rect.contains(point)
+        if self.screen == Screen::Settings || self.chooser.is_open() || !self.rect.contains(point) {
+            return false;
+        }
+        // Shared fields and the crop editor retain their ordinary host input
+        // path; only the manually painted camera surfaces own mode swipes.
+        if self.screen == Screen::Document
+            && (self.document_crop_editor.is_some()
+                || self
+                    .document_controls
+                    .fields
+                    .iter()
+                    .any(|field| field.is_open() || field.get_rect().contains(point)))
+        {
+            return false;
+        }
+        true
     }
 
     fn get_rect(&self) -> Rect {
@@ -3504,6 +3519,31 @@ mod tests {
             assert!(node.name.as_deref().unwrap().starts_with("Switch camera"));
             assert!(node.state.focusable);
         }
+    }
+
+    #[test]
+    fn document_dropdowns_keep_real_hosted_touch_activation() {
+        use winit::event::TouchPhase::{Ended, Started};
+        let (mut app, mut doc, root) = sample_app();
+        app.apply(
+            Action::Nav(Screen::Document),
+            &mut Edits::lend(&mut doc),
+            &root,
+        );
+        let mut frame = render_at(app, doc, 390.0, 844.0);
+        let rect = frame.document_controls.fields[0].get_rect();
+        assert!(rect.width() > 0.0 && rect.height() > 0.0);
+        assert!(
+            !frame.claims_raw_touch(rect.center()),
+            "shared dropdown owns host pointer emulation"
+        );
+        let harness = Framed::harness_mut(&mut frame);
+        harness.touch(1, Started, rect.center().x, rect.center().y);
+        harness.touch(1, Ended, rect.center().x, rect.center().y);
+        assert!(
+            frame.document_controls.fields[0].is_open(),
+            "a real touch opens the retained dropdown"
+        );
     }
 
     #[test]
