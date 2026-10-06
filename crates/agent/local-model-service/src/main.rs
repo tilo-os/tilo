@@ -1617,6 +1617,18 @@ mod tests {
     use super::*;
     use agent_provider_config::local::RuntimeKind;
 
+    #[test]
+    fn checked_in_catalog_signature_survives_speech_format_support() {
+        let image_inputs = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../os/usr/share/tilo/system-extensions");
+        let catalog = load_catalog(
+            &image_inputs.join("local-model-catalog.json"),
+            &image_inputs.join("local-model-keys.json"),
+        )
+        .expect("the existing image catalogue must retain its trusted signature");
+        assert!(catalog.models.iter().any(|model| model.segmentation));
+    }
+
     fn release(id: &str, in_process: bool) -> LocalModelRelease {
         LocalModelRelease {
             id: id.into(),

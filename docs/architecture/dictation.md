@@ -72,6 +72,10 @@ This decoder is not yet attached to an authenticated Unix WebSocket connection.
 The wire journeys in `tests/emoji_picker_commit.rs` exercise production `State`
 with actual Wayland client connections. They do not measure recognition quality,
 actual microphone access, native app CRDT history, or live visual status.
+The native-chrome journey in `tests/input_method_wire.rs` additionally exercises
+the existing `ShellTextInput` stand-in: corrected dictation becomes one native
+`WindowEvent::Ime(Commit)` after finalization. Reuse this bridge. It is not proof
+of an app's selection, CRDT undo or accessibility routing.
 Separate production-reader tests cover queue overflow, source EOF and owned-process teardown
 using synthetic PCM/blocked pipes; they neither capture audio nor run inference.
 
@@ -120,11 +124,9 @@ about 419 MB on x86-64 and 381 MB on Arm64, in addition to the 164 MB model.
 These receipts are review inputs, not a signed production catalogue. The image
 has no source-revision labels; its source/build provenance and installed runtime
 version remain unverified. No image layer or model weight was pulled or executed.
-
-
 The checked-in `local-model-service` manager currently assembles `VllmCommand`
 for runtime-served models, and admits `hf_snapshot_tar_zst`, `vllm_gguf` and
-in-process `onnx_file` formats. Its signed
+in-process `onnx_file` and `whisper_ggml` formats. Its signed
 catalogue payload and verifier are internal to its CLI. It has no speech engine
 launch verb or checked-in speech release. Extend that shared lifecycle rather
 than inventing a second unsigned installer or an ambient executable path.
@@ -145,6 +147,24 @@ artifact provenance, license receipts and an approved runtime base-image
 identity. Signing material stays in the protected publication job, never in
 chat or agent output. Do not dispatch publication while this work is on hold,
 add a trusted development key, or substitute an unsigned executable path.
+
+The lifecycle now also admits a typed in-process `whisper_ggml` object, whose
+signed format declares `speech_recognition`. It goes through the same license,
+hash, queue, installation, removal and capability lookup as other native
+models, and never enters the chat supervisor or recommendation. No fields were
+added to existing signed model records; the checked-in image catalogue is
+verified with its existing public trust input in the regression test.
+
+`dictation-whisper-review.json` pins a multilingual tiny-model candidate by
+upstream revision, LFS hash and size, plus the exact binding source archives
+reviewed. No weights or native dependency were installed. The reviewed
+whisper-rs 0.16.0 `set_abort_callback_safe` erases its closure into a boxed trait
+object, but its trampoline casts that pointer back to the generic closure type
+and does not retain ownership. Do not use that helper. A raw C API adapter needs
+an explicit callback lifetime and process-isolation audit; native CPU build
+flags also need a portable baseline before adoption. The existing field bridge
+reports purpose and caret, so identical-geometry native field switches require
+an explicit field identity/edit generation from the shared host input contract.
 
 ## Remaining implementation and acceptance gates
 

@@ -766,6 +766,36 @@ mod tests {
     }
 
     #[test]
+    fn speech_format_is_signed_without_becoming_a_chat_recommendation() {
+        let key = SigningKey::from_bytes(&[5; 32]);
+        let temp = tempfile::tempdir().unwrap();
+        let mut catalog = source(temp.path());
+        let mut speech = in_process_source(temp.path());
+        speech.artifact_format = ModelArtifactFormat::WhisperGgml;
+        speech.segmentation = false;
+        catalog.models = vec![speech];
+        catalog.runtimes.clear();
+        catalog.recommendation.clear();
+        let (signed, _) = compile(catalog, temp.path(), &key).unwrap();
+        assert_eq!(
+            signed.payload.models[0].in_process_capabilities(),
+            [agent_provider_config::local::InProcessCapability::SpeechRecognition]
+        );
+        assert!(signed.payload.recommendation.is_empty());
+        let signature = Signature::from_slice(&signed.signature).unwrap();
+        key.verifying_key()
+            .verify(&catalog_signing_bytes(&signed.payload).unwrap(), &signature)
+            .unwrap();
+        let mut forged = signed.payload;
+        forged.models[0].artifact_format = ModelArtifactFormat::OnnxFile;
+        assert!(
+            key.verifying_key()
+                .verify(&catalog_signing_bytes(&forged).unwrap(), &signature)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn in_process_only_catalog_compiles_without_chat_recommendation() {
         let key = SigningKey::from_bytes(&[5; 32]);
         let temp = tempfile::tempdir().unwrap();

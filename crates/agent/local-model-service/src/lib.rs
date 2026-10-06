@@ -353,9 +353,9 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
     fn model_path(&self, model: &LocalModelRelease) -> Result<PathBuf, ServiceError> {
         match model.artifact_format {
             ModelArtifactFormat::HfSnapshotTarZst => self.snapshot_path(&model.artifact.sha256),
-            ModelArtifactFormat::VllmGguf | ModelArtifactFormat::OnnxFile => {
-                self.object_path(&model.artifact.sha256)
-            }
+            ModelArtifactFormat::VllmGguf
+            | ModelArtifactFormat::OnnxFile
+            | ModelArtifactFormat::WhisperGgml => self.object_path(&model.artifact.sha256),
         }
     }
 
@@ -429,7 +429,9 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
     fn materialize_model(&mut self, model: &LocalModelRelease) -> Result<PathBuf, ServiceError> {
         let object = self.fetch_verified(&model.artifact)?;
         match model.artifact_format {
-            ModelArtifactFormat::VllmGguf | ModelArtifactFormat::OnnxFile => Ok(object),
+            ModelArtifactFormat::VllmGguf
+            | ModelArtifactFormat::OnnxFile
+            | ModelArtifactFormat::WhisperGgml => Ok(object),
             ModelArtifactFormat::HfSnapshotTarZst => self.extract_snapshot(&object, model),
         }
     }
@@ -1489,6 +1491,48 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    #[test]
+    fn speech_install_uses_verified_objects_and_never_launches_a_runtime() {
+        let bytes = b"synthetic speech graph receipt";
+        let dir = tempfile::tempdir().unwrap();
+        let mut release = onnx_model(bytes);
+        release.id = "speech".into();
+        release.artifact_format = ModelArtifactFormat::WhisperGgml;
+        release.segmentation = false;
+        let mut service = service_for(dir.path(), bytes);
+        assert!(matches!(
+            service.install_in_process_with_progress(&release),
+            Err(ServiceError::LicenseNotAccepted(_))
+        ));
+        service.record_license_acceptance(&release).unwrap();
+        service.queue_install(&release).unwrap();
+        assert_eq!(
+            installed_in_process_model(dir.path(), InProcessCapability::SpeechRecognition).unwrap(),
+            None
+        );
+        assert_eq!(
+            service.install_in_process_with_progress(&release).unwrap(),
+            LocalModelStatus::Installed
+        );
+        assert!(service.supervisor.command.is_none());
+        assert_eq!(
+            installed_in_process_model(dir.path(), InProcessCapability::Segmentation).unwrap(),
+            None
+        );
+        let installed =
+            installed_in_process_model(dir.path(), InProcessCapability::SpeechRecognition)
+                .unwrap()
+                .unwrap();
+        assert_eq!(installed.id, "speech");
+        assert_eq!(installed.sha256, release.artifact.sha256);
+        assert_eq!(fs::read(&installed.path).unwrap(), bytes);
+        service.remove("speech").unwrap();
+        assert_eq!(
+            installed_in_process_model(dir.path(), InProcessCapability::SpeechRecognition).unwrap(),
+            None
+        );
     }
 
     /// An in-process model installs through the verified download and the
