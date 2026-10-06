@@ -13,6 +13,8 @@ pub mod full_entry;
 pub mod history_compaction;
 #[path = "http_end_to_end.rs"]
 pub mod http_end_to_end;
+#[path = "package_review_cli.rs"]
+pub mod package_review_cli;
 #[path = "promotion_cli.rs"]
 pub mod promotion_cli;
 #[path = "publisher_applications.rs"]
