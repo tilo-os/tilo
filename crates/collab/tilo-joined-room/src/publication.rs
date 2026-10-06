@@ -285,7 +285,8 @@ pub fn validate_file_layout(
 ) -> Result<(), String> {
     for room in storage.rooms.values() {
         match (version, room.version, room.publication.is_some()) {
-            (3, 2, true) => {}
+            (3, 2, true) if room.effect_history_root.is_none() => {}
+            (3, 3, true) if room.effect_history_root.is_some() => {}
             _ => return Err("native publication record/file layout mismatch".into()),
         }
         if let Some(publication) = &room.publication {

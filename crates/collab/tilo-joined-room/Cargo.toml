@@ -13,6 +13,7 @@ test-support = ["dep:iroh-base"]
 [dependencies]
 # Writes the file-backed store: owner-only, crash-safe replacement.
 tilo-files = { path = "../../platform/tilo-files" }
+tilo-content = { path = "../../system/content" }
 automerge.workspace = true
 # Scoped owner admission decodes untrusted app mutations only in workers.
 tilo-automerge-isolate.workspace = true

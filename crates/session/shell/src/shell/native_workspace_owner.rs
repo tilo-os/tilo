@@ -29,9 +29,16 @@ pub(crate) use tilo_joined_room::{NativeBootstrap, PendingEnrollmentId, PendingE
 struct TreeStore {
     tree: WorkspaceTreeHandle,
     runtime: NativeStateRuntime,
+    history: tilo_joined_room::HistoryContent,
 }
 
 impl Store for TreeStore {
+    fn put_history(&self, bytes: &[u8]) -> Result<[u8; 32], String> {
+        self.history.put(bytes)
+    }
+    fn read_history(&self, hash: [u8; 32]) -> Result<Vec<u8>, String> {
+        self.history.read(hash)
+    }
     fn healthy(&self) -> bool {
         self.runtime.healthy()
     }
@@ -153,6 +160,7 @@ pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, St
         std::sync::Arc::new(TreeStore {
             tree: tree.clone(),
             runtime: native.native_runtime.clone(),
+            history: tilo_joined_room::HistoryContent::for_state_file(&path),
         }),
         native.native_authority.clone(),
         std::time::SystemTime::now(),
