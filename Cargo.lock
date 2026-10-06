@@ -10585,6 +10585,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-input-context",
  "tilo-vello",
  "tilo-winit",
  "tracing",
@@ -16996,6 +16997,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-input-context"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-scanner",
+ "wayland-server",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-installed-apps"
 version = "0.1.0"
 dependencies = [
@@ -22063,11 +22078,9 @@ dependencies = [
  "wasmi_core",
  "wasmi_ir",
  "wasmparser 0.239.0",
- "wayland-backend",
  "wayland-protocols",
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
- "wayland-sys",
  "web-time",
  "winnow 0.7.14",
  "writeable",
