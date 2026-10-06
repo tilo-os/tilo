@@ -149,57 +149,7 @@ fn decode(
     else {
         return Err("unsupported native effect commit family".into());
     };
-    let receipt: tilo_desktop_model::WorkspaceEffectReceipt =
-        serde_json::from_slice(redacted).map_err(|_| "malformed redacted effect receipt")?;
-    if invocation.is_nil()
-        || receipt.invocation.0 != *invocation
-        || receipt.actor.trim().is_empty()
-        || receipt.actor.chars().count() > 160
-        || receipt.actor.chars().any(char::is_control)
-        || receipt.completed_at < 0
-        || !bounded_context(&receipt.context)
-        || matches!(&receipt.status, tilo_actions::EffectReceiptStatus::Failed { code }
-            if code.is_empty() || code.len() > 96 || !code.bytes().all(|byte|
-                byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')))
-        || receipt.context.facets.len() != 2
-        || !receipt
-            .context
-            .facets
-            .iter()
-            .any(|facet| facet.key == "tilo.receipt" && facet.value == "effect")
-        || !receipt
-            .context
-            .facets
-            .iter()
-            .any(|facet| facet.key == "tilo.invocation" && facet.value == invocation.to_string())
-        || serde_json::to_vec(&receipt).map_err(|error| error.to_string())? != *redacted
-    {
-        return Err("effect receipt is not the exact bounded broker terminal encoding".into());
-    }
-    Ok(receipt)
-}
-
-fn bounded_context(context: &tilo_actions::ActionContext) -> bool {
-    fn text(value: &str, max: usize) -> bool {
-        value.trim() == value
-            && value.chars().count() <= max
-            && !value.chars().any(char::is_control)
-    }
-    text(&context.action_label, 200)
-        && context
-            .app
-            .as_ref()
-            .is_none_or(|app| text(&app.id, 160) && text(&app.label, 160))
-        && context.resource.as_ref().is_none_or(|resource| {
-            text(&resource.id, 512) && text(&resource.kind, 160) && text(&resource.label, 200)
-        })
-        && context
-            .purpose
-            .as_ref()
-            .is_none_or(|purpose| !purpose.is_empty() && text(purpose, 512))
-        && context.group.as_ref().is_none_or(|group| {
-            text(&group.id, 160) && text(&group.label, 200) && text(&group.kind, 160)
-        })
+    tilo_peer_state::StatePeer::validate_workspace_effect_receipt_encoding(*invocation, redacted)
 }
 
 #[cfg(test)]
