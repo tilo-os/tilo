@@ -368,6 +368,7 @@ inputs = ["scripts/perf/", "apps/settings/src/categories.rs"]
 suites = [
   "scripts/perf/check_app_coverage_test.py",
   "scripts/perf/code_editor_effects_test.py",
+  "scripts/perf/device_notes_latency_test.py",
   "scripts/perf/collect_code_editor_native_test.py",
   "scripts/perf/collect_file_explorer_native_test.py",
   "scripts/perf/collect_scratchpad_native_test.py",
