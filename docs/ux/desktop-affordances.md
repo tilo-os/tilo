@@ -1,0 +1,119 @@
+# Desktop affordances: focused-tab operations
+
+Audit base: `b5b1ae23c4` (after the shell redesign and keyboard overview fix).
+This is a source-and-production-test audit, not a claim that every input device
+or every app has been exercised.
+
+| Purpose / journey | Evidence at the audit base | First-slice decision |
+|---|---|---|
+| Find and focus a window, including an already-selected tab | Shell strip navigation and native accessibility activation exist; spatial opt-in and focus reconciliation are owned by PR #2913 | Preserve that work |
+| Select several files, open their menu without a pointer, reveal a search hit, undo a file operation | Files has selection-aware menu construction, Context Menu keyboard handling, Reveal and framework-history journeys (`files_app/tests.rs`, `framework_history_tests.rs`, `search_provider.rs`) | These are not missing wholesale; no duplicate implementation |
+| Discover what can be done with the focused shell tab without knowing individual chords or positioning a pointer | `TabBar` only queues a menu on right-click; shell harvests those requests. Menu arrows, accessible rows, Close / Split Right / Move to New Group already exist | Implement a keyboard and published-action entrance |
+| Carry resources between apps and share them with collaborators | Apps publish typed children and effects; Files has scoped grant/revoke menus. Chat #2912 and Contacts #2910 own their resource changes | Cross-app journey audit is a follow-up, not permission to invent a second sharing protocol |
+| Cancel an accidental tab drag before releasing the pointer | A real pointer/key journey at `90add8ad64` starts a drag, then Escape is unhandled; releasing can still commit the drop | Next slice: cancel the shared pending gesture and expose the same cancellation action |
+| Touch text entry | Existing OSK work has a separate owner | No OSK edits |
+
+## Before and after
+
+Before: with a tab focused, discover its shell operations by moving to its pill
+and right-clicking, or find each operation separately in search. The menu's
+keyboard support starts only after that pointer gesture.
+
+After: press Super+F10 (rebindable in Settings and listed in the shortcut guide)
+or invoke `actions` / `tab.menu`. The same shell menu opens beside the focused
+tab, independently of the pointer, clamped to the keyboard-focused display.
+A collapsed pill uses its real tab bar until the next layout expands it.
+The first row is already focused. Down and
+Enter split a multi-tab group through the existing dispatcher; Escape changes
+no windows. A held opening chord keeps the current row. Single-tab groups only
+offer Close. Locked or removed tabs cannot open a stale menu. App Context Menu
+and Shift+F10 remain available for the app's own resource operations.
+
+The menu uses the shared widget and live theme, including high contrast. No new
+assets, borrowed reference implementation, dependency or licence are introduced:
+this is original repository code under its existing AGPL-3.0 licence. Work per
+opening is bounded by the focused strip/group/tab lookup; no preview renderer,
+background polling or continuous frame demand is added.
+
+## Reproduction and evidence
+
+Use plain Cargo or any Cargo drop-in appropriate to the build environment:
+
+```sh
+cargo test --locked -p shell --lib tab_context_menu -j 4
+cargo test --locked -p shell --lib tab_menu_ -j 4
+cargo test --locked -p settings-store --lib shortcuts -j 4
+cargo check --locked -p shell --tests -j 4
+cargo run --locked -p shell --bin shots -j 4 -- --mode offscreen --scenario tab_menu_keyboard --out target/ux-tab-menu-dark
+```
+
+Use `TILO_SHOTS_THEME=light|dark|high-contrast` for the three material/contrast
+variants; a remote Cargo drop-in must forward that environment variable to its
+runner. The scenario emits desktop, focused-menu, next-row and cancelled
+frames. These are production offscreen frames, never the user's desktop.
+Actual results and any unrun checks belong in the PR description. Native screen
+reader, real touch/keyboard hardware and older-machine latency remain device
+validation, not inferred passes from these tests.
+
+
+## Cancelling a tab drag
+
+With a tab lifted, press Escape to abandon its pending drop immediately. The
+later pointer release cannot move or detach it. `actions` / `tab.drag.cancel`
+requests the same host cancellation for automation and assistive technology;
+locked sessions refuse that request. With no pending tab gesture, Escape keeps
+its existing menu/dialog/application meaning.
+
+Cancellation clears the existing shared tab bar gesture and the shell's
+in-strip/cross-strip feedback. It preserves every live tab host and does not
+write the replicated window topology. A carried handle remains visible even
+when an inactive app has not been laid out: the shared tab ghost is painted
+without forcing the app to render a cold preview. The carried handle uses the
+shared themed surface, and forced-colour themes keep its contrast opaque. This slice does not change group
+reordering, resize gestures or application-owned drags.
+
+The regression journey uses actual pointer press/move, Escape and release,
+asserts that a drag started, then checks the live widget and durable tree.
+Run `cargo test --locked -p shell --lib tab_drag_ -j 4` and the existing
+`cargo test --locked -p shell --test it cross_strip_drag:: -j 4` regression.
+The `tab_drag_cancel` offscreen scenario records before, lifted, cancelled and
+released frames. Physical touch, keyboard and screen-reader qualification
+remain separate device checks.
+
+## Recent files through the resource door
+
+At baseline `12f4dfb2d5`, Recent's pointer menu could open a file's containing
+folder or forget its recent-use entry, but its published file rows exposed
+neither action. The resource journey failed at the missing `reveal` action.
+This made the same everyday task unavailable to automation and assistive
+technology using the app's public surface.
+
+Recent rows now publish localized **Open containing folder** (`reveal`) and
+**Remove from Recent** (`forget-recent`). Invoke the first to open the parent
+folder with the exact file selected, then Back to return to Recent. Invoke the
+second to remove only that device's recent-use entry; the file and other Recent
+items remain intact, including after reopening the window. Both use the same
+commands as the existing pointer menu. They are view operations: a Viewer can
+use them, while Denied access is refused through the framework's existing door.
+
+The effects resolve an opaque published row in the current Recent view. They
+refuse retained requests in an ordinary folder, deleted targets, withdrawn
+rows and caller attempts to substitute a path. The existing collaborative
+record reveal outside Recent keeps its host and permission checks. No new
+clipboard transport, permission grant, shared history mutation, asset or
+dependency is introduced. The code is original work under AGPL-3.0-only.
+
+```sh
+cargo test --locked -p file-explorer --lib recent_resource_tests -j 4
+cargo test --locked -p file-explorer --lib open_with_tests -j 4
+cargo check --locked -p file-explorer --all-targets -j 4
+cargo check --locked -p shell --tests -j 4
+cargo run --locked -p file-explorer -j 4 -- --shots target/recent.png --scenario recent --theme dark
+```
+
+Capture `recent`, `recent-menu`, `recent-revealed` and `recent-forgotten` in
+dark, light and high-contrast themes. Each uses a fresh scratch home, actual
+Recent settings and production command handlers. Generated frames and logs
+belong in PR/CI evidence, never source control. These captures and simulated
+roles do not qualify physical touch, a native screen reader or older-hardware
+latency.

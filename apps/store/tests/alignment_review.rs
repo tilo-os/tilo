@@ -232,6 +232,51 @@ fn details_page_aligns_identity_and_facts() {
     }
 }
 
+/// A publisher's pitch and previews precede the package facts, while the
+/// complete description stays readable in every shipped theme.
+#[test]
+fn publisher_presentation_precedes_package_facts() {
+    for theme in [
+        ui::Theme::dark(),
+        ui::Theme::light(),
+        ui::Theme::high_contrast(),
+    ] {
+        for width in [480.0, 1200.0] {
+            let mut store = staged("detail");
+            store.set_image_store(Some(store::fixture::artwork_store()));
+            let app = Framed::new(
+                ui::State::new(),
+                store,
+                ui::headless::viewport((width, 1600.0)),
+                theme.clone(),
+            );
+            let pitch = first_named(&*app, "Ideas worth keeping, together.");
+            let previews = first_named(&*app, "Previews");
+            let description = by_test_id(&*app, "store.detail.description");
+            let facts = first_named(&*app, "Details");
+            let first_preview = by_test_id(&*app, "store.preview.so.tilo.notes.0");
+            for index in 0..3 {
+                let preview = by_test_id(&*app, &format!("store.preview.so.tilo.notes.{index}"));
+                assert!(preview.x0 >= 0.0 && preview.x1 <= width);
+                if width == 1200.0 {
+                    close(
+                        preview.y0,
+                        first_preview.y0,
+                        "all wide previews share a row",
+                    );
+                }
+            }
+            assert!(pitch.y1 < previews.y0, "the pitch precedes artwork");
+            assert!(previews.y1 < description.y0, "artwork precedes long copy");
+            assert!(description.y1 < facts.y0, "copy precedes package facts");
+            for rect in [pitch, description] {
+                assert!(rect.width() > 0.0 && rect.height() > 0.0);
+                assert!(rect.x0 >= 0.0 && rect.x1 <= width);
+            }
+        }
+    }
+}
+
 /// Every page starts on the catalogue's leading edge, at any width, and the
 /// sections of a reading page end on one trailing edge.
 #[test]

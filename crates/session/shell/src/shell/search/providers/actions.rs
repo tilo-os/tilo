@@ -171,6 +171,8 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "room.activity.open"
         | "room.activity.explore"
         | "room.activity.replay"
+        | "tab.menu"
+        | "tab.drag.cancel"
         | "history.compare"
         | "history.undo"
         | "history.restore" => {
@@ -228,6 +230,11 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.permission = PermissionRequirement::Write;
             contract.retry = RetryPolicy::AtMostOnce;
         }
+        id if id.starts_with("navigation.axis.") => {
+            contract = ActionContract::view();
+            contract.retry = RetryPolicy::AtMostOnce;
+            contract.reversible = true;
+        }
         // Each is one step: repeating it steps again.
         id if WINDOW_FOCUS_ACTION_IDS.contains(&id) => {
             contract = ActionContract::view();
@@ -263,6 +270,8 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "room.activity.open"
         | "room.activity.explore"
         | "room.activity.replay"
+        | "tab.menu"
+        | "tab.drag.cancel"
         | "history.compare"
         | "history.undo"
         | "history.restore"
@@ -272,7 +281,9 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
             tilo_actions::OperationKind::Document
         }
         _ if id.contains("#ownership.") => tilo_actions::OperationKind::Document,
-        _ if WINDOW_FOCUS_ACTION_IDS.contains(&id) => tilo_actions::OperationKind::View,
+        _ if WINDOW_FOCUS_ACTION_IDS.contains(&id) || id.starts_with("navigation.axis.") => {
+            tilo_actions::OperationKind::View
+        }
         _ => tilo_actions::OperationKind::Effect,
     }
 }
@@ -936,6 +947,55 @@ const fn chrome(
 
 impl Action {
     const ALL: &'static [Action] = &[
+        chrome(
+            "dictation.toggle",
+            "shortcut-name-dictation-toggle",
+            "dictation-action-start-detail",
+            |st, _| request_window_shortcut(st, ShortcutAction::DictationToggle),
+        ),
+        chrome(
+            "dictation.finish",
+            "shortcut-name-dictation-finish",
+            "dictation-action-finish-detail",
+            |st, _| request_window_shortcut(st, ShortcutAction::DictationFinish),
+        ),
+        chrome(
+            "dictation.cancel",
+            "shortcut-name-dictation-cancel",
+            "dictation-action-cancel-detail",
+            |st, _| request_window_shortcut(st, ShortcutAction::DictationCancel),
+        ),
+        chrome(
+            "navigation.axis.enable",
+            "search-action-axis-enable",
+            "search-action-axis-enable-subtitle",
+            |st, _| {
+                st.set_axis_navigation_enabled(true);
+                Ok(())
+            },
+        ),
+        chrome(
+            "navigation.axis.disable",
+            "search-action-axis-disable",
+            "search-action-axis-disable-subtitle",
+            |st, _| {
+                st.set_axis_navigation_enabled(false);
+                Ok(())
+            },
+        ),
+        chrome(
+            "navigation.axis.gather",
+            "search-action-axis-gather",
+            "search-action-axis-gather-subtitle",
+            |st, _| {
+                if !st.axis_navigation_enabled() {
+                    return Err(ActionError::Refused(t("axis-navigation-disabled")));
+                }
+                active_workspace_id(st)?;
+                st.request_axis_gather();
+                Ok(())
+            },
+        ),
         chrome(
             "overview.toggle",
             "search-action-overview-toggle",
@@ -1606,6 +1666,34 @@ impl Action {
         // The tab menu's three rows as actions, on the focused tab: a
         // capability reachable only by right-click is not finished. The
         // rows and these closures call the same `window_actions` functions.
+        chrome(
+            "tab.menu",
+            "search-action-tab-menu",
+            "search-action-tab-menu-subtitle",
+            |st, _| {
+                if st.session_locked() || crate::shell::window_actions::active_tab_id(st).is_none()
+                {
+                    return Err(ActionError::Refused(t(
+                        "search-action-tab-menu-unavailable",
+                    )));
+                }
+                request_window_shortcut(st, ShortcutAction::TabMenu)
+            },
+        ),
+        chrome(
+            "tab.drag.cancel",
+            "search-action-tab-drag-cancel",
+            "search-action-tab-drag-cancel-subtitle",
+            |st, _| {
+                if st.session_locked() {
+                    return Err(ActionError::Refused(t(
+                        "search-action-tab-drag-cancel-unavailable",
+                    )));
+                }
+                st.request_tab_drag_cancel();
+                Ok(())
+            },
+        ),
         chrome(
             "tab.close",
             "search-action-tab-close",
@@ -3276,6 +3364,36 @@ mod tests {
         .unwrap();
     }
 
+    #[test]
+    fn axis_navigation_action_door_is_session_local_and_opt_in() {
+        let chrome = chrome_with_room();
+        let results = action_results(&ActionsProvider::new(), &chrome);
+        assert!(!chrome.borrow().axis_navigation_enabled());
+        let gather = results
+            .iter()
+            .find(|row| row.id == "navigation.axis.gather")
+            .unwrap();
+        let mut document = AutoCommit::new();
+        assert!(
+            (gather.on_open)(
+                &mut ui::widget::Edits::lend(&mut document),
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none()
+            )
+            .is_err()
+        );
+        invoke_action(&results, "navigation.axis.enable", &chrome);
+        assert!(chrome.borrow().axis_navigation_enabled());
+        invoke_action(&results, "navigation.axis.gather", &chrome);
+        assert!(chrome.borrow_mut().take_axis_gather_request());
+        let other = chrome_with_room();
+        assert!(!other.borrow().axis_navigation_enabled());
+        invoke_action(&results, "navigation.axis.disable", &chrome);
+        assert!(!chrome.borrow().axis_navigation_enabled());
+        assert!(!chrome.borrow_mut().take_axis_gather_request());
+    }
+
     fn begin_lifecycle_action(
         results: &[crate::shell::search::SearchResult],
         id: &str,
@@ -3733,6 +3851,42 @@ mod tests {
                 "{needle} must surface {id}"
             );
         }
+    }
+
+    #[test]
+    fn tab_menu_is_searchable_as_a_view_and_refuses_empty_focus() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let doc = AutoCommit::new();
+        let rows = {
+            let state = chrome.borrow();
+            provider.query(SearchContext {
+                needle: "tab menu",
+                wanted: &[ResourceKind::Action],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+        };
+        let menu = rows
+            .iter()
+            .find(|row| row.id == "tab.menu")
+            .expect("search discovers the menu");
+        assert_eq!(menu.operation_kind, tilo_actions::OperationKind::View);
+        let mut doc = AutoCommit::new();
+        let result = (menu.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &ActionArgs::none(),
+        );
+        assert!(matches!(result, Err(ActionError::Refused(_))));
+        assert!(
+            chrome
+                .borrow_mut()
+                .take_shortcut_action_requests()
+                .is_empty()
+        );
     }
 
     #[test]

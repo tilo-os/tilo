@@ -25,7 +25,7 @@ pub use syntax_palette::SyntaxPalette;
 pub use terminal_palette::TerminalPalette;
 pub use typography::{FontFamily, REFERENCE_BODY_PX, ReadingFace, TextRole, Typography, UiFace};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Tokens {
     pub colors: Colors,
     pub typography: Typography,

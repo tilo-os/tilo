@@ -456,6 +456,17 @@ impl QueryComposition {
         self.caret = show_caret.then_some(caret);
     }
 
+    /// Private text/selection equality without retaining a query snapshot.
+    pub fn ime_edit_fingerprint(
+        &self,
+        text: &str,
+        selection: &Selection,
+        key: &[u8; 32],
+    ) -> Option<[u8; 32]> {
+        (!self.is_composing())
+            .then(|| crate::ime::edit_fingerprint(text, selection.anchor, selection.cursor, key))
+    }
+
     pub fn ime_cursor_rect(&self) -> Option<Rect> {
         self.caret
     }
@@ -475,6 +486,28 @@ impl QueryComposition {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn deferred_input_query_refuses_composition_and_pins_selection() {
+        let mut composition = super::QueryComposition::new();
+        let mut selection = crate::text_selection::Selection::collapsed(5);
+        let stamp = composition
+            .ime_edit_fingerprint("hello", &selection, &[4; 32])
+            .unwrap();
+        selection.anchor = 0;
+        assert_ne!(
+            composition
+                .ime_edit_fingerprint("hello", &selection, &[4; 32])
+                .unwrap(),
+            stamp
+        );
+        composition.core.set_preedit("draft", Some((5, 5)));
+        assert!(
+            composition
+                .ime_edit_fingerprint("hello", &selection, &[4; 32])
+                .is_none()
+        );
+    }
+
     use super::*;
     use crate::text_render::{FontChoice, TextRenderer};
     use vello::Scene;

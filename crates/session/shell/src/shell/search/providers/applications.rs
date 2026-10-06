@@ -989,6 +989,15 @@ fn launch_resolved_installed_app(
             .active_workspace()
             .and_then(|ws| {
                 crate::shell::peer_windows::opened_for_the_room(ws, package_id, salt)
+                    .or_else(|| {
+                        (package_id == "so.tilo.terminal")
+                            .then(|| {
+                                crate::shell::peer_windows::opened_locally_in_workspace(
+                                    ws, package_id, salt,
+                                )
+                            })
+                            .flatten()
+                    })
                     .map(|(strip, group, tab)| (ws.id, strip, group, tab))
             })
             .or_else(|| {
@@ -1369,6 +1378,65 @@ mod tests {
     fn chrome_rc() -> Chrome {
         let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree::default()));
         ChromeState::new_with_handle(handle)
+    }
+
+    #[test]
+    fn opening_a_live_local_terminal_focuses_without_another_record_writer() {
+        use crate::shell::state::{
+            Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+            next_id,
+        };
+        let tab_id = next_id();
+        let mut workspace = Workspace::new(WorkspaceId::from(next_id()), "Home");
+        let mut strip = Strip::new(StripId::from(next_id()), "Main");
+        let group_id = next_id();
+        strip.window_groups.push(WindowGroup {
+            id: group_id,
+            tabs: vec![Tab {
+                id: tab_id,
+                title: "Terminal".into(),
+                tile: TileContent::Foreign {
+                    app_id: "so.tilo.terminal".into(),
+                    surface_id: 7,
+                },
+            }],
+            active_tab: tab_id,
+            width: WindowWidth::Normal,
+            maximized: false,
+        });
+        workspace.strips.push(strip);
+        let mut tree = WorkspaceTree::default();
+        tree.set_salt_override(crate::shell::state::peer_salt_of(tab_id));
+        tree.desktop.active = workspace.id;
+        tree.desktop.workspaces = vec![workspace];
+        let handle = Arc::new(RwLock::new(tree));
+        let chrome = ChromeState::new_with_handle(handle.clone());
+        let provider = ApplicationsProvider::new();
+        let rows = provider.results_for(
+            "terminal",
+            vec![app("so.tilo.terminal", "Terminal")],
+            OpenTarget::Beside,
+        );
+        let row = rows.first().expect("installed Terminal action");
+        let mut doc = AutoCommit::new();
+        (row.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &ActionArgs::none(),
+        )
+        .expect("Open must focus the existing local Terminal");
+        assert_eq!(chrome.borrow().active_tab_id(), Some(tab_id));
+        assert!(
+            chrome.borrow().notifications().is_empty(),
+            "focus must not queue a second launcher or opening notice"
+        );
+        assert_eq!(
+            handle.read().desktop.workspaces[0].strips[0].window_groups[0]
+                .tabs
+                .len(),
+            1
+        );
     }
 
     fn refresh_until_ready(provider: &ApplicationsProvider, ctx: &SearchContext<'_>) {
