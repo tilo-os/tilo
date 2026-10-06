@@ -36,6 +36,9 @@ getrandom.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 workspace-hack = { version = "0.1" }
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 # The bundle-root override is process-wide environment; tests scope and

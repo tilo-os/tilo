@@ -175,6 +175,15 @@ pub fn abi_check(
     base: &BaseInfo,
     arch: &str,
 ) -> Result<Vec<String>, DaemonError> {
+    abi_check_verified(provenance, base, arch, None)
+}
+
+pub(crate) fn abi_check_verified(
+    provenance: &Provenance,
+    base: &BaseInfo,
+    arch: &str,
+    cohort: Option<&crate::cohort::VerifiedCohort>,
+) -> Result<Vec<String>, DaemonError> {
     let mismatch = |field: &str, layer: &str, vm: &str| DaemonError::AbiMismatch {
         field: field.into(),
         layer: layer.into(),
@@ -208,7 +217,7 @@ pub fn abi_check(
     if let (Some(layer), Some(vm)) = (&provenance.cargo_lock_hash, &base.cargo_lock_hash)
         && layer != vm
     {
-        if provenance.cargo_profile.as_deref() == Some("thin-app") {
+        if provenance.cargo_profile.as_deref() == Some("thin-app") && cohort.is_none() {
             return Err(mismatch("Cargo.lock", short(layer), short(vm)));
         }
         warnings.push(format!(
@@ -216,6 +225,12 @@ pub fn abi_check(
             short(layer),
             short(vm)
         ));
+        if let Some(cohort) = cohort {
+            warnings.push(format!(
+                "verified complete apps+runtime cohort carries its own native toolkit {}",
+                cohort.version
+            ));
+        }
     }
     if let (Some(layer), Some(vm)) = (&provenance.base_image_digest, &base.image_digest)
         && layer != vm
@@ -1177,12 +1192,40 @@ impl Daemon {
         info: Option<ComponentInfo>,
     ) -> Result<ApplyResult, DaemonError> {
         let mut record = self.load_slot(name)?;
-        self.layers.require(layer)?;
+        let layer_path = self.layers.require(layer)?;
         let provenance = self
             .layers
             .provenance(layer)
             .unwrap_or_else(|| Provenance::local(component));
-        let warnings = abi_check(&provenance, &self.base, std::env::consts::ARCH)?;
+        let cohort = if component == "apps+runtime"
+            && self
+                .manifest
+                .as_ref()
+                .and_then(|manifest| manifest.get(component))
+                .is_some_and(|entry| entry.image_assembled && entry.info.scope == Scope::Session)
+        {
+            if provenance.component != component
+                || provenance.source_commit.is_none()
+                || provenance.cargo_profile.as_deref() != Some("thin-app")
+            {
+                return Err(DaemonError::InvalidParams(
+                    "apps+runtime requires actual source-bound thin graph provenance".into(),
+                ));
+            }
+            Some(crate::cohort::verify(
+                &layer_path,
+                Path::new("/usr/share/tilo-apps"),
+                std::env::consts::ARCH,
+            )?)
+        } else {
+            None
+        };
+        let warnings = abi_check_verified(
+            &provenance,
+            &self.base,
+            std::env::consts::ARCH,
+            cohort.as_ref(),
+        )?;
         let info = self.component_info(&record, component, info);
         apply::check_scope(&record, component, &info)?;
         let Some((from, to)) = self.slots.prepare_swap(&record, component, layer, info)? else {
