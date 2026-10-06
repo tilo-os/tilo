@@ -1150,6 +1150,15 @@ impl QuickSettingsRoot {
         }
     }
     fn subline(c: QuickSettingsControl, s: &QuickSettingsState) -> String {
+        if s.radio_change_pending
+            && matches!(
+                c,
+                QuickSettingsControl::Wifi | QuickSettingsControl::AirplaneMode
+            )
+        {
+            return t("display-confirm-applying");
+        }
+
         let on_off = |on: bool| t(if on { "qs-on" } else { "qs-off" });
         match c {
             QuickSettingsControl::Wifi if !s.radios.wifi_available => s
@@ -1203,11 +1212,18 @@ impl QuickSettingsRoot {
         s: &mut QuickSettingsState,
         pending: &mut PendingRootActions,
     ) -> Option<RootAction> {
+        if s.radio_change_pending
+            && matches!(
+                c,
+                QuickSettingsControl::Wifi | QuickSettingsControl::AirplaneMode
+            )
+        {
+            return None;
+        }
         match c {
             QuickSettingsControl::Wifi => {
                 if s.radios.wifi_available {
-                    s.wifi = !s.wifi;
-                    pending.wifi = Some(s.wifi);
+                    pending.wifi = Some(!s.wifi);
                 } else if let Some(wired) = &mut s.wired {
                     wired.connected = !wired.connected;
                     pending.wired = Some(wired.connected);
@@ -1223,8 +1239,7 @@ impl QuickSettingsRoot {
                 pending.night_light = Some(s.night_light);
             }
             QuickSettingsControl::AirplaneMode => {
-                s.radios.airplane_mode = !s.radios.airplane_mode;
-                pending.airplane = Some(s.radios.airplane_mode);
+                pending.airplane = Some(!s.radios.airplane_mode);
             }
             QuickSettingsControl::MobileData => {
                 s.radios.wwan_enabled = !s.radios.wwan_enabled;
@@ -2078,7 +2093,8 @@ impl QuickSettingsRoot {
                         self.scaled(TOGGLE_H),
                     ),
                     on,
-                ),
+                )
+                .disabled(s.radio_change_pending && c == QuickSettingsControl::AirplaneMode),
             );
         }
     }
@@ -2429,6 +2445,8 @@ impl QuickSettingsRoot {
                     RootStop::Control(_, control) if Self::is_switch(control) => {
                         let mut node = node;
                         node.state.checked = Some(Self::on(control, state));
+                        node.state.disabled = state.radio_change_pending
+                            && control == QuickSettingsControl::AirplaneMode;
                         node
                     }
                     _ => node,
