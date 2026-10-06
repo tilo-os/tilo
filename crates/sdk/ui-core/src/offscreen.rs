@@ -34,6 +34,33 @@ use vello::kurbo::Rect;
 use vello::peniko::Color;
 use vello::{AaConfig, AaSupport, FineDamageRect, RenderParams, Renderer, RendererOptions, Scene};
 
+/// Device pixels per logical pixel a capture draws its frames at
+/// (`--device-scale`); 1 is the size people see on a standard display.
+static CAPTURE_DEVICE_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+/// The largest device scale a capture draws at: a glyph sheet enlarged
+/// from the outlines (16x); `--device-scale` itself stops at 4.
+pub const MAX_CAPTURE_DEVICE_SCALE: u32 = 16;
+
+/// Draw every following capture frame at `scale` device pixels per
+/// logical pixel, as a HiDPI display draws it: the frame is laid out at its
+/// logical size and drawn with the window scale transform the live host
+/// uses, so text is rasterised from the glyph outlines at that size rather
+/// than enlarged afterwards ([`crate::headless::FrameHarness`]). Clamped to
+/// `1..=MAX_CAPTURE_DEVICE_SCALE`.
+pub fn set_capture_device_scale(scale: u32) {
+    CAPTURE_DEVICE_SCALE.store(
+        scale.clamp(1, MAX_CAPTURE_DEVICE_SCALE),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// The device scale captures draw at ([`set_capture_device_scale`]).
+#[must_use]
+pub fn capture_device_scale() -> u32 {
+    CAPTURE_DEVICE_SCALE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Ensures only ONE `wgpu::Instance` per process — constructing several in
 /// parallel (the default `cargo test` pattern) races inside
 /// `vkCreateInstance` on at least radv + intel-iris and SIGSEGVs. `Arc` lets
@@ -619,6 +646,11 @@ pub struct OffscreenRenderer {
     area_ppt8_attempt_accounting: AreaPpt8AttemptAccounting,
     clip_single_group_attempt_accounting: ClipSingleGroupAttemptAccounting,
     target_valid: bool,
+    /// Backdrops the scenes rendered next draw floating surfaces over; see
+    /// [`Self::set_backdrop`].
+    backdrop: Option<Arc<crate::backdrop::BackdropFrame>>,
+    /// Built with the first frame that has a backdrop.
+    backdrop_blur: Option<crate::backdrop::BackdropBlur>,
 }
 
 impl OffscreenRenderer {
@@ -1254,7 +1286,16 @@ impl OffscreenRenderer {
             area_ppt8_attempt_accounting: AreaPpt8AttemptAccounting::default(),
             clip_single_group_attempt_accounting: ClipSingleGroupAttemptAccounting::default(),
             target_valid: false,
+            backdrop: None,
+            backdrop_blur: None,
         })
+    }
+
+    /// Draw the floating surfaces of the scenes rendered from now on over
+    /// `backdrop`, the frame their host recorded with them (for the shell,
+    /// `FrameBuilder::take_backdrop`). `None` draws them opaque.
+    pub fn set_backdrop(&mut self, backdrop: Option<Arc<crate::backdrop::BackdropFrame>>) {
+        self.backdrop = backdrop;
     }
 
     #[allow(
@@ -1360,6 +1401,18 @@ impl OffscreenRenderer {
             (handle.device.clone(), handle.queue.clone())
         };
 
+        if let Some(backdrop) = self.backdrop.as_deref().filter(|frame| !frame.is_empty()) {
+            self.backdrop_blur
+                .get_or_insert_with(|| crate::backdrop::BackdropBlur::new(&device))
+                .prepare(
+                    &device,
+                    &queue,
+                    &mut self.renderer,
+                    backdrop,
+                    (self.width, self.height),
+                    bg,
+                );
+        }
         self.renderer
             .render_to_texture(
                 &device,
@@ -1374,6 +1427,9 @@ impl OffscreenRenderer {
                 },
             )
             .expect("render_to_texture");
+        if let Some(blur) = self.backdrop_blur.as_mut() {
+            blur.release(&mut self.renderer);
+        }
         self.target_valid = true;
         if self
             .last_damage_region_count

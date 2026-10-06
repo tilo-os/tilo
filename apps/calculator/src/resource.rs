@@ -335,16 +335,14 @@ fn history_label(entry: &HistoryEntry) -> String {
 }
 
 fn graph_label(kind: GraphKind, plot: &PlotFn) -> String {
-    let rhs = if plot.expr.trim().is_empty() {
-        "(empty)"
-    } else {
-        plot.expr.trim()
+    let (lhs, empty) = match kind {
+        GraphKind::Curve2d => ("y", "Empty function"),
+        GraphKind::Surface3d => ("z", "Empty surface"),
     };
-    let lhs = match kind {
-        GraphKind::Curve2d => "y",
-        GraphKind::Surface3d => "z",
-    };
-    clip(&format!("{lhs} = {rhs}"), 48)
+    if plot.expr.trim().is_empty() {
+        return empty.to_owned();
+    }
+    clip(&format!("{lhs} = {}", plot.expr.trim()), 48)
 }
 
 fn clip(s: &str, n: usize) -> String {
@@ -359,7 +357,9 @@ fn clip(s: &str, n: usize) -> String {
 /// Framework app: the calculator widget is the surface over [`Calculator`].
 pub struct CalculatorShell;
 
-/// The screenshot scenarios. A plain `--shots` is the lived-in 2D graph.
+/// The screenshot scenarios. A plain `--shots` is the lived-in 2D graph;
+/// every `narrow` one captures at a phone-sized window, where each panel is a
+/// floating drawer.
 const SCENARIOS: &[&str] = &[
     "calculator",
     "graph2d",
@@ -368,16 +368,18 @@ const SCENARIOS: &[&str] = &[
     "history-closed",
     "empty",
     "narrow",
+    "narrow-history",
+    "narrow-graph2d",
     "narrow-functions",
+    "narrow-graph3d",
     "long-formula",
-    "selection",
     "error",
     "remote-cursor",
 ];
 
 /// A collaborator's pointer in the `remote-cursor` scenario: over the first
 /// function's formula, which draws it as their caret in the math.
-pub const REMOTE_POINTER: (f32, f32) = (110.0, 175.0);
+pub const REMOTE_POINTER: (f32, f32) = (145.0, 97.0);
 
 impl ResourceApp for CalculatorShell {
     type Resource = Calculator;
@@ -415,8 +417,8 @@ impl ResourceApp for CalculatorShell {
         }
     }
 
-    /// A lived-in calculator: five calculations, four curves and three
-    /// surfaces, or one long curve for `long-formula`; nothing for `empty`.
+    /// A lived-in calculator: its calculations, curves and surfaces, or one
+    /// long curve for `long-formula`; nothing for `empty`.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Calculator>> {
         let model = match name {
             Some("empty") => return Vec::new(),
@@ -565,14 +567,51 @@ mod tests {
     fn captures_stage_through_actions() {
         let mut graph = TestApp::<CalculatorShell>::capture(None).unwrap();
         let state = graph.state();
-        assert_eq!(state.history.len(), 5);
+        assert_eq!(state.history.len(), crate::model::DEMO_HISTORY.len());
         assert_eq!(state.history[0].1.expr, "12*(4+3)", "newest first");
-        assert_eq!(state.funcs.len(), 4);
-        assert_eq!(state.surfaces.len(), 3);
+        assert_eq!(state.funcs.len(), crate::model::DEMO_CURVES.len());
+        assert_eq!(state.surfaces.len(), crate::model::DEMO_SURFACES.len());
         let frame = graph.harness().inspection_json().unwrap();
         assert!(frame.contains("Functions"), "{frame}");
 
         let empty = TestApp::<CalculatorShell>::capture(Some("empty")).unwrap();
         assert_eq!(empty.state(), CalculatorState::default());
+    }
+}
+
+#[cfg(test)]
+mod scenario_tests {
+    use super::*;
+
+    /// Every scenario stages a lived-in calculator through the document's own
+    /// actions, and each narrow one captures at a phone-sized window.
+    #[test]
+    fn scenarios_stage_lived_in_content_and_declare_narrow_viewports() {
+        let full = crate::model::DEMO_HISTORY.len()
+            + crate::model::DEMO_CURVES.len()
+            + crate::model::DEMO_SURFACES.len();
+        for name in CalculatorShell::scenarios() {
+            let expected = match *name {
+                "empty" => 0,
+                "long-formula" => 1,
+                _ => full,
+            };
+            assert_eq!(
+                CalculatorShell::scenario(Some(name)).len(),
+                expected,
+                "scenario {name}"
+            );
+            let narrow = name.starts_with("narrow");
+            assert_eq!(
+                CalculatorShell::shot_viewport(Some(name)).0 < 600,
+                narrow,
+                "viewport of {name}"
+            );
+        }
+        assert_eq!(
+            CalculatorShell::scenario(None).len(),
+            full,
+            "a plain capture is lived in too"
+        );
     }
 }

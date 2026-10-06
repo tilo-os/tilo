@@ -22,6 +22,7 @@ exclude = [
     "vendor/zlink-macros",
     "vendor/web-transport-quinn",
     "vendor/automerge",
+    "vendor/cosmic-text",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
 # it requires unwind support, unlike the default release profile.
@@ -910,6 +911,10 @@ debug-assertions = true
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
 # pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]
+# Shapes a variable font at its `wdth` as well as its `wght`, so condensed
+# text is measured and kerned at the width it is drawn. See
+# vendor/cosmic-text/TILO-PATCH.md.
+cosmic-text = { path = "vendor/cosmic-text" }
 # The Google Cast message types with their prost code pre-generated, so the
 # build no longer compiles a protobuf compiler for one message.
 # See vendor/google-cast-protocol/PROVENANCE.md.

@@ -23,7 +23,7 @@ const PERIOD_SECONDS: f64 = 120.0;
 /// the initial composition without requiring a redraw timer.
 #[must_use]
 pub fn needs_animation(theme: &Theme) -> bool {
-    !theme.reduce_motion && theme.name != "High Contrast"
+    !theme.reduce_motion && !theme.colors_are_forced()
 }
 
 /// Paint an opaque authentication backdrop inside `bounds`.
@@ -37,9 +37,9 @@ pub fn draw(scene: &mut Scene, theme: &Theme, bounds: Rect, elapsed_seconds: f64
         return;
     }
 
-    let base = theme.bg_app.with_alpha(1.0);
+    let base = theme.tokens.colors.surfaces.base.with_alpha(1.0);
     scene.fill(Fill::NonZero, Affine::IDENTITY, base, None, &bounds);
-    if theme.name == "High Contrast" {
+    if theme.colors_are_forced() {
         return;
     }
 
@@ -50,7 +50,7 @@ pub fn draw(scene: &mut Scene, theme: &Theme, bounds: Rect, elapsed_seconds: f64
     };
     let transform = Affine::translate((bounds.x0, bounds.y0))
         .pre_scale_non_uniform(bounds.width(), bounds.height());
-    let accent = theme.accent_primary;
+    let accent = theme.tokens.colors.intent.inverted;
     let light = if theme.tokens.colors.lifts_bright() {
         theme.text_primary
     } else {
@@ -235,7 +235,7 @@ mod tests {
             expected.fill(
                 Fill::NonZero,
                 Affine::IDENTITY,
-                theme.bg_app.with_alpha(1.0),
+                theme.tokens.colors.surfaces.base.with_alpha(1.0),
                 None,
                 &BOUNDS,
             );
@@ -246,14 +246,15 @@ mod tests {
         // Case `every_frame_starts_with_an_opaque_cover_of_its_bounds`.
         {
             let mut transparent_theme = Theme::dark();
-            transparent_theme.bg_app = transparent_theme.bg_app.with_alpha(0.2);
+            let ground = &mut transparent_theme.tokens.colors.surfaces.base;
+            *ground = ground.with_alpha(0.2);
             for theme in [Theme::dark(), Theme::light(), transparent_theme] {
                 let scene = frame(&theme, 7.0);
                 let mut cover = Scene::new();
                 cover.fill(
                     Fill::NonZero,
                     Affine::IDENTITY,
-                    theme.bg_app.with_alpha(1.0),
+                    theme.tokens.colors.surfaces.base.with_alpha(1.0),
                     None,
                     &BOUNDS,
                 );

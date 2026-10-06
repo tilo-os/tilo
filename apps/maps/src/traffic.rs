@@ -8,9 +8,8 @@
 //! reports the map shows "No traffic data" rather than inventing colours.
 //!
 //! The rendering lives in [`crate::canvas::draw_traffic`]; sample congestion
-//! (behind `--shots` / the bundled offline basemap) exists only to exercise
-//! that rendering and is always labelled as sample data — never presented as a
-//! real measurement.
+//! exists only on the bundled offline basemap (captures and tests), never on
+//! the live map.
 
 use crate::model::LatLon;
 use crate::sample::{Basemap, RoadClass};
@@ -74,12 +73,10 @@ pub struct TrafficSegment {
 }
 
 /// The traffic overlay's data. Empty until real reports arrive — the honest
-/// live state. `source` records provenance for the UI (e.g. `"sample data"`);
-/// `None` means there is nothing to show and the overlay must say so.
+/// live state, which the overlay says.
 #[derive(Clone, Debug, Default)]
 pub struct TrafficData {
     pub segments: Vec<TrafficSegment>,
-    pub source: Option<String>,
 }
 
 impl TrafficData {
@@ -111,8 +108,8 @@ impl TrafficData {
     /// free-flowing — so the overlay reads like a real arterial network rather
     /// than a flat wash.
     ///
-    /// SAMPLE ONLY: the live app never calls this; it waits for real peer
-    /// reports. Marked `"sample data"` so the UI can label it honestly.
+    /// Sample only: the live app never calls this; it waits for real peer
+    /// reports.
     pub fn sample(base: &Basemap) -> Self {
         // Points per sub-segment window (they overlap by one point so the
         // coloured ribbon stays continuous across a level change).
@@ -145,10 +142,7 @@ impl TrafficData {
                 sub += 1;
             }
         }
-        Self {
-            segments,
-            source: Some("sample data".to_string()),
-        }
+        Self { segments }
     }
 }
 
@@ -214,7 +208,6 @@ mod tests {
         {
             let t = TrafficData::default();
             assert!(t.is_empty(), "live traffic starts with no reports");
-            assert!(t.source.is_none(), "no provenance when there is no data");
             assert_eq!(t.counts(), [0, 0, 0, 0]);
         }
 
@@ -223,7 +216,6 @@ mod tests {
             let base = crate::sample::basemap();
             let t = TrafficData::sample(&base);
             assert!(!t.is_empty(), "the sample basemap has roads to colour");
-            assert_eq!(t.source.as_deref(), Some("sample data"));
             // Every segment is a real polyline (>= 2 points) and is counted in
             // exactly one level bucket.
             for s in &t.segments {

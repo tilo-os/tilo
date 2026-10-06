@@ -410,7 +410,7 @@ fn shared_library(state: &SharedLibrary, limit: usize) -> Resource {
     let mut playlists = Resource::new(
         "video-player.playlists.shared",
         "media.playlists",
-        format!("Shared playlists · {}", state.playlists.len()),
+        format!("{} shared playlists", state.playlists.len()),
     )
     .with_action(show_shared());
     for playlist in state.playlists.iter().take(limit) {
@@ -523,14 +523,14 @@ fn shared_library(state: &SharedLibrary, limit: usize) -> Resource {
     let mut annotations = Resource::new(
         "video-player.annotations.shared",
         "media.annotations",
-        format!("Timestamp annotations · {}", state.annotations.len()),
+        format!("{} timestamp annotations", state.annotations.len()),
     )
     .with_action(show_shared());
     for annotation in state.annotations.iter().take(limit) {
         let label = if annotation.text.is_empty() {
-            format!("Bookmark · {}ms", annotation.time_ms)
+            format!("Bookmark ({}ms)", annotation.time_ms)
         } else {
-            format!("{} · {}ms", annotation.text, annotation.time_ms)
+            format!("{} ({}ms)", annotation.text, annotation.time_ms)
         };
         let id = annotation.id.clone();
         let before = annotation.text.clone();
@@ -608,7 +608,7 @@ pub(crate) fn live_rows(rows: &PlayerRows<'_>, limit: usize) -> Vec<LiveRow> {
                 "video-player.tracks.current",
                 "media.tracks",
                 format!(
-                    "Audio and subtitles · {} audio · {} subtitles",
+                    "{} audio tracks and {} subtitle tracks",
                     rows.audio_tracks.len(),
                     rows.subtitle_tracks.len()
                 ),
@@ -624,7 +624,7 @@ pub(crate) fn live_rows(rows: &PlayerRows<'_>, limit: usize) -> Vec<LiveRow> {
                 LiveRow::new(
                     "video-player.chapters.current",
                     "media.chapters",
-                    format!("Chapters · {} available", rows.chapters.len()),
+                    format!("{} chapters available", rows.chapters.len()),
                 ),
                 LiveRow::row,
             );
@@ -636,7 +636,7 @@ pub(crate) fn live_rows(rows: &PlayerRows<'_>, limit: usize) -> Vec<LiveRow> {
         "video-player.queue.local",
         "media.queue",
         format!(
-            "Queue · {} session item{}",
+            "{} session queue item{}",
             rows.queue.len(),
             if rows.queue.len() == 1 { "" } else { "s" }
         ),
@@ -648,7 +648,7 @@ pub(crate) fn live_rows(rows: &PlayerRows<'_>, limit: usize) -> Vec<LiveRow> {
     let mut recent = LiveRow::new(
         "video-player.history.local",
         "media.history",
-        format!("Recent videos · {} on this device", rows.recent.len()),
+        format!("{} recent videos on this device", rows.recent.len()),
     )
     .effect(&VideoEffect::ShowLibrary {
         tab: "recent".into(),
@@ -673,7 +673,7 @@ pub(crate) fn live_row(rows: &PlayerRows<'_>, id: &str) -> Option<LiveRow> {
 
 fn track_label(track: &TrackState) -> String {
     if track.selected {
-        format!("{} · selected", track.label)
+        format!("{} is selected", track.label)
     } else {
         track.label.clone()
     }
@@ -713,7 +713,7 @@ fn chapter_rows<'a>(rows: &'a PlayerRows<'_>) -> impl Iterator<Item = LiveRow> +
             LiveRow::new(
                 id.clone(),
                 "media.chapter",
-                format!("{} · {:.1}s", chapter.label, chapter.seconds),
+                format!("{} starts at {:.1} seconds", chapter.label, chapter.seconds),
             )
             .effect(&VideoEffect::JumpToChapter { chapter: id })
         })
@@ -721,7 +721,7 @@ fn chapter_rows<'a>(rows: &'a PlayerRows<'_>) -> impl Iterator<Item = LiveRow> +
 
 fn queue_rows<'a>(rows: &'a PlayerRows<'_>) -> impl Iterator<Item = LiveRow> + 'a {
     rows.queue.iter().map(|item| {
-        let suffix = if item.current { " · playing" } else { "" };
+        let suffix = if item.current { " is playing" } else { "" };
         LiveRow::new(
             queue_item_resource_id(&item.id),
             "media.queue-item",

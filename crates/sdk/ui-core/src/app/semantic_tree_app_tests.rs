@@ -106,7 +106,7 @@ impl crate::search::SearchProvider for LargeDirectoryProvider {
 
     fn search_page(
         &self,
-        query: &str,
+        query: &crate::search::SearchQuery,
         cursor: Option<&crate::search::SearchCursor>,
         work_budget: usize,
         result_limit: usize,
@@ -116,7 +116,7 @@ impl crate::search::SearchProvider for LargeDirectoryProvider {
         self.largest_budget
             .fetch_max(work_budget, std::sync::atomic::Ordering::Relaxed);
         self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+            .query_page(query.text(), cursor, work_budget, result_limit)
     }
 
     fn resolve_action_resource(&self, address: &tilo_actions::ActionAddress) -> Option<Resource> {
@@ -1614,8 +1614,9 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
                     Vec::new()
                 }
             });
-        let nav =
-            crate::widget::NavShell::new(Box::new(search), Box::new(crate::widget::Column::new()));
+        let nav = crate::widget::NavShell::new()
+            .overview(Box::new(search))
+            .content(Box::new(crate::widget::Column::new()));
         let mut app = App::new(State::new(), Box::new(nav));
         app.init_layout();
         let update = app.build_a11y_tree_update(1.0);
