@@ -1283,6 +1283,12 @@ pub fn contact_resource(contact: &Contact) -> Resource {
     );
 
     child = child.with_action(patch_spec(contact));
+    child = child.with_action(
+        crate::account_editor::AccountEffect::OpenAccounts {
+            person: contact.id.to_string(),
+        }
+        .bound(),
+    );
 
     // Rename — a prompted patch that never carries unrelated fields from
     // the resource snapshot, so peer edits remain intact.

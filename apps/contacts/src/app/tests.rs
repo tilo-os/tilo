@@ -146,6 +146,7 @@ fn sampled() -> ContactsApp {
     let mut app = ContactsApp::new();
     app.present_book(&crate::resource::ContactsState {
         contacts: crate::resource::sample_book(),
+        ..crate::resource::ContactsState::default()
     });
     app.stage_capture(None);
     app
@@ -158,6 +159,7 @@ fn published(app: &ContactsApp) -> Vec<tilo_actions::Resource> {
         "Contacts",
         &crate::resource::ContactsState {
             contacts: app.store.contacts.clone(),
+            ..crate::resource::ContactsState::default()
         },
     )]
 }
@@ -770,6 +772,7 @@ fn search_and_open_operations_reveal_their_target() {
         let entries = <crate::resource::Contacts as ui::tilo_resource::Resource>::search(
             &crate::resource::ContactsState {
                 contacts: app.book(),
+                ..crate::resource::ContactsState::default()
             },
         );
         let hits: Vec<_> = entries
