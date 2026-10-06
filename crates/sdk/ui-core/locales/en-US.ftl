@@ -462,6 +462,10 @@ block-editor-replace = Replace
 block-editor-replace-all = Replace all
 block-editor-replace-all-help = Replace all — Shift+Enter in the replacement field
 
+dictation-record-once = Record once
+dictation-finish = Finish
+dictation-cancel = Cancel
+
 music-home-heading = Your music
 music-connect-spotify = Connect Spotify
 music-spotify-playback = Authorize playback
@@ -526,3 +530,6 @@ music-spotify-follow-artist = Follow artist on Spotify
 music-spotify-unfollow-artist = Unfollow artist on Spotify
 
 music-spotify-playlist-actions = Spotify playlist actions
+
+dictation-copy-transcript = Copy transcript
+dictation-discard-transcript = Discard transcript

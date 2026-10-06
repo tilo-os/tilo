@@ -79,3 +79,41 @@ Run `cargo test --locked -p shell --lib tab_drag_ -j 4` and the existing
 The `tab_drag_cancel` offscreen scenario records before, lifted, cancelled and
 released frames. Physical touch, keyboard and screen-reader qualification
 remain separate device checks.
+
+## Recent files through the resource door
+
+At baseline `12f4dfb2d5`, Recent's pointer menu could open a file's containing
+folder or forget its recent-use entry, but its published file rows exposed
+neither action. The resource journey failed at the missing `reveal` action.
+This made the same everyday task unavailable to automation and assistive
+technology using the app's public surface.
+
+Recent rows now publish localized **Open containing folder** (`reveal`) and
+**Remove from Recent** (`forget-recent`). Invoke the first to open the parent
+folder with the exact file selected, then Back to return to Recent. Invoke the
+second to remove only that device's recent-use entry; the file and other Recent
+items remain intact, including after reopening the window. Both use the same
+commands as the existing pointer menu. They are view operations: a Viewer can
+use them, while Denied access is refused through the framework's existing door.
+
+The effects resolve an opaque published row in the current Recent view. They
+refuse retained requests in an ordinary folder, deleted targets, withdrawn
+rows and caller attempts to substitute a path. The existing collaborative
+record reveal outside Recent keeps its host and permission checks. No new
+clipboard transport, permission grant, shared history mutation, asset or
+dependency is introduced. The code is original work under AGPL-3.0-only.
+
+```sh
+cargo test --locked -p file-explorer --lib recent_resource_tests -j 4
+cargo test --locked -p file-explorer --lib open_with_tests -j 4
+cargo check --locked -p file-explorer --all-targets -j 4
+cargo check --locked -p shell --tests -j 4
+cargo run --locked -p file-explorer -j 4 -- --shots target/recent.png --scenario recent --theme dark
+```
+
+Capture `recent`, `recent-menu`, `recent-revealed` and `recent-forgotten` in
+dark, light and high-contrast themes. Each uses a fresh scratch home, actual
+Recent settings and production command handlers. Generated frames and logs
+belong in PR/CI evidence, never source control. These captures and simulated
+roles do not qualify physical touch, a native screen reader or older-hardware
+latency.
