@@ -1,6 +1,6 @@
 # Continuity and protocol interoperability
 
-Status: 2026-10-05. This inventory distinguishes code present in the repository
+Status: 2026-10-06. This inventory distinguishes code present in the repository
 from interoperability observed on physical devices. A simulator passing is not
 a claim that every receiver or phone works.
 
@@ -110,10 +110,10 @@ separates automated fixtures from physical-device observations.
 | Journey | Already implemented | This branch | Remaining implementation | Validation still required |
 |---|---|---|---|---|
 | Nearby transfer between certified Tilo devices | Files resources/actions and opaque connection/workspace-bound handles; approved source/destination descriptors; explicit receive consent; immutable file/folder staging; chunk transport, checkpoint hashes, collision-safe install, cancel/retry and policy teardown | Confirmed local decline of recovered partials; fresh-consent retry rebinding for an unchanged exact-source object | No further missing general-transfer code established in this assessment; additional gaps must come from the remaining journey checks. | Two-Iroh-endpoint resumed-byte fixture plus store/broker tests; physical paired-device disconnect/reconnect, grant revocation and large-file/folder journeys remain unobserved. |
-| Shared clipboard | Same-identity fabric snapshots, bounded shared history, sensitive-content exclusion, imported provenance and policy withdrawal; explicit history activation rather than remote writes replacing the live selection | Existing privacy/history tests exercised; no new clipboard engine | No established missing code for the current history-sharing contract. Apple Universal Clipboard interoperability is a separate, unimplemented adapter. | Existing runtime policy/provenance tests are fixtures. A live certified two-session copy → history activation → paste journey still needs end-to-end validation; two Wayland clients on one compositor do not prove this. |
-| Resume work | Private continuity checkpoints, structural/generic app contracts and app-specific metadata; continuation suggestion/accept/dismiss; resource-position launch and preserved local focus | Existing semantic suggestion tests exercised; no new app resume implementation | No established missing general transport code. App-specific semantic fidelity must be assessed against each app's declared contract; Music owns playback state. | Semantic tests prove offer/accept/dismiss, not sleeping-device catch-up. Live paired-session resource resolution, restart catch-up and position fidelity remain to validate. |
+| Shared clipboard | Same-identity fabric snapshots, bounded shared history, sensitive-content exclusion, imported provenance and policy withdrawal; explicit history activation rather than remote writes replacing the live selection | Real-Iroh root-certified session fixture: runtime export/import, explicit activation, secret/primary exclusion, no imported re-export, and observed wrong-root frame rejection; no new clipboard engine | No established missing code for the current history-sharing contract. Apple Universal Clipboard interoperability is a separate, unimplemented adapter. | The paired fixture drives the compositor selection store and fabric pump, not two running Wayland clients. Physical copy → semantic activation → application paste and policy withdrawal remain unobserved. |
+| Resume work | Private continuity checkpoints, structural/generic app contracts and app-specific metadata; continuation suggestion/accept/dismiss; resource-position launch and preserved local focus | Real-Iroh same-root request/checkpoint fixture with exact Browser metadata, preserved local focus, semantic suggestion acceptance and real launcher consumption; no new app resume implementation | No established missing general transport code. App-specific semantic fidelity must be assessed against each app's declared contract; Music owns playback state. | The paired fixture verifies late-session catch-up, semantic acceptance and launcher staging. Two live compositor/app processes, durable restart and app-specific restored position remain to validate. |
 | AirPlay/Cast projection | Compositor-owned capture, receiver discovery/selection, existing encrypted AirPlay helper and PIN/password input, Cast/FCast control and disconnect | Explicit credential isolation/redaction with reject/retry/ready/disconnect subprocess regression | No second Cast/Spotify controller. Opt-in AirPlay receiver mode would be new code, outside the existing sender journey. | FCast socket and discovery fixtures exist; AirPlay helper regression uses a substitute child process. Assembled-image encrypted interoperability and physical AirPlay/Cast receivers remain unverified here. |
-| AirDrop interoperability | No AirDrop adapter, AWDL lifecycle or AirDrop action surface found | Primary-source candidate/license/security roadmap only | Substantial missing code: package/pin the audited adapter, AWDL discovery/session lifecycle, selected external peer transaction, bounded transfer staging through Files consent and sandbox, cancellation/errors, and identity-verification design. Stock automatic receive is not an acceptable integration. | Adapter simulation must precede an authorized AWDL-capable hardware lab. This is not blocked only by physical testing; the adapter and security integration still need implementation. |
+| AirDrop interoperability | No packaged AirDrop feature, AWDL lifecycle or AirDrop action surface | Independent bounded Python wire sender actually exchanges a file with pinned GPL-3.0 OpenDrop production receiver over loopback TLS; mandatory per-attempt certificate pin and read-only descriptor | Package/route through Files resources and broker consent; trusted fingerprint verification UX; AWDL discovery/session lifecycle; progress/cancel; secure optional receiving. The internal adapter is deliberately uninstalled until these capability boundaries exist. | Seven mandatory compatible-receiver/boundary tests pass. Apple-device interoperability, owner verification and AWDL hardware remain unobserved; no Contacts Only credentials or network changes are attempted. |
 
 Acceptance for the retry slice: immutable peer/name/kind/size/hash must match;
 fresh consent and an approved destination precede request rebinding; old request
@@ -140,3 +140,57 @@ inspectable failure through the existing semantic control surface. Negotiate a
 separate versioned adapter protocol when needed; never append variants to a
 stable postcard relay enum. Discovery, pairing, capture consent and filesystem
 consent are separate decisions with explicit revocation and expiry.
+
+### AirDrop wire adapter and lab prerequisites
+
+`tools/protocols/airdrop_sender.py` is an internal transport component, not an
+installed Files feature. It performs `/Discover`, `/Ask`, and chunked `/Upload`
+with a gzip/newc CPIO containing one regular basename, capped at 16 MiB. The
+source is an already approved read-only descriptor; it never opens a host path.
+The staged bytes are immutable for the attempt. The sender uses a literal
+selected IP endpoint, TLS 1.2 or newer, and the exact leaf-certificate SHA-256
+pin before every HTTP request connection, including reconnects. An inspect
+operation only observes a certificate: it sends no HTTP data and grants no
+trust. The broker must obtain independent approval/verification of that pin;
+blindly feeding inspection output to send is not pairing. AirDrop trust never
+becomes a Tilo root/device certificate or authority for clipboard/workspaces.
+
+Receiver `/Ask` refusal stops before upload. Response bodies are capped at
+64 KiB, socket inactivity at 15 seconds, and the standalone attempt at 60 seconds.
+No source names, remote strings, content, credentials or paths are printed in
+errors. No receiver process, discovery service, Apple identity records or
+persistent trust store ships with this component. A future broker subprocess
+must impose its own wall-clock deadline and cancellation, clear inherited
+credentials, and inherit only its scoped descriptor; no automatic shell action
+has been registered before that integration is complete.
+
+The compatibility fixture imports the unmodified OpenDrop production handler at
+`11fe7ba7861093b302bc0637e8cb10adf2d29337` from a separate temporary GPL-3.0
+checkout. This repository copies none of its implementation. It extracts only our
+bounded safe test archive into an isolated temporary directory; OpenDrop's stock
+auto-accepting receiver is never a proposed desktop service. The fixture must
+fail if the checkout/dependencies are missing or the revision is changed, rather
+than silently skip interoperability. Reproduction:
+
+```sh
+python3 -m venv /tmp/tilo-opendrop-venv
+/tmp/tilo-opendrop-venv/bin/pip install libarchive-c==5.3 zeroconf==0.148.0 ifaddr==0.2.0 Pillow==11.3.0
+git clone https://github.com/seemoo-lab/opendrop /tmp/tilo-opendrop-fixture
+git -C /tmp/tilo-opendrop-fixture checkout 11fe7ba7861093b302bc0637e8cb10adf2d29337
+/tmp/tilo-opendrop-venv/bin/python tools/ci/test_airdrop_sender.py --opendrop-checkout /tmp/tilo-opendrop-fixture
+```
+
+Prerequisites are Python 3, OpenSSL for ephemeral fixture certificates, system
+libarchive, and permission to bind loopback sockets. No AWDL is involved in this
+fixture. The physical lab additionally needs an explicitly authorized test
+receiver in Everyone mode, an independently verifiable peer-certificate method,
+a Linux adapter/driver supporting monitor mode and injected frames, approved
+OWL/AWDL interface lifecycle with IPv6 and mDNS, legal channels 6/44/149, and a
+plan for Wi-Fi interruption. OWL documents exclusive adapter use and unsuitable
+ordinary virtualized Wi-Fi. Interface creation, channel changes, BLE wake-up or
+phone settings require separate approval; no commands doing those are included
+in this work. Contacts Only/Apple credential extraction is outside this slice.
+
+Ownership remains continuity transport, pairing and Files capability integration;
+Music retains Spotify playback and UI owns its toolkit split. These fixtures add
+no UI framework refactor, casting controller, persistent grant or deployed service.

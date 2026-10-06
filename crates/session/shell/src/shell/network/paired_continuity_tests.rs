@@ -1,0 +1,722 @@
+//! Continuity crosses real, root-certified Iroh sessions before OS projection.
+
+use super::*;
+use crate::compositor::selection::{self, SharedSelection, Target};
+use crate::shell::device_fabric_runtime::{DeviceFabricRuntime, LocalFabricCapabilities};
+use crate::shell::personal_continuity::DeviceId;
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+
+struct Session {
+    network: ShellNetwork,
+    endpoint: iroh::Endpoint,
+    actor: tokio::task::JoinHandle<()>,
+    cert: DeviceCert,
+    deferred: Mutex<VecDeque<NetEvent>>,
+}
+
+impl Session {
+    async fn new(root: &ed25519_dalek::SigningKey, tag: u8, tree: WorkspaceTree) -> Self {
+        let device = iroh::SecretKey::from_bytes(&[tag; 32]);
+        let lookup = MemoryLookup::new();
+        let endpoint = iroh::Endpoint::builder(presets::N0)
+            .secret_key(device.clone())
+            .address_lookup(lookup.clone())
+            .bind()
+            .await
+            .unwrap();
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: *device.public().as_bytes(),
+            device_label: format!("Fixture {tag}"),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, root).unwrap();
+        let identity = || HostIdentity {
+            device_cert: cert.clone(),
+            device_signing_key: ed25519_dalek::SigningKey::from_bytes(&device.to_bytes()),
+            workspace_device_certs: Default::default(),
+            workspace_revocations: Default::default(),
+            identity_paths: None,
+        };
+        let (commands, actor) = Actor::spawn_reporting_addrs(
+            endpoint.clone(),
+            lookup,
+            Some(identity()),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let (mut network, _) = shell_network_for_test(
+            tree.shared(),
+            crate::network::behaviour::peer_liveness_handle(&device.public()),
+        );
+        network.cmd_tx = commands;
+        network.keypair = device.clone();
+        network.local_peer_id = device.public();
+        network.require_peer_identity = true;
+        network.personal_continuity_user = Some(cert.user_public_key);
+        network.personal_continuity_device =
+            Some(DeviceId::new(hex::encode(cert.device_public_key)).unwrap());
+        network.host_identity = Some(identity());
+        network.continuity_policy_override = Some(policy());
+        Self {
+            network,
+            endpoint,
+            actor,
+            cert,
+            deferred: Mutex::default(),
+        }
+    }
+
+    async fn join(&self, topic: u64) {
+        self.network.joined_topics.lock().unwrap().insert(topic);
+        self.network
+            .cmd_tx
+            .send(NetCmd::JoinWorkspace {
+                ws: topic,
+                on_event: self.network.event_tx.clone(),
+            })
+            .await
+            .unwrap();
+    }
+
+    async fn hello(&self, topic: u64) {
+        self.network
+            .cmd_tx
+            .send(NetCmd::Publish {
+                ws: topic,
+                msg: NeighbourMsg::IdentityHello {
+                    cert: Box::new(self.cert.clone()),
+                    revocations: vec![],
+                },
+            })
+            .await
+            .unwrap();
+    }
+
+    fn admit_without_app_cache(&self) {
+        // Root/transport admission runs normally. Hold actual checkpoint
+        // events until the receiver's process-local report cache is cleared.
+        loop {
+            let event = self.network.event_rx.lock().unwrap().try_recv().ok();
+            let Some(event) = event else { break };
+            if matches!(
+                &event,
+                NetEvent::Msg {
+                    msg: NeighbourMsg::PersonalContinuityCheckpoint { .. },
+                    ..
+                }
+            ) {
+                self.deferred.lock().unwrap().push_back(event);
+            } else {
+                self.network.dispatch_net_event(event);
+            }
+        }
+    }
+
+    async fn close(self) {
+        self.endpoint.close().await;
+        self.actor.abort();
+        let _ = self.actor.await;
+    }
+}
+
+fn policy() -> crate::shell::continuity_policy::ContinuityPolicySnapshot {
+    crate::shell::continuity_policy::ContinuityPolicySnapshot::from_document(
+        serde_json::json!({"continuity": {
+            "enabled": true, "clipboard": true, "app_continuations": true,
+            "notifications": false, "wifi_settings": false, "media": false,
+            "display_input": false, "file_transfer": false,
+            "realtime_sessions": false, "typed_gamepad": false
+        }})
+        .as_object()
+        .unwrap(),
+    )
+}
+
+async fn pair(left: &Session, right: &Session) {
+    let topic = personal_continuity_topic_id(&left.cert.user_public_key);
+    left.join(topic).await;
+    right.join(topic).await;
+    left.network
+        .cmd_tx
+        .send(NetCmd::Connect {
+            addr: right.endpoint.addr(),
+        })
+        .await
+        .unwrap();
+    tilo_test_env::within("two continuity sessions joined", async {
+        loop {
+            left.network.tick();
+            right.admit_without_app_cache();
+            if left
+                .network
+                .live_room_peers
+                .lock()
+                .unwrap()
+                .contains(&(topic, right.endpoint.id()))
+                && right
+                    .network
+                    .live_room_peers
+                    .lock()
+                    .unwrap()
+                    .contains(&(topic, left.endpoint.id()))
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    left.hello(topic).await;
+    right.hello(topic).await;
+    tilo_test_env::within("root-certified continuity routes admitted", async {
+        loop {
+            left.network.tick();
+            right.admit_without_app_cache();
+            if left
+                .network
+                .authenticated_personal_routes
+                .lock()
+                .unwrap()
+                .contains_key(&(topic, right.endpoint.id()))
+                && right
+                    .network
+                    .authenticated_personal_routes
+                    .lock()
+                    .unwrap()
+                    .contains_key(&(topic, left.endpoint.id()))
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+}
+
+fn selection() -> SharedSelection {
+    Arc::new(Mutex::new(selection::SelectionStore::default()))
+}
+
+fn pump(runtime: &mut DeviceFabricRuntime, session: &Session, selection: &SharedSelection) {
+    session.network.tick();
+    runtime.pump(
+        &session.network,
+        selection,
+        LocalFabricCapabilities {
+            display: None,
+            pointer: false,
+            keyboard: false,
+            audio_output: false,
+        },
+    );
+}
+
+struct SettingsReset;
+impl Drop for SettingsReset {
+    fn drop(&mut self) {
+        settings_store::install_source(None);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one paired journey keeps transport, policy and end-state assertions together"
+)]
+async fn paired_continuity_clipboard_requires_activation_and_filters_private_selections() {
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    home.env().set(
+        "DBUS_SESSION_BUS_ADDRESS",
+        "unix:path=/nonexistent/tilo-continuity-test",
+    );
+    let paths = settings_store::SessionPaths::beside(home.config().join("settings.json"));
+    settings_store::install_source(Some(Arc::new(
+        settings_store::SessionSettings::open(paths).unwrap(),
+    )));
+    let _settings_reset = SettingsReset;
+    settings_store::update_section(
+        "continuity",
+        serde_json::json!({
+            "enabled": true, "clipboard": true, "app_continuations": true,
+            "notifications": false, "wifi_settings": false, "media": false,
+            "display_input": false, "file_transfer": false,
+            "realtime_sessions": false, "typed_gamepad": false
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    )
+    .unwrap();
+    let root = ed25519_dalek::SigningKey::from_bytes(&[0x91; 32]);
+    let left = Session::new(&root, 0x92, WorkspaceTree::default()).await;
+    let right = Session::new(&root, 0x93, WorkspaceTree::default()).await;
+    pair(&left, &right).await;
+    let copied = selection();
+    let pasted = selection();
+    assert!(selection::set_mirror_text(
+        &copied,
+        Target::Clipboard,
+        "portable copy"
+    ));
+    assert!(selection::set_mirror_text(
+        &copied,
+        Target::Primary,
+        "private primary"
+    ));
+    selection::clear_mirror(&copied, Target::Clipboard);
+    selection::set_mirror_bytes(
+        &copied,
+        Target::Clipboard,
+        selection::SECRET_MIME,
+        b"secret marker".to_vec(),
+    )
+    .unwrap();
+    selection::set_mirror_bytes(
+        &copied,
+        Target::Clipboard,
+        selection::TEXT_MIME,
+        b"private password".to_vec(),
+    )
+    .unwrap();
+    assert!(selection::set_mirror_text(
+        &pasted,
+        Target::Clipboard,
+        "keep local clipboard"
+    ));
+    let mut outgoing = DeviceFabricRuntime::new(
+        &left.network,
+        crate::notifications::NotificationBridge::new(),
+    );
+    let mut incoming = DeviceFabricRuntime::new(
+        &right.network,
+        crate::notifications::NotificationBridge::new(),
+    );
+    let item = tilo_test_env::within("clipboard reaches certified second session", async {
+        loop {
+            pump(&mut outgoing, &left, &copied);
+            pump(&mut incoming, &right, &pasted);
+            if let Some(item) = selection::clipboard_history(&pasted)
+                .into_iter()
+                .find(|item| item.text_preview.as_deref() == Some("portable copy"))
+            {
+                break item;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert_eq!(item.source_device, left.network.personal_continuity_device);
+    assert_eq!(
+        selection::mirror_text(&pasted, Target::Clipboard).as_deref(),
+        Some("keep local clipboard")
+    );
+    assert!(selection::activate_history_item(&pasted, item.id));
+    assert_eq!(
+        selection::mirror_text(&pasted, Target::Clipboard).as_deref(),
+        Some("portable copy")
+    );
+    for private in ["private primary", "private password", "secret marker"] {
+        assert!(
+            !selection::clipboard_history(&pasted)
+                .iter()
+                .any(|item| item.text_preview.as_deref() == Some(private))
+        );
+        let checkpoint = left.network.local_device_fabric_checkpoint().unwrap();
+        assert!(
+            !checkpoint
+                .windows(private.len())
+                .any(|bytes| bytes == private.as_bytes())
+        );
+    }
+    assert!(
+        selection::shareable_clipboard_history(&pasted)
+            .iter()
+            .all(|shared| shared.id != item.id)
+    );
+    // An independently certified person can connect to the transport, but
+    // cannot turn that connection into this person's clipboard authority.
+    let other_root = ed25519_dalek::SigningKey::from_bytes(&[0x97; 32]);
+    let stranger = Session::new(&other_root, 0x98, WorkspaceTree::default()).await;
+    let topic = personal_continuity_topic_id(&left.cert.user_public_key);
+    stranger.join(topic).await;
+    stranger
+        .network
+        .cmd_tx
+        .send(NetCmd::Connect {
+            addr: right.endpoint.addr(),
+        })
+        .await
+        .unwrap();
+    tilo_test_env::within("stranger transport connection joined", async {
+        loop {
+            stranger.network.tick();
+            right.network.tick();
+            if right
+                .network
+                .live_room_peers
+                .lock()
+                .unwrap()
+                .contains(&(topic, stranger.endpoint.id()))
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    stranger.hello(topic).await;
+    tilo_test_env::within("stranger certificate observed on actual transport", async {
+        loop {
+            right.network.tick();
+            if right
+                .network
+                .peer_identities
+                .get(&crate::shell::state::PeerOrigin::peer(
+                    &stranger.endpoint.id(),
+                ))
+                .is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(
+        !right
+            .network
+            .authenticated_personal_routes
+            .lock()
+            .unwrap()
+            .contains_key(&(topic, stranger.endpoint.id()))
+    );
+    let private_copy = selection();
+    assert!(selection::set_mirror_text(
+        &private_copy,
+        Target::Clipboard,
+        "other person's copy"
+    ));
+    let mut stranger_runtime = DeviceFabricRuntime::new(
+        &stranger.network,
+        crate::notifications::NotificationBridge::new(),
+    );
+    pump(&mut stranger_runtime, &stranger, &private_copy);
+    stranger
+        .network
+        .cmd_tx
+        .send(NetCmd::PublishPersonalFabricTarget {
+            ws: topic,
+            user_public_key: left.cert.user_public_key,
+            target: right.endpoint.id(),
+            payload: PersonalFabricPayload::Snapshot(
+                stranger.network.local_device_fabric_checkpoint().unwrap(),
+            ),
+        })
+        .await
+        .unwrap();
+    let untrusted = tilo_test_env::within("untrusted clipboard frame actually arrived", async {
+        loop {
+            let event = right.network.event_rx.lock().unwrap().try_recv().ok();
+            if let Some(event) = event {
+                if matches!(&event, NetEvent::PersonalFabric { peer, .. } if *peer == stranger.endpoint.id()) { break event; }
+                right.network.dispatch_net_event(event);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await;
+    right.network.dispatch_net_event(untrusted);
+    pump(&mut incoming, &right, &pasted);
+    assert!(
+        !right.network.device_fabric().snapshots().contains_key(
+            stranger
+                .network
+                .personal_continuity_device
+                .as_ref()
+                .unwrap()
+        )
+    );
+    assert!(
+        !selection::clipboard_history(&pasted)
+            .iter()
+            .any(|item| item.text_preview.as_deref() == Some("other person's copy"))
+    );
+    stranger.close().await;
+    left.close().await;
+    right.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one paired journey keeps transport, policy and end-state assertions together"
+)]
+async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_identity() {
+    use crate::shell::personal_continuity::{AppInstanceId, LaunchIntent};
+    use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+    use ui::widget::Widget as _;
+
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let packages = home.data().join("apps");
+    let payload = packages.join("payloads/so.tilo.browser");
+    std::fs::create_dir_all(&payload).unwrap();
+    let manifest = payload.join("manifest.toml");
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/browser/tilo-app.toml"),
+        &manifest,
+    )
+    .unwrap();
+    std::fs::write(
+        packages.join("registry.toml"),
+        format!(
+            "[[entry]]\nid = 'so.tilo.browser'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+            payload.to_str().unwrap(),
+            manifest.to_str().unwrap(),
+        ),
+    )
+    .unwrap();
+    home.env().set("TILO_APPS_DATA_DIR", &packages);
+    let root = ed25519_dalek::SigningKey::from_bytes(&[0x94; 32]);
+    let room = RoomId::new();
+    let tab = 0xC011_0094;
+    let mut tree = WorkspaceTree::bootstrap_default();
+    let workspace = &mut tree.desktop.workspaces[0];
+    workspace.room = room;
+    workspace.strips[0].window_groups.push(WindowGroup {
+        id: crate::shell::state::next_id(),
+        tabs: vec![Tab {
+            id: tab,
+            title: "Browser".into(),
+            tile: TileContent::Foreign {
+                app_id: "so.tilo.browser".into(),
+                surface_id: 94,
+            },
+        }],
+        active_tab: tab,
+        width: WindowWidth::Normal,
+        maximized: false,
+    });
+    let source_group = workspace.strips[0].window_groups[0].id;
+    tree.desktop
+        .active_group
+        .insert(workspace.strips[0].id, source_group);
+    let mut local_tree = WorkspaceTree::bootstrap_default();
+    let local_workspace = &mut local_tree.desktop.workspaces[0];
+    let local_workspace_id = local_workspace.id;
+    let local_strip = local_workspace.strips[0].id;
+    let local_group = crate::shell::state::next_id();
+    let local_tab = 0xC011_0096;
+    local_workspace.strips[0].window_groups.push(WindowGroup {
+        id: local_group,
+        tabs: vec![Tab {
+            id: local_tab,
+            title: "Terminal".into(),
+            tile: TileContent::LocalApp {
+                app_id: "so.tilo.terminal".into(),
+                label: "Terminal".into(),
+                note: String::new(),
+            },
+        }],
+        active_tab: local_tab,
+        width: WindowWidth::Normal,
+        maximized: false,
+    });
+    local_tree
+        .desktop
+        .active_group
+        .insert(local_strip, local_group);
+    let metadata = ui::app::compose_structural_continuation_metadata(
+        ui::view::View::default(),
+        Some(ui::collaboration::ContinuationMetadata {
+            schema_version: 1,
+            bytes: br#"{"url":"https://example.test/reading"}"#.to_vec(),
+        }),
+    )
+    .unwrap();
+    let left = Session::new(&root, 0x95, tree).await;
+    let right = Session::new(&root, 0x96, local_tree).await;
+    let peers_path = home.config().join("home-peers.json");
+    home.env().set("TILO_HOME_PEERS_PATH", &peers_path);
+    std::fs::write(
+        peers_path.with_file_name("personal-device-peers.json"),
+        serde_json::to_vec(&[
+            hex::encode(left.cert.device_public_key),
+            hex::encode(right.cert.device_public_key),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    let registry = crate::shell::personal_continuity_registry::global_registry();
+    {
+        let mut reports = registry.lock().unwrap();
+        reports.bind_tab(AppInstanceId(tab), AppInstanceId(tab));
+        assert!(
+            reports
+                .report(
+                    room,
+                    "so.tilo.browser",
+                    AppInstanceId(tab),
+                    metadata.schema_version,
+                    metadata.bytes.clone()
+                )
+                .unwrap()
+        );
+    }
+    let prepared = left.network.local_continuity_snapshot_bytes().unwrap();
+    let prepared = crate::shell::personal_continuity::decode_checkpoint(&prepared).unwrap();
+    let source = prepared
+        .snapshot_for(left.network.personal_continuity_device.as_ref().unwrap())
+        .unwrap();
+    let app = source
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.apps)
+        .find(|app| app.id == AppInstanceId(tab))
+        .unwrap();
+    assert_eq!(
+        app.resume.as_ref().unwrap().bytes(),
+        metadata.bytes,
+        "source checkpoint carries semantic metadata"
+    );
+    pair(&left, &right).await;
+    // The response is captured on the sending shell, crosses Iroh, then
+    // enters a receiving shell with no process-local app report cache.
+    right.network.publish_personal_continuity_request();
+    let arrived = tilo_test_env::within("session requests its app checkpoint", async {
+        loop {
+            left.network.tick();
+            let event = right
+                .deferred
+                .lock()
+                .unwrap()
+                .pop_front()
+                .or_else(|| right.network.event_rx.lock().unwrap().try_recv().ok());
+            if let Some(event) = event {
+                if let NetEvent::Msg {
+                    msg: NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. },
+                    ..
+                } = &event
+                {
+                    let decoded =
+                        crate::shell::personal_continuity::decode_checkpoint(snapshot).unwrap();
+                    if decoded
+                        .snapshot_for(left.network.personal_continuity_device.as_ref().unwrap())
+                        .is_some_and(|source| {
+                            source.workspaces.iter().any(|workspace| {
+                                workspace.apps.iter().any(|app| {
+                                    app.id == AppInstanceId(tab)
+                                        && app
+                                            .resume
+                                            .as_ref()
+                                            .is_some_and(|resume| resume.bytes() == metadata.bytes)
+                                })
+                            })
+                        })
+                    {
+                        break event;
+                    }
+                }
+                right.network.dispatch_net_event(event);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    registry
+        .lock()
+        .unwrap()
+        .forget_local_tab(AppInstanceId(tab));
+    right.network.dispatch_net_event(arrived);
+    assert!(
+        right
+            .network
+            .replica
+            .lock()
+            .unwrap()
+            .tree
+            .read()
+            .continuation_tabs
+            .contains(&tab)
+    );
+    let tree_handle = right.network.replica.lock().unwrap().tree.clone();
+    assert_eq!(
+        tree_handle.read().desktop.active,
+        local_workspace_id,
+        "arrival preserves local focus"
+    );
+    assert_eq!(
+        tree_handle.read().desktop.active_group[&local_strip],
+        local_group
+    );
+    let chrome = crate::shell::chrome_state::ChromeState::new_with_handle(tree_handle.clone());
+    chrome
+        .borrow_mut()
+        .set_continuity_feed(right.network.continuity_feed());
+    assert_eq!(
+        chrome
+            .borrow()
+            .continuity_suggestion(std::time::Instant::now())
+            .unwrap()
+            .tab,
+        tab
+    );
+    let mut bar = crate::shell::topbar_chrome::TopBarChrome::from_tree(&tree_handle.read().desktop)
+        .with_chrome(crate::shell::topbar_chrome::native_source(chrome.clone()));
+    let mut document = automerge::AutoCommit::new();
+    assert!(bar.perform_semantic_action(
+        "topbar:continuity",
+        &ui::a11y::Action::Activate,
+        &mut ui::widget::Edits::lend(&mut document),
+        &automerge::ROOT
+    ));
+    let accepted = tree_handle.read();
+    let active_workspace = accepted.desktop.active_workspace().unwrap();
+    let active_strip = accepted.desktop.active_strip[&active_workspace.id];
+    let active_group = accepted.desktop.active_group[&active_strip];
+    assert!(
+        active_workspace
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .any(|group| group.id == active_group && group.active_tab == tab)
+    );
+    drop(accepted);
+    let offered = registry
+        .lock()
+        .unwrap()
+        .continuation_for_tab(
+            room,
+            AppInstanceId(tab),
+            &LaunchIntent::app("so.tilo.browser").unwrap(),
+        )
+        .unwrap();
+    assert_eq!(offered.resume.bytes(), metadata.bytes);
+    assert_eq!(offered.record_instance, AppInstanceId(tab));
+    crate::shell::launcher::clear_pending_placements();
+    crate::shell::launcher::set_pending_placement(
+        "so.tilo.browser",
+        crate::shell::tab_binding::Placement::IntoTab(tab),
+    );
+    crate::shell::launcher::stage_continuation_resume(
+        room,
+        tab,
+        offered.resume.schema_version(),
+        offered.resume.bytes().to_vec(),
+        offered.record_instance.0,
+    );
+    assert_eq!(
+        crate::shell::launcher::take_staged_resume_for_package("so.tilo.browser", room),
+        Some((Some((metadata.schema_version, metadata.bytes)), tab))
+    );
+    crate::shell::launcher::clear_pending_placements();
+    registry
+        .lock()
+        .unwrap()
+        .forget_local_tab(AppInstanceId(tab));
+    left.close().await;
+    right.close().await;
+}
