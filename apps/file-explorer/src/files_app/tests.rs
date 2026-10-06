@@ -5698,6 +5698,44 @@ mod sort_selection_tests {
     use super::*;
 
     #[test]
+    fn sorting_keeps_an_active_rename_on_the_original_file() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("a.txt"), b"aaa").unwrap();
+        std::fs::write(root.path().join("b.txt"), b"b").unwrap();
+        let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
+        files.navigate(root.path().into());
+        files.set_sort_by(SortBy::Name);
+        files.apply_command(FileCommand::SetSortOrder(SortOrder::Ascending));
+        files.apply_command(FileCommand::Click {
+            index: 0,
+            ctrl: false,
+            shift: false,
+        });
+        files.apply_command(FileCommand::Rename);
+        files.set_rename_buffer("chosen.txt".into());
+        let mut doc = automerge::AutoCommit::new();
+        let folder = published::tree(&files, &doc)[0].id.clone();
+        published::invoke(
+            &mut files,
+            &mut doc,
+            folder.as_str(),
+            "sort-size",
+            &serde_json::json!({}),
+        )
+        .unwrap();
+        assert!(files.is_renaming());
+        assert!(files.rename_input.is_focused());
+        assert_eq!(files.rename_buffer, "chosen.txt");
+        assert!(files.commit_rename());
+        assert_eq!(
+            std::fs::read(root.path().join("chosen.txt")).unwrap(),
+            b"aaa"
+        );
+        assert_eq!(std::fs::read(root.path().join("b.txt")).unwrap(), b"b");
+        assert!(!root.path().join("a.txt").exists());
+    }
+
+    #[test]
     fn sort_capture_stages_keep_the_same_selected_files() {
         use crate::resource::FileExplorerShell;
         use ui::prelude::TestApp;
