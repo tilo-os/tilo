@@ -555,6 +555,29 @@ impl Relay {
         .await
     }
 
+    /// Start an app-serving host with an explicit transport relay policy.
+    ///
+    /// # Errors
+    /// The same as [`Relay::start`].
+    pub async fn start_with_app_serving_and_relay_mode(
+        cfg: RelayConfig,
+        identity: RelayIdentity,
+        app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+        relay_mode: iroh::RelayMode,
+    ) -> Result<Self, RelayError> {
+        Box::pin(Self::start_inner(
+            cfg,
+            identity,
+            Some(relay_mode),
+            None,
+            Vec::new(),
+            RelayStartupMode::CertifiedHost,
+            app_serving,
+            Arc::new(tilo_clock::SystemClock),
+        ))
+        .await
+    }
+
     /// [`Relay::start`], judging how recent the full-replica status stamp
     /// is by `replica_clock` instead of the wall clock.
     ///
