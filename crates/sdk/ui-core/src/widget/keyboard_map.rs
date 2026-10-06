@@ -141,6 +141,8 @@ pub struct KeyboardMap {
     preview_level: usize,
     live_layout: bool,
     inspected_key: Option<String>,
+    source: String,
+    model: String,
     rect: Rect,
     focused: bool,
     input: KeyboardMapInput,
@@ -159,12 +161,86 @@ impl KeyboardMap {
             preview_level: 0,
             live_layout: false,
             inspected_key: None,
+            source: String::new(),
+            model: String::new(),
             rect: Rect::ZERO,
             focused: false,
             input: KeyboardMapInput::default(),
             pointer: None,
             dirty: true,
         }
+    }
+
+    /// Name the exact configuration compiled for these painted positions.
+    #[must_use]
+    pub fn with_configuration(mut self, source: String, model: String) -> Self {
+        self.source = source;
+        self.model = model;
+        self
+    }
+
+    /// Read the mounted map's current paint state, never a keystroke history.
+    /// Live symbols require actual foreground native configuration; preview
+    /// legends remain explicitly identified as compiled preview data.
+    pub fn inspection_snapshot(&self) -> Result<serde_json::Value, String> {
+        let state = self
+            .input
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mounted = self.rect.is_finite() && self.rect.width() > 0.0 && self.rect.height() > 0.0;
+        let native = state.foreground.then_some(state.layout.as_ref()).flatten();
+        let selected = self
+            .inspected_key
+            .as_ref()
+            .and_then(|name| self.keys.iter().find(|key| &key.name == name));
+        let native_key = selected.and_then(|key| {
+            native?
+                .keys
+                .iter()
+                .find(|entry| entry.physical == key.physical)
+        });
+        let available =
+            mounted && selected.is_some() && (!self.live_layout || native_key.is_some());
+        let symbols = selected
+            .filter(|_| available)
+            .map(|key| self.legend_values_at(key, &state))
+            .unwrap_or_default();
+        let mut pressed = self
+            .keys
+            .iter()
+            .filter(|key| mounted && state.foreground && state.keys.contains(&key.physical))
+            .map(|key| key.name.clone())
+            .collect::<Vec<_>>();
+        pressed.sort();
+        if self.keys.len() > 256
+            || self.source.len() > 128
+            || self.model.len() > 32
+            || self
+                .inspected_key
+                .as_ref()
+                .is_some_and(|name| name.len() > 32)
+            || pressed.iter().any(|name| name.len() > 32)
+            || pressed.len() > 256
+            || symbols.len() > 32
+            || symbols.iter().any(|symbol| symbol.len() > 1024)
+        {
+            return Err("The keyboard inspection exceeds its bound.".into());
+        }
+        Ok(serde_json::json!({
+            "available": available,
+            "page_visible": mounted,
+            "foreground": state.foreground,
+            "mode": if self.live_layout { "live" } else { "preview" },
+            "source": (!self.live_layout).then_some(&self.source),
+            "model": self.model,
+            "inspected_key": self.inspected_key,
+            "selected_symbols": symbols,
+            "native_layout_available": native.is_some(),
+            "native_group": native.map(|layout| layout.group),
+            "native_modifiers": native.map(|layout| [layout.depressed, layout.latched, layout.locked]),
+            "pressed_physical_keys": pressed,
+        }))
     }
 
     /// Keep the owning page's private press state across retained recomposition.
@@ -363,9 +439,28 @@ impl KeyboardMap {
     }
 
     fn legend_values(&self, key: &KeyboardMapKey) -> Vec<String> {
+        let state = self
+            .input
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.legend_values_at(key, &state)
+    }
+
+    fn legend_values_at(&self, key: &KeyboardMapKey, state: &PressState) -> Vec<String> {
         if self.live_layout {
             // Missing focused-seat evidence must never fall back to preferences.
-            let symbols = self.active_symbols(key.physical).unwrap_or_default();
+            let symbols = state
+                .layout
+                .as_ref()
+                .and_then(|layout| {
+                    layout
+                        .keys
+                        .iter()
+                        .find(|entry| entry.physical == key.physical)
+                })
+                .map(|entry| entry.symbols.clone())
+                .unwrap_or_default();
             let legend = symbols
                 .into_iter()
                 .map(|symbol| crate::keycaps::active().native_symbol(&symbol.name, &symbol.text))
@@ -761,6 +856,7 @@ impl crate::widget::Decorator for KeyboardMapSelection {
                     .with_action_target(Self::key_target(&key.name))
                     .with_bounds(self.inspection_rect(key))
                     .with_state(AccessState {
+                        selected: self.map.inspected_key.as_ref() == Some(&key.name),
                         disabled: !self.inspection_enabled(),
                         ..Default::default()
                     })
@@ -989,6 +1085,7 @@ mod selection_tests {
         assert_eq!(semantics.children.len(), 1);
         let control = &semantics.children[0];
         assert_eq!(control.role, Role::Button);
+        assert!(!control.state.selected);
         let target = control.action_target.as_deref().unwrap();
         assert_eq!(map.control_action_bindings()[0].control_id, target);
         assert!(map.perform_semantic_action(
@@ -998,6 +1095,8 @@ mod selection_tests {
             &automerge::ROOT
         ));
         assert_eq!(map.take_control_invocation(), pointer);
+        map.map.inspected_key = Some("AD06".into());
+        assert!(map.accessibility().unwrap().children[0].state.selected);
         assert!(!map.perform_semantic_action(
             "input.keyboard_map.key.unknown",
             &crate::a11y::Action::Activate,

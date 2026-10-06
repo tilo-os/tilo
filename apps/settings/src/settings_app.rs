@@ -649,6 +649,31 @@ impl SettingsApp {
     }
 }
 
+impl SettingsApp {
+    pub(crate) fn keyboard_inspection(&self) -> Result<serde_json::Value, String> {
+        fn mounted_map(widget: &dyn Widget) -> Option<&ui::KeyboardMap> {
+            if let Some(map) = widget
+                .as_any()
+                .and_then(|value| value.downcast_ref::<ui::KeyboardMap>())
+            {
+                return Some(map);
+            }
+            widget.children().into_iter().find_map(mounted_map)
+        }
+        if self.selected == Category::MouseKeyboard
+            && let Some(map) = mounted_map(self)
+        {
+            return map.inspection_snapshot();
+        }
+        Ok(serde_json::json!({
+            "available": false, "page_visible": false, "foreground": false,
+            "mode": null, "source": null, "model": null, "inspected_key": null,
+            "selected_symbols": [], "native_layout_available": false,
+            "native_group": null, "native_modifiers": null, "pressed_physical_keys": [],
+        }))
+    }
+}
+
 impl Widget for SettingsApp {
     fn native_input_snapshot(
         &self,
