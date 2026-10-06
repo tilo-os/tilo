@@ -1224,6 +1224,927 @@
       "qualification": "Intermittent allocation failure unresolved. Preserve the previous completed receipt, but do not claim current Small stability or use this partial run as a complete comparison."
     },
     "model_selection": "The existing signed installed-model service chooses the most recently installed valid SpeechRecognition model. Language is persisted independently in Settings. No new model preference, signing, installation or publication is included.",
-    "limits": "Decoder timings exclude cold loading, capture completion and editable-field ACK. No live microphone, older-device, Arm or end-to-end Flow-parity claim."
+    "limits": "Decoder timings exclude cold loading, capture completion and editable-field ACK. No live microphone, older-device, Arm or end-to-end Flow-parity claim.",
+    "allocation_diagnosis": {
+      "date": "2026-10-06",
+      "case": "ar_eg-1",
+      "audio_sha256": "4c8e0057b6a4347b0abf260d1f4a14b15dade63caf991f475da70909f3602035",
+      "model_sha256": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+      "memory_limit_bytes": 1073741824,
+      "threads": 2,
+      "method": "External parent samples /proc/<owned-child>/status every 20 ms. Each fresh non-root child retains production RLIMIT_AS, Landlock and seccomp. VmPeak/VmHWM are kernel high-water counters as observed; phase labels and final unobserved intervals have sampling uncertainty. No dump, ptrace, sandbox relaxation or real microphone.",
+      "profiles": [
+        {
+          "configuration": "qualified attention=false; default allocator",
+          "requested_probes": 5,
+          "completed_recorded_probes": 5,
+          "transport_exit": 0,
+          "log_sha256": "fdb5d6ff8fdd3cd29563d154110d67b76971b2dc5cca864571497299f8029c96",
+          "peak_virtual_kib": 1043140,
+          "peak_resident_kib": 512452,
+          "fixed_final_median_ms": 4785,
+          "probe_exits": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "observations": [
+            {
+              "run": 0,
+              "case": "ar_eg-1",
+              "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+              "exit": 0,
+              "last_phase": "final-auto-language",
+              "peak": {
+                "VmPeak": 1043140,
+                "VmSize": 1030336,
+                "VmHWM": 512356,
+                "VmRSS": 512356,
+                "Threads": 3
+              },
+              "phase_peaks": {
+                "loading": {
+                  "VmPeak": 391448,
+                  "VmSize": 391448,
+                  "VmHWM": 387816,
+                  "VmRSS": 387816,
+                  "Threads": 1
+                },
+                "draft-fixed-language": {
+                  "VmPeak": 1041340,
+                  "VmSize": 1028536,
+                  "VmHWM": 497128,
+                  "VmRSS": 497128,
+                  "Threads": 3
+                },
+                "final-fixed-language": {
+                  "VmPeak": 1042200,
+                  "VmSize": 1029396,
+                  "VmHWM": 501348,
+                  "VmRSS": 501348,
+                  "Threads": 2
+                },
+                "final-auto-language": {
+                  "VmPeak": 1043140,
+                  "VmSize": 1030336,
+                  "VmHWM": 512356,
+                  "VmRSS": 512356,
+                  "Threads": 2
+                }
+              },
+              "sample_interval_ms": 20,
+              "memory_limit_bytes": 1073741824,
+              "ambient_arena_tunables": false,
+              "memory_values_unit": "KiB except Threads"
+            },
+            {
+              "run": 1,
+              "case": "ar_eg-1",
+              "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+              "exit": 0,
+              "last_phase": "final-auto-language",
+              "peak": {
+                "VmPeak": 1043140,
+                "VmSize": 1030336,
+                "VmHWM": 512432,
+                "VmRSS": 512432,
+                "Threads": 2
+              },
+              "phase_peaks": {
+                "loading": {
+                  "VmPeak": 964376,
+                  "VmSize": 964376,
+                  "VmHWM": 387844,
+                  "VmRSS": 387844,
+                  "Threads": 1
+                },
+                "draft-fixed-language": {
+                  "VmPeak": 1041340,
+                  "VmSize": 1028536,
+                  "VmHWM": 497204,
+                  "VmRSS": 497204,
+                  "Threads": 2
+                },
+                "final-fixed-language": {
+                  "VmPeak": 1042200,
+                  "VmSize": 1029396,
+                  "VmHWM": 501424,
+                  "VmRSS": 501424,
+                  "Threads": 2
+                },
+                "final-auto-language": {
+                  "VmPeak": 1043140,
+                  "VmSize": 1030336,
+                  "VmHWM": 512432,
+                  "VmRSS": 512432,
+                  "Threads": 2
+                }
+              },
+              "sample_interval_ms": 20,
+              "memory_limit_bytes": 1073741824,
+              "ambient_arena_tunables": false,
+              "memory_values_unit": "KiB except Threads"
+            },
+            {
+              "run": 2,
+              "case": "ar_eg-1",
+              "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+              "exit": 0,
+              "last_phase": "final-auto-language",
+              "peak": {
+                "VmPeak": 1043140,
+                "VmSize": 1030336,
+                "VmHWM": 512396,
+                "VmRSS": 512396,
+                "Threads": 2
+              },
+              "phase_peaks": {
+                "loading": {
+                  "VmPeak": 391448,
+                  "VmSize": 391448,
+                  "VmHWM": 387816,
+                  "VmRSS": 387816,
+                  "Threads": 1
+                },
+                "draft-fixed-language": {
+                  "VmPeak": 1041340,
+                  "VmSize": 1028536,
+                  "VmHWM": 497168,
+                  "VmRSS": 497168,
+                  "Threads": 2
+                },
+                "final-fixed-language": {
+                  "VmPeak": 1042200,
+                  "VmSize": 1029396,
+                  "VmHWM": 501388,
+                  "VmRSS": 501388,
+                  "Threads": 2
+                },
+                "final-auto-language": {
+                  "VmPeak": 1043140,
+                  "VmSize": 1030336,
+                  "VmHWM": 512396,
+                  "VmRSS": 512396,
+                  "Threads": 2
+                }
+              },
+              "sample_interval_ms": 20,
+              "memory_limit_bytes": 1073741824,
+              "ambient_arena_tunables": false,
+              "memory_values_unit": "KiB except Threads"
+            },
+            {
+              "run": 3,
+              "case": "ar_eg-1",
+              "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+              "exit": 0,
+              "last_phase": "final-auto-language",
+              "peak": {
+                "VmPeak": 1043140,
+                "VmSize": 1030336,
+                "VmHWM": 512448,
+                "VmRSS": 512448,
+                "Threads": 2
+              },
+              "phase_peaks": {
+                "loading": {
+                  "VmPeak": 391448,
+                  "VmSize": 391448,
+                  "VmHWM": 387880,
+                  "VmRSS": 387880,
+                  "Threads": 1
+                },
+                "draft-fixed-language": {
+                  "VmPeak": 1041340,
+                  "VmSize": 1028536,
+                  "VmHWM": 497220,
+                  "VmRSS": 497220,
+                  "Threads": 2
+                },
+                "final-fixed-language": {
+                  "VmPeak": 1042200,
+                  "VmSize": 1029396,
+                  "VmHWM": 501440,
+                  "VmRSS": 501440,
+                  "Threads": 2
+                },
+                "final-auto-language": {
+                  "VmPeak": 1043140,
+                  "VmSize": 1030336,
+                  "VmHWM": 512448,
+                  "VmRSS": 512448,
+                  "Threads": 2
+                }
+              },
+              "sample_interval_ms": 20,
+              "memory_limit_bytes": 1073741824,
+              "ambient_arena_tunables": false,
+              "memory_values_unit": "KiB except Threads"
+            },
+            {
+              "run": 4,
+              "case": "ar_eg-1",
+              "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+              "exit": 0,
+              "last_phase": "final-auto-language",
+              "peak": {
+                "VmPeak": 1043140,
+                "VmSize": 1030336,
+                "VmHWM": 512452,
+                "VmRSS": 512452,
+                "Threads": 2
+              },
+              "phase_peaks": {
+                "loading": {
+                  "VmPeak": 391448,
+                  "VmSize": 391448,
+                  "VmHWM": 387892,
+                  "VmRSS": 387892,
+                  "Threads": 1
+                },
+                "draft-fixed-language": {
+                  "VmPeak": 1041340,
+                  "VmSize": 1028536,
+                  "VmHWM": 497156,
+                  "VmRSS": 497156,
+                  "Threads": 2
+                },
+                "final-fixed-language": {
+                  "VmPeak": 1042200,
+                  "VmSize": 1029396,
+                  "VmHWM": 501376,
+                  "VmRSS": 501376,
+                  "Threads": 2
+                },
+                "final-auto-language": {
+                  "VmPeak": 1043140,
+                  "VmSize": 1030336,
+                  "VmHWM": 512452,
+                  "VmRSS": 512452,
+                  "Threads": 2
+                }
+              },
+              "sample_interval_ms": 20,
+              "memory_limit_bytes": 1073741824,
+              "ambient_arena_tunables": false,
+              "memory_values_unit": "KiB except Threads"
+            }
+          ]
+        },
+        {
+          "configuration": "attention=false; diagnostic MALLOC_ARENA_MAX=1",
+          "requested_probes": 5,
+          "completed_recorded_probes": 5,
+          "transport_exit": 0,
+          "log_sha256": "fddf1258e222d05554d25f607a26dcf4831175702169178ab827fea53c920b7d",
+          "peak_virtual_kib": 1030336,
+          "peak_resident_kib": 512592,
+          "fixed_final_median_ms": 5106,
+          "probe_exits": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "observations": [
+            {
+              "run": 0,
+              "case": "ar_eg-1",
+              "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+              "exit": 0,
+              "last_phase": "final-auto-language",
+              "peak": {
+                "VmPeak": 1030336,
+                "VmSize": 1030336,
+                "VmHWM": 512584,
+                "VmRSS": 512584,
+                "Threads": 2
+              },
+              "phase_peaks": {
+                "loading": {
+                  "VmPeak": 391448,
+                  "VmSize": 391448,
+                  "VmHWM": 388016,
+                  "VmRSS": 388016,
+                  "Threads": 1
+                },
+                "draft-fixed-language": {
+                  "VmPeak": 1028536,
+                  "VmSize": 1028536,
+                  "VmHWM": 497368,
+                  "VmRSS": 497368,
+                  "Threads": 2
+                },
+                "final-fixed-language": {
+                  "VmPeak": 1029396,
+                  "VmSize": 1029396,
+                  "VmHWM": 501592,
+                  "VmRSS": 501592,
+                  "Threads": 2
+                },
+                "final-auto-language": {
+                  "VmPeak": 1030336,
+                  "VmSize": 1030336,
+                  "VmHWM": 512584,
+                  "VmRSS": 512584,
+                  "Threads": 2
+                }
+              },
+              "sample_interval_ms": 20,
+              "memory_limit_bytes": 1073741824,
+              "ambient_arena_tunables": false,
+              "diagnostic_arena_max": 1,
+              "memory_values_unit": "KiB except Threads"
+            },
+            {
+              "run": 1,
+              "case": "ar_eg-1",
+              "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+              "exit": 0,
+              "last_phase": "final-auto-language",
+              "peak": {
+                "VmPeak": 1030336,
+                "VmSize": 1030336,
+                "VmHWM": 512408,
+                "VmRSS": 512408,
+                "Threads": 2
+              },
+              "phase_peaks": {
+                "loading": {
+                  "VmPeak": 964376,
+                  "VmSize": 964376,
+                  "VmHWM": 387780,
+                  "VmRSS": 387780,
+                  "Threads": 1
+                },
+                "draft-fixed-language": {
+                  "VmPeak": 1028536,
+                  "VmSize": 1028536,
+                  "VmHWM": 497192,
+                  "VmRSS": 497192,
+                  "Threads": 2
+                },
+                "final-fixed-language": {
+                  "VmPeak": 1029396,
+                  "VmSize": 1029396,
+                  "VmHWM": 501416,
+                  "VmRSS": 501416,
+                  "Threads": 2
+                },
+                "final-auto-language": {
+                  "VmPeak": 1030336,
+                  "VmSize": 1030336,
+                  "VmHWM": 512408,
+                  "VmRSS": 512408,
+                  "Threads": 2
+                }
+              },
+              "sample_interval_ms": 20,
+              "memory_limit_bytes": 1073741824,
+              "ambient_arena_tunables": false,
+              "diagnostic_arena_max": 1,
+              "memory_values_unit": "KiB except Threads"
+            },
+            {
+              "run": 2,
+              "case": "ar_eg-1",
+              "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+              "exit": 0,
+              "last_phase": "final-auto-language",
+              "peak": {
+                "VmPeak": 1030336,
+                "VmSize": 1030336,
+                "VmHWM": 512524,
+                "VmRSS": 512524,
+                "Threads": 2
+              },
+              "phase_peaks": {
+                "loading": {
+                  "VmPeak": 391448,
+                  "VmSize": 391448,
+                  "VmHWM": 388028,
+                  "VmRSS": 388028,
+                  "Threads": 1
+                },
+                "draft-fixed-language": {
+                  "VmPeak": 1028536,
+                  "VmSize": 1028536,
+                  "VmHWM": 497308,
+                  "VmRSS": 497308,
+                  "Threads": 2
+                },
+                "final-fixed-language": {
+                  "VmPeak": 1029396,
+                  "VmSize": 1029396,
+                  "VmHWM": 501532,
+                  "VmRSS": 501532,
+                  "Threads": 2
+                },
+                "final-auto-language": {
+                  "VmPeak": 1030336,
+                  "VmSize": 1030336,
+                  "VmHWM": 512524,
+                  "VmRSS": 512524,
+                  "Threads": 2
+                }
+              },
+              "sample_interval_ms": 20,
+              "memory_limit_bytes": 1073741824,
+              "ambient_arena_tunables": false,
+              "diagnostic_arena_max": 1,
+              "memory_values_unit": "KiB except Threads"
+            },
+            {
+              "run": 3,
+              "case": "ar_eg-1",
+              "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+              "exit": 0,
+              "last_phase": "final-auto-language",
+              "peak": {
+                "VmPeak": 1030336,
+                "VmSize": 1030336,
+                "VmHWM": 512592,
+                "VmRSS": 512592,
+                "Threads": 2
+              },
+              "phase_peaks": {
+                "loading": {
+                  "VmPeak": 391448,
+                  "VmSize": 391448,
+                  "VmHWM": 388096,
+                  "VmRSS": 388096,
+                  "Threads": 1
+                },
+                "draft-fixed-language": {
+                  "VmPeak": 1028536,
+                  "VmSize": 1028536,
+                  "VmHWM": 497376,
+                  "VmRSS": 497376,
+                  "Threads": 2
+                },
+                "final-fixed-language": {
+                  "VmPeak": 1029396,
+                  "VmSize": 1029396,
+                  "VmHWM": 501600,
+                  "VmRSS": 501600,
+                  "Threads": 2
+                },
+                "final-auto-language": {
+                  "VmPeak": 1030336,
+                  "VmSize": 1030336,
+                  "VmHWM": 512592,
+                  "VmRSS": 512592,
+                  "Threads": 2
+                }
+              },
+              "sample_interval_ms": 20,
+              "memory_limit_bytes": 1073741824,
+              "ambient_arena_tunables": false,
+              "diagnostic_arena_max": 1,
+              "memory_values_unit": "KiB except Threads"
+            },
+            {
+              "run": 4,
+              "case": "ar_eg-1",
+              "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+              "exit": 0,
+              "last_phase": "final-auto-language",
+              "peak": {
+                "VmPeak": 1030336,
+                "VmSize": 1030336,
+                "VmHWM": 512420,
+                "VmRSS": 512420,
+                "Threads": 3
+              },
+              "phase_peaks": {
+                "loading": {
+                  "VmPeak": 870500,
+                  "VmSize": 870500,
+                  "VmHWM": 387992,
+                  "VmRSS": 387992,
+                  "Threads": 1
+                },
+                "draft-fixed-language": {
+                  "VmPeak": 1028536,
+                  "VmSize": 1028536,
+                  "VmHWM": 497332,
+                  "VmRSS": 497332,
+                  "Threads": 2
+                },
+                "final-fixed-language": {
+                  "VmPeak": 1029396,
+                  "VmSize": 1029396,
+                  "VmHWM": 501556,
+                  "VmRSS": 501556,
+                  "Threads": 3
+                },
+                "final-auto-language": {
+                  "VmPeak": 1030336,
+                  "VmSize": 1030336,
+                  "VmHWM": 512420,
+                  "VmRSS": 512420,
+                  "Threads": 2
+                }
+              },
+              "sample_interval_ms": 20,
+              "memory_limit_bytes": 1073741824,
+              "ambient_arena_tunables": false,
+              "diagnostic_arena_max": 1,
+              "memory_values_unit": "KiB except Threads"
+            }
+          ]
+        },
+        {
+          "configuration": "upstream-default CPU attention=true; default allocator",
+          "requested_probes": 5,
+          "completed_recorded_probes": 3,
+          "transport_exit": 255,
+          "log_sha256": "22f8eb28dab5105f4533a57a01b5fc7411cd6a6cab97a4e9c04df934707d8297",
+          "peak_virtual_kib": 1014796,
+          "peak_resident_kib": 387888,
+          "fixed_final_median_ms": 5698,
+          "probe_exits": [
+            0,
+            0,
+            0
+          ],
+          "observations": [
+            {
+              "run": 0,
+              "case": "ar_eg-1",
+              "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+              "exit": 0,
+              "last_phase": "final-auto-language",
+              "peak": {
+                "VmPeak": 1014796,
+                "VmSize": 955196,
+                "VmHWM": 387724,
+                "VmRSS": 387724,
+                "Threads": 3
+              },
+              "phase_peaks": {
+                "loading": {
+                  "VmPeak": 391448,
+                  "VmSize": 391448,
+                  "VmHWM": 387724,
+                  "VmRSS": 387724,
+                  "Threads": 1
+                },
+                "draft-fixed-language": {
+                  "VmPeak": 1014796,
+                  "VmSize": 954324,
+                  "VmHWM": 387340,
+                  "VmRSS": 357388,
+                  "Threads": 2
+                },
+                "final-fixed-language": {
+                  "VmPeak": 1014796,
+                  "VmSize": 955184,
+                  "VmHWM": 387340,
+                  "VmRSS": 361608,
+                  "Threads": 2
+                },
+                "final-auto-language": {
+                  "VmPeak": 1014796,
+                  "VmSize": 955196,
+                  "VmHWM": 387340,
+                  "VmRSS": 371668,
+                  "Threads": 3
+                }
+              },
+              "sample_interval_ms": 20,
+              "memory_limit_bytes": 1073741824,
+              "ambient_arena_tunables": false,
+              "memory_values_unit": "KiB except Threads"
+            },
+            {
+              "run": 1,
+              "case": "ar_eg-1",
+              "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+              "exit": 0,
+              "last_phase": "final-auto-language",
+              "peak": {
+                "VmPeak": 1014796,
+                "VmSize": 955196,
+                "VmHWM": 387788,
+                "VmRSS": 387788,
+                "Threads": 2
+              },
+              "phase_peaks": {
+                "loading": {
+                  "VmPeak": 391448,
+                  "VmSize": 391448,
+                  "VmHWM": 387788,
+                  "VmRSS": 387788,
+                  "Threads": 1
+                },
+                "draft-fixed-language": {
+                  "VmPeak": 1014796,
+                  "VmSize": 954324,
+                  "VmHWM": 387408,
+                  "VmRSS": 357324,
+                  "Threads": 2
+                },
+                "final-fixed-language": {
+                  "VmPeak": 1014796,
+                  "VmSize": 955184,
+                  "VmHWM": 387408,
+                  "VmRSS": 361544,
+                  "Threads": 2
+                },
+                "final-auto-language": {
+                  "VmPeak": 1014796,
+                  "VmSize": 955196,
+                  "VmHWM": 387408,
+                  "VmRSS": 371604,
+                  "Threads": 2
+                }
+              },
+              "sample_interval_ms": 20,
+              "memory_limit_bytes": 1073741824,
+              "ambient_arena_tunables": false,
+              "memory_values_unit": "KiB except Threads"
+            },
+            {
+              "run": 2,
+              "case": "ar_eg-1",
+              "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+              "exit": 0,
+              "last_phase": "final-auto-language",
+              "peak": {
+                "VmPeak": 1014796,
+                "VmSize": 955196,
+                "VmHWM": 387888,
+                "VmRSS": 387888,
+                "Threads": 2
+              },
+              "phase_peaks": {
+                "loading": {
+                  "VmPeak": 391448,
+                  "VmSize": 391448,
+                  "VmHWM": 387888,
+                  "VmRSS": 387888,
+                  "Threads": 1
+                },
+                "draft-fixed-language": {
+                  "VmPeak": 1014796,
+                  "VmSize": 954324,
+                  "VmHWM": 387372,
+                  "VmRSS": 357424,
+                  "Threads": 2
+                },
+                "final-fixed-language": {
+                  "VmPeak": 1014796,
+                  "VmSize": 955184,
+                  "VmHWM": 387372,
+                  "VmRSS": 361644,
+                  "Threads": 2
+                },
+                "final-auto-language": {
+                  "VmPeak": 1014796,
+                  "VmSize": 955196,
+                  "VmHWM": 387372,
+                  "VmRSS": 371704,
+                  "Threads": 2
+                }
+              },
+              "sample_interval_ms": 20,
+              "memory_limit_bytes": 1073741824,
+              "ambient_arena_tunables": false,
+              "memory_values_unit": "KiB except Threads"
+            }
+          ]
+        },
+        {
+          "configuration": "attention=false; diagnostic MALLOC_MMAP_THRESHOLD_=131072",
+          "requested_probes": 3,
+          "completed_recorded_probes": 3,
+          "transport_exit": 0,
+          "log_sha256": "6e8bfbe51e133528476c84b050653d34b3b5b089ee323a544b16795a3f51d8b8",
+          "peak_virtual_kib": 1042296,
+          "peak_resident_kib": 494208,
+          "fixed_final_median_ms": 4813,
+          "probe_exits": [
+            0,
+            0,
+            0
+          ],
+          "observations": [
+            {
+              "run": 0,
+              "case": "ar_eg-1",
+              "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+              "exit": 0,
+              "last_phase": "final-auto-language",
+              "peak": {
+                "VmPeak": 1042296,
+                "VmSize": 1027668,
+                "VmHWM": 494144,
+                "VmRSS": 494144,
+                "Threads": 2
+              },
+              "phase_peaks": {
+                "loading": {
+                  "VmPeak": 391236,
+                  "VmSize": 391236,
+                  "VmHWM": 387604,
+                  "VmRSS": 387604,
+                  "Threads": 1
+                },
+                "draft-fixed-language": {
+                  "VmPeak": 1041408,
+                  "VmSize": 1027352,
+                  "VmHWM": 493860,
+                  "VmRSS": 493860,
+                  "Threads": 2
+                },
+                "final-fixed-language": {
+                  "VmPeak": 1042196,
+                  "VmSize": 1027568,
+                  "VmHWM": 494144,
+                  "VmRSS": 494144,
+                  "Threads": 2
+                },
+                "final-auto-language": {
+                  "VmPeak": 1042296,
+                  "VmSize": 1027668,
+                  "VmHWM": 494144,
+                  "VmRSS": 494144,
+                  "Threads": 2
+                }
+              },
+              "sample_interval_ms": 20,
+              "memory_limit_bytes": 1073741824,
+              "ambient_arena_tunables": false,
+              "diagnostic_mmap_threshold_bytes": 131072,
+              "memory_values_unit": "KiB except Threads"
+            },
+            {
+              "run": 1,
+              "case": "ar_eg-1",
+              "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+              "exit": 0,
+              "last_phase": "final-auto-language",
+              "peak": {
+                "VmPeak": 1042296,
+                "VmSize": 1027668,
+                "VmHWM": 494208,
+                "VmRSS": 494208,
+                "Threads": 3
+              },
+              "phase_peaks": {
+                "loading": {
+                  "VmPeak": 391236,
+                  "VmSize": 391236,
+                  "VmHWM": 387924,
+                  "VmRSS": 387924,
+                  "Threads": 1
+                },
+                "draft-fixed-language": {
+                  "VmPeak": 1041408,
+                  "VmSize": 1027352,
+                  "VmHWM": 493924,
+                  "VmRSS": 493924,
+                  "Threads": 3
+                },
+                "final-fixed-language": {
+                  "VmPeak": 1042196,
+                  "VmSize": 1027568,
+                  "VmHWM": 494208,
+                  "VmRSS": 494208,
+                  "Threads": 2
+                },
+                "final-auto-language": {
+                  "VmPeak": 1042296,
+                  "VmSize": 1027668,
+                  "VmHWM": 494208,
+                  "VmRSS": 494208,
+                  "Threads": 3
+                }
+              },
+              "sample_interval_ms": 20,
+              "memory_limit_bytes": 1073741824,
+              "ambient_arena_tunables": false,
+              "diagnostic_mmap_threshold_bytes": 131072,
+              "memory_values_unit": "KiB except Threads"
+            },
+            {
+              "run": 2,
+              "case": "ar_eg-1",
+              "model": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+              "exit": 0,
+              "last_phase": "final-auto-language",
+              "peak": {
+                "VmPeak": 1042296,
+                "VmSize": 1027668,
+                "VmHWM": 494124,
+                "VmRSS": 494124,
+                "Threads": 2
+              },
+              "phase_peaks": {
+                "loading": {
+                  "VmPeak": 391236,
+                  "VmSize": 391236,
+                  "VmHWM": 387712,
+                  "VmRSS": 387712,
+                  "Threads": 1
+                },
+                "draft-fixed-language": {
+                  "VmPeak": 1041408,
+                  "VmSize": 1027352,
+                  "VmHWM": 493840,
+                  "VmRSS": 493840,
+                  "Threads": 2
+                },
+                "final-fixed-language": {
+                  "VmPeak": 1042196,
+                  "VmSize": 1027568,
+                  "VmHWM": 494124,
+                  "VmRSS": 494124,
+                  "Threads": 2
+                },
+                "final-auto-language": {
+                  "VmPeak": 1042296,
+                  "VmSize": 1027668,
+                  "VmHWM": 494124,
+                  "VmRSS": 494124,
+                  "Threads": 2
+                }
+              },
+              "sample_interval_ms": 20,
+              "memory_limit_bytes": 1073741824,
+              "ambient_arena_tunables": false,
+              "diagnostic_mmap_threshold_bytes": 131072,
+              "memory_values_unit": "KiB except Threads"
+            }
+          ]
+        }
+      ],
+      "inference": "The qualified decoder approaches the virtual address-space limit despite about 500 MiB resident use. This supports address-space pressure as a cause of allocation failure, but does not identify the original failing native allocation or reproduce its exception path. Passing repeated cases do not establish complete Small stability.",
+      "decision": "Retain qualified attention=false and allocator defaults. Arena/mmap controls do not provide robust headroom; Flash Attention trades memory for slower decoding and its interrupted partial batch lacks full accuracy qualification. No cap increase, promotion or new production tuning.",
+      "sources": [
+        "https://man7.org/linux/man-pages/man2/getrlimit.2.html",
+        "https://man7.org/linux/man-pages/man3/mallopt.3.html",
+        "https://github.com/ggml-org/whisper.cpp/blob/v1.8.3/src/whisper.cpp"
+      ],
+      "reproducer": "tools/release/probe_speech_memory.py --manifest <public-manifest> --benchmark <built-speech_benchmark> --model small-q5_1 --case ar_eg-1 --repeats 3 --allocator default",
+      "qualification_tool_default_run_log_sha256": "2499947ca7748b6ce1589d9a0bcb6e025e466373b3c42d37ae8656040b9a5aeb",
+      "tiny_same_case_observation": {
+        "probes": 1,
+        "log_sha256": "bd6e7861cb70f798f30b367225b6c9d8c3606f12aaf8d463836b60f383a70e3d",
+        "observation": {
+          "run": 0,
+          "case": "ar_eg-1",
+          "model": "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+          "exit": 0,
+          "last_phase": "final-auto-language",
+          "peak": {
+            "VmPeak": 858484,
+            "VmSize": 821116,
+            "VmHWM": 239912,
+            "VmRSS": 239912,
+            "Threads": 2
+          },
+          "phase_peaks": {
+            "loading": {
+              "VmPeak": 171712,
+              "VmSize": 171712,
+              "VmHWM": 168252,
+              "VmRSS": 168252,
+              "Threads": 1
+            },
+            "draft-fixed-language": {
+              "VmPeak": 858484,
+              "VmSize": 819316,
+              "VmHWM": 223868,
+              "VmRSS": 223868,
+              "Threads": 2
+            },
+            "final-fixed-language": {
+              "VmPeak": 858484,
+              "VmSize": 821116,
+              "VmHWM": 239912,
+              "VmRSS": 239912,
+              "Threads": 2
+            },
+            "final-auto-language": {
+              "VmPeak": 858484,
+              "VmSize": 821116,
+              "VmHWM": 239912,
+              "VmRSS": 239912,
+              "Threads": 2
+            }
+          },
+          "sample_interval_ms": 20,
+          "memory_limit_bytes": 1073741824,
+          "allocator": "default",
+          "memory_values_unit": "KiB except Threads"
+        },
+        "limits": "One resource observation only, not a complete memory-stability or older-device benchmark."
+      }
+    }
   }
 }
