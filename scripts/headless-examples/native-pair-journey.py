@@ -62,6 +62,7 @@ class Fixture:
                "XDG_RUNTIME_DIR": str(profile / "run"),
                "TILO_IDENTITY_ROOT": str(profile / "identity"),
                "TILO_IDENTITY_FILE_SECRETS": "1",
+               "TILO_SECRETS_DIR": str(profile / "state/secrets"),
                "CARGO_BUILD_JOBS": "4",
                "TILO_PEER_KEY_PATH": str(profile / "identity/device-private/keypair.bin"),
                "TILO_TEST_CONTROL": str(profile / "run/control.sock"),
@@ -250,8 +251,17 @@ class Fixture:
         channels = packaged.wait_for("two shared text channels", lambda: (
             channels if len(channels := text_channels(alice[0])) >= 2 else None), alice[1])
         first, second = channels[:2]
-        packaged.wait_for("native peer sees the same resources", lambda: (
-            set(channels).issubset(text_channels(bob[0]))), bob[1])
+        self.record("alice-new-channel-committed", channels=channels)
+        try:
+            packaged.wait_for("native peer sees the same resources", lambda: (
+                set(channels).issubset(text_channels(bob[0]))), bob[1])
+        except Exception:
+            for name, session in sessions.items():
+                (self.output / f"{name}-convergence-actions.json").write_text(json.dumps(
+                    [packaged.public_action_observation(row) for row in self.catalogue(session[0])], indent=2))
+                require_ok(call(session[0], {"op": "snapshot", "path": str(self.output / f"{name}-convergence.png")}))
+            raise
+        self.record("both-native-resource-catalogues-converged", channels=channels)
         self.act(alice, room, "open-channel", resource=first)
         self.act(bob, room, "open-channel", resource=second)
         require_ok(call(alice[0], {"op": "pointer_move", "x": 350, "y": 220}))
