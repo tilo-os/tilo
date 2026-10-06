@@ -606,12 +606,32 @@ impl PresenceCtx {
     /// An exact-locus label keeps the lifecycle visible when the generic rail
     /// is suppressed. Failure must not look like a successful pointer action.
     pub(crate) fn interaction_status_label(&self, interaction: &SemanticInteraction) -> String {
-        let actor = actor_label(
-            self,
-            &UserId(interaction.actor.id.clone()),
-            interaction.actor.kind == InteractionActorKind::Agent,
-        );
-        format!("{actor} · {}", phase_label(&interaction.phase))
+        let user = UserId(interaction.actor.id.clone());
+        // The adjacent shared identity mark already distinguishes an Agent.
+        // Do not append another role to names such as "Release Notes Agent".
+        let actor = self
+            .names
+            .get(&user)
+            .filter(|name| !name.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| {
+                crate::i18n::widget_format(
+                    if interaction.actor.kind == InteractionActorKind::Agent {
+                        "interaction-agent"
+                    } else {
+                        "interaction-collaborator"
+                    },
+                    &[],
+                )
+            });
+        crate::i18n::widget_format(
+            "interaction-action-status",
+            &[
+                ("name", actor.into()),
+                ("action", interaction.action.label.clone().into()),
+                ("phase", phase_label(&interaction.phase).into()),
+            ],
+        )
     }
 
     /// Lay out the generic app-level fallback without overlap. At most three
@@ -1079,22 +1099,29 @@ const fn phase_priority(phase: &InteractionPhase) -> u8 {
 
 fn phase_label(phase: &InteractionPhase) -> String {
     match phase {
-        InteractionPhase::Locating => "Inspecting".into(),
-        InteractionPhase::Applying => "Applying".into(),
+        InteractionPhase::Locating => crate::i18n::widget_format("interaction-inspecting", &[]),
+        InteractionPhase::Applying => crate::i18n::widget_format("interaction-applying", &[]),
         InteractionPhase::Progress {
             label,
             completed,
             total,
         } => match (completed, total) {
-            (Some(done), Some(total)) if *total > 0 => {
-                format!("{label} · {done}/{total}")
-            }
+            (Some(done), Some(total)) if *total > 0 => crate::i18n::widget_format(
+                "interaction-progress",
+                &[
+                    ("label", label.clone().into()),
+                    ("done", done.to_string().into()),
+                    ("total", total.to_string().into()),
+                ],
+            ),
             _ => label.clone(),
         },
-        InteractionPhase::Waiting { .. } => "Waiting".into(),
-        InteractionPhase::Committed => "Committed".into(),
-        InteractionPhase::Failed { .. } => "Failed".into(),
-        InteractionPhase::Cancelled { .. } => "Cancelled".into(),
+        InteractionPhase::Waiting { .. } => crate::i18n::widget_format("interaction-waiting", &[]),
+        InteractionPhase::Committed => crate::i18n::widget_format("interaction-committed", &[]),
+        InteractionPhase::Failed { .. } => crate::i18n::widget_format("interaction-failed", &[]),
+        InteractionPhase::Cancelled { .. } => {
+            crate::i18n::widget_format("interaction-cancelled", &[])
+        }
     }
 }
 
@@ -1904,6 +1931,23 @@ mod tests {
 
     #[test]
     fn interactions_are_labelled_and_narrated_as_actions() {
+        // The exact-control badge names the action and lifecycle first, so
+        // elision does not leave only an actor with an ambiguous "Applying".
+        {
+            let mut presence = PresenceCtx::empty();
+            presence
+                .names
+                .insert(UserId("quill".into()), "Release Notes Agent".into());
+            assert_eq!(
+                presence.interaction_status_label(&interaction(11, 1, InteractionPhase::Applying)),
+                "Rename (Applying) - Release Notes Agent"
+            );
+            presence.names.clear();
+            assert_eq!(
+                presence.interaction_status_label(&interaction(11, 1, InteractionPhase::Applying)),
+                "Rename (Applying) - Agent"
+            );
+        }
         // phase: agent_identity_is_textual_and_does_not_fall_back_to_a_raw_id
         {
             let user = UserId("agent:opaque-runtime-id".into());
