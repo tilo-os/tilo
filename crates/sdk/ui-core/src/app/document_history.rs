@@ -879,6 +879,10 @@ impl App {
     #[cfg(any(feature = "native", test))]
     pub(super) fn prepare_native_presentation(&mut self, chrome: crate::host_chrome::HostChrome) {
         if chrome.draws_in_window() {
+            if let Some(history) = &mut self.history {
+                history.remove_fallback_bar();
+                self.layout.structure_dirty = true;
+            }
             if self.native_document_chrome && self.history.is_none() {
                 self.enable_document_history_chrome();
             }
@@ -920,6 +924,10 @@ impl App {
     /// Enable shared standalone services presentation without wrapping the app
     /// root. Native windows enable this automatically; embedding remains opt-in.
     pub fn enable_document_history_chrome(&mut self) {
+        if let Some(history) = &mut self.history {
+            history.remove_fallback_bar();
+            self.layout.structure_dirty = true;
+        }
         // A registered framework owner already supplies its own shared History
         // surface and custody. The standalone adapter serves unregistered roots.
         if self.history.is_some()
