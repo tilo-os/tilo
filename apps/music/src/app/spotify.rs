@@ -78,7 +78,7 @@ impl MusicApp {
                     format!("music.spotify-remote:{index}"),
                     "music.spotify-remote-item",
                     format!(
-                        "{} · {}",
+                        "{}\n{}",
                         ui::i18n!("music-spotify-remote-queue"),
                         remote_item_label(item)
                     ),
@@ -771,7 +771,7 @@ pub(super) fn remote_item_label(item: &serde_json::Value) -> String {
     if artist.is_empty() {
         title.into()
     } else {
-        format!("{title} · {artist}")
+        format!("{title}\n{artist}")
     }
 }
 
