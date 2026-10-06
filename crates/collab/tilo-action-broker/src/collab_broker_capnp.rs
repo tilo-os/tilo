@@ -1098,6 +1098,26 @@ pub struct PublishedSurface {
     pub live: bool,
 }
 
+impl PublishedSurface {
+    /// Copy only the selected descriptor and its routing metadata.
+    fn action_projection(&self, resource: &str, action: &str) -> Option<(Self, PublishedAction)> {
+        let descriptor = self
+            .actions
+            .iter()
+            .find(|descriptor| descriptor.resource == resource && descriptor.action == action)?;
+        Some((
+            Self {
+                peer_id: self.peer_id,
+                app_id: self.app_id.clone(),
+                route: self.route.clone(),
+                actions: Vec::new(),
+                live: self.live,
+            },
+            descriptor.clone(),
+        ))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct InvocationEnvelope {
     id: u64,
@@ -3482,6 +3502,37 @@ impl CapnpBrokerState {
             ))
         }));
         result
+    }
+
+    /// Resolve against the current selected source, independently of the
+    /// asynchronous search snapshot. A live source shadows its retained
+    /// launchable catalogue even when it no longer offers the selected action.
+    pub fn published_action(
+        &self,
+        route: &CrdtRoute,
+        resource: &str,
+        action: &str,
+    ) -> Option<(PublishedSurface, PublishedAction)> {
+        let surfaces = self.surfaces.lock().ok()?;
+        let mut live_route = false;
+        for surface in surfaces
+            .values()
+            .filter(|surface| surface.app_id == route.app_id && surface.route == *route)
+        {
+            live_route = true;
+            if let Some(selected) = surface.action_projection(resource, action) {
+                return Some(selected);
+            }
+        }
+        let selected = if live_route {
+            None
+        } else {
+            self.launchable.action_for(route, resource, action)
+        };
+        // Keep live-source shadowing coherent with the archive lookup; a
+        // publisher must not install a live replacement between those reads.
+        drop(surfaces);
+        selected
     }
 
     /// Check one live action route without cloning the published catalogue.
@@ -13955,6 +14006,52 @@ pub mod tests {
         assert!(!subscribers.contains_key(&3));
         drop(subscribers);
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn exact_published_action_uses_current_live_routes_before_archived_descriptors() {
+        let broker = CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let state = broker.state();
+        let mut retained = catalogue_surface(7, "room", "notebook");
+        retained.actions[0].contract.discovery = tilo_actions::DiscoveryScope::Launchable;
+        state.launchable.retain(&retained);
+        let route = retained.route.clone();
+        let (archived, descriptor) = state.published_action(&route, "notebook", "open").unwrap();
+        assert!(!archived.live);
+        assert!(
+            archived.actions.is_empty(),
+            "lookup must not clone the source inventory"
+        );
+        assert_eq!(descriptor.resource, "notebook");
+
+        let mut empty = retained.clone();
+        empty.actions.clear();
+        state.replace_published_surfaces_for_test(vec![empty.clone()]);
+        assert!(state.published_action(&route, "notebook", "open").is_none());
+
+        let mut other_peer = retained;
+        other_peer.peer_id = 8;
+        other_peer.actions[0].action_label = "Current live action".into();
+        state.replace_published_surfaces_for_test(vec![empty, other_peer]);
+        let (live, descriptor) = state.published_action(&route, "notebook", "open").unwrap();
+        assert!(live.live);
+        assert_eq!(live.peer_id, 8);
+        assert!(live.actions.is_empty());
+        assert_eq!(descriptor.action_label, "Current live action");
+        let foreign = CrdtRoute::record(&route.app_id, "another-room", &route.record_id);
+        assert!(
+            state
+                .published_action(&foreign, "notebook", "open")
+                .is_none()
+        );
+        state.replace_published_surfaces_for_test(Vec::new());
+        assert!(
+            !state
+                .published_action(&route, "notebook", "open")
+                .unwrap()
+                .0
+                .live
+        );
     }
 
     #[allow(
