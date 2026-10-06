@@ -2,6 +2,7 @@
 //! Adapters from the shared broker to the native session's existing services.
 use super::state::WorkspaceAuthority as _;
 use super::state::WorkspaceTreeHandle;
+mod agent_message_execution;
 mod agent_messages;
 #[cfg(target_os = "linux")]
 pub(crate) mod agent_runtime;

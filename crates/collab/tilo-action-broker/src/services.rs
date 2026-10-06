@@ -6,10 +6,45 @@ pub use crate::collab_broker_capnp::workspace_messages::{
     AgentMessagePublisherInstallation, NativeMessageHostAttestations, NativeMessagePublication,
 };
 
+/// Host-private execution session backed by an actual managed-process proof.
+pub trait NativeAgentMessageSession: Send + Sync {
+    /// # Errors
+    /// Refuses retired current process or native owner custody.
+    fn pending(&self) -> Result<Vec<uuid::Uuid>, String>;
+    /// # Errors
+    /// Refuses changed original source, agent identity or launch custody.
+    fn deliver(&self, invocation: uuid::Uuid) -> Result<runtime_collab::AgentMessageInput, String>;
+    /// # Errors
+    /// Refuses changed delivery correlation, source or executing process.
+    fn accept(&self, invocation: uuid::Uuid, digest: [u8; 32]) -> Result<(), String>;
+    /// # Errors
+    /// Refuses unaccepted input, changed output or execution custody.
+    fn prepare_reply(
+        &self,
+        invocation: uuid::Uuid,
+        digest: [u8; 32],
+        text: &str,
+    ) -> Result<(), String>;
+    /// # Errors
+    /// Refuses absent prepared output, changed custody or failed publication.
+    fn commit_reply(&self, invocation: uuid::Uuid, digest: [u8; 32]) -> Result<(), String>;
+}
+
 /// Private native installation door. Applications never receive this service
 /// or a constructor for its broker-owned installation request.
 pub trait WorkspaceMessages: Send + Sync {
     fn requires_room(&self, room: &str) -> bool;
+
+    /// Install only from the broker's actual connected managed-process proof.
+    ///
+    /// # Errors
+    /// The current native owner or exact launch custody cannot be established.
+    fn open_agent_execution(
+        &self,
+        _process: launcher::managed::VerifiedManagedProcess,
+    ) -> Result<Arc<dyn NativeAgentMessageSession>, String> {
+        Err("native Agent Message execution is unavailable".into())
+    }
 
     /// Register the actual admitted worker, directory, and stable stream with
     /// the canonical owner. The returned lease is not serializable.

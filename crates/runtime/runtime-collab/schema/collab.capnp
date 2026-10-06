@@ -407,11 +407,21 @@ interface ChannelHandle {
   openDocumentContribution @57 (sourceToken :Data, totalBytes :UInt64)
       -> (writer :DocumentContributionWriter, reference :Data);
 
+  # Actual managed Agent private input, with no fallback to Chat access.
+  subscribeAgentMessages @58 () -> (stream :AgentMessageStream);
+  acceptAgentMessage @59 (invocation :Text, sourceDigest :Data) -> ();
+  prepareAgentMessageReply @60 (invocation :Text, sourceDigest :Data, text :Text) -> ();
+  commitAgentMessageReply @61 (invocation :Text, sourceDigest :Data) -> ();
+
 }
 
 # One bounded, contiguous upload. An unfinished writer's disposal releases
 # its reservation. Completed custody remains private until exact publication
 # settles, expires, or its original worker/directory/stream retires.
+interface AgentMessageStream {
+  read @0 () -> (inputJson :Text);
+}
+
 interface DocumentContributionWriter {
   write @0 (offset :UInt64, chunk :Data) -> ();
 }

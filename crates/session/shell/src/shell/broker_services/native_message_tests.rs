@@ -379,6 +379,32 @@ async fn actual_native_message_publisher_installs_and_stream_replacement_is_live
             let fixture = fixture();
             prepare_chat(&fixture);
             let (channel, rpc) = native_worker(&fixture).await.unwrap();
+            assert!(
+                channel.subscribe_agent_messages().await.is_err(),
+                "a genuine Chat publisher must not receive private managed Agent input"
+            );
+            let invocation = uuid::Uuid::new_v4().to_string();
+            assert!(
+                channel
+                    .accept_agent_message(&invocation, [1; 32])
+                    .await
+                    .is_err(),
+                "Chat authorship must not acknowledge Agent execution"
+            );
+            assert!(
+                channel
+                    .prepare_agent_message_reply(&invocation, [1; 32], "Unauthorized output")
+                    .await
+                    .is_err(),
+                "Chat authorship must not prepare or commit an Agent reply"
+            );
+            assert!(
+                channel
+                    .commit_agent_message_reply(&invocation, [1; 32])
+                    .await
+                    .is_err(),
+                "Chat authorship must not observe or commit private Agent reply custody"
+            );
             let stream = channel.subscribe_stable_invocations().await.unwrap();
             let replacement = channel.subscribe_stable_invocations().await.unwrap();
             drop(stream);

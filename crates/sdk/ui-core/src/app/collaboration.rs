@@ -821,6 +821,9 @@ impl App {
             | CollabEvent::EnrolledTask(_)
             | CollabEvent::EnrolledTaskReply { .. }
             | CollabEvent::EnrolledTaskDisconnected { .. }
+            | CollabEvent::AgentMessage(_)
+            | CollabEvent::AgentMessageReply { .. }
+            | CollabEvent::AgentMessageDisconnected { .. }
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::TaskRun(_)
             | CollabEvent::TaskActionInvocationResult { .. }

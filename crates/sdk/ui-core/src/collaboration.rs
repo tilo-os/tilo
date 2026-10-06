@@ -414,6 +414,27 @@ pub enum CollabRequest {
     SubscribeEnrolledTasks {
         request_id: u64,
     },
+    /// Private explicit inputs for this actual managed Agent, never Chat history.
+    SubscribeAgentMessages {
+        request_id: u64,
+    },
+    AcceptAgentMessage {
+        request_id: u64,
+        invocation: String,
+        source_digest: [u8; 32],
+    },
+    /// Retain immutable output, then commit its original receipt-scoped reply.
+    PrepareAgentMessageReply {
+        request_id: u64,
+        invocation: String,
+        source_digest: [u8; 32],
+        text: String,
+    },
+    CommitAgentMessageReply {
+        request_id: u64,
+        invocation: String,
+        source_digest: [u8; 32],
+    },
     AcceptEnrolledTask {
         request_id: u64,
         acceptance: runtime_collab::EnrolledTaskAcceptance,
@@ -792,6 +813,14 @@ pub enum CollabEvent {
     /// and contains a lease, not a caller-selected authority token.
     TaskRun(runtime_collab::TaskRunEnvelope),
     EnrolledTask(runtime_collab::EnrolledTaskEnvelope),
+    AgentMessage(runtime_collab::AgentMessageInput),
+    AgentMessageReply {
+        request_id: u64,
+        result: Result<(), String>,
+    },
+    AgentMessageDisconnected {
+        detail: String,
+    },
     EnrolledTaskReply {
         request_id: u64,
         result: Result<(), String>,

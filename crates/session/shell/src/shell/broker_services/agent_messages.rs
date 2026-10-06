@@ -30,6 +30,14 @@ fn original_attestations(
 }
 
 impl WorkspaceMessages for NativeOwnerCommitService {
+    fn open_agent_execution(
+        &self,
+        process: launcher::managed::VerifiedManagedProcess,
+    ) -> Result<std::sync::Arc<dyn tilo_action_broker::services::NativeAgentMessageSession>, String>
+    {
+        super::agent_message_execution::install(self, process)
+    }
+
     fn commit_message(
         &self,
         request: Arc<NativeMessagePublication>,

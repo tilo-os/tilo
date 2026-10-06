@@ -874,6 +874,17 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             json_bytes(confirmation, &mut meter);
         }
         CollabRequest::SubscribeEnrolledTasks { .. } => {}
+        CollabRequest::SubscribeAgentMessages { .. } => {}
+        CollabRequest::AcceptAgentMessage { invocation, .. }
+        | CollabRequest::CommitAgentMessageReply { invocation, .. } => {
+            meter.string_capacity(invocation)
+        }
+        CollabRequest::PrepareAgentMessageReply {
+            invocation, text, ..
+        } => {
+            meter.string_capacity(invocation);
+            meter.string_capacity(text);
+        }
         CollabRequest::AcceptEnrolledTask { acceptance, .. } => {
             serialized_bytes(acceptance, &mut meter)
         }
@@ -1288,6 +1299,29 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             }
         }
         CollabEvent::EnrolledTask(run) => serialized_bytes(run, &mut meter),
+        CollabEvent::AgentMessage(input) => {
+            for field in [
+                &input.invocation,
+                &input.room,
+                &input.agent,
+                &input.channel,
+                &input.request_row,
+                &input.text,
+                &input.launch,
+            ] {
+                meter.string_capacity(field);
+            }
+            if let Some((id, text)) = &input.prepared_reply {
+                meter.string_capacity(id);
+                meter.string_capacity(text);
+            }
+        }
+        CollabEvent::AgentMessageReply { result, .. } => {
+            if let Err(error) = result {
+                meter.string_capacity(error);
+            }
+        }
+        CollabEvent::AgentMessageDisconnected { detail } => meter.string_capacity(detail),
         CollabEvent::EnrolledTaskReply { result, .. } => {
             if let Err(error) = result {
                 meter.string_capacity(error);
@@ -5903,6 +5937,75 @@ async fn dispatch_sdk_request(
                 });
             let _ = inbound_tx
                 .send_durable(CollabEvent::InstalledApplicationLaunchResult { request_id, result });
+        }
+        CollabRequest::SubscribeAgentMessages { request_id } => {
+            let result = route.channel.subscribe_agent_messages().await;
+            let reply = match result {
+                Ok(stream) => {
+                    let tx = inbound_tx.clone();
+                    tokio::task::spawn_local(async move {
+                        loop {
+                            match stream.read().await {
+                                Ok(input) => {
+                                    if !tx.send_durable(CollabEvent::AgentMessage(input)) {
+                                        break;
+                                    }
+                                }
+                                Err(error) => {
+                                    let _ =
+                                        tx.send_durable(CollabEvent::AgentMessageDisconnected {
+                                            detail: error.to_string(),
+                                        });
+                                    break;
+                                }
+                            }
+                        }
+                    });
+                    Ok(())
+                }
+                Err(error) => Err(error.to_string()),
+            };
+            let _ = inbound_tx.send_durable(CollabEvent::AgentMessageReply {
+                request_id,
+                result: reply,
+            });
+        }
+        CollabRequest::AcceptAgentMessage {
+            request_id,
+            invocation,
+            source_digest,
+        } => {
+            let result = route
+                .channel
+                .accept_agent_message(&invocation, source_digest)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = inbound_tx.send_durable(CollabEvent::AgentMessageReply { request_id, result });
+        }
+        CollabRequest::PrepareAgentMessageReply {
+            request_id,
+            invocation,
+            source_digest,
+            text,
+        } => {
+            let result = route
+                .channel
+                .prepare_agent_message_reply(&invocation, source_digest, &text)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = inbound_tx.send_durable(CollabEvent::AgentMessageReply { request_id, result });
+        }
+        CollabRequest::CommitAgentMessageReply {
+            request_id,
+            invocation,
+            source_digest,
+        } => {
+            let result = route
+                .channel
+                .commit_agent_message_reply(&invocation, source_digest)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = inbound_tx.send_durable(CollabEvent::AgentMessageReply { request_id, result });
         }
         CollabRequest::SubscribeEnrolledTasks { request_id } => {
             let result = route

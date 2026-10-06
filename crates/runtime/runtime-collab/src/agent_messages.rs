@@ -63,6 +63,124 @@ fn canonical_uuid(value: &str) -> bool {
         && !value.bytes().any(|byte| byte.is_ascii_uppercase())
 }
 
+#[cfg(feature = "client")]
+#[derive(Clone)]
+pub struct AgentMessageStream {
+    inner: std::rc::Rc<crate::collab_capnp::agent_message_stream::Client>,
+}
+
+#[cfg(feature = "client")]
+impl AgentMessageStream {
+    /// Read one explicit input from this managed Agent's private stream.
+    ///
+    /// # Errors
+    /// Refuses malformed, oversized input or unavailable original custody.
+    pub async fn read(&self) -> Result<AgentMessageInput, runtime_portal::NotAvailable> {
+        let response = self.inner.read_request().send().promise.await?;
+        let json =
+            response.get()?.get_input_json()?.to_str().map_err(|_| {
+                capnp::Error::failed("invalid managed Message input encoding".into())
+            })?;
+        if json.len() > AgentMessageInput::MAX_JSON_BYTES {
+            return Err(capnp::Error::failed("managed Message input too large".into()).into());
+        }
+        let input: AgentMessageInput = serde_json::from_str(json)
+            .map_err(|_| capnp::Error::failed("invalid managed Message input".into()))?;
+        input.validate().map_err(capnp::Error::failed)?;
+        Ok(input)
+    }
+}
+
+#[cfg(feature = "client")]
+impl crate::ChannelHandle {
+    /// Subscribe to only explicitly addressed input for this actual Agent.
+    ///
+    /// # Errors
+    /// Missing managed/native custody or unsupported protocol never falls back.
+    pub async fn subscribe_agent_messages(
+        &self,
+    ) -> Result<AgentMessageStream, runtime_portal::NotAvailable> {
+        let response = self
+            .inner
+            .subscribe_agent_messages_request()
+            .send()
+            .promise
+            .await?;
+        Ok(AgentMessageStream {
+            inner: std::rc::Rc::new(response.get()?.get_stream()?),
+        })
+    }
+
+    /// Acknowledge exactly the original explicit input, not a Chat replica.
+    ///
+    /// # Errors
+    /// Refuses changed correlation, source, process or unavailable service.
+    pub async fn accept_agent_message(
+        &self,
+        invocation: &str,
+        digest: [u8; 32],
+    ) -> Result<(), runtime_portal::NotAvailable> {
+        validate_request(invocation, digest)?;
+        let mut request = self.inner.accept_agent_message_request();
+        request.get().set_invocation(invocation);
+        request.get().set_source_digest(&digest);
+        request.send().promise.await?;
+        Ok(())
+    }
+
+    /// Retain immutable output. Keep this acknowledgement separate from Commit
+    /// so a lost Commit acknowledgement can observe the original terminal receipt.
+    ///
+    /// # Errors
+    /// Invalid text/correlation, changed custody, or uncertain publication.
+    pub async fn prepare_agent_message_reply(
+        &self,
+        invocation: &str,
+        digest: [u8; 32],
+        text: &str,
+    ) -> Result<(), runtime_portal::NotAvailable> {
+        validate_request(invocation, digest)?;
+        if text.trim().is_empty() || text.len() > 64 * 1024 {
+            return Err(capnp::Error::failed("invalid managed Message reply".into()).into());
+        }
+        let mut prepare = self.inner.prepare_agent_message_reply_request();
+        prepare.get().set_invocation(invocation);
+        prepare.get().set_source_digest(&digest);
+        prepare.get().set_text(text);
+        prepare.send().promise.await?;
+        Ok(())
+    }
+
+    /// Commit the originally prepared reply, or observe its historical receipt.
+    /// This never replaces output or appends a second reply on exact replay.
+    ///
+    /// # Errors
+    /// Refuses changed source or execution custody and unprepared output.
+    pub async fn commit_agent_message_reply(
+        &self,
+        invocation: &str,
+        digest: [u8; 32],
+    ) -> Result<(), runtime_portal::NotAvailable> {
+        validate_request(invocation, digest)?;
+        let mut commit = self.inner.commit_agent_message_reply_request();
+        commit.get().set_invocation(invocation);
+        commit.get().set_source_digest(&digest);
+        commit.send().promise.await?;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "client")]
+fn validate_request(
+    invocation: &str,
+    digest: [u8; 32],
+) -> Result<(), runtime_portal::NotAvailable> {
+    if !canonical_uuid(invocation) || digest == [0; 32] {
+        return Err(capnp::Error::failed("invalid managed Message correlation".into()).into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

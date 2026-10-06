@@ -13,6 +13,7 @@
 //! exhausted-but-empty batch triggers no fallback push, callers repeat the
 //! fetch instead.
 
+mod agent_messages;
 mod execution_activity;
 #[cfg(test)]
 mod execution_activity_tests;
@@ -6256,6 +6257,9 @@ impl CapnpBrokerState {
             | CollabEvent::EnrolledTask(_)
             | CollabEvent::EnrolledTaskReply { .. }
             | CollabEvent::EnrolledTaskDisconnected { .. }
+            | CollabEvent::AgentMessage(_)
+            | CollabEvent::AgentMessageReply { .. }
+            | CollabEvent::AgentMessageDisconnected { .. }
             | CollabEvent::TaskRun(_)
             | CollabEvent::TaskActionInvocationResult { .. }
             | CollabEvent::TaskRunCancellation { .. }
@@ -7299,6 +7303,66 @@ impl blob_stream::Server for BlobStreamServer {
 }
 
 impl channel_handle::Server for CapnpChannelHandle {
+    fn subscribe_agent_messages(
+        self: Rc<Self>,
+        _params: channel_handle::SubscribeAgentMessagesParams,
+        results: channel_handle::SubscribeAgentMessagesResults,
+    ) -> Promise<(), capnp::Error> {
+        agent_messages::subscribe(self, results)
+    }
+
+    fn accept_agent_message(
+        self: Rc<Self>,
+        params: channel_handle::AcceptAgentMessageParams,
+        _results: channel_handle::AcceptAgentMessageResults,
+    ) -> Promise<(), capnp::Error> {
+        Promise::from_future(async move {
+            let p = params.get()?;
+            let (id, digest) =
+                agent_messages::correlation(p.get_invocation()?, p.get_source_digest()?)?;
+            self.agent_message_session()?
+                .accept(id, digest)
+                .map_err(capnp::Error::failed)
+        })
+    }
+
+    fn prepare_agent_message_reply(
+        self: Rc<Self>,
+        params: channel_handle::PrepareAgentMessageReplyParams,
+        _results: channel_handle::PrepareAgentMessageReplyResults,
+    ) -> Promise<(), capnp::Error> {
+        Promise::from_future(async move {
+            let p = params.get()?;
+            let (id, digest) =
+                agent_messages::correlation(p.get_invocation()?, p.get_source_digest()?)?;
+            let text = p
+                .get_text()?
+                .to_str()
+                .map_err(|_| capnp::Error::failed("invalid Message reply".into()))?;
+            if text.trim().is_empty() || text.len() > 64 * 1024 {
+                return Err(capnp::Error::failed("invalid Message reply".into()));
+            }
+            self.agent_message_session()?
+                .prepare_reply(id, digest, text)
+                .map_err(capnp::Error::failed)
+        })
+    }
+
+    fn commit_agent_message_reply(
+        self: Rc<Self>,
+        params: channel_handle::CommitAgentMessageReplyParams,
+        _results: channel_handle::CommitAgentMessageReplyResults,
+    ) -> Promise<(), capnp::Error> {
+        Promise::from_future(async move {
+            let p = params.get()?;
+            let (id, digest) =
+                agent_messages::correlation(p.get_invocation()?, p.get_source_digest()?)?;
+            self.agent_message_session()?
+                .commit_reply(id, digest)
+                .map_err(capnp::Error::failed)
+        })
+    }
+
     fn offer_blob(
         self: Rc<Self>,
         params: channel_handle::OfferBlobParams,
