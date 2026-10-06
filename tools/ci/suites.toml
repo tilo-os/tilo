@@ -602,6 +602,8 @@ inputs = [
   "Cargo.toml", "crates/sdk/", "crates/platform/", "vendor/",
   # Canonical worker builder sources and the real packaging manifest fixture.
   "crates/browser/tilo-browser-compute/", "apps/calculator/tilo-app.toml",
+  # The resource-discovery regression reads Music and its normal model dependencies.
+  "apps/music/", "crates/doc/tilo-doc/", "crates/system/accounts/",
 ]
 readers = [
   "crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/portability.rs",
@@ -610,6 +612,7 @@ readers = [
   # Android packaging copies the standalone font catalog out of the SDK.
   "crates/dev/tilo-app-cli/src/android.rs",
   "crates/dev/tilo-app-cli/src/targets/web.rs",
+  "crates/dev/tilo-app-cli/src/resource_kinds.rs",
 ]
 
 [[cargo]]
