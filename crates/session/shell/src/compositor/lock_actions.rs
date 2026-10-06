@@ -63,7 +63,7 @@ pub(super) fn dispatch(
     lock: &mut LockController,
 ) -> Option<Response> {
     match command {
-        Command::ActionsEnumerate { query } if locked => Some(Response::Answer(
+        Command::ActionsEnumerate { query, .. } if locked => Some(Response::Answer(
             console_control::enumerate(PROVIDER, &resources(locked, lock), query),
         )),
         Command::ActionsInvoke {
