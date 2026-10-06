@@ -221,6 +221,9 @@ pub struct Look {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Inspect {
+    /// Include literal fill, stroke and gradient colours with mark counts,
+    /// scoped by region/layer, independent of the newest-mark limit.
+    pub palette: Option<bool>,
     /// Only marks touching `[x, y, width, height]`.
     pub region: Option<[f64; 4]>,
     /// Only marks on this layer.
@@ -908,7 +911,7 @@ const DECLARED: [Declared; 9] = [
     Declared {
         id: "inspect",
         label: "Inspect marks",
-        description: "List the layers and the newest marks (id, kind, name, layer, bounds [x,y,w,h], colours), optionally only in a region or on one layer; measure weighs marks' ink as the eye does, to balance icons and type.",
+        description: "List layers and newest marks (ids, bounds, colours), scoped by region/layer. palette: true also counts literal fill, stroke and gradient colours across all matching marks, independent of limit (first 32 colours, palette_colours is the total). Named pigments come from media. measure weighs ink to balance icons and type.",
         params: params_of::<Inspect>,
         view: true,
     },
