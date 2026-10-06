@@ -1798,4 +1798,151 @@ mod owner_commit_tests {
         let prepared = pending.prepared_effect.lock().unwrap();
         serde_json::to_vec(&prepared.as_ref().unwrap().request).unwrap()
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn prepared_effect_owner_accept_then_restart_reconciles_without_action_delivery() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let root = canonical_tempdir();
+                let mut f = owner_fixture(root.path());
+                let caller = effect_owner_caller(&f);
+                let (key, request, prepared) = prepare_owner_effect(&f, &caller);
+                let state = f.state.clone();
+                let original = request.clone();
+                let submit = tokio::task::spawn_local(async move {
+                    state.publisher.commit_owner(original, None).await
+                });
+                let commit = tilo_test_env::within("effect owner submission", f.mailbox.recv())
+                    .await
+                    .unwrap();
+                commit.apply(&mut f.owner).unwrap();
+                submit.await.unwrap().unwrap();
+                let before = f.owner.status();
+                // Simulate the exact crash gap: owner durable, broker terminal not yet durable.
+                let journal = f
+                    .state
+                    .journal
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .take()
+                    .unwrap();
+                drop(journal);
+                *f.state.journal.lock().unwrap() = Ok(Some(
+                    InvocationJournal::open(&root.path().join("journal")).unwrap(),
+                ));
+                let record = f
+                    .state
+                    .verified_invocation_status(&caller, key.invocation)
+                    .unwrap()
+                    .unwrap();
+                assert!(record.uncertain);
+                assert_eq!(record.prepared_effect.as_ref(), Some(&prepared));
+                let state = f.state.clone();
+                let retained_caller = caller.clone();
+                let reconcile = tokio::task::spawn_local(async move {
+                    state
+                        .reconcile_prepared_effect(record, || {
+                            state.verified_invocation_status(&retained_caller, key.invocation)?;
+                            Ok(())
+                        })
+                        .await
+                });
+                let commit =
+                    tilo_test_env::within("exact prepared reconciliation", f.mailbox.recv())
+                        .await
+                        .unwrap();
+                commit.apply(&mut f.owner).unwrap();
+                let terminal = reconcile.await.unwrap().unwrap();
+                assert!(!terminal.uncertain);
+                assert_eq!(terminal.update, prepared.update);
+                assert_eq!(terminal.prepared_effect, Some(prepared));
+                assert_eq!(
+                    f.owner.status(),
+                    before,
+                    "exact retry must not create new owner history"
+                );
+                assert!(
+                    f.state.pending_invocations.lock().unwrap().is_empty(),
+                    "no action redispatch"
+                );
+                let journal = f
+                    .state
+                    .journal
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .take()
+                    .unwrap();
+                drop(journal);
+                let journal = InvocationJournal::open(&root.path().join("journal")).unwrap();
+                assert_eq!(journal.lookup(&terminal.key).unwrap().unwrap(), terminal);
+            })
+            .await;
+    }
+
+    fn effect_owner_caller(f: &OwnerFixture) -> VerifiedActionCaller {
+        let certificate = f.owner.peer().authority();
+        let presentation = runtime_collab::CertifiedJoinIdentity {
+            workspace_id: f.route.cluster_id.clone(),
+            device_certificate: serde_json::to_vec(certificate).unwrap(),
+            proof: f
+                .owner
+                .signing_key()
+                .sign(&runtime_identity::collaboration_join_signing_bytes(
+                    &f.route.cluster_id,
+                ))
+                .to_bytes()
+                .to_vec(),
+        }
+        .encode()
+        .unwrap();
+        f.state
+            .verify_action_caller(&f.route.cluster_id, &presentation)
+            .unwrap()
+    }
+
+    fn prepare_owner_effect(
+        f: &OwnerFixture,
+        caller: &VerifiedActionCaller,
+    ) -> (
+        InvocationKey,
+        tilo_peer_state::owner_commit::OwnerCommitRequest,
+        invocation_journal::PreparedEffect,
+    ) {
+        let key = f
+            .state
+            .caller_key(caller, tilo_actions::InvocationId::new())
+            .unwrap();
+        let actor = caller.admitted.broker_actor().id;
+        let context = tilo_actions::ActionContext::default();
+        let contract = tilo_actions::ActionContract::default();
+        let intent = serde_json::json!({"operation_kind":tilo_actions::OperationKind::Effect,"context":context,
+            "actor":actor,"contract":contract,"app_id":f.route.app_id,"action":"open"});
+        let update = tilo_actions::InvocationUpdate::Succeeded {
+            invocation: key.invocation,
+            output: tilo_actions::ActionOutput::default(),
+        };
+        let mut effect = crate::policy::redacted_effect_receipt(
+            key.invocation,
+            &actor,
+            context,
+            tilo_actions::EffectReceiptStatus::Succeeded,
+        );
+        effect.completed_at = 100;
+        let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+            room: f.route.cluster_id.clone(),
+            operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+                invocation: key.invocation.0,
+                redacted: serde_json::to_vec(&effect).unwrap(),
+            },
+        };
+        let mut guard = f.state.journal.lock().unwrap();
+        let journal = guard.as_mut().unwrap().as_mut().unwrap();
+        journal.admit(key.clone(), intent, 1).unwrap();
+        let prepared = journal.prepare_effect(&key, update, &request).unwrap();
+        (key, request, prepared)
+    }
 }
