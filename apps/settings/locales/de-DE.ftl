@@ -1791,3 +1791,7 @@ input-map-level = Modifikatorebene
 
 input-map-live-description = Solange Einstellungen den Fokus hat, folgt diese Karte dem aktuellen Tastaturlayout und den Modifikatoren.
 input-map-preview-description = Vorschau des gewählten Layouts. Wähle eine Ebene oder untersuche eine Taste, um weitere Zeichen zu sehen.
+
+input-map-inspect-key = Physische Taste untersuchen
+input-map-inspection-unavailable = Die aktuellen Zeichen dieser physischen Taste sind nicht verfügbar. Aktiviere das Einstellungsfenster oder wähle eine Layout-Vorschau.
+input-map-current-symbols = Aktuelle Zeichen

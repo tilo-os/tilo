@@ -527,4 +527,4 @@ pub use control_custody::{
 };
 mod focus_navigation;
 
-pub use widget::{KeyboardMap, KeyboardMapInput, KeyboardMapKey};
+pub use widget::{KeyboardMap, KeyboardMapInput, KeyboardMapKey, KeyboardMapSelection};
