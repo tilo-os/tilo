@@ -2591,8 +2591,7 @@ impl ChatApp {
             && self.editing.is_none();
         let draft = self.composer_main.value();
         let input = if self.direct_agent.is_some() {
-            let wanted_input_h =
-                self.composer_field_height(tr, &draft, self.composer_text_width(rect.width()));
+            let wanted_input_h = self.composer_input_height(tr, &draft, rect.width());
             let controls_h = (self.composer_height(tr) - wanted_input_h).max(0.0);
             let input_h = wanted_input_h.min((rect.height() - controls_h).max(0.0));
             let input = Rect::new(rect.x0, rect.y1 - input_h, rect.x1, rect.y1);
@@ -2909,6 +2908,44 @@ impl ChatApp {
     /// The band is sized from the measured `draft` (one line when empty) and
     /// centred on the field, so a short draft lines up with the buttons; a
     /// long draft fills the field, which itself grows with the text.
+    fn composer_editor_rect(&self, rect: Rect) -> Rect {
+        if self.direct_agent.is_some() {
+            Rect::new(
+                rect.x0,
+                rect.y0,
+                rect.x1,
+                (rect.y1 - self.chrome.composer_min_h).max(rect.y0),
+            )
+        } else {
+            rect
+        }
+    }
+
+    fn composer_text_rect(
+        &self,
+        field: Rect,
+        ordinary_left: f64,
+        emoji_left: f64,
+        inset: f64,
+    ) -> Rect {
+        let editor = self.composer_editor_rect(field);
+        if self.direct_agent.is_some() {
+            Rect::new(
+                editor.x0 + self.chrome.composer_text_inset,
+                editor.y0 + inset,
+                editor.x1 - self.chrome.composer_text_inset,
+                editor.y1 - inset,
+            )
+        } else {
+            Rect::new(
+                ordinary_left,
+                field.y0 + inset,
+                emoji_left,
+                field.y1 - inset,
+            )
+        }
+    }
+
     pub(crate) fn draw_input_box(
         &self,
         paint: PaintCtx<'_>,
@@ -2927,7 +2964,10 @@ impl ChatApp {
         let sp = &theme.tokens.spacing;
         let btn = ButtonFace::height(ControlSize::Regular, theme);
         let inset = f64::from(sp.s1);
-        // Buttons sit on the last line of a growing draft.
+        let labelled_send = self.direct_agent.is_some();
+        // Ordinary actions share the last draft line. Direct-Agent actions
+        // use a separate row so their localized labels never consume the
+        // editor's width at narrow or enlarged metrics.
         let cy = rect.y1 - inset - btn / 2.0;
         paint_field(scene, tf, theme, rect, focused);
         if interactive {
@@ -2955,7 +2995,6 @@ impl ChatApp {
             crate::app::AgentComposerIntent::Queue => crate::i18n::t("chat-agent-send-queue"),
             crate::app::AgentComposerIntent::Steer => crate::i18n::t("chat-agent-send-steer"),
         };
-        let labelled_send = self.direct_agent.is_some();
         let send_face = if labelled_send {
             ButtonFace::new(Rect::ZERO, &send_label).icon(Icon::Send)
         } else {
@@ -3016,12 +3055,7 @@ impl ChatApp {
             );
         }
 
-        let full = Rect::new(
-            tx,
-            rect.y0 + inset,
-            emoji.x0 - f64::from(sp.s1),
-            rect.y1 - inset,
-        );
+        let full = self.composer_text_rect(rect, tx, emoji.x0 - f64::from(sp.s1), inset);
         let wrap_w = full.width().max(f64::from(sp.s8)) as f32;
         let probe = if draft.is_empty() { "Ag" } else { draft };
         let content_h = f64::from(tr.measure_style(probe, Some(wrap_w), &self.chrome.body).1);

@@ -3318,14 +3318,30 @@ impl ChatApp {
         (f64::from(h) + pad).clamp(chrome.composer_min_h, chrome.composer_max_h)
     }
     /// The width the composer's draft wraps at inside a field `field_w`
-    /// wide: the field less its buttons (attach, emoji, send).
+    /// wide. Direct-Agent actions live on their own row, so enlarged labels
+    /// never squeeze the editor or disagree with the width used to paint it.
     pub(crate) fn composer_text_width(&self, field_w: f64) -> f64 {
-        // A direct-Agent field replaces the attachment button with a labelled
-        // Send button; it does not add another three button columns. Keeping
-        // the same four-control budget as the ordinary composer matches the
-        // geometry painted by `draw_input_box` and avoids wrapping every word
-        // onto its own line at large text sizes.
-        field_w - 4.0 * self.chrome.composer_min_h
+        if self.direct_agent.is_some() {
+            field_w - 2.0 * self.chrome.composer_text_inset
+        } else {
+            field_w - 4.0 * self.chrome.composer_min_h
+        }
+    }
+
+    /// Total field height for the draft plus any separate action row.
+    pub(crate) fn composer_input_height(
+        &self,
+        tr: &mut TextRenderer,
+        text: &str,
+        field_w: f64,
+    ) -> f64 {
+        let draft = self.composer_field_height(tr, text, self.composer_text_width(field_w));
+        draft
+            + if self.direct_agent.is_some() {
+                self.chrome.composer_min_h
+            } else {
+                0.0
+            }
     }
 
     pub(crate) fn direct_agent_status_lines(
@@ -3375,8 +3391,7 @@ impl ChatApp {
 
     fn composer_height_with_notice(&self, tr: &mut TextRenderer, hero_notice: bool) -> f64 {
         let field_w = self.center_right() - self.center_left() - 2.0 * self.chrome.gutter;
-        let text_w = self.composer_text_width(field_w);
-        let field = self.composer_field_height(tr, &self.draft_main, text_w);
+        let field = self.composer_input_height(tr, &self.draft_main, field_w);
         if self.direct_agent.is_none() {
             return field;
         }
@@ -3478,8 +3493,7 @@ impl ChatApp {
     pub(crate) fn thread_composer_rect(&self, tr: &mut TextRenderer, panel: Rect) -> Rect {
         let pad = self.chrome.composer_pad;
         let field_w = panel.width() - 2.0 * pad;
-        let text_w = self.composer_text_width(field_w);
-        let h = self.composer_field_height(tr, &self.composer_thread.value(), text_w);
+        let h = self.composer_input_height(tr, &self.composer_thread.value(), field_w);
         Rect::new(
             panel.x0 + pad,
             panel.y1 - h - pad,

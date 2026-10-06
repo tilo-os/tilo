@@ -66,6 +66,8 @@ pub(crate) struct Chrome {
     pub composer_max_h: f64,
     /// Space around the composer field.
     pub composer_pad: f64,
+    /// Horizontal inset of the draft editor inside its field.
+    pub composer_text_inset: f64,
     /// One direct-Agent task/mode row and the gap between adjacent rows.
     pub agent_control_h: f64,
     pub agent_control_gap: f64,
@@ -101,6 +103,7 @@ impl Chrome {
             composer_min_h,
             composer_max_h: composer_min_h + 6.0 * body_line,
             composer_pad: f64::from(sp.s4),
+            composer_text_inset: f64::from(sp.s3),
             agent_control_h: ui::widget::SegmentedFace::height(ControlSize::Small, theme),
             agent_control_gap: f64::from(sp.s2),
             body,

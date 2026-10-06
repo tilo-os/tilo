@@ -3495,6 +3495,20 @@ mod tests {
             assert_hit_in_view(&app, "header Float", |hit| matches!(hit, Hit::AgentWindow));
             assert_hit_in_view(&app, "composer editor", |hit| matches!(hit, Hit::FocusMain));
             assert_hit_in_view(&app, "Send message", |hit| matches!(hit, Hit::Send));
+            let editor = app.composer_main.rect();
+            let send = app
+                .hits
+                .iter()
+                .find_map(|(rect, hit)| matches!(hit, Hit::Send).then_some(*rect))
+                .expect("Send message hit");
+            assert!(
+                editor.y1 <= send.y0,
+                "the full-width editor {editor:?} stays above the action row {send:?}"
+            );
+            assert!(
+                editor.width() > composer.width() * 0.75,
+                "the editor keeps the composer's width at {width}x{height}: {editor:?} in {composer:?}"
+            );
         }
     }
 
