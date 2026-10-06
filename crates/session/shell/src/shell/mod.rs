@@ -87,6 +87,7 @@ pub mod input_policy;
 pub mod install_card;
 pub mod keyboard_shortcuts;
 pub mod launch_gate;
+pub(crate) mod launch_readiness;
 pub mod launcher;
 pub mod live_activities;
 pub mod live_presence;
