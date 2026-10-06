@@ -178,22 +178,32 @@ impl Keycaps {
         let lower = name.trim().to_ascii_lowercase();
         let canonical = match lower.as_str() {
             "esc" => "escape",
-            "return" => "enter",
-            "del" => "delete",
-            "ins" => "insert",
-            "arrowleft" => "left",
-            "arrowright" => "right",
-            "arrowup" => "up",
-            "arrowdown" => "down",
-            "page_up" => "pageup",
-            "page_down" => "pagedown",
+            "return" | "kp_enter" => "enter",
+            "del" | "kp_delete" => "delete",
+            "ins" | "kp_insert" => "insert",
+            "arrowleft" | "kp_left" => "left",
+            "arrowright" | "kp_right" => "right",
+            "arrowup" | "kp_up" => "up",
+            "arrowdown" | "kp_down" => "down",
+            "page_up" | "kp_prior" | "kp_page_up" | "prior" => "pageup",
+            "page_down" | "kp_next" | "kp_page_down" | "next" => "pagedown",
             "print" => "printscreen",
+            "kp_home" => "home",
+            "kp_end" => "end",
+            "kp_begin" | "kp_beg" => "clear",
+            "kp_add" => "+",
+            "kp_subtract" => "−",
+            "kp_multiply" => "×",
+            "kp_divide" => "÷",
+            "num_lock" => "numlock",
+            "scroll_lock" => "scrolllock",
+            "sys_req" => "sysreq",
             other => other,
         };
         if let Some(label) = self.named(canonical) {
             return label.to_owned();
         }
-        let mut chars = name.chars();
+        let mut chars = canonical.chars();
         match (chars.next(), chars.next()) {
             (Some(character), None) => {
                 let mut upper = character.to_uppercase();
@@ -324,6 +334,10 @@ fn english_key(name: &str) -> Option<&'static str> {
         "pagedown" => "Page Down",
         "printscreen" => "Print Screen",
         "numlock" => "Num Lock",
+        "scrolllock" => "Scroll Lock",
+        "pause" => "Pause",
+        "sysreq" => "SysRq",
+        "clear" => "Clear",
         "capslock" => "Caps Lock",
         "left" => "Left",
         "right" => "Right",
@@ -358,6 +372,10 @@ fn german_key(name: &str) -> Option<&'static str> {
         "pagedown" => "Bild↓",
         "printscreen" => "Druck",
         "numlock" => "Num",
+        "scrolllock" => "Rollen",
+        "pause" => "Pause",
+        "sysreq" => "S-Abf",
+        "clear" => "Löschen",
         "capslock" => "Feststell",
         other => return arrow_key(other),
     })
@@ -377,6 +395,10 @@ fn french_key(name: &str) -> Option<&'static str> {
         "pagedown" => "Pg suiv",
         "printscreen" => "Impr écran",
         "numlock" => "Verr num",
+        "scrolllock" => "Arrêt défil",
+        "pause" => "Pause",
+        "sysreq" => "Syst",
+        "clear" => "Effacer",
         "capslock" => "Verr maj",
         other => return arrow_key(other),
     })
@@ -395,6 +417,10 @@ fn spanish_key(name: &str) -> Option<&'static str> {
         "pagedown" => "Av Pág",
         "printscreen" => "Impr Pant",
         "numlock" => "Bloq Num",
+        "scrolllock" => "Bloq Despl",
+        "pause" => "Pausa",
+        "sysreq" => "Pet Sis",
+        "clear" => "Borrar",
         "capslock" => "Bloq Mayús",
         other => return arrow_key(other),
     })
@@ -412,6 +438,10 @@ fn italian_key(name: &str) -> Option<&'static str> {
         "pagedown" => "Pag↓",
         "printscreen" => "Stamp",
         "numlock" => "Bloc Num",
+        "scrolllock" => "Bloc Scorr",
+        "pause" => "Pausa",
+        "sysreq" => "R Sist",
+        "clear" => "Cancella",
         "capslock" => "Bloc Maiusc",
         other => return arrow_key(other),
     })
@@ -575,6 +605,26 @@ mod tests {
                 family: KeyboardFamily::Apple
             }
         );
+    }
+
+    #[test]
+    fn native_keypad_and_control_names_use_human_legends() {
+        let de = Keycaps::from_xkb("de", "");
+        for (name, label) in [
+            ("KP_Insert", "Einfg"),
+            ("KP_Delete", "Entf"),
+            ("KP_Home", "Pos1"),
+            ("KP_Beg", "Löschen"),
+            ("KP_Prior", "Bild↑"),
+            ("Pause", "Pause"),
+            ("Sys_Req", "S-Abf"),
+            ("Scroll_Lock", "Rollen"),
+            ("KP_Divide", "÷"),
+        ] {
+            assert_eq!(de.key(name), label);
+        }
+        assert_eq!(Keycaps::US.key("Pause"), "Pause");
+        assert_eq!(Keycaps::US.key("KP_Delete"), "Delete");
     }
 
     #[test]

@@ -184,10 +184,7 @@ fn named_legend(caps: ui::Keycaps, name: &str) -> String {
         "Caps_Lock" => caps.key("capslock"),
         "ISO_Left_Tab" => caps.key("tab"),
         "KP_Enter" => caps.key("enter"),
-        "Num_Lock" => "⇭".into(),
-        "Scroll_Lock" => "⇳".into(),
-        "Print" => "⎙".into(),
-        "Pause" => "⏸".into(),
+        "Print" => caps.key("printscreen"),
         _ => caps.key(name),
     }
 }
