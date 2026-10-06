@@ -12,8 +12,8 @@ use ui::{
 };
 use vello::{
     Scene,
-    kurbo::{Affine, Point, Rect},
-    peniko::Color,
+    kurbo::{Affine, BezPath, Cap, Point, Rect, Stroke},
+    peniko::{BlendMode, Color, Fill},
 };
 
 /// Widest the keyboard content grows; wider surfaces centre it.
@@ -124,6 +124,38 @@ pub(crate) struct KeyboardPresentation<'a> {
     pub cursor_mode: bool,
     /// The debug overlay of effective hit areas (empty when off).
     pub hit_cells: &'a [HitCell],
+    /// The in-flight solo gesture; empty for taps and stateless presentation.
+    pub swipe_path: &'a [Point],
+}
+
+/// Paint transient gesture feedback from the current theme, clipped to keys.
+fn draw_swipe_trail(ctx: &mut PaintCtx<'_>, points: &[Point], bounds: Rect) {
+    let Some(&first) = points.first() else { return };
+    if points.len() < 2 {
+        return;
+    }
+    let mut path = BezPath::new();
+    path.move_to(first);
+    for &point in points.iter().skip(1) {
+        path.line_to(point);
+    }
+    let width = f64::from(ctx.theme.tokens.spacing.s1);
+    let color = ctx.theme.tokens.colors.text_primary;
+    ctx.scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        ctx.transform,
+        &bounds,
+    );
+    ctx.scene.stroke(
+        &Stroke::new(width).with_caps(Cap::Round),
+        ctx.transform,
+        color,
+        None,
+        &path,
+    );
+    ctx.scene.pop_layer();
 }
 
 /// The accented variants offered by a long press on a letter, with the one
@@ -331,6 +363,15 @@ impl KeyboardPresentation<'_> {
                 self.key_geom,
                 layout,
             );
+        }
+
+        if let Some(bounds) = self
+            .key_geom
+            .iter()
+            .map(|(_, rect)| *rect)
+            .reduce(|a, b| a.union(b))
+        {
+            draw_swipe_trail(&mut ctx, self.swipe_path, bounds);
         }
 
         // Floating feedback goes last so it overlaps the rows above.

@@ -21,17 +21,29 @@ struct Keyboard {
 
 impl Keyboard {
     fn new() -> Self {
+        Self::with_layout("qwerty", VIEWPORT)
+    }
+
+    fn with_layout(layout: &str, viewport: (u32, u32)) -> Self {
         let typed = Rc::new(RefCell::new(TextMirror::new(4096)));
         let sink = typed.clone();
         let widget = OskWidget::new()
             .with_swipe_model(Box::new(GeometricSwipeModel::english()))
+            .with_active_layout(layout)
             .on_output(move |output| sink.borrow_mut().apply(&output));
-        let driver = Driver::new(State::new(), Box::new(widget), VIEWPORT);
+        let driver = Driver::for_root(State::new(), widget, viewport, ui::Theme::dark());
         Self { driver, typed }
     }
 
     fn text(&self) -> String {
         self.typed.borrow().text().to_string()
+    }
+
+    fn transition(&mut self, transition: osk::imclient::ImTransition) {
+        self.driver
+            .root_mut::<OskWidget>()
+            .follow_input_method(transition);
+        self.driver.recompose().unwrap();
     }
 
     fn down(&mut self, finger: u64, at: Point) {
@@ -50,7 +62,10 @@ impl Keyboard {
 /// Centre of the lower-case letter key `c`, from the same pure geometry the
 /// keyboard lays its keys out with.
 fn key(c: char) -> Point {
-    let layout = KeyboardLayout::qwerty();
+    key_in(&KeyboardLayout::qwerty(), VIEWPORT, c)
+}
+
+fn key_in(layout: &KeyboardLayout, viewport: (u32, u32), c: char) -> Point {
     let rows = u32::try_from(layout.row_count()).expect("a handful of rows");
     let spacing = Spacing::BASE;
     let metrics = Metrics::BASE;
@@ -59,10 +74,10 @@ fn key(c: char) -> Point {
     let area = Rect::new(
         gutter,
         top,
-        f64::from(VIEWPORT.0) - gutter,
+        f64::from(viewport.0) - gutter,
         top + f64::from(rows) * f64::from(key_row_height(&metrics)),
     );
-    osk::key_rects(&layout, area, ShiftState::Off)
+    osk::key_rects(layout, area, ShiftState::Off)
         .into_iter()
         .find(|(id, _)| {
             layout
@@ -173,4 +188,74 @@ fn a_cancelled_contact_types_nothing() {
     kb.down(1, q);
     kb.driver.touch(1, TouchPhase::Cancelled, q.x, q.y);
     assert_eq!(kb.text(), "");
+}
+
+#[test]
+fn a_field_change_cancels_contacts_before_their_release() {
+    let mut kb = Keyboard::new();
+    kb.down(1, key('q'));
+    kb.transition(osk::imclient::ImTransition {
+        field_changed: true,
+        ..Default::default()
+    });
+    kb.up(1, key('q'));
+    assert_eq!(kb.text(), "", "an old finger must not type in a new field");
+    kb.down(2, key('e'));
+    kb.up(2, key('e'));
+    assert_eq!(kb.text().to_lowercase(), "e", "fresh contacts still type");
+}
+
+#[test]
+fn rotation_cancels_a_contact_in_the_old_geometry() {
+    let mut kb = Keyboard::new();
+    kb.down(1, key('q'));
+    kb.driver.resize((390, 720)).unwrap();
+    kb.up(1, key('q'));
+    assert_eq!(kb.text(), "", "rotation must not reinterpret a held key");
+}
+
+#[test]
+fn hiding_cancels_old_contacts() {
+    let mut kb = Keyboard::new();
+    kb.down(1, key('e'));
+    kb.transition(osk::imclient::ImTransition {
+        visibility_changed: Some(false),
+        ..Default::default()
+    });
+    kb.transition(osk::imclient::ImTransition {
+        visibility_changed: Some(true),
+        ..Default::default()
+    });
+    kb.up(1, key('e'));
+    assert_eq!(kb.text(), "");
+}
+
+#[test]
+fn scaled_touch_coordinates_type_once_at_the_drawn_key() {
+    for scale in [1.0, 1.25, 1.5, 2.0] {
+        let mut kb = Keyboard::new();
+        kb.driver.set_input_scale(scale).unwrap();
+        kb.down(1, key('q'));
+        kb.up(1, key('q'));
+        assert_eq!(kb.text().to_lowercase(), "q", "scale {scale}");
+    }
+}
+
+#[test]
+fn english_and_french_touch_typing_follow_phone_and_tablet_geometry() {
+    for (name, layout, word) in [
+        ("qwerty", KeyboardLayout::qwerty(), "keyboard"),
+        ("azerty", KeyboardLayout::azerty(), "bonjour"),
+    ] {
+        for viewport in [(390, 720), (720, 390), (960, 600)] {
+            let mut kb = Keyboard::with_layout(name, viewport);
+            for (index, ch) in word.chars().enumerate() {
+                let at = key_in(&layout, viewport, ch);
+                let finger = index as u64;
+                kb.down(finger, at);
+                kb.up(finger, at);
+            }
+            assert_eq!(kb.text().to_lowercase(), word, "{name} at {viewport:?}");
+        }
+    }
 }
