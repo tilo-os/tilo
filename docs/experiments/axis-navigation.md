@@ -40,7 +40,9 @@ the shell-action tests. Native `FrameBuilder` regressions also dispatch AccessKi
 tab activation, asserting selection survives model resync, an already-selected
 tab focuses its group, and accessibility focus follows the tab bar. A mixed-scale
 case activates a tab on the other display and gathers only that display's lane.
-Semantic activation commits through the same writeback boundary as pointer input;
+The redesigned tab bar's separate media controls keep their media intent without
+moving spatial/native focus or requesting gather. Tab-selection activation alone
+uses the focus-gather path. Semantic activation commits through the same writeback boundary as pointer input;
 it cannot be overwritten by the next model sync.
 
 Offscreen journeys exercise keyboard and repeated wheel navigation, native

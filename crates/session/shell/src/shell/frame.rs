@@ -3411,6 +3411,9 @@ impl FrameBuilder {
             // before the next model sync can restore the previous selection.
             self.host.flush_active_tab_writeback();
             let activated_tab_bar = matches!(action, Action::Activate)
+                && semantic_target
+                    .as_deref()
+                    .is_some_and(|target| target.starts_with("tab:"))
                 && unsafe { (*widget).accessibility() }
                     .is_some_and(|node| node.role == ui::a11y::Role::TabBar);
             if matches!(action, Action::Focus) || activated_tab_bar {
@@ -4983,6 +4986,56 @@ mod tests {
             .find(|(id, _)| *id == update.focus)
             .unwrap();
         assert_eq!(focused.value(), Some("G3-B"));
+    }
+
+    #[test]
+    fn axis_a11y_media_control_preserves_spatial_and_native_focus() {
+        let (tree, strip, groups, tabs) = axis_a11y_tree();
+        let mut fb = FrameBuilder::with_tree(tree, (1280, 800));
+        fb.with_chrome(|chrome| chrome.set_axis_navigation_enabled(true));
+        fb.host_mut().run_requested_shortcut_actions();
+        fb.paint_settled();
+        let mut focus = None;
+        fb.focus_first(&mut focus);
+        let before = focus;
+        fb.host_mut()
+            .group_row_mut_for_tests(strip)
+            .unwrap()
+            .groups
+            .iter_mut()
+            .find(|group| group.id == groups[4])
+            .unwrap()
+            .bar_mut_for_tests()
+            .set_mark(tabs[4][0], Some(ui::widget::TabMark::Playing));
+        let update = fb.build_a11y_tree_update(focus, 1.0);
+        let (target, node) =
+            exported_node_named(&update, "Mute G4-A").expect("new media control exported");
+        assert_eq!(node.role(), ui::accesskit::Role::Button);
+        let mut doc = AutoCommit::new();
+        assert!(fb.dispatch_a11y_action(
+            target,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &mut focus
+        ));
+        assert_eq!(
+            fb.chrome().tree().desktop.active_group.get(&strip),
+            Some(&groups[0])
+        );
+        assert_eq!(focus, before, "mute is a media action, not tab selection");
+        assert!(!fb.chrome.borrow_mut().take_axis_gather_request());
+        let intent = fb
+            .host_mut()
+            .group_row_mut_for_tests(strip)
+            .unwrap()
+            .groups
+            .iter_mut()
+            .find(|group| group.id == groups[4])
+            .unwrap()
+            .bar_mut_for_tests()
+            .take_mark_click();
+        assert_eq!(intent, Some((tabs[4][0], ui::widget::TabMark::Playing)));
     }
 
     #[test]
