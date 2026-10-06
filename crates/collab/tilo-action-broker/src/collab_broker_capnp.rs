@@ -2677,6 +2677,15 @@ struct PresenceSub {
 struct ContextSub {
     peer_id: u64,
     tx: mpsc::UnboundedSender<ContextEnvelope>,
+    /// Authenticated native membership projection and the exact admission it
+    /// came from. Incremental label/presence frames never replace it.
+    native: Option<NativeContext>,
+}
+
+#[derive(Clone)]
+struct NativeContext {
+    admitted: AdmittedJoinIdentity,
+    roster: Vec<ui::collaboration::Collaborator>,
 }
 
 /// Per-channel subscriber registry, keyed by `join_channel(id)`. A
@@ -5705,15 +5714,13 @@ impl CapnpBrokerState {
         self.publish_action_catalogue();
     }
 
-    /// `joinChannel(channelId, identity)` carries no announced handle,
-    /// so the room lookup is the only answer for who to stamp traffic as.
+    /// Stable authenticated actor id for native presence and interactions.
+    /// Display handles remain presentation only.
     fn participant_id(admitted: &AdmittedJoinIdentity) -> String {
-        admitted.agent_id.clone().unwrap_or_else(|| {
-            admitted
-                .display_handle
-                .clone()
-                .unwrap_or_else(|| admitted.principal_id.clone())
-        })
+        admitted.agent_id.as_ref().map_or_else(
+            || admitted.principal_id.clone(),
+            |agent| format!("agent:{agent}"),
+        )
     }
 
     fn revalidate_admission(
@@ -6138,6 +6145,12 @@ impl CapnpBrokerState {
                 if s.peer_id == except {
                     return true;
                 }
+                // App-authored context is not complete membership authority.
+                // Native receivers get owner-backed add/remove refreshes from
+                // `refresh_workspace_context_services` instead.
+                if s.native.is_some() {
+                    return true;
+                }
                 s.tx.send(env.clone()).is_ok()
             });
         }
@@ -6220,15 +6233,209 @@ impl CapnpBrokerState {
         &self,
         channel_id: &str,
         peer_id: u64,
+        native: Option<NativeContext>,
     ) -> mpsc::UnboundedReceiver<ContextEnvelope> {
         let (tx, rx) = mpsc::unbounded_channel();
+        if let Some(native) = native.as_ref() {
+            let _ = tx.send(ContextEnvelope::Snapshot {
+                collaborators: native.roster.clone(),
+                permissions: Vec::new(),
+            });
+        }
         if let Ok(mut m) = self.channels.lock() {
             m.entry(channel_id.to_owned())
                 .or_insert_with(ChannelSubscribers::default)
                 .context
-                .push(ContextSub { peer_id, tx });
+                .push(ContextSub {
+                    peer_id,
+                    tx,
+                    native,
+                });
         }
         rx
+    }
+
+    /// Complete room membership for one retained native receiver. This is
+    /// membership metadata, not online presence: it mints no pointer, caret,
+    /// arrival frame, or transport permission.
+    fn native_membership_roster(
+        &self,
+        route: &CrdtRoute,
+        admitted: &AdmittedJoinIdentity,
+    ) -> Result<Vec<ui::collaboration::Collaborator>, String> {
+        let now = self.policy_now_ns()? / 1_000_000_000;
+        let tree = self
+            .membership
+            .as_ref()
+            .ok_or("native context has no membership authority")?
+            .snapshot()?;
+        let workspace = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == route.cluster_id)
+            .ok_or("native context workspace is unavailable")?;
+        let mut agents = workspace.agent_members_in_room_at(&route.cluster_id, now);
+        agents.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut people = workspace.roster_in_room_at(&route.cluster_id, now);
+        people.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut collaborators =
+            Vec::with_capacity(agents.len().saturating_add(people.len()).saturating_add(1));
+        if admitted.agent_id.is_none() {
+            collaborators.push(ui::collaboration::Collaborator {
+                id: Self::participant_id(admitted),
+                name: admitted
+                    .display_handle
+                    .clone()
+                    .unwrap_or_else(|| admitted.principal_id.clone()),
+                colour: None,
+                is_agent: false,
+                is_self: true,
+            });
+        }
+        for (person, _) in people {
+            if admitted.agent_id.is_none() && person == admitted.principal_id {
+                continue;
+            }
+            // Presence may supply a label, but only owner-backed membership
+            // supplies the identity. An offline member remains a member.
+            let name = workspace
+                .collaborators
+                .iter()
+                .find(|row| row.id == person)
+                .map_or_else(|| person.clone(), |row| row.name.clone());
+            collaborators.push(ui::collaboration::Collaborator {
+                id: person,
+                name,
+                colour: None,
+                is_agent: false,
+                is_self: false,
+            });
+        }
+        for (agent, _) in agents {
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::RemoveAgent {
+                agent: agent.clone(),
+            }
+            .validate()
+            .map_err(|_| "native context contains a noncanonical agent identity")?;
+            let is_self = admitted.agent_id.as_deref() == Some(agent.as_str());
+            collaborators.push(ui::collaboration::Collaborator {
+                id: format!("agent:{agent}"),
+                name: agent,
+                colour: None,
+                is_agent: true,
+                is_self,
+            });
+        }
+        if collaborators.iter().filter(|row| row.is_self).count() != 1 {
+            return Err("native context has no exact authenticated self member".into());
+        }
+        Ok(collaborators)
+    }
+
+    fn native_roster_for_subscriber(
+        &self,
+        route: &CrdtRoute,
+        admitted: &AdmittedJoinIdentity,
+    ) -> Result<Option<NativeContext>, String> {
+        let Some(owner) = self.services.workspace_memberships.as_ref() else {
+            return Ok(None);
+        };
+        if !owner.requires_room(&route.cluster_id) {
+            return Ok(None);
+        }
+        let current = self
+            .revalidate_admission(route, admitted)
+            .map_err(|error| error.to_string())?;
+        let roster = self.native_membership_roster(route, &current)?;
+        Ok(Some(NativeContext {
+            admitted: current,
+            roster,
+        }))
+    }
+
+    fn refresh_workspace_context_services(&self) -> Result<(), String> {
+        fn same_roster(
+            left: &[ui::collaboration::Collaborator],
+            right: &[ui::collaboration::Collaborator],
+        ) -> bool {
+            left.len() == right.len()
+                && left.iter().zip(right).all(|(left, right)| {
+                    left.id == right.id
+                        && left.name == right.name
+                        && left.packed_colour() == right.packed_colour()
+                        && left.is_agent == right.is_agent
+                        && left.is_self == right.is_self
+                })
+        }
+
+        let targets = self
+            .channels
+            .lock()
+            .map_err(|_| "native context subscriptions unavailable")?
+            .iter()
+            .flat_map(|(channel, subscribers)| {
+                subscribers
+                    .context
+                    .iter()
+                    .filter_map(|subscriber| {
+                        subscriber.native.as_ref().map(|native| {
+                            (channel.clone(), subscriber.peer_id, native.admitted.clone())
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        for (channel, peer_id, admitted) in targets {
+            let route = CrdtRoute::from_channel_key(&channel);
+            let Ok(current) = self.revalidate_admission(&route, &admitted) else {
+                let mut channels = self
+                    .channels
+                    .lock()
+                    .map_err(|_| "native context subscriptions unavailable")?;
+                if let Some(subscribers) = channels.get_mut(&channel) {
+                    subscribers.context.retain(|subscriber| {
+                        subscriber.peer_id != peer_id
+                            || subscriber
+                                .native
+                                .as_ref()
+                                .is_none_or(|native| native.admitted != admitted)
+                    });
+                }
+                drop(channels);
+                continue;
+            };
+            let roster = self.native_membership_roster(&route, &current)?;
+            let mut channels = self
+                .channels
+                .lock()
+                .map_err(|_| "native context subscriptions unavailable")?;
+            if let Some(subscribers) = channels.get_mut(&channel) {
+                subscribers.context.retain_mut(|subscriber| {
+                    let Some(native) = subscriber.native.as_mut() else {
+                        return true;
+                    };
+                    if subscriber.peer_id != peer_id || native.admitted != admitted {
+                        return true;
+                    }
+                    if same_roster(&native.roster, &roster) {
+                        return true;
+                    }
+                    if subscriber
+                        .tx
+                        .send(ContextEnvelope::Snapshot {
+                            collaborators: roster.clone(),
+                            permissions: Vec::new(),
+                        })
+                        .is_err()
+                    {
+                        return false;
+                    }
+                    native.roster.clone_from(&roster);
+                    true
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Ask one local subscriber of every record channel in `cluster_id` for
@@ -7628,13 +7835,28 @@ impl channel_handle::Server for CapnpChannelHandle {
         {
             return Promise::err(error);
         }
-        let rx = self.state.subscribe_context(&self.channel_id, self.peer_id);
+        let route = self.route();
+        let native = match self
+            .state
+            .native_roster_for_subscriber(&route, &self.verified_identity)
+        {
+            Ok(roster) => roster,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
+        };
+        let rx = self
+            .state
+            .subscribe_context(&self.channel_id, self.peer_id, native.clone());
         let client: context_stream::Client = capnp_rpc::new_client(ContextStreamServer {
             host_guard: HostWorkerReadGuard::for_channel(
                 &self.state,
                 self.peer_id,
                 &self.verified_identity,
             ),
+            native_guard: native.map(|native| NativeContextReadGuard {
+                state: self.state.clone(),
+                route,
+                identity: native.admitted,
+            }),
             rx: Rc::new(AsyncMutex::new(rx)),
         });
         results.get().set_stream(client);
@@ -10308,7 +10530,36 @@ impl presence_stream::Server for PresenceStreamServer {
 
 struct ContextStreamServer {
     host_guard: Option<HostWorkerReadGuard>,
+    native_guard: Option<NativeContextReadGuard>,
     rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<ContextEnvelope>>>,
+}
+
+struct NativeContextReadGuard {
+    state: Arc<CapnpBrokerState>,
+    route: CrdtRoute,
+    identity: AdmittedJoinIdentity,
+}
+
+impl NativeContextReadGuard {
+    fn check(guard: Option<&Self>) -> Result<(), capnp::Error> {
+        if let Some(guard) = guard {
+            if !guard
+                .state
+                .services
+                .workspace_memberships
+                .as_ref()
+                .is_some_and(|owner| owner.requires_room(&guard.route.cluster_id))
+            {
+                return Err(capnp::Error::failed(
+                    "native context owner is no longer current".into(),
+                ));
+            }
+            guard
+                .state
+                .revalidate_admission(&guard.route, &guard.identity)?;
+        }
+        Ok(())
+    }
 }
 
 impl context_stream::Server for ContextStreamServer {
@@ -10320,6 +10571,7 @@ impl context_stream::Server for ContextStreamServer {
         let rx = self.rx.clone();
         Promise::from_future(async move {
             HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+            NativeContextReadGuard::check(self.native_guard.as_ref())?;
             let mut guard = rx.lock().await;
             let Some(env) = guard.recv().await else {
                 return Err(capnp::Error::disconnected(
@@ -10328,6 +10580,7 @@ impl context_stream::Server for ContextStreamServer {
             };
             drop(guard);
             HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+            NativeContextReadGuard::check(self.native_guard.as_ref())?;
             let mut ctx = results.get().init_ctx();
             let (collaborators, permissions) = match env {
                 ContextEnvelope::Snapshot {
@@ -11001,6 +11254,9 @@ async fn serve_broker_thread(
         if std::time::Instant::now() >= next_membership_refresh {
             if let Err(error) = state.refresh_workspace_membership_services() {
                 tracing::debug!(%error, "native membership surface could not be refreshed");
+            }
+            if let Err(error) = state.refresh_workspace_context_services() {
+                tracing::debug!(%error, "native membership context could not be refreshed");
             }
             next_membership_refresh = std::time::Instant::now()
                 .checked_add(Duration::from_secs(1))
@@ -13602,6 +13858,243 @@ pub mod tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_context_projects_canonical_agents_and_withdraws_exactly() {
+        struct NativeRoom(String);
+        impl crate::services::WorkspaceMemberships for NativeRoom {
+            fn requires_room(&self, room: &str) -> bool {
+                room == self.0
+            }
+
+            fn execute(
+                &self,
+                _: tilo_peer_state::owner_commit::OwnerCommitRequest,
+            ) -> tilo_peer_state::owner_commit::CommitFuture {
+                Box::pin(async { Err("roster fixture never commits owner state".into()) })
+            }
+        }
+
+        let root = SigningKey::from_bytes(&[46; 32]);
+        let person = principal_id_for_root(root.verifying_key().to_bytes());
+        let tide = "tide";
+        let reed = "reed";
+        let mut workspace =
+            crate::test_support::Workspace::new(crate::test_support::WorkspaceId(46), "Roster");
+        workspace.owner = Some(person.clone());
+        let room = workspace.room.to_string();
+        let other_person = "other-person";
+        let person_membership = workspace.grant_capability(CapOverride::membership(
+            Subject::person(other_person),
+            room.clone(),
+            Verb::Read,
+        ));
+        workspace.grant_capability(CapOverride::membership(
+            Subject::person("person-in-other-room"),
+            uuid::Uuid::new_v4().to_string(),
+            Verb::Read,
+        ));
+        let collision = workspace.grant_capability(CapOverride::membership(
+            Subject::agent(&person),
+            room.clone(),
+            Verb::Read,
+        ));
+        workspace.grant_capability(CapOverride::membership(
+            Subject::agent(tide),
+            room.clone(),
+            Verb::Read,
+        ));
+        workspace.grant_capability(CapOverride::membership(
+            Subject::agent("wrong-room"),
+            uuid::Uuid::new_v4().to_string(),
+            Verb::Read,
+        ));
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let route = CrdtRoute::record("so.tilo.chat", &room, "main");
+        let mut admitted = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
+        admitted.display_handle = Some(tide.into());
+        assert_eq!(CapnpBrokerState::participant_id(&admitted), person);
+        let membership = tree.shared();
+        let (state, _bridge_rx) = CapnpBrokerState::new_configured(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(membership.authority()),
+            None,
+            None,
+            HostServices {
+                workspace_memberships: Some(Arc::new(NativeRoom(room.clone()))),
+                ..Default::default()
+            },
+        );
+
+        let roster = state.native_membership_roster(&route, &admitted).unwrap();
+        let legacy_route =
+            CrdtRoute::record("so.tilo.chat", uuid::Uuid::new_v4().to_string(), "main");
+        assert!(
+            state
+                .native_roster_for_subscriber(&legacy_route, &admitted)
+                .unwrap()
+                .is_none(),
+            "a room the native owner did not select keeps ordinary app context"
+        );
+        assert_eq!(roster.iter().filter(|row| row.is_self).count(), 1);
+        assert!(roster.iter().any(|row| row.id == person && !row.is_agent));
+        assert!(roster.iter().all(|row| row.id != "person-in-other-room"));
+        assert!(
+            roster
+                .iter()
+                .any(|row| { row.id == other_person && !row.is_agent && !row.is_self })
+        );
+        assert!(
+            roster
+                .iter()
+                .any(|row| { row.id == format!("agent:{person}") && row.is_agent && !row.is_self })
+        );
+        assert!(
+            roster
+                .iter()
+                .any(|row| row.id == format!("agent:{tide}") && row.is_agent)
+        );
+        assert!(
+            roster.iter().all(|row| row.id != "agent:wrong-room"),
+            "a grant for another room is not native membership here"
+        );
+        assert!(
+            state
+                .native_membership_roster(
+                    &CrdtRoute::record("so.tilo.chat", uuid::Uuid::new_v4().to_string(), "main",),
+                    &admitted,
+                )
+                .is_err()
+        );
+
+        let channel = route.channel_key();
+        let native = state
+            .native_roster_for_subscriber(&route, &admitted)
+            .unwrap()
+            .expect("the actual owner selects this native room");
+        assert!(state.host_workers.lock().unwrap().is_empty());
+        let mut parallel = state.subscribe_context(&channel, 46, Some(native.clone()));
+        assert!(matches!(
+            parallel.try_recv(),
+            Ok(ContextEnvelope::Snapshot { .. })
+        ));
+        let mut stream = state.subscribe_context(&channel, 46, Some(native.clone()));
+        let mut ordinary = state.subscribe_context(&channel, 47, None);
+        assert!(matches!(
+            stream.try_recv(),
+            Ok(ContextEnvelope::Snapshot { .. })
+        ));
+        let forged = ui::collaboration::Collaborator {
+            id: "agent:forged".into(),
+            name: "forged".into(),
+            colour: None,
+            is_agent: true,
+            is_self: false,
+        };
+        {
+            let mut channels = state.channels.lock().unwrap();
+            CapnpBrokerState::fanout_context(
+                channels.values_mut(),
+                u64::MAX,
+                std::slice::from_ref(&forged),
+                &[],
+            );
+        }
+        assert!(
+            stream.try_recv().is_err(),
+            "app context must not replace an authenticated native roster"
+        );
+        assert!(
+            parallel.try_recv().is_err(),
+            "app context must not replace a parallel authenticated native roster"
+        );
+        let ContextEnvelope::Snapshot { collaborators, .. } = ordinary.try_recv().unwrap() else {
+            panic!("ordinary context subscribers still receive app context");
+        };
+        assert_eq!(collaborators.len(), 1);
+        assert_eq!(collaborators[0].id, forged.id);
+        assert_eq!(collaborators[0].name, forged.name);
+        assert!(collaborators[0].is_agent);
+        assert!(!collaborators[0].is_self);
+        assert!(membership.write().workspaces[0].revoke_capability(&collision));
+        assert!(membership.write().workspaces[0].revoke_capability(&person_membership));
+        state.refresh_workspace_context_services().unwrap();
+        let ContextEnvelope::Snapshot { collaborators, .. } = stream.try_recv().unwrap() else {
+            panic!("membership refresh must be a complete snapshot");
+        };
+        assert!(
+            collaborators
+                .iter()
+                .all(|row| row.id != format!("agent:{person}"))
+        );
+        assert!(collaborators.iter().all(|row| row.id != other_person));
+        assert!(
+            collaborators
+                .iter()
+                .any(|row| row.id == person && row.is_self)
+        );
+        let ContextEnvelope::Snapshot { collaborators, .. } = parallel.try_recv().unwrap() else {
+            panic!("every mounted root must receive membership removal");
+        };
+        assert!(
+            collaborators
+                .iter()
+                .all(|row| row.id != format!("agent:{person}"))
+        );
+        membership.write().workspaces[0].grant_capability(CapOverride::membership(
+            Subject::agent(reed),
+            room,
+            Verb::Read,
+        ));
+        state.refresh_workspace_context_services().unwrap();
+        let ContextEnvelope::Snapshot { collaborators, .. } = stream.try_recv().unwrap() else {
+            panic!("membership addition must be a complete snapshot");
+        };
+        assert!(
+            collaborators
+                .iter()
+                .any(|row| row.id == format!("agent:{reed}") && row.is_agent)
+        );
+        let ContextEnvelope::Snapshot { collaborators, .. } = parallel.try_recv().unwrap() else {
+            panic!("every mounted root must receive membership addition");
+        };
+        assert!(
+            collaborators
+                .iter()
+                .any(|row| row.id == "agent:reed" && row.is_agent)
+        );
+
+        let mut queued = state.subscribe_context(&channel, 48, Some(native.clone()));
+        assert!(matches!(
+            queued.try_recv(),
+            Ok(ContextEnvelope::Snapshot { .. })
+        ));
+        let client: context_stream::Client = capnp_rpc::new_client(ContextStreamServer {
+            host_guard: None,
+            native_guard: Some(NativeContextReadGuard {
+                state: state.clone(),
+                route: route.clone(),
+                identity: native.admitted,
+            }),
+            rx: Rc::new(AsyncMutex::new(queued)),
+        });
+        let mut pending = Box::pin(client.read_request().send().promise);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1), &mut pending)
+                .await
+                .is_err(),
+            "the actual stream read must be waiting before revocation"
+        );
+        membership.write().workspaces[0].owner = None;
+        state.refresh_workspace_context_services().unwrap();
+        let Err(error) = pending.await else {
+            panic!("revocation must terminate an already waiting native read");
+        };
+        assert!(error.to_string().contains("context stream fanout closed"));
+    }
+
     #[test]
     fn non_owner_cannot_claim_an_agent_principal() {
         let member = SigningKey::from_bytes(&[45; 32]);
@@ -14027,7 +14520,7 @@ pub mod tests {
             .zip(2_u64..)
             .map(|(route, peer)| {
                 state.ensure_channel(&route.channel_key());
-                state.subscribe_context(&route.channel_key(), peer)
+                state.subscribe_context(&route.channel_key(), peer, None)
             })
             .collect();
 
@@ -14957,9 +15450,12 @@ pub mod tests {
         let room = uuid::Uuid::new_v4().to_string();
         let key =
             |app: &str, record: &str| CrdtRoute::record(app, room.clone(), record).channel_key();
-        let mut addressed = state.subscribe_context(&key("dev.tilo.notes", "continuation:5"), 7);
-        let mut sibling = state.subscribe_context(&key("dev.tilo.notes", "continuation:6"), 8);
-        let mut other_app = state.subscribe_context(&key("dev.tilo.sheets", "continuation:5"), 9);
+        let mut addressed =
+            state.subscribe_context(&key("dev.tilo.notes", "continuation:5"), 7, None);
+        let mut sibling =
+            state.subscribe_context(&key("dev.tilo.notes", "continuation:6"), 8, None);
+        let mut other_app =
+            state.subscribe_context(&key("dev.tilo.sheets", "continuation:5"), 9, None);
         let request = ui::collaboration::handoff::HandoffRequest::Checkpoint { token: 3 };
         // The route SessionFollowDispatcher::request_handoff addresses.
         state.fanout_to_route(
@@ -14992,9 +15488,9 @@ pub mod tests {
             None,
         );
         let channel = "dev.tilo.notes#room:test#record:daily";
-        let mut first = state.subscribe_context(channel, 7);
-        let mut second = state.subscribe_context(channel, 9);
-        let _requester = state.subscribe_context(channel, 12);
+        let mut first = state.subscribe_context(channel, 7, None);
+        let mut second = state.subscribe_context(channel, 9, None);
+        let _requester = state.subscribe_context(channel, 12, None);
 
         assert!(state.request_document_snapshot(channel, 12));
         assert!(matches!(
@@ -15003,7 +15499,7 @@ pub mod tests {
         ));
         assert!(second.try_recv().is_err(), "only one holder may respond");
         let requester_only_channel = "dev.tilo.notes#room:test#record:empty";
-        let mut requester_only = state.subscribe_context(requester_only_channel, 12);
+        let mut requester_only = state.subscribe_context(requester_only_channel, 12, None);
         assert!(
             !state.request_document_snapshot(requester_only_channel, 12),
             "the requester cannot answer from its own empty state"
