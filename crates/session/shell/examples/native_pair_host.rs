@@ -5,12 +5,13 @@
 use ed25519_dalek::SigningKey;
 use getrandom::SysRng;
 use rand_core::UnwrapErr;
-use std::{path::Path, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
+use tilo_agent_participant::{AppCatalogue, ModelChoice};
 use tilo_identity_host::{device_fleet::DeviceFleetStore, provisioning};
 use tilo_relay::{
     config::RelayConfig,
     daemon::{Relay, RelayIdentity},
-    rooms::{IssueInvitationRequest, RemoveMemberRequest},
+    rooms::{GrantAppAuthorshipRequest, IssueInvitationRequest, RemoveMemberRequest},
 };
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, RevocationList};
 use tokio::io::{AsyncBufReadExt as _, BufReader};
@@ -62,6 +63,19 @@ async fn invitations(
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let rooms = relay.rooms().ok_or("host room service absent")?;
     let room = rooms.create("Private native pair").await?;
+    rooms
+        .grant_app_authorship(
+            &room.room,
+            host,
+            GrantAppAuthorshipRequest {
+                request_id: [4; 32],
+                app: "so.tilo.chat".into(),
+            },
+        )
+        .await?;
+    rooms
+        .prepare_application(&room.room, host, &chat_catalogue(), "so.tilo.chat")
+        .await?;
     let expires = tilo_clock::unix_now_ns()
         .checked_add(600_000_000_000)
         .ok_or("expiry overflow")?;
@@ -94,10 +108,15 @@ async fn invitations(
     )
 }
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the owned relay remains live throughout the journey and its consuming async shutdown"
-)]
+fn chat_catalogue() -> AppCatalogue {
+    AppCatalogue::new(
+        AppCatalogue::native()
+            .iter()
+            .filter(|app| app.app_id == "so.tilo.chat")
+            .collect(),
+    )
+}
+
 async fn serve(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let identities = [
         provision(&root.join("alice"))?,
@@ -108,13 +127,18 @@ async fn serve(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     }
     let host = enroll_host(&root.join("alice"), &identities[0])?;
     let cert = host.device_cert.clone();
-    let relay = Relay::start_with_relay_mode(
+    let (relay, _agents) = tilo_relay::agents::start_with_relay_mode(
         RelayConfig {
             state_root: root.join("host"),
             iroh_listen: "127.0.0.1:0".parse()?,
             ..RelayConfig::default()
         },
         host,
+        tilo_relay::agents::AgentOptions {
+            state_dir: root.join("agents"),
+            model: ModelChoice::Scripted,
+            catalogue: Some(Arc::new(chat_catalogue)),
+        },
         iroh::RelayMode::Disabled,
     )
     .await?;
