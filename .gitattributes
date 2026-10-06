@@ -21,3 +21,4 @@ os/external-assets/bootc/*.patch whitespace=-blank-at-eol,-blank-at-eof
 
 # Cargo checks vendor/git against the checksums `cargo vendor` recorded.
 vendor/git/** -text
+

@@ -10,10 +10,11 @@
 //! document plus an input router.
 //!
 //! ## Layout
-//! Two adaptive flaps ([`responsive`]) frame a conversation column: a left
-//! flap (workspace rail + channel sidebar) and a right flap (members /
-//! thread). Each docks beside the content on a wide window and slides over
-//! it behind a scrim on a narrow one — a GNOME Adwaita overlay-flap.
+//! Two toolkit drawers (`ui::widget::SidebarDrawer`) frame a conversation
+//! column: the navigation drawer (workspace rail + channel list) and the
+//! detail drawer (people, or the open thread). Each docks beside the
+//! conversation on a wide window and floats over it behind a scrim on a
+//! narrow one.
 //!
 //! ## Calls
 //! Voice controls send typed local commands to the privileged native media
@@ -72,7 +73,6 @@ pub mod preferences;
 pub mod render_call;
 pub mod render_chat;
 pub mod resource;
-pub mod responsive;
 pub mod semantic_read;
 
 pub use app::ChatApp;

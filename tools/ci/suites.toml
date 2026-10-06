@@ -504,6 +504,12 @@ suites = [
 # (a nextest filterset) within its `test` target runs for that package.
 
 [[cargo]]
+package = "file-explorer"
+# Breadcrumb geometry shapes labels with the shipped toolkit font fixture.
+inputs = ["crates/sdk/ui-core/assets/fonts/"]
+readers = ["apps/file-explorer/src/path_bar.rs"]
+
+[[cargo]]
 package = "tilo-ui"
 # The design and spacing audits ratchet every app and shell source file; the
 # launcher audit reads each app's main.rs and the framework launcher.
@@ -519,19 +525,30 @@ inputs = [
 ]
 readers = [
   "crates/sdk/ui-core/src/app/close_admission.rs",
+  "crates/sdk/ui-core/tests/support/ratchet.rs",
   "crates/sdk/ui-core/src/webview/paint.rs",
-  "crates/sdk/ui-core/tests/design_token_audit.rs",
-  "crates/sdk/ui-core/tests/spacing_token_audit.rs",
   "crates/sdk/ui-core/tests/typography_visual_regression.rs",
 ]
-# App, shell and framework sources are read only by the two audits in the
-# `it` target. A change confined to them runs those audits, not the whole
+# App, shell and framework sources are read only by the look ratchets in the
+# `it` target. A change confined to them runs those ratchets, not the whole
 # toolkit suite; the vendored quit request is compiled into the library, so a
 # change there still runs everything.
 scope = { inputs = [
   "apps/*.rs", "apps/*/tilo-app.toml", "crates/session/shell/src/*.rs",
   "crates/sdk/tilo-app/src/framework/app.rs",
-], test = "it", filter = "test(/^design_token_audit::/) | test(/^spacing_token_audit::/)" }
+], test = "it", filter = "test(/^design_token_audit::/) | test(/^spacing_token_audit::/) | test(/^typography_token_audit::/) | test(/^copy_audit::/)" }
+
+[[cargo]]
+package = "ui-examples"
+# Gallery and type specimen shots render with the toolkit's checked-in fonts.
+inputs = ["crates/sdk/ui-core/assets/fonts/"]
+readers = [
+  "crates/dev/ui-examples/examples/gallery_shots.rs",
+  "crates/dev/ui-examples/examples/type_specimen_shots.rs",
+  "crates/dev/ui-examples/examples/distinct_letters_shots.rs",
+  "crates/dev/ui-examples/examples/distinct_letters_specimen.rs",
+  "crates/dev/ui-examples/examples/reading_face_shots.rs",
+]
 
 [[cargo]]
 package = "tilo-app-package"
@@ -595,6 +612,8 @@ readers = [
   "crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/portability.rs",
   "crates/dev/tilo-app-cli/src/standalone.rs", "crates/dev/tilo-app-cli/tests/outside_repo.rs",
   "crates/dev/tilo-app-cli/src/capability_usage.rs",
+  # Android packaging copies the standalone font catalog out of the SDK.
+  "crates/dev/tilo-app-cli/src/android.rs",
   "crates/dev/tilo-app-cli/src/targets/web.rs",
 ]
 
@@ -715,7 +734,7 @@ readers = ["crates/doc/format-host/tests/integration.rs"]
 package = "notes"
 inputs = ["crates/sdk/ui-core/assets/fonts/", "apps/settings/shots/settings.png"]
 readers = [
-  "apps/notes/src/app.rs", "apps/notes/src/shortcuts_overlay.rs",
+  "apps/notes/src/app.rs",
   "apps/notes/src/scenario.rs", "apps/notes/tests/support/component.rs",
   "apps/notes/tests/effects.rs",
 ]

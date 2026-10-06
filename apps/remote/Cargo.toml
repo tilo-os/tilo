@@ -53,9 +53,6 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
-# Serialises tests that exercise the process-wide clipboard, so they never
-# race each other under cargo's default parallel runner.
-serial_test.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 

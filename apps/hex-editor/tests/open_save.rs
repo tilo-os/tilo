@@ -215,9 +215,22 @@ fn captures_stage_the_sample_through_the_resource() {
     assert_eq!(state.name.as_deref(), Some("sample.png"));
     assert_eq!(&state.bytes[..4], &[0x89, 0x50, 0x4E, 0x47]);
 
-    for scenario in ["search", "error"] {
+    for scenario in [
+        "find",
+        "goto",
+        "edited",
+        "saved",
+        "error",
+        "narrow",
+        "narrow-inspector",
+    ] {
         let app = TestApp::<HexEditorShell>::capture(Some(scenario)).unwrap();
         assert!(app.state().has_file(), "{scenario}");
+        assert_eq!(
+            app.state().bytes != state.bytes,
+            scenario == "edited",
+            "only the edited capture changes bytes, as the resource's edits: {scenario}"
+        );
     }
     let empty = TestApp::<HexEditorShell>::capture(Some("empty")).unwrap();
     assert!(!empty.state().has_file());

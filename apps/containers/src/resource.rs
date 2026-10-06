@@ -128,19 +128,19 @@ pub(crate) fn create_field_dispatcher(
 #[effect(operation = "containers.view")]
 pub enum ContainersEffect {
     /// Show section.
-    #[effect(permission = "read")]
+    #[effect(view, permission = "read")]
     SetSection {
         #[param("containers | images | volumes | distrobox")]
         section: String,
     },
     /// Select container.
-    #[effect(permission = "read")]
+    #[effect(view, permission = "read")]
     SelectContainer {
         #[param("Container id, or omit to clear the selection")]
         id: Option<String>,
     },
     /// Set detail tab.
-    #[effect(permission = "read")]
+    #[effect(view, permission = "read")]
     SetTab {
         #[param("logs | stats | inspect | terminal")]
         tab: String,
@@ -255,24 +255,20 @@ impl ContainersEffect {
 }
 
 /// The screenshots: the default container detail, each section and detail
-/// tab, the create form (with its image suggestions open), a pull in
-/// progress, the collapsed rail, no engine at all, the search palette, and
+/// tab, the new-container form, a pull in progress, no engine at all, and
 /// the confirm and text dialogs.
 const SCENARIOS: &[&str] = &[
+    "confirm",
+    "prompt",
+    "create",
     "images",
     "volumes",
     "distrobox",
     "stats",
     "inspect",
     "terminal",
-    "create",
-    "combo",
     "pull",
-    "collapsed",
     "empty",
-    "palette",
-    "confirm",
-    "prompt",
 ];
 
 /// Framework app.
@@ -301,7 +297,7 @@ impl ResourceApp for ContainersShell {
     fn fixture(fixture: &mut Fixture<Containers>) {
         fixture.provide(if fixture.scenario() == Some("empty") {
             Engine {
-                connection: "No container engine — is podman installed?".into(),
+                connection: crate::podman::UNREACHABLE.into(),
                 live: false,
                 ..Engine::default()
             }
@@ -312,12 +308,12 @@ impl ResourceApp for ContainersShell {
 
     /// The create form is shown filled in.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Containers>> {
-        if !matches!(name, Some("create" | "combo")) {
+        if name != Some("create") {
             return Vec::new();
         }
         [
             (CreateField::Name, "web-frontend"),
-            (CreateField::Image, "nginx"),
+            (CreateField::Image, "docker.io/library/nginx:1.27-alpine"),
             (CreateField::Ports, "8080:80, 8443:443"),
             (CreateField::Env, "TZ=UTC"),
             (CreateField::Volumes, "site:/usr/share/nginx/html"),
@@ -563,7 +559,10 @@ mod tests {
         assert!(detail.state().draft.is_empty());
 
         let create = TestApp::<ContainersShell>::capture(Some("create")).unwrap();
-        assert_eq!(draft(&create, CreateField::Image), "nginx");
+        assert_eq!(
+            draft(&create, CreateField::Image),
+            "docker.io/library/nginx:1.27-alpine"
+        );
         assert_eq!(draft(&create, CreateField::Ports), "8080:80, 8443:443");
 
         let mut empty = TestApp::<ContainersShell>::capture(Some("empty")).unwrap();

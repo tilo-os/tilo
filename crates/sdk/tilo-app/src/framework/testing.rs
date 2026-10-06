@@ -537,6 +537,19 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .unwrap_or(&self.checkout)
     }
 
+    /// Consume the hosted window's explicit save-retry request, as its
+    /// record owner does before reporting durability again.
+    ///
+    /// # Errors
+    /// Returns an error if the framework root is absent.
+    pub fn take_save_retry(&mut self) -> Result<bool, String> {
+        self.harness()
+            .with_widget_mut(|root: &mut super::root::ResourceRoot<A::Resource>| {
+                ui_core::widget::AppWidget::take_save_retry(root)
+            })
+            .ok_or_else(|| "the framework root is not mounted".to_owned())
+    }
+
     /// Make every edit so far durable, as closing the app does.
     ///
     /// # Errors
