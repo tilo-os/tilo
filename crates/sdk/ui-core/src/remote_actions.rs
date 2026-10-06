@@ -440,6 +440,14 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
                     }));
                 return None;
             }
+            if !page.stale_cursor && page.exhausted != page.next_cursor.is_empty() {
+                walk.answer
+                    .set(RemoteCall::Refused(ActionHostError::Unavailable {
+                        reason: "catalogue provider returned inconsistent completion metadata"
+                            .into(),
+                    }));
+                return None;
+            }
             if !page.stale_cursor
                 && walk
                     .query
@@ -466,7 +474,8 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
                 if walk.gathered.providers.is_empty() {
                     walk.gathered.providers = page.providers;
                 }
-                if page.exhausted || page.next_cursor.is_empty() {
+                if page.exhausted {
+                    walk.gathered.exhausted = true;
                     walk.answer.set(RemoteCall::Done(walk.gathered));
                     return None;
                 }
