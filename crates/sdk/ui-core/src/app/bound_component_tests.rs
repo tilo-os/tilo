@@ -2484,9 +2484,7 @@ fn behaviour_probe_factory(
     Ok(component)
 }
 
-fn hosted_behaviour(
-    create: crate::application::ComponentFactory,
-) -> crate::application::ComponentBehaviour {
+fn hosted_behaviour_app(create: crate::application::ComponentFactory) -> App {
     let host = crate::application_test_support::ProbeHost::new();
     let definition = crate::application_test_support::definition(create);
     let target = LaunchTarget::New;
@@ -2501,8 +2499,13 @@ fn hosted_behaviour(
     let component = definition
         .instantiate(context, target, RestoreInput::None)
         .unwrap();
-    let app =
-        App::from_component(component, crate::application_test_support::runner_inputs()).unwrap();
+    App::from_component(component, crate::application_test_support::runner_inputs()).unwrap()
+}
+
+fn hosted_behaviour(
+    create: crate::application::ComponentFactory,
+) -> crate::application::ComponentBehaviour {
+    let app = hosted_behaviour_app(create);
     crate::application::ComponentBehaviour {
         autofocus_on_structure_change: app.autofocus_on_structure_change,
         appearance_reconcile: app.appearance_reconcile,
@@ -2644,4 +2647,59 @@ fn deferred_input_embedded_app_follows_its_actual_editable_child() {
     embedded.app_mut().set_focused_node(None);
     assert!(crate::ime::ImeWindowState::from_widget(&embedded).is_none());
     assert!(embedded.ime_edit_fingerprint(&[3; 32]).is_none());
+}
+
+#[test]
+fn input_surfaces_keep_their_controls_without_native_document_chrome() {
+    for (create, ordinary) in [
+        (
+            collaboration_probe_factory as crate::application::ComponentFactory,
+            true,
+        ),
+        (
+            behaviour_probe_factory as crate::application::ComponentFactory,
+            false,
+        ),
+    ] {
+        let mut app = hosted_behaviour_app(create);
+        app.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
+        assert_eq!(app.history_chrome_enabled, ordinary);
+        assert_eq!(app.native_document_chrome, ordinary);
+        assert_eq!(
+            app.document_sync_status().is_some(),
+            ordinary,
+            "an intentionally unattached input service is not a failed document route"
+        );
+        for (width, height) in [(800, 600), (600, 800)] {
+            app.init_layout();
+            let root = app.layout.root_node.expect("native root layout exists");
+            run_layout_pass(&mut app, root, width, height, 1.0, false, None).unwrap();
+            app.refresh_semantic_tree();
+            let names: Vec<_> = app
+                .semantic_tree()
+                .iter()
+                .filter_map(|node| node.name.as_deref())
+                .collect();
+            assert!(
+                names.contains(&"Live owner"),
+                "the actual application's accessible label remains: {names:?}"
+            );
+            assert!(
+                tilo_actions::door::resolve(
+                    &app.collect_local_resources(),
+                    &tilo_actions::ActionAddress::new("bound-collaboration", "export"),
+                )
+                .is_some(),
+                "the app's declared control remains available"
+            );
+            assert_eq!(names.contains(&"History"), ordinary);
+        }
+        app.action_publication_failure = Some("explicit publication refusal".into());
+        assert_eq!(
+            app.document_sync_status(),
+            Some("explicit publication refusal"),
+            "system-surface presentation must still expose actual errors"
+        );
+        app.close_components();
+    }
 }

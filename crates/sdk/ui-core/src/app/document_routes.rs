@@ -155,7 +155,7 @@ impl App {
                     .find_map(|entry| entry.outbound_failure.as_deref())
             })
             .or_else(|| {
-                if self.document_routes.witness.is_none() {
+                if self.document_routes.witness.is_none() && self.native_document_chrome {
                     Some("Collaboration is unavailable; remote changes are not synchronized.")
                 } else if !self.document_routes.primary.is_empty()
                     || self
