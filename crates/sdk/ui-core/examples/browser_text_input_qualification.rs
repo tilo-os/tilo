@@ -20,6 +20,19 @@ use tilo_ui::webview::text_input::{Failure, Receipt};
 use tilo_ui::webview::{KeyInput, KeyModifiers, SharedEngine, WebViewCommand, WebViewEvent};
 use tilo_ui::widget::WebView;
 
+// Exercise the production decorator blanket implementation, which stands in for
+// its inner widget in retained layout and focused dispatch.
+struct GuardedView(WebView);
+impl tilo_ui::widget::Decorator for GuardedView {
+    type Inner = WebView;
+    fn inner(&self) -> &WebView {
+        &self.0
+    }
+    fn inner_mut(&mut self) -> &mut WebView {
+        &mut self.0
+    }
+}
+
 static PROBE: AtomicU64 = AtomicU64::new(1);
 
 #[allow(
@@ -59,13 +72,17 @@ fn evaluate(engine: &SharedEngine, expression: &str) -> Value {
     }
 }
 
-fn wait_ready(view: &mut Framed<WebView>) {
+fn wait_ready<W: Widget + 'static>(view: &mut Framed<W>) {
     let deadline = tilo_ui::time::now()
         .checked_add(Duration::from_secs(10))
         .expect("bounded fixture deadline");
     loop {
         Framed::harness_mut(view).relayout();
         if view.ime_purpose().is_some() {
+            assert!(
+                view.ime_requires_deferred_ack(),
+                "decorated field must retain its private acknowledgement contract"
+            );
             assert!(view.ime_edit_fingerprint(&[7; 32]).is_some());
             return;
         }
@@ -77,7 +94,7 @@ fn wait_ready(view: &mut Framed<WebView>) {
     }
 }
 
-fn selected(view: &mut Framed<WebView>, engine: &SharedEngine, target: &str) {
+fn selected<W: Widget + 'static>(view: &mut Framed<W>, engine: &SharedEngine, target: &str) {
     view.set_focus(false);
     Framed::harness_mut(view).relayout();
     let expression = if target == "rich" {
@@ -94,7 +111,7 @@ fn selected(view: &mut Framed<WebView>, engine: &SharedEngine, target: &str) {
     wait_ready(view);
 }
 
-fn finish(view: &mut Framed<WebView>, receipt: &Receipt) -> Result<(), Failure> {
+fn finish<W: Widget + 'static>(view: &mut Framed<W>, receipt: &Receipt) -> Result<(), Failure> {
     let deadline = tilo_ui::time::now()
         .checked_add(Duration::from_secs(12))
         .expect("bounded fixture deadline");
@@ -138,7 +155,11 @@ fn load(engine: &SharedEngine, url: &str) {
     }
 }
 
-fn native_rich_baseline(view: &mut Framed<WebView>, engine: &SharedEngine, url: &str) -> Value {
+fn native_rich_baseline<W: Widget + 'static>(
+    view: &mut Framed<W>,
+    engine: &SharedEngine,
+    url: &str,
+) -> Value {
     load(engine, url);
     selected(view, engine, "rich");
     for character in "日本語 café العربية".chars() {
@@ -172,7 +193,11 @@ fn native_rich_baseline(view: &mut Framed<WebView>, engine: &SharedEngine, url: 
     snapshot
 }
 
-fn qualify_replacements(view: &mut Framed<WebView>, engine: &SharedEngine, url: &str) {
+fn qualify_replacements<W: Widget + 'static>(
+    view: &mut Framed<W>,
+    engine: &SharedEngine,
+    url: &str,
+) {
     let native_rich = native_rich_baseline(view, engine, url);
     assert_eq!(
         native_rich["html"],
@@ -236,7 +261,7 @@ fn qualify_replacements(view: &mut Framed<WebView>, engine: &SharedEngine, url: 
         );
     }
 }
-fn qualify_refusals(view: &mut Framed<WebView>, engine: &SharedEngine, url: &str) {
+fn qualify_refusals<W: Widget + 'static>(view: &mut Framed<W>, engine: &SharedEngine, url: &str) {
     for (name, edit) in [
         (
             "focus return",
@@ -273,7 +298,11 @@ fn qualify_refusals(view: &mut Framed<WebView>, engine: &SharedEngine, url: &str
     }
 }
 
-fn qualify_queued_finals(view: &mut Framed<WebView>, engine: &SharedEngine, url: &str) {
+fn qualify_queued_finals<W: Widget + 'static>(
+    view: &mut Framed<W>,
+    engine: &SharedEngine,
+    url: &str,
+) {
     load(engine, url);
     selected(view, engine, "first");
     let deadline = tilo_ui::time::now()
@@ -310,6 +339,65 @@ fn qualify_queued_finals(view: &mut Framed<WebView>, engine: &SharedEngine, url:
     println!("PASS mounted canceled queued final and repeated fresh session without retargeting");
 }
 
+fn qualify_view<W: Widget + 'static>(view: &mut Framed<W>, engine: &SharedEngine, url: &str) {
+    load(engine, url);
+    qualify_replacements(view, engine, url);
+    qualify_refusals(view, engine, url);
+    qualify_queued_finals(view, engine, url);
+    load(engine, url);
+    selected(view, engine, "first");
+    let old = view.ime_edit_fingerprint(&[7; 32]).unwrap();
+    // Distinct loopback sites exercise Chromium's main-frame context replacement,
+    // not just a same-site reload. The owned runner always supplies 127.0.0.1.
+    let replacement = url.replacen("127.0.0.1", "localhost", 1);
+    assert_ne!(
+        replacement, url,
+        "qualification needs the owned loopback fixture"
+    );
+    load(engine, &replacement);
+    let receipt = view
+        .commit_deferred_text("old document")
+        .expect("original navigation receipt");
+    assert_eq!(finish(view, &receipt), Err(Failure::Rejected));
+    assert_eq!(evaluate(engine, "first.value"), "alpha beta gamma");
+    selected(view, engine, "first");
+    assert_ne!(view.ime_edit_fingerprint(&[7; 32]).unwrap(), old);
+    let receipt = view.commit_deferred_text("fresh session").unwrap();
+    assert_eq!(finish(view, &receipt), Ok(()));
+    assert_eq!(evaluate(engine, "first.value"), "alpha fresh session gamma");
+    println!(
+        "PASS mounted cross-site frame replacement and recovery to a fresh original-field lease"
+    );
+    selected(view, engine, "notes");
+    view.set_focus(false);
+    assert!(view.ime_purpose().is_none());
+    let receipt = view.commit_deferred_text("canceled").unwrap();
+    assert_eq!(finish(view, &receipt), Err(Failure::Rejected));
+    assert_eq!(evaluate(engine, "notes.value"), "alpha beta gamma");
+    println!("PASS mounted cancellation: no edit or successor retargeting");
+    view.set_focus(false);
+}
+
+fn mount<W: Widget + 'static>(
+    host: &Path,
+    profile: &Path,
+    url: &str,
+    make: impl FnOnce(SharedEngine) -> W,
+) {
+    let engine: SharedEngine =
+        ChromiumEngine::with_host(host, profile).expect("actual sandboxed Chromium host");
+    engine.set_visible(true);
+    let mut view = Framed::new(
+        State::new(),
+        make(engine.clone()),
+        (1000, 800),
+        Theme::dark(),
+    );
+    qualify_view(&mut view, &engine, url);
+    drop(view);
+    drop(engine);
+}
+
 fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if args == ["--help"] {
@@ -321,54 +409,15 @@ fn main() {
         3,
         "HOST PROFILE SYNTHETIC_HTTP_URL are required"
     );
-    let engine: SharedEngine = ChromiumEngine::with_host(Path::new(&args[0]), Path::new(&args[1]))
-        .expect("actual sandboxed Chromium host");
-    engine.set_visible(true);
-    let mut view = Framed::new(
-        State::new(),
-        WebView::new(engine.clone()),
-        (1000, 800),
-        Theme::dark(),
-    );
-    load(&engine, &args[2]);
-    qualify_replacements(&mut view, &engine, &args[2]);
-    qualify_refusals(&mut view, &engine, &args[2]);
-    qualify_queued_finals(&mut view, &engine, &args[2]);
-    load(&engine, &args[2]);
-    selected(&mut view, &engine, "first");
-    let old = view.ime_edit_fingerprint(&[7; 32]).unwrap();
-    // Distinct loopback sites exercise Chromium's main-frame context replacement,
-    // not just a same-site reload. The owned runner always supplies 127.0.0.1.
-    let replacement = args[2].replacen("127.0.0.1", "localhost", 1);
-    assert_ne!(
-        replacement, args[2],
-        "qualification needs the owned loopback fixture"
-    );
-    load(&engine, &replacement);
-    let receipt = view
-        .commit_deferred_text("old document")
-        .expect("original navigation receipt");
-    assert_eq!(finish(&mut view, &receipt), Err(Failure::Rejected));
-    assert_eq!(evaluate(&engine, "first.value"), "alpha beta gamma");
-    selected(&mut view, &engine, "first");
-    assert_ne!(view.ime_edit_fingerprint(&[7; 32]).unwrap(), old);
-    let receipt = view.commit_deferred_text("fresh session").unwrap();
-    assert_eq!(finish(&mut view, &receipt), Ok(()));
-    assert_eq!(
-        evaluate(&engine, "first.value"),
-        "alpha fresh session gamma"
-    );
-    println!(
-        "PASS mounted cross-site frame replacement and recovery to a fresh original-field lease"
-    );
-    selected(&mut view, &engine, "notes");
-    view.set_focus(false);
-    assert!(view.ime_purpose().is_none());
-    let receipt = view.commit_deferred_text("canceled").unwrap();
-    assert_eq!(finish(&mut view, &receipt), Err(Failure::Rejected));
-    assert_eq!(evaluate(&engine, "notes.value"), "alpha beta gamma");
-    println!("PASS mounted cancellation: no edit or successor retargeting");
-    view.set_focus(false);
-    drop(view);
-    drop(engine);
+    for (name, decorated) in [("direct", false), ("decorated", true)] {
+        println!("QUALIFY {name} retained field owner");
+        let profile = Path::new(&args[1]).join(name);
+        if decorated {
+            mount(Path::new(&args[0]), &profile, &args[2], |engine| {
+                GuardedView(WebView::new(engine))
+            });
+        } else {
+            mount(Path::new(&args[0]), &profile, &args[2], WebView::new);
+        }
+    }
 }

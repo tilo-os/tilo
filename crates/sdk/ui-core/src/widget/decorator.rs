@@ -482,6 +482,14 @@ pub trait Decorator {
         self.inner().is_enabled()
     }
 
+    fn ime_requires_deferred_ack(&self) -> bool {
+        self.inner().ime_requires_deferred_ack()
+    }
+
+    fn commit_deferred_text(&mut self, text: &str) -> Option<crate::webview::text_input::Receipt> {
+        self.inner_mut().commit_deferred_text(text)
+    }
+
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         self.inner().ime_edit_fingerprint(key)
     }
@@ -1094,6 +1102,14 @@ impl<T: Decorator + 'static> Widget for T {
 
     fn is_enabled(&self) -> bool {
         Decorator::is_enabled(self)
+    }
+
+    fn ime_requires_deferred_ack(&self) -> bool {
+        Decorator::ime_requires_deferred_ack(self)
+    }
+
+    fn commit_deferred_text(&mut self, text: &str) -> Option<crate::webview::text_input::Receipt> {
+        Decorator::commit_deferred_text(self, text)
     }
 
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {

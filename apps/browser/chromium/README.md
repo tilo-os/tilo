@@ -200,8 +200,10 @@ sessions only: ordinary composition, OSK and standalone Wayland window runners
 remain closed until they can consume the same acknowledgement contract.
 
 The mounted `browser-text-input-qualification` example exercises the real
-retained `Framed<WebView>` host against a synthetic HTTP fixture. It requires an
-owned disposable profile and the actual CEF helper. Run it as a non-root user
+retained `Framed` host with both a direct `WebView` and a production `Decorator`
+wrapping it, against a synthetic HTTP fixture. Both run the same journeys; the
+wrapper must preserve the inner private receipt and deferred acknowledgement
+requirement. It requires an owned disposable profile and the actual CEF helper. Run it as a non-root user
 (the same Chromium sandbox policy as the backend suite):
 
 ```sh
@@ -209,8 +211,7 @@ python3 apps/browser/chromium/tests/mounted_text_input.py target/chromium/tilo-c
 ```
 
 Build the SDK example in the same execution environment as the helper. Backend
-fixtures and mounted
-SDK fixtures prove distinct boundaries; they do not prove an assembled physical
+fixtures and mounted SDK fixtures prove distinct boundaries; they do not prove an assembled physical
 microphone journey. Chromium's one-batch rich-text insertion preserves inline
 bold markup and native undo but can convert an adjacent space to `&nbsp;`; the
 fixture asserts its exact HTML and exact undo/redo, alongside native typing.
