@@ -408,17 +408,19 @@ impl InitialReadBridge {
         let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
         loop {
             self.check()?;
-            match received.try_recv() {
+            // Wait on the actual worker reply rather than polling and sleeping
+            // the caller's thread. The bounded interval still revalidates
+            // original custody and observes the construction deadline.
+            match received.recv_timeout(crate::time::Duration::from_millis(10)) {
                 Ok(result) => return result.map(|_| ()),
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                     return Err("native initialization reply ended".into());
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             }
             if crate::time::now() >= deadline {
                 return Err("native initialization commit timed out".into());
             }
-            std::thread::sleep(crate::time::Duration::from_millis(10));
         }
     }
     fn from_manager(manager: &CollaborationManager) -> Result<Option<Self>, String> {
