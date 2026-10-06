@@ -1164,6 +1164,7 @@ settings-bluetooth-forgot = { $name } vergessen.
 settings-bluetooth-forget-failed = { $name } konnte nicht vergessen werden: { $error }
 settings-bluetooth-forget-ask = { $name } vergessen? Das entfernt Bindung und Schlüssel.
 input-keyboard-title = Tastatur
+input-keyboard-caption = Passe die Tastenwiederholung, die Compose-Taste und die Feststelltaste an.
 input-active-source = Aktive Eingabequelle
 input-key-repeat = Wiederholgeschwindigkeit
 input-key-repeat-off = Wiederholung ist aus — Schieberegler bewegen, um sie einzuschalten
