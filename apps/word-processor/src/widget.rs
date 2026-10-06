@@ -437,6 +437,17 @@ impl NumField {
             _ => 2.0,
         }
     }
+    fn semantic_target(self) -> String {
+        format!(
+            "word-processor.styles:number:{}",
+            match self {
+                Self::Size => "size",
+                Self::SpaceBefore => "space-before",
+                Self::SpaceAfter => "space-after",
+                Self::Indent => "indent",
+            }
+        )
+    }
     fn label(self) -> String {
         t(match self {
             NumField::Size => "panel-num-size",
@@ -4881,6 +4892,11 @@ impl WordProcessorWidget {
         panel: Rect,
     ) {
         self.panel_hits.clear();
+        for slot in &mut self.num_inputs {
+            slot.rect = Rect::ZERO;
+        }
+        self.line_spacing_rect = Rect::ZERO;
+        self.style_pick_rect = Rect::ZERO;
         let local = theme.clone();
         let sp = &local.tokens.spacing;
         self.panel_rect = panel;
@@ -5981,38 +5997,137 @@ impl WordProcessorWidget {
         })
     }
 
-    /// The foreground inspector owns the current UI projection; the document
-    /// remains available through its canonical resource actions.
+    fn panel_hit_identity(&self, hit: &PanelHit) -> (String, String) {
+        let (id, label) = match hit {
+            PanelHit::Close => ("close".into(), t("panel-close")),
+            PanelHit::Pick(id) => (format!("pick:{id}"), self.sheet.get(id).name),
+            PanelHit::ParaAlign(value) => {
+                (format!("align:{value}"), t(&format!("panel-align-{value}")))
+            }
+            PanelHit::SetFont(value) => {
+                (format!("font:{value}"), t(&format!("panel-font-{value}")))
+            }
+            PanelHit::ToggleBold => ("bold".into(), t("panel-bold")),
+            PanelHit::ToggleItalic => ("italic".into(), t("panel-italic")),
+            PanelHit::SetColor(color) => {
+                let label = STYLE_PALETTE
+                    .iter()
+                    .zip(swatch_names(PaletteKind::Text))
+                    .find_map(|(candidate, label)| (candidate == color).then_some(label))
+                    .unwrap_or_else(|| tool_action_a11y_label(ToolAction::TextColor(Some(*color))));
+                let [red, green, blue] = color;
+                (format!("color:{red:02x}{green:02x}{blue:02x}"), label)
+            }
+            PanelHit::OpenColorPicker => ("custom-color".into(), t("panel-colour-custom")),
+            PanelHit::NewStyle => ("new-style".into(), t("panel-new-style")),
+            PanelHit::ImageScale(factor) => {
+                if *factor < 1.0 {
+                    ("image-smaller".into(), t("panel-image-smaller"))
+                } else {
+                    ("image-larger".into(), t("panel-image-larger"))
+                }
+            }
+            PanelHit::ImageFlipH => ("image-flip-h".into(), t("panel-image-flip-h")),
+            PanelHit::ImageFlipV => ("image-flip-v".into(), t("panel-image-flip-v")),
+            PanelHit::ImageCropInset => ("image-crop-inset".into(), t("panel-image-crop-inset")),
+            PanelHit::ImageCropReset => ("image-crop-reset".into(), t("panel-image-crop-reset")),
+            PanelHit::ImageInline => ("image-inline".into(), t("a11y-image-inline")),
+            PanelHit::ImageFreePosition => ("image-free".into(), t("a11y-image-free-position")),
+            PanelHit::ImageWrapLeft => ("image-left".into(), t("a11y-image-wrap-left")),
+            PanelHit::ImageWrapRight => ("image-right".into(), t("a11y-image-wrap-right")),
+        };
+        (format!("word-processor.styles:{id}"), label)
+    }
+
+    fn panel_hit_checked(&self, hit: &PanelHit) -> Option<bool> {
+        let style = self.focused_style_key().map(|key| self.sheet.get(&key));
+        match hit {
+            PanelHit::ParaAlign(value) => Some(self.current_align() == *value),
+            PanelHit::SetFont(value) => style.map(|style| style.font == *value),
+            PanelHit::ToggleBold => style.map(|style| style.bold),
+            PanelHit::ToggleItalic => style.map(|style| style.italic),
+            PanelHit::SetColor(value) => style.map(|style| style.color == *value),
+            _ => None,
+        }
+    }
+
+    fn visible_styles_rect(&self, rect: Rect) -> Option<Rect> {
+        let visible = rect.intersect(self.panel_body);
+        (visible.width() > 0.0 && visible.height() > 0.0).then_some(visible)
+    }
+
+    /// Project the same painted hits and shared fields the foreground inspector
+    /// actually owns. Scrolled-out controls have no actionable UI node.
     fn styles_page_accessibility_tree(&self) -> A11yTreeNode {
         use ui::a11y::{AccessNode, AccessState, Role};
-        let mut children = Vec::new();
-        if let Some((rect, _)) = self
+        let mut children = self
             .panel_hits
             .iter()
-            .find(|(_, hit)| matches!(hit, PanelHit::Close))
-        {
-            children.push(A11yTreeNode::leaf(
-                AccessNode::new(Role::Button)
-                    .with_name(t("panel-close"))
-                    .with_bounds(*rect)
-                    .with_action_target("word-processor.styles:close")
-                    .with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    }),
-            ));
+            .filter_map(|(rect, hit)| {
+                let close = matches!(hit, PanelHit::Close);
+                let bounds = if close {
+                    Some(*rect)
+                } else {
+                    self.visible_styles_rect(*rect)
+                }?;
+                let (target, label) = self.panel_hit_identity(hit);
+                let checked = self.panel_hit_checked(hit);
+                let role = if matches!(hit, PanelHit::ToggleBold | PanelHit::ToggleItalic) {
+                    Role::ToggleButton
+                } else if checked.is_some() {
+                    Role::RadioButton
+                } else {
+                    Role::Button
+                };
+                Some(A11yTreeNode::leaf(
+                    AccessNode::new(role)
+                        .with_name(label)
+                        .with_bounds(bounds)
+                        .with_action_target(target)
+                        .with_state(AccessState {
+                            focusable: true,
+                            disabled: !close && self.read_only(),
+                            checked,
+                            ..Default::default()
+                        }),
+                ))
+            })
+            .collect::<Vec<_>>();
+        for slot in &self.num_inputs {
+            if let Some(bounds) = self.visible_styles_rect(slot.rect)
+                && let Some(mut node) = Widget::accessibility(&slot.input)
+            {
+                node.state.disabled |= self.read_only();
+                children.push(A11yTreeNode::leaf(
+                    node.with_bounds(bounds)
+                        .with_action_target(slot.field.semantic_target()),
+                ));
+            }
         }
-        if let Some(mut image) = self.image_placement_access_node() {
-            image.node = image
-                .node
-                .with_key(ui::a11y::hash_key(&"word-processor.styles:image-placement"));
-            image.children.retain(|child| {
-                child.node.bounds.is_some_and(|bounds| {
-                    let visible = bounds.to_rect().intersect(self.panel_body);
-                    visible.width() > 0.0 && visible.height() > 0.0
-                })
-            });
-            children.push(image);
+        for (field, rect, label, target) in [
+            (
+                &self.line_spacing,
+                self.line_spacing_rect,
+                "panel-line-spacing",
+                "word-processor.styles:line-spacing",
+            ),
+            (
+                &self.style_pick,
+                self.style_pick_rect,
+                "panel-style",
+                "word-processor.styles:style",
+            ),
+        ] {
+            if let Some(bounds) = self.visible_styles_rect(rect)
+                && let Some(mut node) = Widget::accessibility(field)
+            {
+                node.state.disabled |= self.read_only();
+                children.push(A11yTreeNode::leaf(
+                    node.with_name(t(label))
+                        .with_bounds(bounds)
+                        .with_action_target(target),
+                ));
+            }
         }
         let title = if self.selected_image_id().is_some() {
             t("panel-image")
@@ -6036,39 +6151,86 @@ impl WordProcessorWidget {
         if !self.styles_panel_full_window() {
             return None;
         }
-        {
-            let target = key_path.last().copied();
-            if target == Some(ui::a11y::hash_key(&"word-processor.styles:close")) {
-                return Some(match action {
-                    ui::a11y::Action::Activate => {
-                        self.apply_panel_hit(state, PanelHit::Close);
-                        true
-                    }
-                    ui::a11y::Action::Focus => {
-                        self.set_focus(true);
-                        true
-                    }
-                    _ => false,
-                });
-            }
-            let visible_image_target = self.panel_hits.iter().any(|(_, hit)| {
-                let id = match hit {
-                    PanelHit::ImageInline => "inline",
-                    PanelHit::ImageFreePosition => "free",
-                    PanelHit::ImageWrapLeft => "left",
-                    PanelHit::ImageWrapRight => "right",
-                    _ => return false,
-                };
-                target
-                    == Some(ui::a11y::hash_key(&format!(
-                        "word-processor.image-placement:{id}"
-                    )))
-            });
-            if !visible_image_target {
+        let target = key_path.last().copied();
+        let hit = self.panel_hits.iter().find_map(|(_, hit)| {
+            (target == Some(ui::a11y::hash_key(&self.panel_hit_identity(hit).0)))
+                .then(|| hit.clone())
+        });
+        if let Some(hit) = hit {
+            if self.read_only() && !matches!(hit, PanelHit::Close) {
                 return Some(false);
             }
+            return Some(match action {
+                ui::a11y::Action::Focus => {
+                    self.set_focus(true);
+                    true
+                }
+                ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck => {
+                    self.apply_panel_hit(state, hit);
+                    true
+                }
+                _ => false,
+            });
         }
-        None
+        Some(self.perform_styles_field_action(target, action, state))
+    }
+
+    fn perform_styles_field_action(
+        &mut self,
+        target: Option<u64>,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::Edits<'_>,
+    ) -> bool {
+        if self.read_only() {
+            return false;
+        }
+        if matches!(action, ui::a11y::Action::Focus) {
+            self.set_focus(true);
+        }
+        let field = self.num_inputs.iter().find_map(|slot| {
+            (target == Some(ui::a11y::hash_key(&slot.field.semantic_target())))
+                .then_some(slot.field)
+        });
+        let performed = if let Some(field) = field {
+            if matches!(action, ui::a11y::Action::Focus) {
+                self.line_spacing.close();
+                self.style_pick.close();
+                Widget::set_focus(&mut self.line_spacing, false);
+                Widget::set_focus(&mut self.style_pick, false);
+                self.focus_hosted(Some(field), false);
+                true
+            } else {
+                let Some(slot) = self.num_inputs.iter_mut().find(|slot| slot.field == field) else {
+                    return false;
+                };
+                Widget::perform_action(&mut slot.input, action, state, &automerge::ROOT)
+            }
+        } else {
+            if matches!(action, ui::a11y::Action::Focus) {
+                self.focus_hosted(None, false);
+                Widget::set_focus(&mut self.line_spacing, false);
+                Widget::set_focus(&mut self.style_pick, false);
+            }
+            let menu = if target == Some(ui::a11y::hash_key(&"word-processor.styles:line-spacing"))
+            {
+                &mut self.line_spacing
+            } else if target == Some(ui::a11y::hash_key(&"word-processor.styles:style")) {
+                &mut self.style_pick
+            } else {
+                return false;
+            };
+            if matches!(action, ui::a11y::Action::Focus) {
+                Widget::set_focus(menu, true);
+                true
+            } else {
+                Widget::perform_action(menu, action, state, &automerge::ROOT)
+            }
+        };
+        if performed {
+            self.drain_hosted_fields(state);
+            self.lifecycle.dirty = true;
+        }
+        performed
     }
 
     /// Assemble the full accessibility node tree: a `Role::Document` root holding
@@ -9895,6 +10057,18 @@ impl Widget for WordProcessorWidget {
     }
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        if self.styles_panel_full_window() {
+            let viewport = self.panel_body.height();
+            return Some(ui::widget::PrimaryScrollRegion {
+                key: "styles",
+                owner_generation: None,
+                metrics: ui::widget::ScrollMetrics::new(
+                    self.panel_max_scroll + viewport,
+                    viewport,
+                    self.panel_scroll,
+                ),
+            });
+        }
         Some(ui::widget::PrimaryScrollRegion {
             key: "primary",
             owner_generation: None,
@@ -9924,7 +10098,11 @@ impl Widget for WordProcessorWidget {
         if next == region.metrics.offset {
             return PrimaryScrollResult::Unchanged(region);
         }
-        self.scroll_y = next;
+        if self.styles_panel_full_window() {
+            self.panel_scroll = next;
+        } else {
+            self.scroll_y = next;
+        }
         self.lifecycle.dirty = true;
         self.primary_vertical_scroll().map_or(
             PrimaryScrollResult::Unsupported,
@@ -10516,14 +10694,30 @@ impl Widget for WordProcessorWidget {
         self.lifecycle.focused
     }
     fn ime_cursor_rect(&self) -> Option<Rect> {
-        if self.find.is_open() {
+        if self.styles_panel_full_window() {
+            self.num_inputs
+                .iter()
+                .find(|slot| {
+                    Some(slot.field) == self.editing_field
+                        && self.visible_styles_rect(slot.rect).is_some()
+                })
+                .and_then(|slot| Widget::ime_cursor_rect(&slot.input))
+        } else if self.find.is_open() {
             self.find.ime_cursor_rect()
         } else {
             self.ime_rect
         }
     }
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        if self.find.is_open() {
+        if self.styles_panel_full_window() {
+            self.num_inputs
+                .iter()
+                .find(|slot| {
+                    Some(slot.field) == self.editing_field
+                        && self.visible_styles_rect(slot.rect).is_some()
+                })
+                .and_then(|slot| Widget::ime_purpose(&slot.input))
+        } else if self.find.is_open() {
             self.find.ime_purpose()
         } else {
             Some(winit::window::ImePurpose::Normal)
@@ -12524,12 +12718,31 @@ impl WordProcessorWidget {
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
+        let foreground = self.styles_panel_full_window();
+        let body = self.panel_body;
         if let Some(field) = self.editing_field {
-            if let Some(slot) = self.num_inputs.iter_mut().find(|s| s.field == field) {
-                Self::forward(&mut slot.input, event, ctx);
-            }
+            let Some(slot) = self.num_inputs.iter_mut().find(|slot| {
+                let visible = slot.rect.intersect(body);
+                slot.field == field
+                    && (!foreground || (visible.width() > 0.0 && visible.height() > 0.0))
+            }) else {
+                return false;
+            };
+            Self::forward(&mut slot.input, event, ctx);
             true
-        } else if !self.styles_panel_full_window() && Widget::is_focused(&self.zoom_input) {
+        } else if foreground
+            && self.visible_styles_rect(self.line_spacing_rect).is_some()
+            && Widget::is_focused(&self.line_spacing)
+        {
+            Self::forward(&mut self.line_spacing, event, ctx);
+            true
+        } else if foreground
+            && self.visible_styles_rect(self.style_pick_rect).is_some()
+            && Widget::is_focused(&self.style_pick)
+        {
+            Self::forward(&mut self.style_pick, event, ctx);
+            true
+        } else if !foreground && Widget::is_focused(&self.zoom_input) {
             Self::forward(&mut self.zoom_input, event, ctx);
             true
         } else {
