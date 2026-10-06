@@ -130,6 +130,20 @@ class AppReleaseTests(unittest.TestCase):
                 with self.subTest(path=path):
                     self.assertEqual(app_release.apps_from_changes([path], catalog), expected)
 
+    def test_app_manifest_changes_rebuild_the_shared_runtime_collection(self):
+        catalog = app_release.app_catalog(ROOT)
+        # Mail's new Contacts dependency changed the collection runtime while
+        # ordinary reverse-dependency selection chose only four apps. Reusing
+        # the old tapps then failed the production runtime-root check.
+        self.assertEqual(
+            app_release.apps_from_changes(["apps/mail/Cargo.toml"], catalog),
+            sorted(catalog),
+        )
+        self.assertEqual(
+            app_release.apps_from_changes(["apps/mail/src/app.rs"], catalog),
+            ["mail"],
+        )
+
     def test_direct_changes_select_exactly_their_packaging_closure(self):
         with self.subTest(phase='direct app change does not select fleet'):
             self.assertEqual(
