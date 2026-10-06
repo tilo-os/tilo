@@ -1515,12 +1515,12 @@ impl RichInputConfig {
             .get("caps_lock")
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
-        config.keyboard_model = section
+        section
             .get("keyboard_model")
             .and_then(serde_json::Value::as_str)
             .filter(|model| matches!(*model, "pc104" | "pc105"))
             .unwrap_or("pc105")
-            .to_owned();
+            .clone_into(&mut config.keyboard_model);
         config.normalise_sources();
         config
     }
