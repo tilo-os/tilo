@@ -30,7 +30,9 @@ use drm_re::control::{
 use smithay::backend::allocator::gbm::{GbmBufferFlags, GbmDevice};
 
 use super::paint::{BridgeError, SceneDamage, VelloDrmBridge};
-use super::xrgb_history::{XrgbHistoryCommit, XrgbTargetHistory};
+use super::xrgb_history::{
+    XrgbHistoryCommit, XrgbHistoryIdentity, XrgbTargetHistory, XrgbWritePlan,
+};
 use crate::compositor::backend::OutputId;
 use crate::compositor::cursor::{self, CursorBitmap, CursorShape, PointerImage};
 use vello::{FineDamageRect, Scene};
@@ -1362,6 +1364,9 @@ pub struct CursorPlanes {
     hotspot_space: HotspotSpace,
     /// Last global position, so a hotspot change re-places a still pointer.
     last: Option<(f64, f64)>,
+    /// The global position, shared with the presenter, which draws the
+    /// pointer into the frame on outputs without a cursor plane.
+    shared: std::sync::Arc<std::sync::Mutex<(f64, f64)>>,
 }
 
 impl CursorPlanes {
@@ -1373,7 +1378,13 @@ impl CursorPlanes {
             hotspot: (0, 0),
             hotspot_space: HotspotSpace::Logical,
             last: None,
+            shared: std::sync::Arc::default(),
         }
+    }
+
+    /// The pointer position as the presenter reads it.
+    pub fn shared_position(&self) -> std::sync::Arc<std::sync::Mutex<(f64, f64)>> {
+        self.shared.clone()
     }
 
     /// Adopt the newly shown image's hotspot in its own coordinate space.
@@ -1473,6 +1484,10 @@ impl CursorPlanes {
     /// Move the cursor to global `(gx, gy)`, hiding the previously-active plane on an output crossing; outside every output (mismatched-height gap) the last position is left alone.
     pub fn move_to(&mut self, gx: f64, gy: f64) {
         self.last = Some((gx, gy));
+        *self
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = (gx, gy);
         let rects: Vec<_> = self.outputs.iter().map(|o| o.rect).collect();
         let (xi, yi) = (pixel_coord(gx), pixel_coord(gy));
         let Some(i) = output_index_at(&rects, xi, yi) else {
@@ -1620,6 +1635,9 @@ pub struct DrmScanout {
     flip_submission: u64,
     physical_identity: PhysicalFlipIdentity,
     flip_queued_at: Option<std::time::Instant>,
+    /// `CLOCK_MONOTONIC` when the pending flip was queued, the clock the
+    /// kernel stamps page-flip events with.
+    flip_queued_mono: Option<Duration>,
     /// Whether the page-flip path is in use. Virtual connectors start `false`
     /// because they never signal vblank; a flip there blocks in the kernel
     /// until that wait times out and holds the DRM file description, so the
@@ -1651,6 +1669,8 @@ pub struct DrmScanout {
     xrgb_scanout_epoch: Option<u64>,
     xrgb_software_cursor: [Option<FineDamageRect>; 2],
     xrgb_damage_requested: bool,
+    /// Dumb buffers kept mapped for the CPU renderer, by buffer slot.
+    cpu_maps: [Option<CpuMapping>; 2],
     /// The CRTC's adaptive-sync property and what was last written to it.
     adaptive_sync: AdaptiveSync,
     /// Pixel format of `buffers`. HDR swaps in a 10-bit pair.
@@ -1896,6 +1916,7 @@ impl DrmScanout {
             flip_submission: 0,
             physical_identity: PhysicalFlipIdentity::default(),
             flip_queued_at: None,
+            flip_queued_mono: None,
             use_pageflip,
             damage_clips: Vec::new(),
             width,
@@ -1910,8 +1931,12 @@ impl DrmScanout {
             xrgb_history: XrgbTargetHistory::new(2),
             xrgb_scanout_epoch: Some(1),
             xrgb_software_cursor: [None, None],
+            cpu_maps: [None, None],
+            // The CPU renderer always copies through the destination
+            // history: a full copy per frame is most of its frame time.
             xrgb_damage_requested: std::env::var("TILO_DRM_XRGB_DAMAGE")
-                .is_ok_and(|value| value == "1"),
+                .is_ok_and(|value| value == "1")
+                || super::cpu_present::cpu_render_reason().is_some(),
             adaptive_sync,
             format: ScanoutFormat::Xrgb8888,
             standby: None,
@@ -2577,6 +2602,199 @@ impl DrmScanout {
         Ok(())
     }
 
+    /// Wait for this CRTC's pending page flip. Returns how long the wait
+    /// took and the flip's queue-to-vblank latency, or `None` for the
+    /// latency when no flip was pending. `Err` when the flip did not
+    /// complete in `timeout`.
+    pub(crate) fn wait_cpu_flip(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<(Duration, Option<Duration>), Duration> {
+        let started = Instant::now();
+        let deadline = started.checked_add(timeout).unwrap_or(started);
+        let mut latency = None;
+        loop {
+            if let Ok(events) = self.card.receive_events() {
+                for event in events {
+                    if let Event::PageFlip(flip) = event
+                        && flip.crtc == self.crtc
+                    {
+                        latency = self
+                            .flip_queued_mono
+                            .take()
+                            .map(|queued| flip.duration.saturating_sub(queued));
+                        self.log_flip_completion();
+                        self.flip_pending = false;
+                    }
+                }
+            }
+            if !self.use_pageflip || !self.flip_pending {
+                return Ok((started.elapsed(), latency));
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(started.elapsed());
+            }
+            let timeout_ms = i32::try_from(deadline.saturating_duration_since(now).as_millis())
+                .unwrap_or(i32::MAX)
+                .max(1);
+            let mut fd = libc::pollfd {
+                fd: self.card.as_fd().as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: `fd` points to one valid pollfd for the duration of the
+            // call and the borrowed card descriptor outlives it.
+            let ready = unsafe { libc::poll(&raw mut fd, 1, timeout_ms) };
+            if ready < 0
+                && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+            {
+                return Err(started.elapsed());
+            }
+        }
+    }
+
+    /// Present the CPU renderer's screen: copy what the back buffer is
+    /// missing, by the per-buffer destination history, and queue a flip.
+    /// The caller has waited for the previous flip.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the mapping, history transaction, cursor write and flip stay ordered together, as in present_scene_damage"
+    )]
+    pub(crate) fn present_cpu(
+        &mut self,
+        cpu: &mut super::cpu_present::CpuRenderer,
+        cursor: Option<(f64, f64)>,
+    ) {
+        if self.use_pageflip && self.flip_pending {
+            return;
+        }
+        let idx = if self.use_pageflip {
+            1usize.saturating_sub(self.front)
+        } else {
+            self.front
+        };
+        let (dw, dh) = (self.width as usize, self.height as usize);
+        let hw_cursor_active = self.hw_cursor_active;
+        cpu.record_cursor(!hw_cursor_active);
+        let cursor_bitmap = self.cursor_bitmap();
+        let current_cursor = (!hw_cursor_active)
+            .then(|| software_cursor_damage_rect(cursor, dw, dh, cursor_bitmap.as_deref()))
+            .flatten();
+        let previous_cursor = (!hw_cursor_active)
+            .then(|| self.xrgb_software_cursor.get(idx).copied().flatten())
+            .flatten();
+        if current_cursor != previous_cursor {
+            for rect in [previous_cursor, current_cursor].into_iter().flatten() {
+                cpu.add_pending(rect);
+            }
+        }
+        if !cpu.has_pending() {
+            return;
+        }
+        let Some(pitch) = self.buffers.get(idx).map(|buffer| buffer.pitch() as usize) else {
+            return;
+        };
+        let identity = self
+            .xrgb_scanout_epoch
+            .map(|scanout_epoch| XrgbHistoryIdentity {
+                bridge_generation: u64::MAX,
+                bridge_epoch: cpu.generation(),
+                width: self.width,
+                height: self.height,
+                pitch,
+                targets: 2,
+                scanout_epoch,
+            });
+        let revision = cpu.presented_revision().wrapping_add(1);
+        let pending: Option<Vec<FineDamageRect>> = cpu.pending().map(<[_]>::to_vec);
+        let extra = previous_cursor.as_slice();
+        let started = Instant::now();
+        let mut fresh_mapping = false;
+        let written = (|| -> Option<(u64, usize, bool)> {
+            let handle = u32::from(self.buffers.get(idx)?.handle());
+            let len = pitch.checked_mul(dh)?;
+            let slot = self.cpu_maps.get_mut(idx)?;
+            if slot
+                .as_ref()
+                .is_none_or(|mapping| mapping.handle != handle || mapping.len != len)
+            {
+                *slot = None;
+                fresh_mapping = true;
+                match CpuMapping::new(self.card.as_fd(), handle, len) {
+                    Ok(mapping) => *slot = Some(mapping),
+                    Err(error) => {
+                        tracing::warn!("DRM scanout: mapping a dumb buffer: {error}");
+                        return None;
+                    }
+                }
+            }
+            let dst = slot.as_mut()?.bytes();
+            let transaction = self.xrgb_history.prepare(
+                idx,
+                identity,
+                revision,
+                Some(cpu.presented_revision()),
+                pending.as_deref(),
+                extra,
+            );
+            let full_rect = FineDamageRect {
+                x: 0,
+                y: 0,
+                width: self.width,
+                height: self.height,
+            };
+            let (pixels, rects, full) = match transaction.write_plan() {
+                XrgbWritePlan::Full => (cpu.copy_to_xrgb(dst, pitch, full_rect), 1, true),
+                XrgbWritePlan::Rects(rects) => (
+                    rects
+                        .iter()
+                        .map(|rect| cpu.copy_to_xrgb(dst, pitch, *rect))
+                        .sum(),
+                    rects.len(),
+                    false,
+                ),
+            };
+            if !hw_cursor_active {
+                if let Some((px, py)) = cursor
+                    && let Some(bitmap) = cursor_bitmap.as_deref()
+                {
+                    draw_cursor(dst, pitch, dw, dh, pixel_coord(px), pixel_coord(py), bitmap);
+                }
+                if let Some(slot) = self.xrgb_software_cursor.get_mut(idx) {
+                    *slot = current_cursor;
+                }
+            }
+            transaction.commit(XrgbHistoryCommit::DamageAccepted);
+            Some((pixels, rects, full))
+        })();
+        let Some((pixels, rects, full)) = written else {
+            self.invalidate_xrgb_history();
+            return;
+        };
+        let copy = started.elapsed();
+        // A buffer mapped just now pays its page faults in this copy.
+        if full && !fresh_mapping {
+            cpu.measure_cached_copy_once(copy);
+        }
+        cpu.record_present(copy, pixels, rects);
+        let accepted = if self.use_pageflip {
+            let (cw, ch) = self.clip_dims();
+            let clip = ClipRect::new(0, 0, cw, ch);
+            let dirty_ok = self
+                .fb_at(idx)
+                .is_some_and(|fb| self.card.dirty_framebuffer(fb, &[clip]).is_ok());
+            let flip_ok = self.flip_to(idx);
+            pageflip_history_commit_is_safe(dirty_ok, flip_ok)
+        } else {
+            self.flush_dirty(idx)
+        };
+        if !accepted {
+            self.invalidate_xrgb_history();
+        }
+        cpu.finish_present(revision, accepted);
+    }
+
     /// Present without draining DRM events first: the multi-output backend drains the shared card fd
     /// once per frame and routes via [`Self::mark_flip_complete`] — draining per-scanout here would steal sibling outputs' events.
     pub fn present_no_drain<F>(&mut self, cursor: Option<(f64, f64)>, fill: F)
@@ -2710,6 +2928,7 @@ impl DrmScanout {
             Ok(()) => {
                 self.flip_submission = self.flip_submission.wrapping_add(1);
                 self.flip_queued_at = Some(std::time::Instant::now());
+                self.flip_queued_mono = Some(monotonic_now());
                 self.front = idx;
                 self.note_publish(false, true);
                 tracing::trace!(
@@ -3374,6 +3593,90 @@ fn software_cursor_damage_rect(
         width: u32::try_from(rect_width).ok()?,
         height: u32::try_from(rect_height).ok()?,
     })
+}
+
+/// A dumb buffer mapped for as long as the CPU renderer writes it. Mapping
+/// it for every frame costs milliseconds: the mmap, the page faults and the
+/// TLB shootdown of the munmap, for a copy of a few hundred pixels.
+struct CpuMapping {
+    handle: u32,
+    ptr: std::ptr::NonNull<u8>,
+    len: usize,
+}
+
+// SAFETY: the mapping is shared memory of a buffer this scanout owns; the
+// pointer is only dereferenced through `&mut self`.
+unsafe impl Send for CpuMapping {}
+
+impl CpuMapping {
+    fn new(card: BorrowedFd<'_>, handle: u32, len: usize) -> std::io::Result<Self> {
+        /// `DRM_IOCTL_MODE_MAP_DUMB`: `_IOWR('d', 0xB3, struct drm_mode_map_dumb)`.
+        const MAP_DUMB: u32 = 0xC010_64B3;
+        #[repr(C)]
+        struct MapDumb {
+            handle: u32,
+            pad: u32,
+            offset: u64,
+        }
+        let mut request = MapDumb {
+            handle,
+            pad: 0,
+            offset: 0,
+        };
+        // SAFETY: the request is the kernel's `drm_mode_map_dumb` layout and
+        // lives for the call.
+        let result = unsafe { libc::ioctl(card.as_raw_fd(), MAP_DUMB.into(), &raw mut request) };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let offset = libc::off_t::try_from(request.offset)
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
+        // SAFETY: a fresh shared mapping of the buffer's fake offset on the
+        // card; the kernel checks `len` against the buffer size.
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                card.as_raw_fd(),
+                offset,
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            return Err(std::io::Error::last_os_error());
+        }
+        let ptr = std::ptr::NonNull::new(ptr.cast::<u8>())
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
+        Ok(Self { handle, ptr, len })
+    }
+
+    fn bytes(&mut self) -> &mut [u8] {
+        // SAFETY: `ptr` maps `len` bytes until `drop`, and `&mut self` is
+        // the only access.
+        unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
+    }
+}
+
+impl Drop for CpuMapping {
+    fn drop(&mut self) {
+        // SAFETY: unmaps exactly the mapping made in `new`.
+        unsafe { libc::munmap(self.ptr.as_ptr().cast(), self.len) };
+    }
+}
+
+/// `CLOCK_MONOTONIC` now, comparable with page-flip event timestamps.
+fn monotonic_now() -> Duration {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `now` is a valid timespec for the duration of the call.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut now) };
+    Duration::new(
+        u64::try_from(now.tv_sec).unwrap_or(0),
+        u32::try_from(now.tv_nsec).unwrap_or(0),
+    )
 }
 
 /// A tracked page-flip write remains reusable only if both the established transfer hint and the

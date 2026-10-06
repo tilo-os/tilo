@@ -2400,6 +2400,7 @@ a11y-speaker-listener = { $group } can calibrate with this microphone
 a11y-speaker-listener-description = Speaker calibration may listen with this microphone; activate to stop
 speaker-calibration-listening-refused = { $microphone } was not allowed to listen, so nothing can be measured from where you sit
 speaker-error-listening-unavailable = choose a microphone that can listen where you sit
+lock-screen-unlock = Unlock session
 shortcut-name-dictation-toggle = Start or finish dictation
 shortcut-name-dictation-finish = Finish dictation
 shortcut-name-dictation-cancel = Cancel dictation
