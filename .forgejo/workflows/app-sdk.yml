@@ -323,6 +323,8 @@ jobs:
           server=$!
           "$CHROME" --headless=new --no-sandbox --enable-unsafe-webgpu \
             --enable-features=Vulkan --use-vulkan=swiftshader --use-angle=swiftshader \
+            --disable-background-timer-throttling --disable-renderer-backgrounding \
+            --disable-backgrounding-occluded-windows \
             --remote-debugging-port="$CDP_PORT" --user-data-dir="$RUNNER_TEMP/chrome-profile" \
             about:blank &
           chrome=$!
