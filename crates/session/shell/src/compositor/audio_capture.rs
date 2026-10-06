@@ -371,7 +371,10 @@ mod tests {
                 Ok(())
             });
         }
-        assert!(recorder.status().expect("run protected child").success());
+        let output =
+            bounded_command::run_prepared(recorder, None, PROBE_OUTPUT_LIMIT, PROBE_TIMEOUT)
+                .expect("run protected child");
+        assert!(output.status.success());
     }
 
     #[test]
