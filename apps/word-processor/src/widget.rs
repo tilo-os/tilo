@@ -9925,6 +9925,9 @@ impl Widget for WordProcessorWidget {
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
         self.tool_bar.settle(&mut edits.reborrow(), path);
+        if let Some(action) = self.tool_fired.take() {
+            self.tool_clicked(edits, action);
+        }
         self.drain_image_choice(edits);
         if let Some(scenario) = self.staged_scenario.take() {
             self.run_staged_scenario(edits, &scenario);
@@ -12564,13 +12567,21 @@ impl WordProcessorWidget {
                         let fired = std::rc::Rc::clone(&self.tool_fired);
                         let action = *action;
                         let on_click = move || fired.set(Some(action));
-                        match (action.icon(), active) {
+                        let command = match (action.icon(), active) {
                             (Some(icon), Some(on)) => {
                                 bar.push_icon_toggle(icon, label, *on, on_click)
                             }
                             (Some(icon), None) => bar.push_icon(icon, label, on_click),
                             (None, Some(on)) => bar.push_toggle(label, *on, on_click),
                             (None, None) => bar.push_button(label, on_click),
+                        };
+                        let id = format!("word.toolbar.{}", tool_action_id(action));
+                        // Admission runs the control callback; settlement submits
+                        // document edits through their existing typed dispatcher.
+                        if action.edits_document() || action == ToolAction::InsertImage {
+                            command.with_effect(&id)
+                        } else {
+                            command.with_view(&id)
                         }
                     }
                     ToolEntry::Separator => bar.push_separator(),
