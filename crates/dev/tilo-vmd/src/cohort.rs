@@ -164,22 +164,31 @@ fn application(
     tilo_app_package::validate_manifest(&manifest).map_err(invalid)?;
     let isa = &manifest.package.isa;
     let native_isa = match arch {
-        "x86_64" => isa.x86_64.is_some() && isa.aarch64.is_none(),
-        "aarch64" => isa.aarch64.is_some() && isa.x86_64.is_none(),
+        "x86_64" => isa
+            .for_arch(tilo_app_package::manifest::Arch::X86_64)
+            .is_some(),
+        "aarch64" => isa
+            .for_arch(tilo_app_package::manifest::Arch::AArch64)
+            .is_some(),
         _ => false,
     };
     if hex::encode(record.root.publisher_identity) != publisher
         || row.publisher_key_hex != publisher
         || manifest.package.id != row.id
-        || manifest.package.kind != tilo_app_package::Kind::App
+        || !matches!(
+            manifest.package.kind,
+            tilo_app_package::Kind::App | tilo_app_package::Kind::Service
+        )
+        || !manifest.package.publishable_as("tilo-os")
         || manifest.package.runtime.as_deref() != Some(runtime)
         || row.runtime != runtime
         || !native_isa
         || manifest.target.is_some()
     {
-        return Err(invalid(
-            "a signed app is not bound to the cohort publisher, runtime and ISA",
-        ));
+        return Err(invalid(format!(
+            "signed native package {} is not bound to the cohort publisher, platform, runtime and ISA",
+            row.id
+        )));
     }
     let entry = &manifest
         .entrypoint
