@@ -9745,7 +9745,7 @@ pub fn run() {
         }
         input_steps.step("settings");
         input_methods.follow_input(&mut state, &test_control_ctx.input);
-        input_methods.tick();
+        input_methods.tick(&mut state);
         for (output, on) in state.output_management.take_power_requests() {
             backend.set_output_power(output, on);
         }
