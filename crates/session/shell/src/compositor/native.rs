@@ -2809,7 +2809,7 @@ impl ControlState for FrameBuilderControlState<'_> {
     fn foreign_frames_json(&self) -> serde_json::Value {
         let chrome = self.fb.chrome();
         let store = crate::compositor::foreign::store();
-        let frames: Vec<serde_json::Value> =
+        let mut frames: Vec<serde_json::Value> =
             crate::compositor::foreign::foreign_tabs(&chrome.tree())
                 .into_iter()
                 .map(|tab| {
@@ -2843,12 +2843,41 @@ impl ControlState for FrameBuilderControlState<'_> {
                         "buffer": buffer,
                         // Whether the shell is painting this window yet.
                         "presented": store.is_presented(tab.surface_id),
+                        "pixels_ready": store.presentation_pixels(tab.surface_id).is_some(),
                         // And, while it is not, whether the placeholder card is up — without this
                         // a harness can't tell an empty desktop from one announcing an app is on its way.
                         "opening": store.is_opening(tab.surface_id),
                     })
                 })
                 .collect();
+        if let Some(seat) = self.seat {
+            frames.extend(seat.floating_toplevels.iter().map(|surface| {
+                let pixels = store.presentation_pixels(surface.surface_id);
+                // A mapped client or a retained transfer image is not proof
+                // that its secondary surface is currently being presented.
+                let visible = !surface.suspended
+                    && surface.presented
+                    && surface.transfer_source.is_none()
+                    && store.is_presented(surface.surface_id);
+                serde_json::json!({
+                    "surface_id": surface.surface_id,
+                    "app_id": surface.app_id,
+                    "floating_id": surface.public_id,
+                    "frame_seq": store.frame_seq(surface.surface_id),
+                    "last_error": store.last_error(surface.surface_id),
+                    "rect": {
+                        "x": surface.rect.x0, "y": surface.rect.y0,
+                        "w": surface.rect.width(), "h": surface.rect.height(),
+                    },
+                    "buffer": store.frame_size(surface.surface_id)
+                        .map(|(w, h)| serde_json::json!({ "w": w, "h": h })),
+                    "presented": visible,
+                    "pixels_ready": pixels.is_some(),
+                    "suspended": surface.suspended,
+                    "transferring": surface.transfer_source.is_some(),
+                })
+            }));
+        }
         serde_json::Value::Array(frames)
     }
 
@@ -15438,6 +15467,91 @@ mod tests {
         let summoned = &state.chrome_state_json()["wheel_summon"];
         assert_eq!(summoned["x"].as_f64(), Some(1180.0));
         assert_eq!(summoned["y"].as_f64(), Some(450.0));
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn foreign_frames_observes_floating_pixels_and_native_withdrawal() {
+        let event_loop: calloop::EventLoop<State> =
+            calloop::EventLoop::try_new().expect("event loop");
+        let display: Display<State> = Display::new().expect("display");
+        let mut seat = State::new(event_loop.handle(), display.handle());
+        let fb = FrameBuilder::new((1600, 900));
+        let surface_id = 984_771;
+        let rect = Rect::new(800.0, 100.0, 802.0, 102.0);
+        let store = crate::compositor::foreign::store();
+        store.forget(surface_id);
+        seat.floating_toplevels
+            .push(crate::shell::floating::FloatingToplevel {
+                surface_id,
+                token: "private-capability-must-not-be-exported".into(),
+                connection: 7,
+                public_id: "chat.agent-direct:scribe".into(),
+                app_id: "so.tilo.chat".into(),
+                content_rect: rect,
+                rect,
+                transfer_frame: None,
+                transfer_source: None,
+                suspended: false,
+                presented: false,
+            });
+        let observe = |seat: &State| {
+            FrameBuilderControlState {
+                fb: &fb,
+                doc: None,
+                shares: None,
+                lock: None,
+                seat: Some(seat),
+            }
+            .foreign_frames_json()
+        };
+        let rows = observe(&seat);
+        let row = rows
+            .as_array()
+            .expect("observed frame rows")
+            .iter()
+            .find(|row| row["surface_id"] == surface_id)
+            .expect("native secondary surface");
+        assert_eq!(row["floating_id"], "chat.agent-direct:scribe");
+        assert_eq!(row["pixels_ready"], false);
+        assert_eq!(row["presented"], false);
+        assert!(row.get("token").is_none());
+        assert!(row.get("connection").is_none());
+        store.publish_rgba(surface_id, &[255; 16], 2, 2);
+        assert!(store.mark_presented(surface_id, rect));
+        seat.floating_toplevels[0].presented = true;
+        let rows = observe(&seat);
+        let row = rows
+            .as_array()
+            .expect("observed frame rows")
+            .iter()
+            .find(|row| row["surface_id"] == surface_id)
+            .expect("presented secondary surface");
+        assert_eq!(row["pixels_ready"], true);
+        assert_eq!(row["presented"], true);
+        assert_eq!(row["buffer"], serde_json::json!({"w": 2, "h": 2}));
+        seat.floating_toplevels[0].suspended = true;
+        let rows = observe(&seat);
+        let row = rows
+            .as_array()
+            .expect("observed frame rows")
+            .iter()
+            .find(|row| row["surface_id"] == surface_id)
+            .expect("retained hidden surface");
+        assert_eq!(row["pixels_ready"], true);
+        assert_eq!(
+            row["presented"], false,
+            "retained pixels cannot prove a detached view"
+        );
+        seat.floating_toplevels.clear();
+        assert!(
+            observe(&seat)
+                .as_array()
+                .expect("observed frame rows")
+                .iter()
+                .all(|row| row["surface_id"] != surface_id)
+        );
+        store.forget(surface_id);
     }
 
     /// `chrome.displays` names what is painted: every connected display and
