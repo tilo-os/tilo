@@ -523,7 +523,7 @@ fn draw_word(ctx: &mut PaintCtx<'_>, rect: Rect, word: &str, ink: Color) {
 fn draw_label(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, ratio: f64, ink: Color) {
     if label.chars().count() == 1 {
         let label_px = ctx.theme.text(TextRole::Label).size;
-        let px = ((rect.height() * ratio) as f32).max(label_px);
+        let px = ((rect.height() * ratio).min(rect.width() * 0.85) as f32).max(label_px);
         draw_glyph(ctx, rect, label, px, ink);
     } else {
         draw_word(ctx, rect, label, ink);
@@ -756,7 +756,12 @@ fn draw_toolbar_item(
 ) {
     let control = ui::widget::ControlSize::Regular;
     let square = ButtonFace::height(control, ctx.theme);
-    let rect = Rect::from_center_size(cell.center(), (square, square));
+    let width = if item.icon.is_some() {
+        square
+    } else {
+        cell.width()
+    };
+    let rect = Rect::from_center_size(cell.center(), (width, square));
     let face = match item.icon {
         Some(icon) => ButtonFace::icon_only(rect, icon, &item.label),
         None => ButtonFace::new(rect, &item.label).role(ButtonRole::Plain),

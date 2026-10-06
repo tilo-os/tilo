@@ -18,6 +18,16 @@
 #define FRAME_LIMIT 65536
 static int connection = -2;
 
+// The hash-pinned NotificationManager owns this live GNotification builder.
+// Category conveys persistence without elevating urgency or granting services.
+JNIEXPORT void JNICALL Java_android_app_TiloChooser_markOngoingNative(
+        JNIEnv *env, jclass klass, jlong builder) {
+    (void)env;
+    (void)klass;
+    if (builder) g_notification_set_category((GNotification *)(intptr_t)builder,
+            "x-tilo.android-ongoing");
+}
+
 static gchar *java_utf8(JNIEnv *env, jstring value, jsize limit) {
     if (!value) return NULL;
     jsize length = (*env)->GetStringLength(env, value);
