@@ -114,6 +114,15 @@ pub fn create(dispatch: &Dispatcher<ArtworkResource>, tools: &Tools) -> bool {
         tools.workspace.set(crate::tools::Workspace::Pixel);
         tools.choose_preset(crate::brushes::Preset::Pixel);
         tools.tool.set(crate::tools::Tool::Brush);
+    } else {
+        tools.workspace.set(crate::tools::Workspace::Auto);
+        tools.choose_preset(crate::brushes::Preset::Round);
+        let start = document::start(&tools.new.start.get()).unwrap_or(STARTS[0]);
+        tools.tool.set(if start.medium.is_empty() {
+            crate::tools::Tool::Select
+        } else {
+            crate::tools::Tool::Brush
+        });
     }
     tools.file.set(None);
     tools.selection.set(Vec::new());

@@ -1199,3 +1199,47 @@ fn a_large_pixel_sheet_fits_below_actual_size_and_paints_in_artwork_cells() {
         "pixel reductions are reciprocal whole-cell steps"
     );
 }
+
+#[test]
+fn opening_a_differently_sized_artwork_fits_after_manual_pixel_zoom() {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.call("new-artwork", serde_json::json!({"width":128,"height":128}))
+        .unwrap();
+    app.harness()
+        .perform_semantic_named(
+            "canvas-workspace",
+            Some("canvas-workspace:segment:3"),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    app.harness().key("Ctrl+1");
+    app.harness().key("+");
+    app.harness().key("+");
+    app.call(
+        "new-artwork",
+        serde_json::json!({"width":4096,"height":4096}),
+    )
+    .unwrap();
+    let saved = app
+        .call("save-artwork", serde_json::json!({}))
+        .unwrap()
+        .unwrap();
+    app.call("new-artwork", serde_json::json!({"width":128,"height":128}))
+        .unwrap();
+    app.harness().key("Ctrl+1");
+    app.harness().key("+");
+    app.call("open-artwork", serde_json::json!({"file":saved["content"]}))
+        .unwrap();
+    let canvas = app.harness().targets()["canvas"];
+    app.harness()
+        .click_at(canvas.center().x + 30.0, canvas.center().y);
+    let art = app.state();
+    let Shape::Stroke { points, .. } = &art.marks[0].shape else {
+        panic!("pixel stroke");
+    };
+    assert!(
+        points[0][0] > 2100.0,
+        "new artwork is fitted, not painted through the old 2x zoom: {:?}",
+        points[0]
+    );
+}
