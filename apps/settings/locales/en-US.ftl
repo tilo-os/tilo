@@ -1761,3 +1761,9 @@ settings-printers-read-error = Can't list printers: { $error }
 settings-printers-jobs-read-error = Can't list print jobs: { $error }
 settings-printers-scanners-read-error = Can't list scanners: { $error }
 agent-key-read-error = Can't tell whether a key is saved: { $error }
+
+accounts-browser-identity-title = Tilo browser identities
+accounts-browser-identity-about = Public account choices for existing browser sign-ins. Hiding or removing a choice does not revoke sign-in or resource permissions.
+accounts-browser-identity-hide = Hide from browser picker
+accounts-browser-identity-show = Show in browser picker
+accounts-browser-identity-remove = Remove browser choice

@@ -328,6 +328,8 @@ pub(crate) enum Hit {
     AttachPick(String),
     StartCall,
     StopSharingLiveContext,
+    CopyResourceLink(Id),
+    OpenResourceLink(Id),
     /// Open the platform search over Chat.
     Search,
     CloseThread,
@@ -377,6 +379,8 @@ impl Hit {
             Self::AttachPick(path) => format!("chat.attach-pick:{path}"),
             Self::StartCall => "chat.start-call".into(),
             Self::StopSharingLiveContext => "chat.stop-sharing-live-context".into(),
+            Self::CopyResourceLink(id) => format!("chat.copy-resource-link:{id}"),
+            Self::OpenResourceLink(id) => format!("chat.open-resource-link:{id}"),
             Self::Search => "chat.search".into(),
             Self::ToggleLeftFlap => "chat.toggle-navigation".into(),
             Self::ToggleRightFlap => "chat.toggle-details".into(),
@@ -632,6 +636,7 @@ pub struct ChatApp {
     // Call state.
     pub(crate) call: CallState,
     pub(crate) native_voice: crate::local_voice::LocalVoice,
+    pub(crate) resource_navigation: crate::shared_resources::Navigation,
     /// Measured control/header sizes of the expanded call overlay, refreshed
     /// by the paint pass and read by the renderer-less layout functions.
     pub(crate) call_overlay_metrics: crate::render_call::CallOverlayMetrics,
@@ -909,6 +914,7 @@ impl ChatApp {
             swipe: None,
             call: CallState::default(),
             native_voice: crate::local_voice::LocalVoice::default(),
+            resource_navigation: crate::shared_resources::Navigation::default(),
             call_overlay_metrics: crate::render_call::CallOverlayMetrics::default(),
             call_overlay_metrics_key: None,
             realtime: crate::continuity::ChatRealtimeContinuity::default(),
@@ -2691,6 +2697,16 @@ impl ChatApp {
                     Hit::StopSharingLiveContext => {
                         (crate::i18n::t("chat-context-stop"), Role::Button, false)
                     }
+                    Hit::CopyResourceLink(_) => (
+                        crate::i18n::t("chat-resource-copy-link"),
+                        Role::Button,
+                        false,
+                    ),
+                    Hit::OpenResourceLink(_) => (
+                        crate::i18n::t("chat-resource-open-link"),
+                        Role::Button,
+                        false,
+                    ),
                     Hit::Search => ("Search Chat".into(), Role::Button, false),
                     Hit::ToggleLeftFlap => {
                         ("Show conversation navigation".into(), Role::Button, false)
@@ -2903,6 +2919,7 @@ impl Collaborative for ChatApp {
             self.realtime.target_media_ready = false;
         }
         let mut requests = std::mem::take(&mut self.realtime.requests);
+        requests.extend(self.resource_navigation_requests());
         let before = self.native_voice.snapshot.state;
         requests.extend(self.native_voice.take_requests(ui::time::now()));
         if before != self.native_voice.snapshot.state {
@@ -2913,6 +2930,9 @@ impl Collaborative for ChatApp {
 
     fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
         match event {
+            ui::collaboration::CollabEvent::RemoteAction { message } => {
+                self.complete_resource_navigation(message);
+            }
             ui::collaboration::CollabEvent::FollowChanged { peer_id } => {
                 self.context_follow_requested = peer_id.is_some();
                 self.following_context = false;
@@ -3840,6 +3860,7 @@ impl Widget for ChatApp {
 
     fn needs_animation_frame(&self) -> bool {
         self.read_on_present
+            || self.resource_navigation.pending()
             || (self.thread_open.is_some() && self.thread_scroll.needs_animation_frame())
             || self.flap_animating
             || self.call_chrome_motion.animating

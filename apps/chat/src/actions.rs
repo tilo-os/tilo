@@ -103,6 +103,9 @@ pub enum ChatAction {
         /// references still decodes.
         #[serde(default)]
         reference: Option<tilo_reference::ResourceRef>,
+        /// Existing record provider; an address only, never authority or a URL.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_provider: Option<String>,
         /// The body as written (paragraphs, marks, mentions marked); `text`
         /// is its plain text. Empty for a plain message, and in a frame from
         /// a release that predates rich bodies.
@@ -477,9 +480,18 @@ impl ChatAction {
                 attachment,
                 mentions,
                 reference,
+                source_provider,
                 body,
             } => {
                 let author = signed_by()?;
+                if source_provider
+                    .as_deref()
+                    .is_some_and(|provider| reference.is_none() || !valid_source_provider(provider))
+                {
+                    return Err(ActionError::Refused(
+                        "Invalid shared resource provider".into(),
+                    ));
+                }
                 if reference
                     .as_ref()
                     .is_some_and(|reference| !valid_reference(reference))
@@ -510,6 +522,7 @@ impl ChatAction {
                         attachment: attachment.clone(),
                         mentions: mentions.clone(),
                         reference: reference.clone(),
+                        source_provider: source_provider.clone(),
                         body: body.clone(),
                         ..Default::default()
                     },
@@ -682,6 +695,7 @@ pub fn send_message_action(
         attachment,
         mentions,
         reference: None,
+        source_provider: None,
         body: Vec::new(),
     }
 }
@@ -872,6 +886,7 @@ pub struct MessageResource {
     pub attachment: Option<AttachmentResource>,
     /// Live resource address; sharing it does not grant access to its target.
     pub reference: Option<tilo_reference::ResourceRef>,
+    pub source_provider: Option<String>,
     /// Reactions are shared rows keyed by their canonical emoji value. Keeping
     /// them as children makes a reaction discoverable and actionable without
     /// forcing callers to parse the message body or inspect a rendered chip.
@@ -1102,6 +1117,23 @@ fn valid_reference(reference: &tilo_reference::ResourceRef) -> bool {
         && reference.span.is_none_or(|span| span.start <= span.end)
 }
 
+/// An existing typed record provider. The host resolves and authorizes it;
+/// storing this address neither admits a collaborator nor grants Read.
+pub(crate) fn valid_source_provider(provider: &str) -> bool {
+    let Some(rest) = provider.strip_prefix("record:") else {
+        return false;
+    };
+    let Some((app, _record)) = rest.split_once(':') else {
+        return false;
+    };
+    provider.len() <= 2048
+        && !app.is_empty()
+        && !provider.chars().any(char::is_control)
+        && !provider.contains("://")
+        && !provider.contains('/')
+        && !provider.contains('\\')
+}
+
 fn share_resource_spec(channel: &str) -> ActionSpec {
     use tilo_actions::{ActionParam, ParamType};
     let channel = channel.to_owned();
@@ -1131,6 +1163,11 @@ fn share_resource_spec(channel: &str) -> ActionSpec {
                 }
             })),
             ActionParam::optional("text", ParamType::Text, "Words accompanying the resource"),
+            ActionParam::optional(
+                "sourceProvider",
+                ParamType::Text,
+                "Existing record provider; required to open or copy a browser link",
+            ),
         ],
         move |args| {
             let reference = args.get("reference").and_then(|value| {
@@ -1142,6 +1179,16 @@ fn share_resource_spec(channel: &str) -> ActionSpec {
                     payload: b"A bounded Tilo resource address is required".to_vec(),
                 };
             };
+            let source_provider = args.text("sourceProvider").map(str::to_owned);
+            if source_provider
+                .as_deref()
+                .is_some_and(|value| !valid_source_provider(value))
+            {
+                return EncodedAction {
+                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                    payload: b"An existing record provider is required".to_vec(),
+                };
+            }
             let text = args
                 .text("text")
                 .filter(|text| !text.trim().is_empty())
@@ -1161,6 +1208,7 @@ fn share_resource_spec(channel: &str) -> ActionSpec {
                 attachment: None,
                 mentions: Vec::new(),
                 reference: Some(reference),
+                source_provider,
                 body: Vec::new(),
             })
         },
@@ -1187,6 +1235,25 @@ fn publish_call(ch: &ChannelResource) -> Resource {
 /// A message: reveal and read it, edit, react, pin or unpin, delete; an
 /// agent's record of its work on its own message; its attachment and
 /// reactions.
+fn with_resource_navigation(mut message: Resource, m: &MessageResource) -> Resource {
+    if m.reference.is_some() && m.source_provider.is_some() {
+        message = message
+            .with_action(
+                ChatEffect::CopyResourceLink {
+                    message: m.id.clone(),
+                }
+                .bound(),
+            )
+            .with_action(
+                ChatEffect::OpenResourceLink {
+                    message: m.id.clone(),
+                }
+                .bound(),
+            );
+    }
+    message
+}
+
 fn publish_message(m: &MessageResource) -> Resource {
     let reveal = || {
         ChatEffect::RevealMessage {
@@ -1220,6 +1287,7 @@ fn publish_message(m: &MessageResource) -> Resource {
         }
         .bound(),
     );
+    message = with_resource_navigation(message, m);
     message = message.with_action(ActionSpec::prompted(
         "edit",
         "Edit message",
@@ -1553,13 +1621,14 @@ pub fn message_read_schema() -> &'static serde_json::Value {
     static SCHEMA: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
     SCHEMA.get_or_init(|| {
         serde_json::json!({"type":"object",
-            "required":["id","channel","parent","author","authorName","agent","mine","ts","edited","text","work","reference"],
+            "required":["id","channel","parent","author","authorName","agent","mine","ts","edited","text","work","reference","sourceProvider"],
             "properties":{
                 "id":{"type":"string"},"channel":{"type":"string"},"parent":{"type":["string","null"]},
                 "author":{"type":"string"},"authorName":{"type":"string"},"agent":{"type":"boolean"},
                 "mine":{"type":"boolean"},"ts":{"type":"integer"},"edited":{"type":"boolean"},
                 "text":{"type":"string"},"work":{"type":["object","null"]},
-                "reference":{"type":["object","null"]}
+                "reference":{"type":["object","null"]},
+                "sourceProvider":{"type":["string","null"]}
             }})
     })
 }
@@ -1885,6 +1954,7 @@ mod tests {
             attachment: None,
             mentions: Vec::new(),
             reference: Some(reference.clone()),
+            source_provider: Some("record:so.tilo.word-processor:proposal".into()),
             body: Vec::new(),
         };
         apply_as(&mut first, "u_aria", &action).unwrap();
@@ -1901,6 +1971,10 @@ mod tests {
         assert_eq!(shared.len(), 1);
         assert_eq!(shared[0].reference, Some(reference));
         assert_eq!(shared[0].author, "u_aria");
+        assert_eq!(
+            shared[0].source_provider.as_deref(),
+            Some("record:so.tilo.word-processor:proposal")
+        );
         assert!(
             shared[0].attachment.is_none(),
             "no serialized document or media bytes"

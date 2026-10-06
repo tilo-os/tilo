@@ -129,6 +129,59 @@ impl PersonAccounts {
             .collect()
     }
 
+    /// Publish this signed-in identity's public browser connection metadata.
+    /// This changes the Settings account record only; it creates no credential,
+    /// certificate, room membership or content key. Republishing preserves a
+    /// person's disabled choice and chosen account name.
+    ///
+    /// # Errors
+    /// Refuses malformed public metadata or an occupied identity account id.
+    #[action]
+    pub fn publish_browser_identity(
+        &mut self,
+        root: String,
+        origin: String,
+        display_name: String,
+    ) -> Result<(), Refusal> {
+        if root.len() != 64
+            || !root.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || root != root.to_ascii_lowercase()
+            || display_name.trim().is_empty()
+            || display_name.chars().count() > 160
+            || display_name.chars().any(char::is_control)
+        {
+            return Err(Refusal::from(
+                "a bounded public identity and name are required",
+            ));
+        }
+        let url =
+            url::Url::parse(&origin).map_err(|_| Refusal::from("an HTTPS origin is required"))?;
+        if url.scheme() != "https"
+            || url.origin().ascii_serialization() != origin
+            || origin.len() > 2048
+        {
+            return Err(Refusal::from("a canonical HTTPS origin is required"));
+        }
+        let id = format!("tilo-identity:{root}@{origin}");
+        let key = Id::from_raw(id.clone());
+        if let Some(existing) = self.accounts.get(&key) {
+            if existing.type_id != TILO_IDENTITY_TYPE {
+                return Err(Refusal::from("the identity account id is already in use"));
+            }
+            // No overwrite: removal/disable/name edits are ordinary Settings
+            // actions. A normal sign-in must not silently reverse them.
+            return Ok(());
+        }
+        self.save_account(
+            id,
+            TILO_IDENTITY_TYPE.into(),
+            display_name,
+            serde_json::json!({"userPublicKey": root, "origin": origin}),
+            true,
+            0,
+        )
+    }
+
     /// Save an account: add it, or replace the one with its id.
     #[action]
     pub fn save_account(
@@ -354,6 +407,80 @@ mod tests {
                 .browser_accounts(&root, origin)
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn identity_publication_uses_the_shared_account_record_and_preserves_disabled_choices() {
+        let root = "ab".repeat(32);
+        let origin = "https://host.example";
+        let mut record = Replica::<PersonAccounts>::new();
+        let publication = PersonAccounts::PUBLISH_BROWSER_IDENTITY.with((
+            root.clone(),
+            origin.into(),
+            "Work".into(),
+        ));
+        record.apply(publication.clone()).unwrap();
+        record.apply(publication.clone()).unwrap();
+        let choices = record.state().unwrap().browser_accounts(&root, origin);
+        assert_eq!(choices.len(), 1);
+        assert_eq!(choices[0].display_name, "Work");
+        let id = choices[0].id.clone();
+        let account = record
+            .state()
+            .unwrap()
+            .store()
+            .get(&id.clone().into())
+            .unwrap()
+            .clone();
+        assert_eq!(
+            account.config,
+            serde_json::json!({"userPublicKey": root, "origin": origin})
+        );
+        record
+            .apply(PersonAccounts::SAVE_ACCOUNT.with((
+                id.clone(),
+                TILO_IDENTITY_TYPE.into(),
+                "Private".into(),
+                account.config,
+                false,
+                0,
+            )))
+            .unwrap();
+        record.apply(publication).unwrap();
+        assert!(
+            record
+                .state()
+                .unwrap()
+                .browser_accounts(&root, origin)
+                .is_empty()
+        );
+        assert_eq!(
+            record
+                .state()
+                .unwrap()
+                .store()
+                .get(&id.into())
+                .unwrap()
+                .display_name,
+            "Private"
+        );
+        for invalid in [
+            "http://host.example",
+            "https://host.example/path",
+            "https://name:secret@host.example",
+            "https://host.example/?key=value",
+        ] {
+            assert!(
+                record
+                    .apply(PersonAccounts::PUBLISH_BROWSER_IDENTITY.with((
+                        root.clone(),
+                        invalid.into(),
+                        "Work".into()
+                    )))
+                    .is_err()
+            );
+        }
+        assert_eq!(record.state().unwrap().store().all().len(), 1);
     }
 
     fn save(replica: &mut Replica<PersonAccounts>, id: &str, type_id: &str, host: &str) {

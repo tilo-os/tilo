@@ -352,3 +352,42 @@ Cloud's response-header policy also limits connection destinations to the config
 packet relay and listed AWS/Cognito origins. Its hosting owner must verify that the
 resource viewer's admitted relay origin is supported by that existing policy. This
 investigation does not change CSP, CORS, trust, or permission configuration.
+
+### Native browser navigation and identity publication
+
+New `share-resource` messages can include `sourceProvider`, the existing typed
+`record:<app>:<record>` provider. The message keeps that provenance beside its
+resource address; it does not carry a host URL, bytes or access grant. Older
+messages remain readable but cannot mint a browser link without provenance.
+`read-message` exports the provider, and message resources with provenance offer
+`copy-resource-link` and `open-resource-link`. Their visible controls use shared
+Buttons and the same public effects as automation.
+
+Both effects request fresh exact-view metadata through the existing certified
+native catalogue bridge. One lookup may run at a time, with cancellation and a
+30-second timeout. The completion checks the message still carries the same
+reference/provider. The host's locator supplies the governed room, certified
+host device, HTTPS listener origin, and optional operator-configured
+`resource_browser_page`. Absent browser hosting is reported, never guessed from
+the API listener origin. Only a matching permitted declared local View becomes a
+version-one browser fragment; labels, document bytes, invitations and credentials
+are excluded. Browser hydration still rechecks admission and current Read.
+
+Settings' device-local `publish-browser-identity` effect takes a canonical HTTPS
+host origin and reads the process's bound public identity. It invokes the typed
+`publish-browser-identity` action on Settings' existing personal accounts record;
+no fallback registry, secret vault operation, certificate or membership is
+created. Republishing preserves an existing account's disabled choice and name.
+The account appears in Settings with shared visibility/removal controls and public
+row actions. These affect picker metadata only; they do not revoke sign-in or
+resource permissions. The Accounts area reads the same owned personal record,
+including external-account forms, rather than creating a second registry.
+This is an explicit public-metadata publication action after sign-in. Automatic
+publication from every sign-in entry has not been wired; callers must use this
+Settings action before the corresponding browser picker entry is available.
+
+Cloud's separate prepared change inventories `resource.html` and `resource.css`,
+with a stable external-module redirect to one immutable runtime release. Its
+fixtures preserve the resource fragment and existing CSP. No Cloud deployment,
+actual production bundle ABI verification, physical microphone test or deployed
+native-to-browser journey has run in this continuation.

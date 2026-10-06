@@ -1397,6 +1397,11 @@ impl ChatApp {
             header_h,
             body_h,
             work_h,
+            resource_h: if !editing && m.reference.is_some() && m.source_provider.is_some() {
+                2.0 * (ButtonFace::height(ControlSize::Regular, theme) + f64::from(sp.s2))
+            } else {
+                0.0
+            },
             att_h,
             react_h,
             edited_h,
@@ -1491,8 +1496,55 @@ impl ChatApp {
                 Hit::MessageMenu { msg: m.id.clone() },
             );
         }
+        if rm.resource_h > 0.0 {
+            self.draw_resource_navigation(PaintCtx::new(scene, tf, tr, theme), &m, column, y, hits);
+        }
         self.draw_row_footer(PaintCtx::new(scene, tf, tr, theme), rm, &m, column, y, hits);
         *y += rm.pad;
+    }
+
+    fn draw_resource_navigation(
+        &self,
+        paint: PaintCtx<'_>,
+        m: &Message,
+        column: MessageColumn,
+        y: &mut f64,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let PaintCtx {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let height = ButtonFace::height(ControlSize::Regular, theme);
+        for (key, hit) in [
+            (
+                "chat-resource-copy-link",
+                Hit::CopyResourceLink(m.id.clone()),
+            ),
+            (
+                "chat-resource-open-link",
+                Hit::OpenResourceLink(m.id.clone()),
+            ),
+        ] {
+            *y += gap;
+            let caption = crate::i18n::t(key);
+            let width = ButtonFace::new(Rect::ZERO, &caption)
+                .intrinsic_width(tr, theme)
+                .min(f64::from(column.text_width));
+            let rect = Rect::new(column.text_x, *y, column.text_x + width, *y + height);
+            Button::paint(
+                scene,
+                tf,
+                tr,
+                theme,
+                &ButtonFace::new(rect, &caption).hovered(self.hovered(rect)),
+            );
+            ChatApp::push_hit(hits, rect, hit);
+            *y += height;
+        }
     }
 
     /// A message group's header: avatar, author and time. Advances `*y`
@@ -3080,6 +3132,7 @@ struct RowM {
     header_h: f64,
     body_h: f64,
     work_h: f64,
+    resource_h: f64,
     att_h: f64,
     react_h: f64,
     edited_h: f64,
@@ -3102,6 +3155,7 @@ impl RowM {
             + header
             + body
             + self.work_h
+            + self.resource_h
             + self.edited_h
             + self.att_h
             + self.react_h
@@ -3286,6 +3340,7 @@ mod tests {
             header_h: 0.0,
             body_h: 0.0,
             work_h: 96.0,
+            resource_h: 0.0,
             att_h: 0.0,
             react_h: 0.0,
             edited_h: 0.0,

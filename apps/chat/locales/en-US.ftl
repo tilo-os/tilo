@@ -100,3 +100,6 @@ chat-header-voice-call = Voice call
 
 chat-identity-available = Available
 chat-identity-in-voice = In voice
+
+chat-resource-copy-link = Copy resource link
+chat-resource-open-link = Open resource in browser

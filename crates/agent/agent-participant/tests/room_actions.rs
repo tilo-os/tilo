@@ -395,6 +395,7 @@ impl tilo_agent_participant::room_actions::RoomRecordsLink for DeliveryReadFixtu
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Some(tilo_actions::remote::ResourceViewLocator {
             origin: "https://fixture.tilo.invalid".into(),
+            browser_page: Some("https://fixture.tilo.invalid/qos-runtime/resource.html".into()),
             room: room.into(),
             host_device: hex::encode(self.member.endpoint.host_cert.device_public_key),
             provider: provider.into(),

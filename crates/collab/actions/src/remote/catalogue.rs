@@ -46,6 +46,13 @@ pub struct ResourceViewLocator {
     pub host_device: String,
     /// Exact existing record provider checked by the host.
     pub provider: String,
+    /// Operator-configured browser entry. Absent until a compatible bundle is hosted.
+    #[serde(
+        default,
+        rename = "browserPage",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub browser_page: Option<String>,
 }
 
 /// One bounded request for catalogue rows. Every field narrows; the empty
