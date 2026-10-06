@@ -215,7 +215,6 @@ pub struct CpuRenderer {
     pending_full: bool,
     /// Present counter, the revision the scanout history chains on.
     presented_revision: u64,
-    base: Color,
     stats: CpuFrameStats,
     /// The last finished frame that changed pixels, until it is logged.
     finished: Option<CpuFrameStats>,
@@ -266,7 +265,6 @@ impl CpuRenderer {
             pending: Vec::new(),
             pending_full: true,
             presented_revision: 0,
-            base: ui::theme::Theme::configured().tokens.colors.surfaces.base,
             stats: CpuFrameStats::default(),
             finished: None,
             started: None,
@@ -452,8 +450,10 @@ impl CpuRenderer {
         else {
             return;
         };
+        // The produced scene owns the desktop ground. Clear invalid canvas
+        // regions to transparent before replaying that scene.
         self.raster
-            .render_prepared(&mut target, Some(&regions), self.base);
+            .render_prepared(&mut target, Some(&regions), Color::TRANSPARENT);
         self.stats.raster = started.elapsed();
         self.stats.raster_regions = regions.len();
         for region in &regions {
@@ -980,6 +980,47 @@ mod tests {
         );
         assert_eq!(pixel(&renderer, 40, 40), [0, 0, 255, 255]);
         assert_eq!(pixel(&renderer, 20, 20), [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn the_scene_owns_its_ground_and_removed_draws_leave_transparent_pixels() {
+        let mut renderer = CpuRenderer::new();
+        let mut picture = Scene::new();
+        picture.fill(
+            vello::peniko::Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(0, 0, 255),
+            None,
+            &Rect::new(16.0, 16.0, 32.0, 32.0),
+        );
+        renderer.update(
+            CpuFrame {
+                scene: &picture,
+                revision: 1,
+                previous_revision: None,
+                regions: None,
+            },
+            (64, 48),
+        );
+        assert_eq!(&renderer.canvas[..4], &[0, 0, 0, 0]);
+        assert_eq!(pixel(&renderer, 20, 20), [255, 0, 0, 255]);
+        renderer.mark_presented(1);
+
+        renderer.update(
+            CpuFrame {
+                scene: &Scene::new(),
+                revision: 2,
+                previous_revision: Some(1),
+                regions: None,
+            },
+            (64, 48),
+        );
+        assert!(
+            renderer.canvas.iter().all(|byte| *byte == 0),
+            "removing a draw clears its retained pixels without inventing a ground"
+        );
+        assert_eq!(renderer.stats().fill, "diff");
+        assert_eq!(renderer.stats().raster_px, 16 * 16);
     }
 
     #[test]
