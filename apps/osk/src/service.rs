@@ -50,11 +50,38 @@ pub(crate) enum InputMethodChoice {
     Off,
 }
 
+/// A bounded contextual-action update from the compositor-owned private display.
+#[derive(Clone, Debug)]
+pub(crate) enum ContextTransition {
+    Context {
+        generation: u32,
+        actions: Vec<tilo_input_context::ContextSlot>,
+    },
+    Result {
+        generation: u32,
+        slot: u32,
+        succeeded: bool,
+        message: String,
+    },
+}
+
+pub(crate) struct ContextChanges(Option<Receiver<ContextTransition>>);
+
+impl ContextChanges {
+    pub fn take(&self) -> Vec<ContextTransition> {
+        self.0
+            .as_ref()
+            .map_or_else(Vec::new, |changes| changes.try_iter().collect())
+    }
+}
+
 /// A keyboard serving the session: the focus changes the input method
 /// reports, and where the typed output goes.
 pub(crate) struct Connection {
     /// Focus changes; `None` for an always-visible keyboard.
     pub focus: Option<FocusChanges>,
+    pub context: Option<ContextChanges>,
+    pub invoke_context: Box<dyn FnMut(u32, u32) -> Result<(), String>>,
     /// Delivers every output of the keyboard, in order.
     pub output: Box<dyn FnMut(OskOutput)>,
 }
@@ -104,16 +131,29 @@ pub(crate) fn connect(choice: InputMethodChoice, wake: WakeHandle) -> Result<Con
         let mut emulator = PreeditEmulator::new();
         return Ok(Connection {
             focus: None,
+            context: None,
+            invoke_context: Box::new(|_, _| {
+                Err("contextual input actions require the trusted input method".into())
+            }),
             output: Box::new(move |output| injector.send(&emulator.symbols(&output))),
         });
     };
     tracing::info!("osk: auto-show via input-method-v2");
     let im = Arc::new(Mutex::new(im));
-    let focus = FocusChanges(Some(follow_focus(Arc::clone(&im), wake)));
+    let (context_send, context_receive) = std::sync::mpsc::channel();
+    let focus = FocusChanges(Some(follow_focus(Arc::clone(&im), wake, context_send)));
+    let invoking = Arc::clone(&im);
     let mut editing_keys = default_injector();
     let mut router = OrderedRouter::new();
     Ok(Connection {
         focus: Some(focus),
+        context: Some(ContextChanges(Some(context_receive))),
+        invoke_context: Box::new(move |generation, slot| {
+            invoking
+                .lock()
+                .map_err(|_| "input method connection is unavailable".to_owned())?
+                .invoke_context(generation, slot)
+        }),
         output: Box::new(move |output| {
             let Ok(mut im) = im.lock() else {
                 return;
@@ -125,7 +165,11 @@ pub(crate) fn connect(choice: InputMethodChoice, wake: WakeHandle) -> Result<Con
 
 /// Read the input method's focus events on a thread of their own, folded
 /// through an [`ImState`] into the changes the keyboard follows.
-fn follow_focus(im: Arc<Mutex<InputMethodClient>>, wake: WakeHandle) -> Receiver<ImTransition> {
+fn follow_focus(
+    im: Arc<Mutex<InputMethodClient>>,
+    wake: WakeHandle,
+    context_send: std::sync::mpsc::Sender<ContextTransition>,
+) -> Receiver<ImTransition> {
     let (send, receive) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut model = ImState::new();
@@ -134,13 +178,20 @@ fn follow_focus(im: Arc<Mutex<InputMethodClient>>, wake: WakeHandle) -> Receiver
             // thread can take it to commit typed text. Focus changes are rare
             // and not latency-critical, so a short sleep between polls is
             // fine.
-            let events = {
+            let (events, contexts) = {
                 let Ok(mut im) = im.lock() else {
                     return;
                 };
-                im.poll()
+                let events = im.poll();
+                (events, im.take_context_changes())
             };
             let mut changed = false;
+            for context in contexts {
+                if context_send.send(context).is_err() {
+                    return;
+                }
+                changed = true;
+            }
             for event in events {
                 let transition = model.reduce(event);
                 if transition != ImTransition::default() {

@@ -101,6 +101,13 @@ fn every_scenario_reaches_its_state() {
 }
 
 #[test]
+fn imported_note_keeps_its_success_notification_in_capture() {
+    ui::clock::freeze_for_capture();
+    check(Some("import_success"), (1280, 720))
+        .expect("the imported document and its notification are both captured");
+}
+
+#[test]
 fn rename_scenario_keeps_its_real_inline_editor_focused() {
     check(Some("rename"), (1280, 720)).expect("the real double-click rename remains focused");
 }
