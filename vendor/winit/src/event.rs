@@ -159,9 +159,29 @@ pub enum StartCause {
     Init,
 }
 
+/// Content-free operation for an opted-in original Wayland text field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PrivateIme {
+    pub serial: u32,
+    pub kind: PrivateImeKind,
+    pub snapshot: [u8; 32],
+}
+/// Admission metadata; final text still arrives as the standard IME commit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrivateImeKind { Prepare, Start, Final, Cancel }
+impl PrivateImeKind {
+    #[doc(hidden)]
+    pub fn from_protocol(value: u32) -> Option<Self> {
+        match value { 0 => Some(Self::Prepare), 1 => Some(Self::Start), 2 => Some(Self::Final), 3 => Some(Self::Cancel), _ => None }
+    }
+}
+
 /// Describes an event from a [`Window`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum WindowEvent {
+    /// Original-field metadata beside standard IME delivery; contains no text.
+    PrivateIme(PrivateIme),
+
     /// The activation token was delivered back and now could be used.
     #[cfg_attr(
         not(any(x11_platform, wayland_platform)),

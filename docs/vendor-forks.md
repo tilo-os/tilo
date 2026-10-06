@@ -7,9 +7,19 @@ to prove that the checked-in source still corresponds to them. Run
 `tools/vendor-history.sh export OUTPUT_DIRECTORY` to produce Git bundles and
 one patch file per reviewable commit.
 
+Winit currently records `codex/winit-dictation-ack-history` at
+`217d0e69b3f4824391bdab8c5f73ce178cf4946c`. It extends the original
+`vendor-upstream/winit-0.30.13` history with exact synchronization of
+already-landed input/presentation source, then the separate content-free
+dictation ACK patch. Both manifest forms and original Apache-2.0 attribution
+remain in the export history. The recorded Vello history still differs in four
+files at the original `2fa854fb55` task base; full export verification remains
+red for those pre-existing differences. Winit byte equivalence is verified
+independently; no verifier assertion or exclusion is weakened.
+
 ## Winit's Tilo-only depackaging overlay
 
-The winit history deliberately remains six upstream-facing patches. Its root
+The winit history remains an upstream-facing patch series. Its root
 is the normalized crates.io source for winit 0.30.13, whose archive contains
 four pieces of Cargo publication bookkeeping that Tilo does not commit:
 

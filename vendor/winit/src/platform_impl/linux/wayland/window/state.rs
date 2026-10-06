@@ -103,6 +103,7 @@ pub struct WindowState {
     /// The state of the compositor to create WlRegions.
     compositor: Arc<CompositorState>,
     presentation: Option<Arc<super::super::types::wp_presentation::PresentationState>>,
+    private_text_input: Option<super::super::types::tilo_text_input::PrivateTextField>,
 
     /// The current cursor grabbing mode.
     cursor_grab_mode: GrabState,
@@ -164,6 +165,14 @@ pub struct WindowState {
 }
 
 impl WindowState {
+    pub fn private_text_input(&self, snapshot: Option<[u8; 32]>) -> bool {
+        let Some(field) = &self.private_text_input else { return false; };
+        field.update(snapshot);
+        true
+    }
+    pub fn acknowledge_private_text_input(&self, serial: u32, outcome: u32) {
+        if let Some(field) = &self.private_text_input { field.acknowledge(serial, outcome); }
+    }
     /// Create new window state.
     pub fn new(
         connection: Connection,
@@ -189,6 +198,7 @@ impl WindowState {
             blur_manager: winit_state.kwin_blur_manager.clone(),
             compositor,
             presentation: winit_state.presentation.clone(),
+            private_text_input: winit_state.private_text_input.as_ref().map(|manager| manager.field(window.wl_surface(), queue_handle)),
             connection,
             csd_fails: false,
             cursor_grab_mode: GrabState::new(),

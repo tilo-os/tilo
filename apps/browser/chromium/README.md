@@ -195,15 +195,24 @@ bridge. A queued final waits for any outstanding check of its original lease;
 focus loss and canceled receipts prevent unadmitted insertion. The compositor
 keeps the complete private transcript until acknowledgement. Refusal or unknown
 delivery enters ten-minute recovery with explicit Copy/Discard; it never retries
-or retargets automatically. These fields are admitted for native-hosted voice
-sessions only: ordinary composition, OSK and standalone Wayland window runners
-remain closed until they can consume the same acknowledgement contract.
+or retargets automatically. Standalone Wayland runners now consume the same
+contract through `tilo_text_input_v1`: content-free original-field stamps and
+operation ACKs accompany standard text-input-v3 final delivery. Preparation
+enables the original deferred field for voice only; consent waits for the
+renderer start ACK before recording. The marked final is consumed before public
+app event dispatch, and focus changes or late cancellations cannot redirect it
+to a successor. Ordinary composition and OSK remain closed outside this voice
+session. Real Wayland protocol and bound native App dispatch tests qualify those
+separate production boundaries; a complete standalone-window/microphone journey
+remains an acceptance gate.
 
 The mounted `browser-text-input-qualification` example exercises the real
 retained `Framed` host with both a direct `WebView` and a production `Decorator`
 wrapping it, against a synthetic HTTP fixture. Both run the same journeys; the
 wrapper must preserve the inner private receipt and deferred acknowledgement
-requirement. It requires an owned disposable profile and the actual CEF helper. Run it as a non-root user
+requirement. All 48 mounted journeys pass, including search, telephone, URL and
+plaintext-only fields with start/final ACK, Unicode selection replacement and
+native undo/redo. It requires an owned disposable profile and the actual CEF helper. Run it as a non-root user
 (the same Chromium sandbox policy as the backend suite):
 
 ```sh

@@ -49,6 +49,7 @@ pub struct WinitState {
     pub compositor_state: Arc<CompositorState>,
 
     pub presentation: Option<Arc<super::types::wp_presentation::PresentationState>>,
+    pub private_text_input: Option<super::types::tilo_text_input::PrivateTextInputManager>,
 
     /// The state of the subcompositor.
     pub subcompositor_state: Option<Arc<SubcompositorState>>,
@@ -211,6 +212,7 @@ impl WinitState {
             viewporter_state,
             fractional_scaling_manager,
             kwin_blur_manager: KWinBlurManager::new(globals, queue_handle).ok(),
+            private_text_input: super::types::tilo_text_input::PrivateTextInputManager::bind(globals, queue_handle).ok(),
 
             seats,
             text_input_state: TextInputState::new(globals, queue_handle).ok(),

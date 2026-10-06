@@ -46,7 +46,26 @@ pub struct Receipt {
     deadline: Instant,
 }
 
+/// The original host's one-shot completion end. Completing it grants no input
+/// authority; the host must first bind delivery to its original field owner.
+pub struct Resolver(Receipt);
+impl Resolver {
+    pub fn complete(self, result: Result<Option<Lease>, Failure>) {
+        self.0.complete(result);
+    }
+}
+
 impl Receipt {
+    /// A bounded private host receipt and its one-shot completion end.
+    pub fn channel() -> (Self, Resolver) {
+        let receipt = Self::pending();
+        (receipt.clone(), Resolver(receipt))
+    }
+
+    /// Observe cancellation of this exact scope, including after start ACK.
+    pub fn was_canceled(&self) -> bool {
+        self.is_canceled()
+    }
     pub(crate) fn pending() -> Self {
         Self {
             result: Arc::new(Mutex::new(None)),

@@ -119,11 +119,14 @@ struct Target {
     surface: ObjectId,
     revision: u64,
     owner: TrustedInputMethod,
+    private: Option<super::private_text_input::Identity>,
 }
 
 struct Session {
     id: SessionId,
     native_deferred: bool,
+    native_start: Option<ui::webview::text_input::Receipt>,
+    native_warm: Option<ui::webview::text_input::Receipt>,
     target: Target,
     deadline: Instant,
     draft: zeroize::Zeroizing<String>,
@@ -149,7 +152,22 @@ struct Preparation {
     id: SessionId,
     surface: ObjectId,
     deadline: Instant,
-    input_method: LentInputMethod,
+    input_method: Option<LentInputMethod>,
+    warm: Option<ui::webview::text_input::Receipt>,
+    private: Option<super::private_text_input::Identity>,
+}
+impl Drop for Preparation {
+    fn drop(&mut self) {
+        if let Some(warm) = self.warm.take() {
+            warm.cancel();
+        }
+    }
+}
+
+struct FieldStart {
+    id: SessionId,
+    language: String,
+    receipt: ui::webview::text_input::Receipt,
 }
 
 #[derive(Default)]
@@ -162,6 +180,7 @@ pub(crate) struct Dictation {
     native_commit_pending: bool,
     native_field_deferred: bool,
     native_delivery: Option<NativeDelivery>,
+    field_start: Option<FieldStart>,
     recovery: Option<Recovery>,
 }
 
@@ -204,23 +223,43 @@ impl State {
         {
             return Err(DictationError::Busy);
         }
-        if self.input_method_owner_kind().is_some() {
-            return self.begin_dictation(now);
-        }
         let surface = self
             .seat
             .text_input()
             .focus()
             .filter(Resource::is_alive)
             .ok_or(DictationError::NoEditableField)?;
+        let private = self.private_text_input.identity(&surface.id());
+        if self.input_method_owner_kind().is_some() && private.is_none() {
+            return self.begin_dictation(now);
+        }
         let id = self.text_commit.dictation.allocate_id()?;
-        let input_method =
-            LentInputMethod::connect(self).map_err(|_| DictationError::InputMethodUnavailable)?;
+        let input_method = if self.input_method_owner_kind().is_some() {
+            None
+        } else {
+            Some(
+                LentInputMethod::connect(self)
+                    .map_err(|_| DictationError::InputMethodUnavailable)?,
+            )
+        };
+        let warm = private
+            .as_ref()
+            .map(|identity| {
+                self.private_text_input
+                    .request(
+                        identity,
+                        super::private_text_input::protocol::tilo_text_input_v1::Kind::Prepare,
+                    )
+                    .ok_or(DictationError::TargetChanged)
+            })
+            .transpose()?;
         self.text_commit.dictation.preparation = Some(Preparation {
             id,
             surface: surface.id(),
             deadline: now.checked_add(DELIVERY_WINDOW).unwrap_or(now),
             input_method,
+            warm,
+            private,
         });
         Ok(id)
     }
@@ -271,13 +310,33 @@ impl State {
         if now >= preparation.deadline {
             return Err(DictationError::TimedOut);
         }
-        let ready = match preparation.input_method.pump() {
-            Progress::Waiting => false,
-            Progress::Active => true,
-            Progress::Finished | Progress::Failed => {
-                return Err(DictationError::InputMethodUnavailable);
-            }
+        if preparation.private.is_some()
+            && (self.private_text_input.identity(&preparation.surface) != preparation.private
+                || preparation
+                    .warm
+                    .as_ref()
+                    .is_some_and(ui::webview::text_input::Receipt::was_canceled))
+        {
+            return Err(DictationError::TargetChanged);
+        }
+        let warmed = match preparation
+            .warm
+            .as_ref()
+            .and_then(ui::webview::text_input::Receipt::poll)
+        {
+            Some(Ok(_)) => true,
+            Some(Err(_)) => return Err(DictationError::TargetChanged),
+            None => preparation.warm.is_none(),
         };
+        let ready = warmed
+            && match preparation.input_method.as_mut().map(LentInputMethod::pump) {
+                Some(Progress::Waiting) => false,
+                Some(Progress::Active) => true,
+                Some(Progress::Finished | Progress::Failed) => {
+                    return Err(DictationError::InputMethodUnavailable);
+                }
+                None => self.dictation_target().is_ok(),
+            };
         self.text_commit.dictation.preparation = Some(preparation);
         if ready {
             let target = match self.dictation_target() {
@@ -289,8 +348,16 @@ impl State {
             };
             self.text_commit.dictation.session = Some(Session {
                 id,
-                native_deferred: self.shell_field_active
-                    && self.text_commit.dictation.native_field_deferred,
+                native_deferred: target.private.is_some()
+                    || (self.shell_field_active
+                        && self.text_commit.dictation.native_field_deferred),
+                native_start: None,
+                native_warm: self
+                    .text_commit
+                    .dictation
+                    .preparation
+                    .as_mut()
+                    .and_then(|preparation| preparation.warm.take()),
                 target,
                 deadline: now.checked_add(SESSION_WINDOW).unwrap_or(now),
                 draft: zeroize::Zeroizing::new(String::new()),
@@ -315,13 +382,15 @@ impl State {
             return Err(DictationError::Busy);
         }
         let target = self.dictation_target()?;
-        let native_deferred =
-            self.shell_field_active && self.text_commit.dictation.native_field_deferred;
+        let native_deferred = target.private.is_some()
+            || (self.shell_field_active && self.text_commit.dictation.native_field_deferred);
         let dictation = &mut self.text_commit.dictation;
         let id = dictation.allocate_id()?;
         dictation.session = Some(Session {
             id,
             native_deferred,
+            native_start: None,
+            native_warm: None,
             target,
             deadline: now.checked_add(SESSION_WINDOW).unwrap_or(now),
             draft: zeroize::Zeroizing::new(String::new()),
@@ -377,6 +446,12 @@ impl State {
             .take()
             .ok_or(DictationError::StaleSession)?;
         if session.draft.len() > MAX_COMMIT_BYTES {
+            for receipt in [session.native_start.as_ref(), session.native_warm.as_ref()]
+                .into_iter()
+                .flatten()
+            {
+                receipt.cancel();
+            }
             self.text_commit.dictation.recovery = Some(Recovery {
                 reason: RecoveryReason::TooLong,
                 id,
@@ -389,17 +464,48 @@ impl State {
             return Ok(());
         }
         if session.draft.is_empty() {
+            for receipt in [session.native_start.as_ref(), session.native_warm.as_ref()]
+                .into_iter()
+                .flatten()
+            {
+                receipt.cancel();
+            }
             self.cancel_active_dictation();
             return Ok(());
         }
         // Emit the Wayland final on this compositor thread. Deferred native
         // owners additionally retain this original draft until their private ACK;
         // the receiving guard never acquires a replacement target for this final.
-        self.seat.text_input().with_active_text_input(|field, _| {
-            field.commit_string(Some(session.draft.to_string()));
+        let private = session.target.private.as_ref().map(|identity| {
+            self.private_text_input
+                .request(
+                    identity,
+                    super::private_text_input::protocol::tilo_text_input_v1::Kind::Final,
+                )
+                .unwrap_or_else(|| {
+                    ui::webview::text_input::Receipt::failed(
+                        ui::webview::text_input::Failure::Rejected,
+                    )
+                })
         });
-        self.seat.text_input().done(false);
-        if self.shell_field_active {
+        let may_deliver = private
+            .as_ref()
+            .is_none_or(|receipt| receipt.poll().is_none());
+        if !may_deliver {
+            for receipt in [session.native_start.as_ref(), session.native_warm.as_ref()]
+                .into_iter()
+                .flatten()
+            {
+                receipt.cancel();
+            }
+        }
+        if may_deliver {
+            self.seat.text_input().with_active_text_input(|field, _| {
+                field.commit_string(Some(session.draft.to_string()));
+            });
+            self.seat.text_input().done(false);
+        }
+        if self.shell_field_active || private.is_some() {
             self.text_commit.dictation.native_delivery = Some(NativeDelivery {
                 requires_ack: session.native_deferred,
                 recovery: Recovery {
@@ -410,7 +516,7 @@ impl State {
                     copied: false,
                     copy_failed: false,
                 },
-                receipt: None,
+                receipt: private,
             });
         }
         self.cancel_active_dictation();
@@ -578,11 +684,118 @@ impl State {
     }
 
     pub(crate) fn cancel_active_dictation(&mut self) {
-        self.text_commit.dictation.session = None;
+        if let Some(start) = self.text_commit.dictation.field_start.take() {
+            start.receipt.cancel();
+        }
+        if let Some(session) = self.text_commit.dictation.session.take() {
+            for receipt in [session.native_start, session.native_warm]
+                .into_iter()
+                .flatten()
+            {
+                receipt.cancel();
+            }
+        }
         self.text_commit.dictation.preparation = None;
         if let Some(recognition) = self.text_commit.dictation.recognition.as_mut() {
             recognition.actor.cancel();
             recognition.phase = DictationStatus::Stopping;
+        }
+    }
+
+    pub(crate) fn native_dictation_start_required(&mut self, id: SessionId, now: Instant) -> bool {
+        self.validate_dictation(id, now).is_ok()
+            && self
+                .text_commit
+                .dictation
+                .session
+                .as_ref()
+                .is_some_and(|session| session.id == id && session.native_deferred)
+    }
+    pub(crate) fn standalone_dictation_start(
+        &mut self,
+    ) -> Option<ui::webview::text_input::Receipt> {
+        let identity = self
+            .text_commit
+            .dictation
+            .session
+            .as_ref()?
+            .target
+            .private
+            .as_ref()?;
+        self.private_text_input.request(
+            identity,
+            super::private_text_input::protocol::tilo_text_input_v1::Kind::Start,
+        )
+    }
+
+    pub(crate) fn start_dictation_after_field_ack(
+        &mut self,
+        id: SessionId,
+        language: &str,
+        now: Instant,
+        receipt: Option<ui::webview::text_input::Receipt>,
+    ) -> Result<(), DictationError> {
+        self.validate_dictation(id, now)?;
+        if !self
+            .text_commit
+            .dictation
+            .session
+            .as_ref()
+            .is_some_and(|session| session.native_deferred)
+        {
+            return self.start_authorized_dictation(id, language, now);
+        }
+        if self.text_commit.dictation.field_start.is_some()
+            || self.text_commit.dictation.recognition.is_some()
+        {
+            return Err(DictationError::Busy);
+        }
+        let receipt = receipt.ok_or(DictationError::TargetChanged)?;
+        self.text_commit.dictation.field_start = Some(FieldStart {
+            id,
+            language: language.into(),
+            receipt,
+        });
+        Ok(())
+    }
+
+    pub(crate) fn advance_authorized_dictation(
+        &mut self,
+        now: Instant,
+    ) -> Result<(), DictationError> {
+        let Some(id) = self
+            .text_commit
+            .dictation
+            .field_start
+            .as_ref()
+            .map(|start| start.id)
+        else {
+            return Ok(());
+        };
+        self.validate_dictation(id, now)?;
+        let Some(result) = self
+            .text_commit
+            .dictation
+            .field_start
+            .as_ref()
+            .and_then(|start| start.receipt.poll())
+        else {
+            return Ok(());
+        };
+        let Some(start) = self.text_commit.dictation.field_start.take() else {
+            return Ok(());
+        };
+        match result {
+            Ok(None) => {
+                if let Some(session) = self.text_commit.dictation.session.as_mut() {
+                    session.native_start = Some(start.receipt);
+                }
+                self.launch_authorized_dictation(start.id, &start.language, now)
+            }
+            Err(ui::webview::text_input::Failure::Unknown) => {
+                Err(DictationError::RecognizerUnavailable)
+            }
+            _ => Err(DictationError::TargetChanged),
         }
     }
 
@@ -592,6 +805,25 @@ impl State {
     /// # Errors
     /// Fails closed on a changed field, another actor or unavailable worker.
     pub fn start_authorized_dictation(
+        &mut self,
+        id: SessionId,
+        language: &str,
+        now: Instant,
+    ) -> Result<(), DictationError> {
+        self.validate_dictation(id, now)?;
+        if self
+            .text_commit
+            .dictation
+            .session
+            .as_ref()
+            .is_some_and(|session| session.native_deferred)
+        {
+            return Err(DictationError::TargetChanged);
+        }
+        self.launch_authorized_dictation(id, language, now)
+    }
+
+    fn launch_authorized_dictation(
         &mut self,
         id: SessionId,
         language: &str,
@@ -641,6 +873,9 @@ impl State {
     }
 
     pub fn dictation_status(&self) -> DictationStatus {
+        if self.text_commit.dictation.field_start.is_some() {
+            return DictationStatus::Loading;
+        }
         if self.text_commit.dictation.native_delivery.is_some() {
             return DictationStatus::Finishing;
         }
@@ -836,6 +1071,7 @@ impl State {
                             surface: surface.id(),
                             revision,
                             owner,
+                            private: self.private_text_input.identity(&surface.id()),
                         })
                         .ok_or(DictationError::NoEditableField)
                 };

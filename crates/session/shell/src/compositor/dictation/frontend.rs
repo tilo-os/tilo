@@ -9,6 +9,7 @@ pub(crate) fn service(
     surface: &mut DictationSurface,
     now: Instant,
     locked: bool,
+    field_start: Option<ui::webview::text_input::Receipt>,
 ) {
     state.expire_dictation_recovery(now);
     if locked {
@@ -46,7 +47,7 @@ pub(crate) fn service(
             Request::Consent(id) if surface.session() == Some(id) && surface.is_consent() => {
                 let language = settings_store::dictation::DictationLanguage::load();
                 state
-                    .start_authorized_dictation(id, language.code(), now)
+                    .start_dictation_after_field_ack(id, language.code(), now, field_start)
                     .map(|()| {
                         if let Some(session) = state.text_commit.dictation.session.as_mut() {
                             session.deadline = now.checked_add(SESSION_WINDOW).unwrap_or(now);
@@ -73,6 +74,10 @@ pub(crate) fn service(
             state.cancel_active_dictation();
             surface.failure(error);
         }
+    }
+    if let Err(error) = state.advance_authorized_dictation(now) {
+        state.cancel_active_dictation();
+        surface.failure(error);
     }
     // Explicit cancellation wins over a result arriving in the same turn.
     state.pump_dictation_worker(now);
@@ -165,7 +170,13 @@ mod tests {
                 Some(self.field),
                 Some(NativeFieldId::Widget(42)),
             );
-            service(&mut self.state, &mut self.surface, Instant::now(), false);
+            service(
+                &mut self.state,
+                &mut self.surface,
+                Instant::now(),
+                false,
+                None,
+            );
         }
         fn consent(&mut self) -> super::super::SessionId {
             self.surface.request_toggle();
@@ -186,6 +197,44 @@ mod tests {
                 "requesting consent cannot start a worker or microphone"
             );
             self.surface.session().unwrap()
+        }
+    }
+
+    #[test]
+    fn deferred_consent_requires_original_start_ack_before_any_worker() {
+        for failure in [
+            None,
+            Some(ui::webview::text_input::Failure::Rejected),
+            Some(ui::webview::text_input::Failure::Unknown),
+        ] {
+            let mut fixture = Fixture::new();
+            fixture.state.shell_field_active = true;
+            fixture.state.set_native_dictation_deferred(true);
+            let id = fixture.consent();
+            assert!(
+                fixture
+                    .state
+                    .native_dictation_start_required(id, Instant::now())
+            );
+            // The old synchronous entry cannot bypass deferred acknowledgement.
+            assert_eq!(
+                fixture
+                    .state
+                    .start_authorized_dictation(id, "en", Instant::now()),
+                Err(super::super::DictationError::TargetChanged)
+            );
+            fixture.surface.enqueue(Request::Consent(id));
+            service(
+                &mut fixture.state,
+                &mut fixture.surface,
+                Instant::now(),
+                false,
+                failure.map(ui::webview::text_input::Receipt::failed),
+            );
+            assert!(fixture.state.text_commit.dictation.recognition.is_none());
+            assert!(fixture.state.text_commit.dictation.field_start.is_none());
+            assert!(fixture.state.dictation_target_id().is_none());
+            assert!(!fixture.surface.is_consent());
         }
     }
 
@@ -285,6 +334,7 @@ mod tests {
             &mut fixture.surface,
             Instant::now(),
             true,
+            None,
         );
         assert!(
             fixture.state.dictation_target_id().is_none(),
@@ -416,6 +466,7 @@ mod tests {
             &mut fixture.surface,
             Instant::now(),
             false,
+            None,
         );
         fixture.surface.enqueue(Request::Finish(id));
         service(
@@ -423,6 +474,7 @@ mod tests {
             &mut fixture.surface,
             Instant::now(),
             false,
+            None,
         );
         assert!(
             fixture.surface.is_recovery(),
@@ -440,6 +492,7 @@ mod tests {
             &mut fixture.surface,
             Instant::now(),
             false,
+            None,
         );
         let node = fixture
             .surface
@@ -460,6 +513,7 @@ mod tests {
             &mut fixture.surface,
             Instant::now(),
             false,
+            None,
         );
         assert_eq!(
             crate::compositor::selection::mirror_text(
@@ -497,6 +551,7 @@ mod tests {
             &mut fixture.surface,
             Instant::now(),
             false,
+            None,
         );
         assert!(matches!(
             fixture.state.dictation_status(),
@@ -523,6 +578,7 @@ mod tests {
             &mut fixture.surface,
             Instant::now(),
             false,
+            None,
         );
         assert!(fixture.state.text_commit.dictation.recovery.is_none());
         assert!(
@@ -539,6 +595,7 @@ mod tests {
             &mut fixture.surface,
             Instant::now(),
             false,
+            None,
         );
         assert!(fixture.surface.is_consent());
         assert!(fixture.state.check_dictation(next, Instant::now()).is_ok());
@@ -553,6 +610,7 @@ mod tests {
             &mut fixture.surface,
             Instant::now(),
             true,
+            None,
         );
         assert!(fixture.state.text_commit.dictation.recovery.is_none());
         assert!(
@@ -563,7 +621,13 @@ mod tests {
         );
         let (next, _) = retain_multilingual(&mut fixture);
         let expired = Instant::now() + super::super::RECOVERY_WINDOW;
-        service(&mut fixture.state, &mut fixture.surface, expired, false);
+        service(
+            &mut fixture.state,
+            &mut fixture.surface,
+            expired,
+            false,
+            None,
+        );
         assert!(fixture.state.text_commit.dictation.recovery.is_none());
         assert!(
             fixture

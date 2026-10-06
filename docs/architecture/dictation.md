@@ -271,14 +271,32 @@ stamps now come from the shared host input contract described above.
    for private acknowledgement is pinned to the original session, so a missing
    deferred owner cannot be acknowledged as a synchronous edit.
    `apps/browser/chromium/README.md` documents the backend and mounted SDK
-   qualification. Ordinary composition/OSK and standalone native runners remain
-   closed for deferred DOM fields. Iframes, selection-less email/number inputs,
-   closed shadow roots and composition already active when the isolated world
-   starts need renderer lifecycle support before admission. A complete assembled
-   browser microphone journey remains unqualified. Before that qualification,
-   align the DOM lease's three-minute lifetime with explicit consent/session
-   start: background preparation currently ages the lease before recording.
-   Preserve the original field/edit stamp and bounded lifetime in that handoff.
+   qualification. Standalone native runners now have a surface-bound,
+   content-free Wayland acknowledgement extension beside standard text-input-v3.
+   The SDK advertises an opaque original-field stamp, enables the deferred field
+   only after dictation preparation, waits for the private renderer's start ACK,
+   and consumes the marked standard final before public app event dispatch.
+   Focus changes cancel the original grant; a stale final is consumed without
+   successor dispatch. Ordinary composition/OSK remains closed outside this
+   voice session. Five real protocol tests, six bound native-dispatch tests and
+   mounted renderer journeys qualify
+   separate boundaries; a complete standalone native-window journey remains an
+   acceptance gate. Search, telephone, URL and plaintext-only editable fields
+   pass start/final ACK, Unicode replacement and native undo/redo in both direct
+   and decorated mounted views (48 mounted journeys in total).
+   Same-origin iframe input/textarea/rich-text
+   finals now use private contexts pinned to their original frame/document, with
+   native undo and removal/recovery qualification. Cross-origin/opaque frame
+   ancestry, selection-less email/number inputs, closed shadow roots and composition
+   already active when the isolated world starts need renderer lifecycle support
+   before admission. A complete assembled
+   browser microphone journey remains unqualified. Explicit consent now activates
+   the same original lease/edit stamp once and waits for its private acknowledgement
+   before recognition launches. Warm preparation and the consented session each
+   have a three-minute bound (six minutes combined); checks cannot slide expiry.
+   A real-clock journey proves survival past warm expiry and fixed active expiry.
+   Cancelling an acknowledged start revokes its original receipt scope, and a
+   delayed cancellation cannot revoke a freshly consented successor.
 
 3. Extend the public six-language read-speech qualification below to noisy
    natural conversation, and measure an older CPU and Arm device. Three short
