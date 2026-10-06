@@ -155,13 +155,12 @@ Android runtime-permission APIs or malicious JNI containment. The runner stops i
 own compositor process group, checks control socket cleanup and writes
 `journey.json` only after success.
 
-The checked-in [acceptance record](verification/android-arity/journey.json),
-[rendered calculation](verification/android-arity/calculation.png),
-[second-room calculation](verification/android-arity/second-workspace-calculation.png)
-and [confinement log](verification/android-arity/confinement.log) come from that
-complete run. All five original PNGs and their OCR text are preserved there.
-The full APK/framework execution logs and private profiles remain in the owned
-remote test workspace rather than publishing app-data or identity directories.
+Run-specific receipts, original PNGs, OCR text and confinement results are
+preserved in the [execution-evidence attachment on PR #2908](https://code.tilo.so/attachments/9cc177c1-c0ef-4607-8872-0a7b1af8c5e0).
+They are generated artifacts rather than repository inputs. Future runs must use
+an output directory under `target/android-acceptance/` or outside the checkout;
+the runners reject output inside tracked source. Keep full private profiles and
+identity directories out of published artifacts.
 
 ## Bounded Android mediation slice
 
@@ -205,19 +204,15 @@ new artifact pins. The private framework and transport were built in a bounded
 rootless official Alpine container with signed ART development/JDK packages.
 Nothing was added to the laptop or Tilo OS image.
 
-The final [Android API acceptance record](verification/android-mediation/journey.json)
-and [Arity record](verification/android-arity/journey.json) use the same final runtime
-and production binaries as the successful integration below. Both were rerun after
-the security fix. Earlier checkpoint `ccad09593611` reached terminal green affected,
-quality, SDK, filesystem and legacy workflows; new continuation checks are separate.
+The preserved Android API and Arity runs use the same runtime and production
+binaries as the successful integration below. Both were rerun after the security fix.
 
 ## Successful document, notification and accessibility integration
 
-The [complete integration record](verification/android-integration/journey.json),
-[Android results](verification/android-integration/acceptance.txt),
-[external accessibility tree](verification/android-integration/accessibility.json)
-and three original PNGs preserve actual execution evidence. The runner creates only
-new disposable source, destination and sibling-canary documents in its own profile.
+The [PR evidence attachment](https://code.tilo.so/attachments/9cc177c1-c0ef-4607-8872-0a7b1af8c5e0) contains the integration receipt,
+Android callback results, external accessibility tree and three original PNGs.
+The runner creates only new disposable source, destination and sibling-canary
+documents in its own profile.
 Explicit `--fixture-grants` authorizes only the source read grant and destination
 write grant; it never accepts a user document path or touches the user's bus.
 Android `OPEN_DOCUMENT` selects and reads the exact source bytes through Tilo's
