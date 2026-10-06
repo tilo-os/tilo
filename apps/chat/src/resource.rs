@@ -681,6 +681,53 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_shared_resize_uses_the_complete_mounted_app_door() {
+        let mut app = TestApp::<ChatShell>::new().unwrap();
+        app.harness().resize((960, 720)).unwrap();
+        let resources = app.harness().resources();
+        let resize = resources
+            .iter()
+            .find(|resource| resource.label == "Resize sidebar")
+            .expect("the live shared separator has its localized human label");
+        let spec = resize
+            .actions
+            .iter()
+            .find(|action| action.id == "set-value")
+            .expect("the mounted app publishes exact resize");
+        assert_eq!(spec.kind, ui::tilo_actions::OperationKind::Effect);
+        assert!(app.harness().component_contract_violations().is_empty());
+        let address = ui::tilo_actions::ActionAddress::new(resize.id.as_str(), "set-value");
+        let arguments = serde_json::Map::from_iter([(
+            ui::tilo_actions::PROMPTED_PARAM.to_owned(),
+            serde_json::Value::String("30%".into()),
+        )]);
+        assert!(
+            app.harness()
+                .invoke_action(&address, &arguments, false, None)
+                .expect("the actual published shared control accepts canonical invocation")
+                .completed()
+                .is_some()
+        );
+        assert_eq!(
+            app.with_surface::<ChatApp, _>(|surface| surface.left_flap.list_rect().width()),
+            Some(212.0)
+        );
+        let mut viewer = TestApp::<ChatShell>::with_role(ui::permissions::Role::Viewer).unwrap();
+        viewer.harness().resize((960, 720)).unwrap();
+        assert!(viewer.harness().component_contract_violations().is_empty());
+        let resources = viewer.harness().resources();
+        let separator = resources
+            .iter()
+            .find(|resource| resource.label == "Resize sidebar")
+            .expect("the Viewer frame observes the actual shared separator");
+        for action in &separator.actions {
+            if matches!(action.id.as_str(), "set-value" | "increment" | "decrement") {
+                assert_eq!(action.kind, ui::tilo_actions::OperationKind::Effect);
+            }
+        }
+    }
+
+    #[test]
     fn resource_range_opens_and_highlights_current_text_through_the_public_view() {
         let mut app = TestApp::<ChatShell>::new().unwrap();
         app.call_on(

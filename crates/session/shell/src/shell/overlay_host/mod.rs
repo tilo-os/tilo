@@ -9810,18 +9810,24 @@ impl ShellOverlayHost {
     /// a shell-out on the paint path froze the desktop. Each field
     /// applies only if actually read, so a missing daemon leaves the
     /// previous value rather than blanking it.
-    fn apply_quick_settings_readings(&mut self) {
+    /// Bind the owning native session's existing event-loop wake.
+    pub fn set_quick_settings_wake(&mut self, wake: crate::session_runtime::Wake) {
+        self.qs_refresh.set_host_wake(wake);
+    }
+
+    fn apply_quick_settings_readings(&mut self) -> bool {
         let readings = self.qs_refresh.drain();
         if readings.is_empty() {
-            return;
+            return false;
         }
         let Some(chrome) = self.chrome.clone() else {
-            return;
+            return false;
         };
         for reading in readings {
             let mut st = chrome.borrow_mut();
             self.apply_one_qs_reading(&mut st, reading);
         }
+        true
     }
 
     /// Unpacks a [`QsReading::Fast`] payload, writing its non-scalar fields
@@ -17547,6 +17553,7 @@ impl Widget for ShellOverlayHost {
             return onboarding_dirty || dialog_dirty;
         }
         let pairing_dirty = self.pairing.pump(doc, path);
+        let quick_settings_dirty = self.apply_quick_settings_readings();
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
         self.tick_shortcut_triggers();
@@ -17756,6 +17763,7 @@ impl Widget for ShellOverlayHost {
             chrome.borrow().tree_mut().commit_room_change();
         }
         content_dirty
+            || quick_settings_dirty
             || pairing_dirty
             || close_dirty
             || palette_dirty

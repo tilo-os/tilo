@@ -907,6 +907,49 @@ pub fn history_context(action: &CalendarAction) -> tilo_actions::ActionContext {
     context
 }
 
+/// Name an existing resource from the committed document before an edit or
+/// deletion, so platform History identifies the event, task or project a
+/// person changed rather than showing its opaque storage key.
+pub fn history_context_in_document(
+    action: &CalendarAction,
+    doc: &ui::automerge::AutoCommit,
+) -> tilo_actions::ActionContext {
+    let mut context = history_context(action);
+    let Some(resource) = &mut context.resource else {
+        return context;
+    };
+    let Some((_, key)) = resource.id.split_once(':') else {
+        return context;
+    };
+    // Upserts already carry their new human-readable title in the action.
+    if resource.label != key && resource.kind != "calendar.occurrence" {
+        return context;
+    }
+    let Ok(id) = key.split(':').next().unwrap_or_default().parse::<Id>() else {
+        return context;
+    };
+    let model = CalDoc::read_model(doc);
+    let title = match resource.kind.as_str() {
+        "calendar.project" => model.project(id).map(|project| project.name.clone()),
+        "calendar.event" => model.event(id).map(|event| event.title.clone()),
+        "calendar.task" => model.task(id).map(|task| task.title.clone()),
+        "calendar.attendee" => model
+            .events
+            .iter()
+            .flat_map(|event| &event.attendees)
+            .find(|attendee| attendee.id == id)
+            .map(|attendee| attendee.email.clone()),
+        "calendar.occurrence" => model
+            .event(id)
+            .map(|event| format!("{} — {}", event.title, resource.label)),
+        _ => None,
+    };
+    if let Some(title) = title.filter(|title| !title.trim().is_empty()) {
+        resource.label = title;
+    }
+    context
+}
+
 fn refused(message: &str) -> ActionError {
     ActionError::Refused(message.to_string())
 }
