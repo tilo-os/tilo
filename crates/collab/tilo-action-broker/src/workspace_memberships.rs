@@ -117,6 +117,7 @@ impl CapnpBrokerState {
             resource,
             action,
             super::InvocationInputs {
+                requested: None,
                 caller: None,
                 execution: None,
                 argument,

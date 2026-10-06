@@ -1746,6 +1746,7 @@ impl CapnpBrokerState {
             request.peer_id,
             offered,
             InvocationInputs {
+                requested: None,
                 caller: None,
                 execution: None,
                 argument: request.argument.as_deref(),
@@ -2633,6 +2634,8 @@ struct PendingWorker {
 /// as, the one-use confirmation token it presents and its ambient context.
 /// Admission checks every field; none of them grants authority by itself.
 struct InvocationInputs<'a> {
+    /// The caller's lifecycle identity, independent of execution authority.
+    requested: Option<tilo_actions::InvocationId>,
     /// Who the invocation is admitted for, when the door knows them as a
     /// caller: kept with the running invocation, so an edit its effect
     /// submits is admitted for them too.
@@ -4120,6 +4123,7 @@ impl CapnpBrokerState {
                 peer_id,
                 (surface, published),
                 InvocationInputs {
+                    requested: None,
                     caller: None,
                     execution: None,
                     argument,
@@ -4584,6 +4588,7 @@ impl CapnpBrokerState {
             resource,
             action,
             InvocationInputs {
+                requested: None,
                 caller: None,
                 execution: None,
                 argument,
@@ -4715,6 +4720,7 @@ impl CapnpBrokerState {
         provenance: AdmissionProvenance<'_>,
     ) -> Result<InvocationJob, String> {
         let InvocationInputs {
+            requested,
             caller,
             execution,
             argument,
@@ -4874,12 +4880,19 @@ impl CapnpBrokerState {
             .invocation_id
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .map_err(|_| "invocation handle space exhausted")?;
+        let authoritative = durable
+            .map(DurableContext::invocation)
+            .or_else(|| execution.as_ref().map(ExecutionScope::invocation));
+        if requested.is_some_and(|requested| {
+            requested.0.is_nil() || authoritative.is_some_and(|held| held != requested)
+        }) {
+            return Err("requested invocation does not match admitted custody".into());
+        }
         let invocation = match durable {
             Some(context) => context.invocation(),
-            None => execution.as_ref().map_or_else(
-                || tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
-                ExecutionScope::invocation,
-            ),
+            None => requested.or(authoritative).unwrap_or_else(|| {
+                tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)))
+            }),
         };
         let (tx, rx) = std::sync::mpsc::channel();
         let mut receipt_context = tilo_actions::ActionContext::for_resource(
@@ -5490,6 +5503,7 @@ impl CapnpBrokerState {
             resource,
             action,
             InvocationInputs {
+                requested: None,
                 caller: None,
                 execution: None,
                 argument,
@@ -8583,6 +8597,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            requested: None,
                             caller: None,
                             execution: None,
                             argument: argument.as_deref(),
@@ -8620,6 +8635,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            requested: None,
                             caller: None,
                             execution: None,
                             argument: argument.as_deref(),
@@ -8649,6 +8665,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            requested: None,
                             caller: None,
                             execution: None,
                             argument: argument.as_deref(),
@@ -12945,6 +12962,61 @@ pub mod tests {
         let snapshot: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(snapshot["records"].as_array().unwrap().len(), 1);
         assert_eq!(snapshot["records"][0]["wire_id"], job.id);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_person_requested_uuid_survives_actual_delivery_and_completion() {
+        use tilo_actions::remote::{
+            Caller, InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
+        };
+        tokio::task::LocalSet::new().run_until(async {
+            let root = tempfile::tempdir().unwrap();
+            let base = local_directory_fixture();
+            let membership = base.membership.as_ref().unwrap().clone();
+            membership.write().persist_path = Some(root.path().join("state.json"));
+            drop(base);
+            let mut fixture = local_directory_fixture_with_membership(membership);
+            let offered = PublishedSurface {
+                peer_id: fixture.peer_id,
+                app_id: fixture.route.app_id.clone(),
+                route: fixture.route.clone(),
+                actions: vec![published_directory_action(&fixture.directory_state.borrow().row()).unwrap()],
+                live: true,
+            };
+            fixture.state.surfaces.lock().unwrap().insert(fixture.peer_id, offered);
+            let caller = Caller::local_person("fixture-owner").in_room(fixture.cluster_id.clone());
+            assert!(caller.execution_id().is_none(), "no fabricated execution lease");
+            let request = InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider: fixture.peer_id.to_string(),
+                    address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+                },
+                argument: InvokeArgument::None, context: None, confirmation: None,
+                revision: None, on_behalf_of: None,
+            };
+            let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
+            let PendingPoll::Ready(Ok(receipt)) = pending.poll_ready() else {
+                panic!("published ordinary action must be admitted");
+            };
+            assert_eq!(receipt.invocation, request.invocation);
+            let (job, delivered) = fixture.take_invocation_identity().unwrap();
+            assert_eq!(delivered, request.invocation);
+            assert_ne!(delivered.0, uuid::Uuid::from_u128(u128::from(job)));
+            assert!(matches!(fixture.state.invocation_status(job),
+                Some(tilo_actions::InvocationUpdate::Accepted { invocation }) if invocation == request.invocation));
+            let path = root.path().join("state.json.invocations/records.json");
+            let snapshot: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(snapshot["records"][0]["key"]["invocation"], request.invocation.0.to_string());
+            fixture.complete_invocation(job, &tilo_actions::InvocationUpdate::Succeeded {
+                invocation: delivered, output: tilo_actions::ActionOutput::default(),
+            }).await.unwrap();
+            assert!(matches!(fixture.state.invocation_status(job),
+                Some(tilo_actions::InvocationUpdate::Succeeded { invocation, .. }) if invocation == request.invocation));
+            let snapshot: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            assert_eq!(snapshot["records"][0]["key"]["invocation"], request.invocation.0.to_string());
+            assert!(fixture.take_invocation_identity().is_none());
+        }).await;
     }
 
     #[cfg(test)]
