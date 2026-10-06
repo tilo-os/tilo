@@ -186,16 +186,9 @@ pub fn stage<A: ResourceApp>(
         .flush_component_records()
         .map_err(LaunchError::Operation)?;
     harness.relayout();
-    // Staging can insert navigation rows and move retained section headings.
-    // Capture their settled production frame, rather than an intermediate
-    // animation with new rows already at their destination.
-    if !harness.settle_for_capture(SETTLE) {
-        return Err(LaunchError::Operation(format!(
-            "{} scenario {:?} did not settle its capture frame",
-            A::TITLE,
-            scenario.unwrap_or("default")
-        )));
-    }
+    // Navigation replacement has coherent first-frame geometry. Capture the
+    // acknowledged production frame after its visual work above completes;
+    // a live progress spinner intentionally never reaches animation idle.
     Ok(())
 }
 

@@ -115,6 +115,7 @@ pub(crate) struct StandaloneHistoryHost {
     /// The app draws the window's header row, which holds the History
     /// control, so the window draws no bar of its own.
     app_presents_button: bool,
+    in_window_history: bool,
     pane: StandaloneHistoryPane,
     content_target: Result<HistoryTarget, HistoryError>,
     content_focus: Option<CompositionFocus>,
@@ -157,6 +158,7 @@ impl StandaloneHistoryHost {
             search: None,
             search_enabled: false,
             app_presents_button: false,
+            in_window_history: true,
             pane: StandaloneHistoryPane::new(),
             content_target: Err(HistoryError::Unavailable),
             content_focus: None,
@@ -291,9 +293,8 @@ impl StandaloneHistoryHost {
     /// What the window's History control shows, or `None` where the host's
     /// own chrome (a menu bar, the Tilo shell) presents History.
     fn control(&self) -> Option<HistoryControl> {
-        self.toolbar
-            .as_ref()
-            .map(|_| HistoryControl::of(self.is_open()))
+        self.in_window_history
+            .then(|| HistoryControl::of(self.is_open()))
     }
 
     /// Offer the History control to the app's header row before the app is
@@ -320,6 +321,13 @@ impl StandaloneHistoryHost {
     /// The host's own chrome presents History and Search: drop the in-window
     /// buttons. Their actions stay, reachable from that chrome.
     pub(crate) fn remove_in_window_controls(&mut self) {
+        self.in_window_history = false;
+        self.remove_fallback_bar();
+    }
+
+    /// Keep the app's integrated History control while dropping the redundant
+    /// standalone band. Header placement must not depend on a fallback button.
+    pub(crate) fn remove_fallback_bar(&mut self) {
         let had_toolbar = self.toolbar.take().is_some();
         let had_search = self.search.take().is_some();
         self.structure_dirty |= had_toolbar || had_search;
@@ -641,7 +649,7 @@ impl StandaloneHistoryHost {
                 |app| format!("{app}: {}", resource.label),
             ));
         }
-        let now = crate::time::SystemTime::now();
+        let now = crate::time::wall();
         for entry in selected {
             let action = entry
                 .context
@@ -1935,8 +1943,15 @@ mod tests {
         assert!(summary.contains("Calendar: Planning"), "{summary}");
         assert!(
             summary.contains(&crate::widget::history::format_relative_time(
-                host.session.as_ref().unwrap().rows()[0].timestamp,
-                crate::time::SystemTime::now()
+                host.session
+                    .as_ref()
+                    .unwrap()
+                    .rows()
+                    .iter()
+                    .find(|row| row.id == decode_entry(&entry).unwrap())
+                    .unwrap()
+                    .timestamp,
+                crate::time::wall()
             )),
             "{summary}"
         );

@@ -2738,7 +2738,7 @@ impl FrameHarness {
                 if self.history.is_none() && self.history_chrome_enabled {
                     self.document_history
                         .place_in_app_header(self.root.as_mut());
-                    self.document_history.remove_in_window_controls();
+                    self.document_history.remove_fallback_bar();
                 }
                 self.child_node = if let Some(history) = &mut self.history {
                     history.build_composition(

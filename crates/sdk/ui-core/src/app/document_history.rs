@@ -534,7 +534,7 @@ impl App {
                 .place_in_app_header(self.root_widget.as_mut());
             // Shared services belong in the existing header or the platform
             // action door; never add a second toolbar above the app.
-            self.document_history.remove_in_window_controls();
+            self.document_history.remove_fallback_bar();
         }
         let app = self.root_widget.build_layout(
             &mut self.layout.taffy,
@@ -1256,9 +1256,17 @@ mod tests {
                 crate::standalone_history_host::HISTORY_RESOURCE,
                 "open",
             );
+            assert!(app.action_ui_routes(&open).is_empty());
+            assert!(app.history_layout.unwrap().toolbar.is_none());
             assert!(
-                !app.action_ui_routes(&open).is_empty(),
-                "launcher is a visible canonical affordance"
+                app.history_local_resources().iter().any(|resource| {
+                    resource.id.as_str() == open.resource
+                        && resource
+                            .actions
+                            .iter()
+                            .any(|action| action.id == open.action)
+                }),
+                "the canonical History door remains available without an extra bar"
             );
             app.invoke_history_address_local(&open, None)
                 .expect("local History address")
