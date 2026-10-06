@@ -24,7 +24,7 @@ use crate::remote;
 /// enough for a Wi-Fi roam or a DHCP renewal, short enough that a device
 /// that is asleep is reported as such.
 pub const REACH_BUDGET: Duration = Duration::from_secs(60);
-/// One TCP attempt at the device's SSH port.
+/// One authenticated attempt at the device's SSH port.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const RETRY_PAUSE: Duration = Duration::from_secs(3);
 /// How long `vm wake` waits for the woken machine's tilo-vmd.
@@ -124,6 +124,15 @@ fn wake_line(entry: &VmEntry) -> String {
 }
 
 impl App {
+    fn probe_device(&mut self, vm: &Resolved, endpoint: &SshEndpoint) -> Probe {
+        reach::probe(
+            &mut self.runner,
+            endpoint,
+            vm.entry.key.as_deref(),
+            PROBE_TIMEOUT,
+        )
+    }
+
     /// Where to reach `vm` over SSH now. A device is taken at its address
     /// as the registry has it now (an earlier step may have moved it), and
     /// found again by name when that stops answering
@@ -158,7 +167,7 @@ impl App {
             if std::env::var_os("TILO_VM_SSH").is_some() {
                 return Ok(endpoint);
             }
-            let detail = match reach::probe(&endpoint.host, endpoint.port, PROBE_TIMEOUT) {
+            let detail = match self.probe_device(&vm, &endpoint) {
                 Probe::There | Probe::Unknown => return Ok(endpoint),
                 Probe::Lost(detail) => detail,
             };
@@ -195,15 +204,16 @@ impl App {
             return Ok(None);
         };
         let host = address.to_string();
-        if host == endpoint.host
-            || reach::probe(&host, endpoint.port, PROBE_TIMEOUT) != Probe::There
-        {
+        if host == endpoint.host {
             return Ok(None);
         }
         let moved = SshEndpoint {
             host,
             ..endpoint.clone()
         };
+        if self.probe_device(vm, &moved) != Probe::There {
+            return Ok(None);
+        }
         self.update_entry(&vm.name, |entry| entry.ssh = Some(moved.ssh_spec()))?;
         let note = format!(
             "{} moved from {} to {}: found it as {name}, and recorded the new address in {}",
@@ -332,7 +342,7 @@ impl App {
         }
         let recorded = hypervisor::adapter(DEVICE)?.ssh_endpoint(&vm.vm(), &mut self.runner)?;
         if std::env::var_os("TILO_VM_SSH").is_none()
-            && reach::probe(&recorded.host, recorded.port, PROBE_TIMEOUT) == Probe::There
+            && self.probe_device(&vm, &recorded) == Probe::There
         {
             return self.await_daemon(&vm, started, "it was awake already");
         }
