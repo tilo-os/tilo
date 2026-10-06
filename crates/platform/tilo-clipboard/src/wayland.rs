@@ -73,6 +73,11 @@ impl RichClipboard {
 const CLIPBOARD_READ_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_millis(40);
 const CLIPBOARD_SHUTDOWN_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_millis(250);
 
+fn publication_deadline() -> tilo_clock::Instant {
+    let now = tilo_clock::now();
+    now.checked_add(CLIPBOARD_READ_BUDGET).unwrap_or(now)
+}
+
 fn recv_bounded<T>(
     receiver: &std::sync::mpsc::Receiver<T>,
     budget: tilo_clock::Duration,
@@ -130,11 +135,13 @@ struct PublicationClipboard {
 }
 
 enum ClipboardCommand {
-    SetText(Vec<u8>, std::sync::mpsc::Sender<bool>),
-    SetImage(Vec<u8>, std::sync::mpsc::Sender<bool>),
+    SetText(Vec<u8>, std::sync::mpsc::Sender<bool>, tilo_clock::Instant),
+    SetImage(Vec<u8>, std::sync::mpsc::Sender<bool>, tilo_clock::Instant),
     Exit,
     #[cfg(test)]
     Fence(std::sync::mpsc::Sender<()>),
+    #[cfg(test)]
+    CommandProcessed(std::sync::mpsc::Sender<()>),
 }
 
 impl WaylandClipboard {
@@ -422,20 +429,37 @@ mod image_worker_impl {
             rich_read_budget,
             exit: false,
         };
-        #[cfg(test)]
         let fence_connection = connection.clone();
         let _ = loop_handle.insert_source(commands, move |event, (), state| {
             if let calloop::channel::Event::Msg(command) = event {
                 match command {
-                    ClipboardCommand::SetText(text, reply) => {
-                        state.store_text(text);
-                        let _ = reply.send(state.publish_current());
+                    ClipboardCommand::SetText(text, reply, deadline) => {
+                        fence_connection.display().sync(
+                            &state.queue_handle,
+                            PendingPublication::new(
+                                PublicationPayload::Text(text),
+                                reply,
+                                deadline,
+                            ),
+                        );
+                        let _ = fence_connection.flush();
                     }
-                    ClipboardCommand::SetImage(png, reply) => {
-                        state.store_image(png);
-                        let _ = reply.send(state.publish_current());
+                    ClipboardCommand::SetImage(png, reply, deadline) => {
+                        fence_connection.display().sync(
+                            &state.queue_handle,
+                            PendingPublication::new(
+                                PublicationPayload::Image(png),
+                                reply,
+                                deadline,
+                            ),
+                        );
+                        let _ = fence_connection.flush();
                     }
                     ClipboardCommand::Exit => state.exit = true,
+                    #[cfg(test)]
+                    ClipboardCommand::CommandProcessed(reply) => {
+                        let _ = reply.send(());
+                    }
                     #[cfg(test)]
                     ClipboardCommand::Fence(reply) => {
                         // A protocol sync reply shares the worker's event queue.
@@ -456,7 +480,77 @@ mod image_worker_impl {
         state.invalidate_rich();
     }
 
+    enum PublicationPayload {
+        Text(Vec<u8>),
+        Image(Vec<u8>),
+    }
+
+    struct PendingPublication {
+        payload: std::sync::Mutex<Option<PublicationPayload>>,
+        reply: std::sync::mpsc::Sender<bool>,
+        deadline: tilo_clock::Instant,
+    }
+
+    impl PendingPublication {
+        fn new(
+            payload: PublicationPayload,
+            reply: std::sync::mpsc::Sender<bool>,
+            deadline: tilo_clock::Instant,
+        ) -> Self {
+            Self {
+                payload: std::sync::Mutex::new(Some(payload)),
+                reply,
+                deadline,
+            }
+        }
+    }
+
+    impl Dispatch<sctk::reexports::client::protocol::wl_callback::WlCallback, PendingPublication>
+        for State
+    {
+        fn event(
+            state: &mut Self,
+            _: &sctk::reexports::client::protocol::wl_callback::WlCallback,
+            _: sctk::reexports::client::protocol::wl_callback::Event,
+            pending: &PendingPublication,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            // This callback follows all earlier focus events on the same
+            // protocol queue. A timed-out or unfocused copy must not become
+            // a selection later when the application regains focus.
+            let payload = pending
+                .payload
+                .lock()
+                .ok()
+                .and_then(|mut payload| payload.take());
+            let ok = if tilo_clock::now() < pending.deadline && state.can_publish() {
+                match payload {
+                    Some(PublicationPayload::Text(text)) => {
+                        state.store_text(text);
+                        state.publish_current()
+                    }
+                    Some(PublicationPayload::Image(png)) => {
+                        state.store_image(png);
+                        state.publish_current()
+                    }
+                    None => false,
+                }
+            } else {
+                false
+            };
+            let _ = pending.reply.send(ok);
+        }
+    }
+
     impl State {
+        fn can_publish(&self) -> bool {
+            self.latest_seat
+                .as_ref()
+                .and_then(|seat| self.seats.get(seat))
+                .is_some_and(|seat| seat.has_focus && seat.data_device.is_some())
+        }
+
         fn store_text(&mut self, text: Vec<u8>) {
             self.text_contents = Some(Arc::from(text));
             self.pending_image = None;
@@ -516,10 +610,8 @@ mod image_worker_impl {
             };
             source.set_selection(device, serial);
             self.data_sources.push(source);
-            // Keep the latest image around just like text. If this command
-            // arrived before the seat's focus/serial event, publish_current
-            // will be retried from that event rather than silently dropping
-            // the user's copy.
+            // Keep the accepted payload available for protocol transfers and
+            // subsequent focus/serial updates.
             true
         }
 
@@ -1400,9 +1492,13 @@ impl ClipboardBackend for WaylandClipboard {
     fn set_text(&self, target: ClipboardTarget, text: &str) -> bool {
         match target {
             ClipboardTarget::Clipboard => {
+                let deadline = publication_deadline();
                 let (reply, result) = std::sync::mpsc::channel();
-                let ok = self
-                    .send_publication(ClipboardCommand::SetText(text.as_bytes().to_vec(), reply));
+                let ok = self.send_publication(ClipboardCommand::SetText(
+                    text.as_bytes().to_vec(),
+                    reply,
+                    deadline,
+                ));
                 if ok && let Ok(mut cache) = self.clipboard_cache.lock() {
                     *cache = Some(text.to_owned());
                 }
@@ -1435,8 +1531,9 @@ impl ClipboardBackend for WaylandClipboard {
         let Some(png) = encode_png(width, height, rgba) else {
             return false;
         };
+        let deadline = publication_deadline();
         let (reply, result) = std::sync::mpsc::channel();
-        self.send_publication(ClipboardCommand::SetImage(png, reply))
+        self.send_publication(ClipboardCommand::SetImage(png, reply, deadline))
             && recv_bounded(&result, CLIPBOARD_READ_BUDGET).unwrap_or(false)
     }
 
