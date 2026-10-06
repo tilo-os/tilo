@@ -484,7 +484,10 @@ impl MusicBackend for SpotifyBackend {
         Err(BackendError("Spotify playback is not connected in Tilo. Spotify's Web API does not supply audio streams. Native playback needs a separate streaming session and Premium.".into()))
     }
     fn home(&self) -> Result<HomeContent, BackendError> {
-        let reply = self.operation(&crate::backend::SpotifyOperation::LibraryPage { offset: 0 })?;
+        let reply = self.operation(&crate::backend::SpotifyOperation::LibraryPage {
+            offset: 0,
+            artists_after: None,
+        })?;
         serde_json::from_value(reply.state.get("home_page").unwrap_or(&Value::Null).clone())
             .map_err(|_| BackendError("Spotify library page could not be decoded".into()))
     }
@@ -552,6 +555,12 @@ impl MusicBackend for SpotifyBackend {
     }
     fn artist(&self, id: &str) -> Result<ArtistPage, BackendError> {
         let value = self.get(&format!("artists/{}", raw_id(id, "artist")?), &[])?;
+        let followed = self
+            .get("me/library/contains", &[("uris", id)])?
+            .as_array()
+            .and_then(|items| items.first())
+            .and_then(Value::as_bool)
+            .ok_or_else(|| BackendError("Spotify did not confirm artist follow status".into()))?;
         let albums = self
             .pages(&format!("artists/{}/albums", raw_id(id, "artist")?))?
             .iter()
@@ -569,12 +578,13 @@ impl MusicBackend for SpotifyBackend {
             name: text(&value, "name"),
             header_url: cover(&value),
             albums,
+            provider_followed: Some(followed),
             ..Default::default()
         })
     }
 }
 
-fn library_home(albums: &Value, playlists: &Value) -> HomeContent {
+fn library_home(albums: &Value, playlists: &Value, artists: &Value) -> HomeContent {
     let album_items = items(albums)
         .iter()
         .filter_map(|item| album(item.get("album").unwrap_or(&Value::Null)))
@@ -609,6 +619,23 @@ fn library_home(albums: &Value, playlists: &Value) -> HomeContent {
             duration_s: 0,
         })
         .collect();
+    let artist_items = items(artists)
+        .iter()
+        .filter_map(artist)
+        .map(|artist| HomeItem {
+            id: artist.id,
+            title: artist.name,
+            subtitle: ui::i18n!("music-spotify-following"),
+            cover_url: artist.avatar_url,
+            kind: HomeItemKind::Artist,
+            video_id: String::new(),
+            artist_id: String::new(),
+            artist_name: String::new(),
+            album_id: String::new(),
+            album_title: String::new(),
+            duration_s: 0,
+        })
+        .collect();
     HomeContent {
         sections: vec![
             HomeSection {
@@ -634,6 +661,10 @@ fn library_home(albums: &Value, playlists: &Value) -> HomeContent {
             HomeSection {
                 title: ui::i18n!("music-spotify-playlists"),
                 items: playlist_items,
+            },
+            HomeSection {
+                title: ui::i18n!("music-spotify-artists"),
+                items: artist_items,
             },
         ],
     }
@@ -1099,17 +1130,24 @@ mod tests {
         let api = Responder::start(vec![
             Reply::status(200).body(serde_json::to_vec(&serde_json::json!({"items":albums,"next":"https://attacker.invalid/?token"})).unwrap()),
             Reply::status(200).body(br#"{"items":[],"next":null}"#.to_vec()),
+            Reply::status(200).body(br#"{"artists":{"items":[],"next":null}}"#.to_vec()),
             Reply::status(200).body(serde_json::to_vec(&serde_json::json!({"currently_playing":null,"queue":vec![serde_json::json!({"name":"Remote episode","type":"episode"});70]})).unwrap()),
         ]);
         let (backend, _root) = fixture(&api.url(), &oauth);
         assert!(
             backend
-                .operation(&SpotifyOperation::LibraryPage { offset: 2000 })
+                .operation(&SpotifyOperation::LibraryPage {
+                    offset: 2000,
+                    artists_after: None
+                })
                 .is_err()
         );
         assert!(api.drain_requests().is_empty());
         let reply = backend
-            .operation(&SpotifyOperation::LibraryPage { offset: 50 })
+            .operation(&SpotifyOperation::LibraryPage {
+                offset: 50,
+                artists_after: None,
+            })
             .unwrap();
         let home: HomeContent = serde_json::from_value(reply.state["home_page"].clone()).unwrap();
         assert_eq!(home.sections[1].items.len(), 50);
@@ -1117,6 +1155,7 @@ mod tests {
         for _ in 0..2 {
             assert!(api.next_request().target.contains("offset=50"));
         }
+        assert!(api.next_request().target.starts_with("/me/following?"));
         let queue = backend.operation(&SpotifyOperation::Queue).unwrap();
         assert_eq!(
             queue.state["remote_queue"]["queue"]
@@ -1130,6 +1169,164 @@ mod tests {
         assert_eq!(request.target, "/me/player/queue");
         assert_eq!(request.method, "GET");
         api.assert_untouched();
+    }
+
+    #[test]
+    fn spotify_followed_artists_use_cursor_and_confirm_follow_changes() {
+        use crate::backend::SpotifyOperation;
+        use test_http::{Reply, Responder};
+        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+        let id = "1234567890123456789012";
+        let uri = format!("spotify:artist:{id}");
+        let previous = "0000000000000000000001";
+        let api = Responder::start(vec![
+            Reply::status(200).body(br#"{"items":[],"next":null}"#.to_vec()),
+            Reply::status(200).body(br#"{"items":[],"next":null}"#.to_vec()),
+            Reply::status(200).body(serde_json::to_vec(&serde_json::json!({"artists":{"items":[{"id":id,"name":"Artist","images":[{"url":"https://example.invalid/art.jpg"}]}],"next":"https://attacker.invalid/","cursors":{"after":id}}})).unwrap()),
+            Reply::status(204), Reply::status(200).body(b"[true]".to_vec()),
+            Reply::status(204), Reply::status(200).body(b"[true]".to_vec()),
+            Reply::status(204), Reply::status(200).body(b"[false]".to_vec()),
+        ]);
+        let (backend, _root) = fixture(&api.url(), &oauth);
+        let silent = Responder::silent();
+        let (rejected, _rejected_root) = fixture(&silent.url(), &oauth);
+        assert!(
+            rejected
+                .operation(&SpotifyOperation::LibraryPage {
+                    offset: 50,
+                    artists_after: Some("bad/identity".into())
+                })
+                .is_err()
+        );
+        silent.assert_untouched();
+        let result = backend
+            .operation(&SpotifyOperation::LibraryPage {
+                offset: 50,
+                artists_after: Some(previous.into()),
+            })
+            .unwrap();
+        let home: HomeContent = serde_json::from_value(result.state["home_page"].clone()).unwrap();
+        assert_eq!(home.sections[3].items[0].id, uri);
+        assert_eq!(home.sections[3].items[0].kind, HomeItemKind::Artist);
+        assert_eq!(result.state["has_more"], true);
+        for _ in 0..2 {
+            assert!(api.next_request().target.contains("offset=50"));
+        }
+        let cursor = api.next_request();
+        assert!(cursor.target.starts_with("/me/following?"));
+        assert!(cursor.target.contains(&format!("after={previous}")));
+        let saved = backend
+            .operation(&SpotifyOperation::Save {
+                uri: uri.clone(),
+                saved: true,
+            })
+            .unwrap();
+        assert_eq!(saved.state["saved"], true);
+        assert_eq!(api.next_request().method, "PUT");
+        assert!(
+            api.next_request()
+                .target
+                .starts_with("/me/library/contains?")
+        );
+        assert!(
+            backend
+                .operation(&SpotifyOperation::Save {
+                    uri: uri.clone(),
+                    saved: false
+                })
+                .is_err(),
+            "an unconfirmed unfollow is never reported as successful"
+        );
+        assert_eq!(api.next_request().method, "DELETE");
+        assert_eq!(api.next_request().method, "GET");
+        assert_eq!(
+            backend
+                .operation(&SpotifyOperation::Save { uri, saved: false })
+                .unwrap()
+                .state["saved"],
+            false
+        );
+        assert_eq!(api.next_request().method, "DELETE");
+        assert_eq!(api.next_request().method, "GET");
+        api.assert_untouched();
+    }
+
+    #[test]
+    fn spotify_artist_page_requires_a_provider_follow_status() {
+        use test_http::{Reply, Responder};
+        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+        let id = "1234567890123456789012";
+        let uri = format!("spotify:artist:{id}");
+        let api = Responder::start(vec![
+            Reply::status(200)
+                .body(serde_json::to_vec(&serde_json::json!({"id":id,"name":"Artist"})).unwrap()),
+            Reply::status(200).body(b"[true]".to_vec()),
+            Reply::status(200).body(br#"{"items":[],"next":null}"#.to_vec()),
+            Reply::status(200)
+                .body(serde_json::to_vec(&serde_json::json!({"id":id,"name":"Artist"})).unwrap()),
+            Reply::status(200).body(b"[]".to_vec()),
+        ]);
+        let (backend, _root) = fixture(&api.url(), &oauth);
+        assert_eq!(backend.artist(&uri).unwrap().provider_followed, Some(true));
+        assert!(
+            api.next_request()
+                .target
+                .starts_with(&format!("/artists/{id}"))
+        );
+        assert!(
+            api.next_request()
+                .target
+                .starts_with("/me/library/contains?")
+        );
+        assert!(
+            api.next_request()
+                .target
+                .starts_with(&format!("/artists/{id}/albums?"))
+        );
+        assert!(
+            backend
+                .artist(&uri)
+                .unwrap_err()
+                .to_string()
+                .contains("did not confirm")
+        );
+        assert_eq!(api.next_request().method, "GET");
+        assert_eq!(api.next_request().method, "GET");
+        api.assert_untouched();
+    }
+
+    #[test]
+    fn spotify_followed_artist_pages_refuse_missing_stalled_or_malformed_cursors() {
+        use crate::backend::SpotifyOperation;
+        use serde_json::json;
+        use test_http::{Reply, Responder};
+        let id = "1234567890123456789012";
+        for artists in [
+            json!({"items":[],"next":"https://attacker.invalid","cursors":{"after":id}}),
+            json!({"items":[{"id":id,"name":"Artist"}],"next":"https://attacker.invalid"}),
+            json!({"items":[{"id":id,"name":"Artist"}],"next":"https://attacker.invalid","cursors":{"after":id}}),
+            json!({"items":[{"id":"bad/artist","name":"Artist"}],"next":null}),
+        ] {
+            let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+            let api = Responder::start(vec![
+                Reply::status(200).body(br#"{"items":[],"next":null}"#.to_vec()),
+                Reply::status(200).body(br#"{"items":[],"next":null}"#.to_vec()),
+                Reply::status(200).body(serde_json::to_vec(&json!({"artists":artists})).unwrap()),
+            ]);
+            let (backend, _root) = fixture(&api.url(), &oauth);
+            assert!(
+                backend
+                    .operation(&SpotifyOperation::LibraryPage {
+                        offset: 50,
+                        artists_after: Some(id.into())
+                    })
+                    .is_err()
+            );
+            for _ in 0..3 {
+                assert_eq!(api.next_request().method, "GET");
+            }
+            api.assert_untouched();
+        }
     }
 
     #[test]

@@ -629,6 +629,51 @@ fn hit_center(app: &MusicApp, action: &Action) -> Option<Point> {
 }
 
 #[test]
+fn spotify_keyboard_creation_and_escape_use_accessible_shared_controls() {
+    use ui::framework::testing::TestApp;
+    for scale in [1.0, 2.0] {
+        let mut app = TestApp::<crate::resource::MusicShell>::new().unwrap();
+        app.surface_mut::<MusicApp>().snap_spotify("spotify-home");
+        app.harness()
+            .relayout_themed(
+                (360, 900),
+                ui::Theme::high_contrast().with_text_scale(scale),
+            )
+            .unwrap();
+        let accessible = app.harness().focus_access_nodes();
+        let label = ui::i18n!("music-spotify-create-playlist");
+        assert!(
+            accessible
+                .iter()
+                .any(|node| node.name.as_deref() == Some(label.as_str())
+                    && node.state.focusable
+                    && !node.state.disabled)
+        );
+        let before = app.read_document(|doc| doc.clone().get_heads());
+        app.harness()
+            .perform_semantic_named(
+                "music-spotify-create-playlist",
+                None,
+                &ui::a11y::Action::Focus,
+            )
+            .unwrap();
+        app.harness().key("Enter");
+        assert!(
+            app.surface_mut::<MusicApp>().name_prompt.is_some(),
+            "host keyboard activation invokes the published effect and opens the shared dialog"
+        );
+        app.harness().key("Escape");
+        assert!(app.surface_mut::<MusicApp>().name_prompt.is_none());
+        assert_eq!(
+            app.read_document(|doc| doc.clone().get_heads()),
+            before,
+            "cancelling never creates a local or provider playlist"
+        );
+        assert!(app.surface_mut::<MusicApp>().spotify_jobs.is_empty());
+    }
+}
+
+#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
@@ -4309,6 +4354,7 @@ fn artist_and_album_pages_navigate_and_play() {
                     cover_url: String::new(),
                 },
             ],
+            provider_followed: None,
             similar: vec![ArtistHit {
                 id: "UCjustice".into(),
                 name: "Justice".into(),

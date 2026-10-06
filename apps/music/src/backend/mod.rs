@@ -251,6 +251,8 @@ pub struct ArtistPage {
     pub albums: Vec<ArtistAlbum>,
     /// Related / similar artists surfaced on the page.
     pub similar: Vec<ArtistHit>,
+    /// Provider-confirmed device-local follow status, independent of the CRDT.
+    pub provider_followed: Option<bool>,
 }
 
 /// A real YouTube-Music playlist: its ordered tracks + cover + owner. Backs the
@@ -328,15 +330,39 @@ pub type ResolveOutcome = Result<ResolvedStream, BackendError>;
 pub enum SpotifyOperation {
     Devices,
     Queue,
-    LibraryPage { offset: u32 },
-    CreatePlaylist { name: String },
-    Transfer { device: String },
-    RemotePlay { device: String, track: String },
-    RemotePause { device: String },
-    Save { uri: String, saved: bool },
-    RenamePlaylist { playlist: String, name: String },
-    PlaylistAdd { playlist: String, track: String },
-    PlaylistRemove { playlist: String, track: String },
+    LibraryPage {
+        offset: u32,
+        artists_after: Option<String>,
+    },
+    CreatePlaylist {
+        name: String,
+    },
+    Transfer {
+        device: String,
+    },
+    RemotePlay {
+        device: String,
+        track: String,
+    },
+    RemotePause {
+        device: String,
+    },
+    Save {
+        uri: String,
+        saved: bool,
+    },
+    RenamePlaylist {
+        playlist: String,
+        name: String,
+    },
+    PlaylistAdd {
+        playlist: String,
+        track: String,
+    },
+    PlaylistRemove {
+        playlist: String,
+        track: String,
+    },
 }
 
 #[derive(Clone, Debug, Default)]

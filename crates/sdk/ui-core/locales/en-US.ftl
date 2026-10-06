@@ -495,3 +495,8 @@ music-spotify-remote-queue-unloaded = Refresh to read Spotify’s remote queue. 
 music-spotify-remote-queue-age = Snapshot captured { $seconds } seconds ago
 music-spotify-remote-queue-truncated = Showing the first 50 remote items.
 music-spotify-local-queue = This device’s queue
+
+music-spotify-artists = Followed artists
+music-spotify-following = Following on Spotify
+music-spotify-follow-artist = Follow artist on Spotify
+music-spotify-unfollow-artist = Unfollow artist on Spotify

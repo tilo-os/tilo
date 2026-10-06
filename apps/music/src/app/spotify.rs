@@ -16,6 +16,22 @@ pub(super) struct PendingJob {
 use ui::widget::Widget as _;
 
 impl MusicApp {
+    pub(super) fn artist_followed(&self, id: &str) -> bool {
+        if !id.starts_with("spotify:artist:") {
+            return self.lib.is_artist_followed(id);
+        }
+        self.artist_pages
+            .get(id)
+            .and_then(|page| page.provider_followed)
+            .unwrap_or_else(|| {
+                self.home.as_ref().is_some_and(|home| {
+                    home.sections
+                        .iter()
+                        .flat_map(|section| &section.items)
+                        .any(|item| item.kind == super::HomeItemKind::Artist && item.id == id)
+                })
+            })
+    }
     pub(super) fn refresh_spotify_control_flags(&mut self) {
         let page_ready = self.spotify_catalogue
             && self.home.is_some()
@@ -335,6 +351,15 @@ impl MusicApp {
             }
             SpotifyOperation::LibraryPage {
                 offset: self.spotify_library_offset,
+                artists_after: self.home.as_ref().and_then(|home| {
+                    home.sections
+                        .iter()
+                        .flat_map(|section| &section.items)
+                        .filter(|item| item.kind == super::HomeItemKind::Artist)
+                        .filter_map(|item| item.id.strip_prefix("spotify:artist:"))
+                        .next_back()
+                        .map(str::to_string)
+                }),
             }
         } else {
             operation(effect).ok_or("Invalid Spotify operation")?
@@ -345,7 +370,7 @@ impl MusicApp {
                 | SpotifyOperation::PlaylistRemove { .. }
                 | SpotifyOperation::CreatePlaylist { .. }
         );
-        let library_page = if let SpotifyOperation::LibraryPage { offset } = operation {
+        let library_page = if let SpotifyOperation::LibraryPage { offset, .. } = operation {
             Some(offset)
         } else {
             None
@@ -397,6 +422,16 @@ impl MusicApp {
         });
         let update = match result {
             Ok(reply) => {
+                if let Some(uri) = reply.state.get("uri").and_then(serde_json::Value::as_str)
+                    && uri.starts_with("spotify:artist:")
+                    && let Some(saved) = reply
+                        .state
+                        .get("saved")
+                        .and_then(serde_json::Value::as_bool)
+                    && let Some(page) = self.artist_pages.get_mut(uri)
+                {
+                    page.provider_followed = Some(saved);
+                }
                 if reply.state.get("remote_queue").is_some() {
                     self.spotify_remote_queue = Some((reply.state.clone(), ui::time::now()));
                 }
@@ -476,7 +511,7 @@ impl MusicApp {
         let more = state["has_more"]
             .as_bool()
             .ok_or_else(|| ui::i18n!("music-spotify-library-page-invalid"))?;
-        if page.sections.len() > 3 || page.sections.iter().any(|section| section.items.len() > 50) {
+        if page.sections.len() > 4 || page.sections.iter().any(|section| section.items.len() > 50) {
             return Err(ui::i18n!("music-spotify-library-page-invalid"));
         }
         let mut home = self
@@ -658,13 +693,20 @@ impl MusicApp {
                 };
                 let mut row = ui::framework::LiveRow::new(address, kind, label)
                     .effect(&MusicEffect::Open { place });
-                if id.starts_with("spotify:")
-                    && id != "spotify:collection:liked"
-                    && kind != "music.artist"
-                {
-                    row = row
-                        .effect(&MusicEffect::SpotifySave { uri: id.clone() })
-                        .effect(&MusicEffect::SpotifyUnsave { uri: id });
+                if id.starts_with("spotify:") && id != "spotify:collection:liked" {
+                    row = if kind == "music.artist" {
+                        row.operation(crate::actions::bound(
+                            &MusicEffect::SpotifySave { uri: id.clone() },
+                            &ui::i18n!("music-spotify-follow-artist"),
+                        ))
+                        .operation(crate::actions::bound(
+                            &MusicEffect::SpotifyUnsave { uri: id },
+                            &ui::i18n!("music-spotify-unfollow-artist"),
+                        ))
+                    } else {
+                        row.effect(&MusicEffect::SpotifySave { uri: id.clone() })
+                            .effect(&MusicEffect::SpotifyUnsave { uri: id })
+                    };
                 }
                 Some(row)
             })
@@ -851,6 +893,167 @@ fn operation(effect: &MusicEffect) -> Option<SpotifyOperation> {
 mod tests {
     use super::*;
     use ui::widget::controls::ActionControls as _;
+
+    #[test]
+    fn spotify_status_and_provider_page_titles_are_accessible_without_shared_metadata() {
+        let mut app = MusicApp::without_profile();
+        app.snap_spotify("spotify-home");
+        app.source_error = Some("Reconnect Spotify to grant library access".into());
+        let tree = app.accessibility().unwrap();
+        let page = &tree.children[2];
+        assert!(page.children.iter().any(|node| node.name.as_deref()
+            == Some(app.source_status().as_str())
+            && node.description.as_deref() == app.source_error.as_deref()));
+        assert!(
+            !page
+                .children
+                .iter()
+                .any(|node| node.name.as_deref() == Some("Empty music library")),
+            "remote collections do not announce an empty library"
+        );
+        let id = "spotify:artist:1234567890123456789012";
+        app.artist_pages.insert(
+            id.into(),
+            crate::backend::ArtistPage {
+                id: id.into(),
+                name: "Provider artist".into(),
+                provider_followed: Some(true),
+                ..Default::default()
+            },
+        );
+        app.view = super::super::View::Artist(id.into());
+        assert_eq!(
+            app.accessibility().unwrap().children[2].name.as_deref(),
+            Some("Provider artist")
+        );
+        assert!(
+            app.device_row(&crate::actions::artist_resource_id(id))
+                .is_some()
+        );
+        let album = "spotify:album:1234567890123456789012";
+        app.album_pages.insert(
+            album.into(),
+            crate::backend::AlbumPage {
+                id: album.into(),
+                title: "Provider album".into(),
+                ..Default::default()
+            },
+        );
+        app.view = super::super::View::Album(album.into());
+        assert_eq!(
+            app.accessibility().unwrap().children[2].name.as_deref(),
+            Some("Provider album")
+        );
+        let playlist = "spotify:playlist:1234567890123456789012";
+        app.playlist_pages.insert(
+            playlist.into(),
+            crate::backend::PlaylistPage {
+                id: playlist.into(),
+                title: "Provider playlist".into(),
+                ..Default::default()
+            },
+        );
+        app.view = super::super::View::Playlist(playlist.into());
+        assert_eq!(
+            app.accessibility().unwrap().children[2].name.as_deref(),
+            Some("Provider playlist")
+        );
+    }
+
+    #[test]
+    fn spotify_artist_follow_is_a_host_effect_and_provider_confirmation_only() {
+        use ui::tilo_resource::Effect as _;
+        let mut app = MusicApp::without_profile();
+        let id = "spotify:artist:1234567890123456789012";
+        let page = crate::backend::ArtistPage {
+            id: id.into(),
+            name: "Artist".into(),
+            provider_followed: Some(true),
+            ..Default::default()
+        };
+        app.absorb_artist(&page);
+        app.artist_pages.insert(id.into(), page);
+        let mut doc = automerge::AutoCommit::new();
+        let before = doc.get_heads();
+        let refused = tilo_actions::Action::apply(
+            &crate::actions::MusicAction::SetFollowedArtist {
+                artist: id.into(),
+                followed: false,
+            },
+            &mut doc,
+        )
+        .unwrap_err();
+        assert!(refused.to_string().contains("provider-authorized"));
+        app.on_toggle_follow(id, &mut ui::widget::Edits::lend(&mut doc));
+        let invocation = app
+            .take_control_invocation()
+            .expect("follow uses the host control channel");
+        assert_eq!(invocation.address.resource, "music.library");
+        let spec = MusicEffect::specs()
+            .into_iter()
+            .find(|spec| spec.id == invocation.address.action)
+            .unwrap();
+        let encoded = spec.build_json(&invocation.arguments).unwrap();
+        assert!(
+            matches!(MusicEffect::from_payload(&encoded.payload).unwrap(), MusicEffect::SpotifyUnsave {uri} if uri == id)
+        );
+        assert!(
+            app.artist_followed(id),
+            "the intent does not claim a provider write succeeded"
+        );
+        let resource = app
+            .device_row(&crate::actions::artist_resource_id(id))
+            .unwrap()
+            .into_resource();
+        assert!(
+            resource
+                .actions
+                .iter()
+                .any(|action| action.id == MusicEffect::SpotifySave { uri: id.into() }.id())
+        );
+        assert!(
+            resource
+                .actions
+                .iter()
+                .any(|action| action.id == MusicEffect::SpotifyUnsave { uri: id.into() }.id())
+        );
+        app.spotify_jobs.insert(
+            45,
+            PendingJob {
+                invocation: tilo_actions::InvocationId::new(),
+                started: ui::time::now(),
+                retryable: true,
+                remote_play: false,
+                library_page: None,
+            },
+        );
+        app.finish_spotify_operation(45, Err("Not confirmed".into()));
+        assert!(app.artist_followed(id));
+        app.spotify_jobs.insert(
+            46,
+            PendingJob {
+                invocation: tilo_actions::InvocationId::new(),
+                started: ui::time::now(),
+                retryable: true,
+                remote_play: false,
+                library_page: None,
+            },
+        );
+        app.finish_spotify_operation(
+            46,
+            Ok(SpotifyReply {
+                devices: vec![],
+                state: serde_json::json!({"uri":id,"saved":false}),
+            }),
+        );
+        assert!(!app.artist_followed(id));
+        assert_eq!(
+            doc.get_heads(),
+            before,
+            "Spotify following is not a collaborative document edit"
+        );
+        assert!(app.take_control_invocation().is_none());
+    }
 
     #[test]
     fn spotify_queue_refresh_is_a_shared_host_control_at_large_text() {
