@@ -766,3 +766,63 @@ promise. Production CEF's native
 [context-menu edit-state flags](https://cef-builds.spotifycdn.com/docs/144.0/classCefContextMenuParams.html)
 are scoped to the node on which that menu was invoked, so they do not alone
 supply a continuously fresh focused-field history status.
+
+
+### Allocation containment and native history follow-up
+
+The Small failure is preserved. A separate test-only preload injects one
+`std::bad_alloc` into the 3,200-byte FFT input allocation on the public
+`ar_eg-1` draft. Pinned Whisper 1.8.3 creates a preprocessing thread before
+running the same worker on its main thread; unwinding with that thread still
+joinable aborts before the outer ABI catch. The controlled baseline aborted
+with signal 6. Serial preprocessing through
+`whisper_pcm_to_mel_with_state(..., 1)`, followed by
+`whisper_full_with_state(..., nullptr, 0)`, now returns the typed recognition
+failure and exits 1. Recognition still uses two threads, fresh state,
+`best_of=1`, the default allocator and the unchanged 1 GiB cap. This identifies
+and contains one real allocation failure path; it does **not** establish the
+cause of the original intermittent abort or cover every native thread.
+`tools/release/probe_speech_fft_failure.py` makes the public-fixture regression
+repeatable without installing a preload or changing service confinement.
+
+The subsequent default-allocator batch completed all 21 public cases. Draft,
+final and automatic-language text matched byte-for-byte against the original
+13 successful observations plus eight separate follow-ups, and against the
+complete throw-observer diagnostic batch. Five actual-child memory probes
+(two failing-case retries and all three long clips) completed. Short Arabic
+virtual-memory margin increased to 17.8 MiB, while long Chinese still had only
+1.60 MiB; long French retained 4.01 MiB. This remains inadequate evidence for
+stability or a default model promotion. The production worker and benchmark
+already release the verified input model copy before decoder allocation; no
+second copy was found to remove.
+
+The native history work uses the existing LocalUndo capability and canonical
+`tilo.host:edit` resource. Original-focus Prepare/Check replies carry only two
+history availability flags, accepted strictly with a 500 ms freshness bound.
+Expired, canceled or changed reservations do not fall back to unrelated CRDT
+history. The same availability reaches the host menu, palette, accessibility
+controls and broker publication. A supported native history operation is
+admitted as a bounded background job and reports success only after its
+renderer acknowledgement; refusal or missing acknowledgement is non-retryable.
+Native page history is local-device-only, like the private field context it
+uses; it does not authorize another collaborator to undo private form edits.
+Unsupported hosts do not advertise this capability, and withdrawing the
+focused native owner removes its broker route.
+
+**Chromium's history is page-wide, not per field.** A stronger actual CEF test
+showed that Undo can restore another field's latest entry while the first field
+is focused. The original failing field-ownership assertion is retained: a
+field-scoped request must refuse without changing either field. The private
+protocol therefore requires explicit `history_scope: "page"` for native
+Undo/Redo, and the public action description states that another field may own
+the latest change. The existing original-focus and frame lease still guards
+that request; a focus or document change before dispatch refuses rather than
+retargeting. No per-field native history support is claimed. The native
+keyboard route keeps its existing page-history behavior.
+
+The mounted audio fixture does not inherit the launcher's collaboration
+service descriptor and certified route. Its earlier missing catalogue rows
+remain an unqualified assembled broker-publication observation; direct
+connection with an ephemeral signer cannot substitute for production launcher
+admission. Native CEF effects and the production SDK resource-dispatch path
+are qualified separately, without granting access or weakening attestation.

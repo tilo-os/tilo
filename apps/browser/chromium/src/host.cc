@@ -251,7 +251,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     agent_log_->Attach();
     paint_snapshot_=new tilo::PaintSnapshot(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
     paint_snapshot_->Attach();
-    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
+    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
     TraceGeometry("ready",id_);
     browser_->GetHost()->WasHidden(!visible_);
     if(closing) browser_->GetHost()->CloseBrowser(true);
@@ -1213,14 +1213,15 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   if(op=="text_input") {
     if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("action",VTYPE_STRING))return false;
     const auto action=d->GetString("action").ToString();
-    if(action!="prepare_text_input" && action!="check_text_input" && action!="commit_text_input" && action!="cancel_text_input")return false;
+    if(action!="prepare_text_input" && action!="start_text_input" && action!="check_text_input" && action!="commit_text_input" && action!="cancel_text_input" && action!="undo_text_input" && action!="redo_text_input")return false;
     CefDictionaryValue::KeyList keys;d->GetKeys(keys);
-    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="request_id" && key!="action" && key!="lease" && key!="text" && key!="expires_ms")return false;
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="request_id" && key!="action" && key!="lease" && key!="text" && key!="expires_ms" && key!="history_scope")return false;
     if(action!="prepare_text_input") {
       if(!type("lease",VTYPE_STRING))return false;
       const auto lease=d->GetString("lease").ToString();
       if(lease.size()!=32 || !std::all_of(lease.begin(),lease.end(),[](char c){return (c>='0' && c<='9') || (c>='a' && c<='f');}))return false;
     }
+    if(d->HasKey("history_scope") && (!type("history_scope",VTYPE_STRING) || (action!="undo_text_input" && action!="redo_text_input") || d->GetString("history_scope")!="page"))return false;
     if(d->HasKey("expires_ms") && (!number("expires_ms") || Number(d,"expires_ms")<=0 || !std::isfinite(Number(d,"expires_ms"))))return false;
     return action!="commit_text_input" || (type("text",VTYPE_STRING) && !d->GetString("text").empty() && d->GetString("text").ToString().size()<=4096);
   }

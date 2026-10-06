@@ -551,6 +551,9 @@ dictation-copy-transcript = Copy transcript
 dictation-discard-transcript = Discard transcript
 
 dropdown-no-matches = No matching choices
+host-native-history-unobserved = The original field’s editing history has not been confirmed.
+host-native-history-unconfirmed = This page’s history edit was not confirmed. Inspect the page before trying again.
+host-native-page-history-scope = Undo and redo apply to this page’s editing history. The latest change may be in another field.
 
 # Shared native screen topology canvas
 display-arrangement-name = Display arrangement

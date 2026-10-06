@@ -480,6 +480,9 @@ dictation-copy-transcript = Transkript kopieren
 dictation-discard-transcript = Transkript verwerfen
 
 dropdown-no-matches = Keine passende Auswahl
+host-native-history-unobserved = Der Bearbeitungsverlauf des ursprünglichen Felds wurde noch nicht bestätigt.
+host-native-history-unconfirmed = Die Verlaufsänderung dieser Seite wurde nicht bestätigt. Prüfe die Seite, bevor du es erneut versuchst.
+host-native-page-history-scope = Rückgängig und Wiederholen gelten für den Bearbeitungsverlauf dieser Seite. Die letzte Änderung kann in einem anderen Feld liegen.
 
 # Shared native screen topology canvas
 display-arrangement-name = Bildschirmanordnung

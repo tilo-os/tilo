@@ -4,6 +4,12 @@
 // `d<document>e<element>`; the document number is the world's, so a ref never
 // resolves in a later document.
 globalThis.__tiloPage ||= (() => {
+  const execNativeHistory = Document.prototype.execCommand;
+  const queryNativeHistory = Document.prototype.queryCommandEnabled;
+  const nativeHistory = () => ({
+    can_undo: Reflect.apply(queryNativeHistory, document, ['undo']),
+    can_redo: Reflect.apply(queryNativeHistory, document, ['redo'])
+  });
   const MAX_LINES = 1200, MAX_CHARS = 100000, MAX_VISITED = 40000;
   const MAX_TEXT = 200, MAX_NAME = 120, MAX_VALUE = 200, MAX_OPTIONS = 30;
   const INPUT_ROLES = {button: 'button', submit: 'button', reset: 'button', image: 'button',
@@ -547,14 +553,22 @@ globalThis.__tiloPage ||= (() => {
     while (element?.shadowRoot?.activeElement) element = element.shadowRoot.activeElement;
     return element;
   }
-  function composedParent(node) { return node?.parentNode || node?.host || null; }
+  function composedParent(node) {
+    if (node?.assignedSlot) return node.assignedSlot;
+    if (node?.parentNode || node?.host) return node.parentNode || node.host;
+    // Same-origin frame ancestors carry eligibility and mutation revocation.
+    // No universal-access world or cross-origin DOM bypass is requested.
+    return node?.nodeType === 9 ? node.defaultView?.frameElement : null;
+  }
   function composedContains(ancestor, node) {
     for (; node; node = composedParent(node)) if (node === ancestor) return true;
     return false;
   }
   function composedReadOnly(element) {
     for (let node = element; node; node = composedParent(node)) {
-      if (node instanceof Element && node.matches('[inert],[aria-readonly="true"],[aria-disabled="true"]')) return true;
+      if (node.nodeType === 9 && node.defaultView.parent !== node.defaultView && !node.defaultView.frameElement)
+        throw failure('not_editable', 'The original frame ancestors cannot be observed');
+      if (node.nodeType === 1 && node.matches('[inert],[aria-readonly="true"],[aria-disabled="true"]')) return true;
     }
     return false;
   }
@@ -593,8 +607,12 @@ globalThis.__tiloPage ||= (() => {
     return Object.keys(original).every(key => current[key] === original[key]);
   }
   function touchesTextLease(lease, record) {
-    return composedContains(record.target, lease.element) ||
-      composedContains(lease.element, record.target);
+    if (composedContains(lease.element, record.target)) return true;
+    if (record.type !== 'childList') return composedContains(record.target, lease.element);
+    // Sibling notifications/toolbars do not mutate this field. Removing or
+    // reparenting an original ancestor still retires it, even after restoration.
+    return [...record.addedNodes, ...record.removedNodes].some(node =>
+      lease.ancestors.has(node) || composedContains(node, lease.element));
   }
   addEventListener('selectionchange', () => {
     if (textLease) {
@@ -611,7 +629,7 @@ globalThis.__tiloPage ||= (() => {
       const element = activeTextElement(), snapshot = textSnapshot(element);
       const bytes = crypto.getRandomValues(new Uint8Array(16));
       const lease = [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('');
-      textLease = {element, snapshot, lease, expires: performance.now() + 180000, revoked: false};
+      textLease = {element, snapshot, lease, expires: performance.now() + 180000, revoked: false, started: false};
       const owned = textLease;
       owned.observer = new MutationObserver(records => {
         if ((textLease === owned || committingTextLease === owned) &&
@@ -619,13 +637,17 @@ globalThis.__tiloPage ||= (() => {
       });
       const options = {subtree: true, childList: true, characterData: true, attributes: true,
         attributeFilter: ['type', 'readonly', 'disabled', 'autocomplete', 'contenteditable',
-          'aria-readonly', 'aria-disabled', 'inert', 'style', 'class', 'hidden']};
+          'aria-readonly', 'aria-disabled', 'inert', 'style', 'class', 'hidden', 'slot', 'name']};
       // Observe every composed root: nested shadow hosts carry eligibility too.
       const roots = new Set([document]);
-      for (let node = element; node; node = composedParent(node)) roots.add(node.getRootNode());
+      owned.ancestors = new Set();
+      for (let node = element; node; node = composedParent(node)) {
+        owned.ancestors.add(node);
+        roots.add(node.getRootNode());
+      }
       for (const root of roots) owned.observer.observe(root, options);
       owned.timer = setTimeout(() => { if (textLease === owned) retireTextLease(); }, 180000);
-      return {ok: true, message: 'Text input prepared', data: {lease}};
+      return {ok: true, message: 'Text input prepared', data: {lease}, history: nativeHistory()};
     }
     if (!textLease || command.lease !== textLease.lease)
       throw failure('text_input_retired', 'This text-input lease is no longer active');
@@ -641,8 +663,27 @@ globalThis.__tiloPage ||= (() => {
       retireTextLease();
       throw failure('text_input_changed', 'The original text field or selection changed');
     }
-    if (command.action === 'check_text_input') return {ok: true, message: 'Text input unchanged', data: {lease: owned.lease}};
-    if (typeof command.text !== 'string' || !command.text ||
+    if (command.action === 'start_text_input') {
+      if (owned.started) throw failure('text_input_changed', 'This original session has already started');
+      owned.started = true;
+      clearTimeout(owned.timer);
+      owned.expires = performance.now() + 180000;
+      owned.timer = setTimeout(() => { if (textLease === owned) retireTextLease(); }, 180000);
+      return {ok: true, message: 'Original text session started', data: {lease: owned.lease}, history: nativeHistory()};
+    }
+    if (command.action === 'check_text_input') return {ok: true, message: 'Text input unchanged', data: {lease: owned.lease}, history: nativeHistory()};
+    if (command.action === 'undo_text_input' || command.action === 'redo_text_input') {
+      if (command.history_scope !== 'page')
+        throw failure('rejected', 'Field-scoped native history is not available');
+      if (owned.started) throw failure('text_input_changed', 'An active speech session owns this field');
+      try {
+        const verb = command.action === 'undo_text_input' ? 'undo' : 'redo';
+        if (!Reflect.apply(execNativeHistory, document, [verb]))
+          throw failure('rejected', 'The original field has no available history entry');
+        return {ok: true, message: 'Original page history invoked'};
+      } finally { retireTextLease(); }
+    }
+    if (typeof command.text !== 'string'  || !command.text ||
         new TextEncoder().encode(command.text).length > 4096)
       throw failure('invalid_request', 'The final text is empty or too large');
     textLease = null; clearTimeout(owned.timer); committingTextLease = owned;
@@ -662,7 +703,7 @@ globalThis.__tiloPage ||= (() => {
       try {
         if (!doc) doc = command.doc;
         switch (command.action) {
-          case 'prepare_text_input': case 'check_text_input': case 'commit_text_input': case 'cancel_text_input':
+          case 'prepare_text_input': case 'start_text_input': case 'check_text_input': case 'commit_text_input': case 'cancel_text_input': case 'undo_text_input': case 'redo_text_input':
             return guardedTextInput(command);
           case 'outline': return outline();
           case 'changes': return changes();

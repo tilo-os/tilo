@@ -545,6 +545,12 @@ pub trait WebViewEngine: Send + Sync {
             .is_some_and(|engine| engine.supports_text_input())
     }
 
+    /// Whether original-field acknowledged Undo/Redo is supported.
+    fn supports_guarded_edit_history(&self) -> bool {
+        self.wrapped()
+            .is_some_and(|engine| engine.supports_guarded_edit_history())
+    }
+
     /// Offer system Undo/Redo to this page's native editing history.
     /// True means the backend consumed the request, not that a history entry
     /// existed or that an asynchronous edit has already completed.
