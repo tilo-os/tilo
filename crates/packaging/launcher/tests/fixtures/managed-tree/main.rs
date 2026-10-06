@@ -2,44 +2,41 @@
 //! Cargo builds this through the checkout's normal compiler budget. Its only
 //! protocol is the real managed startup challenge followed by private test bytes.
 #[cfg(target_os = "linux")]
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::{
         io::{Read, Write},
         os::fd::{AsRawFd, FromRawFd},
         os::unix::net::UnixStream,
         time::Duration,
     };
-    fn service(name: &str) -> UnixStream {
-        let fd: i32 = std::env::var(name)
-            .expect("required enrolled descriptor")
-            .parse()
-            .unwrap();
-        assert!(fd >= 3);
+    fn service(name: &str) -> Result<UnixStream, Box<dyn std::error::Error>> {
+        let fd: i32 = std::env::var(name)?.parse()?;
+        if fd < 3 {
+            return Err("required enrolled descriptor overlaps standard streams".into());
+        }
         // SAFETY: the launcher exclusively transfers this descriptor to us.
-        unsafe { UnixStream::from_raw_fd(fd) }
+        Ok(unsafe { UnixStream::from_raw_fd(fd) })
     }
-    let mut collab = service("TILO_SVC_COLLAB_FD");
+    let mut collab = service("TILO_SVC_COLLAB_FD")?;
     // svc_env_var currently uppercases the canonical service name verbatim.
-    let mut model = service("TILO_SVC_MODEL-GATEWAY_FD");
-    collab
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .unwrap();
+    let mut model = service("TILO_SVC_MODEL-GATEWAY_FD")?;
+    collab.set_read_timeout(Some(Duration::from_secs(10)))?;
     let mut challenge = [0; 32];
-    collab.read_exact(&mut challenge).unwrap();
-    collab.write_all(&challenge).unwrap();
+    collab.read_exact(&mut challenge)?;
+    collab.write_all(&challenge)?;
     let mut admitted = [0];
-    collab.read_exact(&mut admitted).unwrap();
-    assert_eq!(
-        admitted,
-        [1],
-        "actual host admission must precede the fixture"
-    );
-    collab.set_read_timeout(None).unwrap();
+    collab.read_exact(&mut admitted)?;
+    if admitted != [1] {
+        return Err("actual host admission must precede the fixture".into());
+    }
+    collab.set_read_timeout(None)?;
 
     // No threads have been created. After fork the child branches use only libc
     // and terminate with _exit; they never unwind or run inherited Rust drops.
     let intermediate = unsafe { libc::fork() };
-    assert!(intermediate >= 0, "intermediate fork failed");
+    if intermediate < 0 {
+        return Err("intermediate fork failed".into());
+    }
     if intermediate == 0 {
         let original_parent = unsafe { libc::getpid() };
         let grandchild = unsafe { libc::fork() };
@@ -56,7 +53,7 @@ fn main() {
                 tv_sec: 0,
                 tv_nsec: 1_000_000,
             };
-            unsafe { libc::nanosleep(&delay, std::ptr::null_mut()) };
+            unsafe { libc::nanosleep(&raw const delay, std::ptr::null_mut()) };
         }
         if unsafe { libc::getppid() } != 1 {
             unsafe { libc::_exit(42) };
@@ -74,17 +71,21 @@ fn main() {
         }
     }
     let mut status = 0;
-    assert_eq!(
-        unsafe { libc::waitpid(intermediate, &mut status, 0) },
-        intermediate
-    );
-    assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0);
-    collab.write_all(b"P").unwrap(); // Intermediate was actually waited/reaped.
+    if unsafe { libc::waitpid(intermediate, &raw mut status, 0) } != intermediate {
+        return Err("exact intermediate was not reaped".into());
+    }
+    if !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != 0 {
+        return Err("intermediate fixture did not exit successfully".into());
+    }
+    collab.write_all(b"P")?; // Intermediate was actually waited/reaped.
     let mut exit = [0];
-    model.read_exact(&mut exit).unwrap();
-    assert_eq!(exit, [b'E']);
+    model.read_exact(&mut exit)?;
+    if exit != *b"E" {
+        return Err("private fixture exit command differs".into());
+    }
     // The reparented descendant remains blocked in pause until the actual
     // sandbox teardown kills it.
+    Ok(())
 }
 
 #[cfg(not(target_os = "linux"))]

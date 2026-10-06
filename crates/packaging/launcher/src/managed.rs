@@ -1132,6 +1132,11 @@ impl KernelProcess {
 #[path = "managed_channel.rs"]
 pub mod channel;
 
+/// Signed package/runtime setup for explicitly opted-in kernel qualifications.
+#[cfg(all(target_os = "linux", feature = "managed-tree-test"))]
+#[path = "managed_test_support.rs"]
+pub mod test_support;
+
 /// Proven wait result from this launch owner's exact Child handle. Diagnostic
 /// PID labels or process absence cannot construct this witness.
 #[derive(Clone)]

@@ -2,24 +2,19 @@
 //! are failures. This fixture proves custody barriers, not model/agent readiness.
 use launcher::{
     managed::{
-        InstalledManagedPackage, ManagedBinding, ManagedLaunchAuthority, ManagedLaunchEvent,
-        ManagedLaunchScope, ManagedLauncher, ManagedRuntime, PackageTrust, ProcessIdentity,
-        VerifiedManagedProcess, VerifiedManagedSupervisor,
+        ManagedBinding, ManagedLaunchAuthority, ManagedLaunchEvent, ManagedLaunchScope,
+        ManagedLauncher, ProcessIdentity, VerifiedManagedProcess, VerifiedManagedSupervisor,
         channel::{ManagedProcessAuthority, PendingManagedConnection},
+        test_support::{fixture_package, fixture_runtime},
     },
     services::{EnrolledServiceContext, ManagedProviderSelection},
 };
 use std::{
-    fs::{File, OpenOptions},
     io::{Read, Write},
     os::{
         fd::{AsRawFd, FromRawFd, OwnedFd},
-        unix::{
-            fs::{OpenOptionsExt, PermissionsExt},
-            net::UnixStream,
-        },
+        unix::{fs::PermissionsExt, net::UnixStream},
     },
-    path::Path,
     process::{Child, Command, Stdio},
     sync::{
         Arc,
@@ -73,7 +68,7 @@ impl PinnedProcess {
         assert!(raw >= 0, "pidfd_open: {}", std::io::Error::last_os_error());
         let result = Self {
             identity,
-            fd: unsafe { OwnedFd::from_raw_fd(raw as i32) },
+            fd: unsafe { OwnedFd::from_raw_fd(i32::try_from(raw).unwrap()) },
         };
         assert!(
             identity.is_current(),
@@ -88,7 +83,7 @@ impl PinnedProcess {
             events: libc::POLLIN,
             revents: 0,
         };
-        let count = unsafe { libc::poll(&mut poll, 1, 0) };
+        let count = unsafe { libc::poll(&raw mut poll, 1, 0) };
         assert!(count >= 0, "pidfd poll failed");
         assert_eq!(poll.revents & (libc::POLLERR | libc::POLLNVAL), 0);
         poll.revents & libc::POLLIN != 0
@@ -130,138 +125,6 @@ impl Drop for Reap {
     }
 }
 
-fn fixture_package(root: &Path) -> (InstalledManagedPackage, PackageTrust) {
-    let mut seed = [0; 32];
-    File::open("/dev/urandom")
-        .unwrap()
-        .read_exact(&mut seed)
-        .unwrap();
-    let key = ed25519_dalek::SigningKey::from_bytes(&seed);
-    let public = key.verifying_key().to_bytes();
-    let public_hex: String = public.iter().map(|b| format!("{b:02x}")).collect();
-    let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
-        r#"
-[package]
-id = "so.tilo.agent"
-version = "1.0.0"
-kind = "service"
-runtime = "tilo-runtime/2026.07"
-[package.isa]
-x86_64 = "baseline"
-aarch64 = "armv8-a"
-[publisher]
-identity = "ed25519:{public_hex}"
-signature = ""
-[sandbox]
-namespaces = ["user", "pid", "uts", "ipc", "mount"]
-seccomp = "tilo-default"
-landlock = "strict"
-[sandbox.net]
-mode = "off"
-[sandbox.services]
-collab = "required@1"
-model-gateway = "required@1"
-[entrypoint]
-bin = "bin/agent"
-type = "cli"
-"#
-    ))
-    .unwrap();
-    let source = root.join("package-source");
-    std::fs::create_dir_all(source.join("bin")).unwrap();
-    std::fs::copy(
-        env!("CARGO_BIN_EXE_managed-tree-fixture"),
-        source.join("bin/agent"),
-    )
-    .unwrap();
-    let packed = tilo_app_package::pack(
-        &source,
-        &manifest,
-        &tilo_app_package::SigningIdentity::from_signing_key(key),
-    )
-    .unwrap();
-    let id = packed.id();
-    let trust = PackageTrust {
-        publishers: vec![public],
-        attestors: vec![],
-        revoked: Default::default(),
-    };
-    assert!(matches!(
-        tilo_app_package::verify_with_trust(
-            &packed.meta,
-            &trust.publishers,
-            &trust.attestors,
-            &trust.revoked
-        ),
-        tilo_app_package::Verification::Trusted { .. }
-    ));
-    let payload = root.join("installed-payload");
-    tilo_app_package::unpack(&packed.meta, &packed, &payload).unwrap();
-    std::fs::write(payload.join("manifest.toml"), &packed.meta.manifest_bytes).unwrap();
-    let evidence = package_store::integrity::legacy_record_dir(root, "so.tilo.agent");
-    std::fs::create_dir_all(&evidence).unwrap();
-    for (name, bytes) in [
-        ("signed-root", packed.meta.signed_root_bytes().to_vec()),
-        ("manifest.toml", packed.meta.manifest_bytes.clone()),
-        ("collection.qcl", packed.meta.collection_bytes.clone()),
-    ] {
-        std::fs::write(evidence.join(name), bytes).unwrap();
-    }
-    let package = InstalledManagedPackage::verify(
-        launcher::managed::agent_package_row(
-            id.to_hex(),
-            payload.clone(),
-            payload.join("manifest.toml"),
-        ),
-        root.to_path_buf(),
-        id,
-        &trust,
-    )
-    .unwrap();
-    (package, trust)
-}
-
-fn fixture_runtime(root: &Path) -> ManagedRuntime {
-    let identity = runtime_bundle::Identity::generate();
-    let identity_path = root.join("runtime-development-identity.json");
-    let mut key_file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&identity_path)
-        .unwrap();
-    key_file.write_all(&identity.to_json_bytes()).unwrap();
-    assert_eq!(
-        key_file.metadata().unwrap().permissions().mode() & 0o777,
-        0o600
-    );
-    let bundle_root = root.join("runtime");
-    let bundle = runtime_bundle::build_bundle_with(
-        &bundle_root,
-        "2026.07",
-        &runtime_bundle::BuildOptions {
-            from: None,
-            arch: Some(std::env::consts::ARCH),
-            identity: Some(&identity_path),
-            extra_libs: &[],
-        },
-    )
-    .unwrap();
-    // Trust is separately selected from the freshly generated task-private key.
-    assert_eq!(
-        bundle.publisher_hex.as_deref(),
-        Some(identity.public_key_hex().as_str())
-    );
-    ManagedRuntime {
-        bundle_root,
-        runtime_publisher: identity.public_key_hex(),
-        sandbox_shim: env!("CARGO_BIN_EXE_tilo-launcher").into(),
-        bwrap: std::env::var_os("TILO_MANAGED_TEST_BWRAP")
-            .unwrap_or_else(|| "/usr/bin/bwrap".into())
-            .into(),
-    }
-}
-
 fn started(launcher: &mut ManagedLauncher) -> VerifiedManagedSupervisor {
     let deadline = tilo_test_env::hang_deadline();
     loop {
@@ -285,50 +148,58 @@ fn started(launcher: &mut ManagedLauncher) -> VerifiedManagedSupervisor {
 fn marker(socket: &UnixStream) -> (u8, u32) {
     let mut byte = 0u8;
     let mut iov = libc::iovec {
-        iov_base: (&mut byte as *mut u8).cast(),
+        iov_base: (&raw mut byte).cast(),
         iov_len: 1,
     };
     let mut control = [0usize; 16];
     let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
-    message.msg_iov = &mut iov;
+    message.msg_iov = &raw mut iov;
     message.msg_iovlen = 1;
     message.msg_control = control.as_mut_ptr().cast();
     message.msg_controllen = std::mem::size_of_val(&control);
-    let count = unsafe { libc::recvmsg(socket.as_raw_fd(), &mut message, libc::MSG_CMSG_CLOEXEC) };
+    let count =
+        unsafe { libc::recvmsg(socket.as_raw_fd(), &raw mut message, libc::MSG_CMSG_CLOEXEC) };
     let mut rights = Vec::new();
     let mut credentials = Vec::new();
     let mut unexpected = false;
-    let mut header = unsafe { libc::CMSG_FIRSTHDR(&message) };
+    let mut header = unsafe { libc::CMSG_FIRSTHDR(&raw const message) };
     while !header.is_null() {
         let h = unsafe { &*header };
         if h.cmsg_level == libc::SOL_SOCKET && h.cmsg_type == libc::SCM_RIGHTS {
             let bytes = h
                 .cmsg_len
                 .saturating_sub(unsafe { libc::CMSG_LEN(0) } as usize);
-            for i in 0..bytes / std::mem::size_of::<i32>() {
-                let raw = unsafe {
+            for i in 0..bytes.checked_div(std::mem::size_of::<i32>()).unwrap() {
+                let raw_bytes = unsafe {
                     libc::CMSG_DATA(header)
-                        .cast::<i32>()
-                        .add(i)
+                        .add(i.checked_mul(std::mem::size_of::<i32>()).unwrap())
+                        .cast::<[u8; std::mem::size_of::<i32>()]>()
                         .read_unaligned()
                 };
+                let raw = i32::from_ne_bytes(raw_bytes);
                 rights.push(unsafe { OwnedFd::from_raw_fd(raw) });
             }
             unexpected = true;
         } else if h.cmsg_level == libc::SOL_SOCKET
             && h.cmsg_type == libc::SCM_CREDENTIALS
             && h.cmsg_len
-                == unsafe { libc::CMSG_LEN(std::mem::size_of::<libc::ucred>() as u32) } as usize
+                == unsafe {
+                    libc::CMSG_LEN(u32::try_from(std::mem::size_of::<libc::ucred>()).unwrap())
+                } as usize
         {
-            credentials.push(unsafe {
-                libc::CMSG_DATA(header)
-                    .cast::<libc::ucred>()
-                    .read_unaligned()
-            });
+            let mut credential: libc::ucred = unsafe { std::mem::zeroed() };
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    libc::CMSG_DATA(header),
+                    (&raw mut credential).cast::<u8>(),
+                    std::mem::size_of::<libc::ucred>(),
+                );
+            }
+            credentials.push(credential);
         } else {
             unexpected = true;
         }
-        header = unsafe { libc::CMSG_NXTHDR(&message, header) };
+        header = unsafe { libc::CMSG_NXTHDR(&raw const message, header) };
     }
     assert_eq!(
         count,
@@ -363,8 +234,16 @@ fn proc_number(pid: u32, label: &str) -> u32 {
 fn qualify_tree(owned_stop: bool) {
     let root = tempfile::tempdir().unwrap();
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let (package, trust) = fixture_package(root.path());
-    let runtime = fixture_runtime(root.path());
+    let (package, trust) = fixture_package(
+        root.path(),
+        std::path::Path::new(env!("CARGO_BIN_EXE_managed-tree-fixture")),
+    )
+    .unwrap();
+    let runtime = fixture_runtime(
+        root.path(),
+        std::path::Path::new(env!("CARGO_BIN_EXE_tilo-launcher")),
+    )
+    .unwrap();
     let binding = ManagedBinding {
         room: uuid::Uuid::new_v4().to_string(),
         app: "so.tilo.agent".into(),
@@ -422,6 +301,34 @@ fn qualify_tree(owned_stop: bool) {
         .admit_connection(&supervisor, authority.as_ref())
         .unwrap();
     let (agent, collab) = admitted.into_parts();
+    let topology = qualify_topology(&agent, &collab, &supervisor);
+    qualify_pre_effect(&mut launcher, &topology, owned_stop);
+    if owned_stop {
+        launcher.stop(&binding).unwrap();
+    } else {
+        model_peer.write_all(b"E").unwrap();
+    }
+    qualify_finished(
+        &mut launcher,
+        &topology,
+        (&binding, &facts, &supervisor),
+        owned_stop,
+    );
+}
+
+struct Topology {
+    agent_pidfd: PinnedProcess,
+    orphan: Orphan,
+    unrelated_pidfd: PinnedProcess,
+    // The exact unrelated child remains owned until all proof steps complete.
+    _unrelated: Reap,
+}
+
+fn qualify_topology(
+    agent: &VerifiedManagedProcess,
+    collab: &UnixStream,
+    supervisor: &VerifiedManagedSupervisor,
+) -> Topology {
     let agent_pidfd = PinnedProcess::capture(agent.process().pid);
     collab
         .set_read_timeout(Some(tilo_test_env::hang_bound()))
@@ -432,7 +339,7 @@ fn qualify_tree(owned_stop: bool) {
     let mut orphan = None;
     let mut parent_reaped = false;
     for _ in 0..2 {
-        let (byte, sender) = marker(&collab);
+        let (byte, sender) = marker(collab);
         match byte {
             b'R' => {
                 assert!(orphan.is_none());
@@ -490,14 +397,25 @@ fn qualify_tree(owned_stop: bool) {
         orphan.0.identity,
         unrelated_pidfd.identity
     );
+    Topology {
+        agent_pidfd,
+        orphan,
+        unrelated_pidfd,
+        _unrelated: unrelated,
+    }
+}
+
+fn qualify_pre_effect(launcher: &mut ManagedLauncher, topology: &Topology, owned_stop: bool) {
     // This observation is mandatory in both cases: the orphan demonstrably
     // survives its immediate parent and remains blocked before the effect.
     // No test command, EOF or voluntary fixture path can release that orphan.
-    let observation_end = Instant::now() + Duration::from_millis(250);
+    let observation_end = Instant::now()
+        .checked_add(Duration::from_millis(250))
+        .unwrap();
     loop {
-        agent_pidfd.assert_live();
-        orphan.0.assert_live();
-        unrelated_pidfd.assert_live();
+        topology.agent_pidfd.assert_live();
+        topology.orphan.0.assert_live();
+        topology.unrelated_pidfd.assert_live();
         assert!(
             launcher.drain_events().unwrap().is_empty(),
             "event exposed while fixture tree must remain live"
@@ -510,13 +428,20 @@ fn qualify_tree(owned_stop: bool) {
     eprintln!(
         "managed-tree pre-effect: owned_stop={owned_stop}, exact agent and reparented orphan live for >=250ms, no Finished"
     );
-    if owned_stop {
-        launcher.stop(&binding).unwrap();
-    } else {
-        model_peer.write_all(b"E").unwrap();
-    }
+}
+fn qualify_finished(
+    launcher: &mut ManagedLauncher,
+    topology: &Topology,
+    expected: (
+        &ManagedBinding,
+        &launcher::managed::ManagedRuntimeFacts,
+        &VerifiedManagedSupervisor,
+    ),
+    owned_stop: bool,
+) {
+    let (binding, facts, supervisor) = expected;
     let deadline = tilo_test_env::hang_deadline();
-    let mut finished = 0;
+    let mut finished = 0_u32;
     while finished == 0 {
         for event in launcher.drain_events().unwrap() {
             match event {
@@ -529,23 +454,23 @@ fn qualify_tree(owned_stop: bool) {
                     // No wait/grace period after observing Finished: its barrier
                     // must already cover the exact retained original descendant.
                     assert!(
-                        orphan.0.exited(),
+                        topology.orphan.0.exited(),
                         "Finished exposed while original orphan remains live"
                     );
                     assert!(
-                        agent_pidfd.exited(),
+                        topology.agent_pidfd.exited(),
                         "Finished exposed before actual agent exit"
                     );
-                    unrelated_pidfd.assert_live();
-                    assert_eq!(actual, binding);
+                    topology.unrelated_pidfd.assert_live();
+                    assert_eq!(&actual, binding);
                     assert_eq!(process, Some(supervisor.process()));
-                    assert_eq!(exit.binding(), &binding);
+                    assert_eq!(exit.binding(), binding);
                     assert_eq!(exit.supervisor(), supervisor.process());
-                    assert_eq!(exit.runtime_facts(), &facts);
+                    assert_eq!(exit.runtime_facts(), facts);
                     if !owned_stop {
                         assert!(exit.status().success());
                     }
-                    finished += 1;
+                    finished = finished.checked_add(1).unwrap();
                 }
                 ManagedLaunchEvent::Failed { reason, .. } => {
                     panic!("uncertain managed cleanup: {reason}")
@@ -553,7 +478,7 @@ fn qualify_tree(owned_stop: bool) {
                 ManagedLaunchEvent::Started(_) => panic!("duplicate Started"),
             }
         }
-        unrelated_pidfd.assert_live();
+        topology.unrelated_pidfd.assert_live();
         assert!(
             Instant::now() < deadline,
             "whole-tree Finished deadline; owned_stop={owned_stop}"
@@ -570,8 +495,8 @@ fn qualify_tree(owned_stop: bool) {
         launcher.drain_events().unwrap().is_empty(),
         "duplicate/late terminal event after join"
     );
-    assert!(orphan.0.exited());
-    unrelated_pidfd.assert_live();
+    assert!(topology.orphan.0.exited());
+    topology.unrelated_pidfd.assert_live();
     eprintln!(
         "managed-tree PASS: owned_stop={owned_stop}, Finished=1, original agent and orphan pidfds exited, unrelated task live, shutdown joined; no orphan release path"
     );
