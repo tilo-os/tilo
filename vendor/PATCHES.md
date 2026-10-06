@@ -1,5 +1,14 @@
 # Patches against upstream
 
+## Cast transport
+
+`fcast-sender-sdk` 0.3.0 is the checksum-verified MIT registry release, moved to
+edition 2024. Its local patch verifies TLS handshake signatures with Rustls/ring
+and bounds negotiation/cancellation. Self-signed transport leaves still require a
+separate Cast DeviceAuth authority decision before receiver identity can be
+claimed. No Cast authority is installed. See its `PROVENANCE.md`, ephemeral-key
+TLS regression tests, and `docs/architecture/continuity-interop.md`.
+
 ## Spotify dependencies
 
 `librespot-core` 0.8.0 and `hyper-proxy2` 0.1.0 are checksum-verified MIT

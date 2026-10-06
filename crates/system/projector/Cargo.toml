@@ -21,6 +21,8 @@ zbus = { workspace = true, features = ["tokio", "p2p"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tokio-rustls = { workspace = true }
+rustls-pki-types = "1.14"
 futures-util.workspace = true
 tilo-callstream = { path = "../../collab/tilo-callstream" }
 tilo-test-env = { path = "../../dev/test-env" }

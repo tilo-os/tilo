@@ -12,6 +12,7 @@ exclude = [
     "vendor/vello_shaders",
     "vendor/genawaiter-proc-macro",
     "vendor/google-cast-protocol",
+    "vendor/fcast-sender-sdk",
     "vendor/libspa-sys",
     "vendor/winit",
     "vendor/accesskit_winit",
@@ -916,6 +917,9 @@ debug-assertions = true
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
 # pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]
+# Verify Cast TLS handshake signatures and bound cancellation; identity
+# authentication remains a separate explicit trust decision. See provenance.
+fcast-sender-sdk = { path = "vendor/fcast-sender-sdk" }
 # Spotify parser/session and Rustls proxy repairs; preserve Tilo trust roots.
 # See the two vendor PROVENANCE.md files.
 librespot-core = { path = "vendor/librespot-core" }
