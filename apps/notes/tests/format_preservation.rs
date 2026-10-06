@@ -22,6 +22,10 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
         let text = "Böld and italic with code";
         for width in [400.0_f32, 130.0] {
             let theme = ui::Theme::dark();
+            // The line pads its text 10 px across,
+            // a control inset above and below.
+            let pad_x = 10.0_f32;
+            let pad_y = theme.tokens.spacing.s2;
             let mut renderer = renderer();
             let mut line = RichTextLine::new().with_text(text);
             // Settle the input's initial text/font measurement before checking
@@ -98,25 +102,27 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
                         ..RichSpan::new("code")
                     },
                 ],
-                &ui::text_render::TextStyle::new(16.0).with_line_height(1.25),
-                Some(width - 20.0),
+                &theme.text(ui::TextRole::Body).with_line_height(1.25),
+                Some(width - 2.0 * pad_x),
                 TextAlign::Left,
                 Vec::new(),
                 Vec::new(),
             );
             assert!(
-                (size.height - (expected.height() + 16.0)).abs() < 0.1,
-                "marked text must determine wrapping and height"
+                (size.height - (expected.height() + 2.0 * pad_y)).abs() < 0.1,
+                "marked text must determine wrapping and height: measured {} vs shaped {} + 2*{pad_y}, width {width}",
+                size.height,
+                expected.height()
             );
             for byte in [0, 5, 10, 16, 22, 26] {
                 let (x, y, _) = expected.caret_geometry(byte);
                 let caret = line.caret_rect(&theme, byte);
                 assert!(
-                    (caret.x0 - (50.0 + f64::from(x))).abs() < 0.1,
+                    (caret.x0 - (40.0 + f64::from(pad_x) + f64::from(x))).abs() < 0.1,
                     "marked caret x at {byte}, width {width}: {caret:?} vs {x}"
                 );
                 assert!(
-                    (caret.y0 - (68.0 + f64::from(y))).abs() < 0.1,
+                    (caret.y0 - (60.0 + f64::from(pad_y) + f64::from(y))).abs() < 0.1,
                     "marked caret row at {byte}, width {width}"
                 );
                 assert_eq!(
@@ -285,7 +291,7 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
             let image = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../target/notes-review")
                 .join(format!("formatted-{}.png", expected_kind.replace(':', "-")));
-            live.render_window_png(&image);
+            live.render_png(&image);
             assert!(
                 std::fs::read(&image)
                     .unwrap()
@@ -295,33 +301,65 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
         }
     }
 
-    eprintln!("phase unknown_dates_use_one_honest_status_and_known_dates_remain_visible");
+    eprintln!("phase unknown_dates_show_nothing_and_known_dates_read_in_the_local_time_zone");
     {
+        use chrono::{Local, TimeZone};
         use notes::metadata::NoteDates;
         notes::metadata::register_messages();
-        assert_eq!(NoteDates::default().labels().len(), 1);
-        // Midday UTC, so the date is 14 November in every zone the host
-        // may run in; labels are in the local time zone.
+        let now = Local
+            .with_ymd_and_hms(2026, 6, 30, 10, 42, 0)
+            .single()
+            .unwrap();
+        assert!(
+            NoteDates::default().labels_at(now).is_empty(),
+            "a note with no known date shows no header placeholder"
+        );
+        assert_eq!(
+            NoteDates::default().display_labels(false).len(),
+            1,
+            "the detailed resource display retains its unavailable-date label"
+        );
+        let created = Local
+            .with_ymd_and_hms(2023, 11, 14, 10, 42, 0)
+            .single()
+            .unwrap();
+        let edited = Local
+            .with_ymd_and_hms(2023, 11, 17, 11, 40, 0)
+            .single()
+            .unwrap();
         let edited_only = NoteDates {
             created: None,
-            edited: Some(1_699_966_800),
+            edited: Some(edited.timestamp()),
         };
-        assert_eq!(edited_only.labels().len(), 1);
-        assert!(edited_only.labels()[0].contains("2023"));
+        let lines = edited_only.labels_at(now);
+        assert_eq!(lines, vec!["Edited 17 Nov 2023".to_string()]);
         let both = NoteDates {
-            created: Some(1_699_963_200),
+            created: Some(created.timestamp()),
             edited: edited_only.edited,
         };
-        assert_eq!(both.labels().len(), 2);
-        assert!(
-            both.labels()
-                .iter()
-                .all(|label| label.contains("Nov 2023, "))
+        let detailed = both.display_labels(false);
+        assert_eq!(detailed.len(), 2);
+        assert!(detailed.iter().all(|label| label.contains("Nov 2023, ")));
+        let lines = both.labels_at(now);
+        assert_eq!(
+            lines,
+            vec!["Created 14 Nov 2023, edited 17 Nov 2023".to_string()],
+            "created and edited share one header line in the reader's local time"
         );
         assert!(
-            both.display_labels(true)
+            lines
                 .iter()
-                .all(|label| label.contains("2023-11-14"))
+                .chain(detailed.iter())
+                .all(|line| !line.contains("UTC")),
+            "dates are the reader's local time, never labelled UTC: {lines:?}, {detailed:?}"
+        );
+        let today = NoteDates {
+            created: Some(now.timestamp()),
+            edited: Some(now.timestamp()),
+        };
+        assert_eq!(
+            today.labels_at(now),
+            vec!["Created today at 10:42".to_string()]
         );
     }
 }

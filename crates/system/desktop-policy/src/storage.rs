@@ -252,6 +252,37 @@ pub struct CleanupPreview {
     pub total_bytes: u64,
 }
 
+impl CleanupPreview {
+    /// A preview of `items` (path and size) under `root` for a capture or a
+    /// test: what Storage shows before a cleanup, with nothing on disk behind
+    /// it. Cleaning it refuses every item as changed since the preview.
+    #[must_use]
+    pub fn fixture(
+        root: impl Into<PathBuf>,
+        items: impl IntoIterator<Item = (PathBuf, u64)>,
+    ) -> Self {
+        let items: Vec<CleanupItem> = items
+            .into_iter()
+            .map(|(path, bytes)| CleanupItem {
+                path,
+                bytes,
+                files: 1,
+                kind: CleanupKind::File,
+                device: 0,
+                inode: 0,
+                modified_ns: 0,
+                changed_ns: 0,
+            })
+            .collect();
+        let total_bytes = items.iter().map(|item| item.bytes).sum();
+        Self {
+            root: root.into(),
+            items,
+            total_bytes,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CleanupReport {
     pub removed: usize,

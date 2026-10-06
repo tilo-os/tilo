@@ -15,7 +15,6 @@ use std::path::Path;
 use taffy::prelude::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 
 use crate::bound_dispatch::BoundNodeMap;
 #[cfg(not(target_arch = "wasm32"))]
@@ -56,16 +55,19 @@ pub struct ShotFrame {
     viewport: (u32, u32),
     layout_mode: ShotLayout,
     resync_after_build: bool,
-    background: Color,
     taffy: TaffyTree<()>,
     node_map: HashMap<NodeId, *mut dyn Widget>,
     child: Option<NodeId>,
+    /// The floating surfaces the last [`ShotFrame::draw`] and the
+    /// [`ShotFrame::draw_overlay`] after it drew over the blurred material,
+    /// with what lay below each; the PNG blurs them as a live window does.
+    backdrop: Vec<crate::backdrop::RecordedBackdrop>,
 }
 
 impl ShotFrame {
     /// A frame at `viewport` with a fresh document, the theme's text scale
-    /// applied to the text renderer, settled layout, and a transparent
-    /// background.
+    /// applied to the text renderer, and settled layout. Its PNG lands on the
+    /// window ground (`surfaces.content`), as a live window clears.
     #[must_use]
     pub fn new(viewport: (u32, u32), theme: Theme) -> Self {
         let mut text = TextRenderer::new();
@@ -79,10 +81,10 @@ impl ShotFrame {
             viewport,
             layout_mode: ShotLayout::Settled,
             resync_after_build: false,
-            background: Color::TRANSPARENT,
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
             child: None,
+            backdrop: Vec::new(),
         }
     }
 
@@ -109,13 +111,6 @@ impl ShotFrame {
     #[must_use]
     pub fn with_resync_after_build(mut self) -> Self {
         self.resync_after_build = true;
-        self
-    }
-
-    /// Clear to `background` rather than transparency when writing the PNG.
-    #[must_use]
-    pub fn with_background(mut self, background: Color) -> Self {
-        self.background = background;
         self
     }
 
@@ -236,9 +231,23 @@ impl ShotFrame {
         Some((&mut self.state, &self.taffy, child))
     }
 
-    /// Paint the widget's main pass into a new scene.
+    /// The window the frame stands for, in its own coordinates.
+    fn window(&self) -> vello::kurbo::Rect {
+        vello::kurbo::Rect::new(
+            0.0,
+            0.0,
+            f64::from(self.viewport.0),
+            f64::from(self.viewport.1),
+        )
+    }
+
+    /// Paint the widget's main pass into a new scene, culled against the
+    /// frame's window as a live host culls.
     pub fn draw(&mut self, widget: &mut dyn Widget) -> Scene {
         let mut scene = Scene::new();
+        let recording = crate::backdrop::BackdropRecording::begin();
+        crate::backdrop::layer_scene(&scene, 0);
+        let previous = self.presence.push_viewport(self.window());
         widget.draw_with_presence(
             &mut scene,
             Affine::IDENTITY,
@@ -247,12 +256,19 @@ impl ShotFrame {
             &self.presence,
             &self.permission,
         );
+        self.presence.pop_viewport(previous);
+        self.backdrop = recording.finish();
         scene
     }
 
-    /// Composite the widget's top layer (open dropdowns, context menus) onto
-    /// `scene`, as the live App does after the main pass.
+    /// Composite the widget's top layer (open menus, popovers, modals) onto
+    /// `scene` over the frame's window, as the live host does after the main
+    /// pass and the window chrome.
     pub fn draw_overlay(&mut self, widget: &mut dyn Widget, scene: &mut Scene) {
+        let recording =
+            crate::backdrop::BackdropRecording::continuing(std::mem::take(&mut self.backdrop));
+        crate::backdrop::layer_scene(scene, 0);
+        let previous = self.presence.push_viewport(self.window());
         widget.draw_overlay(
             scene,
             Affine::IDENTITY,
@@ -260,6 +276,8 @@ impl ShotFrame {
             &self.theme,
             &self.presence,
         );
+        self.presence.pop_viewport(previous);
+        self.backdrop = recording.finish();
     }
 
     /// Paint app-owned floating surfaces onto `scene`, in the order the live
@@ -273,27 +291,47 @@ impl ShotFrame {
             &self.presence,
         );
     }
+}
 
-    /// Rasterise `scene` at the frame's viewport and publish it to `out` as a
-    /// PNG, creating the parent directory.
+#[cfg(not(target_arch = "wasm32"))]
+impl ShotFrame {
+    /// Rasterise `scene` over the window ground at the frame's viewport and
+    /// publish it to `out` as a PNG, creating the parent directory.
     ///
     /// # Panics
     ///
     /// Panics when the offscreen renderer cannot publish the file, as
     /// [`OffscreenRenderer::render_png`] does.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn write_png(&self, scene: &Scene, out: &Path) {
+        self.write_png_on(scene, self.theme.tokens.colors.surfaces.content, out);
+    }
+
+    /// [`ShotFrame::write_png`] over a transparent background, for a capture
+    /// that is composited onto something else afterwards.
+    ///
+    /// # Panics
+    ///
+    /// As [`ShotFrame::write_png`].
+    pub fn write_png_transparent(&self, scene: &Scene, out: &Path) {
+        self.write_png_on(scene, vello::peniko::Color::TRANSPARENT, out);
+    }
+
+    fn write_png_on(&self, scene: &Scene, background: vello::peniko::Color, out: &Path) {
         if let Some(parent) = out.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         let (w, h) = self.viewport;
-        OffscreenRenderer::new(w, h).render_png(scene, self.background, out);
+        let mut renderer = OffscreenRenderer::new(w, h);
+        renderer.set_backdrop(Some(std::sync::Arc::new(
+            crate::backdrop::BackdropFrame::from_single_scene(self.backdrop.clone()),
+        )));
+        renderer.render_png(scene, background, out);
     }
 }
 
 /// Render one frame of `widget` at `viewport` under `theme` and write it to
 /// `out` as a PNG: [`ShotFrame`] with its defaults, synced once, laid out
-/// once and drawn once.
+/// once and drawn once with its top layer.
 ///
 /// # Errors
 ///
@@ -308,7 +346,8 @@ pub fn render_widget_png(
     let mut frame = ShotFrame::new(viewport, theme);
     frame.sync(widget);
     frame.layout(widget)?;
-    let scene = frame.draw(widget);
+    let mut scene = frame.draw(widget);
+    frame.draw_overlay(widget, &mut scene);
     frame.write_png(&scene, out);
     Ok(())
 }
