@@ -370,6 +370,8 @@ pub struct QuickSettingsState {
     pub wifi_networks: Vec<WifiNetwork>,
     /// True only while `NetworkManager` discovery is outstanding.
     pub wifi_scanning: bool,
+    /// A typed radio mutation is admitted but has not completed.
+    pub radio_change_pending: bool,
     /// Last discovery failure, kept separate from an honest empty result.
     pub wifi_scan_error: Option<String>,
     /// SSID currently being joined off-thread. Kept separate from the
@@ -463,6 +465,7 @@ impl Default for QuickSettingsState {
             // edge — no fake content.
             wifi_networks: Vec::new(),
             wifi_scanning: false,
+            radio_change_pending: false,
             wifi_scan_error: None,
             wifi_joining: None,
             bt_devices: Vec::new(),
@@ -511,6 +514,7 @@ impl QuickSettingsState {
             // edge — no fake content.
             wifi_networks: Vec::new(),
             wifi_scanning: false,
+            radio_change_pending: false,
             wifi_scan_error: None,
             wifi_joining: None,
             bt_devices: Vec::new(),
