@@ -23,6 +23,9 @@ pub(crate) fn valid_model(model: &str) -> bool {
 
 /// Build a visual map from installed native XKB data and the same bounded
 /// keyboard options the compositor reads. Does not apply settings or capture input.
+///
+/// # Errors
+/// Rejects invalid sources or models and unavailable or invalid installed metadata.
 pub fn preview_layout(
     source: &str,
     model: &str,

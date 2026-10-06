@@ -48,6 +48,10 @@ impl std::error::Error for Error {}
 
 /// Compile an installed model/layout using fixed public metadata only.
 /// The returned keycodes identify physical positions, never typed input.
+///
+/// # Errors
+/// Rejects invalid or oversized requests, unavailable native metadata, unknown
+/// requested physical positions, and native output exceeding the declared bounds.
 pub fn compile(
     layout: &str,
     variant: &str,
