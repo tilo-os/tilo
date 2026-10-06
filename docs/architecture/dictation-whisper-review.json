@@ -52,7 +52,7 @@
     "worker_process": true
   },
   "qualification": {
-    "command": "rcargo --no-fallback --on-builder run --locked -p local-model-service --example speech_qualify",
+    "command": "On the build machine, use any cargo drop-in: run --locked -p local-model-service --example speech_qualify",
     "sample_url": "https://raw.githubusercontent.com/ggml-org/whisper.cpp/2eeeba56e9edd762b4b38467bab96c2517163158/samples/jfk.wav",
     "sample_sha256": "59dfb9a4acb36fe2a2affc14bacbee2920ff435cb13cc314a08c13f66ba7860e",
     "samples": 176000,
@@ -77,6 +77,20 @@
       "Non-English quality and microphone latency are unmeasured.",
       "The installed CLI correctly refuses elevated developer overrides. Its positive --worker fixture journey still needs an unprivileged runtime; --worker-core validates the same production handler and process limits in an uninstalled qualification child."
     ],
-    "worker_core_command": "rcargo --no-fallback --on-builder run --locked -p local-model-service --example speech_qualify -- --worker-core"
+    "worker_core_command": "On the build machine, use any cargo drop-in: run --locked -p local-model-service --example speech_qualify -- --worker-core"
+  },
+  "artifact_validation": {
+    "verified_on": "2026-10-06",
+    "environment": "connected remote build machine",
+    "directory": "/tmp/tilo-dictation-review-ce8",
+    "model_size_bytes": 77691713,
+    "model_sha256": "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+    "license_size_bytes": 1063,
+    "license_sha256": "b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d",
+    "provenance_sha256": "bd78051261f7c46309e4a52c8d3a8fdb6a31f6bd2c67e3fd17060c258b3b17e3",
+    "installed": false,
+    "signed": false,
+    "published": false,
+    "microphone_accessed": false
   }
 }

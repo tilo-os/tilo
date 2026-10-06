@@ -2424,3 +2424,7 @@ shortcut-name-tab-menu = Show tab menu
 search-action-tab-menu = Show tab menu
 search-action-tab-menu-subtitle = Actions for the focused tab
 search-action-tab-menu-unavailable = No focused tab is available
+
+dictation-transcript-retained = Microphone off · Text is too long to insert in one step. Kept privately for 10 minutes. Copy exports all text to your clipboard; discard removes it.
+dictation-transcript-copied = Complete transcript copied. Paste it into your chosen field. The private draft remains until you discard it or 10 minutes expire.
+dictation-copy-failed = Clipboard unavailable. Your complete transcript is still kept privately; retry copying or discard it.
