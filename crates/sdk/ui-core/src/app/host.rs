@@ -192,6 +192,42 @@ fn draw_frame_content(
     )
 }
 
+/// Paint the exact action-locus marker for every App host. Native windows and
+/// in-process tiled apps must not diverge: both resolve the same current
+/// semantic tree and retained control bindings, and both publish only markers
+/// that were actually painted this frame.
+#[cfg(feature = "native")]
+fn draw_agent_action_presence(
+    app: &mut App,
+    scene: &mut Scene,
+    transform: Affine,
+    window_rect: KurboRect,
+    interaction_now: crate::time::Instant,
+) {
+    let visible_interactions = app.presence_ctx.visible_interactions(interaction_now);
+    let bindings = if visible_interactions.is_empty() {
+        Vec::new()
+    } else {
+        app.refresh_semantic_tree();
+        app.with_native_presentation(|root, _, _, _, _| {
+            crate::widget::controls::control_action_bindings(root)
+        })
+        .unwrap_or_default()
+    };
+    let marker_surface = app.presence_ctx.agent_marker_surface_key("primary");
+    app.window.agent_marker_surface = Some(marker_surface.clone());
+    app.window.agent_marker_viewport = Some(window_rect);
+    crate::action_locus::draw_action_presence(
+        &mut crate::paint::PaintCtx::new(scene, transform, &mut app.text_renderer, &app.theme),
+        &mut app.presence_ctx,
+        &app.accessibility.semantic_tree,
+        &bindings,
+        window_rect,
+        &marker_surface,
+        interaction_now,
+    );
+}
+
 #[cfg(feature = "native")]
 fn draw_visible_tooltip(
     app: &mut App,

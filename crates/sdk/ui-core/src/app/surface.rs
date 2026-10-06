@@ -31,7 +31,7 @@ mod agent_marker_gesture_tests {
     use crate::presence::PresenceKey;
     use crate::text_render::TextRenderer;
     use crate::theme::Theme;
-    use crate::widget::Text;
+    use crate::widget::{Button, Text, resource_actions};
     use tilo_actions::{
         ActionApp, ActionResource, INTERACTION_VERSION, InteractionAction, InteractionActor,
         InteractionActorKind, InteractionAnchor, InteractionPhase, InvocationId,
@@ -42,6 +42,22 @@ mod agent_marker_gesture_tests {
         Scene,
         kurbo::{Affine, Rect},
     };
+
+    struct MarkerSurface;
+
+    impl AppSurface for MarkerSurface {
+        fn scale_factor(&self) -> f64 {
+            1.0
+        }
+
+        fn inner_size(&self) -> winit::dpi::PhysicalSize<u32> {
+            winit::dpi::PhysicalSize::new(640, 480)
+        }
+
+        fn request_redraw(&self) {}
+
+        fn set_cursor(&self, _cursor: CursorIcon) {}
+    }
 
     fn pointer(position: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
@@ -158,6 +174,88 @@ mod agent_marker_gesture_tests {
             "a withdrawn or changed room consumes the owned release"
         );
         assert!(app.window.pending_agent_navigation.is_none());
+    }
+
+    #[test]
+    fn hosted_surface_frame_paints_and_publishes_the_real_action_marker() {
+        let resource = tilo_actions::Resource::new("note:draft", "note", "Draft").with_action(
+            tilo_actions::ActionSpec::operation(
+                "edit",
+                "Edit",
+                tilo_actions::OperationKind::Effect,
+                "test.note.edit",
+                &(),
+            )
+            .unwrap(),
+        );
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
+        let root = resource_actions::immediate(
+            Box::new(Button::new("edit", "Edit draft").on_action(binding)),
+            resource,
+            |_| Ok(tilo_actions::ActionOutput::default()),
+        );
+        let mut app = App::new(State::new(), root);
+        app.set_presence_broadcast_scope(Some(PresenceKey::Workspace {
+            id: "room-a".into(),
+        }));
+        app.presence_ctx_mut().apply_collaboration_snapshot(&[
+            Collaborator {
+                id: "person:viewer".into(),
+                name: "Viewer".into(),
+                colour: None,
+                is_agent: false,
+                is_self: true,
+            },
+            Collaborator {
+                id: "agent:scribe".into(),
+                name: "Scribe".into(),
+                colour: None,
+                is_agent: true,
+                is_self: false,
+            },
+        ]);
+        let interaction = SemanticInteraction {
+            version: INTERACTION_VERSION,
+            invocation: InvocationId(Uuid::from_u128(41)),
+            sequence: 1,
+            actor: InteractionActor {
+                id: "agent:scribe".into(),
+                kind: InteractionActorKind::Agent,
+            },
+            phase: InteractionPhase::Applying,
+            action: InteractionAction {
+                id: "edit".into(),
+                label: "Edit".into(),
+                app: Some(ActionApp {
+                    id: "so.tilo.notes".into(),
+                    label: "Notes".into(),
+                }),
+            },
+            resource: ActionResource {
+                id: "note:draft".into(),
+                kind: "note".into(),
+                label: "Draft".into(),
+            },
+            anchor: InteractionAnchor::Resource,
+            group: None,
+        };
+        app.presence_ctx_mut()
+            .apply_interaction(interaction.clone())
+            .unwrap();
+
+        let mut scene = Scene::new();
+        let _ = app.surface_frame(&MarkerSurface, &mut scene);
+        let viewport = Rect::new(0.0, 0.0, 640.0, 480.0);
+        let surface = app.presence_ctx().agent_marker_surface_key("primary");
+        let publication = app
+            .presence_ctx()
+            .agent_marker_targets(&surface, crate::time::now());
+
+        assert_eq!(publication.len(), 1);
+        assert_eq!(publication[0].interaction, interaction);
+        assert!(publication[0].bounds.width() > 0.0);
+        assert!(viewport.contains(publication[0].bounds.center()));
+        assert!(!scene.encoding().is_empty());
     }
 }
 
@@ -989,7 +1087,11 @@ impl App {
             .action_palette
             .as_mut()
             .is_some_and(|palette| palette.advance_search_page().pending);
-        draw_frame_content(self, scene, size.width, size.height, scale_factor, None);
+        let (transform, window_rect, _, _) =
+            draw_frame_content(self, scene, size.width, size.height, scale_factor, None);
+        let interaction_now = crate::time::now();
+        self.presence_ctx.prune_interactions(interaction_now);
+        draw_agent_action_presence(self, scene, transform, window_rect, interaction_now);
         complete_native_frame_content(self, |_| {});
         search_pending
             || self.needs_sync

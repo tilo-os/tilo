@@ -2193,35 +2193,7 @@ impl AppHandler {
             &app.theme,
             &app.presence_ctx,
         );
-        // Resolve canonical actions against this layout; never match resource
-        // labels or retain an arrival-time control id through a rebuild.
-        let visible_interactions = app.presence_ctx.visible_interactions(interaction_now);
-        let bindings = if visible_interactions.is_empty() {
-            Vec::new()
-        } else {
-            app.refresh_semantic_tree();
-            app.with_native_presentation(|root, _, _, _, _| {
-                crate::widget::controls::control_action_bindings(root)
-            })
-            .unwrap_or_default()
-        };
-        let marker_surface = app.presence_ctx.agent_marker_surface_key("primary");
-        app.window.agent_marker_surface = Some(marker_surface.clone());
-        app.window.agent_marker_viewport = Some(window_rect);
-        crate::action_locus::draw_action_presence(
-            &mut crate::paint::PaintCtx::new(
-                &mut scene,
-                transform,
-                &mut app.text_renderer,
-                &app.theme,
-            ),
-            &mut app.presence_ctx,
-            &app.accessibility.semantic_tree,
-            &bindings,
-            window_rect,
-            &marker_surface,
-            interaction_now,
-        );
+        draw_agent_action_presence(app, &mut scene, transform, window_rect, interaction_now);
 
         if let Some(p) = app.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::PresenceOverlay, __prof_presence);

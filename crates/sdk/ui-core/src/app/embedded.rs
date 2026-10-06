@@ -110,6 +110,13 @@ impl EmbeddedApp {
         &mut self.app
     }
 
+    /// Ask the real embedded-host draw path for a fresh frame after a
+    /// test-control fixture changes app-owned presence state.
+    #[cfg(feature = "test-support")]
+    pub fn request_frame_for_test(&self) {
+        self.wants_frame.set(true);
+    }
+
     /// The root widget of the app's component: what an app's own tests
     /// reach into, as they would in the app's window.
     pub fn component_root_mut(&mut self) -> Option<&mut dyn Widget> {
