@@ -744,3 +744,259 @@ fn overview_selection_and_row_content_follow_the_room_and_its_capabilities() {
     the_share_list_collapses_rather_than_growing_without_bound();
     a_room_that_shares_nothing_still_gets_a_row();
 }
+
+/// Fixture-only pixels make the native preview branch observable without
+/// sampling a desktop or changing preview disclosure policy.
+fn overview_controls_host_with_preview() -> ShellOverlayHost {
+    let mut h = host();
+    let tab = {
+        let chrome = h.chrome.as_ref().expect("fixture chrome").borrow();
+        h.overview_windows(&chrome.tree())
+            .first()
+            .expect("demo window")
+            .address
+            .tab
+    };
+    h.window_previews
+        .store(tab, std::sync::Arc::from([80, 90, 100, 255]), 1, 1, None);
+    assert!(!h.overview_row_windows().is_empty());
+    h
+}
+
+#[test]
+fn overview_controls_semantic_bounds_and_focus_follow_populated_child_order() {
+    let mut h = overview_controls_host_with_preview();
+    let count = h.overview_cards().len();
+    let tree = h.accessibility().expect("overview tree");
+    let overview = &tree.children[0];
+    assert_eq!(overview.name.as_deref(), Some("Workspace overview"));
+    assert_eq!(overview.children[count].role, ui::a11y::Role::List);
+    assert_eq!(
+        h.synthetic_accessibility_rect(&[0, count, 0]),
+        Some(h.overview_window_tile_rect(0)),
+        "a window-list child resolves to its painted preview, not the create row"
+    );
+    let create = count.saturating_add(1);
+    assert_eq!(
+        h.synthetic_accessibility_rect(&[0, create]),
+        overview.children[create]
+            .bounds
+            .map(ui::a11y::AccessBounds::to_rect)
+    );
+    assert!(h.focus_synthetic_accessibility(&[0, count, 0]));
+    assert_eq!(h.overview_window_selection, Some(0));
+    assert!(h.focus_synthetic_accessibility(&[0, create]));
+    assert_eq!(h.overview_selection, Some(count));
+    assert_eq!(h.overview_window_selection, None);
+    let tree = h.accessibility().expect("focused overview");
+    assert!(tree.children[0].children[create].state.focused);
+    assert!(tree.children[0].children[create].state.focusable);
+    assert!(!h.focus_synthetic_accessibility(&[0, create, 0]));
+    assert!(!h.focus_synthetic_accessibility(&[0, count, usize::MAX]));
+    let target = h.overview_here_index().expect("current workspace");
+    assert!(h.focus_synthetic_accessibility(&[0, target]));
+    assert_eq!(h.overview_selection, Some(target));
+}
+
+#[test]
+fn overview_controls_tab_create_cancel_reopen_and_repeat_use_the_native_keyboard_route() {
+    use winit::event::Modifiers;
+    use winit::keyboard::ModifiersState;
+    let mut h = host_with(WorkspaceTree::bootstrap_default());
+    let doc = AutoCommit::new();
+    let mut handled = false;
+    assert!(h.handle_shell_keyboard_event(
+        &Key::Named(NamedKey::Tab),
+        Modifiers::default(),
+        false,
+        &doc,
+        &automerge::ROOT,
+        &mut handled,
+    ));
+    assert_eq!(h.overview_selection, Some(1));
+    assert!(h.handle_shell_keyboard_event(
+        &Key::Named(NamedKey::Tab),
+        Modifiers::from(ModifiersState::SHIFT),
+        false,
+        &doc,
+        &automerge::ROOT,
+        &mut handled,
+    ));
+    assert_eq!(h.overview_selection, Some(0));
+    assert!(h.handle_shell_keyboard_event(
+        &Key::Named(NamedKey::Tab),
+        Modifiers::default(),
+        false,
+        &doc,
+        &automerge::ROOT,
+        &mut handled,
+    ));
+    assert!(h.handle_shell_escape_chord(&mut handled));
+    assert_eq!(ws_count(&h), 1, "cancel never creates a workspace");
+    h.chrome
+        .as_ref()
+        .expect("chrome")
+        .borrow_mut()
+        .overlays
+        .overview = true;
+    h.force_overview_settled(true);
+    assert!(h.handle_shell_keyboard_event(
+        &Key::Named(NamedKey::Tab),
+        Modifiers::default(),
+        false,
+        &doc,
+        &automerge::ROOT,
+        &mut handled,
+    ));
+    assert!(h.handle_shell_keyboard_event(
+        &Key::Named(NamedKey::Enter),
+        Modifiers::default(),
+        false,
+        &doc,
+        &automerge::ROOT,
+        &mut handled,
+    ));
+    assert_eq!(ws_count(&h), 2);
+    assert!(!h.overlay_flags().overview);
+    assert_eq!(h.overview_t, 0.0);
+    assert!(!h.handle_overview_keyboard_nav(&Key::Named(NamedKey::Enter), false, &mut handled));
+    assert_eq!(ws_count(&h), 2, "closed overview cannot create again");
+}
+
+#[test]
+fn overview_controls_production_capture_matrix_is_written() {
+    use crate::shell::osd::review_offscreen::OffscreenRenderer;
+    let out = std::env::var_os("TILO_OVERVIEW_CONTROL_SHOTS").map_or_else(
+        || std::path::PathBuf::from("target/overview-controls-shots"),
+        std::path::PathBuf::from,
+    );
+    std::fs::create_dir_all(&out).expect("capture output");
+    let variants = vec![
+        ("dark", Theme::dark(), 1280_u32, 800_u32),
+        ("light", Theme::light(), 1280, 800),
+        ("high-contrast", Theme::high_contrast(), 1280, 800),
+        ("large-text", Theme::dark().with_text_scale(2.0), 1280, 800),
+        (
+            "ui-text-scaled",
+            Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
+            1280,
+            800,
+        ),
+        (
+            "compact-large-text",
+            Theme::dark().with_text_scale(2.0),
+            960,
+            540,
+        ),
+    ];
+    for (name, theme, w, h) in variants {
+        let mut renderer = OffscreenRenderer::new(w, h);
+        for target in ["workspace", "window", "create"] {
+            let mut host = overview_controls_host_with_preview();
+            host.rect = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
+            let mut warm = Scene::new();
+            host.draw_overview(
+                &mut warm,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+            );
+            let count = host.overview_cards().len();
+            let path = match target {
+                "window" => vec![0, count, 0],
+                "create" => vec![0, count.saturating_add(1)],
+                _ => vec![0, count.saturating_sub(1)],
+            };
+            assert!(
+                host.focus_synthetic_accessibility(&path),
+                "capture focus target {target}"
+            );
+            let target_rect = host
+                .synthetic_accessibility_rect(&path)
+                .expect("focused target bounds");
+            let viewport = host.overview_content_rect();
+            assert!(
+                target_rect.y0 >= viewport.y0 && target_rect.y1 <= viewport.y1,
+                "focused target must be visible at {name}: {target_rect:?} in {viewport:?}"
+            );
+            let mut scene = Scene::new();
+            host.draw_overview(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+            );
+            let path = out.join(format!("{name}-{target}.png"));
+            renderer.render_png(&scene, theme.tokens.colors.surfaces.base, &path);
+            if target == "window" {
+                assert_overview_preview_focus_pixels(&mut renderer, &scene, &host, &theme, w);
+            }
+            assert!(
+                path.is_file(),
+                "production capture missing: {}",
+                path.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn overview_controls_compact_page_keeps_creation_visible_after_focus_and_resize() {
+    let mut h = overview_controls_host_with_preview();
+    let theme = Theme::dark().with_text_scale(2.0);
+    let mut scene = Scene::new();
+    let mut text = TextRenderer::new();
+    h.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
+    h.draw_overview(&mut scene, Affine::IDENTITY, &mut text, &theme);
+    assert_eq!(h.overview_panel_rect(), h.overlay_area());
+    let count = h.overview_cards().len();
+    assert!(
+        h.add_workspace_hit_rect().area() == 0.0,
+        "offscreen create action has no pointer target"
+    );
+    assert!(h.focus_synthetic_accessibility(&[0, count.saturating_add(1)]));
+    assert!(h.overview_scroll_y > 0.0);
+    let hidden_preview = h.overview_window_tile_rect(0).center();
+    assert!(!h.overview_content_rect().contains(hidden_preview));
+    assert_eq!(
+        h.hit_test_overview_window(hidden_preview),
+        None,
+        "clipped previews cannot receive pointer activation"
+    );
+    for viewport in [h.rect, Rect::new(0.0, 0.0, 800.0, 600.0)] {
+        h.rect = viewport;
+        h.draw_overview(&mut scene, Affine::IDENTITY, &mut text, &theme);
+        let content = h.overview_content_rect();
+        let create = h.add_workspace_hit_rect();
+        assert!(create.area() > 0.0);
+        assert!(create.y0 >= content.y0 && create.y1 <= content.y1);
+        assert_eq!(create, h.overview_add_workspace_rect_for(count));
+        assert_eq!(h.overview_selection, Some(count));
+    }
+}
+
+/// The shared focus ring remains visible outside the preview's painted
+/// frame, including the compact body's left edge. Assert actual pixels.
+fn assert_overview_preview_focus_pixels(
+    renderer: &mut crate::shell::osd::review_offscreen::OffscreenRenderer,
+    scene: &Scene,
+    host: &ShellOverlayHost,
+    theme: &Theme,
+    width: u32,
+) {
+    use crate::shell::osd::review_offscreen::OffscreenRenderer;
+    let tile = host.overview_window_tile_rect(0);
+    let x = tile.x0 - f64::from(theme.tokens.spacing.s1) - 1.0;
+    let y = tile.center().y;
+    let pixel_x = u32::try_from(f64_floor_to_usize_saturating(x.round())).expect("positive ring x");
+    let pixel_y = u32::try_from(f64_floor_to_usize_saturating(y.round())).expect("positive ring y");
+    let pixels = renderer.render_resilient(scene, theme.tokens.colors.surfaces.base);
+    let (red, green, blue, _) = OffscreenRenderer::sample(&pixels, width, pixel_x, pixel_y);
+    let expected = theme.border_focus.to_rgba8();
+    assert!(
+        red.abs_diff(expected.r) <= 2
+            && green.abs_diff(expected.g) <= 2
+            && blue.abs_diff(expected.b) <= 2,
+        "preview focus ring is clipped at ({pixel_x}, {pixel_y})"
+    );
+}

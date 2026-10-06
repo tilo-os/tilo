@@ -92,6 +92,13 @@ pub trait Presenter: Send {
 
     /// Power the display on/off, routed through the same channel as frames so a blank can never overtake a frame already queued.
     fn set_dpms(&mut self, _on: bool) {}
+
+    /// What the frame just presented cost, as `key=value` fields for its
+    /// `FRAME-LIFECYCLE` line. A presenter that returns fields gets the line
+    /// for every frame that changed pixels, not only for slow ones.
+    fn frame_detail(&mut self) -> Option<String> {
+        None
+    }
 }
 
 enum PresentMsg {
@@ -253,6 +260,12 @@ impl PresentPipe {
                                     phases,
                                 },
                             );
+                            if let Some(detail) = presenter.frame_detail() {
+                                eprintln!(
+                                    "CPU-FRAME serial={serial} revision={} {detail}",
+                                    frame.revision
+                                );
+                            }
                             *thread_last_retirement
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
