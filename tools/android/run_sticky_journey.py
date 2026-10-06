@@ -71,7 +71,7 @@ def exercise_work(journey, output, profile, package, args, documents, grants):
         if (recorded.parent / 'visits.txt').read_text().splitlines() != ['visit=1', 'visit=2']:
             raise RuntimeError('private visits lost')
         (output / 'foreground.txt').write_text(recorded.read_text())
-        return {'actual_ART': True, 'runtime_accepted': False, 'killed_pid': pid, 'sticky_recovery': False,
+        return {'actual_ART': True, 'runtime_accepted': False, 'architecture': args.architecture, 'killed_pid': pid, 'sticky_recovery': False,
                 'baseline_gap_reproduced': True, 'revoked_relaunch_denied': True,
                 'private_visits_preserved': True, 'presented_frame': frame, 'real_device': False}
     wait_for(lambda: 'service-start;intent=null;id=1' in recorded.read_text(), 'actual null-Intent sticky recovery')
@@ -120,7 +120,7 @@ def exercise_work(journey, output, profile, package, args, documents, grants):
     if source.read_text() != 'Tilo disposable scoped source\n':
         raise RuntimeError('scoped source modified')
     (output / 'foreground.txt').write_text(recorded.read_text())
-    return {'actual_ART': True, 'runtime_accepted': True, 'real_device': False, 'sticky_recovery': True,
+    return {'actual_ART': True, 'runtime_accepted': True, 'architecture': args.architecture, 'real_device': False, 'sticky_recovery': True,
             'initial_pid': pid, 'recovered_pid': second_pid, 'original_activity_restarted': False,
             'recovery_intent': 'null', 'foreground_notification_persistent': True,
             'revocation_during_recovery': True, 'revoked_relaunch_denied': True,

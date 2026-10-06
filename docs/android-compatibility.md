@@ -451,7 +451,9 @@ and glib-dev). The existing `stage_alpine_runtime.py`, `stage_runtime.py` and
 `qualify_apk.py` validate ARM64 ELF IDs and complete separate receipts. Preserve
 the full upstream GPL source and package provenance, and retain an accepted
 native ARM64 Tilo image from the existing
-`Build / OS dev (aarch64)` pipeline. On a native remote ARM64 session, run the same
+`Build / OS dev (aarch64)` pipeline. The execution drivers default to the observed Linux host architecture and accept
+`--architecture aarch64`; a mismatching execution host fails before launching.
+On a native remote ARM64 session, run the same
 unchanged signed APK journeys through the production launcher/compositor with
 mandatory confinement, frames, file/permission denials, notification ownership,
 lifecycle and sticky recovery. A loader or emulator probe alone is insufficient.

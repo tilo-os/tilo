@@ -38,6 +38,11 @@
 # whose read CI never runs, with the reason.
 
 [[group]]
+name = "android-runtime-supervisor"
+inputs = ["tools/android/atl_entry.c", "tools/android/test_sticky_entry.c", "tools/android/test_sticky_entry.py"]
+suites = ["tools/android/test_sticky_entry.py"]
+
+[[group]]
 name = "session-diagnostics"
 inputs = ["dist/session/tilo-flight-recorder.py"]
 suites = ["os/tests/flight_recorder_test.py"]
