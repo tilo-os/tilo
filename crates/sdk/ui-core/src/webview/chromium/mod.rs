@@ -35,6 +35,7 @@ struct NavigationRequests {
 struct Shared {
     text_input: Mutex<super::text_input::Transactions>,
     native_edit_history: AtomicBool,
+    guarded_edit_history: AtomicBool,
     open_tabs: Mutex<VecDeque<(String, bool)>>,
     frames: FrameSlot,
     events: Mutex<VecDeque<WebViewEvent>>,
@@ -464,6 +465,7 @@ impl UnavailableEngine {
             shared: Shared {
                 text_input: Mutex::default(),
                 native_edit_history: AtomicBool::new(false),
+                guarded_edit_history: AtomicBool::new(false),
                 open_tabs: Mutex::default(),
                 frames: Arc::new(Mutex::new(None)),
                 events: Mutex::new(VecDeque::new()),
@@ -993,6 +995,10 @@ impl WebViewEngine for ChromiumEngine {
             .is_ok()
     }
 
+    fn supports_guarded_edit_history(&self) -> bool {
+        self.supports_text_input() && self.shared.guarded_edit_history.load(Ordering::Acquire)
+    }
+
     fn supports_text_input(&self) -> bool {
         !self.shared.failed.load(Ordering::Acquire) && !self.shared.stopping.load(Ordering::Acquire)
     }
@@ -1309,6 +1315,10 @@ fn route_native_event(
     };
     if let Some(shared) = endpoint {
         if matches!(event_name, "ready" | "tab_ready") {
+            shared.guarded_edit_history.store(
+                value["guarded_edit_history"].as_bool() == Some(true),
+                Ordering::Release,
+            );
             shared.native_edit_history.store(
                 value["native_edit_history"].as_bool() == Some(true),
                 Ordering::Release,
@@ -1547,12 +1557,20 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
             text("cef_version")
                 && text("chromium_version")
                 && value
+                    .get("guarded_edit_history")
+                    .is_none_or(Value::is_boolean)
+                && value
                     .get("native_edit_history")
                     .is_none_or(Value::is_boolean)
         }
-        "tab_ready" => value
-            .get("native_edit_history")
-            .is_none_or(Value::is_boolean),
+        "tab_ready" => {
+            value
+                .get("guarded_edit_history")
+                .is_none_or(Value::is_boolean)
+                && value
+                    .get("native_edit_history")
+                    .is_none_or(Value::is_boolean)
+        }
         "open_tab" => {
             value["url"].as_str().is_some_and(|url| url.len() <= 8192)
                 && value["background"].is_boolean()

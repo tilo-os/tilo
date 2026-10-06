@@ -2199,8 +2199,9 @@ fn native_history_capability_is_optional_strict_and_per_tab() {
     let downloads = Mutex::default();
     let (ready, _receiver) = sync_channel(1);
     assert!(!first.native_edit_history.load(Ordering::Acquire));
-    route_native_event(&json!({"event":"ready","cef_version":"152","chromium_version":"152","native_edit_history":true}), &routes, &downloads, &ready).unwrap();
+    route_native_event(&json!({"event":"ready","cef_version":"152","chromium_version":"152","native_edit_history":true,"guarded_edit_history":true}), &routes, &downloads, &ready).unwrap();
     assert!(first.native_edit_history.load(Ordering::Acquire));
+    assert!(first.guarded_edit_history.load(Ordering::Acquire));
     route_native_event(
         &json!({"event":"tab_ready","tab":2}),
         &routes,
@@ -2209,18 +2210,20 @@ fn native_history_capability_is_optional_strict_and_per_tab() {
     )
     .unwrap();
     assert!(!second.native_edit_history.load(Ordering::Acquire));
+    assert!(!second.guarded_edit_history.load(Ordering::Acquire));
     assert!(first.native_edit_history.load(Ordering::Acquire));
     route_native_event(
-        &json!({"event":"tab_ready","tab":2,"native_edit_history":true}),
+        &json!({"event":"tab_ready","tab":2,"native_edit_history":true,"guarded_edit_history":true}),
         &routes,
         &downloads,
         &ready,
     )
     .unwrap();
     assert!(second.native_edit_history.load(Ordering::Acquire));
+    assert!(second.guarded_edit_history.load(Ordering::Acquire));
     assert!(
         route_native_event(
-            &json!({"event":"tab_ready","tab":2,"native_edit_history":"true"}),
+            &json!({"event":"tab_ready","tab":2,"native_edit_history":true,"guarded_edit_history":"true"}),
             &routes,
             &downloads,
             &ready
@@ -2235,5 +2238,6 @@ fn native_history_capability_is_optional_strict_and_per_tab() {
     )
     .unwrap();
     assert!(!first.native_edit_history.load(Ordering::Acquire));
+    assert!(!first.guarded_edit_history.load(Ordering::Acquire));
     assert!(second.native_edit_history.load(Ordering::Acquire));
 }

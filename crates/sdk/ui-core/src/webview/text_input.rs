@@ -22,6 +22,10 @@ impl Lease {
 }
 
 pub enum Request {
+    History {
+        lease: Lease,
+        request: crate::undo::UndoRequest,
+    },
     Prepare,
     Start(Lease),
     Check(Lease),
@@ -46,6 +50,7 @@ pub enum Failure {
 pub struct Receipt {
     result: Arc<Mutex<Option<Result<Option<Lease>, Failure>>>>,
     canceled: Arc<AtomicBool>,
+    history: Arc<Mutex<Option<(crate::undo::UndoStatus, Instant)>>>,
     deadline: Instant,
 }
 
@@ -73,8 +78,15 @@ impl Receipt {
         Self {
             result: Arc::new(Mutex::new(None)),
             canceled: Arc::new(AtomicBool::new(false)),
+            history: Arc::new(Mutex::new(None)),
             deadline: crate::time::now() + Duration::from_secs(10),
         }
+    }
+
+    fn history_status(&self) -> Option<crate::undo::UndoStatus> {
+        let history = self.history.lock().ok()?;
+        let (status, expires) = history.as_ref()?;
+        (crate::time::now() < *expires && !self.is_canceled()).then(|| status.clone())
     }
 
     pub fn failed(failure: Failure) -> Self {
@@ -136,6 +148,15 @@ impl Transactions {
             .checked_add(1)
             .filter(|id| i32::try_from(*id).is_ok())?;
         let (action, lease, text, returns_lease) = match request {
+            Request::History { lease, request } => (
+                match request {
+                    crate::undo::UndoRequest::Undo => "undo_text_input",
+                    crate::undo::UndoRequest::Redo => "redo_text_input",
+                },
+                Some(lease),
+                None,
+                false,
+            ),
             Request::Prepare => ("prepare_text_input", None, None, true),
             Request::Start(lease) => ("start_text_input", Some(lease), None, true),
             Request::Check(lease) => ("check_text_input", Some(lease), None, true),
@@ -154,6 +175,9 @@ impl Transactions {
             .checked_add(5000)
             .and_then(|ms| u64::try_from(ms).ok())?;
         let mut value = serde_json::json!({"op":"text_input","request_id":id,"action":action,"expires_ms":expires});
+        if matches!(action, "undo_text_input" | "redo_text_input") {
+            value["history_scope"] = serde_json::json!("page");
+        }
         if let Some(lease) = lease {
             value["lease"] = serde_json::json!(lease.0);
         }
@@ -176,7 +200,7 @@ impl Transactions {
         let Some((receipt, returns_lease)) = self.pending.remove(&id) else {
             return;
         };
-        let result = if value["ok"] == true {
+        let mut result = if value["ok"] == true {
             if returns_lease {
                 value["data"]["lease"]
                     .as_str()
@@ -212,6 +236,29 @@ impl Transactions {
                 },
             )
         };
+        if returns_lease
+            && matches!(result, Ok(Some(_)))
+            && let Some(history) = value.get("history")
+        {
+            if let (Some(can_undo), Some(can_redo)) =
+                (history["can_undo"].as_bool(), history["can_redo"].as_bool())
+                && history.as_object().is_some_and(|fields| fields.len() == 2)
+            {
+                *receipt
+                    .history
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+                    crate::undo::UndoStatus {
+                        can_undo,
+                        can_redo,
+                        ..Default::default()
+                    },
+                    crate::time::now() + Duration::from_millis(500),
+                ));
+            } else {
+                result = Err(Failure::Unknown);
+            }
+        }
         receipt.complete(result);
     }
 
@@ -250,9 +297,14 @@ struct Activation {
     receipt: Receipt,
 }
 
+enum FinalValue {
+    Text(zeroize::Zeroizing<String>),
+    History(crate::undo::UndoRequest),
+}
+
 struct Final {
     lease: Lease,
-    text: zeroize::Zeroizing<String>,
+    text: FinalValue,
     receipt: Receipt,
     needs_check: bool,
 }
@@ -261,6 +313,7 @@ struct Final {
 /// an earlier check is pending; retirement is acknowledged before re-preparing.
 pub(crate) struct Guard {
     lease: Option<Lease>,
+    history: Option<Receipt>,
     pending: Option<Pending>,
     retiring: Option<Lease>,
     final_text: Option<Final>,
@@ -275,6 +328,7 @@ impl Default for Guard {
     fn default() -> Self {
         Self {
             lease: None,
+            history: None,
             pending: None,
             retiring: None,
             final_text: None,
@@ -289,6 +343,7 @@ impl Default for Guard {
 }
 impl Guard {
     pub fn invalidate(&mut self, _engine: &super::SharedEngine) {
+        self.history = None;
         if let Some(receipt) = self.active_receipt.take() {
             receipt.cancel();
         }
@@ -312,6 +367,9 @@ impl Guard {
         result: Result<Option<Lease>, Failure>,
         focused: bool,
     ) {
+        if matches!(result, Ok(Some(_))) {
+            self.history = Some(pending.receipt.clone());
+        }
         match pending.operation {
             Operation::Prepare => match result {
                 Ok(Some(lease)) if focused && !self.revoked => {
@@ -453,10 +511,17 @@ impl Guard {
                 return;
             } else {
                 let lease = final_text.lease;
-                let receipt = engine.text_input(Request::Commit {
-                    lease: lease.clone(),
-                    text: final_text.text,
-                });
+                let request = match final_text.text {
+                    FinalValue::Text(text) => Request::Commit {
+                        lease: lease.clone(),
+                        text,
+                    },
+                    FinalValue::History(request) => Request::History {
+                        lease: lease.clone(),
+                        request,
+                    },
+                };
+                let receipt = engine.text_input(request);
                 if let Some(receipt) = receipt {
                     self.pending = Some(Pending {
                         receipt,
@@ -492,6 +557,19 @@ impl Guard {
             final_receipt: None,
         });
     }
+    pub fn history_status(&self) -> Option<crate::undo::UndoStatus> {
+        if !self.ready() || self.revoked || self.activated {
+            return None;
+        }
+        let receipt = self.history.as_ref()?;
+        let Ok(Some(lease)) = receipt.poll()? else {
+            return None;
+        };
+        (self.lease.as_ref() == Some(&lease))
+            .then(|| receipt.history_status())
+            .flatten()
+    }
+
     pub fn stamp(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         Some(self.lease.as_ref()?.stamp(key))
     }
@@ -545,7 +623,19 @@ impl Guard {
         Some(receipt)
     }
 
+    pub fn history(&mut self, request: crate::undo::UndoRequest) -> Option<Receipt> {
+        if self.activated {
+            return None;
+        }
+        self.queue_final(FinalValue::History(request))
+    }
     pub fn commit(&mut self, _engine: &super::SharedEngine, text: &str) -> Option<Receipt> {
+        if text.is_empty() || text.len() > 4000 {
+            return None;
+        }
+        self.queue_final(FinalValue::Text(zeroize::Zeroizing::new(text.into())))
+    }
+    fn queue_final(&mut self, value: FinalValue) -> Option<Receipt> {
         if self.final_text.is_some()
             || self.activation.is_some()
             || self
@@ -553,8 +643,7 @@ impl Guard {
                 .as_ref()
                 .is_some_and(|pending| matches!(pending.operation, Operation::Start(_)))
             || self.retiring.is_some()
-            || text.is_empty()
-            || text.len() > 4000
+            || self.revoked
         {
             return None;
         }
@@ -562,7 +651,7 @@ impl Guard {
         let receipt = Receipt::pending();
         self.final_text = Some(Final {
             lease,
-            text: zeroize::Zeroizing::new(text.into()),
+            text: value,
             receipt: receipt.clone(),
             needs_check: self
                 .pending
@@ -616,12 +705,58 @@ mod tests {
             Some(receipt)
         }
     }
+    #[test]
+    fn native_history_observations_are_original_receipt_scoped_and_strict() {
+        for history in [
+            serde_json::Value::Null,
+            serde_json::json!({"can_undo": true}),
+            serde_json::json!({"can_undo": "true", "can_redo": false}),
+            serde_json::json!({"can_undo": true, "can_redo": false, "text": "must not cross"}),
+        ] {
+            let mut transactions = Transactions::default();
+            let (receipt, command) = transactions.admit(Request::Prepare).unwrap();
+            transactions.reply(&serde_json::json!({"request_id":command["request_id"],
+                "ok":true,"data":{"lease":"0123456789abcdef0123456789abcdef"},"history":history}));
+            assert!(matches!(receipt.poll(), Some(Err(Failure::Unknown))));
+            assert!(receipt.history_status().is_none());
+        }
+        let mut transactions = Transactions::default();
+        let (receipt, command) = transactions.admit(Request::Prepare).unwrap();
+        transactions.reply(&serde_json::json!({"request_id":command["request_id"],
+            "ok":true,"data":{"lease":"0123456789abcdef0123456789abcdef"},
+            "history":{"can_undo":true,"can_redo":false}}));
+        let observed = receipt.history_status().unwrap();
+        assert!(observed.can_undo && !observed.can_redo);
+        let controlled = Arc::new(Controlled::default());
+        let engine: SharedEngine = controlled;
+        let mut guard = leased_guard();
+        guard.history = Some(receipt.clone());
+        assert_eq!(guard.history_status(), Some(observed));
+        let original = guard.lease.take();
+        guard.lease = Lease::parse("11111111111111111111111111111111");
+        assert!(
+            guard.history_status().is_none(),
+            "another field cannot inherit an observation"
+        );
+        guard.lease = original;
+        receipt.history.lock().unwrap().as_mut().unwrap().1 = crate::time::now();
+        assert!(
+            guard.history_status().is_none(),
+            "expired observation is unavailable"
+        );
+        guard.invalidate(&engine);
+        assert!(guard.history_status().is_none());
+        receipt.cancel();
+        assert!(receipt.history_status().is_none());
+    }
+
     fn lease() -> Lease {
         Lease::parse("0123456789abcdef0123456789abcdef").unwrap()
     }
     fn leased_guard() -> Guard {
         Guard {
             lease: Some(lease()),
+            history: None,
             pending: None,
             retiring: None,
             final_text: None,
@@ -711,6 +846,43 @@ mod tests {
             "retired cancellation cannot revoke a successor"
         );
         assert!(guard.start().is_some());
+    }
+
+    #[test]
+    fn native_history_waits_for_original_check_and_never_retargets() {
+        for changed in [false, true] {
+            let (mut guard, controlled, engine, check) = checked_guard();
+            let receipt = guard.history(crate::undo::UndoRequest::Undo).unwrap();
+            guard.pump(&engine, true);
+            assert!(receipt.poll().is_none());
+            assert_eq!(controlled.requests.lock().unwrap().len(), 1);
+            check.complete(if changed {
+                Err(Failure::Rejected)
+            } else {
+                Ok(Some(lease()))
+            });
+            guard.pump(&engine, true);
+            let requests = controlled.requests.lock().unwrap();
+            if changed {
+                assert!(matches!(receipt.poll(), Some(Err(Failure::Rejected))));
+                assert!(
+                    requests
+                        .iter()
+                        .all(|(r, _)| !matches!(r, Request::History { .. }))
+                );
+            } else {
+                assert!(
+                    matches!(&requests[1].0, Request::History { lease: original, request: crate::undo::UndoRequest::Undo } if *original == lease())
+                );
+                requests[1].1.complete(Ok(None));
+                drop(requests);
+                guard.pump(&engine, true);
+                assert!(matches!(receipt.poll(), Some(Ok(None))));
+            }
+        }
+        let mut guard = leased_guard();
+        assert!(guard.start().is_some());
+        assert!(guard.history(crate::undo::UndoRequest::Redo).is_none());
     }
 
     #[test]

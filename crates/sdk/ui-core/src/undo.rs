@@ -366,9 +366,37 @@ pub trait UndoControl {
     }
 }
 
+/// A focused component's observed history, or an original-field observation
+/// that is not available yet. Pending is never replaced by document history.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LocalUndoStatus {
+    Ready(UndoStatus),
+    Pending,
+}
+impl LocalUndoStatus {
+    pub(crate) fn key(&self) -> (bool, bool, bool) {
+        match self {
+            Self::Ready(status) => (true, status.can_undo, status.can_redo),
+            Self::Pending => (false, false, false),
+        }
+    }
+}
+
 /// A component with its own editing history, offered the host's keyboard
 /// undo/redo shortcut before the application document consumes it.
 pub trait LocalUndo {
+    /// None means this component does not own the focused history. Pending
+    /// means it owns it, but cannot currently advertise an available entry.
+    fn local_undo_status(&self) -> Option<LocalUndoStatus> {
+        None
+    }
+
+    /// True when exported Edit operations complete through Widget's existing
+    /// asynchronous operation receipts rather than on shortcut dispatch.
+    fn local_undo_is_deferred(&self) -> bool {
+        false
+    }
+
     /// `true` only while focus is inside the component and it consumed the
     /// request.
     fn handle_local_undo_request(&mut self, request: UndoRequest) -> bool;
@@ -403,6 +431,25 @@ pub fn take_undo_request(
     widget: &mut (impl crate::widget::Widget + ?Sized),
 ) -> Option<UndoRequest> {
     crate::widget::capability::capability_mut::<dyn UndoControl>(widget)?.take_undo_request()
+}
+
+/// Observe the same component histories the host offers its UndoRequest.
+pub fn local_undo_status(widget: &dyn crate::widget::Widget) -> Option<LocalUndoStatus> {
+    if let Some(local) = crate::widget::capability::capability::<dyn LocalUndo>(widget) {
+        return local.local_undo_status();
+    }
+    widget.children().into_iter().find_map(local_undo_status)
+}
+
+pub(crate) fn local_undo_is_deferred(widget: &dyn crate::widget::Widget) -> bool {
+    if let Some(local) = crate::widget::capability::capability::<dyn LocalUndo>(widget) {
+        return local.local_undo_status().is_some() && local.local_undo_is_deferred();
+    }
+    widget
+        .children()
+        .into_iter()
+        .find(|child| local_undo_status(*child).is_some())
+        .is_some_and(local_undo_is_deferred)
 }
 
 /// Offer a keyboard undo/redo to the component histories under `widget`.

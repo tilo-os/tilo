@@ -56,6 +56,10 @@ class GuardedTextInput(unittest.TestCase):
         self.h.navigate(self.url)
         self.h.send(op='focus', focused=True)
         self.request = 0
+        deadline = time.monotonic() + 10
+        while not self.main_world("(first.focus(),first.setSelectionRange(6,10),document.hasFocus())"):
+            self.assertLess(time.monotonic(), deadline, 'owned native document must acquire focus')
+            time.sleep(.02)
         self.assertTrue(self.main_world("(first.focus(),first.setSelectionRange(6,10),document.hasFocus())"))
 
     def main_world(self, expression):
@@ -146,6 +150,64 @@ class GuardedTextInput(unittest.TestCase):
                 self.assertFalse(self.request_input('commit', lease=lease, text='lost')['ok'])
                 self.unchanged()
                 self.main_world('(window.' + flag + '=false,true)')
+
+    def test_original_field_history_flags_follow_native_undo_and_redo(self):
+        result = self.request_input('prepare')
+        self.assertTrue(result['ok'], result)
+        self.assertIn('history', result, 'original-field ACK must observe native history')
+        self.assertEqual(result['history'], {'can_undo': False, 'can_redo': False})
+        lease = result['data']['lease']
+        self.assertTrue(self.request_input('start', lease=lease)['ok'])
+        self.assertTrue(self.request_input('commit', lease=lease, text='dictated')['ok'])
+        self.main_world('(document.queryCommandEnabled=()=>false,true)')
+        self.main_world('(document.execCommand=()=>false,true)')
+        for direction, value, flags in [
+                ('undo', 'alpha beta gamma', {'can_undo': True, 'can_redo': False}),
+                ('redo', 'alpha dictated gamma', {'can_undo': False, 'can_redo': True})]:
+            result = self.request_input('prepare')
+            self.assertTrue(result['ok'], result)
+            self.assertEqual(result['history'], flags)
+            self.assertEqual(set(result['data']), {'lease'}, 'history exports no field content')
+            lease = result['data']['lease']
+            check = self.request_input('check', lease=lease)
+            self.assertTrue(check['ok'], check)
+            self.assertEqual(check['history'], flags)
+            effect = self.request_input(direction, lease=lease, history_scope='page')
+            self.assertTrue(effect['ok'], effect)
+            self.assertEqual(self.main_world('first.value'), value)
+            self.assertFalse(self.request_input(direction, lease=lease)['ok'], 'history is one shot')
+        lease = self.prepare()
+        self.main_world('(second.focus(),true)')
+        rejected = self.request_input('undo', lease=lease, history_scope='page')
+        self.assertFalse(rejected['ok'], rejected)
+        self.assertNotIn('history', rejected, 'changed field must not report original history')
+        self.assertEqual(self.main_world('first.value'), 'alpha dictated gamma')
+        self.assertEqual(self.main_world('second.value'), 'second')
+
+    def test_original_field_history_never_undoes_a_successor_entry(self):
+        lease = self.prepare()
+        self.assertTrue(self.request_input('commit', lease=lease, text='original')['ok'])
+        self.assertTrue(self.main_world("(second.focus(),second.select(),document.execCommand('insertText',false,'successor edit'))"))
+        self.main_world('(first.focus(),first.setSelectionRange(6,14),true)')
+        lease = self.prepare()
+        result = self.request_input('undo', lease=lease)
+        self.assertEqual(self.main_world('second.value'), 'successor edit', 'original-field Undo cannot mutate a different field history entry')
+        if result['ok']:
+            self.assertEqual(self.main_world('first.value'), 'alpha beta gamma')
+        else:
+            self.assertEqual(self.main_world('first.value'), 'alpha original gamma')
+
+    def test_explicit_page_history_matches_native_cross_field_stack(self):
+        lease = self.prepare()
+        self.assertTrue(self.request_input('commit', lease=lease, text='original')['ok'])
+        self.assertTrue(self.main_world("(second.focus(),second.select(),document.execCommand('insertText',false,'successor edit'))"))
+        self.main_world('(first.focus(),first.setSelectionRange(6,14),true)')
+        lease = self.prepare()
+        result = self.request_input('undo', lease=lease, history_scope='page')
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(self.main_world('first.value'), 'alpha original gamma')
+        self.assertEqual(self.main_world('second.value'), 'second')
+        self.assertFalse(self.request_input('undo', lease=lease, history_scope='page')['ok'])
 
     def test_selectionless_email_and_number_refuse_deferred_input_and_recover(self):
         for kind, value in [('email', 'public@example.test'), ('number', '123.5')]:
