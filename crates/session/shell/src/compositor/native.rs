@@ -10244,7 +10244,14 @@ pub fn run() {
             }
         }
         if let Some(proxy) = shell_text_input.as_mut() {
-            let mut typed = proxy.sync(&mut state, shell_field);
+            let identity = if frame_builder.host().palette_visible() {
+                Some(crate::compositor::shell_text_input::NativeFieldId::Palette)
+            } else {
+                test_control_ctx.focus.map(|node| {
+                    crate::compositor::shell_text_input::NativeFieldId::Widget(u64::from(node))
+                })
+            };
+            let mut typed = proxy.sync_for_field(&mut state, shell_field, identity);
             state.shell_field_active = proxy.holds_focus(&state);
             typed.append(&mut state.shell_field_keys);
             for event in &typed {
