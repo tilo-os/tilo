@@ -44,3 +44,53 @@ fn the_inspector_drawer_holds_its_controls_inside_the_window() {
         );
     }
 }
+
+#[test]
+fn blank_phone_welcome_and_header_controls_stay_inside_the_window() {
+    let mut app = TestApp::<App>::capture_at(None, (390, 844)).expect("blank artwork");
+    assert!(
+        app.harness()
+            .settle_for_capture(std::time::Duration::from_secs(2))
+    );
+    let targets = app.harness().targets();
+    let welcome = [
+        "canvas-welcome-new",
+        "canvas-welcome-open",
+        "canvas-welcome-close",
+    ];
+    for name in welcome {
+        let rect = targets.get(name).expect("the actual welcome control");
+        assert!(
+            rect.width() > 0.0 && rect.x0 >= 0.0 && rect.x1 <= 390.0,
+            "{name} leaves the phone viewport: {rect:?}"
+        );
+    }
+    let header: Vec<_> = targets
+        .iter()
+        .filter(|(name, rect)| {
+            (name.starts_with("canvas-zoom-")
+                || name.as_str() == "canvas-add-picture"
+                || name.as_str() == "canvas-menu"
+                || name.ends_with("nav-shell-inspector")
+                || name.as_str() == "standalone-history-open")
+                && rect.height() > 0.0
+        })
+        .collect();
+    assert!(
+        !header.is_empty(),
+        "the actual header exposes its mounted controls"
+    );
+    for (index, (name, rect)) in header.iter().enumerate() {
+        assert!(rect.x0 >= 0.0 && rect.x1 <= 390.0, "{name}: {rect:?}");
+        assert!(
+            rect.y1 < targets["canvas-welcome-close"].y0,
+            "header and welcome overlap: {name} {rect:?}"
+        );
+        for (other, other_rect) in &header[index + 1..] {
+            assert!(
+                rect.intersect(**other_rect).area().total_cmp(&0.0).is_eq(),
+                "header controls overlap: {name} {rect:?}; {other} {other_rect:?}"
+            );
+        }
+    }
+}
