@@ -532,9 +532,6 @@ impl App {
         if self.history_chrome_enabled {
             self.document_history
                 .place_in_app_header(self.root_widget.as_mut());
-            // Shared services belong in the existing header or the platform
-            // action door; never add a second toolbar above the app.
-            self.document_history.remove_fallback_bar();
         }
         let app = self.root_widget.build_layout(
             &mut self.layout.taffy,
@@ -879,6 +876,9 @@ impl App {
     #[cfg(any(feature = "native", test))]
     pub(super) fn prepare_native_presentation(&mut self, chrome: crate::host_chrome::HostChrome) {
         if chrome.draws_in_window() {
+            // Native apps use their integrated header or the platform action
+            // door. Low-level embedded hosts retain their shared controls.
+            self.document_history.remove_fallback_bar();
             if let Some(history) = &mut self.history {
                 history.remove_fallback_bar();
                 self.layout.structure_dirty = true;
