@@ -80,6 +80,18 @@ intervals — rather than growing a queue the display can never drain.
 Resize and DPMS travel the same channel as frames, so a blank cannot
 overtake a frame already queued.
 
+With `TILO_PROFILE_GPU_STAGES=1`, the existing `FRAME-LIFECYCLE` retirement
+record includes the exact pipe serial and scene revision, CPU encode/submission
+wall time, GPU completion wait, bump-counter settlement and separate KMS
+retirement wait. Direct scanout collects those bridge phases without staging
+or reading back pixels. These CPU clock intervals locate blocking work; they
+are not GPU timestamp samples or proof of successful physical presentation.
+Vello dispatch timestamps additionally require both `VELLO_GPU_TIMESTAMPS=1`
+and `VELLO_GPU_DISPATCH_TIMESTAMPS=1` before device/renderer creation. Enable
+these fixed options through the greeter's ordinary next-sign-in diagnostics
+action. A disabled/unsupported recorder and discarded presentation remain
+ineligible for a hardware latency claim.
+
 `crates/session/shell/src/compositor/metrics.rs` instruments all of it
 (`TILO_FRAME_TRACE`, `TILO_FRAME_SUMMARY`); `scripts/perf/frame-loop-bench.py`
 drives a measured run and diffs two of them.
