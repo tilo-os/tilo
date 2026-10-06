@@ -333,12 +333,6 @@ pub enum StoreEffect {
         #[param("HTTPS repository URL")]
         url: String,
     },
-    /// Use Flathub for my apps.
-    #[effect(job, permission = "admin")]
-    UseFlathubForAccount {
-        #[param("Enabled device Flathub repository identity")]
-        remote: String,
-    },
     /// Enable source.
     #[effect(job, permission = "admin")]
     EnableRemote {
@@ -1872,9 +1866,17 @@ mod tests {
 
     #[test]
     fn captures_cover_account_setup_search_paging_and_flatpak_actions() {
-        for scenario in ["account-setup", "account-remotes"] {
+        for (scenario, control) in [
+            ("account-setup", "Refresh catalogues"),
+            ("account-remotes", "Refresh remotes"),
+        ] {
             let mut app = TestApp::<StoreShell>::capture(Some(scenario)).unwrap();
-            assert!(frame(&mut app).contains("Use Flathub for my apps"));
+            let shown = frame(&mut app);
+            assert!(!shown.contains("Use Flathub for my apps"));
+            assert!(shown.contains(control), "{scenario} exposes {control}");
+            if scenario == "account-remotes" {
+                assert!(shown.contains("Flathub"));
+            }
             assert!(app.state().reports.is_empty());
         }
         let mut search = TestApp::<StoreShell>::capture(Some("search-notes")).unwrap();

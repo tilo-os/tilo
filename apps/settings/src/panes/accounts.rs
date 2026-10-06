@@ -2155,8 +2155,10 @@ mod tests {
         // Case `sample_directory_renders_read_only_without_remove_buttons`.
         {
             // The sample is illustration: one live Add button per provider kind,
-            // and no Remove buttons.
-            let pane = AccountsPane::from_dir(sample_directory(), true);
+            // and no Remove buttons. A scratch root keeps whatever the runner's
+            // own account stores hold (a browser identity, say) out of the count.
+            let (_scratch, root) = scratch_root();
+            let pane = AccountsPane::from_dir_in(root, sample_directory(), true);
             let composed = lay_out(&pane);
             assert_eq!(
                 count_named(composed.as_ref(), "Button"),
@@ -2170,7 +2172,8 @@ mod tests {
             // Without stored passwords, real rows offer removal but do not invent
             // a reauthentication action.
             let dir = sample_directory(); // 2 mail + 1 cal + 1 nextcloud = 4 accounts
-            let pane = AccountsPane::from_dir(dir, false);
+            let (_scratch, root) = scratch_root();
+            let pane = AccountsPane::from_dir_in(root, dir, false);
             let composed = lay_out(&pane);
             // One Add per kind + four maintenance actions on each of four accounts.
             assert_eq!(
@@ -2184,7 +2187,8 @@ mod tests {
             // Real accounts get an explicit Remove action rather than a lone
             // trash glyph. The confirmation flow still owns the mutation; this
             // assertion guards the decision point users see before it.
-            let pane = AccountsPane::from_dir(sample_directory(), false);
+            let (_scratch, root) = scratch_root();
+            let pane = AccountsPane::from_dir_in(root, sample_directory(), false);
             let composed = lay_out(&pane);
             let mut labels = Vec::new();
             button_labels(composed.as_ref(), &mut labels);
