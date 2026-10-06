@@ -46,6 +46,17 @@ pub enum ChatEffect {
     /// Reveal message
     #[effect(view, row)]
     RevealMessage { message: String },
+    /// Reveal message range
+    #[effect(view, row, returns)]
+    RevealMessageRange {
+        message: String,
+        #[param("Start offset in the declared unit")]
+        start: usize,
+        #[param("End offset in the declared unit")]
+        end: usize,
+        #[param("Offset unit", choices = ["Chars", "Bytes"])]
+        unit: String,
+    },
     /// Open person
     #[effect(view, row)]
     OpenPerson { user: String },
@@ -140,6 +151,12 @@ impl ChatApp {
                 self.toggle_category(&category);
             }
             ChatEffect::RevealMessage { message } => self.reveal_message(&message)?,
+            ChatEffect::RevealMessageRange {
+                message,
+                start,
+                end,
+                unit,
+            } => return self.reveal_message_range(&message, start, end, &unit),
             ChatEffect::OpenPerson { user } => self.open_person(&user)?,
             ChatEffect::ReadMessage { message } => {
                 return self.read_message(&message).map(Effected::value);
@@ -351,6 +368,45 @@ impl ChatApp {
         Ok(())
     }
 
+    fn reveal_message_range(
+        &mut self,
+        message: &str,
+        start: usize,
+        end: usize,
+        unit: &str,
+    ) -> EffectAnswer {
+        let unit = match unit {
+            "Chars" => tilo_reference::SpanUnit::Chars,
+            "Bytes" => tilo_reference::SpanUnit::Bytes,
+            _ => return Err("unsupported range unit".into()),
+        };
+        if start > end {
+            return Err("backwards message range".into());
+        }
+        let span = tilo_reference::Span { start, end, unit };
+        let text = self
+            .search_messages
+            .iter()
+            .find(|m| m.id == message)
+            .map(|m| &m.text)
+            .ok_or("message no longer exists")?;
+        let selected = span
+            .slice(text)
+            .ok_or("message range no longer fits")?
+            .to_owned();
+        let start_byte = match unit {
+            tilo_reference::SpanUnit::Bytes => start,
+            tilo_reference::SpanUnit::Chars => text.chars().take(start).map(char::len_utf8).sum(),
+        };
+        let end_byte = start_byte + selected.len();
+        let source = text.clone();
+        self.reveal_message(message)?;
+        self.revealed_range = Some((message.to_owned(), source, start_byte, end_byte));
+        Ok(Effected::value(
+            serde_json::json!({"selected": selected, "span": span}),
+        ))
+    }
+
     fn reveal_message(&mut self, message: &str) -> Result<(), String> {
         let found = self
             .search_messages
@@ -368,6 +424,7 @@ impl ChatApp {
         self.active_channel = channel;
         self.inbox_open = false;
         self.thread_open = parent;
+        self.revealed_range = None;
         self.revealed_message = Some(message.to_owned());
         self.reveal_scroll_pending = true;
         self.revealed_person = None;

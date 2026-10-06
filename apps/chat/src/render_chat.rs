@@ -192,7 +192,33 @@ impl ChatApp {
             view.set_mention_paint(paint);
             *painted = fingerprint;
         }
-        view.show(&m.blocks());
+        let blocks = m.blocks();
+        view.show(&blocks);
+        let editor = view.editor_mut();
+        editor.clear_document_selection();
+        if let Some((message, source, start, end)) = &self.revealed_range
+            && message == &m.id
+            && self.revealed_message.as_ref() == Some(message)
+            && source == &m.text
+            && crate::body::plain_text(&blocks) == *source
+        {
+            let position = |offset: usize| {
+                let mut remaining = offset;
+                for (block, content) in blocks.iter().enumerate() {
+                    if remaining <= content.text.len() {
+                        return Some(ui::widget::DocumentPosition {
+                            block,
+                            byte: remaining,
+                        });
+                    }
+                    remaining = remaining.saturating_sub(content.text.len() + 1);
+                }
+                None
+            };
+            if let (Some(anchor), Some(cursor)) = (position(*start), position(*end)) {
+                editor.select_document_range(anchor, cursor);
+            }
+        }
         // The view's paragraphs keep a field's side padding. Lay the view out
         // that far to the leading side so the text itself starts on the
         // message column's edge; the padding is read back from the laid-out

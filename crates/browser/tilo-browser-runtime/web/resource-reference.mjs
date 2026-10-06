@@ -31,13 +31,19 @@ export async function resolveResourceReference({reference, provider, actions, cu
  */
 export async function openResourceReference({reference, provider, action, actions, current, waitRecord, mount, signal}) {
   signal?.throwIfAborted();
-  if (reference?.span != null) throw Error('Shared resource ranges require a range-aware view action');
+  const span = reference?.span == null ? null : {...reference.span};
+  if (span && (!Number.isSafeInteger(span.start) || !Number.isSafeInteger(span.end)
+    || span.start < 0 || span.end < span.start || !['Chars', 'Bytes'].includes(span.unit))) {
+    throw Error('Invalid shared resource range');
+  }
   const resolved = await resolveResourceReference({reference, provider, actions, current});
   signal?.throwIfAborted();
   const prefix = `record:${resolved.app}:`;
   if (!provider.startsWith(prefix)) throw Error('Shared resource record does not match its publisher');
-  if (!resolved.views.some(view => view.address?.resource === resolved.resource.id
-    && view.address.action === action)) throw Error('Shared resource view unavailable');
+  const declared = resolved.views.find(view => view.address?.resource === resolved.resource.id
+    && view.address.action === action);
+  if (!declared) throw Error('Shared resource view unavailable');
+  if (span && !declared.view.range) throw Error('Shared resource ranges require a range-aware view action');
   const record = provider.slice(prefix.length);
   await waitRecord(resolved.app, record);
   signal?.throwIfAborted();
@@ -51,15 +57,36 @@ export async function openResourceReference({reference, provider, action, action
     if (!current()) throw Error('Shared resource connection changed');
     // The mounted app resolves the same exact address again with current
     // permissions. Read metadata does not authorize a later view invocation.
-    const view = opened.actions(resolved.resource.id).find(view =>
-      view.address?.resource === resolved.resource.id && view.address.action === action && view.kind === 'View'
-      && view.view?.open_action === action);
-    if (!view || (view.input && view.input !== 'None')
-      || view.params?.some(param => param.required)
-      || (view.contract?.confirmation?.mode && view.contract.confirmation.mode !== 'none')) {
+    const local = opened.actions(resolved.resource.id);
+    const view = local.find(view => view.address?.resource === resolved.resource.id
+      && view.address.action === action && view.kind === 'View' && view.view?.open_action === action);
+    if (!view) throw Error('Shared resource view unavailable');
+    let selected = view, args = {}, invoke = action;
+    if (span) {
+      const range = view.view.range;
+      if (!range || JSON.stringify(range) !== JSON.stringify(declared.view.range)) {
+        throw Error('Shared resource range view changed');
+      }
+      const names = [range.start_param, range.end_param, range.unit_param];
+      if (names.some(name => typeof name !== 'string' || !name.length) || new Set(names).size !== 3) {
+        throw Error('Shared resource range contract invalid');
+      }
+      invoke = range.action;
+      selected = local.find(candidate => candidate.address?.resource === resolved.resource.id
+        && candidate.address.action === invoke && candidate.kind === 'View');
+      const types = ['integer', 'integer', 'text'];
+      if (!selected || names.some((name, i) => !selected.params?.some(p => p.name === name && p.ty === types[i]))) {
+        throw Error('Shared resource range view unavailable');
+      }
+      args = {[names[0]]: span.start, [names[1]]: span.end, [names[2]]: span.unit};
+    }
+    if ((selected.input && selected.input !== 'None' && !span)
+      || selected.params?.some(param => param.required && !Object.hasOwn(args, param.name))
+      || (selected.contract?.confirmation?.mode && selected.contract.confirmation.mode !== 'none')) {
       throw Error('Shared resource view unavailable or requires input');
     }
-    const result = opened.invokeAction(resolved.resource.id, action);
+    const result = span ? opened.invokeAction(resolved.resource.id, invoke, args)
+      : opened.invokeAction(resolved.resource.id, invoke);
     signal?.throwIfAborted();
     if (result.state !== 'completed' || !current()) throw Error('Shared resource view did not complete');
     return opened;

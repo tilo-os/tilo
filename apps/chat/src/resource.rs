@@ -536,6 +536,53 @@ mod tests {
     use ui::framework::testing::TestApp;
 
     #[test]
+    fn resource_range_opens_and_highlights_current_text_through_the_public_view() {
+        let mut app = TestApp::<ChatShell>::new().unwrap();
+        app.call_on(
+            "chat.channel:c_general",
+            "post",
+            serde_json::json!({"value": "café notes"}),
+        )
+        .unwrap();
+        app.settle();
+        let id = app
+            .state()
+            .messages()
+            .find(|m| m.text == "café notes")
+            .unwrap()
+            .id
+            .clone();
+        app.call_on(
+            &format!("chat.message:{id}"),
+            "reveal-message-range",
+            serde_json::json!({"start": 3, "end": 4, "unit": "Chars"}),
+        )
+        .unwrap();
+        app.settle();
+        let surface = app.surface_mut::<crate::ChatApp>();
+        let mut bodies = surface.body_views.borrow_mut();
+        let (_, view) = bodies
+            .get_mut(&(0, id.clone()))
+            .expect("real layout produced the message body");
+        assert_eq!(view.editor_mut().selected_text().as_deref(), Some("é"));
+        drop(bodies);
+        app.call_on(
+            &format!("chat.message:{id}"),
+            "edit",
+            serde_json::json!({"value": "changed"}),
+        )
+        .unwrap();
+        app.settle();
+        let surface = app.surface_mut::<crate::ChatApp>();
+        let mut bodies = surface.body_views.borrow_mut();
+        let (_, view) = bodies.get_mut(&(0, id)).unwrap();
+        assert!(
+            view.editor_mut().selected_text().is_none(),
+            "edits invalidate the old highlight"
+        );
+    }
+
+    #[test]
     fn shared_space_visible_stop_button_uses_the_same_consent_handler() {
         let mut app = TestApp::<ChatShell>::capture(Some("live-context")).unwrap();
         assert!(app.surface_mut::<crate::ChatApp>().sharing_context);

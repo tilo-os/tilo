@@ -21,6 +21,7 @@
  */
 import {createActions} from './actions.mjs';
 import {resolveResourceReference, openResourceReference} from './resource-reference.mjs';
+import {createResourceLink} from './resource-link.mjs';
 import {createAgents} from './agents.mjs';
 import {openChannelVault} from './channel-vault.mjs';
 import {createMembership, createWorkspaces} from './membership.mjs';
@@ -591,7 +592,7 @@ async function connect({
   origin, userPublicKey, label = 'Browser', room, custody, store, runtime, identity, deviceCertificate,
   profile, device = 'tilo-browser-device', displayName = '', vaultStorage,
   fetch: fetcher, liveCarriers, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
-  voice: voiceOptions = {},
+  voice: voiceOptions = {}, requireExistingCertificate = false,
 }) {
   userPublicKey ??= identity?.userPublicKey;
   if (identity && userPublicKey !== identity.userPublicKey) {
@@ -776,11 +777,16 @@ async function connect({
   }
 
   async function certificate() {
+    if (requireExistingCertificate && deviceCertificate) throw Error('Resource links require a previously certified device');
     if (deviceCertificate) {
       await store.put(CERTIFICATE, deviceCertificate);
       deviceCertificate = undefined;
     }
     const existing = await store.get(CERTIFICATE);
+    if (requireExistingCertificate) {
+      if (!existing) throw Error('Sign in on this browser and obtain admission before opening a resource link');
+      return existing; // Host checks expiry/revocation; never renew or pair implicitly.
+    }
     if (existing && !(identity && expiresWithinADay(existing))) return existing;
     const issued = identity
       ? await runtime.certifyWithRoot(post, identity, custodyForWasm, label)
@@ -916,6 +922,16 @@ async function connect({
     },
     /** The room's app actions (`actions.mjs`), or `undefined` without a room. */
     get actions() { return actions; },
+    /** Public address of this admitted session; it conveys no authority. */
+    get resourceScope() {
+      if (disposed || snapshot.phase !== 'ready' || !actions || !room) return undefined;
+      return {origin: new URL(origin).origin, room,
+        hostDevice: hexKey(host.hostCert?.device_public_key)};
+    },
+    /** Mint a browser navigation link from a fresh authorized resource view. */
+    resourceLink(page, reference, provider, action) {
+      return createResourceLink({peer: certifiedPeer, page, reference, provider, action});
+    },
     /** Fresh permission-filtered metadata for a record-local shared resource.
      * The host-issued source provider is required; this never joins a room,
      * grants access, follows a peer or navigates as a side effect. */
@@ -974,13 +990,24 @@ async function connect({
     },
     /** Resolves once the host admitted the room (`phase === 'ready'`);
      * rejects when it refused this device. */
-    whenReady() {
+    whenReady({signal, timeoutMs = 30_000} = {}) {
       return new Promise((resolve, reject) => {
-        const check = current => {
-          if (current.phase === 'ready') { listeners.delete(check); resolve(current); }
-          else if (current.phase === 'failed') { listeners.delete(check); reject(new Error(current.error ?? 'the host refused this device')); }
+        let timer;
+        const finish = (error, value) => {
+          clearTimeout(timer); listeners.delete(check); pendingRecordWaits.delete(finish);
+          signal?.removeEventListener('abort', abort);
+          if (error) reject(error); else resolve(value);
         };
-        listeners.add(check);
+        const abort = () => finish(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+        const check = current => {
+          if (disposed) finish(new Error('Shared resource connection closed'));
+          else if (current.phase === 'ready') finish(undefined, current);
+          else if (current.phase === 'failed') finish(new Error(current.error ?? 'the host refused this device'));
+        };
+        if (signal?.aborted) { abort(); return; }
+        timer = setTimeout(() => finish(new Error('Room admission timed out')), timeoutMs);
+        listeners.add(check); pendingRecordWaits.add(finish);
+        signal?.addEventListener('abort', abort, {once: true});
         check(snapshot);
       });
     },
@@ -1035,6 +1062,7 @@ async function connect({
         return {operationId: `retry-asset:${request.surfaceId}:${request.assetId}`};
       }
       if (request?.kind === 'reauthenticate') {
+        if (requireExistingCertificate) throw Error('Sign in through the identity flow before reopening this resource');
         voice?.reset();
         stopLive();
         peer.dispose();

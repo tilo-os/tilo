@@ -993,6 +993,54 @@ fn validate_view_action_binding(action: &PublishedAction, role: &str) -> Result<
     Ok(())
 }
 
+fn validate_resource_range_binding(
+    actions: &[PublishedAction],
+    action: &PublishedAction,
+    range: &tilo_actions::ResourceViewRangeSpec,
+) -> Result<(), capnp::Error> {
+    let names = [&range.start_param, &range.end_param, &range.unit_param];
+    let target = actions
+        .iter()
+        .find(|target| target.resource == action.resource && target.action == range.action)
+        .ok_or_else(|| capnp::Error::failed("resource range action missing".into()))?;
+    if names.iter().any(|name| name.is_empty())
+        || names[0] == names[1]
+        || names[0] == names[2]
+        || names[1] == names[2]
+        || target.operation_kind != tilo_actions::OperationKind::View
+        || target.contract.confirmation != tilo_actions::ConfirmationPolicy::None
+    {
+        return Err(capnp::Error::failed(
+            "invalid resource range binding".into(),
+        ));
+    }
+    for (name, ty) in [
+        (&range.start_param, tilo_actions::ParamType::Integer),
+        (&range.end_param, tilo_actions::ParamType::Integer),
+        (&range.unit_param, tilo_actions::ParamType::Text),
+    ] {
+        if !target
+            .params
+            .iter()
+            .any(|p| p.name.as_ref() == name && p.ty == ty)
+        {
+            return Err(capnp::Error::failed(
+                "invalid resource range parameter".into(),
+            ));
+        }
+    }
+    if target
+        .params
+        .iter()
+        .any(|p| p.required && !names.iter().any(|n| p.name.as_ref() == *n))
+    {
+        return Err(capnp::Error::failed(
+            "resource range requires unrelated input".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Recheck the resource-view invariants after decoding an untrusted action
 /// surface. A view with a mount must carry that action in the same atomic
 /// publication/page so the broker can prove the binding before exposing it.
@@ -1044,6 +1092,10 @@ fn validate_resource_view_descriptors(actions: &[PublishedAction]) -> Result<(),
                     "at most one resource view may be primary".into(),
                 ));
             }
+        }
+
+        if let Some(range) = &view.range {
+            validate_resource_range_binding(actions, action, range)?;
         }
 
         let Some(mount) = &view.mount else {
@@ -2390,6 +2442,13 @@ fn write_directory_descriptor(
         out.set_description(view.description.as_deref().unwrap_or(""));
         out.set_open_action(&view.open_action);
         out.set_primary(view.primary);
+        if let Some(range) = &view.range {
+            let mut range_out = out.reborrow().init_range();
+            range_out.set_action(&range.action);
+            range_out.set_start_param(&range.start_param);
+            range_out.set_end_param(&range.end_param);
+            range_out.set_unit_param(&range.unit_param);
+        }
         if let Some(mount) = &view.mount {
             let mut out = out.init_mount();
             out.set_action(&mount.action);
@@ -7461,6 +7520,19 @@ impl channel_handle::Server for CapnpChannelHandle {
                             description: (!description.is_empty()).then_some(description),
                             open_action: view.get_open_action()?.to_str()?.to_owned(),
                             primary: view.get_primary(),
+                            range: view
+                                .has_range()
+                                .then(|| view.get_range())
+                                .transpose()?
+                                .map(|range| {
+                                    Ok::<_, capnp::Error>(tilo_actions::ResourceViewRangeSpec {
+                                        action: range.get_action()?.to_str()?.to_owned(),
+                                        start_param: range.get_start_param()?.to_str()?.to_owned(),
+                                        end_param: range.get_end_param()?.to_str()?.to_owned(),
+                                        unit_param: range.get_unit_param()?.to_str()?.to_owned(),
+                                    })
+                                })
+                                .transpose()?,
                             mount: view
                                 .has_mount()
                                 .then(|| view.get_mount())
@@ -9070,6 +9142,15 @@ fn published_directory_action(
             description: view.description.clone(),
             open_action: view.open_action.clone(),
             primary: view.primary,
+            range: view
+                .range
+                .as_ref()
+                .map(|range| tilo_actions::ResourceViewRangeSpec {
+                    action: range.action.clone(),
+                    start_param: range.start_param.clone(),
+                    end_param: range.end_param.clone(),
+                    unit_param: range.unit_param.clone(),
+                }),
             mount: view
                 .mount
                 .as_ref()
@@ -16022,6 +16103,7 @@ mod resource_view_tests {
                 description: None,
                 open_action: action.into(),
                 primary,
+                range: None,
                 mount: Some(tilo_actions::ResourceViewMountSpec::new(
                     action,
                     "slot_capability",
@@ -16055,6 +16137,22 @@ mod resource_view_tests {
             .unwrap()
             .view_param = "slot_capability".into();
         assert!(validate_resource_view_descriptors(std::slice::from_ref(&invalid_mount)).is_err());
+
+        let mut ranged = editor.clone();
+        ranged.view.as_mut().unwrap().range =
+            Some(tilo_actions::ResourceViewRangeSpec::new("show-range"));
+        let mut target = editor.clone();
+        target.action = "show-range".into();
+        target.view = None;
+        target.params = vec![
+            tilo_actions::ActionParam::required("start", tilo_actions::ParamType::Integer, "Start"),
+            tilo_actions::ActionParam::required("end", tilo_actions::ParamType::Integer, "End"),
+            tilo_actions::ActionParam::required("unit", tilo_actions::ParamType::Text, "Unit"),
+        ];
+        assert!(validate_resource_view_descriptors(&[ranged.clone(), target.clone()]).is_ok());
+        assert!(validate_resource_view_descriptors(std::slice::from_ref(&ranged)).is_err());
+        target.operation_kind = tilo_actions::OperationKind::Document;
+        assert!(validate_resource_view_descriptors(&[ranged, target]).is_err());
 
         let reader = test_published_view("read", "reader", true);
         assert!(validate_resource_view_descriptors(&[editor, reader]).is_err());

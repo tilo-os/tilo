@@ -55,9 +55,10 @@ journey still need manual validation before release.
 
 ## Remaining integration boundaries
 
-External browser links to Tilo resources also require a deployed, authenticated browser
-resource resolver. `ResourceRef` alone contains neither a public URL nor an access
-capability; this increment does not mint public links.
+The runtime now ships authenticated existing-admission browser link routing (details
+below). Native Chat chips still need host-provided source route metadata and shared
+identity account-picker integration. `ResourceRef` alone conveys no access capability;
+resource navigation links never grant admission.
 
 ## Compatibility research (2026-10-05)
 
@@ -108,16 +109,37 @@ Only explicit `ResourceViewSpec` navigation declarations qualify: read queries w
 message views through its existing navigation effects; opening a voice channel is
 excluded because it would join a call. Cancellation, disconnect, changed connection,
 missing views and refused invocations clean up the provisional mount. Record waits
-are cancellable and reject when leaving the peer. Ranges are refused until a
-range-aware view exists, rather than silently opening the wrong position.
+are cancellable and reject when leaving the peer.
 
-Remaining precise blockers to clickable external resource links: Chat's legacy
-`ResourceRef` does not carry the source record provider or an authenticated host/room
-locator; there is no canonical deployed browser link envelope/bootstrap that resolves
-those and calls this API. Joining already uses `tilo-browser-peer::invite` with
-root/device certificates and governed room admission. The new API reuses that authority
-and adds no persistent grant. Joined desktop topology has a separate existing-record
-restriction; this path uses the already-supported standalone browser mount.
+A resource view can declare a `ResourceViewRangeSpec`: a separate view action and
+explicit integer start/end plus text unit parameters. The declaration survives both
+the JSON catalogue and Cap'n Proto publication; the broker rechecks its binding.
+`Chars` and `Bytes` retain the reference's unit. Unsupported, backwards, unsafe or
+stale ranges fail instead of silently opening the whole resource. Chat message views
+publish `reveal-message-range`; the current message validates Unicode boundaries,
+then the existing read-only rich-text editor highlights that exact range. The highlight
+is local and disappears when the source text changes. Other apps must declare their
+own supported range view; this change does not claim they all do.
+
+The certified peer's `resourceLink(page, reference, provider, action)` creates the
+versioned browser link only after fresh authorized lookup. Its fragment carries the
+HTTPS host origin, room, host device key, exact source provider, kind/id, optional
+span and declared view action. It carries no invitation, account key, bearer grant or
+caller-supplied label. `resource.html` opens the standalone resource after an explicit
+Open, using the recipient's existing browser identity profile and certificate. A
+missing certificate is refused without pairing or renewal; current host/room/device
+binding and permissions are checked before opening. Leave aborts pending navigation,
+closes the app and releases the peer/device key. This is the runtime's shipped browser
+entry point, not a newly deployed service.
+
+Remaining integration: native Chat's legacy `ResourceRef` still does not carry the
+source provider or host/room locator. Browser peers with the admitted source can mint
+and open actual links, but the native Chat resource chip's Copy/Open link path needs
+host-provided route metadata. The browser entry currently asks for the recipient's
+existing public identity key; account-picker integration belongs to the shared identity
+flow. New admission continues through the existing governed invitation flow, never
+through this navigation address. Physical browser/native cross-device acceptance and
+hosting distribution are unproven here. No access grant or deployment is added.
 
 The existing browser-peer HTTPS fixture
 `the_owner_admits_and_removes_a_different_person_over_https` also passes on the remote

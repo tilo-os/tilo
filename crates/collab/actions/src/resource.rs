@@ -316,6 +316,28 @@ impl ResourceViewMountSpec {
     }
 }
 
+/// Explicit range-navigation binding. Offsets retain the reference's Chars or
+/// Bytes unit; the app validates them against its current text before moving.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceViewRangeSpec {
+    pub action: String,
+    pub start_param: String,
+    pub end_param: String,
+    pub unit_param: String,
+}
+
+impl ResourceViewRangeSpec {
+    pub fn new(action: impl Into<String>) -> Self {
+        Self {
+            action: action.into(),
+            start_param: "start".into(),
+            end_param: "end".into(),
+            unit_param: "unit".into(),
+        }
+    }
+}
+
 /// An explicit presentation of a resource, separate from the actions used to
 /// open or mount it.
 ///
@@ -331,6 +353,8 @@ pub struct ResourceViewSpec {
     pub open_action: String,
     pub primary: bool,
     pub mount: Option<ResourceViewMountSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<ResourceViewRangeSpec>,
 }
 
 impl ResourceViewSpec {
@@ -346,6 +370,7 @@ impl ResourceViewSpec {
             open_action: open_action.into(),
             primary: false,
             mount: None,
+            range: None,
         }
     }
 
@@ -364,6 +389,12 @@ impl ResourceViewSpec {
     #[must_use]
     pub fn with_mount(mut self, mount: ResourceViewMountSpec) -> Self {
         self.mount = Some(mount);
+        self
+    }
+
+    #[must_use]
+    pub fn with_range(mut self, range: ResourceViewRangeSpec) -> Self {
+        self.range = Some(range);
         self
     }
 
@@ -406,6 +437,47 @@ impl ResourceViewSpec {
                         ));
                     }
                 }
+            }
+        }
+        if let Some(range) = &self.range {
+            let names = [&range.start_param, &range.end_param, &range.unit_param];
+            if names.iter().any(|name| name.trim().is_empty())
+                || names[0] == names[1]
+                || names[0] == names[2]
+                || names[1] == names[2]
+            {
+                errors.push("range parameter names must be non-empty and distinct".into());
+            }
+            if let Some(action) = resource.actions.iter().find(|a| a.id == range.action) {
+                if action.kind != OperationKind::View
+                    || action.contract.confirmation != ConfirmationPolicy::None
+                {
+                    errors.push("range action must be a view without confirmation".into());
+                }
+                for (name, ty) in [
+                    (&range.start_param, ParamType::Integer),
+                    (&range.end_param, ParamType::Integer),
+                    (&range.unit_param, ParamType::Text),
+                ] {
+                    if !action
+                        .params()
+                        .iter()
+                        .any(|p| p.name.as_ref() == name && p.ty == ty)
+                    {
+                        errors.push(format!(
+                            "range parameter `{name}` has the wrong type or is missing"
+                        ));
+                    }
+                }
+                if action
+                    .params()
+                    .iter()
+                    .any(|p| p.required && !names.iter().any(|n| p.name.as_ref() == *n))
+                {
+                    errors.push("range action requires unrelated input".into());
+                }
+            } else {
+                errors.push("range action is not exported".into());
             }
         }
         errors

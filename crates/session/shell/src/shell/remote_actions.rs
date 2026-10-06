@@ -296,6 +296,7 @@ mod tests {
                 description: None,
                 open_action: "open".into(),
                 primary: true,
+                range: None,
                 mount: None,
             };
             open.view = Some(view.clone());

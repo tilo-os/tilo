@@ -103,6 +103,7 @@ compute_opt=--no-wasm-opt
 bash "$repo/crates/browser/tilo-browser-compute/scripts/build.sh" "$out" --profile "$profile" "$compute_opt"
 find "$crate/web" -maxdepth 1 -name '*.mjs' ! -name '*.test.mjs' -exec cp {} "$out/" \;
 cp "$crate/web/index.html" "$out/index.html"
+cp "$crate/web/resource.html" "$out/resource.html"
 # The live plane's MoQ library is bundled from the published @moq/net pinned
 # in scripts/moq-browser/package-lock.json, never committed; this replaces
 # any local development copy just copied.

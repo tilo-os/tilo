@@ -130,7 +130,7 @@ test('package-primary resources mount the canonical existing record; ranges neve
     assert.deepEqual(steps, [['so.tilo.chat', ''], {app: 'so.tilo.chat', record: '@tilo:package-primary'}]);
     await assert.rejects(openResourceReference({reference: {...reference, span: {start: 1, end: 2, unit: 'Chars'}},
       provider: source, action: 'show', actions, current: () => true}), /range-aware/);
-    assert.equal(sent.length, 1);
+    assert.equal(sent.length, 2);
   } finally { actions.dispose(); }
 });
 
@@ -173,5 +173,43 @@ test('optional embedded-view metadata does not replace the declared ordinary ope
     assert.equal(await openResourceReference({reference, provider, action: 'show', actions,
       current: () => true, waitRecord: async () => {}, mount: async () => opened}), opened);
     assert.equal(invoked, 1);
+  } finally { actions.dispose(); }
+});
+
+test('range navigation retains units and invokes only the declared local range action', async () => {
+  const range = {action: 'range', start_param: 'start', end_param: 'end', unit_param: 'unit'};
+  const ranged = {...view, view: {...view.view, range}};
+  const target = {address: {...view.address, action: 'range'}, kind: 'View', input: 'None',
+    params: [{name: 'start', ty: 'integer', required: true}, {name: 'end', ty: 'integer', required: true},
+      {name: 'unit', ty: 'text', required: true}]};
+  for (const unit of ['Chars', 'Bytes']) {
+    const {actions} = endpoints(() => ({revision: 'r', rows: [{...row, action: ranged}, {...row, action: target}]}));
+    const calls = [];
+    try {
+      await openResourceReference({reference: {...reference, span: {start: 1, end: 3, unit}}, provider,
+        action: 'show', actions, current: () => true, waitRecord: async () => {},
+        mount: async () => ({actions: () => [ranged, target], cleanup: async () => {},
+          invokeAction: (...args) => { calls.push(args); return {state: 'completed'}; }})});
+      assert.deepEqual(calls, [[reference.id, 'range', {start: 1, end: 3, unit}]]);
+    } finally { actions.dispose(); }
+  }
+});
+
+test('invalid and changed range contracts refuse navigation and clean provisional mounts', async () => {
+  const range = {action: 'range', start_param: 'start', end_param: 'end', unit_param: 'unit'};
+  const ranged = {...view, view: {...view.view, range}};
+  const {actions} = endpoints(() => ({revision: 'r', rows: [{...row, action: ranged}]}));
+  let cleaned = 0;
+  try {
+    for (const span of [{start: -1, end: 2, unit: 'Chars'}, {start: 3, end: 2, unit: 'Bytes'},
+      {start: 0, end: Number.MAX_SAFE_INTEGER + 1, unit: 'Chars'}, {start: 0, end: 1, unit: 'Pixels'}]) {
+      await assert.rejects(openResourceReference({reference: {...reference, span}, provider,
+        action: 'show', actions, current: () => true}), /Invalid.*range/);
+    }
+    await assert.rejects(openResourceReference({reference: {...reference, span: {start: 0, end: 1, unit: 'Chars'}},
+      provider, action: 'show', actions, current: () => true, waitRecord: async () => {},
+      mount: async () => ({actions: () => [{...ranged, view: {...view.view, range: {...range, action: 'other'}}}],
+        cleanup: async () => { cleaned++; }, invokeAction: () => assert.fail('changed range must not run')})}), /range view changed/);
+    assert.equal(cleaned, 1);
   } finally { actions.dispose(); }
 });

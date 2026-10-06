@@ -905,6 +905,15 @@ impl App {
                     description: view.description.clone(),
                     open_action: view.open_action.clone(),
                     primary: view.primary,
+                    range: view
+                        .range
+                        .as_ref()
+                        .map(|range| runtime_collab::ExportedViewRange {
+                            action: range.action.clone(),
+                            start_param: range.start_param.clone(),
+                            end_param: range.end_param.clone(),
+                            unit_param: range.unit_param.clone(),
+                        }),
                     mount: view
                         .mount
                         .as_ref()

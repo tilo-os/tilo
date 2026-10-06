@@ -1389,6 +1389,13 @@ impl ChannelHandle {
                     out.set_description(view.description.as_deref().unwrap_or(""));
                     out.set_open_action(&view.open_action);
                     out.set_primary(view.primary);
+                    if let Some(range) = &view.range {
+                        let mut range_out = out.reborrow().init_range();
+                        range_out.set_action(&range.action);
+                        range_out.set_start_param(&range.start_param);
+                        range_out.set_end_param(&range.end_param);
+                        range_out.set_unit_param(&range.unit_param);
+                    }
                     if let Some(mount) = &view.mount {
                         let mut out = out.init_mount();
                         out.set_action(&mount.action);
@@ -2357,6 +2364,15 @@ pub struct ExportedView {
     pub open_action: String,
     pub primary: bool,
     pub mount: Option<ExportedViewMount>,
+    pub range: Option<ExportedViewRange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportedViewRange {
+    pub action: String,
+    pub start_param: String,
+    pub end_param: String,
+    pub unit_param: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2482,6 +2498,19 @@ fn decode_exported_action(
                 description: (!description.is_empty()).then_some(description),
                 open_action: capnp_text(view.get_open_action()?)?,
                 primary: view.get_primary(),
+                range: view
+                    .has_range()
+                    .then(|| view.get_range())
+                    .transpose()?
+                    .map(|range| {
+                        Ok::<_, capnp::Error>(ExportedViewRange {
+                            action: capnp_text(range.get_action()?)?,
+                            start_param: capnp_text(range.get_start_param()?)?,
+                            end_param: capnp_text(range.get_end_param()?)?,
+                            unit_param: capnp_text(range.get_unit_param()?)?,
+                        })
+                    })
+                    .transpose()?,
                 mount: view
                     .has_mount()
                     .then(|| view.get_mount())
@@ -3531,6 +3560,11 @@ mod tests {
                 view.set_description("Edit this note");
                 view.set_open_action("show-editor");
                 view.set_primary(true);
+                let mut range = view.reborrow().init_range();
+                range.set_action("show-range");
+                range.set_start_param("start");
+                range.set_end_param("end");
+                range.set_unit_param("unit");
                 let mut mount = view.init_mount();
                 mount.set_action("mount-editor");
                 mount.set_capability_param("slot_capability");
@@ -3548,6 +3582,12 @@ mod tests {
                     description: Some("Edit this note".into()),
                     open_action: "show-editor".into(),
                     primary: true,
+                    range: Some(ExportedViewRange {
+                        action: "show-range".into(),
+                        start_param: "start".into(),
+                        end_param: "end".into(),
+                        unit_param: "unit".into()
+                    }),
                     mount: Some(ExportedViewMount {
                         action: "mount-editor".into(),
                         capability_param: "slot_capability".into(),

@@ -50,7 +50,7 @@ use tilo_clock::unix_now_i64;
 
 use tilo_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource, ResourceViewSpec,
+    OperationKind, Resource, ResourceViewRangeSpec, ResourceViewSpec,
 };
 use tilo_document::RichTextAction;
 use ui::tilo_resource::Effect as _;
@@ -1200,7 +1200,20 @@ fn publish_message(m: &MessageResource) -> Resource {
         m.label.clone(),
     )
     .with_action(reveal())
-    .with_view(ResourceViewSpec::new("message", "Message", "reveal-message").with_primary(true))
+    .with_view(
+        ResourceViewSpec::new("message", "Message", "reveal-message")
+            .with_primary(true)
+            .with_range(ResourceViewRangeSpec::new("reveal-message-range")),
+    )
+    .with_action(
+        ChatEffect::RevealMessageRange {
+            message: m.id.clone(),
+            start: 0,
+            end: 0,
+            unit: "Chars".into(),
+        }
+        .bound_asking(&["start", "end", "unit"]),
+    )
     .with_action(
         ChatEffect::ReadMessage {
             message: m.id.clone(),
