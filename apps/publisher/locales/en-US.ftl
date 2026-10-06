@@ -9,6 +9,7 @@ publisher-copy-proof = Copy proof line
 publisher-copy-secret = Copy key for CI
 publisher-check-status = Check application
 publisher-namespace-heading = Namespaces
+publisher-namespace-help = Claim the domains and forge accounts whose apps you publish.
 publisher-domain-label = Domain
 publisher-domain-help = Proved with a DNS TXT record or a .well-known file on the domain.
 publisher-domain-placeholder = example.com

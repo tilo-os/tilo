@@ -601,7 +601,16 @@ fn card(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         .with_child(Box::new(Welcome(Box::new(ui::widget::Card::new(
             Box::new(body),
         )))));
-    super::layout::width(Box::new(card), |metrics| metrics.panel_width_list)
+    super::layout::themed(Box::new(card), |theme, style| {
+        // A cap is a comfortable wide measure, never a minimum wider than
+        // the space between the rail and the window's trailing gutter.
+        style.size.width = ui::taffy::Dimension::auto();
+        style.min_size.width = ui::taffy::Dimension::length(0.0);
+        style.max_size.width = ui::taffy::Dimension::length(theme.tokens.metrics.panel_width_list);
+        style.flex_basis = ui::taffy::Dimension::length(0.0);
+        style.flex_grow = 1.0;
+        style.flex_shrink = 1.0;
+    })
 }
 
 /// The card centred over the canvas: inset by the rail, the header and
@@ -633,7 +642,7 @@ fn placed(card: Element, sidebar: bool) -> Element {
                     style.padding.right = ui::taffy::LengthPercentage::length(if sidebar {
                         theme.tokens.metrics.inspector_width
                     } else {
-                        0.0
+                        theme.tokens.spacing.s4
                     });
                     style.padding.top =
                         ui::taffy::LengthPercentage::length(theme.tokens.metrics.header_height);

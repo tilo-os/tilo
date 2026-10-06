@@ -81,6 +81,26 @@ fn compact_and_large_text_layouts_keep_full_disjoint_touch_targets() {
     }
 }
 
+#[test]
+fn resource_selected_timer_pane_keeps_navigation_in_sync() {
+    let mut app = TestApp::<ClocksShell>::capture_at(Some("timers"), (1280, 800)).unwrap();
+    let harness = app.harness();
+    let nodes = harness.a11y_nodes();
+    for (label, selected) in [("Timers", true), ("World", false)] {
+        let row = nodes
+            .iter()
+            .find(|(_, node)| {
+                node.label() == Some(label) && node.role() == ui::accesskit::Role::TreeItem
+            })
+            .unwrap_or_else(|| panic!("the {label} destination is published"));
+        assert_eq!(row.1.is_selected(), Some(selected), "{label} selection");
+    }
+    assert!(
+        harness.targets()["clocks.timer.custom.add"].y0 < 800.0,
+        "the timer setup remains reachable in the desktop viewport"
+    );
+}
+
 /// What the shell presents of Clocks' live activity now; an ended one is
 /// shown as inactive.
 fn snapshot() -> ShellSnapshot {
