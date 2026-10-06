@@ -1309,6 +1309,14 @@ Status after integrating the parallel branches (`feat/browser-runtime`).
 
 ## Verification
 
+The runtime and desktop browser cdylibs reserve a 16 MiB linear stack, matching
+the native thread-stack floor in `.cargo/config.toml`. Their wasm32 build scripts
+apply the policy at each final link; a runtime rlib cannot pass link arguments
+to the desktop cdylib. Unoptimized nested app/layout construction can exceed
+Rust's default 1 MiB before the first frame. This does not raise the WASM memory
+maximum or the renderer's GPU limits. The separate compute module retains its
+own private-memory ceiling and release-size budget.
+
 Keep these green on every change touching the portable toolkit:
 
 ```sh
