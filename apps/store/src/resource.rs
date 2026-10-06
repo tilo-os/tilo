@@ -849,13 +849,7 @@ mod tests {
         use ui::widget::Collaborative;
         let _offline = offline();
         let mut app = TestApp::<StoreShell>::new().unwrap();
-        tilo_test_env::wait_until("the ordinary catalogue worker settles", || {
-            app.settle();
-            app.with_surface::<StoreApp, _>(|surface| {
-                surface.inspect_catalogue(None).unwrap()["worker_busy"] == false
-            })
-            .unwrap()
-        });
+        settle_catalogue_worker(&mut app);
         let selected = crate::fixture::fixture_catalog()
             .into_iter()
             .find(|item| {
@@ -869,8 +863,18 @@ mod tests {
             surface.set_items(vec![selected]);
         })
         .unwrap();
+        app.settle();
+        let row = format!("app:{id}");
+        let contract = find(&app.harness().resources(), &row)
+            .unwrap()
+            .actions
+            .into_iter()
+            .find(|action| action.id == "flatpak-open")
+            .unwrap()
+            .contract;
+        assert_eq!(contract.result, ui::tilo_actions::ResultSpec::Job);
         let invocation = app
-            .start_effect(&StoreEffect::FlatpakOpen { app: id.clone() })
+            .start_effect_on(&row, &StoreEffect::FlatpakOpen { app: id.clone() })
             .unwrap();
         let mut request = None;
         tilo_test_env::wait_until("the original channel carries the admitted launch", || {
@@ -933,13 +937,49 @@ mod tests {
             });
         })
         .unwrap();
+        assert_valid_launch_job_completion(&mut app, invocation, &contract);
+    }
+
+    fn settle_catalogue_worker(app: &mut TestApp<StoreShell>) {
+        tilo_test_env::wait_until("the ordinary catalogue worker settles", || {
+            app.settle();
+            app.with_surface::<StoreApp, _>(|surface| {
+                surface.inspect_catalogue(None).unwrap()["worker_busy"] == false
+            })
+            .unwrap()
+        });
+    }
+
+    fn assert_valid_launch_job_completion(
+        app: &mut TestApp<StoreShell>,
+        invocation: ui::tilo_actions::InvocationId,
+        contract: &ui::tilo_actions::ActionContract,
+    ) {
         assert!(
             app.harness()
                 .wait_until(ui::time::Duration::from_secs(5), |harness| {
-                    harness.job_updates(invocation).iter().any(|update| {
-                        matches!(update, ui::tilo_actions::InvocationUpdate::Succeeded { .. })
-                    })
+                    harness
+                        .job_updates(invocation)
+                        .iter()
+                        .any(ui::tilo_actions::InvocationUpdate::is_terminal)
                 })
+        );
+        let updates = app.harness().job_updates(invocation);
+        let output = updates
+            .iter()
+            .find_map(|update| match update {
+                ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } => Some(output),
+                _ => None,
+            })
+            .expect("the declared launch succeeds only after the original host receipt");
+        contract
+            .result
+            .validate(output)
+            .expect("the actual published job accepts its terminal output");
+        assert!(output.value.is_none() && output.resources.is_empty());
+        assert_eq!(
+            app.with_surface::<StoreApp, _>(|surface| surface.status_line().to_owned()),
+            Some(ui::i18n!("store-launch-opened").as_str().to_owned())
         );
     }
 
