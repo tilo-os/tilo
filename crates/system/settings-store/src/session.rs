@@ -410,6 +410,51 @@ impl SettingsSource for SessionSettings {
         self.update_section_if(name, Some(expected), values)
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "canonical state and copy locks cover atomic display comparison, persistence and publication"
+    )]
+    fn compare_display_update(
+        &self,
+        update: crate::DisplayUpdate,
+    ) -> std::io::Result<ConditionalUpdate> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let _lock = lock_copy(&self.paths.copy)?;
+        self.take_in_copy(&mut state)?;
+        if !update.matches(&state.projection()) {
+            return Ok(ConditionalUpdate::Superseded);
+        }
+        let sections = update.sections();
+        if sections.iter().any(|(section, values)| {
+            values.keys().any(|leaf| {
+                classify(&format!("tilo.{section}.{leaf}")) == Some(SettingScope::Personal)
+            })
+        }) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "display intent must stay in one device record",
+            ));
+        }
+        let previous = state.device.clone();
+        let mut touched = Touched::default();
+        for (section, values) in sections {
+            for (leaf, value) in values {
+                touched = touched.or(state.put(section, &leaf, value));
+            }
+        }
+        if let Err(error) = persist(&self.paths, &state, touched) {
+            state.device = previous;
+            return Err(error);
+        }
+        if touched.device {
+            self.publish_committed(&state);
+        }
+        Ok(match write_copy(&self.paths, &mut state) {
+            Ok(()) => ConditionalUpdate::Stored,
+            Err(error) => ConditionalUpdate::StoredWithCopyRepair(error),
+        })
+    }
+
     fn revision(&self) -> u64 {
         self.refresh();
         self.revision.load(Ordering::Acquire)
@@ -465,6 +510,97 @@ fn lock_copy(path: &Path) -> std::io::Result<tilo_files::Lock> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn display_update_commits_transaction_and_profiles_in_one_device_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = open(dir.path());
+        let update = crate::DisplayUpdate::new(
+            &session.load(),
+            object(json!({"id": 7, "state": "confirmed"})),
+            Some(object(json!({"profiles": {"panel": {"outputs": {}}}}))),
+        );
+        assert!(matches!(
+            session.compare_display_update(update).unwrap(),
+            ConditionalUpdate::Stored
+        ));
+        let document = session.load();
+        assert_eq!(document["display_transaction"]["id"], 7);
+        assert_eq!(
+            document["display_profiles"]["profiles"]["panel"]["outputs"],
+            json!({})
+        );
+        assert_eq!(
+            Value::Object(load_at(&session.paths.device)),
+            Value::Object(document.clone())
+        );
+        let reopened = SessionSettings::open(session.paths).unwrap();
+        assert_eq!(reopened.load(), document);
+    }
+
+    #[test]
+    fn display_update_refuses_a_new_external_profile_without_overwriting_either_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = open(dir.path());
+        let update = crate::DisplayUpdate::new(
+            &session.load(),
+            object(json!({"id": 7})),
+            Some(object(json!({"profiles": {}}))),
+        );
+        crate::update_section_at(
+            &session.paths.copy,
+            "display_profiles",
+            object(json!({"external_revision": 8})),
+        )
+        .unwrap();
+        assert!(matches!(
+            session.compare_display_update(update).unwrap(),
+            ConditionalUpdate::Superseded
+        ));
+        let document = session.load();
+        assert!(!document.contains_key("display_transaction"));
+        assert_eq!(document["display_profiles"]["external_revision"], 8);
+    }
+
+    #[test]
+    fn display_update_record_failure_rolls_back_both_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = open(dir.path());
+        let before = session.load();
+        let update = crate::DisplayUpdate::new(
+            &before,
+            object(json!({"id": 7})),
+            Some(object(json!({"profiles": {}}))),
+        );
+        std::fs::create_dir_all(session.paths.device.parent().unwrap()).unwrap();
+        std::fs::create_dir(&session.paths.device).unwrap();
+        assert!(session.compare_display_update(update).is_err());
+        assert_eq!(session.load(), before);
+        assert_eq!(load_at(&session.paths.copy), before);
+    }
+
+    #[test]
+    fn display_update_copy_failure_reports_durable_both_sections_and_repairs_later() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = open(dir.path());
+        let update = crate::DisplayUpdate::new(
+            &session.load(),
+            object(json!({"id": 7})),
+            Some(object(json!({"profiles": {}}))),
+        );
+        std::fs::remove_file(&session.paths.copy).unwrap();
+        std::fs::create_dir(&session.paths.copy).unwrap();
+        assert!(matches!(
+            session.compare_display_update(update).unwrap(),
+            ConditionalUpdate::StoredWithCopyRepair(_)
+        ));
+        let durable = load_at(&session.paths.device);
+        assert_eq!(durable["display_transaction"]["id"], 7);
+        assert_eq!(durable["display_profiles"]["profiles"], json!({}));
+        std::fs::remove_dir(&session.paths.copy).unwrap();
+        assert_eq!(session.load(), durable);
+        assert_eq!(load_at(&session.paths.copy), durable);
+    }
 
     #[test]
     fn every_change_rings_its_readers_and_nothing_else_does() {

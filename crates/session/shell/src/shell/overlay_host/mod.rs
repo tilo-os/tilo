@@ -16536,6 +16536,7 @@ impl Widget for ShellOverlayHost {
             return onboarding_dirty || dialog_dirty;
         }
         let pairing_dirty = self.pairing.pump(doc, path);
+        let display_storage_dirty = self.projection_overlay.poll_storage();
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
         self.tick_shortcut_triggers();
@@ -16687,6 +16688,7 @@ impl Widget for ShellOverlayHost {
             chrome.borrow().tree_mut().commit_room_change();
         }
         content_dirty
+            || display_storage_dirty
             || pairing_dirty
             || close_dirty
             || palette_dirty
