@@ -1,24 +1,24 @@
 {
   "schema": 1,
   "execution": "headless production Tilo compositor, x86_64 software graphics",
-  "completed_at_utc": "2026-10-06T01:17:31.040308+00:00",
+  "completed_at_utc": "2026-10-06T01:56:19.895845+00:00",
   "production_binaries": {
-    "shell": "90b0127096189ccdaf9f30d359d124f4581a85725867d5552481c551a6543de4",
-    "tilo-launcher": "adc3e6d3bedf3412e4a5fdf80cace09e68d53f6830564b6d959b1d2f38d8fb46"
+    "shell": "af68f633d9c37e61a2a0fd59a5406e26612b3078db990d671bb000c994c0ac85",
+    "tilo-launcher": "226bb1606bc0e56f971739ef39d9d84556904edd7cc25f0a8b39531bb3ab6e90"
   },
   "apk_sha256": "1928e65ced8cbe78be2ff3cb4c321e9e75d138e8e30ea1368fbb772a86827d1d",
-  "runtime_receipt_sha256": "804b2c280485ee16b8051a45b43c4a3389260d90ebed78188b9f0dc0b34908ea",
+  "runtime_receipt_sha256": "839ed7e5428eb315f1e48b00b8e89435294290ba7b275f009a71efe502704a56",
   "evidence": [
     {
       "step": "calculation",
       "expression": "123+456",
       "answer": "579",
-      "png_sha256": "cf99257475d88561371ec9eb96d2ffe72afbf4b997ac69defdb48cc633196227",
+      "png_sha256": "a20bd369854e4ebd860431c60fc7ba389845a3e93d09797c20596722f3548708",
       "frame": {
         "surface_id": 4294967333,
         "app_id": "so.tilo.android.qualify.h1928e65ced8cbe78be2ff3cb4c321e9e75d138e8e30ea1368fbb772a86827d1d",
         "sheets": [],
-        "frame_seq": 32,
+        "frame_seq": 24,
         "last_error": null,
         "rect": {
           "x": 265.99998474121094,
@@ -33,13 +33,13 @@
         "presented": true,
         "opening": false
       },
-      "room": "a89df760-b2b3-4ef9-8c3c-280920911f1e"
+      "room": "b7099f77-2bd3-463a-aba2-58a2d18760c3"
     },
     {
       "step": "reopened",
       "expression": "123+456",
       "answer": "579",
-      "png_sha256": "4942adfae53bdbc00deaaace3ff6f8a39cae67bc5022dea39e8c04d1a95ca6ec",
+      "png_sha256": "b40bc4f2533f234853d494e21011ed4c59bb935d291d0139b81971d2cbfa6edd",
       "frame": {
         "surface_id": 8589934629,
         "app_id": "so.tilo.android.qualify.h1928e65ced8cbe78be2ff3cb4c321e9e75d138e8e30ea1368fbb772a86827d1d",
@@ -59,18 +59,18 @@
         "presented": true,
         "opening": false
       },
-      "room": "a89df760-b2b3-4ef9-8c3c-280920911f1e"
+      "room": "b7099f77-2bd3-463a-aba2-58a2d18760c3"
     },
     {
       "step": "second-workspace-calculation",
       "expression": "234+567",
       "answer": "801",
-      "png_sha256": "3920f2ca4c7ba424ae04b7bfa216424e40fcb28909f36747bed305a748d0b27f",
+      "png_sha256": "5c8b135a0ba5078c671327bc29b585a22a82b485227da35257549d0ff52831a0",
       "frame": {
         "surface_id": 12884901925,
         "app_id": "so.tilo.android.qualify.h1928e65ced8cbe78be2ff3cb4c321e9e75d138e8e30ea1368fbb772a86827d1d",
         "sheets": [],
-        "frame_seq": 12,
+        "frame_seq": 6,
         "last_error": null,
         "rect": {
           "x": 265.99998474121094,
@@ -85,13 +85,13 @@
         "presented": true,
         "opening": false
       },
-      "room": "5aa01319-f5a1-49bb-87d1-e07b464c8ad0"
+      "room": "ef8eacc9-5e32-4df4-9739-275a3a4979a7"
     },
     {
       "step": "first-workspace-restored",
       "expression": "123+456",
       "answer": "579",
-      "png_sha256": "3b5354745bbd3d00396d870879073bd02afd9b26c4f70eea2abf6693583838cf",
+      "png_sha256": "d12c1a7729497f2b3ddb1034ab408a59d4e85ca71abe7c7c695ffa91988f054b",
       "frame": {
         "surface_id": 17179869221,
         "app_id": "so.tilo.android.qualify.h1928e65ced8cbe78be2ff3cb4c321e9e75d138e8e30ea1368fbb772a86827d1d",
@@ -111,11 +111,11 @@
         "presented": true,
         "opening": false
       },
-      "room": "a89df760-b2b3-4ef9-8c3c-280920911f1e"
+      "room": "b7099f77-2bd3-463a-aba2-58a2d18760c3"
     }
   ],
-  "first_room": "a89df760-b2b3-4ef9-8c3c-280920911f1e",
-  "second_room": "5aa01319-f5a1-49bb-87d1-e07b464c8ad0",
+  "first_room": "b7099f77-2bd3-463a-aba2-58a2d18760c3",
+  "second_room": "ef8eacc9-5e32-4df4-9739-275a3a4979a7",
   "confinement": {
     "file_read": "denied",
     "file_write": "denied",
