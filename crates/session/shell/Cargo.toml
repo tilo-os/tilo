@@ -364,6 +364,7 @@ test = true
 workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+signal-hook-registry = "1.4.8"
 # Tilo owns the producer side of portal ScreenCast streams.  `pipewire-rs`
 # talks to the session daemon directly; sandboxed apps only receive a remote
 # after the portal has granted a session.
