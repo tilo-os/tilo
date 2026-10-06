@@ -325,13 +325,29 @@ pairing, clipboard/workspace trust or automatic capture authorization.
 
 A targeted audit found no existing Cast-specific trust authority in Tilo. Full
 receiver authentication consequently needs a separate explicit authority/policy
-review before production enablement. No new roots, trust files, access grants or
-real-device pairing are introduced by the transport fix.
+review before production enablement. This is an internal protocol architecture
+review, not an operating-system trust-setting operation or an automatic approval
+review rejection. Source implementation and isolated tests need no machine trust
+settings change. No new roots, trust files, access grants or real-device pairing
+are introduced by the transport fix.
+
+The proposed anchors would be private constants inside the Cast DeviceAuth
+verifier only: Cast/Eureka for receiver identity, Cast CRL for authenticated
+revocation bundles. They would not enter OS, browser, user or Tilo collaborator
+trust stores. They would not create pairing records, pins, accounts, ACLs, capture
+consent or persistent access grants. Requiring DeviceAuth narrows the currently
+accepted selected-receiver set; manufacturer identity is not proof of user
+ownership or authorization to capture.
 
 The concrete public authorities proposed for that review are from Open Screen
 revision `1c526caf732881bd0aa1ab9479c36861bb225ba6` (BSD-3-Clause). Fingerprints
 below hash certificate DER, not C++ source. Only fingerprints/provenance were
 recorded; certificate bytes are not installed or added to the production build.
+Each proposed root is sourced from Google's Open Screen repository over ordinary
+certificate-validated HTTPS at that immutable revision, matched to its trust-store
+includes and pinned by DER hash. This establishes the reviewed repository source;
+it is not an independently verified Google-signed trust bundle or Git commit
+signature. Preserve the upstream BSD-3-Clause license if those bytes are embedded.
 
 | Proposed purpose | Certificate DER SHA-256 |
 | --- | --- |
@@ -365,7 +381,19 @@ above rather than inheriting those permissive compatibility defaults.
 Proposed Tilo policy is a SHA-256 challenge proof and authenticated revocation
 validation with a defined missing/stale-CRL failure policy. Legacy SHA-1 certificate
 chains and receivers require a documented compatibility decision, not silent
-fallback. Pin public authority bytes to a reviewed upstream revision, hashes and
+fallback. The conservative initial proposal accepts only an explicit
+RSASSA-PKCS1-v1_5/SHA-256 proof with RSA keys of at least 2048 bits, rejects SHA-1
+issuer signatures, and requires a current authentic CRL bundle. The trusted
+anchor's self-signature is not an issuer link. Reject missing, invalid, stale or
+revoked CRLs; a still-current authenticated in-memory cache may satisfy the check,
+without persistent trust records or unsolicited URL fetches. Reject audio-only
+policy OID `1.3.6.1.4.1.11129.2.5.2` anywhere in the verified path, including its
+anchor. This proposal would reject some legacy and uncertified software receivers.
+A future explicitly pinned/PIN-authorized software-receiver mode needs a separate
+trust label and review, not a claim of Google manufacturer authentication.
+None of these DeviceAuth policies are applied by this TLS transport patch.
+
+Pin public authority bytes to a reviewed upstream revision, hashes and
 license/provenance; no TOFU, arbitrary environment trust loader, ambient WebPKI
 substitution or second Cast/Spotify controller.
 
