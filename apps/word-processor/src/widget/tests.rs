@@ -721,6 +721,72 @@ fn open_hosted_toolbar_overflow(framed: &mut Framed<WordProcessorWidget>) {
     );
 }
 
+#[test]
+fn retained_toolbar_admits_edit_effects_and_transient_views() {
+    let (mut state, mut wp) = bound();
+    wp.model_mut()
+        .insert_str(&mut edits(&mut state.doc), "Native toolbar");
+    wp.model_mut().select_all(&state.doc);
+    let mut framed = mount(state, wp, 1000, 700);
+    assert!(!framed.mark_active_in_selection("strong"));
+    {
+        let driver = Framed::harness_mut(&mut framed);
+        let resource = driver
+            .resources()
+            .into_iter()
+            .find(|resource| resource.id.as_str() == "tilo.control:word.toolbar.bold")
+            .expect("the painted Bold control publishes its admitted effect");
+        assert_eq!(
+            resource.actions.first().expect("the invoke action").kind,
+            tilo_actions::OperationKind::Effect
+        );
+        driver
+            .invoke_action(
+                &tilo_actions::ActionAddress::new(resource.id.as_str(), "invoke"),
+                &serde_json::Map::new(),
+                false,
+                None,
+            )
+            .expect("the actual host admits and settles Bold");
+    }
+    assert!(
+        framed.mark_active_in_selection("strong"),
+        "the admitted effect dispatches the canonical strong mark"
+    );
+    let (was_visible, heads) = {
+        let (wp, state) = Framed::split(&mut framed);
+        (wp.view.ruler_visible, state.doc.get_heads())
+    };
+    {
+        let driver = Framed::harness_mut(&mut framed);
+        let resource = driver
+            .resources()
+            .into_iter()
+            .find(|resource| resource.id.as_str() == "tilo.control:word.toolbar.toggle-ruler")
+            .expect("the painted Ruler control publishes its admitted view");
+        assert_eq!(
+            resource.actions.first().expect("the invoke action").kind,
+            tilo_actions::OperationKind::View
+        );
+        driver
+            .invoke_action(
+                &tilo_actions::ActionAddress::new(resource.id.as_str(), "invoke"),
+                &serde_json::Map::new(),
+                false,
+                None,
+            )
+            .expect("the actual host admits and settles Ruler");
+    }
+    let (wp, state) = Framed::split(&mut framed);
+    assert_eq!(wp.view.ruler_visible, !was_visible);
+    assert_eq!(
+        state.doc.get_heads(),
+        heads,
+        "Ruler never edits the document"
+    );
+    assert!(wp.mark_active_in_selection("strong"));
+}
+
 /// The commands the toolbar offers this frame, in order.
 fn tool_actions(wp: &WordProcessorWidget) -> Vec<ToolAction> {
     wp.toolbar_entries()
