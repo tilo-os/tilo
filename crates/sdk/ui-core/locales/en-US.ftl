@@ -535,3 +535,5 @@ music-spotify-playlist-actions = Spotify playlist actions
 
 dictation-copy-transcript = Copy transcript
 dictation-discard-transcript = Discard transcript
+
+dropdown-no-matches = No matching choices
