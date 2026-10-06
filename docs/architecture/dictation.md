@@ -408,7 +408,9 @@ Settings → Accessibility exposes a shared, persisted dictation-language dropdo
 and the same semantic `SetDictationLanguage` action. Stable language codes are
 separate from localized labels; unknown saved values fall back to automatic
 detection. A session reads that preference when local consent is granted. The
-system microphone is the source selected by Sound settings; no second per-app
+continuity policy classifies the language as personal intent; no audio,
+transcript, microphone identity or microphone grant accompanies it. The system
+microphone is the source selected by Sound settings; no second per-app
 microphone preference or permission is introduced.
 
 While listening or finishing, the trusted local overlay shows the last 160
@@ -420,6 +422,11 @@ words are absent from prompt diagnostics. Finish commits corrected text once to
 the original selected range. Ordinary shared text editing and system undo/redo
 provide correction; spoken replacement commands and a personal dictionary are
 not yet implemented.
+
+Consent and recovery explanations wrap in the shared permission prompt at the
+selected text scale. Its height, buttons, trusted seal and accessible bounds
+follow the complete explanation. The shared caption Container and Text widgets
+own their background, themed inset and natural text height.
 
 ## Public multilingual and long-speech qualification
 

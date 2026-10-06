@@ -2796,6 +2796,8 @@ mod tests {
 
     #[test]
     fn driver_scene_setup_covers_the_catalogue_and_keeps_pending_invites_out_of_presence() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_UI_DEBUG", "1");
         // Phase `driver_scene_setup_covers_catalogue`.
         // Smoke for `scene_setup` — drive every named scene and verify it
         // returns Ok, then verify a fresh driver returns Err for an

@@ -5,7 +5,7 @@ use crate::compositor::dictation::{DictationError, DictationStatus, SessionId};
 use crate::shell::i18n::{t, t_args};
 use std::time::Instant;
 use ui::a11y::AccessNode;
-use ui::widget::{PermissionPrompt, PromptChoice, Text, Widget};
+use ui::widget::{Container, PermissionPrompt, PromptChoice, Text, Widget};
 use vello::kurbo::Rect;
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -35,7 +35,7 @@ pub(crate) struct DictationSurface {
     changed: bool,
     // Shared Text has no Debug/serialization surface; words stay in this
     // local overlay, never in the permission prompt's diagnostic fields.
-    preview: Option<Text>,
+    preview: Option<Container>,
     preview_text: zeroize::Zeroizing<String>,
 }
 impl DictationSurface {
@@ -125,29 +125,40 @@ impl DictationSurface {
         self.preview_text.push_str(excerpt);
         let label = t_args("dictation-live-preview", &[("text", excerpt.into())]);
         self.preview = Some(
-            Text::new(&label)
-                .with_id("dictation.live-preview")
-                .with_role(ui::tokens::TextRole::Caption)
-                .with_live(ui::a11y::Politeness::Polite),
+            Container::new().with_background().with_child(Box::new(
+                Text::new(&label)
+                    .with_id("dictation.live-preview")
+                    .with_role(ui::tokens::TextRole::Caption)
+                    .with_live(ui::a11y::Politeness::Polite),
+            )),
         );
         self.changed = true;
     }
-    fn preview_rect(geometry: LayerGeometry<'_>) -> Rect {
-        let prompt = Self::surface_rect(geometry);
+    fn preview_rect(&self, geometry: LayerGeometry<'_>) -> Rect {
+        let prompt = self.surface_rect(geometry);
         let spacing = ui::tokens::Spacing::BASE;
         Rect::new(
             prompt.x0,
             prompt.y1,
             prompt.x1,
-            prompt.y1 + f64::from(spacing.s8 + spacing.s8),
+            prompt.y1
+                + self.preview.as_ref().map_or_else(
+                    || f64::from(spacing.s8 + spacing.s8),
+                    |preview| {
+                        preview
+                            .get_rect()
+                            .height()
+                            .max(f64::from(spacing.s8 + spacing.s8))
+                    },
+                ),
         )
     }
     pub(crate) fn contains(&self, geometry: LayerGeometry<'_>, point: vello::kurbo::Point) -> bool {
         self.prompt.is_some()
-            && (Self::surface_rect(geometry).contains(point)
-                || self.preview.is_some() && Self::preview_rect(geometry).contains(point))
+            && (self.surface_rect(geometry).contains(point)
+                || self.preview.is_some() && self.preview_rect(geometry).contains(point))
     }
-    pub(crate) fn surface_rect(geometry: LayerGeometry<'_>) -> Rect {
+    pub(crate) fn surface_rect(&self, geometry: LayerGeometry<'_>) -> Rect {
         let area = geometry.focused_output.unwrap_or(geometry.viewport);
         let spacing = ui::tokens::Spacing::BASE;
         let pad = f64::from(spacing.s4);
@@ -155,7 +166,17 @@ impl DictationSurface {
             area.x0 + pad,
             area.y0 + pad,
             area.x1 - pad,
-            area.y0 + pad + ui::widget::permission_prompt::PROMPT_HEIGHT,
+            area.y0
+                + pad
+                + self.prompt.as_ref().map_or(
+                    ui::widget::permission_prompt::PROMPT_HEIGHT,
+                    |prompt| {
+                        prompt
+                            .get_rect()
+                            .height()
+                            .max(ui::widget::permission_prompt::PROMPT_HEIGHT)
+                    },
+                ),
         )
     }
     fn show(&mut self, phase: Phase, message: &'static str) {
@@ -345,8 +366,9 @@ impl ShellLayer for DictationSurface {
         {
             return Routed::Pass;
         }
+        let rect = self.surface_rect(cx.geometry);
         if let Some(prompt) = self.prompt.as_mut() {
-            prompt.set_rect(Self::surface_rect(cx.geometry));
+            prompt.set_rect(rect);
             prompt.handle_event(event, cx.event);
             if let Some(choice) = prompt.pending_choice.take()
                 && let Some(intent) = self.choice(choice)
@@ -362,8 +384,15 @@ impl ShellLayer for DictationSurface {
         }
     }
     fn draw(&mut self, cx: &mut LayerPaint<'_>) {
+        let rect = self.surface_rect(cx.geometry);
         if let Some(prompt) = self.prompt.as_mut() {
-            let rect = Self::surface_rect(cx.geometry);
+            prompt.set_rect(rect);
+            let rect = Rect::new(
+                rect.x0,
+                rect.y0,
+                rect.x1,
+                rect.y0 + prompt.preferred_height(cx.text_renderer, cx.theme),
+            );
             prompt.set_rect(rect);
             prompt.draw(
                 cx.scene,
@@ -382,29 +411,12 @@ impl ShellLayer for DictationSurface {
                 );
             }
         }
+        let rect = self.preview_rect(cx.geometry);
         if let Some(preview) = self.preview.as_mut() {
-            let rect = Self::preview_rect(cx.geometry);
-            let pad = f64::from(cx.theme.tokens.spacing.s4);
-            cx.scene.fill(
-                vello::peniko::Fill::NonZero,
-                cx.transform,
-                cx.theme.tokens.colors.surfaces.overlay,
-                None,
-                &rect,
-            );
-            preview.apply_layout_external(Rect::new(
-                rect.x0 + pad,
-                rect.y0 + pad,
-                rect.x1 - pad,
-                rect.y1 - pad,
-            ));
-            cx.scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                1.0,
-                cx.transform,
-                &rect,
-            );
+            if layout_preview(preview, rect, cx.text_renderer, cx.theme).is_err() {
+                tracing::warn!("dictation caption layout unavailable");
+                return;
+            }
             preview.draw(
                 cx.scene,
                 cx.transform,
@@ -412,7 +424,7 @@ impl ShellLayer for DictationSurface {
                 cx.theme,
                 cx.presence,
             );
-            cx.scene.pop_layer();
+            preview.mark_drawn();
         }
     }
     fn accessibility(&self, _geometry: LayerGeometry<'_>) -> Option<AccessNode> {
@@ -429,21 +441,25 @@ impl ShellLayer for DictationSurface {
         if let Some(child) = node.children.get_mut(1) {
             child.action_target = Some(self.cancel_target());
         }
-        if let Some(preview) = self.preview.as_ref().and_then(Widget::accessibility) {
-            node.children.push(preview);
+        if let Some(preview) = self.preview.as_ref() {
+            preview.for_each_child(&mut |child| {
+                if let Some(caption) = child.accessibility() {
+                    node.children.push(caption);
+                }
+            });
         }
         Some(node)
     }
     fn accessibility_rect(&self, geometry: LayerGeometry<'_>, path: &[usize]) -> Option<Rect> {
         let choices = self.prompt.as_ref()?.accessibility()?.children.len();
         if self.preview.is_some() && path == [choices] {
-            return Some(Self::preview_rect(geometry));
+            return Some(self.preview_rect(geometry));
         }
         let mut prompt = self.prompt.clone()?;
-        prompt.set_rect(Self::surface_rect(geometry));
+        prompt.set_rect(self.surface_rect(geometry));
         if path.is_empty() {
             Some(if self.preview.is_some() {
-                prompt.get_rect().union(Self::preview_rect(geometry))
+                prompt.get_rect().union(self.preview_rect(geometry))
             } else {
                 prompt.get_rect()
             })
@@ -488,6 +504,40 @@ impl ShellLayer for DictationSurface {
     }
 }
 
+/// A shared Container owns the caption's surface and themed inset; shared Text
+/// owns shaping and wrapping. This tiny local layout follows the normal widget
+/// passes and gives the complete bounded caption its natural height.
+fn layout_preview(
+    preview: &mut Container,
+    rect: Rect,
+    text: &mut ui::text_render::TextRenderer,
+    theme: &ui::Theme,
+) -> Result<(), taffy::TaffyError> {
+    let mut tree = taffy::TaffyTree::<()>::new();
+    let mut nodes = std::collections::HashMap::new();
+    let root = preview.build_layout(&mut tree, theme, &mut nodes);
+    let mut style = tree.style(root)?.clone();
+    style.min_size.height =
+        taffy::Dimension::length(theme.tokens.spacing.s8 + theme.tokens.spacing.s8);
+    tree.set_style(root, style)?;
+    tree.compute_layout_with_measure(
+        root,
+        taffy::Size {
+            width: taffy::AvailableSpace::Definite(ui::num::f32_of_f64(rect.width())),
+            height: taffy::AvailableSpace::MaxContent,
+        },
+        |known, available, node, _, _| {
+            nodes.get(&node).map_or(taffy::Size::ZERO, |&widget| {
+                // SAFETY: both nodes point into this exclusively borrowed
+                // Container; no widget moves or receives events during layout.
+                unsafe { (&mut *widget).measure(known, available, text) }
+            })
+        },
+    )?;
+    preview.apply_layout(&tree, root, vello::kurbo::Point::new(rect.x0, rect.y0));
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -506,7 +556,7 @@ mod tests {
             focused_output: None,
         };
         let node = surface.accessibility(geometry).unwrap();
-        let caption_rect = DictationSurface::preview_rect(geometry);
+        let caption_rect = surface.preview_rect(geometry);
         assert!(surface.contains(geometry, caption_rect.center()));
         assert!(
             surface
@@ -531,6 +581,27 @@ mod tests {
         assert!(
             !format!("{:?}", surface.prompt.as_ref().unwrap()).contains("Private public fixture")
         );
+        let mut text = ui::text_render::TextRenderer::new();
+        for theme in [
+            ui::Theme::light(),
+            ui::Theme::high_contrast().with_text_scale(1.3),
+        ] {
+            let preview = surface.preview.as_mut().unwrap();
+            layout_preview(
+                preview,
+                Rect::new(16.0, 96.0, 784.0, 160.0),
+                &mut text,
+                &theme,
+            )
+            .unwrap();
+            let panel = preview.get_rect();
+            assert!(panel.height() >= 64.0);
+            preview.for_each_child(&mut |child| {
+                assert!(panel.contains(child.get_rect().origin()));
+                assert!(child.get_rect().x1 <= panel.x1);
+                assert!(child.get_rect().y1 <= panel.y1);
+            });
+        }
         assert!(matches!(
             surface.semantic_intent(&finish),
             Some(LayerIntent::Dictation(_))
