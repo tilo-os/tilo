@@ -1208,6 +1208,7 @@ impl VideoEditorApp {
                     ..Default::default()
                 }),
         );
+        kids.extend(self.history.accessibility(r.history_btn));
         AccessNode::new(Role::Toolbar)
             .with_name("Editor commands")
             .with_hashed_key(TOPBAR_A11Y_KEY)
@@ -1473,7 +1474,7 @@ impl VideoEditorApp {
         if let Some((mid, _)) = self
             .bin_item_rects(r)
             .into_iter()
-            .find(|(_, rect)| rect.contains(p))
+            .find(|(_, rect)| rect.contains(p) && VideoEditorApp::bin_viewport(r).contains(p))
             && let Some(i) = self.a11y_bin_items().iter().position(|m| *m == mid)
         {
             self.focus.pane = Pane::Bin;
@@ -1517,7 +1518,7 @@ impl VideoEditorApp {
         if matches!(row, InspectorRow::Field(_)) {
             return Some(Rect::new(
                 rect.x0 - 3.0,
-                rect.y0 - 21.0,
+                rect.y0 - 27.0,
                 rect.x1 + 3.0,
                 rect.y1 + 2.0,
             ));

@@ -94,6 +94,8 @@ pub struct Dispatcher<R: Resource> {
     applied: Rc<Cell<bool>>,
     /// The boundary last taken opened a step that stays open.
     opened: Rc<Cell<bool>>,
+    /// The view shows a past version in History, not the live resource.
+    past: bool,
     /// The last immediate action may be continued by a later one
     /// ([`Resource::continuable`]).
     continuable: Rc<Cell<bool>>,
@@ -136,6 +138,7 @@ impl<R: Resource> Clone for Dispatcher<R> {
             continuing: Rc::clone(&self.continuing),
             applied: Rc::clone(&self.applied),
             opened: Rc::clone(&self.opened),
+            past: self.past,
             continuable: Rc::clone(&self.continuable),
             marker: std::marker::PhantomData,
         }
@@ -168,6 +171,7 @@ impl<R: Resource> Dispatcher<R> {
             continuing: Rc::default(),
             applied: Rc::default(),
             opened: Rc::default(),
+            past: false,
             continuable: Rc::default(),
             marker: std::marker::PhantomData,
         }
@@ -191,6 +195,22 @@ impl<R: Resource> Dispatcher<R> {
     /// view of a past version, which nobody edits.
     pub fn me(&self) -> Option<&str> {
         self.me.as_deref()
+    }
+
+    /// A dispatcher for a past version in History: nothing it is given is
+    /// ever applied.
+    pub(crate) fn past(mut self) -> Self {
+        self.past = true;
+        self.read_only.set(true);
+        self
+    }
+
+    /// Whether the view shows a past version in History mode, drawn from a
+    /// frozen document. Such a view must start no work: no worker, no
+    /// network, no files. A surface that would fetch or watch something
+    /// presents what the document holds instead.
+    pub fn is_past(&self) -> bool {
+        self.past
     }
 
     /// Whether edits from this participant will be refused, as of now: it
@@ -380,6 +400,16 @@ impl<R: Resource> Dispatcher<R> {
         }
     }
 
+    /// Open the platform search with `request`, narrowed to this app or one
+    /// part of it (`SearchRequest::within`). Searching is a view, so a
+    /// participant who may only view can search too.
+    pub fn open_search(&self, request: &ui_core::search::SearchRequest) {
+        self.queue.borrow_mut().push_back((
+            ui_core::search::open_search_invocation(request),
+            super::effect::acting_for(),
+        ));
+    }
+
     /// Invoke an action published on a nested resource, such as one item of
     /// a collection.
     pub(crate) fn invoke_at(
@@ -567,6 +597,7 @@ impl<R: Resource> Dispatcher<R> {
             continuing: Rc::clone(&self.continuing),
             applied: Rc::clone(&self.applied),
             opened: Rc::clone(&self.opened),
+            past: self.past,
             continuable: Rc::clone(&self.continuable),
             marker: std::marker::PhantomData,
         }

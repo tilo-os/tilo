@@ -356,6 +356,18 @@ jobs:
           bash tools/test-env.sh cargo nextest run --locked --profile ci --tests ${{ matrix.test_packages }}
           -E "not ($GOLDEN_FILTER)${{ github.event_name == 'pull_request' && ' and not ($PUSH_ONLY_FILTER)' || '' }}"
 
+      # Each nextest phase writes the same ci-profile JUnit path. Preserve
+      # its report before a later phase starts, including on test failure.
+      - name: Report affected tests of shard ${{ matrix.shard }}
+        if: always() && matrix.test_packages != ''
+        run: |
+          mkdir -p target/ci/junit
+          if [ -f target/nextest/ci/junit.xml ]; then
+            mv target/nextest/ci/junit.xml target/ci/junit/affected.xml
+          fi
+          python3 tools/ci/nextest_report.py \
+            --label "affected shard ${{ matrix.shard }} (${{ matrix.arch }})" target/ci/junit/affected.xml
+
       # The shard's visual goldens, run after its suite has drained so the
       # software renderer is idle, as nightly does. They compare only on the
       # image they were rendered on; once the builder has moved on they wait
@@ -380,6 +392,16 @@ jobs:
             bash scripts/ci-run.sh "cargo nextest visual goldens (shard ${{ matrix.shard }})" -- \
             bash tools/test-env.sh cargo nextest run --locked --profile ci --tests \
             ${{ matrix.test_packages }} --no-tests=pass -E "$GOLDEN_FILTER"
+
+      - name: Report visual goldens of shard ${{ matrix.shard }}
+        if: always() && matrix.test_packages != ''
+        run: |
+          mkdir -p target/ci/junit
+          if [ -f target/nextest/ci/junit.xml ]; then
+            mv target/nextest/ci/junit.xml target/ci/junit/visual-goldens.xml
+          fi
+          python3 tools/ci/nextest_report.py \
+            --label "visual goldens shard ${{ matrix.shard }} (${{ matrix.arch }})" target/ci/junit/visual-goldens.xml
 
       # The shard's test executables are done with; Certify links the apps'
       # own binaries from the same rlibs, and a wide shard does not fit both
@@ -414,7 +436,7 @@ jobs:
 
       # A package reached only through outside inputs its manifest entry
       # scopes (tools/ci/suites.toml) runs just the tests that read them, with
-      # the same environment; their JUnit report joins the shard's.
+      # the same environment; preserve their report alongside the shard's.
       - name: Scoped reader tests of shard ${{ matrix.shard }}
         if: matrix.scoped_tests != ''
         env:
@@ -429,14 +451,15 @@ jobs:
           bash scripts/ci-run.sh "cargo nextest (scoped reader tests, shard ${{ matrix.shard }})" --
           python3 tools/ci/run_scoped_tests.py
 
-      # The ci profile does not retry. List slow tests, and any retried
-      # case if a profile turns retries back on, and keep the JUnit report.
-      - name: Report retried tests in shard ${{ matrix.shard }}
-        if: always() && (matrix.test_packages != '' || matrix.scoped_tests != '')
-        run: >-
-          python3 tools/ci/nextest_report.py
-          --label "affected shard ${{ matrix.shard }} (${{ matrix.arch }})"
-          target/nextest/ci/junit.xml
+      - name: Report scoped reader tests of shard ${{ matrix.shard }}
+        if: always() && matrix.scoped_tests != ''
+        run: |
+          mkdir -p target/ci/junit
+          if [ -f target/nextest/ci/junit.xml ]; then
+            mv target/nextest/ci/junit.xml target/ci/junit/scoped.xml
+          fi
+          python3 tools/ci/nextest_report.py \
+            --label "scoped reader tests shard ${{ matrix.shard }} (${{ matrix.arch }})" target/ci/junit/scoped.xml
 
       - name: Save test results of shard ${{ matrix.shard }}
         if: always() && (matrix.test_packages != '' || matrix.scoped_tests != '')
@@ -444,7 +467,7 @@ jobs:
         uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: nextest-junit-${{ matrix.arch }}-${{ matrix.shard }}
-          path: target/nextest/ci/junit.xml
+          path: target/ci/junit
           retention-days: 14
           if-no-files-found: warn
 

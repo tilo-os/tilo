@@ -26,7 +26,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    Button, Column, Container, Row, ScrollAxis, Scrollable, Section, Spacer, Text, TextInput,
+    Button, Card, Column, Container, Row, ScrollAxis, Scrollable, Section, Spacer, Text, TextInput,
     Toggle, Widget,
 };
 
@@ -146,6 +146,7 @@ impl Default for Settings {
 /// controls. Typed actions mutate durable settings; local mirrors only
 /// present the action-applied result in this window.
 pub struct SettingsPane {
+    notices: Vec<crate::notice::Notice>,
     rect: Rect,
     presentation: SettingsPresentation,
     /// Composed child tree, rebuilt on every `build_layout`.
@@ -156,6 +157,7 @@ pub struct SettingsPane {
     /// cannot diagnose this profile's disk permissions or free space.
     history_clear_error: Option<String>,
     private_window_request: Option<ui::LocalState<bool>>,
+    autofill_request: Option<ui::LocalState<Option<bool>>>,
 }
 
 impl SettingsPane {
@@ -167,12 +169,14 @@ impl SettingsPane {
     /// Construct a pane with a process-local projection of `settings`.
     pub fn with_settings(settings: &Settings) -> Self {
         Self {
+            notices: Vec::new(),
             rect: Rect::ZERO,
             presentation: SettingsPresentation::from_settings(settings),
             composed: None,
             actions: SettingsActionBindings::default(),
             history_clear_error: None,
             private_window_request: None,
+            autofill_request: None,
         }
     }
 
@@ -206,6 +210,13 @@ impl SettingsPane {
         self
     }
 
+    /// Open device-local password or address management through a published view control.
+    #[must_use]
+    pub fn with_autofill_request(mut self, request: ui::LocalState<Option<bool>>) -> Self {
+        self.autofill_request = Some(request);
+        self
+    }
+
     /// Build the composed widget tree from the CRDT-backed controls.
     ///
     /// The layout follows the Tilo settings grammar: a header, then a stack
@@ -215,15 +226,15 @@ impl SettingsPane {
     /// gap — a plain `.push().push()` renders the rows touching.
     fn build_composition(&self, theme: &Theme) -> Box<dyn Widget> {
         let large_text = theme.text_scale >= 1.5;
-        let action_height = if large_text { 56.0 } else { 36.0 };
         let header = Row::new()
             .push(Box::new(
-                Text::new("Settings").with_size(24.0).with_heading_level(1),
+                Text::new("Settings")
+                    .with_role(ui::TextRole::Title)
+                    .with_heading_level(1),
             ))
             .push(Box::new(Spacer::new()))
             .push(Box::new(button_with_action(
-                Button::new("settings.close", "Done")
-                    .with_size(if large_text { 112.0 } else { 96.0 }, action_height),
+                Button::new("settings.close", "Done").control_size(ui::widget::ControlSize::Large),
                 self.actions.close.clone(),
             )));
 
@@ -249,7 +260,7 @@ impl SettingsPane {
             ]),
         );
 
-        let browsing_controls = browsing_data_controls(&self.actions, large_text, action_height);
+        let browsing_controls = browsing_data_controls(&self.actions, large_text);
         let mut privacy_rows = vec![
             setting_row_described(
                 "Block ads & trackers",
@@ -282,32 +293,53 @@ impl SettingsPane {
                 large_text,
             ),
         ];
+        if let Some(request) = &self.autofill_request {
+            for (id, label, addresses) in [
+                ("browser.credentials.open", "Passwords", false),
+                ("browser.address.open", "Address autofill", true),
+            ] {
+                let request = request.clone();
+                privacy_rows.push(setting_row_described(
+                    label,
+                    "Manage filling on this device; opening does not enable it.",
+                    Box::new(
+                        Button::new(id, "Manage")
+                            .with_accessible_name(label)
+                            .on_view(move || request.set(Some(addresses))),
+                    ),
+                    large_text,
+                ));
+            }
+        }
         if let Some(error) = &self.history_clear_error {
-            privacy_rows.push(Box::new(Text::new(error).with_size(12.0)));
+            privacy_rows.push(Box::new(Text::new(error).with_role(ui::TextRole::Caption)));
         }
         let privacy = card("Privacy & Security", rows(privacy_rows));
 
         let mut body = Column::new()
+            .with_rhythm(ui::tokens::Rhythm::Group)
             .with_intrinsic_height()
             .push(Box::new(header))
-            .push(vgap(20.0))
             .push(general)
-            .push(vgap(CARD_GAP))
             .push(privacy);
         if let Some(request) = self.private_window_request.clone() {
-            body = body.push(vgap(CARD_GAP)).push(card(
+            body = body.push(card(
                 "Windows",
                 rows(vec![setting_row_described(
                     "Private browsing",
                     "Open a separate private window with memory-only browsing state.",
                     Box::new(
                         Button::new("settings.new_private_window", "New Private Window")
-                            .with_size(180.0, 36.0)
+                            .control_size(ui::widget::ControlSize::Regular)
                             .on_effect(move || request.set(true)),
                     ),
                     large_text,
                 )]),
             ));
+        }
+
+        for notice in &self.notices {
+            body = body.push(notice.widget(false));
         }
 
         // Inset from the window edges (a Container's default padding) and
@@ -331,60 +363,36 @@ impl Default for SettingsPane {
 // field — so the pane reads consistently. Repeated vertical rhythm comes from
 // the shared `Section`, matching the system Settings app.
 
-/// Gap between stacked cards.
-const CARD_GAP: f32 = 16.0;
-/// Gap between a card's title and its body.
-const CARD_TITLE_GAP: f32 = 12.0;
-/// Gap between rows inside one card.
-const ROW_GAP: f32 = 12.0;
-
-/// The dim foreground colour, read from the OS dark theme (the builders
-/// run before `draw`, where the live `Theme` would otherwise supply it).
-/// A fixed-height empty box, to inject deliberate vertical space.
-fn vgap(px: f32) -> El {
-    Box::new(Container::new().with_no_padding().with_height(px))
-}
-
-/// A titled card: a heading above a bordered, padded surface holding the
-/// body. Keeping the title inside the background `Container` makes it draw
-/// reliably (a bare `Text` in a column can be dropped by the cached draw).
+/// A named section uses the shared card's heading, inset and surface.
 fn card(title: &str, body: El) -> El {
-    let inner = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .push(Box::new(Row::new().push(Box::new(
-            Text::new(title).with_size(16.0).with_heading_level(2),
-        ))))
-        .push(vgap(CARD_TITLE_GAP))
-        .push(body);
-    Box::new(
-        Container::new()
-            .with_background()
-            .with_child(Box::new(inner)),
-    )
+    Box::new(Card::new(body).with_title(title))
 }
 
 /// A vertical stack of rows with explicit inter-row spacing.
 fn rows(items: Vec<El>) -> El {
-    Box::new(Section::with_gap(items, ROW_GAP))
+    Box::new(Section::new(items))
 }
 
 /// A label with a dim helper line beneath it, paired with a trailing
 /// control. The `Spacer` pushes the control to the trailing edge.
 fn setting_row_described(label: &str, description: &str, control: El, large_text: bool) -> El {
     let text_block = Column::new()
+        .with_rhythm(ui::tokens::Rhythm::Tight)
         .with_no_padding()
         .with_intrinsic_height()
-        .push(Box::new(Text::new(label).with_size(14.0)))
-        .push(vgap(2.0))
-        .push(Box::new(Text::new(description).with_size(12.0).dimmed()));
+        .push(Box::new(Text::new(label).with_role(ui::TextRole::Body)))
+        .push(Box::new(
+            Text::new(description)
+                .with_role(ui::TextRole::Caption)
+                .dimmed(),
+        ));
     if large_text {
         Box::new(
             Column::new()
+                .with_rhythm(ui::tokens::Rhythm::Related)
                 .with_no_padding()
                 .with_intrinsic_height()
                 .push(Box::new(text_block))
-                .push(vgap(10.0))
                 .push(control),
         )
     } else {
@@ -397,28 +405,24 @@ fn setting_row_described(label: &str, description: &str, control: El, large_text
     }
 }
 
-fn browsing_data_controls(
-    actions: &SettingsActionBindings,
-    large_text: bool,
-    action_height: f32,
-) -> El {
+fn browsing_data_controls(actions: &SettingsActionBindings, large_text: bool) -> El {
     let clear_history = Box::new(button_with_action(
         Button::new("settings.clear_history", "Clear history")
-            .with_size(if large_text { 240.0 } else { 140.0 }, action_height),
+            .control_size(ui::widget::ControlSize::Large),
         actions.clear_history.clone(),
     ));
     let clear_site_data = Box::new(button_with_action(
         Button::new("settings.clear_cookies", "Request site-data clear")
-            .with_size(if large_text { 300.0 } else { 200.0 }, action_height),
+            .control_size(ui::widget::ControlSize::Large),
         actions.clear_site_data.clone(),
     ));
     if large_text {
         Box::new(
             Column::new()
+                .with_rhythm(ui::tokens::Rhythm::Related)
                 .with_no_padding()
                 .with_intrinsic_height()
                 .push(clear_history)
-                .push(vgap(8.0))
                 .push(clear_site_data),
         )
     } else {
@@ -447,8 +451,7 @@ fn field_block(
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .push(Box::new(Text::new(label).with_size(14.0)))
-            .push(vgap(6.0))
+            .push(Box::new(Text::new(label).with_role(ui::TextRole::Body)))
             .push(Box::new(input)),
     )
 }
@@ -589,6 +592,20 @@ impl Widget for SettingsPane {
     fn test_id(&self) -> Option<&str> {
         Some("settings.root")
     }
+}
+
+impl SettingsPane {
+    pub(crate) fn with_notices(mut self, notices: Vec<crate::notice::Notice>) -> Self {
+        self.notices = notices;
+        self
+    }
+}
+pub(crate) fn page(parts: Vec<Box<dyn Widget>>) -> Box<dyn Widget> {
+    Box::new(
+        parts
+            .into_iter()
+            .fold(ui::widget::Page::new(), ui::widget::Page::section),
+    )
 }
 
 #[cfg(test)]

@@ -306,6 +306,10 @@ def verify_package(out, architecture, source, sequence, trusted_key):
     inspected = subprocess.check_output([str(cli), 'inspect', str(tapps[0])], text=True)
     manifest = tomllib.loads(inspected.split('--- manifest.toml ---\n', 1)[1]
                              .split('--- payload (', 1)[0])
+    entrypoint = manifest.get('entrypoint', {})
+    require(entrypoint.get('type') == 'cli'
+            and entrypoint.get('bin') == 'lib/chromium/tilo-chromium-host',
+            'signed engine package must declare its executable host')
     require(manifest['package']['id'] == PACKAGE
             and manifest['package']['version'] == proof['package_version']
             and manifest['package']['provides'] == expected['runtime']
