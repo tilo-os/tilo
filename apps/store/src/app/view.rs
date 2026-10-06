@@ -23,7 +23,7 @@ use ui::widget::{
 
 use super::{
     PAGE_SIZE, StoreApp, Theme, action_code, format_size, full_publisher, remote_state_label,
-    short_publisher, visible_operation_status,
+    visible_operation_status,
 };
 use crate::bindings;
 use crate::model::{StoreItem, StoreSource, StoreTrust};
@@ -576,8 +576,36 @@ impl StoreApp {
                 )],
             )));
         }
+        children.push(self.technical_details(item));
         children.push(Self::report_section(item));
         Some(self.page(theme, Measure::Reading, false, children))
+    }
+
+    fn technical_details(&self, item: &StoreItem) -> Element {
+        let label = ui::i18n::I18nManager::lookup_plain(if self.technical_details_open {
+            "store-hide-technical-details"
+        } else {
+            "store-show-technical-details"
+        });
+        let mut toggle = Button::new("store.detail.technical", &label).role(ButtonRole::Plain);
+        if let Some(binding) = bindings::effect(&StoreEffect::SetTechnicalDetails {
+            expanded: !self.technical_details_open,
+        }) {
+            toggle = toggle.on_action(binding);
+        }
+        let items = if self.technical_details_open {
+            vec![Box::new(PropertyList::new(technical_properties(item))) as Element]
+        } else {
+            Vec::new()
+        };
+        Box::new(
+            Section::new(items).with_header(
+                SectionHeader::heading(ui::i18n::I18nManager::lookup_plain(
+                    "store-technical-details",
+                ))
+                .action(toggle),
+            ),
+        )
     }
 
     /// Reporting a problem with the app, or reading how decisions are made.
@@ -794,7 +822,7 @@ impl StoreApp {
                         remote: remote.resource_id(),
                     })
                 {
-                    row = row.on_action(binding.clone()).action_binding(
+                    row = row.disclosure().on_action(binding.clone()).action_binding(
                         Icon::Globe,
                         ui::i18n!("store-remote-browse"),
                         binding,
@@ -803,15 +831,17 @@ impl StoreApp {
                 if remote.user_managed
                     && let Some(binding) = bindings::effect(&super::remote_enabled_effect(remote))
                 {
-                    row = row.action_binding(
-                        Icon::Globe,
-                        ui::i18n!(if remote.disabled {
-                            "store-remote-enable"
-                        } else {
-                            "store-remote-disable"
-                        }),
-                        binding,
-                    );
+                    row = row.trailing(Box::new(
+                        Button::new(
+                            &format!("store.{}.enabled", remote.resource_id()),
+                            &ui::i18n!(if remote.disabled {
+                                "store-remote-enable"
+                            } else {
+                                "store-remote-disable"
+                            }),
+                        )
+                        .on_action(binding),
+                    ));
                 }
                 if remote.user_managed
                     && let Some(binding) = bindings::remove_remote(remote)
@@ -893,11 +923,7 @@ fn detail_properties(item: &StoreItem) -> Vec<Property> {
 
 /// The package's facts: identity, version and what it weighs.
 fn package_properties(item: &StoreItem) -> Vec<Property> {
-    let mut rows = vec![
-        Property::new("App ID", &item.id)
-            .with_kind(TextKind::Identifier)
-            .copyable(),
-    ];
+    let mut rows = Vec::new();
     if !item.categories.is_empty() {
         rows.push(Property::new(
             "Categories",
@@ -914,11 +940,6 @@ fn package_properties(item: &StoreItem) -> Vec<Property> {
             rows.push(
                 Property::new("Download size", format_size(version.size_bytes))
                     .with_kind(TextKind::Numeric),
-            );
-        }
-        if let Some(hash) = version.root_hash_hex.as_deref() {
-            rows.push(
-                Property::new("Package digest", digest_summary(hash)).with_kind(TextKind::Secret),
             );
         }
     }
@@ -948,18 +969,37 @@ fn publisher_properties(item: &StoreItem) -> Vec<Property> {
         StoreSource::FlatpakRemote { title, .. } => title.clone(),
     };
     let mut rows = vec![Property::new("Catalogue", source)];
-    match item.publisher_pubkey_hex.as_deref() {
-        Some(key) => {
-            let full = format!("ed25519:{key}");
-            rows.push(
-                Property::new("Publisher", short_publisher(item))
-                    .with_kind(TextKind::Identifier)
-                    .action(Icon::Copy, "Copy publisher key", move || {
-                        ui::text_selection::clipboard_copy(&full);
-                    }),
-            );
-        }
-        None => rows.push(Property::new("Publisher", full_publisher(item))),
+    if item.publisher_pubkey_hex.is_none() {
+        rows.push(Property::new("Publisher", full_publisher(item)));
+    }
+    rows
+}
+
+/// Exact package identity remains inspectable without dominating the app summary.
+fn technical_properties(item: &StoreItem) -> Vec<Property> {
+    let mut rows = vec![
+        Property::new("App ID", &item.id)
+            .with_kind(TextKind::Identifier)
+            .copyable(),
+    ];
+    if let Some(hash) = item
+        .versions
+        .first()
+        .and_then(|version| version.root_hash_hex.as_deref())
+    {
+        rows.push(
+            Property::new("Package digest", digest_summary(hash)).with_kind(TextKind::Secret),
+        );
+    }
+    if let Some(key) = item.publisher_pubkey_hex.as_deref() {
+        rows.push(
+            Property::new(
+                ui::i18n::I18nManager::lookup_plain("store-publisher-key"),
+                format!("ed25519:{key}"),
+            )
+            .with_kind(TextKind::Identifier)
+            .copyable(),
+        );
     }
     rows
 }
