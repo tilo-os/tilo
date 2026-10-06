@@ -7555,6 +7555,11 @@ fn backend_nested_loop_uses_edge_wake(source: &str) -> bool {
               the block already ends right after both are computed"
 )]
 pub fn run() {
+    // Arm recovery before creating services, clients or a renderer.
+    let recovery = super::session_recovery::SessionRecovery::from_env().unwrap_or_else(|error| {
+        eprintln!("tilo compositor: cannot establish session lock recovery: {error}");
+        std::process::exit(1);
+    });
     // Calloop drives the whole compositor; smithay is callback-oriented and
     // expects every wakeup to fan out from a single `EventLoop::<State>`.
     let mut event_loop: EventLoop<'static, State> = match EventLoop::try_new() {
@@ -7564,6 +7569,27 @@ pub fn run() {
             std::process::exit(1);
         }
     };
+
+    let (termination, termination_source) =
+        super::session_termination::SessionTermination::source().unwrap_or_else(|error| {
+            eprintln!("tilo compositor: cannot establish ordered signal teardown: {error}");
+            std::process::exit(1);
+        });
+    event_loop
+        .handle()
+        .insert_source(termination_source, |_, fd, _| {
+            let mut value = [0_u8; 8];
+            // SAFETY: the buffer is writable for its stated length; fd is the
+            // live nonblocking eventfd owned by this event source.
+            unsafe {
+                libc::read(fd.as_raw_fd(), value.as_mut_ptr().cast(), value.len());
+            }
+            Ok(PostAction::Continue)
+        })
+        .unwrap_or_else(|error| {
+            eprintln!("tilo compositor: cannot observe termination signals: {error}");
+            std::process::exit(1);
+        });
 
     // The `Display` owns the wayland-server protocol state. Its poll fd is an
     // epoll instance containing the individual client sockets. Register a
@@ -8195,10 +8221,10 @@ pub fn run() {
     // its own wake (see `TestControlConn::watch`), because a connection is
     // accepted as soon as it exists, which is often before the request bytes
     // that follow it have arrived.
-    let _test_control_listener_wake = test_control_listener
+    let test_control_listener_wake = test_control_listener
         .as_ref()
         .and_then(|listener| control_listener_wake(listener, &event_loop.handle()));
-    let _agent_control_listener_wake = agent_control_listener
+    let agent_control_listener_wake = agent_control_listener
         .as_ref()
         .and_then(|listener| control_listener_wake(listener, &event_loop.handle()));
     // Per-process input context shared by the physical-seat and optional
@@ -8300,6 +8326,10 @@ pub fn run() {
             .with_suspend(power_policy.idle_suspend)
     };
     let mut session = SessionManager::new(idle_config, Instant::now());
+    if recovery.as_ref().is_some_and(|(_, locked)| *locked) {
+        session.request_lock(Instant::now());
+    }
+    frame_builder.set_session_locked(session.is_locked());
     let mut previous_onboarding_active = frame_builder.host().onboarding_active();
     publish_native_session_state(
         local_session_lifecycle.as_ref(),
@@ -8727,6 +8757,9 @@ pub fn run() {
     let mut transition_hold_sleep = Duration::ZERO;
     let mut credit_transition_hold;
     while !close_requested {
+        if termination.requested() {
+            break;
+        }
         let iter_t0 = Instant::now();
         crate::shell::launcher::action_authority::tick(iter_t0);
         let injected_redraw = std::mem::take(&mut injected_redraw_pending);
@@ -12257,6 +12290,27 @@ pub fn run() {
     // event loop remain in scope until the function returns below, ensuring
     // the libseat notifier, DRM handles and device leases unwind normally.
     drop(display);
+    // Close accepted control clients and their duplicated wake descriptors,
+    // not merely the socket names, before publishing an unlocked handoff.
+    for conn in &mut test_control_conns {
+        if let Some(token) = conn.wake.take() {
+            event_loop.handle().remove(token);
+        }
+    }
+    drop(test_control_conns);
+    for token in [
+        test_control_listener_wake,
+        agent_control_listener_wake,
+        admin_control.as_mut().and_then(|(_, _, wake)| wake.take()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        event_loop.handle().remove(token);
+    }
+    drop(test_control_listener);
+    drop(agent_control_listener);
+    drop(admin_control);
     // Explicitly drop service guards in dependency order so the next session
     // cannot observe stale endpoints while backend teardown finishes.
     drop(test_control_unlink);
@@ -12286,6 +12340,13 @@ pub fn run() {
     drop(polkit_agent);
     drop(network_secret_agent);
     drop(bluetooth_agent);
+    // No old scene, client authority or control endpoint can outlive an
+    // unlocked handoff. An incomplete/failed teardown keeps the armed record.
+    if let Some((recovery, _)) = recovery
+        && let Err(error) = recovery.finish(session.is_locked())
+    {
+        tracing::error!(%error, "session lock handoff failed; next startup validates the saved record");
+    }
 }
 
 /// Publish a successful machine-level change to every shell surface that

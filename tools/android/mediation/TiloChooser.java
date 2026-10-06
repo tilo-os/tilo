@@ -14,6 +14,12 @@ final class TiloChooser {
     private static boolean broken;
     private static native byte[] exchange(byte[] request);
     private static native boolean notificationServiceAvailable();
+    private static native void markOngoingNative(long builder);
+
+    static void markOngoing(long builder) {
+        loadBridge();
+        markOngoingNative(builder);
+    }
 
     static synchronized void loadBridge() {
         if (loaded) return;

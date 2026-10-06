@@ -473,6 +473,10 @@ impl GrantStoreHandle {
         let Some(key) = self.portal_consent_key(caller, kind) else {
             return false;
         };
+        self.insert_portal_consent_key(key, scope)
+    }
+
+    fn insert_portal_consent_key(&self, key: String, scope: GrantScope) -> bool {
         let Ok(mut state) = self.portal_consents.lock() else {
             return false;
         };
@@ -497,11 +501,16 @@ impl GrantStoreHandle {
         tree.desktop
             .workspaces
             .iter()
-            .any(|workspace| workspace.id == caller.workspace_id)
-            .then(|| {
+            .find(|workspace| workspace.id == caller.workspace_id)
+            .filter(|workspace| !workspace.room.is_nil())
+            .map(|workspace| {
+                // A local slot survives joining a different room. Consent
+                // belongs to the durable room, never to that reusable slot.
+                // The prefix also leaves legacy numeric-slot records inert:
+                // their original room cannot be recovered safely.
                 format!(
-                    "{}\u{1f}{}\u{1f}{}",
-                    caller.workspace_id.0,
+                    "room:{}\u{1f}{}\u{1f}{}",
+                    workspace.room,
                     caller.app_id,
                     kind.name()
                 )
@@ -1010,21 +1019,15 @@ pub mod flow {
         cap_template: Capability,
     ) -> PromptOutcome {
         // Fast path — `Always`-scoped grant already present.
+        let Some(consent_key) = ctx.grants().portal_consent_key(&caller, kind) else {
+            return PromptOutcome::Deny;
+        };
         if matches!(ctx.grants().lookup(&caller, kind), Some(GRANT_ALWAYS)) {
             return PromptOutcome::AllowAlways;
         }
-        let rx = ctx.prompts().enqueue(caller.clone(), cap_template.clone());
+        let rx = ctx.prompts().enqueue(caller.clone(), cap_template);
         match rx.await {
-            Ok(outcome) => {
-                // Persist Session/Always — Once is treated as one-shot.
-                if let Some(scope) = outcome.to_scope()
-                    && !matches!(scope, GRANT_ONCE)
-                {
-                    let cap = super::with_scope(cap_template, scope);
-                    ctx.grants().insert_portal_consent(&caller, &cap);
-                }
-                outcome
-            }
+            Ok(outcome) => finish(ctx, &caller, kind, consent_key, outcome),
             // A dead channel means the prompt pump shut down mid-flight — deny rather than hang the caller forever.
             Err(_) => PromptOutcome::Deny,
         }
@@ -1039,22 +1042,17 @@ pub mod flow {
         cap_template: Capability,
         request_key: String,
     ) -> PromptOutcome {
+        let Some(consent_key) = ctx.grants().portal_consent_key(&caller, kind) else {
+            return PromptOutcome::Deny;
+        };
         if matches!(ctx.grants().lookup(&caller, kind), Some(GRANT_ALWAYS)) {
             return PromptOutcome::AllowAlways;
         }
-        let rx =
-            ctx.prompts()
-                .enqueue_for_request(caller.clone(), cap_template.clone(), request_key);
+        let rx = ctx
+            .prompts()
+            .enqueue_for_request(caller.clone(), cap_template, request_key);
         match rx.await {
-            Ok(outcome) => {
-                if let Some(scope) = outcome.to_scope()
-                    && !matches!(scope, GRANT_ONCE)
-                {
-                    let cap = super::with_scope(cap_template, scope);
-                    ctx.grants().insert_portal_consent(&caller, &cap);
-                }
-                outcome
-            }
+            Ok(outcome) => finish(ctx, &caller, kind, consent_key, outcome),
             Err(_) => PromptOutcome::Deny,
         }
     }
@@ -1067,23 +1065,37 @@ pub mod flow {
         kind: CapabilityKind,
         cap_template: Capability,
     ) -> PromptOutcome {
+        let Some(consent_key) = ctx.grants().portal_consent_key(&caller, kind) else {
+            return PromptOutcome::Deny;
+        };
         if matches!(ctx.grants().lookup(&caller, kind), Some(GRANT_ALWAYS)) {
             return PromptOutcome::AllowAlways;
         }
         let rx = ctx.prompts().enqueue(caller.clone(), cap_template);
         match rx.await {
-            Ok(outcome) => {
-                if let Some(scope) = outcome.to_scope()
-                    && !matches!(scope, GRANT_ONCE)
-                {
-                    let _ = ctx
-                        .grants()
-                        .insert_portal_consent_kind(&caller, kind, scope);
-                }
-                outcome
-            }
+            Ok(outcome) => finish(ctx, &caller, kind, consent_key, outcome),
             Err(_) => PromptOutcome::Deny,
         }
+    }
+
+    fn finish(
+        ctx: &impl ConsentContext,
+        caller: &PortalCaller,
+        kind: CapabilityKind,
+        consent_key: String,
+        outcome: PromptOutcome,
+    ) -> PromptOutcome {
+        if ctx.grants().portal_consent_key(caller, kind).as_ref() != Some(&consent_key) {
+            return PromptOutcome::Deny;
+        }
+        if let Some(scope) = outcome.to_scope()
+            && !matches!(scope, GRANT_ONCE)
+        {
+            // Persist the identity approved by this prompt. Recomputing it
+            // here could bind an old approval to a newly joined room.
+            ctx.grants().insert_portal_consent_key(consent_key, scope);
+        }
+        outcome
     }
 }
 
@@ -1381,6 +1393,132 @@ mod tests {
 
     fn empty_ws(id: u64) -> Workspace {
         Workspace::new(WorkspaceId(id), "t")
+    }
+
+    #[tokio::test]
+    async fn private_portal_prompt_cannot_approve_a_different_room() {
+        for variant in 0..3 {
+            for outcome in [
+                PromptOutcome::AllowOnce,
+                PromptOutcome::AllowSession,
+                PromptOutcome::AllowAlways,
+            ] {
+                let (store, id) = GrantStoreHandle::test_with_workspace(empty_ws(31));
+                let queue = PromptQueueHandle::new(PromptResolver::Channel);
+                let ctx = (store.clone(), queue.clone());
+                let caller = PortalCaller::new(id, "private-app");
+                let response = async {
+                    let cap = Capability::Camera { scope: GRANT_ONCE };
+                    match variant {
+                        0 => flow::resolve(&ctx, caller.clone(), CapabilityKind::Camera, cap).await,
+                        1 => {
+                            flow::resolve_for_request(
+                                &ctx,
+                                caller.clone(),
+                                CapabilityKind::Camera,
+                                cap,
+                                "/request/camera".into(),
+                            )
+                            .await
+                        }
+                        _ => {
+                            flow::resolve_local(&ctx, caller.clone(), CapabilityKind::Camera, cap)
+                                .await
+                        }
+                    }
+                };
+                tokio::pin!(response);
+                assert!(futures_util::poll!(&mut response).is_pending());
+                let prompts = queue.drain();
+                assert_eq!(prompts.len(), 1);
+                assert!(
+                    store
+                        .tree_handle()
+                        .write()
+                        .set_room_in_memory(id, crate::shell::state::RoomId::new())
+                );
+                prompts
+                    .into_iter()
+                    .next()
+                    .unwrap()
+                    .reply
+                    .send(outcome)
+                    .unwrap();
+                assert_eq!(response.await, PromptOutcome::Deny);
+                assert_eq!(store.lookup(&caller, CapabilityKind::Camera), None);
+            }
+        }
+    }
+
+    #[test]
+    fn private_portal_consent_requires_a_durable_room_and_ignores_legacy_slots() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("consents.json");
+        let (store, id) = GrantStoreHandle::test_with_workspace(empty_ws(31));
+        let shared = store.tree_handle();
+        let caller = PortalCaller::new(id, "private-app");
+        let mut legacy = BTreeSet::new();
+        legacy.insert(format!("{}\u{1f}private-app\u{1f}camera", id.0));
+        persist_portal_consents(&path, &legacy).unwrap();
+        let store = GrantStoreHandle::with_consent_path(shared.clone(), Some(path.clone()));
+        assert_eq!(store.lookup(&caller, CapabilityKind::Camera), None);
+        assert!(store.insert_portal_consent(
+            &caller,
+            &Capability::Camera {
+                scope: GRANT_ALWAYS
+            }
+        ));
+
+        // A different local slot for the same room preserves durable consent.
+        let moved_id = WorkspaceId(32);
+        shared.write().desktop.workspaces[0].id = moved_id;
+        let moved = PortalCaller::new(moved_id, "private-app");
+        let restored = GrantStoreHandle::with_consent_path(shared.clone(), Some(path));
+        assert_eq!(restored.lookup(&caller, CapabilityKind::Camera), None);
+        assert_eq!(
+            restored.lookup(&moved, CapabilityKind::Camera),
+            Some(GRANT_ALWAYS)
+        );
+
+        shared.write().desktop.workspaces[0].room = crate::shell::state::RoomId::nil();
+        assert_eq!(restored.lookup(&moved, CapabilityKind::Camera), None);
+        assert!(!restored.insert_portal_consent(
+            &moved,
+            &Capability::Camera {
+                scope: GRANT_ALWAYS
+            }
+        ));
+    }
+
+    #[test]
+    fn private_portal_consent_does_not_follow_a_workspace_into_another_room() {
+        for scope in [GRANT_SESSION, GRANT_ALWAYS] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("consents.json");
+            let (store, id) = GrantStoreHandle::test_with_workspace(empty_ws(31));
+            let shared = store.tree_handle();
+            let store = GrantStoreHandle::with_consent_path(shared.clone(), Some(path.clone()));
+            let caller = PortalCaller::new(id, "private-app");
+            assert!(store.insert_portal_consent(&caller, &Capability::Camera { scope }));
+            assert_eq!(store.lookup(&caller, CapabilityKind::Camera), Some(scope));
+
+            // Joining an invitation preserves the local slot and replaces
+            // its collaboration room through the production join operation.
+            let joined_room = crate::shell::state::RoomId::new();
+            assert!(shared.write().set_room_in_memory(id, joined_room));
+            assert_eq!(
+                store.lookup(&caller, CapabilityKind::Camera),
+                None,
+                "privacy consent from the previous room must not authorize the joined room"
+            );
+            let restored = GrantStoreHandle::with_consent_path(shared, Some(path));
+            assert_eq!(restored.lookup(&caller, CapabilityKind::Camera), None);
+            assert!(restored.insert_portal_consent(&caller, &Capability::Camera { scope }));
+            assert_eq!(
+                restored.lookup(&caller, CapabilityKind::Camera),
+                Some(scope)
+            );
+        }
     }
 
     #[test]

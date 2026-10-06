@@ -21,6 +21,41 @@ PINS = {'src/api-impl/android/app/Service.java': '0f2601d83841e1e8f9a838742dcf87
 def patch_services(root):
     service = root / 'src/api-impl/android/app/Service.java'
     text = service.read_text()
+    begin = text.index('\tpublic void startForeground(int id, Notification notification) {')
+    end = text.index('\n\tpublic Application getApplication()', begin)
+    text = text[:begin] + '''    public void startForeground(int id, Notification notification) {
+        if (id == 0 || notification == null)
+            throw new IllegalArgumentException("foreground service requires a nonzero id and notification");
+        if (getApplicationInfo().targetSdkVersion >= 28 &&
+                checkSelfPermission("android.permission.FOREGROUND_SERVICE") !=
+                android.content.pm.PackageManager.PERMISSION_GRANTED)
+            throw new SecurityException("foreground service permission is unavailable");
+        NotificationManager manager = new NotificationManager();
+        if (!manager.areNotificationsEnabled())
+            throw new SecurityException("foreground service requires the filtered host notification provider");
+        if (notification.style instanceof Notification.MediaStyle)
+            throw new UnsupportedOperationException("foreground media service notification is not qualified");
+        notification.ongoing = true;
+        manager.notify(id, notification);
+        if (notification_id != 0 && notification_id != id) manager.cancel(notification_id);
+        notification_id = id;
+    }
+
+    public void stopForeground(boolean remove) {
+        if (remove && notification_id != 0) {
+            new NotificationManager().cancel(notification_id);
+            notification_id = 0;
+        }
+    }
+
+    public void stopForeground(int flags) {
+        if (flags != 0 && flags != 1)
+            throw new UnsupportedOperationException("foreground notification detach is not qualified");
+        stopForeground(flags == 1);
+    }
+
+    public void tiloDestroyForeground() { stopForeground(true); }
+''' + text[end:]
     text = text.replace('System.out.println("Service.stopSelf(" + startId + ") called");',
         'this.get_atl_loaded_app().tiloStopSelf(this, startId);')
     text = text.replace('System.out.println("Service.stopSelf() called");',
@@ -57,7 +92,12 @@ def patch_services(root):
                             if (running_services.get(className) != service) return;
                             tiloStartedServices.add(service);
                         }
-                        service.onStartCommand(intent, 0, startId);''')
+                        int restartMode = service.onStartCommand(intent, 0, startId);
+                        // Android START_STICKY=1 and START_REDELIVER_INTENT=3.
+                        // There is no independent host service supervisor.
+                        if (restartMode == 1 || restartMode == 3)
+                            android.util.Log.w("TiloService",
+                                "sticky/redelivery process recovery unsupported; no background restart authority");''')
     begin = text.index('\tpublic boolean stopService(Intent intent) {')
     end = text.index('\n\tpublic void receiveBroadcast(', begin)
     text = text[:begin] + '''    public boolean stopService(Intent intent) {
@@ -84,9 +124,12 @@ def patch_services(root):
             tiloStartedServices.remove(service);
         }
         // Application callbacks always run on the main looper, including worker self-stops.
-        if (Looper.myLooper() == Looper.getMainLooper()) service.onDestroy();
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            service.tiloDestroyForeground();
+            service.onDestroy();
+        }
         else new Handler(Looper.getMainLooper()).post(new Runnable() {
-            @Override public void run() { service.onDestroy(); }
+            @Override public void run() { service.tiloDestroyForeground(); service.onDestroy(); }
         });
         return true;
     }
@@ -137,6 +180,8 @@ def patch(root):
                         'public void notify(String tag, int id, Notification notification) {\n\t\tif (!areNotificationsEnabled()) return;')
     text = text.replace('public void cancel(String tag, final int id) {',
                         'public void cancel(String tag, final int id) {\n\t\tif (!areNotificationsEnabled()) return;')
+    text = text.replace('long builder = nativeInitBuilder();',
+                        'long builder = nativeInitBuilder();\n\t\tif (notification.ongoing) TiloChooser.markOngoing(builder);')
     notification.write_text(text)
     view = root / 'src/api-impl/android/view/View.java'
     text = view.read_text().replace('public void setContentDescription(CharSequence contentDescription) {}',

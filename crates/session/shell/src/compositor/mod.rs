@@ -89,6 +89,10 @@ pub mod screen_dim;
 pub mod selection;
 pub mod session_env;
 #[cfg(target_os = "linux")]
+mod session_recovery;
+#[cfg(target_os = "linux")]
+mod session_termination;
+#[cfg(target_os = "linux")]
 pub mod shell_text_input;
 #[cfg(target_os = "linux")]
 pub mod shortcut_inhibit;
