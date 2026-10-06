@@ -109,6 +109,20 @@ class FeedbackTests(unittest.TestCase):
             observed.observe('remote-driver: fetched 4 artifact(s) in 2.5s', 84.5)
             self.assertEqual(observed.reported_stages, {'cargo': 82.0, 'artifact_fetch': 2.5})
 
+    def test_related_targets_share_one_invocation_without_losing_selection(self):
+        args = argparse.Namespace(operation='test', package=['clock', 'lock'], lib=True, tests=False,
+                                  test=['first', 'second'], filter=None, exact=False,
+                                  cargo_command='remote-driver --no-fallback')
+        self.assertEqual(feedback.command(args),
+                         ['remote-driver', '--no-fallback', 'test', '--locked', '--color=never',
+                          '-p', 'clock', '-p', 'lock', '--lib', '--test', 'first', '--test', 'second'])
+        args.tests = True
+        with self.assertRaises(ValueError):
+            feedback.command(args)
+        args.tests, args.lib, args.test = False, False, []
+        with self.assertRaises(ValueError):
+            feedback.command(args)
+
     def test_command_preserves_scope_and_disables_local_fallback(self):
         args = argparse.Namespace(operation='test', package=['shell'], lib=False, tests=False,
                                   test='it', filter='interaction_test::journey', exact=True, cargo_command='remote-driver --no-fallback')

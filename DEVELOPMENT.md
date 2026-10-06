@@ -317,6 +317,19 @@ isolated invocation's hit rate. Use Cargo's
 [`--timings`](https://doc.rust-lang.org/cargo/reference/timings.html) report for
 unit/concurrency inspection; its HTML is a human report, not a stable JSON API.
 
+Batch related small targets in one invocation instead of admitting each
+separately. Repeat `-p` or `--test`, and combine `--lib` with named integration
+targets to retain their union. For example:
+
+```sh
+python3 tools/rust_feedback.py test -p tilo-clock -p tilo-advisory-lock --lib --test lock
+```
+
+This keeps the same Cargo/test runner and selected tests while avoiding a second
+admission and client setup. It does not bypass admission or replace final
+integration checks. A larger feature/dependency union can cost more compilation,
+so batch related checks rather than the workspace.
+
 Start one heavy validation per task at a time. The builder owns admission; do
 not reserve slots or poll queued jobs. A fresh worktree's seed/sync cost can
 exceed a small leaf compile, so compare warm runs separately. A focused result
