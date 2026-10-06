@@ -266,7 +266,7 @@ fn sheet_sizes_to_its_body_within_the_window() {
         assert!(!lay(&ModalSpec::new("Short").body_height(100.0), &Theme::dark()).body_overflows);
     }
 
-    // Case `the_sheet_keeps_the_gutter_on_a_small_output`.
+    // Case `a_small_output_becomes_a_page_and_keeps_the_content_gutter`.
     {
         let small = Rect::new(0.0, 0.0, 420.0, 360.0);
         let spec = ModalSpec::new("Workspace invite").body_height(600.0);
@@ -274,8 +274,9 @@ fn sheet_sizes_to_its_body_within_the_window() {
         let mut tr = TextRenderer::new();
         let l = layout(small, &spec, &mut tr, &theme);
         let gutter = f64::from(theme.tokens.spacing.s6);
-        assert!(l.card.x0 >= gutter - 0.5 && l.card.x1 <= small.x1 - gutter + 0.5);
-        assert!(l.card.y0 >= gutter - 0.5 && l.card.y1 <= small.y1 - gutter + 0.5);
+        assert_eq!(l.card, small, "a compact modal fills the viewport");
+        assert!(l.body.x0 >= gutter - 0.5 && l.body.x1 <= small.x1 - gutter + 0.5);
+        assert!(l.title.y0 >= gutter - 0.5 && l.body.y1 <= small.y1 - gutter + 0.5);
     }
 
     // Case `the_sheet_stops_growing_at_its_maximum`.
@@ -358,6 +359,127 @@ fn the_sheet_is_a_floating_panel_with_a_title() {
         18.0,
         "panel radius"
     );
+}
+
+#[test]
+fn a_modal_scrim_does_not_dim_the_foreground_materials_recorded_backdrop() {
+    let window = Rect::new(0.0, 0.0, 1000.0, 700.0);
+    for (name, theme) in themes() {
+        let mut text = TextRenderer::new();
+        let spec = ModalSpec::new("Foreground").body_height(160.0);
+        let geometry = layout(window, &spec, &mut text, &theme);
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            theme.tokens.colors.surfaces.content,
+            None,
+            &window,
+        );
+        let original = scene.clone();
+        let recording = crate::backdrop::BackdropRecording::begin();
+        crate::backdrop::layer_scene(&scene, 0);
+        paint_backdrop(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &geometry,
+            &spec,
+        );
+        let surfaces = recording.finish();
+        let surface = surfaces
+            .first()
+            .expect("the real floating material records its backdrop");
+        assert_eq!(surface.bounds, geometry.card);
+        let mut renderer =
+            crate::offscreen::OffscreenRenderer::try_new_with_cpu_preprocessing(1000, 700)
+                .expect("the production renderer can observe the backdrop");
+        let original = renderer.render_rgba(&original);
+        let below = renderer.render_rgba(&surface.below);
+        let at = |pixels: &[u8], x: usize, y: usize| {
+            let offset = y.saturating_mul(1000).saturating_add(x).saturating_mul(4);
+            pixels
+                .get(offset..offset.saturating_add(4))
+                .expect("a sample inside the image")
+                .to_vec()
+        };
+        assert_eq!(
+            at(&below, 500, 350),
+            at(&original, 500, 350),
+            "{name}: the actual material samples undimmed background under the foreground"
+        );
+        assert_ne!(
+            at(&below, 20, 20),
+            at(&original, 20, 20),
+            "{name}: the same scrim still dims the page outside the dialog"
+        );
+    }
+}
+
+#[test]
+fn compact_modals_fill_the_window_and_keep_their_controls_on_the_foreground_page() {
+    for (name, theme) in themes() {
+        for window in [
+            Rect::new(0.0, 0.0, 360.0, 800.0),
+            Rect::new(20.0, 30.0, 820.0, 390.0),
+        ] {
+            let actions = [
+                ModalAction::secondary("Cancel"),
+                ModalAction::primary("Save"),
+            ];
+            let spec = ModalSpec::new("Edit event")
+                .actions(&actions)
+                .body_height(1200.0);
+            let mut text = TextRenderer::new();
+            let geometry = layout(window, &spec, &mut text, &theme);
+            assert_eq!(
+                geometry.card, window,
+                "{name}: compact dialog is the whole foreground page"
+            );
+            assert_eq!(
+                geometry.scrim, window,
+                "the modal still isolates the whole viewport"
+            );
+            assert!(
+                geometry.body_overflows,
+                "the body scrolls while the footer stays reachable"
+            );
+            assert_eq!(
+                geometry.body.width(),
+                body_width(window, spec.max_width, &theme)
+            );
+            for (index, rect) in geometry.actions.iter().enumerate() {
+                assert!(window.contains_rect(*rect));
+                assert!(rect.y0 >= geometry.body.y1);
+                assert_eq!(geometry.hit(rect.center()), Some(ModalHit::Action(index)));
+            }
+            let close = geometry
+                .close
+                .expect("the full-window page retains its close control");
+            assert!(window.contains_rect(close));
+            assert_eq!(geometry.hit(close.center()), Some(ModalHit::Close));
+            assert_eq!(
+                geometry.hit(window.origin() + Vec2::new(1.0, 1.0)),
+                Some(ModalHit::Card)
+            );
+            let mut scene = Scene::new();
+            let recording = crate::backdrop::BackdropRecording::begin();
+            crate::backdrop::layer_scene(&scene, 0);
+            paint_backdrop(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &geometry,
+                &spec,
+            );
+            assert!(
+                recording.finish().is_empty(),
+                "the full-window foreground is opaque, not a blurred card"
+            );
+        }
+    }
 }
 
 #[test]

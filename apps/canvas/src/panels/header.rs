@@ -16,10 +16,17 @@ use crate::resource::ArtworkResource;
 use crate::selection::{Combine, Select, UseSelection};
 use crate::tools::{Sheet, Tools, ViewRequest};
 
-/// The content column's header: the artwork's title, then adding a
-/// picture, exporting, undo and redo, and the zoom. The window shell owns
-/// the row, the inspector's toggle and History.
-pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Vec<Element> {
+/// The editable artwork title and its current zoom occupy an intrinsically
+/// measured header slot beside the individually measured commands.
+pub fn title(cx: &ViewCx<ArtworkResource>, tools: &Tools, compact: &LocalState<bool>) -> Element {
+    let zoom_tools = tools.clone();
+    let zoom = cx.switch(compact, move |_, compact| {
+        if *compact {
+            Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element
+        } else {
+            zoom_readout(&zoom_tools)
+        }
+    });
     // Finish editing the title as one resource action and undo step.
     let titled = cx.value(|art: &Artwork| art.title.clone());
     let title = cx.switch(&titled, |cx, title| {
@@ -38,60 +45,75 @@ pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Vec<Element> {
             ),
         ) as Element
     });
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_width()
+            .with_intrinsic_height()
+            .push(Box::new(
+                Row::new()
+                    .no_wrap()
+                    .with_align_items(ui::taffy::AlignItems::Center)
+                    .push(title)
+                    .push(zoom),
+            ))
+            .push(notice(cx, tools)),
+    )
+}
+
+/// Individual shared controls let the shell move each command into More
+/// without laying a wider private row beneath its inspector and History.
+pub fn header(
+    cx: &ViewCx<ArtworkResource>,
+    tools: &Tools,
+    compact: &LocalState<bool>,
+) -> Vec<Element> {
     let lookup = ui::i18n::I18nManager::lookup_plain;
-    let row = Row::new()
-        .no_wrap()
-        .with_align_items(ui::taffy::AlignItems::Center)
-        // The title takes the room the controls leave, and holds them at
-        // the far end.
-        .push(Box::new(
-            Container::new()
-                .with_no_padding()
-                .with_flex_grow()
-                .with_child(Box::new(
-                    Column::new()
-                        .with_no_padding()
-                        .with_intrinsic_height()
-                        .push(title)
-                        .push(notice(cx, tools)),
-                )),
-        ))
-        .push(add_picture(tools))
-        .push(Box::new(sheet_button(
-            tools,
-            "canvas-export-title",
-            Icon::Download,
-            Sheet::Export,
-        )))
-        .push(menu(cx, tools))
-        .push(Box::new(icon_button(
+    let mut actions = vec![
+        menu(cx, tools),
+        Box::new(icon_button(
             cx,
             Icon::Undo2,
             &lookup("canvas-undo"),
             ArtworkResource::UNDO.invoke(),
-        )))
-        .push(Box::new(icon_button(
+        )),
+        Box::new(icon_button(
             cx,
             Icon::Redo2,
             &lookup("canvas-redo"),
             ArtworkResource::REDO.invoke(),
-        )))
-        .push(zoom(tools));
-    // One group: each control is one of the artwork's actions (or a view
-    // of it) an agent already has, so none is offered again on its own.
-    vec![Box::new(super::pane::Group::new(Box::new(
-        Container::new()
-            .with_no_padding()
-            .with_flex_grow()
-            .with_min_width(0.0)
-            .with_child(Box::new(row)),
-    )))]
+        )),
+    ];
+    // Files/export remain in the artwork menu on mobile; adding a picture
+    // moves beside the tools. Keep the title readable rather than compressing
+    // every desktop command into a phone's one header row.
+    for command in 0..5 {
+        let tools = tools.clone();
+        actions.push(cx.switch(compact, move |_, compact| {
+            if *compact {
+                return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
+            }
+            match command {
+                0 => add_picture(&tools, ControlSize::Small),
+                1 => Box::new(sheet_button(
+                    &tools,
+                    "canvas-export-title",
+                    Icon::Download,
+                    Sheet::Export,
+                )),
+                2 => view_button(&tools, "canvas-zoom-out", Icon::Minus, ViewRequest::ZoomOut),
+                3 => view_button(&tools, "canvas-zoom-in", Icon::Plus, ViewRequest::ZoomIn),
+                _ => view_button(&tools, "canvas-zoom-fit", Icon::Maximize2, ViewRequest::Fit),
+            }
+        }));
+    }
+    actions
 }
 
 /// Choose a picture to add: on an empty sheet it becomes the artwork, the
 /// sheet taking its size; otherwise it is placed on the artwork. The
 /// canvas takes the answer when the chooser gives it.
-fn add_picture(tools: &Tools) -> Element {
+pub(crate) fn add_picture(tools: &Tools, size: ControlSize) -> Element {
     let picking = tools.picking.clone();
     let name = ui::i18n::I18nManager::lookup_plain("canvas-add-picture");
     let title = ui::i18n::I18nManager::lookup_plain("canvas-add-picture-title");
@@ -99,7 +121,7 @@ fn add_picture(tools: &Tools) -> Element {
     let kinds = ui::i18n::I18nManager::lookup_plain("canvas-pictures");
     Box::new(
         Button::icon_only("canvas-add-picture", Icon::Image, &name)
-            .control_size(ControlSize::Small)
+            .control_size(size)
             .on_view(move || {
                 let request = ui::portal::PickRequest::open(&title, &confirm)
                     .filter(
@@ -758,9 +780,9 @@ const MENU_RECENTS: usize = 5;
 
 /// Zoom out, how near the artwork is now, zoom in, and fit it to the
 /// window.
-fn zoom(tools: &Tools) -> Element {
-    let readout = {
-        let zoom = tools.zoom.clone();
+fn zoom_readout(tools: &Tools) -> Element {
+    let zoom = tools.zoom.clone();
+    Box::new(
         Text::dynamic(move || {
             let percent = zoom.with(|zoom| zoom * 100.0);
             if percent < 10.0 {
@@ -770,44 +792,7 @@ fn zoom(tools: &Tools) -> Element {
             }
         })
         .with_role(TextRole::Caption)
-        .numeric()
-    };
-    Box::new(
-        Row::new()
-            .no_wrap()
-            .with_gap(0.0)
-            .with_align_items(ui::taffy::AlignItems::Center)
-            .push(view_button(
-                tools,
-                "canvas-zoom-out",
-                Icon::Minus,
-                ViewRequest::ZoomOut,
-            ))
-            .push(Box::new(
-                Container::new()
-                    .with_no_padding()
-                    // Room for "6400%", so the buttons beside the readout
-                    // hold still as it changes: two pointer targets.
-                    .with_width(2.0 * ui::tokens::Metrics::BASE.min_pointer_target)
-                    .with_child(Box::new(
-                        Row::new()
-                            .no_wrap()
-                            .with_justify(ui::taffy::JustifyContent::Center)
-                            .push(Box::new(readout)),
-                    )),
-            ))
-            .push(view_button(
-                tools,
-                "canvas-zoom-in",
-                Icon::Plus,
-                ViewRequest::ZoomIn,
-            ))
-            .push(view_button(
-                tools,
-                "canvas-zoom-fit",
-                Icon::Maximize2,
-                ViewRequest::Fit,
-            )),
+        .numeric(),
     )
 }
 

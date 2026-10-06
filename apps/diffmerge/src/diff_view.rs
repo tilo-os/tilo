@@ -8,6 +8,7 @@
 //! from the theme; nothing here fills the pane.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use taffy::prelude::*;
 use vello::Scene;
@@ -32,6 +33,8 @@ use crate::i18n::t;
 use crate::model::{AlignedRow, DiffModel, RowKind};
 use crate::pane::{self, CodeMetrics};
 use crate::scroll::{HScroll, wheel_pixels};
+
+const EAGER_SYNTAX_BYTES: usize = 256 * 1024;
 
 /// Row metrics measured from the renderer the panel paints with. Refreshed at
 /// the top of every draw and read by scrolling, block rects (accessibility
@@ -129,12 +132,15 @@ fn leaf_node(taffy: &mut TaffyTree<()>, style: Style) -> NodeId {
 
 /// Side-by-side diff panel.
 pub struct DiffView {
-    model: DiffModel,
+    model: Arc<DiffModel>,
     left_label: String,
     right_label: String,
     /// Syntax spans per source line of each side, tokenized as a whole file.
-    left_spans: Vec<Vec<Span>>,
-    right_spans: Vec<Vec<Span>>,
+    left_spans: Vec<Arc<[Span]>>,
+    right_spans: Vec<Arc<[Span]>>,
+    left_highlight: Option<highlight::BackgroundDocument>,
+    right_highlight: Option<highlight::BackgroundDocument>,
+    wake: ui::WakeHandle,
     rect: Rect,
     focused: bool,
     scroll_y: f64,
@@ -167,11 +173,14 @@ impl Default for DiffView {
 impl DiffView {
     pub fn new() -> Self {
         Self {
-            model: DiffModel::default(),
+            model: Arc::default(),
             left_label: String::new(),
             right_label: String::new(),
             left_spans: Vec::new(),
             right_spans: Vec::new(),
+            left_highlight: None,
+            right_highlight: None,
+            wake: ui::WakeHandle::new(),
             rect: Rect::ZERO,
             focused: false,
             scroll_y: 0.0,
@@ -210,13 +219,28 @@ impl DiffView {
     }
 
     pub fn set_inputs(&mut self, left_label: &str, left: &str, right_label: &str, right: &str) {
-        self.model = DiffModel::compute(left, right);
+        self.model = crate::model::comparison(left, right);
         self.left_label = left_label.to_string();
         self.right_label = right_label.to_string();
-        self.left_spans =
-            highlight::document(&highlight::grammar_for_label(left_label), left.lines());
-        self.right_spans =
-            highlight::document(&highlight::grammar_for_label(right_label), right.lines());
+        // Small sources finish immediately; large ones paint the complete
+        // diff immediately and receive continuous grammar results in batches.
+        self.left_highlight = None;
+        self.right_highlight = None;
+        self.left_spans.clear();
+        self.right_spans.clear();
+        if left.len().max(right.len()) <= EAGER_SYNTAX_BYTES {
+            self.left_spans =
+                highlight::shared_document(&highlight::grammar_for_label(left_label), left.lines());
+            self.right_spans = highlight::shared_document(
+                &highlight::grammar_for_label(right_label),
+                right.lines(),
+            );
+        } else {
+            self.left_highlight =
+                highlight::BackgroundDocument::start(left_label, left, self.wake.clone());
+            self.right_highlight =
+                highlight::BackgroundDocument::start(right_label, right, self.wake.clone());
+        }
         self.widest = left
             .lines()
             .chain(right.lines())
@@ -227,6 +251,31 @@ impl DiffView {
         self.across.reset();
         self.active_block = self.model.blocks.first().map(|_| 0);
         self.dirty = true;
+    }
+
+    pub(crate) fn set_waker(&mut self, wake: ui::WakeHandle) {
+        self.wake = wake;
+    }
+
+    pub(crate) fn collect_highlights(&mut self) -> bool {
+        let before = self.left_spans.len().saturating_add(self.right_spans.len());
+        if self
+            .left_highlight
+            .as_mut()
+            .is_some_and(|job| !job.collect(&mut self.left_spans))
+        {
+            self.left_highlight = None;
+        }
+        if self
+            .right_highlight
+            .as_mut()
+            .is_some_and(|job| !job.collect(&mut self.right_spans))
+        {
+            self.right_highlight = None;
+        }
+        let changed = before != self.left_spans.len().saturating_add(self.right_spans.len());
+        self.dirty |= changed;
+        changed
     }
 
     pub fn model(&self) -> &DiffModel {
@@ -419,9 +468,20 @@ impl Widget for DiffView {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        self.collect_highlights();
         // One metric snapshot per frame: rows, gutter, header and scroll clamp
         // all follow the renderer's actual line height.
-        let measured = Metrics::measure(tr, theme);
+        let mut measured = Metrics::measure(tr, theme);
+        if self.rect.width() < measured.breakpoint {
+            // Source choices and file metadata occupy separate rows.
+            let caption_h = f64::from(
+                tr.measure_style("Ag", None, &theme.text(TextRole::Caption))
+                    .1,
+            );
+            measured.code.header_h = SegmentedFace::height(ControlSize::Small, theme)
+                + caption_h
+                + 3.0 * f64::from(theme.tokens.spacing.s2);
+        }
         if measured != self.metrics {
             self.metrics = measured;
             self.scroll_y = self.scroll_y.min(self.max_scroll());
@@ -730,13 +790,22 @@ impl DiffView {
         let content_right = r.x1 - m.strip_w;
         let inset = f64::from(theme.tokens.spacing.s3);
         let strip_h = SegmentedFace::height(ControlSize::Small, theme);
-        let strip_y = r.y0 + (m.code.header_h - strip_h) / 2.0;
+        let strip_y = r.y0 + f64::from(theme.tokens.spacing.s2);
         let (x0, x1) = (r.x0 + inset, content_right - inset);
         let mid = x0.midpoint(x1);
         self.compact_source_hits = [
             Rect::new(x0, strip_y, mid, strip_y + strip_h),
             Rect::new(mid, strip_y, x1, strip_y + strip_h),
         ];
+        let file = |label: &str, fallback: &str| {
+            std::path::Path::new(highlight::file_name(label))
+                .file_name()
+                .and_then(|name| name.to_str())
+                .filter(|name| !name.is_empty())
+                .map_or_else(|| t(fallback), str::to_owned)
+        };
+        let left = file(&self.left_label, "source-left");
+        let right = file(&self.right_label, "source-right");
         let labels = [t("source-left"), t("source-right")];
         let labels = [labels[0].as_str(), labels[1].as_str()];
         ToggleGroup::paint(
@@ -757,6 +826,24 @@ impl DiffView {
                     .position(|rect| rect.contains(self.cursor)),
             ),
         );
+        let metadata_top = strip_y + strip_h + f64::from(theme.tokens.spacing.s2);
+        for (segment, file) in self.compact_source_hits.iter().zip([left, right]) {
+            let band = Rect::new(segment.x0, metadata_top, segment.x1, r.y0 + m.code.header_h);
+            let caption = theme.text(TextRole::Caption);
+            let shown = ctx.text.elide_to_width_style(
+                &file,
+                pane::to_f32((band.width() - 2.0 * inset).max(0.0)),
+                &caption,
+            );
+            ctx.text_role_in_band(
+                &shown,
+                TextRole::Caption,
+                theme.text_dim,
+                band.x0 + inset,
+                band,
+                None,
+            );
+        }
         let body_top = r.y0 + m.code.header_h;
         ui::surface::separator(
             ctx.scene,
@@ -956,9 +1043,86 @@ impl DiffView {
 }
 
 /// The spans of 1-based source line `number` on one side.
-fn line_spans(spans: &[Vec<Span>], number: Option<usize>) -> &[Span] {
+fn line_spans(spans: &[Arc<[Span]>], number: Option<usize>) -> &[Span] {
     number
         .and_then(|number| number.checked_sub(1))
         .and_then(|index| spans.get(index))
-        .map_or(&[], Vec::as_slice)
+        .map_or(&[], AsRef::as_ref)
+}
+
+#[cfg(test)]
+pub(crate) mod performance_tests {
+    use super::*;
+    use std::time::Instant;
+
+    pub(crate) fn unique_sources() -> (String, String) {
+        use std::fmt::Write as _;
+        let mut left = String::with_capacity(20 * 1024 * 1024);
+        let mut index = 0usize;
+        while left.len() < 20 * 1024 * 1024 {
+            writeln!(left, "pub fn example_{index}() {{ let message = \"unique source line {index} for a real large document comparison\"; }}").unwrap();
+            index = index.saturating_add(1);
+        }
+        let mut right = left.clone();
+        let change = right.len() / 2;
+        let change = right[..change]
+            .rfind("example")
+            .expect("real source identifier");
+        right.replace_range(change..change + "example".len(), "changed");
+        (left, right)
+    }
+
+    #[test]
+    fn twenty_megabyte_comparison_load_render_and_scroll_use_the_real_view() {
+        let (left, right) = unique_sources();
+        let started = Instant::now();
+        let compared = DiffModel::compute(&left, &right);
+        let comparison = started.elapsed();
+        assert_eq!(compared.modified, 1);
+        drop(compared);
+        let mut view = DiffView::new();
+        let started = Instant::now();
+        view.set_inputs("large.rs (before)", &left, "large.rs (after)", &right);
+        let load = started.elapsed();
+        assert_eq!(view.model.modified, 1);
+        assert_eq!(view.model.blocks.len(), 1);
+        assert_eq!(view.model.left_lines, left.lines().count());
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        view.place(Rect::new(0.0, 0.0, 1280.0, 800.0));
+        let mut scene = Scene::new();
+        let started = Instant::now();
+        view.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        let first = started.elapsed();
+        let first_shapes = text.take_shape_stats();
+        view.scroll_to(view.max_scroll() / 2.0);
+        scene.reset();
+        let started = Instant::now();
+        view.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        let scroll = started.elapsed();
+        let scroll_shapes = text.take_shape_stats();
+        assert!(view.scroll_y > 0.0);
+        assert!(!scene.encoding().draw_tags.is_empty());
+        assert!(
+            view.left_spans.len() <= 16 && view.right_spans.len() <= 16,
+            "two frames admit bounded syntax chunks, never the complete source"
+        );
+        eprintln!(
+            "large comparison bytes={} rows={} comparison={comparison:?} load={load:?} first_frame={first:?} scroll_frame={scroll:?} first_shapes={first_shapes:?} scroll_shapes={scroll_shapes:?}",
+            left.len(),
+            view.model.rows.len()
+        );
+    }
 }

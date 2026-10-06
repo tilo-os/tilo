@@ -186,6 +186,9 @@ pub fn stage<A: ResourceApp>(
         .flush_component_records()
         .map_err(LaunchError::Operation)?;
     harness.relayout();
+    // Navigation replacement has coherent first-frame geometry. Capture the
+    // acknowledged production frame after its visual work above completes;
+    // a live progress spinner intentionally never reaches animation idle.
     Ok(())
 }
 
