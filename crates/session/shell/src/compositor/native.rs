@@ -13872,6 +13872,26 @@ mod tests {
         tree.shared()
     }
 
+    fn attach_directory_fixture(
+        frame_builder: &mut FrameBuilder,
+        directory: &crate::shell::collab_broker_capnp::tests::LocalDirectoryFixture,
+    ) {
+        frame_builder
+            .host_mut()
+            .attach_app_action_broker(directory.broker.clone());
+        // This fixture has a test-owned room authority, not a signed desktop
+        // session. Bind the search caller to that same explicit fixture; never
+        // let a socket test depend on the machine's selected identity.
+        crate::shell::overlay_host::install_fixture_search_provider(
+            frame_builder.host_mut(),
+            std::rc::Rc::new(
+                crate::shell::search::providers::LiveAppActionsProvider::new_with_fixture_identity(
+                    directory.broker.clone(),
+                ),
+            ),
+        );
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -13893,9 +13913,7 @@ mod tests {
                         tree.clone(),
                     );
                 let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
-                frame_builder
-                    .host_mut()
-                    .attach_app_action_broker(directory.broker.clone());
+                attach_directory_fixture(&mut frame_builder, &directory);
                 let mut ctx = TestControlCtx::new();
                 let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
                 let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
@@ -14117,9 +14135,7 @@ mod tests {
                         tree.clone(),
                     );
                 let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
-                frame_builder
-                    .host_mut()
-                    .attach_app_action_broker(directory.broker.clone());
+                attach_directory_fixture(&mut frame_builder, &directory);
                 let mut ctx = TestControlCtx::new();
                 let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
                 let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
@@ -14232,9 +14248,7 @@ mod tests {
                         tree.clone(),
                     );
                 let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
-                frame_builder
-                    .host_mut()
-                    .attach_app_action_broker(directory.broker.clone());
+                attach_directory_fixture(&mut frame_builder, &directory);
                 let mut ctx = TestControlCtx::new();
                 let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
                 let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
