@@ -399,3 +399,57 @@ fn a_small_vector_icon_keeps_vector_tools_in_the_automatic_workspace() {
         "small vector icons still offer lettering"
     );
 }
+
+#[test]
+fn all_project_choices_fit_and_accept_pointer_input_at_the_live_window_size() {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.harness().resize((868, 772)).unwrap();
+    for (key, pixel) in [
+        ("canvas-workspace-pixel", true),
+        ("canvas-workspace-photo", false),
+        ("canvas-workspace-vector", false),
+        ("canvas-workspace-auto", false),
+    ] {
+        let snapshot = app.harness().inspection();
+        let label = ui::i18n::I18nManager::lookup_plain(key);
+        let bounds = support::named_bounds(&snapshot.root, &label).unwrap();
+        assert!(
+            bounds.x0 >= 0.0 && bounds.x1 <= 868.0 && bounds.y1 <= 772.0,
+            "{label} is fully visible: {bounds:?}"
+        );
+        assert!(bounds.width() >= 44.0 && bounds.height() >= 28.0);
+        app.harness().click_at(bounds.center().x, bounds.center().y);
+        if pixel {
+            let canvas = app.harness().targets()["canvas"];
+            app.harness().click_at(canvas.center().x, canvas.center().y);
+            assert_eq!(app.state().marks[0].style.brush.as_deref(), Some("pixel"));
+        } else {
+            let snapshot = app.harness().inspection();
+            let name = ui::i18n::I18nManager::lookup_plain(canvas::tools::Tool::Select.label());
+            assert!(support::named_bounds(&snapshot.root, &name).is_some());
+        }
+    }
+}
+
+#[test]
+fn starting_a_regular_sheet_after_a_sprite_resets_the_pixel_brush() {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.harness().click_named("canvas-welcome-new").unwrap();
+    app.harness()
+        .click_named("canvas-new-size-pixel-32")
+        .unwrap();
+    app.harness().click_named("canvas-new-title").unwrap();
+    app.harness().key("Enter");
+    app.harness().click_named("canvas-menu").unwrap();
+    app.harness().key("Home");
+    app.harness().key("Enter");
+    app.harness().click_named("canvas-new-size-a4").unwrap();
+    app.harness().click_named("canvas-new-start-paper").unwrap();
+    app.harness().click_named("canvas-new-title").unwrap();
+    app.harness().key("Enter");
+    app.harness().key("b");
+    let canvas = app.harness().targets()["canvas"];
+    app.harness().click_at(canvas.center().x, canvas.center().y);
+    assert_eq!(app.state().marks.len(), 1);
+    assert_ne!(app.state().marks[0].style.brush.as_deref(), Some("pixel"));
+}

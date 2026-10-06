@@ -451,9 +451,9 @@ fn workspace_controls(tools: &tools::Tools) -> Element {
     })
     .collect();
     let held = tools.clone();
-    let choose = ui::widget::ToggleGroup::from_state(choices, &tools.workspace).on_view(
-        "canvas-workspace",
-        move |_| {
+    let choose = ui::widget::ToggleGroup::from_state(choices, &tools.workspace)
+        .with_flexible_width()
+        .on_view("canvas-workspace", move |_| {
             let workspace = held.workspace.get();
             held.tool.set(if workspace == Workspace::Pixel {
                 tools::Tool::Brush
@@ -468,8 +468,7 @@ fn workspace_controls(tools: &tools::Tools) -> Element {
             if workspace == Workspace::Photo {
                 held.layer_adjust.set(true);
             }
-        },
-    );
+        });
     Box::new(
         Column::new()
             .with_no_padding()

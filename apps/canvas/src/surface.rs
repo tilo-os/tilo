@@ -3441,6 +3441,14 @@ impl ResourceSurface<ArtworkResource, ViewOp> for CanvasSurface {
     }
 
     fn present(&mut self, state: &Rc<Artwork>) {
+        // A differently sized sheet needs its own fit; keeping a hand-panned
+        // sprite view can otherwise put a newly opened photograph off screen.
+        if self.art.width.to_bits() != state.width.to_bits()
+            || self.art.height.to_bits() != state.height.to_bits()
+        {
+            self.moved_by_hand = false;
+            self.fitted_to = None;
+        }
         self.expected.retain(|id| state.mark(id).is_none());
         let expected = &self.expected;
         self.selection
