@@ -403,13 +403,26 @@ impl ResourceApp for ChatShell {
             return Vec::new();
         }
         let creator = LocalIdentity::for_participant(cx.me());
-        Invoke::apply(&ChatAction::SeedStarter {
-            name: creator.name,
-            initials: creator.initials,
-            color_idx: creator.color_idx,
-        })
-        .into_iter()
-        .collect()
+        let action = if let Some(workspace) = cx.host().and_then(|host| host.creation_workspace()) {
+            ChatAction::SeedWorkspace {
+                workspace: workspace.id.clone(),
+                workspace_name: if workspace.name.trim().is_empty() {
+                    workspace.id.clone()
+                } else {
+                    workspace.name.clone()
+                },
+                creator_name: creator.name,
+                creator_initials: creator.initials,
+                color_idx: creator.color_idx,
+            }
+        } else {
+            ChatAction::SeedStarter {
+                name: creator.name,
+                initials: creator.initials,
+                color_idx: creator.color_idx,
+            }
+        };
+        Invoke::apply(&action).into_iter().collect()
     }
 }
 

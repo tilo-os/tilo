@@ -1456,6 +1456,7 @@ impl CapnpBrokerState {
             (surface, offered),
             InvocationInputs {
                 caller: Some(caller),
+                requested: Some(request.invocation),
                 execution: super::ExecutionScope::for_call(caller, request.invocation),
                 argument,
                 actor: &actor,
@@ -1540,6 +1541,7 @@ impl CapnpBrokerState {
             &address.action,
             InvocationInputs {
                 caller: Some(caller),
+                requested: Some(request.invocation),
                 execution: super::ExecutionScope::for_call(caller, request.invocation),
                 argument: argument.as_deref(),
                 actor: &actor,

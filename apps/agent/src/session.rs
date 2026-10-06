@@ -4249,6 +4249,7 @@ mod tests {
                         };
                         if let CollabEvent::Invocation {
                             id,
+                            invocation,
                             resource,
                             action,
                             argument,
@@ -4264,8 +4265,6 @@ mod tests {
                                 .expect("Session must dispatch the typed JSON argument envelope");
                             let arguments = serde_json::from_str(json).unwrap();
                             calls.lock().unwrap().push((action.clone(), arguments));
-                            let invocation =
-                                tilo_actions::InvocationId(Uuid::from_u128(u128::from(id)));
                             let update = if is_photo {
                                 if failed && action == PRODUCE {
                                     tilo_actions::InvocationUpdate::Failed {
@@ -4295,7 +4294,7 @@ mod tests {
                                     &resources,
                                     wp::register,
                                     peer::DocumentInvocation {
-                                        id,
+                                        invocation,
                                         address: tilo_actions::ActionAddress { resource, action },
                                         argument: argument.as_deref(),
                                         actor: &actor,

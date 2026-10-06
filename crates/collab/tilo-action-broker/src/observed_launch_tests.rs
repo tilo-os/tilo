@@ -2,10 +2,93 @@
 // controlled so a receipt can be observed before and after the actual signal.
 type ObservedLaunch = (String, Option<String>, String, Option<String>);
 
+#[tokio::test(flavor = "current_thread")]
+async fn observed_person_launch_retains_exact_original_scope_and_cancellation() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let (started, started_rx) = std::sync::mpsc::channel();
+            let (adopt, receiver) = tokio::sync::oneshot::channel();
+            let launcher = Arc::new(ObservedLauncher {
+                started,
+                receiver: Mutex::new(Some(receiver)),
+                requests: Mutex::new(Vec::new()),
+                original: Mutex::new(None),
+            });
+            let rig = Rig::with_services(
+                &env,
+                HostServices {
+                    launcher: Some(launcher.clone()),
+                    ..env.membership.services()
+                },
+            )
+            .await;
+            let (person, evidence) = local_host_evidence(&env);
+            let facade = crate::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
+            let host = facade.certified_local_action_host(&person, &evidence).unwrap();
+            let original = id(0xc529);
+            let mut request = local_host_request(true);
+            request.invocation = original;
+            let admitted = host.invoke(&person, request);
+            rig.state.drain_action_directory_bridge(&rig.directories);
+            local_host_answer(admitted).await.unwrap();
+            let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
+            assert_eq!(delivered.invocation_uuid, *original.0.as_bytes());
+            let handle = rig.worker.handle.clone();
+            let root = format!("tapp:{}", "12".repeat(32));
+            let selected = root.clone();
+            let mut pending = tokio::task::spawn_local(async move {
+                handle
+                    .launch_installed_application_for(
+                        "so.tilo.word-processor",
+                        None,
+                        Some(&selected),
+                        Some(*original.0.as_bytes()),
+                    )
+                    .await
+            });
+            tokio::select! {
+                () = certified_launch_wait(&started_rx) => {},
+                result = &mut pending => panic!("original launch refused before host admission: {result:?}"),
+            }
+            let custody = launcher
+                .original
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("real original is retained");
+            let workspace = env.membership.read().workspaces[0].clone();
+            assert!(custody.matches("so.tilo.word-processor", Some(&root), &workspace));
+            assert!(!custody.matches("so.tilo.chat", Some(&root), &workspace));
+            assert!(!custody.matches("so.tilo.word-processor", None, &workspace));
+            assert_eq!(custody.certificate().unwrap(),
+                *env.authority.additional_certificates.lock().unwrap().last().unwrap());
+            assert!(!pending.is_finished(), "custody is not actual adoption");
+            let grants = std::mem::take(&mut env.membership.write().workspaces[0].capabilities);
+            assert!(custody.certificate().is_err(), "fresh rights, not the launch snapshot, govern admission");
+            env.membership.write().workspaces[0].capabilities = grants;
+            assert!(custody.certificate().is_ok());
+            host.cancel(&person, &original).unwrap();
+            assert!(
+                custody.certificate().is_err(),
+                "cancelled original cannot be reused"
+            );
+            assert!(custody.delegate_authorship().is_err());
+            adopt.send(Ok(())).unwrap();
+            let (_, json) = pending.await.unwrap().unwrap();
+            assert!(matches!(
+                serde_json::from_str::<tilo_actions::InvocationUpdate>(&json).unwrap(),
+                tilo_actions::InvocationUpdate::Failed { .. }
+            ));
+        })
+        .await;
+}
+
 struct ObservedLauncher {
     started: std::sync::mpsc::Sender<()>,
     receiver: Mutex<Option<tokio::sync::oneshot::Receiver<Result<(), String>>>>,
     requests: Mutex<Vec<ObservedLaunch>>,
+    original: Mutex<Option<crate::services::ObservedApplicationLaunch>>,
 }
 impl crate::services::LauncherServices for ObservedLauncher {
     fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
@@ -36,6 +119,17 @@ impl crate::services::LauncherServices for ObservedLauncher {
     fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
         false
     }
+    fn begin_launch_from_original(
+        &self,
+        app: &str,
+        root: Option<&str>,
+        workspace: &tilo_desktop_model::Workspace,
+        author: Option<&str>,
+        original: Option<crate::services::ObservedApplicationLaunch>,
+    ) -> Result<crate::services::LaunchReadiness, String> {
+        *self.original.lock().unwrap() = original;
+        self.begin_launch(app, root, workspace, author)
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -50,6 +144,7 @@ async fn installed_launch_rpc_waits_for_adoption_preserves_signed_root_and_reval
                     started,
                     receiver: Mutex::new(Some(receiver)),
                     requests: Mutex::new(Vec::new()),
+                    original: Mutex::new(None),
                 });
                 let rig = Rig::with_services(
                     &env,
@@ -136,6 +231,7 @@ async fn installed_launch_rpc_rejects_a_noncanonical_package_root_before_host_ad
                 started,
                 receiver: Mutex::new(Some(receiver)),
                 requests: Mutex::new(Vec::new()),
+                original: Mutex::new(None),
             });
             let rig = Rig::with_services(
                 &env,
@@ -175,6 +271,7 @@ async fn installed_launch_continuation_keeps_the_original_agents_authority() {
                     started,
                     receiver: Mutex::new(Some(receiver)),
                     requests: Mutex::new(Vec::new()),
+                    original: Mutex::new(None),
                 });
                 let rig = Rig::with_services(
                     &env,

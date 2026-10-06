@@ -297,7 +297,9 @@ pub fn publish_actions(peer: &mut TypedPeer, app_id: &str, resources: &[Resource
 
 /// A document invocation as the broker delivers it to the app host.
 pub struct DocumentInvocation<'a> {
-    pub id: u64,
+    /// The broker-minted end-to-end invocation identity. The connection-local
+    /// numeric correlation key remains solely on the response RPC.
+    pub invocation: tilo_actions::InvocationId,
     pub address: ActionAddress,
     pub argument: Option<&'a str>,
     pub actor: &'a str,
@@ -323,7 +325,7 @@ pub fn service_document_invocation(
     invocation: DocumentInvocation<'_>,
 ) -> tilo_actions::InvocationUpdate {
     let DocumentInvocation {
-        id,
+        invocation,
         address,
         argument,
         actor,
@@ -364,7 +366,6 @@ pub fn service_document_invocation(
             &mut transport,
         )
     };
-    let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
     match result {
         Ok(_) => {
             let delta = replica.save_after(&before);

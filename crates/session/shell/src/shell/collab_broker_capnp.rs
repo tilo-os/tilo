@@ -265,7 +265,7 @@ pub mod tests {
             ), "unexpected confirmation reply: {confirmation_reply:?}");
             fixture.set_confirmation_required(false);
 
-            let provider = LiveAppActionsProvider::new(fixture.broker.clone());
+            let provider = LiveAppActionsProvider::new_with_fixture_identity(fixture.broker.clone());
             let mut doc = AutoCommit::new();
             let doc_root = automerge::ROOT.clone();
             let _same_room_actor = load_directory_result(&fixture, &provider, &doc, &doc_root).await;
