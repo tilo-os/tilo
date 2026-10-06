@@ -126,6 +126,20 @@ pub enum MailEffect {
     /// it is this window's own.
     #[effect(view)]
     Compose,
+    /// Choose a recipient and sending account from shared Contacts.
+    #[effect(view)]
+    ContactRecipients,
+    /// Prepare a draft from this exact address-book recipient and sender.
+    ///
+    /// Requires review; creates no identity link and sends nothing.
+    #[effect(row, destructive, returns)]
+    PrepareContactDraft {
+        person: String,
+        label: String,
+        email: String,
+        sender_account: String,
+        sender_email: String,
+    },
     /// Refresh current folder
     #[effect(job, idempotent)]
     Refresh,
@@ -192,6 +206,8 @@ fn bound(effect: &MailEffect, label: &str) -> ActionSpec {
 /// [`Action::apply`] a pure write with no re-derivation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct DraftData {
+    #[serde(default)]
+    pub sender: Option<crate::model::DraftSender>,
     pub to: String,
     pub cc: String,
     pub bcc: String,
@@ -209,6 +225,7 @@ pub struct DraftData {
 impl DraftData {
     pub fn from_draft(d: &Draft) -> Self {
         Self {
+            sender: d.sender.clone(),
             to: bounded_text(&d.to, MAX_DRAFT_ADDRESS_CHARS, false),
             cc: bounded_text(&d.cc, MAX_DRAFT_ADDRESS_CHARS, false),
             bcc: bounded_text(&d.bcc, MAX_DRAFT_ADDRESS_CHARS, false),
@@ -229,6 +246,7 @@ impl DraftData {
 
     fn to_draft(&self) -> Draft {
         Draft {
+            sender: self.sender.clone(),
             to: bounded_text(&self.to, MAX_DRAFT_ADDRESS_CHARS, false),
             cc: bounded_text(&self.cc, MAX_DRAFT_ADDRESS_CHARS, false),
             bcc: bounded_text(&self.bcc, MAX_DRAFT_ADDRESS_CHARS, false),

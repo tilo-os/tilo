@@ -15,7 +15,7 @@ import tempfile
 import tomllib
 
 from qualify_apk import digest, pinned, verify_runtime
-from run_arity_journey import REPO, Journey, wait_for, require_ok
+from run_arity_journey import REPO, Journey, wait_for, require_ok, checked_output
 
 
 def main():
@@ -25,6 +25,7 @@ def main():
     for name in ('apk', 'signer', 'runtime-receipt'):
         parser.add_argument('--' + name + '-sha256', required=True)
     args = parser.parse_args()
+    output = checked_output(args.output)
     payload = args.payload.resolve(strict=True)
     pinned(payload / 'app.apk', args.apk_sha256)
     qualification = json.loads((payload / 'qualification.json').read_text())
@@ -37,7 +38,6 @@ def main():
     parent = args.runtime_parent.resolve(strict=True)
     if parent.stat().st_uid != os.geteuid() or parent.stat().st_mode & 0o077:
         raise RuntimeError('runtime parent must be private and user-owned')
-    output = args.output.absolute()
     output.mkdir(mode=0o700)
     profile = output / 'profile'
     catalogue = profile / 'data/tilo-apps'

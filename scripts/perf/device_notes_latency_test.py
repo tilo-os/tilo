@@ -51,7 +51,7 @@ class DeviceFixture:
 
     def execute(self, arguments):
         if arguments[0].endswith("python3"):
-            return "/owned/session/latest.log\n"
+            return "/owned/session/latest.log\n" if len(arguments) == 3 else ""
         if arguments[0].endswith("wc"):
             return "0 /owned/session/latest.log\n"
         return ""

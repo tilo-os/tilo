@@ -6,9 +6,9 @@ use std::rc::Rc;
 
 use osk::widget::{key_row_height, keyboard_gutter, suggestion_row_height, toolbar_row_height};
 use osk::{GeometricSwipeModel, KeyAction, KeyboardLayout, OskWidget, ShiftState, TextMirror};
-use ui::State;
 use ui::headless::Driver;
 use ui::tokens::{Metrics, Spacing};
+use ui::{State, Widget};
 use vello::kurbo::{Point, Rect};
 use winit::event::TouchPhase;
 
@@ -25,12 +25,18 @@ impl Keyboard {
     }
 
     fn with_layout(layout: &str, viewport: (u32, u32)) -> Self {
+        Self::with_widget(
+            OskWidget::new()
+                .with_swipe_model(Box::new(GeometricSwipeModel::english()))
+                .with_active_layout(layout),
+            viewport,
+        )
+    }
+
+    fn with_widget(widget: OskWidget, viewport: (u32, u32)) -> Self {
         let typed = Rc::new(RefCell::new(TextMirror::new(4096)));
         let sink = typed.clone();
-        let widget = OskWidget::new()
-            .with_swipe_model(Box::new(GeometricSwipeModel::english()))
-            .with_active_layout(layout)
-            .on_output(move |output| sink.borrow_mut().apply(&output));
+        let widget = widget.on_output(move |output| sink.borrow_mut().apply(&output));
         let driver = Driver::for_root(State::new(), widget, viewport, ui::Theme::dark());
         Self { driver, typed }
     }
@@ -163,6 +169,38 @@ fn one_finger_alone_on_the_keys_swipes_a_word() {
     }
     kb.up(1, *path.last().unwrap());
     assert_eq!(kb.text().to_lowercase(), "quick");
+}
+
+#[test]
+fn a_fast_adjacent_letter_gesture_uses_its_release_endpoint() {
+    let mut kb = Keyboard::new();
+    kb.down(1, key('a'));
+    // A coalesced fast gesture can arrive as down/up without a move event.
+    kb.up(1, key('s'));
+    assert_eq!(kb.text(), "as");
+}
+
+#[test]
+fn changing_letters_without_changing_rectangles_cancels_old_contacts() {
+    let mut swapped = KeyboardLayout::qwerty();
+    swapped.name = "swapped".into();
+    swapped.rows[0].swap(2, 3);
+    let mut kb = Keyboard::with_widget(OskWidget::new().with_layout(swapped), VIEWPORT);
+    let old_geometry = kb.driver.root::<OskWidget>().get_rect();
+    kb.down(1, key('e'));
+    kb.driver
+        .root_mut::<OskWidget>()
+        .present_preferences(&osk::OskPreferences {
+            layout: "swapped".into(),
+            ..osk::OskPreferences::default()
+        });
+    kb.driver.recompose().unwrap();
+    assert_eq!(kb.driver.root::<OskWidget>().get_rect(), old_geometry);
+    kb.up(1, key('e'));
+    assert_eq!(kb.text(), "");
+    kb.down(2, key('e'));
+    kb.up(2, key('e'));
+    assert_eq!(kb.text(), "r");
 }
 
 #[test]

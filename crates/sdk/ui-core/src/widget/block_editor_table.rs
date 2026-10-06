@@ -363,6 +363,19 @@ impl Table {
         self.projection_exit.take()
     }
 
+    pub(super) fn projected_ime_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        let (index, input) = self
+            .cells
+            .iter()
+            .enumerate()
+            .find(|(_, input)| input.is_focused())?;
+        Some(crate::ime::scoped_fingerprint(
+            &index.to_le_bytes(),
+            input.ime_edit_fingerprint(key)?,
+            key,
+        ))
+    }
+
     pub(super) fn projected_ime_rect(&self) -> Option<Rect> {
         self.cells
             .iter()

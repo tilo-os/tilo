@@ -5116,6 +5116,12 @@ impl Widget for TextInput {
         })
     }
 
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        (!self.holds_secret() && !self.core.has_preedit()).then(|| {
+            crate::ime::edit_fingerprint(&self.text, self.core.anchor(), self.core.caret(), key)
+        })
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         // A secret (password or key) input never leaks its value into the a11y

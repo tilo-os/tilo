@@ -45,6 +45,7 @@ pub mod moderation;
 pub mod moderation_api;
 pub mod serve;
 pub mod storage;
+pub mod submission_review;
 
 pub use allowlist::{AllowlistError, PublisherAllowlist, PublisherRow};
 pub use bundle_review::{
