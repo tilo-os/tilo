@@ -1013,6 +1013,9 @@ impl OskWidget {
         if name == "symbols" || !self.layouts.contains_key(name) {
             return false;
         }
+        if self.active_layout_name() != name {
+            self.cancel_contacts();
+        }
         self.preferred_text_layout = name.to_string();
         self.active_letter = name.to_string();
         self.purpose = InputPurpose::Text;
@@ -1056,6 +1059,7 @@ impl OskWidget {
         {
             return;
         }
+        self.cancel_contacts();
         self.preferred_text_layout = name.to_string();
         if self.purpose == InputPurpose::Text {
             self.active_letter = name.to_string();
@@ -1362,7 +1366,7 @@ impl OskWidget {
         self.apply_hint_case();
     }
 
-    /// Cancel input that belonged to a previous field or key geometry. A
+    /// Cancel input that belonged to a previous field, layout or key geometry. A
     /// later release must not type, decode a swipe or restart an editing hold.
     fn cancel_contacts(&mut self) {
         self.fingers.clear();
@@ -1778,11 +1782,14 @@ impl OskWidget {
         Some(true)
     }
 
-    /// Average key dimension of the current frame (the swipe/tap threshold
-    /// scale). Falls back to a sane default before the first layout.
+    /// Letter-key dimension shared with the decoder. Non-letter panels use
+    /// their average key size; before layout, use the target key height.
     fn key_scale(&self) -> f64 {
         if self.key_geom.is_empty() {
             return f64::from(self.target_key_height);
+        }
+        if let Some(scale) = crate::swipe::letter_key_scale(&self.key_geom, self.current_layout()) {
+            return scale;
         }
         let sum: f64 = self
             .key_geom
