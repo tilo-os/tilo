@@ -473,6 +473,10 @@ impl GrantStoreHandle {
         let Some(key) = self.portal_consent_key(caller, kind) else {
             return false;
         };
+        self.insert_portal_consent_key(key, scope)
+    }
+
+    fn insert_portal_consent_key(&self, key: String, scope: GrantScope) -> bool {
         let Ok(mut state) = self.portal_consents.lock() else {
             return false;
         };
@@ -1015,21 +1019,15 @@ pub mod flow {
         cap_template: Capability,
     ) -> PromptOutcome {
         // Fast path — `Always`-scoped grant already present.
+        let Some(consent_key) = ctx.grants().portal_consent_key(&caller, kind) else {
+            return PromptOutcome::Deny;
+        };
         if matches!(ctx.grants().lookup(&caller, kind), Some(GRANT_ALWAYS)) {
             return PromptOutcome::AllowAlways;
         }
-        let rx = ctx.prompts().enqueue(caller.clone(), cap_template.clone());
+        let rx = ctx.prompts().enqueue(caller.clone(), cap_template);
         match rx.await {
-            Ok(outcome) => {
-                // Persist Session/Always — Once is treated as one-shot.
-                if let Some(scope) = outcome.to_scope()
-                    && !matches!(scope, GRANT_ONCE)
-                {
-                    let cap = super::with_scope(cap_template, scope);
-                    ctx.grants().insert_portal_consent(&caller, &cap);
-                }
-                outcome
-            }
+            Ok(outcome) => finish(ctx, &caller, kind, consent_key, outcome),
             // A dead channel means the prompt pump shut down mid-flight — deny rather than hang the caller forever.
             Err(_) => PromptOutcome::Deny,
         }
@@ -1044,22 +1042,17 @@ pub mod flow {
         cap_template: Capability,
         request_key: String,
     ) -> PromptOutcome {
+        let Some(consent_key) = ctx.grants().portal_consent_key(&caller, kind) else {
+            return PromptOutcome::Deny;
+        };
         if matches!(ctx.grants().lookup(&caller, kind), Some(GRANT_ALWAYS)) {
             return PromptOutcome::AllowAlways;
         }
-        let rx =
-            ctx.prompts()
-                .enqueue_for_request(caller.clone(), cap_template.clone(), request_key);
+        let rx = ctx
+            .prompts()
+            .enqueue_for_request(caller.clone(), cap_template, request_key);
         match rx.await {
-            Ok(outcome) => {
-                if let Some(scope) = outcome.to_scope()
-                    && !matches!(scope, GRANT_ONCE)
-                {
-                    let cap = super::with_scope(cap_template, scope);
-                    ctx.grants().insert_portal_consent(&caller, &cap);
-                }
-                outcome
-            }
+            Ok(outcome) => finish(ctx, &caller, kind, consent_key, outcome),
             Err(_) => PromptOutcome::Deny,
         }
     }
@@ -1072,23 +1065,37 @@ pub mod flow {
         kind: CapabilityKind,
         cap_template: Capability,
     ) -> PromptOutcome {
+        let Some(consent_key) = ctx.grants().portal_consent_key(&caller, kind) else {
+            return PromptOutcome::Deny;
+        };
         if matches!(ctx.grants().lookup(&caller, kind), Some(GRANT_ALWAYS)) {
             return PromptOutcome::AllowAlways;
         }
         let rx = ctx.prompts().enqueue(caller.clone(), cap_template);
         match rx.await {
-            Ok(outcome) => {
-                if let Some(scope) = outcome.to_scope()
-                    && !matches!(scope, GRANT_ONCE)
-                {
-                    let _ = ctx
-                        .grants()
-                        .insert_portal_consent_kind(&caller, kind, scope);
-                }
-                outcome
-            }
+            Ok(outcome) => finish(ctx, &caller, kind, consent_key, outcome),
             Err(_) => PromptOutcome::Deny,
         }
+    }
+
+    fn finish(
+        ctx: &impl ConsentContext,
+        caller: &PortalCaller,
+        kind: CapabilityKind,
+        consent_key: String,
+        outcome: PromptOutcome,
+    ) -> PromptOutcome {
+        if ctx.grants().portal_consent_key(caller, kind).as_ref() != Some(&consent_key) {
+            return PromptOutcome::Deny;
+        }
+        if let Some(scope) = outcome.to_scope()
+            && !matches!(scope, GRANT_ONCE)
+        {
+            // Persist the identity approved by this prompt. Recomputing it
+            // here could bind an old approval to a newly joined room.
+            ctx.grants().insert_portal_consent_key(consent_key, scope);
+        }
+        outcome
     }
 }
 
