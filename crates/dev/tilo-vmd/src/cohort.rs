@@ -163,15 +163,19 @@ fn application(
     .map_err(invalid)?;
     tilo_app_package::validate_manifest(&manifest).map_err(invalid)?;
     let isa = &manifest.package.isa;
-    let native_isa = match arch {
-        "x86_64" => isa
-            .for_arch(tilo_app_package::manifest::Arch::X86_64)
-            .is_some(),
-        "aarch64" => isa
-            .for_arch(tilo_app_package::manifest::Arch::AArch64)
-            .is_some(),
-        _ => false,
-    };
+    // Authored manifests may omit minimum ISA requirements. The actual ELF
+    // below still binds the payload to this native architecture. A nonempty
+    // requirements table must declare this architecture.
+    let native_isa = isa.is_empty()
+        || match arch {
+            "x86_64" => isa
+                .for_arch(tilo_app_package::manifest::Arch::X86_64)
+                .is_some(),
+            "aarch64" => isa
+                .for_arch(tilo_app_package::manifest::Arch::AArch64)
+                .is_some(),
+            _ => false,
+        };
     if hex::encode(record.root.publisher_identity) != publisher
         || row.publisher_key_hex != publisher
         || manifest.package.id != row.id
