@@ -248,6 +248,24 @@ impl ShellTextInput {
         self.edit_stamp = stamp;
     }
 
+    /// After the compositor flushes a native dictation final, drain its local
+    /// bridge in the same input turn. Reads are nonblocking and bounded; a
+    /// missing complete commit is failure, never a delayed insertion attempt.
+    pub(crate) fn drain_dictation_commit(&mut self) -> Option<Vec<WindowEvent>> {
+        for _ in 0..32 {
+            self.pump();
+            if self
+                .state
+                .events
+                .iter()
+                .any(|event| matches!(event, WindowEvent::Ime(Ime::Commit(_))))
+            {
+                return Some(std::mem::take(&mut self.state.events));
+            }
+        }
+        None
+    }
+
     fn update_enable(&mut self) {
         let Some(text_input) = self.text_input.as_ref() else {
             return;

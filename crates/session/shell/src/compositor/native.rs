@@ -10326,6 +10326,35 @@ pub fn run() {
         if dictation_changed {
             frame_builder.with_chrome(crate::shell::chrome_state::ChromeState::bump);
         }
+        if state.take_native_dictation_commit() {
+            let events = display.flush_clients().ok().and_then(|()| {
+                shell_text_input.as_mut().and_then(
+                    crate::compositor::shell_text_input::ShellTextInput::drain_dictation_commit,
+                )
+            });
+            if let Some(events) = events {
+                for event in &events {
+                    frame_builder.dispatch_event(
+                        event,
+                        &test_control_ctx.modifiers,
+                        &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
+                        &test_control_ctx.root_obj,
+                        &mut test_control_ctx.focus,
+                    );
+                }
+                injected_redraw_pending = true;
+            } else {
+                // Disconnect the old bridge so an incomplete result cannot
+                // arrive next turn after the target's selection has changed.
+                shell_text_input = None;
+                state.shell_field_active = false;
+                frame_builder
+                    .host_mut()
+                    .dictation_surface_mut()
+                    .failure(crate::compositor::dictation::DictationError::RecognizerUnavailable);
+                frame_builder.with_chrome(crate::shell::chrome_state::ChromeState::bump);
+            }
+        }
         frame_builder.set_osk_commits(state.osk_commits);
         pump_checkpoint!("session-focus-and-surfaces");
         let floating_surfaces = state
