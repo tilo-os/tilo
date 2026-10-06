@@ -442,6 +442,7 @@ block-editor-replace-all-help = Replace all — Shift+Enter in the replacement f
 music-home-heading = Your music
 music-connect-spotify = Connect Spotify
 music-spotify-playback = Authorize playback
+music-spotify-playback-authorized = Spotify • Playback grant authorized; Premium checked before audio
 music-spotify-devices = Spotify devices
 music-browse-spotify = Browse Spotify
 music-browse-youtube = YouTube Music

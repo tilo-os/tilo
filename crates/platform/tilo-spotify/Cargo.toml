@@ -19,5 +19,8 @@ tilo-rt = { path = "../tilo-rt", optional = true }
 account-custody = { path = "../../system/account-custody" }
 accounts = { path = "../../system/accounts" }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
 [lints]
 workspace = true

@@ -20,6 +20,7 @@ aead-3b31131e45eafb45 = { package = "aead", version = "0.6", default-features = 
 aead-d8f496e17d97b5cb = { package = "aead", version = "0.5", default-features = false, features = ["alloc", "getrandom"] }
 aes-gcm = { version = "0.10" }
 aho-corasick = { version = "1" }
+anstream = { version = "1" }
 arrayvec = { version = "0.7" }
 base16ct-6f8ce4dd05d13bba = { package = "base16ct", version = "0.2", default-features = false, features = ["alloc"] }
 base16ct-dff4ba8e3ae991db = { package = "base16ct", version = "1", default-features = false, features = ["alloc"] }
@@ -73,12 +74,12 @@ fontdb = { version = "0.23" }
 form_urlencoded = { version = "1" }
 futures = { version = "0.3" }
 futures-channel = { version = "0.3", features = ["sink"] }
-futures-core = { version = "0.3" }
+futures-core = { version = "0.3", features = ["unstable"] }
 futures-io = { version = "0.3" }
 futures-lite = { version = "2" }
 futures-sink = { version = "0.3" }
-futures-task = { version = "0.3", default-features = false, features = ["std"] }
-futures-util = { version = "0.3", features = ["channel", "io", "sink"] }
+futures-task = { version = "0.3", default-features = false, features = ["std", "unstable"] }
+futures-util = { version = "0.3", features = ["bilock", "channel", "io", "sink", "unstable"] }
 generic-array = { version = "0.14", default-features = false, features = ["more_lengths", "zeroize"] }
 getrandom-6f8ce4dd05d13bba = { package = "getrandom", version = "0.2", default-features = false, features = ["std"] }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng", "wasm_js"] }
@@ -98,7 +99,7 @@ hpke-rs = { version = "0.7", default-features = false, features = ["experimental
 hpke-rs-rust-crypto = { version = "0.7", default-features = false, features = ["experimental", "std"] }
 hybrid-array = { version = "0.4", default-features = false, features = ["alloc", "ctutils", "extra-sizes", "subtle", "zeroize"] }
 hyper = { version = "1", features = ["client", "http1", "http2", "server"] }
-hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "server-auto", "server-graceful", "service"] }
 hypher = { version = "0.1" }
 icu_collections = { version = "2", default-features = false, features = ["serde"] }
 icu_locale_core = { version = "2", default-features = false, features = ["alloc", "serde", "zerovec"] }
@@ -113,6 +114,7 @@ inout = { version = "0.2", default-features = false, features = ["block-padding"
 ipnet = { version = "2", features = ["serde"] }
 itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
 kurbo = { version = "0.13" }
+lazy_static = { version = "1", default-features = false, features = ["spin_no_std"] }
 libc = { version = "0.2", features = ["extra_traits"] }
 libm = { version = "0.2" }
 litemap = { version = "0.8", default-features = false, features = ["serde"] }
@@ -139,15 +141,17 @@ phf = { version = "0.13", features = ["macros"] }
 phf_shared-594e8ee84c453af0 = { package = "phf_shared", version = "0.13", default-features = false, features = ["std"] }
 pkcs8 = { version = "0.11", default-features = false, features = ["encryption", "pem", "std"] }
 poly1305 = { version = "0.9", default-features = false, features = ["zeroize"] }
-portable-atomic = { version = "1" }
+portable-atomic = { version = "1", features = ["require-cas"] }
 postcard = { version = "1", features = ["experimental-derive", "use-std"] }
 potential_utf = { version = "0.1", default-features = false, features = ["alloc", "serde", "zerovec"] }
 ppv-lite86 = { version = "0.2", default-features = false, features = ["simd", "std"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
-quick-xml = { version = "0.41", features = ["encoding"] }
+quick-xml = { version = "0.41", features = ["encoding", "serialize"] }
 quote = { version = "1" }
+rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
 rand-93f6ce9d446188ac = { package = "rand", version = "0.10" }
-rand-c38e5c1d305a1b54 = { package = "rand", version = "0.8", default-features = false, features = ["std"] }
+rand-c38e5c1d305a1b54 = { package = "rand", version = "0.8" }
+rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
 rand_chacha-468e82937335b1c9 = { package = "rand_chacha", version = "0.3" }
 rand_chacha-93f6ce9d446188ac = { package = "rand_chacha", version = "0.10" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
@@ -169,6 +173,7 @@ sec1 = { version = "0.7", features = ["pem", "std", "subtle"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
 serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
+sha1 = { version = "0.10", features = ["oid"] }
 sha2-93f6ce9d446188ac = { package = "sha2", version = "0.10" }
 sha2-a6292c17cd707f01 = { package = "sha2", version = "0.11" }
 sha3 = { version = "0.12" }
@@ -190,7 +195,7 @@ syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "vis
 syntect = { version = "5", default-features = false, features = ["plist-load", "regex-fancy", "yaml-load"] }
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 thiserror = { version = "2" }
-time = { version = "0.3", features = ["macros", "serde-well-known"] }
+time = { version = "0.3", features = ["local-offset", "macros", "serde-well-known"] }
 tiny-skia-path = { version = "0.12" }
 tinystr = { version = "0.8", features = ["serde", "zerovec"] }
 tls_codec = { version = "0.5", features = ["derive", "mls", "serde"] }
@@ -217,6 +222,7 @@ wasmi_collections = { version = "1", default-features = false, features = ["std"
 wasmi_core = { version = "1", default-features = false, features = ["simd", "std"] }
 wasmi_ir = { version = "1", default-features = false, features = ["simd"] }
 wasmparser = { version = "0.239", default-features = false, features = ["features", "simd", "std", "validate"] }
+web-time = { version = "1", default-features = false, features = ["serde"] }
 winnow = { version = "0.7" }
 writeable = { version = "0.6", default-features = false, features = ["alloc", "either"] }
 yoke = { version = "0.8", features = ["derive", "serde"] }
@@ -234,6 +240,7 @@ aead-3b31131e45eafb45 = { package = "aead", version = "0.6", default-features = 
 aead-d8f496e17d97b5cb = { package = "aead", version = "0.5", default-features = false, features = ["alloc", "getrandom"] }
 aes-gcm = { version = "0.10" }
 aho-corasick = { version = "1" }
+anstream = { version = "1" }
 arrayvec = { version = "0.7" }
 base16ct-6f8ce4dd05d13bba = { package = "base16ct", version = "0.2", default-features = false, features = ["alloc"] }
 base16ct-dff4ba8e3ae991db = { package = "base16ct", version = "1", default-features = false, features = ["alloc"] }
@@ -290,12 +297,12 @@ fontdb = { version = "0.23" }
 form_urlencoded = { version = "1" }
 futures = { version = "0.3" }
 futures-channel = { version = "0.3", features = ["sink"] }
-futures-core = { version = "0.3" }
+futures-core = { version = "0.3", features = ["unstable"] }
 futures-io = { version = "0.3" }
 futures-lite = { version = "2" }
 futures-sink = { version = "0.3" }
-futures-task = { version = "0.3", default-features = false, features = ["std"] }
-futures-util = { version = "0.3", features = ["channel", "io", "sink"] }
+futures-task = { version = "0.3", default-features = false, features = ["std", "unstable"] }
+futures-util = { version = "0.3", features = ["bilock", "channel", "io", "sink", "unstable"] }
 generic-array = { version = "0.14", default-features = false, features = ["more_lengths", "zeroize"] }
 getrandom-6f8ce4dd05d13bba = { package = "getrandom", version = "0.2", default-features = false, features = ["std"] }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng", "wasm_js"] }
@@ -315,7 +322,7 @@ hpke-rs = { version = "0.7", default-features = false, features = ["experimental
 hpke-rs-rust-crypto = { version = "0.7", default-features = false, features = ["experimental", "std"] }
 hybrid-array = { version = "0.4", default-features = false, features = ["alloc", "ctutils", "extra-sizes", "subtle", "zeroize"] }
 hyper = { version = "1", features = ["client", "http1", "http2", "server"] }
-hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "server-auto", "server-graceful", "service"] }
 hypher = { version = "0.1" }
 icu_collections = { version = "2", default-features = false, features = ["serde"] }
 icu_locale_core = { version = "2", default-features = false, features = ["alloc", "serde", "zerovec"] }
@@ -330,6 +337,7 @@ inout = { version = "0.2", default-features = false, features = ["block-padding"
 ipnet = { version = "2", features = ["serde"] }
 itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
 kurbo = { version = "0.13" }
+lazy_static = { version = "1", default-features = false, features = ["spin_no_std"] }
 libc = { version = "0.2", features = ["extra_traits"] }
 libm = { version = "0.2" }
 litemap = { version = "0.8", default-features = false, features = ["serde"] }
@@ -356,15 +364,17 @@ phf = { version = "0.13", features = ["macros"] }
 phf_shared-594e8ee84c453af0 = { package = "phf_shared", version = "0.13", default-features = false, features = ["std"] }
 pkcs8 = { version = "0.11", default-features = false, features = ["encryption", "pem", "std"] }
 poly1305 = { version = "0.9", default-features = false, features = ["zeroize"] }
-portable-atomic = { version = "1" }
+portable-atomic = { version = "1", features = ["require-cas"] }
 postcard = { version = "1", features = ["experimental-derive", "use-std"] }
 potential_utf = { version = "0.1", default-features = false, features = ["alloc", "serde", "zerovec"] }
 ppv-lite86 = { version = "0.2", default-features = false, features = ["simd", "std"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
-quick-xml = { version = "0.41", features = ["encoding"] }
+quick-xml = { version = "0.41", features = ["encoding", "serialize"] }
 quote = { version = "1" }
+rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
 rand-93f6ce9d446188ac = { package = "rand", version = "0.10" }
-rand-c38e5c1d305a1b54 = { package = "rand", version = "0.8", default-features = false, features = ["std"] }
+rand-c38e5c1d305a1b54 = { package = "rand", version = "0.8" }
+rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
 rand_chacha-468e82937335b1c9 = { package = "rand_chacha", version = "0.3" }
 rand_chacha-93f6ce9d446188ac = { package = "rand_chacha", version = "0.10" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
@@ -386,6 +396,7 @@ sec1 = { version = "0.7", features = ["pem", "std", "subtle"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
 serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
+sha1 = { version = "0.10", features = ["oid"] }
 sha2-93f6ce9d446188ac = { package = "sha2", version = "0.10" }
 sha2-a6292c17cd707f01 = { package = "sha2", version = "0.11" }
 sha3 = { version = "0.12" }
@@ -407,7 +418,7 @@ syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "vis
 syntect = { version = "5", default-features = false, features = ["plist-load", "regex-fancy", "yaml-load"] }
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 thiserror = { version = "2" }
-time = { version = "0.3", features = ["macros", "serde-well-known"] }
+time = { version = "0.3", features = ["local-offset", "macros", "serde-well-known"] }
 time-macros = { version = "0.2", default-features = false, features = ["formatting", "parsing", "serde"] }
 tiny-skia-path = { version = "0.12" }
 tinystr = { version = "0.8", features = ["serde", "zerovec"] }
@@ -435,6 +446,7 @@ wasmi_collections = { version = "1", default-features = false, features = ["std"
 wasmi_core = { version = "1", default-features = false, features = ["simd", "std"] }
 wasmi_ir = { version = "1", default-features = false, features = ["simd"] }
 wasmparser = { version = "0.239", default-features = false, features = ["features", "simd", "std", "validate"] }
+web-time = { version = "1", default-features = false, features = ["serde"] }
 winnow = { version = "0.7" }
 writeable = { version = "0.6", default-features = false, features = ["alloc", "either"] }
 yoke = { version = "0.8", features = ["derive", "serde"] }
@@ -455,7 +467,8 @@ getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-f
 half = { version = "2" }
 harfrust = { version = "0.5" }
 hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
-hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 linux-raw-sys-5ef9efb8ec2df382 = { package = "linux-raw-sys", version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
@@ -467,8 +480,6 @@ nom = { version = "7" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 profiling = { version = "1" }
-rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
-rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
@@ -496,7 +507,8 @@ getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-f
 half = { version = "2" }
 harfrust = { version = "0.5" }
 hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
-hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 linux-raw-sys-5ef9efb8ec2df382 = { package = "linux-raw-sys", version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
@@ -508,8 +520,6 @@ nom = { version = "7" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 profiling = { version = "1" }
-rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
-rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
@@ -537,7 +547,8 @@ getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-f
 half = { version = "2" }
 harfrust = { version = "0.5" }
 hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
-hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 linux-raw-sys-5ef9efb8ec2df382 = { package = "linux-raw-sys", version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
@@ -549,8 +560,6 @@ nom = { version = "7" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 profiling = { version = "1" }
-rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
-rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
@@ -578,7 +587,8 @@ getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-f
 half = { version = "2" }
 harfrust = { version = "0.5" }
 hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
-hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 linux-raw-sys-5ef9efb8ec2df382 = { package = "linux-raw-sys", version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
@@ -590,8 +600,6 @@ nom = { version = "7" }
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 phf_shared-582f2526e08bb6a0 = { package = "phf_shared", version = "0.14", default-features = false, features = ["std"] }
 profiling = { version = "1" }
-rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
-rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }

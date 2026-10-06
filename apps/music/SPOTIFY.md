@@ -17,11 +17,14 @@ There is no client secret, password prompt, pasted bearer token or borrowed
 Spotifast registration.
 
 Connect Spotify authorizes catalogue, library and official player operations.
-Authorize playback obtains a separate streaming grant after confirming Premium.
+Authorize playback obtains a separate streaming grant and verifies account identity.
 Both grants must identify the same account; stable `account_id` values, when
 returned, must also match. The native session additionally matches its canonical
-username. A missing/deprecated subscription field is reported as unknown; native
-playback stays unavailable rather than assuming Premium or mislabelling Free. Account custody seals them under
+username. Missing/deprecated Web API subscription metadata remains unknown;
+native playback waits up to ten seconds for the authenticated session's product
+metadata to confirm Premium before constructing an audio sink. Unknown or rejected
+native eligibility produces an error without audio. Explicit Free profiles are
+rejected before playback authorization. Account custody seals the grants under
 `music.spotify` and `music.spotify.streaming`; they never enter Automerge,
 resources, the playback profile, fixtures or continuity payloads. Disconnect
 forgets both device-local grants and stops the local Spotify transport. Revoke
@@ -200,7 +203,9 @@ loopback redirect above. A consenting eligible Premium tester must be authorized
 for that app; the app owner needs active Premium in Development Mode. New-user
 allowlist limits and grandfathered registration differences apply. Verify the
 selected registration's endpoint availability and whether it returns subscription
-eligibility; absent product data currently blocks native playback. Start browser
+eligibility. Missing Web API product metadata does not establish Premium: native
+audio requires a confirmed Premium product from the authenticated session, while
+official Connect commands still require explicit Web API eligibility. Start browser
 PKCE only with explicit approval, authorize the catalogue and streaming grants
 for the same account, and use the system secret store. Never paste tokens,
 passwords or client secrets into chat. The client ID is public configuration.

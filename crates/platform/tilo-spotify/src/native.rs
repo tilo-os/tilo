@@ -289,6 +289,66 @@ fn connection() -> Result<(SessionConfig, Credentials), String> {
     Ok((config, Credentials::with_access_token(token.as_str())))
 }
 
+fn premium_confirmed(session: &Session) -> Result<bool, String> {
+    if session.is_invalid() {
+        return Err(
+            "Spotify streaming session ended. Check Premium eligibility and sign in again.".into(),
+        );
+    }
+    match session.get_user_attribute("type").as_deref() {
+        Some("premium") => Ok(true),
+        None => Ok(false),
+        Some(_) => Err("Spotify's native session did not confirm Premium eligibility".into()),
+    }
+}
+
+async fn verified_sink(
+    session: &Session,
+    cancel: &AtomicBool,
+    output: &Output,
+    frames: &Arc<AtomicU64>,
+    timeout: Duration,
+) -> Result<Option<PcmSink>, String> {
+    let confirmed = tokio::time::timeout(timeout, async {
+        loop {
+            if cancel.load(Ordering::Acquire) {
+                return Ok::<bool, String>(false);
+            }
+            if premium_confirmed(session)? {
+                return Ok(true);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        "Spotify's native session did not confirm Premium eligibility; no audio started".to_string()
+    })??;
+    if !confirmed {
+        return Ok(None);
+    }
+    PcmSink::new(output, frames).map(Some)
+}
+
+async fn authorized_sink(
+    session: &Session,
+    shared: &Shared,
+    output: &Output,
+) -> Result<Option<PcmSink>, String> {
+    let sink = verified_sink(
+        session,
+        &shared.cancel,
+        output,
+        &shared.frames,
+        Duration::from_secs(10),
+    )
+    .await?;
+    if sink.is_some() && matches!(output, Output::Capture(_)) {
+        shared.update(|state| state.sink = Some("appsink".into()));
+    }
+    Ok(sink)
+}
+
 async fn run(
     uri: String,
     account: String,
@@ -305,10 +365,9 @@ async fn run(
     }
     let track =
         SpotifyUri::from_uri(&uri).map_err(|_| "Invalid Spotify track identity".to_string())?;
-    let sink = PcmSink::new(&output, &shared.frames)?;
-    if matches!(output, Output::Capture(_)) {
-        shared.update(|state| state.sink = Some("appsink".into()));
-    }
+    let Some(sink) = authorized_sink(&session, shared, &output).await? else {
+        return Ok(());
+    };
     let pipeline = sink.pipeline.clone();
     let source = sink.source.clone();
     let volume = sink.volume.clone();
@@ -327,6 +386,14 @@ async fn run(
     let mut pending_transition = None;
     let mut pending_started: Option<tilo_clock::Instant> = None;
     loop {
+        if !matches!(premium_confirmed(&session), Ok(true)) {
+            shared.update(|state| {
+                state.error =
+                    Some("Spotify's native session no longer confirms Premium eligibility".into());
+                state.playing = false;
+            });
+            break;
+        }
         tokio::select! {
             command = commands.recv() => match command {
                 Some(Command::Play) => player.play(), Some(Command::Pause) => player.pause(),
@@ -375,9 +442,6 @@ async fn run(
             },
             _ = tick.tick() => {
                 if shared.cancel.load(Ordering::Acquire) { break; }
-                if session.is_invalid() {
-                    shared.update(|state| { state.error = Some("Spotify streaming session ended. Check Premium eligibility and sign in again.".into()); state.playing = false; }); break;
-                }
                 if pending_started.is_some_and(|started| started.elapsed() > Duration::from_secs(30)) {
                     shared.update(|state| state.error = Some("Spotify did not start the next queued track".into())); break;
                 }
@@ -552,6 +616,116 @@ impl Drop for PcmSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn eligibility_output() -> Output {
+        Output::Capture(CaptureOutput {
+            on_pcm: Arc::new(|_| {}),
+            on_rendered: Arc::new(|| {}),
+        })
+    }
+
+    #[test]
+    fn native_output_waits_for_confirmed_premium_metadata() {
+        tilo_rt::block_on(async {
+            let session = Session::new(SessionConfig::default(), None);
+            let cancel = AtomicBool::new(false);
+            let frames = Arc::new(AtomicU64::new(0));
+            let output = eligibility_output();
+            let unknown = verified_sink(
+                &session,
+                &cancel,
+                &output,
+                &frames,
+                Duration::from_millis(20),
+            )
+            .await;
+            assert!(unknown.err().unwrap().contains("did not confirm Premium"));
+            assert_eq!(frames.load(Ordering::Acquire), 0);
+            let updates = session.clone();
+            let received = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                updates.set_user_attribute("type", "premium");
+            });
+            let mut sink =
+                verified_sink(&session, &cancel, &output, &frames, Duration::from_secs(2))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            received.await.unwrap();
+            assert_eq!(sink.pipeline.current_state(), gst::State::Null);
+            assert_eq!(frames.load(Ordering::Acquire), 0);
+            sink.start().unwrap();
+            sink.write(
+                AudioPacket::Samples(vec![0.0; 2048]),
+                &mut Converter::new(None),
+            )
+            .unwrap();
+            sink.source.end_of_stream().unwrap();
+            drain_output(&sink.pipeline, &cancel).await.unwrap();
+            assert!(
+                frames.load(Ordering::Acquire) > 0,
+                "real clocked PCM follows confirmed Premium"
+            );
+            session.set_user_attribute("type", "free");
+            assert!(
+                premium_confirmed(&session).is_err(),
+                "active playback must reject a withdrawn subscription"
+            );
+            session.shutdown();
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn native_eligibility_wait_is_cancellable_without_output() {
+        tilo_rt::block_on(async {
+            let session = Session::new(SessionConfig::default(), None);
+            let cancel = Arc::new(AtomicBool::new(false));
+            let frames = Arc::new(AtomicU64::new(0));
+            let cancelled = cancel.clone();
+            let update = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                cancelled.store(true, Ordering::Release);
+            });
+            let sink = verified_sink(
+                &session,
+                &cancel,
+                &eligibility_output(),
+                &frames,
+                Duration::from_secs(2),
+            )
+            .await
+            .unwrap();
+            update.await.unwrap();
+            assert!(sink.is_none());
+            assert_eq!(frames.load(Ordering::Acquire), 0);
+            session.shutdown();
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn native_output_rejects_non_premium_and_unknown_product_types() {
+        tilo_rt::block_on(async {
+            for product in ["free", "open", "", "premium-like"] {
+                let session = Session::new(SessionConfig::default(), None);
+                session.set_user_attribute("type", product);
+                let frames = Arc::new(AtomicU64::new(0));
+                let result = verified_sink(
+                    &session,
+                    &AtomicBool::new(false),
+                    &eligibility_output(),
+                    &frames,
+                    Duration::from_secs(2),
+                )
+                .await;
+                assert!(result.is_err(), "{product:?} must not authorize audio");
+                assert!(session.is_invalid());
+                assert_eq!(frames.load(Ordering::Acquire), 0);
+            }
+        })
+        .unwrap();
+    }
 
     #[test]
     fn spotify_decoded_pcm_reaches_the_shared_clocked_capture_sink() {
