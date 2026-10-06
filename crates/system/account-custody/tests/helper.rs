@@ -51,6 +51,7 @@ fn helper_publishes_a_valid_access_token_but_never_the_refresh_token() {
         refresh_token: "long-lived-refresh".into(),
         expires_in: 3600,
         obtained_at: tilo_clock::unix_now(),
+        scope: None,
     };
     save(
         &root,
