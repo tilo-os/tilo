@@ -131,6 +131,7 @@ pub(crate) fn row(provider: &str, resource: &str, label: &str, action: &str) -> 
             presentation: None,
         },
         action: Some(ActionDescriptor {
+            semantic_identity: None,
             address: ActionAddress::new(resource, action),
             resource_kind: "notes.page".into(),
             resource_label: label.into(),

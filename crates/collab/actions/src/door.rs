@@ -123,6 +123,8 @@ impl InputSpec {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ActionDescriptor {
     pub address: ActionAddress,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_identity: Option<crate::ResourceSemanticIdentity>,
     /// The publishing resource's stable kind tag (`word_processor.section`,
     /// `files.entry`), shared with the OS-wide type registry so the same kind
     /// means the same thing across apps.
@@ -283,6 +285,7 @@ fn survey_into(resource: &Resource, out: &mut Vec<ActionDescriptor>) {
         let view = ResourceViewDescriptor::declared_for(resource, &action.id);
         out.push(ActionDescriptor {
             address: ActionAddress::new(resource.id.as_str(), &action.id),
+            semantic_identity: resource.semantic_identity.clone(),
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),
             action_label: action.label.clone(),

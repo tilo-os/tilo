@@ -382,6 +382,7 @@ fn surface_offers(surfaces: &[ui::collaboration::BrokerActionSurface]) -> Vec<Of
                     app: surface.app_id.clone(),
                     broker_peer_id: Some(surface.peer_id),
                     descriptor: ActionDescriptor {
+                        semantic_identity: action.semantic_identity.clone(),
                         address: ActionAddress::new(&action.resource, &action.action),
                         resource_kind: action.resource_kind.clone(),
                         resource_label: action.resource_label.clone(),
@@ -598,6 +599,7 @@ fn openable(
             app: c.namespace.to_string(),
             broker_peer_id: None,
             descriptor: ActionDescriptor {
+                semantic_identity: None,
                 address: open_address(c.namespace),
                 resource_kind: APPLICATION_KIND.to_string(),
                 resource_label: c.title.to_string(),
@@ -1065,6 +1067,7 @@ mod tests {
                 has_children: false,
                 visibility: None,
                 action: Some(ActionDescriptor {
+                    semantic_identity: None,
                     address: ActionAddress::new("calculator.document", "clear"),
                     resource_kind: "calculator.document".into(),
                     resource_label: "Calculator".into(),
@@ -1103,6 +1106,7 @@ mod tests {
                 app: "so.tilo.diffmerge".into(),
                 broker_peer_id: Some(0),
                 descriptor: ActionDescriptor {
+                    semantic_identity: None,
                     address,
                     resource_kind: APPLICATION_KIND.into(),
                     resource_label: "Diffmerge".into(),
@@ -1489,6 +1493,7 @@ mod tests {
             app: app.to_string(),
             broker_peer_id: None,
             descriptor: ActionDescriptor {
+                semantic_identity: None,
                 address: ActionAddress::new(resource, action),
                 resource_kind: format!("{app}.thing"),
                 resource_label: "a thing".to_string(),
