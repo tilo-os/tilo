@@ -1798,6 +1798,12 @@ impl App {
             // What the effect submitted is applied for its invoker before
             // its caller learns it finished.
             self.dispatch_control_invocations();
+            if let Some(scope) = &authorization {
+                // Submitted continuations already carry their original broker
+                // custody. A retained handler clone must not submit more work
+                // once this handler has answered, even while those edits settle.
+                scope.cancel();
+            }
             self.actions.acting_for.remove(&invocation)
         };
         let update = match result {
@@ -3635,6 +3641,9 @@ impl App {
                 Ok(Some(update)) => update,
                 Ok(None) => continue,
                 Err(_) => {
+                    if let Some(scope) = &pending.authorization {
+                        scope.cancel();
+                    }
                     self.actions.bound_invocations.remove(&invocation);
                     self.actions.directed_invocations.remove(&invocation);
                     continue;
@@ -3659,6 +3668,9 @@ impl App {
                 self.dispatch_control_invocations();
                 if let Some(continuation) = self.actions.acting_for.get_mut(&invocation) {
                     if !continuation.outstanding.is_empty() {
+                        if let Some(scope) = &pending.authorization {
+                            scope.cancel();
+                        }
                         // It answers once the host admitted its edits.
                         continuation.deferred = Some((pending.wire_id, update));
                         self.actions.bound_invocations.remove(&invocation);
@@ -3676,6 +3688,9 @@ impl App {
                 break;
             }
             if update.is_terminal() {
+                if let Some(scope) = &pending.authorization {
+                    scope.cancel();
+                }
                 self.actions.bound_invocations.remove(&invocation);
                 self.actions.directed_invocations.remove(&invocation);
                 self.actions.acting_for.remove(&invocation);
