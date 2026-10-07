@@ -11,6 +11,7 @@ class InferenceRepositoryBoundaryTests(unittest.TestCase):
             "docs/projects/llm-asic",
             "hardware/llm-asic",
             "tools/chip",
+            "tools/tests/test_chip_model_profile.py",
         ):
             with self.subTest(path=relative):
                 self.assertFalse(
