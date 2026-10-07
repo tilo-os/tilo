@@ -111,7 +111,9 @@ def worker_failure(reply):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--manifest', required=True, type=Path)
-    parser.add_argument('--qualifier', required=True, type=Path)
+    parser.add_argument('--qualifier', type=Path)
+    parser.add_argument('--native-review-model', type=Path,
+                        help='explicit isolated Nemotron worker fixture; never installed catalogue authority')
     parser.add_argument('--worker', required=True, type=Path)
     parser.add_argument('--model', choices=('tiny', 'base', 'base-q8_0'), default='base')
     parser.add_argument('--case', required=True)
@@ -129,9 +131,18 @@ def main():
     if (manifest.get('dataset') != 'google/fleurs'
             or manifest.get('revision') != '70bb2e84b976b7e960aa89f1c648e09c59f894dd'):
         parser.error('unexpected public corpus')
-    model = manifest['models'][args.model]
-    if model['sha256'] != REVIEW_MODELS[args.model]:
-        parser.error('unexpected reviewed model')
+    if args.native_review_model is not None:
+        model = {'sha256': '3fc991d3badad7277c11030a7519832cddaf2057aafed6d4b25147e953a070b1'}
+        if args.qualifier is not None or args.model != 'base':
+            parser.error('native review fixture excludes Whisper model/witness options')
+        if args.native_review_model.stat().st_size != 742090464:
+            parser.error('exact native review object size required')
+    else:
+        if args.qualifier is None:
+            parser.error('production Whisper probe requires an ephemeral qualifier')
+        model = manifest['models'][args.model]
+        if model['sha256'] != REVIEW_MODELS[args.model]:
+            parser.error('unexpected reviewed model')
     long_language = args.case.removeprefix('long-') if args.case.startswith('long-') else None
     requested = [args.case, *args.append_case]
     if len(requested) > 6 or len(set(requested)) != len(requested) or (long_language and args.append_case):
@@ -143,7 +154,7 @@ def main():
         parser.error('pinned public case unavailable')
     if len(cases) != (8 if long_language else len(requested)):
         parser.error('pinned public case collection unavailable')
-    model_path = verified(args.manifest.parent, model)
+    model_path = args.native_review_model or verified(args.manifest.parent, model)
     chunks, references = [], []
     for case in cases:
         audio_path = verified(args.manifest.parent, case)
@@ -176,27 +187,31 @@ def main():
     if len(cpus) != args.cpus:
         parser.error('requested CPU affinity unavailable')
     os.sched_setaffinity(0, cpus)
-    holder = subprocess.Popen([str(args.qualifier), '--hold-fixture', str(model_path)],
-                              stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                              stderr=subprocess.DEVNULL)
+    holder = (None if args.native_review_model is not None else
+              subprocess.Popen([str(args.qualifier), '--hold-fixture', str(model_path)],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL))
     worker = None
     peak, memory_errors = {}, []
     finished = threading.Event()
     sampler = None
     try:
-        with selectors.DefaultSelector() as selector:
-            selector.register(holder.stdout, selectors.EVENT_READ)
-            if not selector.select(90):
-                raise TimeoutError('ephemeral witness deadline')
-        witness = json.loads(holder.stdout.readline(4096))
-        if witness.get('ephemeral') is not True or witness['model_sha256'] != model['sha256']:
-            raise ValueError('unexpected isolated witness')
+        if holder is not None:
+            with selectors.DefaultSelector() as selector:
+                selector.register(holder.stdout, selectors.EVENT_READ)
+                if not selector.select(90):
+                    raise TimeoutError('ephemeral witness deadline')
+            witness = json.loads(holder.stdout.readline(4096))
+            if witness.get('ephemeral') is not True or witness['model_sha256'] != model['sha256']:
+                raise ValueError('unexpected isolated witness')
+            worker_command = [str(args.worker), '--root', witness['root'],
+                              '--catalog', witness['catalog'], '--keys', witness['keys']]
+        else:
+            worker_command = [str(args.worker), '--model', str(model_path)]
         usage_before = resource.getrusage(resource.RUSAGE_CHILDREN)
         started = time.monotonic()
-        worker = subprocess.Popen([str(args.worker), '--root', witness['root'],
-                                   '--catalog', witness['catalog'], '--keys', witness['keys']],
-                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                  stderr=subprocess.DEVNULL)
+        worker = subprocess.Popen(worker_command, stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         def sample_memory():
             while not finished.is_set():
                 try:
@@ -217,7 +232,7 @@ def main():
         send(worker.stdin, 0, sequence, json.dumps({'language': language, 'vocabulary': args.vocabulary}).encode())
         ready = receive(worker.stdout)
         if ready.get('kind') != 'ready' or ready.get('sequence') != sequence:
-            raise RuntimeError('production worker did not become ready')
+            raise RuntimeError('worker did not become ready: ' + worker_failure(ready))
         cold_ms = (time.monotonic() - started) * 1000
         capture = time.monotonic()
         sent, first_partial, revisions, drafts = 0, None, 0, []
@@ -271,6 +286,7 @@ def main():
         usage_after = resource.getrusage(resource.RUSAGE_CHILDREN)
         print('SPEECH_STREAM_PROBE ' + json.dumps({
             'case': case['id'], 'language': language,
+            'backend': 'nemotron-review' if args.native_review_model is not None else 'whisper',
             'public_sources': [{'id': case['id'], 'sha256': case['sha256']} for case in cases],
             'input_pcm_sha256': hashlib.sha256(pcm).hexdigest(),
             'original_pcm_sha256': original_pcm_sha256, 'synthetic_noise': noise,
@@ -285,7 +301,7 @@ def main():
             'cpu_user_seconds': usage_after.ru_utime-usage_before.ru_utime,
             'cpu_system_seconds': usage_after.ru_stime-usage_before.ru_stime,
             'wall_seconds': time.monotonic()-started, 'worker_exit': 0,
-            'cpu_accounting': 'serial worker RUSAGE_CHILDREN delta; witness still running',
+            'cpu_accounting': 'serial worker RUSAGE_CHILDREN delta; includes verification and preparation',
             'memory_limit_bytes': 1073741824, 'memory_peak': peak,
             'memory_unit': 'KiB except Threads', 'memory_sample_interval_ms': 20,
             'reference': case['reference'],
@@ -300,10 +316,12 @@ def main():
         finished.set()
         if sampler:
             sampler.join(timeout=2)
-        holder.stdin.close()
-        if holder.wait(timeout=10) != 0:
-            raise RuntimeError('ephemeral witness cleanup failed')
-        holder.stdout.close()
+        if holder is not None:
+            holder.stdin.close()
+            if holder.wait(timeout=10) != 0:
+                raise RuntimeError('ephemeral witness cleanup failed')
+            holder.stdout.close()
+
 
 
 if __name__ == '__main__':

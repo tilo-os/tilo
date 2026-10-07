@@ -60,6 +60,9 @@ int main(int argc, char** argv) {
         rejects([&] { loader.get_tensor_file_data("fixture", SIZE_MAX); },
                 "overflowing tensor extent admitted");
         loader.release_file_resources();
+        require(std::memcmp(loader.get_tensor_file_data("fixture", sizeof(values)),
+                            values, sizeof(values)) == 0, "lazy setup lost immutable anchor");
+        loader.release_input();
         rejects([&] { loader.get_tensor_file_data("fixture", sizeof(values)); },
                 "released descriptor reopened path");
         std::cout << "PASS owned descriptor metadata/tensors, caller close/unlink, "

@@ -1,16 +1,22 @@
 //! One confined child serving a private speech pipe. No microphone is opened.
-use super::{
-    FRAME, RequestKind, SpeechConfig, SpeechEngine, SpeechError, SpeechInput, SpeechRecognition,
-    SpeechReply, speech_model_file,
-};
+use super::{FRAME, RequestKind, SpeechConfig, SpeechError, SpeechInput, SpeechReply};
+#[cfg(feature = "whisper")]
+use super::{SpeechEngine, SpeechRecognition, speech_model_file};
+#[cfg(feature = "whisper")]
 use crate::catalog::VerifiedCatalog;
 use std::io::{Read, Write};
+#[cfg(feature = "whisper")]
 use std::path::Path;
 
 /// Write only the bounded typed worker reply.
 /// # Errors
 /// Fails on serialization or a closed pipe.
 pub fn reply(output: &mut impl Write, message: &SpeechReply) -> Result<(), SpeechError> {
+    if let SpeechReply::Draft { text, .. } | SpeechReply::Done { text, .. } = message
+        && text.len() > super::MAX_TEXT_BYTES
+    {
+        return Err(SpeechError::TextTooLong);
+    }
     let bytes = serde_json::to_vec(message).map_err(|_| SpeechError::Protocol)?;
     FRAME
         .write(output, &bytes)
@@ -62,6 +68,7 @@ pub unsafe fn prepare() -> Result<(), SpeechError> {
 /// uses an isolated ephemeral witness in a separate, uninstalled child.
 /// # Errors
 /// Fails closed on object/licence, protocol, confinement or engine errors.
+#[cfg(feature = "whisper")]
 pub fn serve(
     root: &Path,
     verified: &VerifiedCatalog,
@@ -71,6 +78,69 @@ pub fn serve(
     let sealed = speech_model_file(root, verified)?;
     let model = sealed.id().to_owned();
     let revision = sealed.revision().to_owned();
+    let (session, config) = configure(input)?;
+    // Only an immutable, receipt-checked descriptor survives confinement.
+    // Native parsing has no path access; failures precede Ready and capture.
+    let threads = std::thread::available_parallelism().map_or(1, |count| count.get().min(2));
+    super::confine_worker()?;
+    let mut engine = SpeechEngine::load_file(&sealed)?;
+    drop(sealed);
+    engine.set_threads(threads)?;
+    engine.set_vocabulary(&config.vocabulary)?;
+    engine.prepare()?;
+    let language = engine.language(&config.language)?;
+    drop(config);
+    let mut decoder = WhisperDecoder {
+        engine,
+        recognition: SpeechRecognition::default(),
+        language,
+    };
+    serve_decoder((&model, &revision), session, &mut decoder, input, output)
+}
+
+/// One bounded decoder session. Streaming engines receive each new PCM sample
+/// exactly once; full-context engines may use the shared cumulative input.
+/// All methods execute in the owned confined child, never the compositor.
+pub trait SpeechDecoder {
+    /// Accept only newly appended PCM, once per audio frame.
+    /// # Errors
+    /// Rejects invalid audio, exhausted resources or native failure.
+    fn push(&mut self, samples: &[f32]) -> Result<(), SpeechError>;
+    /// Produce the current cumulative hypothesis without retiring the session.
+    /// # Errors
+    /// Rejects invalid state, oversized text or native failure.
+    fn draft(&mut self, samples: &[f32]) -> Result<String, SpeechError>;
+    /// Flush and retire this decoder, returning cumulative final text.
+    /// # Errors
+    /// Rejects invalid state, oversized text or native failure.
+    fn finish(&mut self, samples: &[f32]) -> Result<String, SpeechError>;
+}
+
+#[cfg(feature = "whisper")]
+struct WhisperDecoder {
+    engine: SpeechEngine,
+    recognition: SpeechRecognition,
+    language: std::ffi::CString,
+}
+#[cfg(feature = "whisper")]
+impl SpeechDecoder for WhisperDecoder {
+    fn push(&mut self, _samples: &[f32]) -> Result<(), SpeechError> {
+        Ok(())
+    }
+    fn draft(&mut self, samples: &[f32]) -> Result<String, SpeechError> {
+        self.recognition
+            .transcribe(&mut self.engine, samples, &self.language, false)
+    }
+    fn finish(&mut self, samples: &[f32]) -> Result<String, SpeechError> {
+        self.recognition
+            .transcribe(&mut self.engine, samples, &self.language, true)
+    }
+}
+
+/// Read the existing strict configuration frame before engine preparation.
+/// # Errors
+/// Rejects an absent, oversized, malformed or out-of-sequence configuration.
+pub fn configure(input: &mut impl Read) -> Result<(SpeechInput, SpeechConfig), SpeechError> {
     let frame = zeroize::Zeroizing::new(
         FRAME
             .with_max_len(super::MAX_CONFIG_BYTES + 9)
@@ -83,40 +153,53 @@ pub fn serve(
     if kind != RequestKind::Configure {
         return Err(SpeechError::Protocol);
     }
-    let config: SpeechConfig =
-        serde_json::from_slice(payload).map_err(|_| SpeechError::Protocol)?;
-    drop(frame);
-    // Only an immutable, receipt-checked descriptor survives confinement.
-    // Native parsing has no path access; failures precede Ready and capture.
-    let threads = std::thread::available_parallelism().map_or(1, |count| count.get().min(2));
-    super::confine_worker()?;
-    let mut engine = SpeechEngine::load_file(&sealed)?;
-    drop(sealed);
-    engine.set_threads(threads)?;
-    engine.set_vocabulary(&config.vocabulary)?;
-    engine.prepare()?;
-    let language = engine.language(&config.language)?;
-    drop(config);
-    let mut recognition = SpeechRecognition::default();
+    let config = serde_json::from_slice(payload).map_err(|_| SpeechError::Protocol)?;
+    Ok((session, config))
+}
+
+/// Serve the real private pipe using an already prepared confined decoder.
+/// Readiness follows configuration, model verification, confinement and native
+/// preparation. Completion retires the session; failures stop before reuse.
+/// # Errors
+/// Rejects invalid input, native failure, oversized replies or a closed pipe.
+pub fn serve_decoder(
+    identity: (&str, &str),
+    mut session: SpeechInput,
+    decoder: &mut impl SpeechDecoder,
+    input: &mut impl Read,
+    output: &mut impl Write,
+) -> Result<(), SpeechError> {
+    if session.sequence() != 1 || !session.samples().is_empty() {
+        return Err(SpeechError::Protocol);
+    }
     reply(
         output,
         &SpeechReply::Ready {
             sequence: session.sequence(),
-            model,
-            revision,
+            model: identity.0.to_owned(),
+            revision: identity.1.to_owned(),
         },
     )?;
     loop {
-        let frame = FRAME
-            .read(input)
-            .map_err(|_| SpeechError::Protocol)?
-            .ok_or(SpeechError::WorkerStopped)?;
+        let frame = zeroize::Zeroizing::new(
+            FRAME
+                .read(input)
+                .map_err(|_| SpeechError::Protocol)?
+                .ok_or(SpeechError::WorkerStopped)?,
+        );
+        let previous = session.samples().len();
         let (kind, _) = session.accept(&frame)?;
         match kind {
-            RequestKind::Audio => {}
+            RequestKind::Audio => {
+                decoder.push(
+                    session
+                        .samples()
+                        .get(previous..)
+                        .ok_or(SpeechError::Protocol)?,
+                )?;
+            }
             RequestKind::Draft => {
-                let text =
-                    recognition.transcribe(&mut engine, session.samples(), &language, false)?;
+                let text = decoder.draft(session.samples())?;
                 reply(
                     output,
                     &SpeechReply::Draft {
@@ -126,8 +209,7 @@ pub fn serve(
                 )?;
             }
             RequestKind::Finish => {
-                let text =
-                    recognition.transcribe(&mut engine, session.samples(), &language, true)?;
+                let text = decoder.finish(session.samples())?;
                 reply(
                     output,
                     &SpeechReply::Done {

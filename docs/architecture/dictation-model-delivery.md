@@ -1,6 +1,6 @@
 # Delivery of a streaming speech model
 
-Status: proposed production integration, with existing artifact verification hardened.
+Status: production Whisper descriptor loading and isolated native worker qualification.
 No new model is installed, selected, signed or admitted by this change. The held
 speech PR and reserved holdout remain unchanged.
 
@@ -20,9 +20,9 @@ HTTPS-only transport, offset resume, exact signed size and SHA-256, a private
 object does not require a 742 MB Rust `Vec`, a second downloader, a new cache,
 a microphone grant or a network-enabled recognition worker.
 
-The current 256 MiB boundary is `speech::MAX_MODEL_BYTES`, enforced by both
-`speech_model_bytes` and `SpeechEngine::load`. That consumer accepts signed
-`WhisperGgml` releases and calls a Whisper buffer loader. Nemotron is a distinct
+The current 256 MiB boundary is `speech::MAX_MODEL_BYTES`, enforced by the
+verified Whisper model-file witness and both engine loaders. That consumer
+accepts signed `WhisperGgml` releases and calls the descriptor loader. Nemotron is a distinct
 GGUF engine; relabeling it as Whisper, llama.cpp or vLLM would be false. The
 742 MB candidate remains rejected by the current consumer. Streaming delivery
 alone does not change that rejection.
@@ -93,9 +93,10 @@ exception for the candidate.
   meaningful stable draft on one exposed German clip. This is a development
   result, not holdout, noisy-name or production-service acceptance.
 
-The remaining blocking decisions are an approved production backend/format and
-artifact-size policy, an immutable descriptor-loading design, and physical/full
-OS acceptance. They are not solved by increasing the existing Whisper cap.
+Remaining integration work is the explicit native format/runtime and its
+qualified artifact-size policy, followed by physical/full OS acceptance. Backend
+implementation is authorized; release/signing/installation remains held. The
+existing Whisper cap is unchanged.
 
 
 ## Production descriptor loading implementation
@@ -150,32 +151,85 @@ one process; no dynamic engine code is loaded from model bytes.
 against NeMo-Speech.cpp `8642eaa5cc51efbc17ad0f3e433944ba858a873f`.
 The internal `ModelConfig::descriptor` reaches the real recognizer/model factory
 without becoming a CLI parameter. Metadata and tensor reads share one duplicated
-read-only regular-file descriptor; the path is unused in this mode. Releasing
-the input prohibits subsequent tensor reads. Tensor range checks use subtraction
+read-only regular-file descriptor; the path is unused in this mode. Routine
+reader-buffer release retains an immutable anchor for upstream lazy sessions.
+Explicit input retirement prohibits subsequent tensor reads. Tensor range checks use subtraction
 to reject overflowing offsets. Existing path callers retain their API defaults.
 
 `tools/release/qualify_nemo_descriptor.py --out <fresh-directory>` compiles the
 actual loader, checks the model and recognizer call sites, and runs a tiny GGUF
 through the production reader. It checks caller close/unlink, exact tensor bytes,
 writable and invalid descriptor rejection, overflowing reads, and released-input
-failure. The reproducible remote run passed in 2.943 seconds. Exact original and
+failure. The strengthened lazy-anchor run passed in 3.093 seconds. Exact original and
 patched source hashes are in `fixtures/nemo_descriptor_sources.json`; the helper
 checks them before and after, copies only a separate source overlay, and leaves
 upstream sources and shared build objects untouched. The initial duplicate-header
 overlay failure remains in the evidence log; the corrected overlay passed.
 
-This is a tested native loading adapter, not an enabled speech worker. Its caller
+This is a tested native loading adapter; normal production selection is held. Its caller
 must establish immutable input before invoking it: read-only access alone does
-not prevent another writer. The next implementation is a verified immutable
-cached-file witness and separate native worker integration, followed by the
-existing sandbox, protocol and resource journeys. No backend implementation
+not prevent another writer. The isolated worker now verifies a kernel-immutable cached-file witness and
+uses the existing sandbox, protocol and resource journeys, as described below. No backend implementation
 approval is pending. Actual release/signing/installation remains held, the
 Whisper 256 MiB admission remains unchanged, and neither the model nor audio
 was used by this adapter regression.
 
 A read-only `FS_IOC_MEASURE_VERITY` query on the existing 742090464-byte review
-object returned `ENOTTY` (25). The current runner storage therefore cannot
-supply this witness. No enable ioctl or filesystem mutation was attempted.
+object on the original review filesystem returned `ENOTTY` (25). That
+filesystem could not supply this witness; no mutation was attempted in that
+query. The existing btrfs filesystem subsequently resolved this limitation.
 `dictation-native-descriptor.json` records the adapter and storage evidence.
-File-backed qualification needs an observed supporting filesystem; this is a
-concrete runner/storage limitation, not a backend implementation approval gate.
+The historical receipt remains unchanged; the successful btrfs qualification
+is recorded separately below.
+
+## Actual native worker qualification
+
+The builder's existing home btrfs filesystem supports fs-verity. A disposable
+fixture enabled it and rejected writes, then an owned copy of the already
+reviewed model established the same kernel witness. Its exact raw SHA-256 was
+verified after immutability. No privileged mount/configuration change, download,
+model installation, catalogue signature or access grant was needed.
+
+The shared production handler now accepts a decoder session while retaining its
+strict Configure/Audio/Draft/Finish parser, sequence checks, bounded replies and
+zeroized PCM frames. Default builds retain Whisper. The explicitly selected
+`nemo-review` example builds without Whisper and refuses combined linkage; the
+actual binary contains no Whisper symbols. A pinned bridge is built inside the
+one native backend generation, with the complete versioned ggml dependency
+closure verified before execution. No engine code comes from model bytes.
+
+Native parsing follows full existing Landlock/seccomp confinement. The private
+review witness admits only the fixed reviewed size/digest, requires fs-verity,
+and hashes the same descriptor with a 32 KiB buffer. Native lazy sessions retain
+the descriptor anchor rather than reopening a path. Upstream streaming-only
+scalar warmup prepares resources before Ready; its temporary runner is destroyed
+before the fresh user stream. New PCM is pushed once, endpoint finals accumulate
+before the current draft, and native vocabulary consumes the existing bounded
+SpeechConfig spellings with at most 64 tokenizer tokens.
+
+Actual English and exposed German vocabulary streams completed under 1 GiB
+RLIMIT_AS, the 960 MiB guard and the verified 1.25 GiB scope. German raw WER was
+0%, with no unspoken TiLo or observed non-prefix revisions. English raw WER was
+21.05% under the existing strict number-preserving scoring. Startup was about
+6.3 seconds; first partial after capture was 2.63 seconds in English and
+5.39 seconds in German. These are development results, not release acceptance.
+
+Cancellation after Ready and a draft request terminated the owned worker. A
+fresh empty-vocabulary session produced empty silence drafts/final; an unknown
+selected language returned a typed failure before Ready. Model file-cache pages
+were advised DONTNEED only on the owned object before each fresh scope. The
+scope observed memory-high reclamation, peak about 1.126 GiB, and no max/OOM
+events. Worker virtual peaks stayed below the 960 MiB guard. This does not prove
+physical 4–8 GiB/ARM behavior or cold-device IO isolation.
+
+Exact source/binary/dependency hashes, positive runs and retained failed launches
+are in `dictation-native-worker.json`. The immutable anchor fixes a failure found
+only by the actual worker: upstream routine buffer release precedes later lazy
+weight loading. The complete native format/runtime release, startup/formatting
+quality, broader natural speech and renderer-owned cancellation remain pending.
+
+The default production Whisper worker also completed the same paced English
+stream after the shared-handler change: 5.26% raw WER, 207 ms preparation,
+3.10 seconds to first partial after capture, and no memory-high/max/OOM events.
+Focused speech tests passed (10 tests); default all-target and native-only
+Clippy passed. The native review feature remains outside normal consumer builds.
