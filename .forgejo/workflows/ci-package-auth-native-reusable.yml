@@ -29,7 +29,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-          sparse-checkout: tools/ci/package_auth_probe.py
+          sparse-checkout: |
+            tools/ci/package_auth_probe.py
+            tools/ci/package_auth_materialize.py
+            .forgejo/workflows/build-image.yml
           sparse-checkout-cone-mode: false
       - name: Probe reusable package and broker authentication
         env:
@@ -40,3 +43,13 @@ jobs:
           JOB_TOKEN: ${{ github.token }}
           COLLECTION_AUDIENCE: ${{ vars.TILO_OS_APP_COLLECTION_AUDIENCE }}
         run: python3 tools/ci/package_auth_probe.py
+      - name: Materialize the exact pinned collection through production checks
+        env:
+          DEV_BUILD: 'true'
+          PACKAGE_TOKEN: ${{ github.token }}
+          COLLECTION_SOURCE: a33663af30b44d19a673df25b3a2bf59eea6d765
+          COLLECTION_SHA256_INPUT: 9749360ed68085fc2c94f79ff3047249854207b4745bb3fc68926f64cabab0b0
+          COLLECTION_URL_INPUT: https://code.tilo.so/api/packages/tilo/generic/tilo-app-collections/0.0.0-a33663af30b44d19a673df25b3a2bf59eea6d765-9749360ed68085fc2c94f79ff3047249854207b4745bb3fc68926f64cabab0b0/tilo-apps-x86_64.tar.gz
+          COLLECTION_PUBLISHER: d3a8bd4b1cee19a15fddbe4ee4a70a119553a9b8b85e09ba1f67b4ab95d6ddb0
+          COLLECTION_AUDIENCE: ${{ vars.TILO_OS_APP_COLLECTION_AUDIENCE }}
+        run: python3 tools/ci/package_auth_materialize.py
