@@ -954,3 +954,10 @@ activity-catch-up-needs-review = Needs your review · { $count ->
    *[other] { $count } waiting tasks
     }
 activity-catch-up-waiting-detail = { $task } · { $who }
+
+notification-alarm-dismiss = Dismiss
+notification-alarm-snooze = Snooze for 5 minutes
+notification-alarm-action-failed = Could not change this alarm
+notification-alarm-action-title = { $action }: { $title }
+notification-alarm-action-subtitle = For this alarm occurrence
+notification-alarm-action-retry = Keep this notification and try again.
