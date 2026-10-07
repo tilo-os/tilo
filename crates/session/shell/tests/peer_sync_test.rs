@@ -298,3 +298,329 @@ fn invite_token_carries_an_authenticated_iroh_address() {
     assert_eq!(parsed.owner_addr, addr);
     assert_eq!(parsed.owner_peer_id, key.public().to_string());
 }
+
+async fn spawn_same_identity_actor(
+    device_seed: u8,
+) -> (
+    mpsc::Sender<NetCmd>,
+    mpsc::Receiver<NetEvent>,
+    iroh::EndpointAddr,
+) {
+    use shell::network::HostIdentity;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+    let root = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+    let key = ed25519_dalek::SigningKey::from_bytes(&[device_seed; 32]);
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: format!("Synthetic device {device_seed}"),
+        capabilities: DeviceCapabilities::primary(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut cert, &root).unwrap();
+    let lookup = MemoryLookup::new();
+    let endpoint = iroh::Endpoint::builder(presets::N0)
+        .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
+        .address_lookup(lookup.clone())
+        .bind()
+        .await
+        .unwrap();
+    let addr = endpoint.addr();
+    let identity = HostIdentity {
+        device_cert: cert,
+        device_signing_key: key,
+        workspace_device_certs: HashMap::new(),
+        workspace_revocations: HashMap::new(),
+        identity_paths: None,
+    };
+    let (cmd, _join) = Actor::spawn_reporting_addrs(
+        endpoint,
+        lookup,
+        Some(identity),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    let (events, rx) = mpsc::channel(64);
+    cmd.send(NetCmd::JoinWorkspace {
+        ws: WS,
+        on_event: events,
+    })
+    .await
+    .unwrap();
+    (cmd, rx, addr)
+}
+
+async fn wait_certified_native_peer(events: &mut mpsc::Receiver<NetEvent>) {
+    tilo_test_env::within("same-identity native peer announced", async {
+        let mut joined = false;
+        let mut certified = false;
+        while !(joined && certified) {
+            match events.recv().await.expect("certified actor remains live") {
+                NetEvent::PeerJoined { .. } => joined = true,
+                NetEvent::Msg {
+                    peer,
+                    msg: NeighbourMsg::IdentityHello { cert, .. },
+                    ..
+                } => {
+                    assert_eq!(
+                        cert.device_public_key,
+                        *peer.as_bytes(),
+                        "certificate binds the transport endpoint"
+                    );
+                    let identity = shell::network::PeerIdentityStore::new()
+                        .insert(PeerOrigin::peer(&peer), *cert, 2)
+                        .unwrap();
+                    let root = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+                    assert_eq!(identity.user_pubkey, root.verifying_key().to_bytes());
+                    certified = true;
+                }
+                _ => {}
+            }
+        }
+    })
+    .await;
+}
+
+/// Native screen crossing reaches the remote Wayland seat over real Iroh,
+/// using an exact synthetic grant and no SurfaceStreamStart/video payload.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_screen_crossing_reaches_the_two_peer_seat_without_video() {
+    use settings_store::display_placement::Placement;
+    use shell::network::device_topology::{NativeScreen, NativeScreenRouter};
+    use shell::network::{InputEvent, ShareRegistry, StreamingShare};
+
+    let (cmd_a, mut events_a, addr_a) = spawn_same_identity_actor(42).await;
+    let (cmd_b, mut events_b, addr_b) = spawn_same_identity_actor(43).await;
+    let source_endpoint = addr_a.id;
+    let source_peer = shell::network::behaviour::peer_liveness_handle(&source_endpoint);
+    let target_peer = shell::network::behaviour::peer_liveness_handle(&addr_b.id);
+    let target = addr_b.id;
+    connect_pair(&cmd_a, addr_a, &cmd_b, addr_b).await;
+    wait_certified_native_peer(&mut events_a).await;
+    wait_certified_native_peer(&mut events_b).await;
+
+    let screens = vec![
+        NativeScreen {
+            peer: source_peer,
+            connector: "eDP-1".into(),
+            surface: 6,
+            placement: Placement::new(0, 0, 960, 540),
+            online: true,
+        },
+        // A 2560x1440 physical panel at 2x is 1280x720 logical units.
+        NativeScreen {
+            peer: target_peer,
+            connector: "eDP-1".into(),
+            surface: 7,
+            placement: Placement::new(960, 0, 1280, 720),
+            online: true,
+        },
+    ];
+    let mut router = NativeScreenRouter::default();
+    assert!(router.replace(screens.clone()));
+    let mut grants = ShareRegistry::new();
+    let motion = ((959.0, 200.0), (970.0, 205.0));
+    assert!(
+        router
+            .cross((source_peer, 6), motion, &grants, false)
+            .is_none(),
+        "membership and topology do not grant input"
+    );
+    grants.insert(target_peer, 7, StreamingShare::new());
+    assert!(
+        router
+            .cross((source_peer, 6), motion, &grants, true)
+            .is_none(),
+        "sensitive source focus must not export physical input"
+    );
+    let handoff = router
+        .cross((source_peer, 6), motion, &grants, false)
+        .unwrap();
+    assert_eq!(
+        handoff.event,
+        InputEvent::PointerMotion { x: 10.0, y: 205.0 }
+    );
+    cmd_a
+        .send(NetCmd::PublishWorkspaceControl {
+            ws: WS,
+            msg: NeighbourMsg::RemoteInput {
+                peer: source_peer,
+                surface: handoff.surface,
+                event: postcard::to_stdvec(&handoff.event).unwrap(),
+            },
+            route: WorkspaceControlRoute::Direct { target },
+        })
+        .await
+        .unwrap();
+    let event = tilo_test_env::within("native boundary input arrived", async {
+        loop {
+            match events_b.recv().await.expect("Iroh receiver remains live") {
+                NetEvent::Msg { peer, msg: NeighbourMsg::RemoteInput { surface, event, .. }, .. } => {
+                    assert_eq!(peer, source_endpoint);
+                    assert_eq!(surface, 7);
+                    break postcard::from_bytes::<InputEvent>(&event).unwrap();
+                }
+                NetEvent::Msg { msg: NeighbourMsg::SurfaceStreamStart { .. }
+                    | NeighbourMsg::SurfaceFrame { .. }, .. } => panic!("native fixture emitted video"),
+                _ => {}
+            }
+        }
+    }).await;
+    assert_native_receiver_policy(event, source_peer);
+    assert_native_focus_lifecycle(router, screens, grants, source_peer, target_peer);
+}
+
+fn assert_native_receiver_policy(event: shell::network::InputEvent, source_peer: u64) {
+    use shell::compositor::state::State;
+    use shell::network::{ShellView, StreamingShare};
+    use smithay::reexports::calloop::EventLoop;
+    use smithay::reexports::wayland_server::Display;
+    use vello::kurbo::Rect;
+    let event_loop: EventLoop<'static, State> = EventLoop::try_new().unwrap();
+    let display: Display<State> = Display::new().unwrap();
+    let mut seat = State::new(event_loop.handle(), display.handle());
+    seat.share_registry
+        .insert(source_peer, 7, StreamingShare::new());
+    seat.remote_input_firewall.publish_view(ShellView::new(
+        vec![(7, Rect::new(0.0, 0.0, 1280.0, 720.0))],
+        Some(7),
+        false,
+        false,
+    ));
+    assert!(seat.apply_remote_input(source_peer, 7, event.clone()));
+    let pointer = seat.seat.get_pointer().unwrap().current_location();
+    assert_eq!((pointer.x, pointer.y), (10.0, 205.0));
+    seat.share_registry.set_read_only(source_peer, 7, true);
+    assert!(!seat.apply_remote_input(source_peer, 7, event.clone()));
+    seat.share_registry.set_read_only(source_peer, 7, false);
+    seat.remote_input_firewall.publish_view(
+        ShellView::new(
+            vec![(7, Rect::new(0.0, 0.0, 1280.0, 720.0))],
+            Some(7),
+            false,
+            false,
+        )
+        .locked(true),
+    );
+    assert!(!seat.apply_remote_input(source_peer, 7, event));
+}
+
+fn assert_native_focus_lifecycle(
+    mut router: shell::network::device_topology::NativeScreenRouter,
+    screens: Vec<shell::network::device_topology::NativeScreen>,
+    mut grants: shell::network::ShareRegistry,
+    source_peer: u64,
+    target_peer: u64,
+) {
+    use shell::network::InputEvent;
+    let motion = ((959.0, 200.0), (970.0, 205.0));
+    let key = InputEvent::Key {
+        keysym: 30,
+        pressed: true,
+        modifiers: 0,
+    };
+    assert!(router.focused_input(key.clone(), &grants, false).is_some());
+    grants.set_read_only(target_peer, 7, true);
+    assert!(router.focused_input(key.clone(), &grants, false).is_none());
+    grants.set_read_only(target_peer, 7, false);
+    assert!(
+        router.focused_input(key.clone(), &grants, false).is_none(),
+        "renewing a grant cannot resurrect focus"
+    );
+    assert!(
+        router
+            .cross((source_peer, 6), motion, &grants, false)
+            .is_some()
+    );
+    assert!(router.focused_input(key.clone(), &grants, true).is_none());
+    assert!(
+        router.focused_input(key.clone(), &grants, false).is_none(),
+        "leaving sensitive focus does not resume typing"
+    );
+    assert!(
+        router
+            .cross((source_peer, 6), motion, &grants, false)
+            .is_some()
+    );
+    let mut offline = screens.clone();
+    offline[1].online = false;
+    assert!(router.replace(offline));
+    assert!(
+        router
+            .cross((source_peer, 6), motion, &grants, false)
+            .is_none()
+    );
+    assert!(router.replace(screens));
+    assert!(
+        router.focused_input(key, &grants, false).is_none(),
+        "reconnect requires a new crossing"
+    );
+}
+
+mod native_geometry {
+    use settings_store::display_placement::Placement;
+    use shell::network::device_topology::{NativeScreen, NativeScreenRouter};
+    use shell::network::{InputEvent, ShareRegistry, StreamingShare};
+
+    fn screen(peer: u64, surface: u64, placement: Placement) -> NativeScreen {
+        NativeScreen {
+            peer,
+            surface,
+            connector: "eDP-1".into(),
+            placement,
+            online: true,
+        }
+    }
+
+    #[test]
+    fn crossing_uses_the_shared_edge_not_only_the_destination_rect() {
+        let mut router = NativeScreenRouter::default();
+        assert!(router.replace(vec![
+            screen(1, 1, Placement::new(0, 0, 100, 100)),
+            screen(2, 2, Placement::new(100, 80, 100, 100)),
+        ]));
+        let mut grants = ShareRegistry::new();
+        grants.insert(2, 2, StreamingShare::new());
+        assert!(
+            router
+                .cross((1, 1), ((99.0, 85.0), (101.0, 85.0)), &grants, false)
+                .is_some()
+        );
+        assert!(
+            router
+                .cross((1, 1), ((90.0, 10.0), (190.0, 90.0)), &grants, false)
+                .is_none()
+        );
+        for point in [(f64::NAN, 85.0), (f64::INFINITY, 85.0), (101.0, f64::NAN)] {
+            assert!(
+                router
+                    .cross((1, 1), ((99.0, 85.0), point), &grants, false)
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_replacement_cancels_focus_and_cannot_leave_old_screens_active() {
+        let mut router = NativeScreenRouter::default();
+        let first = screen(1, 1, Placement::new(0, 0, 100, 100));
+        let second = screen(2, 2, Placement::new(100, 0, 100, 100));
+        assert!(router.replace(vec![first.clone(), second.clone()]));
+        let mut grants = ShareRegistry::new();
+        grants.insert(2, 2, StreamingShare::new());
+        let motion = ((99.0, 50.0), (101.0, 50.0));
+        assert!(router.cross((1, 1), motion, &grants, false).is_some());
+        assert!(!router.replace(vec![first.clone(), first]));
+        assert!(router.cross((1, 1), motion, &grants, false).is_none());
+        let key = InputEvent::Key {
+            keysym: 30,
+            pressed: true,
+            modifiers: 0,
+        };
+        assert!(router.focused_input(key, &grants, false).is_none());
+        assert!(!router.replace(vec![second.clone(), screen(3, 3, second.placement)]));
+    }
+}
