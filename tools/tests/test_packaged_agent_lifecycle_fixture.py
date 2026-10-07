@@ -587,6 +587,106 @@ class PresentedEditorTargetTests(unittest.TestCase):
             finally:
                 provider.close()
 
+    def test_marker_provider_invokes_one_discovered_exact_chat_action(self):
+        provider = PROOF.HeldProvider(marker_agent="tide")
+        provider.require_owner_admission(
+            lambda: {"phase": "planning", "sequence": 1, "run_epoch": 7}
+        )
+        operation = "broker:42:chat.person:tide#open-agent-conversation"
+
+        def post(payload):
+            request = urllib.request.Request(
+                provider.endpoint + "/chat/completions",
+                json.dumps(payload).encode(),
+                {"Authorization": "Bearer isolated-fixture-not-a-real-provider-key"},
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return json.loads(response.read())
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            try:
+                response = pool.submit(post, {
+                    "model": "bounded-fixture",
+                    "messages": [{"role": "user", "content":
+                                  "Operations published right now:\n\n"
+                                  "In so.tilo.chat: Tide (chat.agent) — resource chat.person:tide\n"
+                                  f"  {operation} — Open conversation\n"
+                                  "The request:\n\nOpen that conversation."}],
+                })
+                PROOF.wait_for("one marker provider request",
+                               lambda: provider.request_count() == 1, timeout=5)
+                provider.release_through(1)
+                tool = response.result(timeout=5)["choices"][0]["message"]["tool_calls"][0]
+                self.assertEqual(tool["function"]["name"], "invoke")
+                arguments = json.loads(tool["function"]["arguments"])
+                self.assertEqual(arguments["operation"], operation)
+                self.assertEqual(arguments["parameters"], {})
+                self.assertEqual(provider.request_count(), 1)
+                self.assertEqual(provider.overflow_count(), 0)
+            finally:
+                provider.close()
+
+    def test_marker_operation_refuses_absent_ambiguous_or_noncanonical_targets(self):
+        expected = "broker:9:chat.person:tide#open-agent-conversation"
+        self.assertEqual(PROOF.marker_operation_from_request(
+            {"messages": [{"role": "user", "content":
+                            "Operations published right now:\n\n"
+                            "In so.tilo.chat: Tide (chat.agent) — resource chat.person:tide\n"
+                            "  " + expected + " — Open conversation\n"
+                            "  " + expected + " — Open conversation\n" +
+                            "\nThe request:\n\nOpen it."}]}, "tide"
+        ), expected)
+        for request in (
+                {"messages": [{"role": "user", "content":
+                                "Operations published right now:\n\nno operation\nThe request:\n\n"}]},
+                {"messages": [{"role": "user", "content":
+                                "Operations published right now:\n\n"
+                                "  " + expected + " — Open conversation\n"
+                                "  broker:8:chat.person:tide#open-agent-conversation — Open conversation\n"
+                                "The request:\n\n"}]},
+                {"messages": [{"role": "user", "content":
+                                "Operations published right now:\n\n"
+                                "  broker:9:chat.person:reed#open-agent-conversation — Open conversation\n"
+                                "The request:\n\n"}]},
+                {"messages": [{"role": "user", "content":
+                                "Operations published right now:\n\n"
+                                "In so.tilo.chat: " + expected + " (chat.agent) — resource chat.person:tide\n"
+                                "  broker:9:somewhere#else — label " + expected + "\n"
+                                "The request:\n\n" + expected}]}):
+            with self.subTest(request=request), self.assertRaises(RuntimeError):
+                PROOF.marker_operation_from_request(request, "tide")
+        with self.assertRaises(RuntimeError):
+            PROOF.marker_operation_from_request({"messages": []}, "Tide with spaces")
+
+    def test_marker_stage_uses_real_governance_and_accessibility_doors(self):
+        rows = [{
+            "application": "tilo.workspace", "room": "room-a",
+            "resource": "workspace.permissions:room-a", "operation": "profile.save",
+            "id": "save",
+        }, {
+            "application": "tilo.workspace", "room": "room-b",
+            "resource": "workspace.permissions:room-b", "operation": "profile.save",
+            "id": "foreign",
+        }]
+        with patch.object(PROOF, "actions", return_value=rows):
+            self.assertEqual(PROOF.offered_governance_action(
+                "socket", "room-a", "profile.save"
+            )["id"], "save")
+        grant = inspect.getsource(PROOF.grant_exact_marker_action)
+        self.assertIn('"profile.save"', grant)
+        self.assertIn('"profile.assign"', grant)
+        self.assertIn('"Action"', grant)
+        self.assertIn('"open-agent-conversation"', grant)
+        self.assertIn('"broad_chat_grant": False', grant)
+        stage = inspect.getsource(PROOF.managed_agent_marker_stage)
+        for required in (
+                "start_managed_agent", "agent_marker_accessibility",
+                "activate_shell_accessibility_control", "Agent quick composer",
+                "provider.request_count() != 1", "full_lifecycle_proven"):
+            self.assertIn(required, stage)
+        for forbidden in ("open_agent_quick_composer_for_shots", "stage_scenario"):
+            self.assertNotIn(forbidden, stage)
+
     def test_fourth_response_does_not_release_the_original_third_turn(self):
         provider = object.__new__(PROOF.HeldProvider)
         provider.request_lock = threading.Condition()

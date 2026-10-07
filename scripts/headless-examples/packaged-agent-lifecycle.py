@@ -146,6 +146,75 @@ def agent_conversation_accessibility(agent_name, *, detached=False, diagnostic_p
     return None
 
 
+def shell_accessibility_control(label):
+    """Find one compositor-owned control without reading application content."""
+    address = atspi.atspi_address()
+    matches = []
+    for bus, proxy_pid in atspi.bus_pids(address).items():
+        pid = atspi.app_process(proxy_pid)
+        if process_program(pid) != "shell":
+            continue
+        client = atspi.AtspiClient(address, bus)
+        try:
+            children = client.call(atspi.ROOT_PATH, "org.a11y.atspi.Accessible.GetChildren")
+            for window in dict.fromkeys(atspi.PATH_RE.findall(children)):
+                tree = accessible_subtree(client, window, atspi.APP_TREE_NODE_LIMIT)
+                for path in client.named(tree, label):
+                    matches.append({"bus": bus, "window": window, "control": path})
+        except atspi.GateError:
+            continue
+    if len(matches) > 1:
+        raise RuntimeError(f"the compositor published {len(matches)} copies of {label}")
+    return matches[0] if matches else None
+
+
+def agent_marker_accessibility(agent):
+    """Find one fresh compositor marker for the exact canonical Agent."""
+    pattern = re.compile(rf"^Agent action: {re.escape(agent)}(?: · Agent)?$", re.IGNORECASE)
+    address = atspi.atspi_address()
+    matches = []
+    for bus, proxy_pid in atspi.bus_pids(address).items():
+        pid = atspi.app_process(proxy_pid)
+        if process_program(pid) != "shell":
+            continue
+        client = atspi.AtspiClient(address, bus)
+        try:
+            children = client.call(atspi.ROOT_PATH, "org.a11y.atspi.Accessible.GetChildren")
+            for window in dict.fromkeys(atspi.PATH_RE.findall(children)):
+                tree = accessible_subtree(client, window, atspi.APP_TREE_NODE_LIMIT)
+                for path, name in tree.items():
+                    if isinstance(name, str) and pattern.fullmatch(name):
+                        matches.append({
+                            "bus": bus, "window": window, "control": path, "label": name,
+                        })
+        except atspi.GateError:
+            continue
+    if len(matches) > 1:
+        raise RuntimeError("the compositor published duplicate exact Agent markers")
+    return matches[0] if matches else None
+
+
+def activate_shell_accessibility_control(access, label):
+    """Focus and activate one exact compositor node through its public AT door."""
+    client = atspi.AtspiClient(atspi.atspi_address(), access["bus"])
+    focused = client.call(
+        access["control"], "org.a11y.atspi.Component.GrabFocus", check=False
+    )
+    if focused.strip() != "(true,)":
+        raise RuntimeError(f"the compositor's {label} refused accessibility focus")
+    actions = client.call(
+        access["control"], "org.a11y.atspi.Action.GetActions", check=False
+    )
+    if "'click'" not in actions:
+        raise RuntimeError(f"the compositor's {label} has no accessibility action")
+    activated = client.call(
+        access["control"], "org.a11y.atspi.Action.DoAction", "0", check=False
+    )
+    if activated.strip() != "(true,)":
+        raise RuntimeError(f"the compositor's {label} refused accessibility activation")
+    return True
+
+
 def agent_read_only_accessibility(agent_name, *, detached=False):
     """Observe one mounted revoked conversation without reading its private draft."""
     address = atspi.atspi_address()
@@ -790,6 +859,45 @@ def native_float_return(socket, room, record, output, size, process):
     }
 
 
+def marker_operation_from_request(request, agent):
+    """Select one operation from the Agent's trusted live-catalogue prefix."""
+    if not isinstance(agent, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", agent):
+        raise RuntimeError("marker proof requires one canonical Agent id")
+    messages = request.get("messages") if isinstance(request, dict) else None
+    if not isinstance(messages, list):
+        raise RuntimeError("the model request has no bounded message list")
+    prefix = "Operations published right now:\n\n"
+    catalogue = None
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if not isinstance(content, str) or not content.startswith(prefix):
+            continue
+        catalogue = content[len(prefix):]
+        boundaries = [position for marker in (
+            "\nPeople in this workspace ",
+            "\nEarlier in this conversation ",
+            "\nThe request:\n",
+        ) if (position := catalogue.find(marker)) >= 0]
+        if boundaries:
+            catalogue = catalogue[:min(boundaries)]
+        break
+    if catalogue is None:
+        raise RuntimeError("the model request has no trusted live catalogue")
+    pattern = re.compile(
+        rf"^  (broker:\d+:chat\.person:{re.escape(agent)}#open-agent-conversation) — ",
+    )
+    matches = {
+        match.group(1)
+        for line in catalogue.splitlines()
+        if (match := pattern.match(line)) is not None
+    }
+    if len(matches) != 1:
+        raise RuntimeError("the model request did not publish one exact Agent conversation action")
+    return next(iter(matches))
+
+
 class HeldProvider:
     """Bounded host-only HTTP fixture behind the unchanged model gateway.
 
@@ -797,7 +905,7 @@ class HeldProvider:
     logged. Only a count/event is evidence; no credentials enter state-dump.
     The fixture cannot initiate a request or invoke any desktop action.
     """
-    def __init__(self):
+    def __init__(self, marker_agent=None):
         self.received = threading.Event()
         self.requests = 0
         self.refused_requests = 0
@@ -806,6 +914,8 @@ class HeldProvider:
         self.waiting_ordinals = set()
         self.owner_admissions = {}
         self.owner_admission_probe = None
+        self.marker_agent = marker_agent
+        self.marker_operations = {}
         self.closed = False
         self.request_lock = threading.Condition()
         owner = self
@@ -835,16 +945,30 @@ class HeldProvider:
                 if not isinstance(request, dict) or request.get("model") != "bounded-fixture":
                     self.send_error(400)
                     return
+                marker_operation = None
+                if owner.marker_agent is not None:
+                    try:
+                        marker_operation = marker_operation_from_request(
+                            request, owner.marker_agent
+                        )
+                    except RuntimeError:
+                        with owner.request_lock:
+                            owner.refused_requests += 1
+                        self.send_error(409)
+                        return
                 probe = owner.owner_admission_probe
                 admission = probe() if probe is not None else None
                 with owner.request_lock:
-                    if owner.requests >= 4:
+                    limit = 1 if owner.marker_agent is not None else 4
+                    if owner.requests >= limit:
                         owner.refused_requests += 1
                         self.send_error(429)
                         return
                     owner.requests += 1
                     ordinal = owner.requests
                     owner.owner_admissions[ordinal] = admission
+                    if marker_operation is not None:
+                        owner.marker_operations[ordinal] = marker_operation
                     owner.request_lock.notify_all()
                 owner.received.set()
                 if admission is None:
@@ -860,11 +984,24 @@ class HeldProvider:
                 if not released or owner.closed:
                     self.send_error(504)
                     return
+                if owner.marker_agent is None:
+                    tool_name = "plan"
+                    arguments = {"reply": "Fixture response.", "done": True}
+                else:
+                    tool_name = "invoke"
+                    arguments = {
+                        "operation": owner.marker_operations[ordinal],
+                        "parameters": {},
+                        "parts": [{
+                            "part": "Open the Agent conversation.",
+                            "app": "so.tilo.chat",
+                        }],
+                        "reply": "Opened the Agent conversation.",
+                    }
                 reply = {"id": "proof", "model": "bounded-fixture", "choices": [{
                     "index": 0, "message": {"role": "assistant", "content": None,
                     "tool_calls": [{"id": "proof-plan", "type": "function", "function": {
-                        "name": "plan", "arguments": json.dumps({"reply": "Fixture response.",
-                                                                  "done": True})}}]},
+                        "name": tool_name, "arguments": json.dumps(arguments)}}]},
                     "finish_reason": "tool_calls"}]}
                 if request.get("stream"):
                     message = reply["choices"][0]["message"]
@@ -1343,6 +1480,57 @@ def offered_desktop_action(socket, room, record, resource, operation):
     return matches[0] if matches else None
 
 
+def offered_governance_action(socket, room, operation):
+    """Select the owner-published governance door without constructing its id."""
+    matches = [row for row in actions(socket)
+               if row.get("application") == "tilo.workspace"
+               and row.get("room") == room
+               and row.get("resource") == f"workspace.permissions:{room}"
+               and row.get("operation") == operation]
+    if len(matches) > 1:
+        raise RuntimeError(f"ambiguous workspace governance action {operation}")
+    return matches[0] if matches else None
+
+
+def grant_exact_marker_action(socket, room, agent, process, output):
+    """Assign one expiring action rule through the real owner governance surface."""
+    profile_name = "Agent marker proof"
+    save = wait_for("owner profile.save action", lambda: offered_governance_action(
+        socket, room, "profile.save"), process)
+    save_receipt = wait_terminal(socket, invoke(socket, save, {
+        "name": profile_name,
+        "description": "May open one Agent conversation for the marker proof",
+        "rules": [{
+            "scope": {"Action": {
+                "app": "so.tilo.chat", "action": "open-agent-conversation",
+            }},
+            "effect": "Grant",
+            "verb": "Write",
+        }],
+        "confirm": True,
+    }), process)
+    assign = wait_for("owner profile.assign action", lambda: offered_governance_action(
+        socket, room, "profile.assign"), process)
+    assign_receipt = wait_terminal(socket, invoke(socket, assign, {
+        "profile": profile_name,
+        "subject_kind": "agent",
+        "subject": agent,
+        "expires_unix": int(time.time()) + 600,
+        "confirm": True,
+    }), process)
+    evidence = {
+        "save_invocation": terminal_invocation(save_receipt),
+        "assign_invocation": terminal_invocation(assign_receipt),
+        "scope": "so.tilo.chat#open-agent-conversation",
+        "subject_kind": "agent",
+        "expiring": True,
+        "broad_chat_grant": False,
+        "private_fixture_content_recorded": False,
+    }
+    (output / "marker-governance.json").write_text(json.dumps(evidence, indent=2) + "\n")
+    return evidence
+
+
 def read_task(socket, room, task_id, process):
     action = wait_for("owner-published task read", lambda: offered_desktop_action(
         socket, room, "tasks", f"desktop:task:{task_id}", "read-task"), process)
@@ -1472,6 +1660,99 @@ def start_managed_agent(socket, room, agent, process):
     if value.get("startup_requested") is not True:
         raise RuntimeError("managed Agent start did not acknowledge only its launch request")
     return {"semantic": True, "invocation": terminal_invocation(receipt)}
+
+
+def managed_agent_marker_stage(socket, room, provider, output, process, size):
+    """Invoke one least-privilege Chat action and activate its real marker."""
+    agent = "tide"
+    grant = grant_exact_marker_action(socket, room, agent, process, output)
+    queue = wait_for("owner-published Queue task action", lambda: offered_desktop_action(
+        socket, room, "tasks", "desktop:tasks", "queue"), process)
+    queued_receipt = wait_terminal(socket, invoke(socket, queue, {
+        "instruction": "Open Tide's agent conversation.",
+        "title": "Agent marker proof",
+        "agent": agent,
+        "route": "model",
+    }), process)
+    queued_value = terminal_value(queued_receipt)
+    queued = queued_value.get("result", {}).get("queued")
+    task_id = queued.get("task_id") if isinstance(queued, dict) else None
+    if not isinstance(task_id, str) or not task_id or queued_value.get("delivery") != "queued":
+        raise RuntimeError("marker proof did not durably queue one owner task")
+
+    def exact_task():
+        current = current_agent_tasks(socket, room, agent, process)
+        rows = current.get("tasks")
+        if current.get("complete") is not True or not isinstance(rows, list):
+            raise RuntimeError("marker task owner projection is incomplete")
+        matches = [row for row in rows
+                   if isinstance(row, dict) and row.get("task_id") == task_id]
+        if len(matches) > 1:
+            raise RuntimeError("marker task appears more than once in owner projection")
+        return matches[0] if matches else None
+
+    def accepted_marker_task():
+        task = exact_task()
+        execution = task.get("execution") if task else None
+        if not isinstance(execution, dict):
+            return None
+        epoch = task.get("run_epoch")
+        phase = execution.get("phase")
+        sequence = execution.get("sequence")
+        if type(epoch) is not int or epoch <= 0 or execution.get("run_epoch") != epoch:
+            return None
+        if (phase == "accepted" and sequence == 0) \
+                or (phase == "planning" and type(sequence) is int and sequence > 0):
+            return {"run_epoch": epoch, "phase": phase, "sequence": sequence}
+        return None
+
+    provider.require_owner_admission(accepted_marker_task)
+    startup = start_managed_agent(socket, room, agent, process)
+    wait_for("marker task's single controlled model request",
+             lambda: provider.request_count() == 1, process)
+    admission = provider.owner_admission(1)
+    if admission is None:
+        raise RuntimeError("marker provider request lacked owner task custody")
+    provider.release_through(1)
+
+    marker = wait_for("actual compositor Agent action marker",
+                      lambda: agent_marker_accessibility(agent), process)
+    require_ok(call(socket, {"op": "snapshot", "path": str(
+        output / f"agent-action-marker-before-{size}.png"
+    )}))
+    activate_shell_accessibility_control(marker, marker["label"])
+    composer = wait_for("actual compositor Agent quick composer", lambda:
+                        shell_accessibility_control("Agent quick composer"), process)
+    require_ok(call(socket, {"op": "snapshot", "path": str(
+        output / f"agent-quick-composer-after-{size}.png"
+    )}))
+
+    def completed():
+        task = read_task(socket, room, task_id, process)
+        status = task.get("status")
+        if status in {"failed", "cancelled"}:
+            raise RuntimeError(f"marker task reached unexpected terminal status {status}")
+        return task if status == "done" else None
+
+    terminal = wait_for("marker task's durable owner completion", completed, process)
+    if provider.request_count() != 1 or provider.overflow_count() != 0:
+        raise RuntimeError("marker proof used more than one controlled model request")
+    evidence = {
+        "queue_invocation": terminal_invocation(queued_receipt),
+        "start_invocation": startup["invocation"],
+        "run_epoch": admission["run_epoch"],
+        "owner_phase_at_request": admission["phase"],
+        "provider_request_count": 1,
+        "exact_action_scope": grant["scope"],
+        "marker_accessible": True,
+        "marker_activated": True,
+        "quick_composer_accessible": composer is not None,
+        "terminal_status": terminal["status"],
+        "full_lifecycle_proven": False,
+        "private_fixture_content_recorded": False,
+    }
+    (output / "native-agent-marker.json").write_text(json.dumps(evidence, indent=2) + "\n")
+    return evidence
 
 
 def agent_reply_observation(socket, room, record, parent, agent, process, *, diagnostic_path=None):
@@ -2692,7 +2973,7 @@ def enroll_native(socket, invitation, shell, binaries, env):
 
 
 def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
-              launch_path="applications", task_only=False):
+              launch_path="applications", task_only=False, marker_only=False):
     if launch_path not in ("applications", "store") or (launch_path == "store" and not native):
         raise RuntimeError("Store launch proof requires the native signed workspace")
     env, profile = scratch_session_env()
@@ -2704,6 +2985,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
     float_return_proven = False
     physical_send_evidence = None
     revocation_evidence = None
+    marker_evidence = None
     try:
         # Keep Unix socket paths short enough for the production private IME
         # displays. This is still an exclusively owned mode-0700 directory,
@@ -2744,7 +3026,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
             invitation = json.loads(invitation_path.read_text())
             if invitation.get("empty_app_records") is not True:
                 raise RuntimeError("native fixture improperly seeded application records")
-        provider = HeldProvider()
+        provider = HeldProvider(marker_agent="tide" if marker_only else None)
         run(binaries / "examples/proof_provider", [profile / "config", provider.endpoint], env)
         gateway_socket = runtime / "tilo/services/model-gateway.sock"
         gateway_socket.parent.mkdir(parents=True, mode=0o700)
@@ -2985,6 +3267,30 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
                 and presented["frame_seq"] > before_open["frame_seq"] else None), shell)
             require_ok(call(socket, {"op": "snapshot", "path": str(
                 output / f"agent-conversation-open-{size}.png")}))
+            if marker_only:
+                marker_evidence = managed_agent_marker_stage(
+                    socket, enrollment["room"], provider, output, shell, size
+                )
+                proven = bool(
+                    marker_evidence.get("provider_request_count") == 1
+                    and marker_evidence.get("marker_activated") is True
+                    and marker_evidence.get("quick_composer_accessible") is True
+                    and marker_evidence.get("terminal_status") == "done"
+                )
+                (output / "bootstrap.json").write_text(json.dumps({
+                    "stage": "native-marker",
+                    "native_join_acknowledged": True,
+                    "chat_surface_id": frame["surface_id"],
+                    "viewport": size,
+                    "launch_path": launch_path,
+                    "chat_frame_seq": frame["frame_seq"],
+                    "agent_invite": invited,
+                    "native_agent_marker_proven": proven,
+                    "full_lifecycle_proven": False,
+                }, indent=2) + "\n")
+                if proven:
+                    print("PASS one managed Agent invoked an exact Chat action and opened its marker composer")
+                return proven
             if lifecycle or task_only:
                 lifecycle_evidence = managed_task_and_message_lifecycle(
                     socket, enrollment["room"], category[0]["record"], provider, output, shell,
@@ -3094,7 +3400,7 @@ def evidence_directory(stage, size):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binaries", type=pathlib.Path, required=True)
-    parser.add_argument("--stage", choices=["bootstrap", "native-bootstrap", "managed-task", "lifecycle"], default="lifecycle")
+    parser.add_argument("--stage", choices=["bootstrap", "native-bootstrap", "native-marker", "managed-task", "lifecycle"], default="lifecycle")
     parser.add_argument("--size", choices=["1600x900", "800x600"], default="1600x900")
     parser.add_argument("--launch-path", choices=["applications", "store"], default="applications")
     args = parser.parse_args()
@@ -3114,10 +3420,11 @@ def main():
         lifecycle=args.stage == "lifecycle",
         launch_path=args.launch_path,
         task_only=args.stage == "managed-task",
+        marker_only=args.stage == "native-marker",
     )
-    if args.stage in {"managed-task", "lifecycle"} and not proven:
+    if args.stage in {"native-marker", "managed-task", "lifecycle"} and not proven:
         raise RuntimeError(
-            "the requested managed-Agent lifecycle proof did not complete"
+            "the requested native managed-Agent proof stage did not complete"
         )
 
 
