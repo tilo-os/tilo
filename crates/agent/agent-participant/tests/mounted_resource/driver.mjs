@@ -33,7 +33,7 @@ process.env.CHROME ??= '/usr/bin/chromium-browser';
 let browser;
 const stages = [];
 const stage = name => {stages.push(name); process.stdout.write(JSON.stringify({stage: name}) + '\n');};
-const evidence = resolve('target/mounted-resource');
+const evidence = resolve(fixture.disconnectRetry ? 'target/mounted-resource-recovery' : 'target/mounted-resource');
 mkdirSync(evidence, {recursive:true});
 const deadline = setTimeout(async () => {
   console.error('Mounted resource journey exceeded its 130-second bound');
@@ -164,6 +164,56 @@ try {
   assert.ok(opened, 'native Open must create the exact browser resource destination');
   await browser.send('Target.closeTarget', {targetId:opened.targetId});
   stage('native-open-browser-destination');
+  if (fixture.disconnectRetry) {
+    const before = await tab.evaluate('({peer:peer.getSnapshot(), frames:mount.state().frames})');
+    assert.equal(before.peer.health.transport.authenticated, true);
+    const network = await tab.send('Network.enable');
+    assert.equal(network.error, undefined, 'fixture network control must be available');
+    const blocked = await tab.send('Network.setBlockedURLs', {urls:[fixture.origin + '/*']});
+    assert.equal(blocked.error, undefined, 'only the fixture relay origin must be blocked');
+    // Close the existing certified carrier; a real browser request to the
+    // blocked fixture origin must fail, rather than fabricating peer state.
+    await tab.evaluate('peer.reconnect()');
+    await tab.waitFor('!peer.getSnapshot().health.transport.authenticated && peer.getSnapshot().health.transport.phase !== "connected"');
+    stage('browser-offline');
+    assert.equal(JSON.parse((await lines.next()).value).nativePublished, true);
+    const offlineRead = await tab.evaluate("mount.invokeAction(fixture.channel, 'read-messages', {pageSize:32})");
+    assert.equal(offlineRead.state, 'completed');
+    assert.equal(offlineRead.output.value.content.messages.filter(message =>
+      message.text === 'Native fixture while browser disconnected').length, 0,
+    'the disconnected browser must not already have received the new native post');
+    const queued = await tab.evaluate(`mount.invokeAction(fixture.channel, 'post',
+      {value:'Browser fixture queued during disconnect'})`);
+    assert.equal(queued.state, 'completed', 'the original local post must complete once');
+    await tab.evaluate('mount.flush()');
+    await tab.waitFor('peer.getSnapshot().outgoingPending > 0 && !peer.getSnapshot().health.transport.authenticated');
+    stage('compiled-browser-post-queued-without-transport');
+    const unblocked = await tab.send('Network.setBlockedURLs', {urls:[]});
+    assert.equal(unblocked.error, undefined, 'fixture relay network must be restored');
+    const recovered = await tab.evaluate('peer.recover({kind:"retry-connection"})');
+    assert.equal(recovered.operationId, 'retry-connection');
+    await tab.waitFor('peer.getSnapshot().phase === "ready" && peer.getSnapshot().health.transport.authenticated');
+    await tab.evaluate('peer.flush()');
+    await tab.waitFor('peer.getSnapshot().outgoingPending === 0 && peer.getSnapshot().synchronization === "acknowledged"');
+    await tab.waitFor(`(() => {
+      const result = mount.invokeAction(fixture.channel, 'read-messages', {pageSize:32});
+      if (result.state !== 'completed') return false;
+      const messages = result.output.value.content.messages;
+      return messages.filter(message => message.text === 'Browser fixture queued during disconnect').length === 1
+        && messages.filter(message => message.text === 'Native fixture while browser disconnected').length === 1;
+    })()`);
+    const after = await tab.evaluate('peer.getSnapshot()');
+    assert.equal(after.deviceId, before.peer.deviceId, 'retry keeps the original certified device');
+    const frameBeforeOpen = await tab.evaluate('mount.state().frames');
+    const openedChannel = await tab.evaluate("mount.invokeAction(fixture.channel, 'open-channel')");
+    assert.equal(openedChannel.state, 'completed');
+    await tab.waitFor('mount.state().presentation && mount.state().frames > ' + frameBeforeOpen);
+    await tab.waitFor(`JSON.stringify(mount.state().semantics).includes('Browser fixture queued during disconnect')
+      && JSON.stringify(mount.state().semantics).includes('Native fixture while browser disconnected')`);
+    stage('browser-recovered');
+    assert.equal(JSON.parse((await lines.next()).value).nativeReceivedOnce, true);
+    stage('certified-retry-merges-both-original-posts-once');
+  }
   await tab.evaluate('(async()=>{await (await import("/resource-session.mjs")).closeResourceOperation(operation); return document.querySelectorAll("canvas").length;})()');
   const link = await tab.evaluate('link');
   await tab.navigate(link);
@@ -189,7 +239,8 @@ try {
   assert.equal(await tab.evaluate('document.querySelectorAll("canvas").length'), 0);
   assert.notEqual(await tab.evaluate('document.querySelector("#status").textContent'), 'Shared resource open. Leave to close this session.');
   stage('governed-revocation-refuses-link-reopen');
-  writeFileSync(join(evidence, 'journey.json'), JSON.stringify({stages}, null, 2) + '\n');
+  writeFileSync(join(evidence, 'journey.json'), JSON.stringify({mode: fixture.disconnectRetry ? 'certified-browser-disconnect-retry' : 'certified-browser-viewer',
+    app:'so.tilo.chat', stages}, null, 2) + '\n');
 } finally {
   clearTimeout(deadline);
   input.close();
