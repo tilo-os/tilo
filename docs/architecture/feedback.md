@@ -11,7 +11,7 @@ account connection nor a second messaging service. A report's resource is
 can add redactions but cannot remove the deterministic floor. Invalid spans or
 an oversized merged floor fail the review rather than silently losing masks.
 
-`tilo-feedback` supplies the portable draft, approved preview, capture boundary
+The SDK exposes `tilo-feedback` as `ui::feedback`, supplying the portable draft, approved preview, capture boundary
 and durable outbox. Drafts begin with no context. The host attaches context only
 after an explicit user action. Semantic identifiers stay local; context sent in
 a report has synthetic field keys. Credentials and declared personal values are
@@ -55,7 +55,9 @@ Use shared toolkit controls, themed/localized presentation and semantic actions.
 
 The destination receipt adapter must check the **canonical**
 `RecordStore::save_status(record)` at the time it reads the canonical document.
-Only Saved permits `chat::feedback::durable_receipt`. MemoryOnly, pending saves
+Use `chat::feedback::receipt_from_record` with the retained canonical owner,
+record id and admitted destination. It checks current durability and room scope
+before reading the report. MemoryOnly, pending saves
 and failures are not receipts. The UI's cached Saved indicator is not a receipt
 witness: it can describe earlier heads. Retain the authenticated source identity
 through this adapter; never derive it from report payloads or URLs. The submitting
