@@ -432,7 +432,10 @@ impl StoreApp {
             .no_wrap()
             .with_gap(gap)
             .push(Box::new(self.availability_badge(item)));
-        if item.trust == StoreTrust::PublisherSigned {
+        if matches!(
+            item.trust,
+            StoreTrust::PublisherSigned | StoreTrust::TrustedAttestor
+        ) {
             row = row.push(Box::new(
                 Badge::text("Publisher verified").style(ChipStyle::Tinted(Tone::Success)),
             ));
@@ -625,7 +628,7 @@ impl StoreApp {
         );
         children.push(Box::new(Section::titled(
             "Trust",
-            vec![Self::prose(trust_explanation(item, locally_retained))],
+            vec![Self::prose(&trust_explanation(item, locally_retained))],
         )));
         children.push(self.technical_details(item));
         children.push(Self::report_section(item));
@@ -941,17 +944,18 @@ impl ui::widget::FormControl for NoteField {
 }
 
 /// What a trust claim does and does not promise.
-fn trust_explanation(item: &StoreItem, locally_retained: bool) -> &'static str {
+fn trust_explanation(item: &StoreItem, locally_retained: bool) -> String {
     if locally_retained {
-        return "Verified when installed. Current registry metadata is unavailable, so update availability is unknown.";
+        return "Verified when installed. Current registry metadata is unavailable, so update availability is unknown.".into();
     }
     match item.trust {
+        StoreTrust::TrustedAttestor => ui::i18n!("store-package-local-trust"),
         StoreTrust::PublisherSigned => {
-            "Publisher identity and package integrity are verified. This is not an independent quality review."
+            "Publisher identity and package integrity are verified. This is not an independent quality review.".into()
         }
-        StoreTrust::Flathub => "Tilo has not independently reviewed this app.",
+        StoreTrust::Flathub => "Tilo has not independently reviewed this app.".into(),
         StoreTrust::ConfiguredRemote => {
-            "This metadata comes from a configured repository. Tilo has not independently reviewed the app."
+            "This metadata comes from a configured repository. Tilo has not independently reviewed the app.".into()
         }
     }
 }

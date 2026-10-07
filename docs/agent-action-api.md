@@ -488,3 +488,24 @@ reviewing a full file does not bypass fetching or authorize an unavailable runti
 Poll each numeric broker job to a terminal outcome, then separately inspect the
 selected app's installed state before invoking its ordinary Open action. A
 pre-existing installed app is an update/reuse test, not a first installation.
+
+### Trusted local `.tapp` files in Store
+
+Store's existing **Review package** and **Install reviewed package** actions also
+accept unlisted local app packages when the user's host-side
+`~/.config/tilo/trusted-attestors.toml` already authorizes a valid scoped
+attestation. The host checks `revoked-keys.toml` before honoring that attestation.
+Opening the file never grants publisher trust or installs anything. Valid
+self-signatures alone are refused on this Store path, even though the standalone
+installer's default policy can warn and continue.
+
+The existing launcher-issued AppHost capability reviews handed bytes without
+receiving a publisher key or host filesystem path from the worker. Installation
+rechecks the exact reviewed archive digest and signed root against current host
+trust, then calls the canonical local installer with its verified attestor
+requirement. A publisher change is refused; normal pinned/held selection and
+runtime/interface policies remain in force. A thin local file needs its missing
+payload already in the canonical content store; Store does not invent an
+untrusted download source. The review reports actual installed state separately
+from the candidate, and successful installation requires the reviewed root to
+be the selected installed package.
