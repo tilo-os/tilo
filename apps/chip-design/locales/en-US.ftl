@@ -159,3 +159,14 @@ chip-op-matrix-weights = Matrix weights
 chip-op-linear-projection = Linear projection
 chip-graph-output-width = Output width
 chip-graph-input-width = Input width
+
+chip-study-memory-name = Memory
+chip-study-memory-width = Word width (bits)
+chip-study-memory-depth = Depth (words)
+chip-study-memory-bits = Logical storage (bits)
+chip-study-memory-read-ports = Read ports
+chip-study-memory-clocked-reads = Clocked read ports
+chip-study-memory-write-ports = Write ports
+chip-study-memory-initialized = Fully initialized
+chip-value-yes = Yes
+chip-value-no = No

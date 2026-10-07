@@ -78,6 +78,21 @@ pub struct Synthesis {
     pub fixed_initialized_bits: u64,
     pub licensed_memory_macro: bool,
     pub synthesized_netlist_equivalence: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub memories: Vec<LogicalMemory>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogicalMemory {
+    pub name: String,
+    pub width_bits: u64,
+    pub depth_words: u64,
+    pub bits: u64,
+    pub read_ports: u64,
+    pub clocked_read_ports: u64,
+    pub write_ports: u64,
+    pub fully_initialized: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -290,6 +305,31 @@ fn validate_variants(
                 "generic synthesis cannot assert physical memory or netlist qualification".into(),
             );
         }
+        if let Some(observation) = &variant.synthesis {
+            validate_memories(&observation.memories)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_memories(memories: &[LogicalMemory]) -> Result<(), String> {
+    let mut names = std::collections::BTreeSet::new();
+    if memories.len() > 32
+        || memories.iter().any(|memory| {
+            !super::text(&memory.name)
+                || memory.name.len() > 512
+                || memory.name.chars().any(char::is_control)
+                || !names.insert(&memory.name)
+                || memory.width_bits == 0
+                || memory.depth_words == 0
+                || memory.width_bits.checked_mul(memory.depth_words) != Some(memory.bits)
+                || memory.read_ports == 0 && memory.write_ports == 0
+                || memory.read_ports > 65536
+                || memory.write_ports > 65536
+                || memory.clocked_read_ports > memory.read_ports
+        })
+    {
+        return Err("invalid reported logical memory geometry or ports".into());
     }
     Ok(())
 }

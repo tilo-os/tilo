@@ -194,3 +194,109 @@ fn failed_study_removes_declared_device_paths_before_shared_storage() {
     assert!(stored.contains("<run directory>"));
     let _: VerificationRecord = VerificationRecord::read(&stored).unwrap();
 }
+
+fn memory_report() -> Value {
+    let mut report = example("aggregate");
+    for (index, ports) in [513, 1].into_iter().enumerate() {
+        report["architecture_study"]["variants"][index]["synthesis"]["memories"] = json!([{
+            "name":"quantizer.words", "width_bits":32, "depth_words":256,
+            "bits":8192, "read_ports":1, "clocked_read_ports":1,
+            "write_ports":ports, "fully_initialized":false
+        }]);
+    }
+    report
+}
+
+#[test]
+fn public_memory_report_preserves_geometry_ports_and_native_properties() {
+    let report = memory_report();
+    let raw = report.to_string();
+    let mut app = TestApp::<ChipDesignShell>::new().unwrap();
+    app.call("import-verification", json!({"json":raw}))
+        .unwrap();
+    let id = VerificationRecord::import(&raw).unwrap().0;
+    let child = crate::resource::verification_resource_id(&id);
+    app.call_on(&child, "inspect", json!({})).unwrap();
+    let read = app.call("read", json!({"item":child})).unwrap().unwrap();
+    for index in 0..2 {
+        assert_eq!(
+            read["receipt"]["architecture_study"]["variants"][index]["synthesis"]["memories"],
+            report["architecture_study"]["variants"][index]["synthesis"]["memories"]
+        );
+    }
+    app.harness().resize((1600, 2600)).unwrap();
+    app.settle();
+    let inspection = app.harness().inspection_json().unwrap();
+    for key in [
+        "chip-study-memory-name",
+        "chip-study-memory-width",
+        "chip-study-memory-depth",
+        "chip-study-memory-bits",
+        "chip-study-memory-read-ports",
+        "chip-study-memory-clocked-reads",
+        "chip-study-memory-write-ports",
+        "chip-study-memory-initialized",
+        "chip-value-no",
+    ] {
+        let label = ui::i18n::I18nManager::lookup_plain(key);
+        assert!(
+            inspection.contains(&serde_json::to_string(&label).unwrap()),
+            "missing {key}"
+        );
+    }
+    assert!(inspection.contains("quantizer.words"));
+    assert!(app.undo());
+    assert!(app.state().verifications.is_empty());
+}
+
+#[test]
+fn invalid_memory_geometry_ports_and_inventory_refuse_atomically() {
+    let original = memory_report();
+    let mut invalid = Vec::new();
+    for (field, value) in [
+        ("width_bits", json!(0)),
+        ("depth_words", json!(0)),
+        ("bits", json!(8191)),
+        ("depth_words", json!(u64::MAX)),
+        ("clocked_read_ports", json!(2)),
+        ("write_ports", json!(65537)),
+        ("name", json!("bad\nname")),
+        ("fully_initialized", json!("false")),
+    ] {
+        let mut value_report = original.clone();
+        value_report["architecture_study"]["variants"][0]["synthesis"]["memories"][0][field] =
+            value;
+        invalid.push(value_report);
+    }
+    for count in [2, 33] {
+        let mut value = original.clone();
+        let memory = value["architecture_study"]["variants"][0]["synthesis"]["memories"][0].clone();
+        let memories: Vec<_> = (0..count)
+            .map(|index| {
+                let mut item = memory.clone();
+                if count == 33 {
+                    item["name"] = json!(format!("words-{index}"));
+                }
+                item
+            })
+            .collect();
+        value["architecture_study"]["variants"][0]["synthesis"]["memories"] = json!(memories);
+        invalid.push(value);
+    }
+    let mut app = TestApp::<ChipDesignShell>::new().unwrap();
+    for value in invalid {
+        assert!(
+            app.call("import-verification", json!({"json":value.to_string()}))
+                .is_err()
+        );
+        assert!(app.state().verifications.is_empty());
+    }
+    // A ROM may have asynchronous reads and no writes.
+    let mut rom = original;
+    rom["architecture_study"]["variants"][0]["synthesis"]["memories"][0]["clocked_read_ports"] =
+        json!(0);
+    rom["architecture_study"]["variants"][0]["synthesis"]["memories"][0]["write_ports"] = json!(0);
+    rom["architecture_study"]["variants"][0]["synthesis"]["memories"][0]["fully_initialized"] =
+        json!(true);
+    VerificationRecord::import(&rom.to_string()).unwrap();
+}
