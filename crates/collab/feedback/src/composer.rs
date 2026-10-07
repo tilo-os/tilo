@@ -95,6 +95,9 @@ impl Composer {
         if self.active.is_some() {
             return Err(Error::Conflict);
         }
+        if text.trim().is_empty() || text.len() > 8_000 {
+            return Err(Error::Invalid("feedback"));
+        }
         let mut preview = Draft {
             text: text.to_owned(),
             context: if consent.context {
@@ -159,7 +162,12 @@ impl Composer {
         if let Some(image) = preview.screenshot() {
             self.host.persist_screenshot(image)?;
         }
-        self.outbox.queue(submission)?;
+        if let Err(error) = self.outbox.queue(submission) {
+            if matches!(error, Error::Store(_)) {
+                self.active = Some(id);
+            }
+            return Err(error);
+        }
         self.active = Some(id);
         self.pump()
     }
@@ -349,6 +357,47 @@ mod tests {
             Some(DeliveryState::Sent {
                 report: "chat.message:m_feedback_42".into()
             })
+        );
+    }
+
+    #[test]
+    fn rejecting_the_first_local_write_preserves_the_approved_retry_identity() {
+        let store = Rc::new(crate::test_store::RejectOnceStore::new());
+        let calls = Rc::new(RefCell::new(Calls::default()));
+        let outbox = Outbox::open(store.clone(), StorageKey::package("feedback")).unwrap();
+        let mut composer =
+            Composer::new(destination(), outbox, Box::new(Host(calls.clone()))).unwrap();
+        let id = "0123456789abcdef0123456789abcdef".to_owned();
+        composer
+            .review("The book did not open", Consent::default())
+            .unwrap();
+        assert!(matches!(
+            composer.submit(id.clone(), "The book did not open", Consent::default()),
+            Err(Error::Store(_))
+        ));
+        assert_eq!(
+            composer.state().unwrap(),
+            Some(DeliveryState::StorageFailed)
+        );
+        assert_eq!(
+            composer.pending_ids().collect::<Vec<_>>(),
+            vec![id.as_str()]
+        );
+        assert!(calls.borrow().sent.is_empty());
+        composer.pump().unwrap();
+        let submitted = calls.borrow().sent.first().unwrap().clone();
+        assert_eq!(submitted.id, id);
+        drop(composer);
+        let outbox = Outbox::open(store, StorageKey::package("feedback")).unwrap();
+        let mut restored =
+            Composer::new(destination(), outbox, Box::new(Host(calls.clone()))).unwrap();
+        restored.pump().unwrap();
+        assert!(
+            calls
+                .borrow()
+                .sent
+                .iter()
+                .all(|report| report == &submitted)
         );
     }
 }

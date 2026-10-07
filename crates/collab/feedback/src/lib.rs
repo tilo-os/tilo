@@ -22,6 +22,8 @@ mod capture;
 mod composer;
 mod outbox;
 mod review;
+#[cfg(test)]
+mod test_store;
 
 pub use capture::{CapturePermit, MaskedScreenshot, PixelRect, SurfaceCapture};
 pub use composer::{Composer, Consent, FeedbackHost};

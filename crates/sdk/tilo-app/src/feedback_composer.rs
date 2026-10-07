@@ -262,8 +262,8 @@ fn install_effects(
             reviewed_fields.set(Vec::new());
             reviewed_pixels.set(None);
         }
-        let key = if result.is_err() {
-            "feedback-retry-needed"
+        let key = if let Err(error) = &result {
+            error_label(error)
         } else {
             match composer
                 .state()
@@ -277,6 +277,16 @@ fn install_effects(
         result.map_err(|_| key.to_owned())?;
         Ok(Effected::done())
     });
+}
+
+fn error_label(error: &crate::feedback::Error) -> &'static str {
+    match error {
+        crate::feedback::Error::CaptureProtected => "feedback-capture-unavailable",
+        crate::feedback::Error::CaptureChanged => "feedback-capture-changed",
+        crate::feedback::Error::NotApproved => "feedback-review-first",
+        crate::feedback::Error::Store(_) => "feedback-storage-failed",
+        _ => "feedback-retry-needed",
+    }
 }
 
 fn restore_progress(services: &FeedbackServices, status: &LocalState<String>) {
