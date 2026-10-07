@@ -327,3 +327,52 @@ receipts/status, public baseline and mapped SDK hashes remain available on
 failure. Accepted, lost, ambiguous or unobservable outcomes fail without
 replaying the effect. Runner unit tests exercise these transitions and stale
 record refusal; they do not claim physical installation or presentation.
+
+### Official full/thin packages through Store's chooser
+
+After the deployment owner confirms the matched apps/runtime, Shell/control,
+launcher/install and AppHost cohort is active, `store-chooser.py` uses the normal
+owner console actions through `tilo-vm slot exec`. It opens no private app socket,
+does not stage bytes or grant publisher trust, and submits no raw path to Store.
+The owner console must admit the actual slot user; it never falls back to an
+Agent, a synthetic actor, or a different socket when refused.
+
+First acquire the public ARM package through a canonically verified official
+catalogue using the independently pinned registry owner. Verify the signed full
+archive and derive the thin archive with `tilo-app-package thin`, preserving the
+same signed root. Retain the canonical `verified-offer.json` receipt. The exact
+runtime named by that offer must be resolvable through the normal independently
+verified runtime resolver; an unrelated private SDK or a historical runtime tag
+is not compatibility evidence. Hold/pin and installer checks remain authoritative.
+
+The deployment owner stages only those public files through maintained `tilo-vm
+vm ssh` stdin into their Downloads scratch directory. This runner consumes their
+names from the chooser's declared entries, never invents entry IDs or navigates
+an undeclared path. With no other chooser active, run:
+
+```bash
+python3 scripts/vm-acceptance/store-chooser.py \
+  --tilo-vm /ABS/PATH/tilo-vm --vm yoga --slot YOUR_SLOT \
+  --cohort-receipt /ABS/PATH/successful-apps-runtime-receipt.json \
+  --fixture /ABS/PATH/verified-offer.json \
+  --directories Downloads official-tapp-acceptance \
+  --thin calculator-aarch64-thin.tapp --full calculator-aarch64-full.tapp \
+  --out target/store-chooser-acceptance
+```
+
+Both Import jobs must stay observable while a new unique chooser request is
+inspected. Each operation rechecks the expected active workspace, unlocked
+owner console, request UUID, and listing token. Confirmation is the declared
+`confirm:true` action, followed by terminal status on the *original* Store job
+and exact root/version review readback. PortalCaller binds application and
+workspace; this is not a claim that it identifies a particular record. A
+competing same-application chooser cannot be independently attributed, so do
+not use the runner concurrently with human or automated portal requests.
+
+The default performs two reviews only. Add `--install-open` only when the owner
+has authorized the one install and fresh Calculator launch. It installs once,
+checks the installed version and mapped application, and reports update/reuse
+when the app was already installed (including the private 57-app cohort).
+Missing capabilities, runtime incompatibility, publisher refusal, stale jobs or
+unobservable completion fail the run; they are never replaced with CLI install,
+clicks, retries, or trust changes. Review completion alone is not installation.
