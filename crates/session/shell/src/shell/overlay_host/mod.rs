@@ -1864,6 +1864,16 @@ impl ShellOverlayHost {
         self.last_search_query = "\u{0}app-action-provider-attached\u{0}".into();
     }
 
+    pub(crate) fn attach_task_review(
+        &mut self,
+        review: crate::shell::task_review::NativeTaskReview,
+    ) {
+        self.room_activity.attach_task_review(review.clone());
+        self.search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::task_review::TaskReviewProvider::new(review),
+        ));
+    }
+
     /// Registers every built-in search provider and hands back the shared
     /// records index alongside the registry. Split out of [`Self::new`],
     /// which was otherwise dominated by this one flat setup block.
@@ -8490,6 +8500,11 @@ impl ShellOverlayHost {
                     return;
                 }
                 let args = crate::shell::search::action_api::ActionArgs::none();
+                let previous_notice = chrome
+                    .borrow()
+                    .notifications()
+                    .last()
+                    .map(|notice| notice.id);
                 let outcome = if let Some(begin) = &result.on_begin_invoke {
                     begin(doc, root, &chrome, &args).map(|disposition| match disposition {
                         crate::shell::search::InvocationDisposition::Accepted(_) => (),
@@ -8506,10 +8521,31 @@ impl ShellOverlayHost {
                 let entered_resource_scope =
                     outcome.is_ok() && result.id.starts_with("directory-resource\u{1f}");
                 if let Err(err) = outcome {
-                    chrome.borrow_mut().push_warning_notification(
-                        t_args("host-action-cannot-run", &[("title", result.title.into())]),
-                        err.to_string(),
-                    );
+                    let reported_detail = chrome
+                        .borrow()
+                        .notifications()
+                        .last()
+                        .filter(|notice| {
+                            Some(notice.id) != previous_notice
+                                && matches!(
+                                    notice.severity,
+                                    tilo_desktop::notifications::NotificationSeverity::Warning
+                                        | tilo_desktop::notifications::NotificationSeverity::Error
+                                )
+                        })
+                        .map(|notice| notice.body.clone());
+                    let detail = reported_detail.unwrap_or_else(|| {
+                        let detail = err.to_string();
+                        chrome.borrow_mut().push_warning_notification(
+                            t_args("host-action-cannot-run", &[("title", result.title.into())]),
+                            detail.clone(),
+                        );
+                        detail
+                    });
+                    self.palette
+                        .set_selected_status(t("host-action-failed-status"), detail);
+                    self.palette_layout_dirty = true;
+                    return;
                 }
                 if entered_resource_scope {
                     let label = chrome.borrow().search_resource_scope.as_ref().map_or_else(
@@ -10311,6 +10347,7 @@ impl ShellOverlayHost {
                 .briefs
                 .first()
                 .map(|brief| crate::shell::chrome_state::ActivityFocus {
+                    task_id: None,
                     author: brief.authors.first().map(|author| author.name.clone()),
                     group_id: brief.group_id.clone(),
                     entry_id: None,
@@ -16241,18 +16278,22 @@ impl ShellOverlayHost {
             *ctx.handled = true;
             return true;
         }
-        // Keyboard Enter: fire the cursor-selected action.
+        // One activation per press. A held Enter must not repeat a failed
+        // invocation while its recovery context stays open.
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
                     logical_key: Key::Named(NamedKey::Enter),
                     state: ElementState::Pressed,
+                    repeat,
                     ..
                 },
             ..
         } = event
         {
-            self.activate_selected_result(state, ctx.path);
+            if !repeat {
+                self.activate_selected_result(state, ctx.path);
+            }
             *ctx.handled = true;
             return true;
         }

@@ -840,6 +840,36 @@ mod tests {
         assert_eq!(app.state().reports[0].note, "");
     }
 
+    fn assert_installed_flatpak_launch(app_id: &str, id: &str) {
+        let exports = tempfile::tempdir().unwrap();
+        std::fs::write(
+            exports.path().join(format!("{id}.desktop")),
+            format!(
+                concat!(
+                    "[Desktop Entry]\nType=Application\nName=Installed Flatpak\n",
+                    "Exec=/usr/bin/flatpak run {}\nX-Flatpak={}\n"
+                ),
+                id, id
+            ),
+        )
+        .unwrap();
+        let scan = desktop_entry::scan::scan_dirs(
+            &[exports.path().to_path_buf()],
+            &desktop_entry::scan::current_desktops(),
+        );
+        let desktop_id = app_id.strip_prefix("host:").unwrap();
+        let entry = scan
+            .find(desktop_id)
+            .expect("the original launch resolves the installed Flatpak export");
+        assert_eq!(entry.id, id);
+        assert_eq!(
+            entry.source,
+            desktop_entry::EntrySource::Flatpak {
+                app_id: id.to_owned()
+            }
+        );
+    }
+
     #[test]
     fn declared_open_job_waits_for_its_original_channel_startup_receipt() {
         use ui::collaboration::{CollabEvent, CollabRequest};
@@ -892,7 +922,9 @@ mod tests {
         else {
             panic!("the original channel must carry startup");
         };
-        assert_eq!(app_id, format!("host:{id}.desktop"));
+        // Join the actual admitted launch to the host's production desktop
+        // scanner, rather than duplicating its identity convention here.
+        assert_installed_flatpak_launch(&app_id, &id);
         assert!(package_root.is_none());
         assert!(
             on_behalf_of.is_none(),

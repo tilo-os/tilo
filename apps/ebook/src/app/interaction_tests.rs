@@ -629,8 +629,7 @@ fn render_scene(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64) -> Sce
     // Only the checked-in fonts: pixels drawn with whatever the host happens to
     // have installed would make every committed baseline machine-specific.
     let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../crates/sdk/ui-core/assets/fonts"),
+        ui::font_catalog::checkout_root(),
         "en-US",
     );
     let mut tr = TextRenderer::with_font_catalog(&catalog).expect("checked-in font catalog");

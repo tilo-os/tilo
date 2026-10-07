@@ -271,6 +271,13 @@ struct BridgeInner {
     closed_events: Vec<(u32, CloseReason)>,
     /// Toast action activated in the compositor → `ActionInvoked` signal.
     action_events: Vec<(u32, String)>,
+    scheduled_targets: HashMap<
+        u32,
+        (
+            PortalCaller,
+            tilo_desktop::notifications::ScheduledNotificationTarget,
+        ),
+    >,
     /// Additional protocol-specific consumers. The freedesktop notification
     /// service still drains `action_events`; taps receive a copy at write time
     /// so a portal backend never races it for the same toast click.
@@ -291,6 +298,7 @@ impl std::fmt::Debug for BridgeInner {
             .field("ongoing_owners", &self.ongoing_owners.len())
             .field("closed_events", &self.closed_events.len())
             .field("action_events", &self.action_events.len())
+            .field("scheduled_targets", &self.scheduled_targets.len())
             .field("action_taps", &self.action_taps.len())
             .field("sharing", &self.sharing.len())
             .field("continuity_routes", &self.continuity.by_id.len())
@@ -385,6 +393,36 @@ impl NotificationBridge {
             g.incoming.push(n);
         }
         self.wake_compositor();
+    }
+
+    #[cfg(target_os = "linux")]
+    fn push_scheduled(
+        &self,
+        notice: IncomingNotification,
+        target: tilo_desktop::notifications::ScheduledNotificationTarget,
+    ) {
+        if let Some(caller) = notice.caller.clone()
+            && let Ok(mut inner) = self.inner.lock()
+        {
+            inner
+                .scheduled_targets
+                .insert(notice.dbus_id, (caller, target));
+            inner.incoming.push(notice);
+        }
+        self.wake_compositor();
+    }
+
+    pub(crate) fn take_scheduled_target(
+        &self,
+        id: u32,
+        caller: Option<&PortalCaller>,
+    ) -> Option<tilo_desktop::notifications::ScheduledNotificationTarget> {
+        let (owner, target) = self.inner.lock().ok()?.scheduled_targets.remove(&id)?;
+        let caller = caller?;
+        (owner.app_id == caller.app_id
+            && owner.workspace_id == caller.workspace_id
+            && target.valid())
+        .then_some(target)
     }
 
     fn push_incoming_with_sharing(

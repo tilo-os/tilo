@@ -58,9 +58,26 @@ checks. No durable user resource is deleted by this slice.
 
 ## Pending usable integration
 
-Editor continuation remains a separate pending slice (PR #3157). It qualifies
-CRDT-anchored selection and viewport after checked record hydration; continuous
-owner-session following and independent cold-start convergence remain pending.
+Code Editor's typed continuation projects its active durable buffer identity,
+CRDT-anchored carets and selections, top visible character, fractional line offset
+and horizontal columns. It includes no file path or text. Resolution happens
+against the existing hydrated record after merge; unavailable or foreign-object
+anchors are refused. Pixel dimensions are measured on the receiving device.
+Restoring this presentation neither edits text nor grants keyboard focus.
+The text facet is available only with an active bound buffer. An empty editor
+retains the framework's presentation-only continuation.
+
+The headless two-app fixture uses the existing checked storage installer, real
+editor dispatchers and the production record store to prove concurrent offline
+edits, anchored selection and shifted viewport with different measured cell
+widths. A separate production-launch fixture starts two fresh profiles without
+prehydration. Modern replicas importing identical file bytes construct the same
+Text object, import those bytes once and retain both private writers' offline
+edits after merge. Existing legacy records still require checked hydration;
+mixed legacy/new cold bootstrap and divergent initial versions remain pending.
+The cursor API rejects an operation from another text sequence rather than
+asserting. Continuous owner-session following and physical handoff are pending.
+
 
 Live Displays now observes certified peers' connector topology through the shared
 host projection described below. Peer dragging now invokes exported screen
@@ -123,8 +140,8 @@ resurrected by stored placement. Host disconnect refuses pending gestures, and
 correlated receipts cannot revive old requests.
 
 Physical pointer/keyboard handoff, hosted native application focus, sensitive
-fields, continuous owner-session following and independent cold-start
-convergence still require qualification. Connector observations are rediscovered
+fields and continuous owner-session following still require qualification.
+Mixed legacy/new bootstrap and divergent initial file versions remain pending. Connector observations are rediscovered
 after compositor restart; durable user resources are unaffected. A connector message that arrives
 before its matching checkpoint is discarded and retried at the presence heartbeat.
 

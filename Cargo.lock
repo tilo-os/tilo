@@ -14792,6 +14792,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-desktop-entry",
  "tilo-files",
  "tilo-net",
  "tilo-test-env",
@@ -16235,6 +16236,7 @@ dependencies = [
  "pollster",
  "skrifa 0.42.1",
  "smallvec",
+ "tilo-font-catalog",
  "tilo-vello",
  "tilo-vello-encoding",
  "vello_cpu 0.3.0",
@@ -16543,6 +16545,17 @@ dependencies = [
  "tilo-app-package",
  "tilo-automerge-fork",
  "tilo-resource",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-feedback-review"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
  "workspace-hack",
 ]
 

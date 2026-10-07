@@ -958,7 +958,7 @@ mod tests {
 
     #[test]
     fn unchanged_browser_query_reshapes_after_font_failure_and_install() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+        let root = crate::font_catalog::checkout_root();
         let fonts = crate::font_catalog::FontCatalog::product("", "en-US")
             .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
             .unwrap();
