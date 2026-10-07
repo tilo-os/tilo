@@ -684,6 +684,9 @@ pub struct RecordingApply {
     /// Answers for the next `control` calls, in order; an echo of the
     /// arguments once they run out.
     pub control_replies: std::collections::VecDeque<ControlResult>,
+    /// Scripted readiness observations, consumed once per restarted session.
+    pub readiness_replies: std::collections::VecDeque<Result<(), String>>,
+
     /// Exact normal installer output for production cohort selection tests.
     pub cohort_replies: std::collections::VecDeque<String>,
     /// The machine's own session, when it has one.
@@ -736,6 +739,11 @@ impl RecordingApply {
 }
 
 impl Apply for RecordingApply {
+    fn wait_session_ready(&mut self, session: &Session) -> Result<(), String> {
+        self.call(format!("wait_session_ready {}", session.slot));
+        self.readiness_replies.pop_front().unwrap_or(Ok(()))
+    }
+
     fn session_layer_dropin(
         &mut self,
         slot: &str,

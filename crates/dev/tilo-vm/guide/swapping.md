@@ -2,7 +2,7 @@
 
 ```sh
 tilo-vm swap shell                        # your slot, built from this worktree
-tilo-vm swap shell --profile dev          # faster compile, slower binary
+tilo-vm --target review swap shell --profile dev          # faster compile, slower binary
 tilo-vm swap --slot my-slot launcher      # an explicit slot
 tilo-vm swap --slot vm fs                 # a VM-wide component into the vm slot
 tilo-vm swap app:notes                    # one app, installed into your slot's app store
@@ -189,6 +189,22 @@ what the restarted session printed.
   builds are.
 - Swapping the same layer twice does nothing. A failed apply leaves the slot
   on its old generation; rerun the swap.
+
+## Explicit targets and failed starts
+
+Use `--target <registered-name>` on any command to select a development VM or
+already-enrolled development machine for just that invocation. It overrides
+`TILO_VM`, `.tilo-vm` and the registry default without changing any of them.
+An unknown target or a conflicting positional VM name fails before connecting.
+For example: `tilo-vm --target review rollback --slot my-slot`.
+
+A runtime swap becomes current only after its restarted sessions pass the
+existing readiness checks. A failed activation restores the previous generation
+and checks it once. The error includes the original failure and whether recovery
+succeeded. If recovery also fails, inspect the journal and retry the named prior
+generation; the pending marker remains for diagnosis. Neither recovery path
+resets account identity or application data. Kernel changes retain their separate
+boot-confirmation lifecycle.
 
 ### Worktree apps and their matching runtime
 
