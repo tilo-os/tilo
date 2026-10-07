@@ -680,6 +680,7 @@ mod component_adapter {
 
     impl Widget for BoundAppWidget {
         crate::provides!(
+            dyn crate::AppWidget,
             dyn crate::widget::FullscreenProvider,
             dyn crate::widget::CompleteContentProvider,
             dyn crate::widget::Continuable,
