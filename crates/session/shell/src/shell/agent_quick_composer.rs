@@ -546,7 +546,6 @@ pub(crate) struct AgentQuickComposer {
     pending_message: Option<PendingMessage>,
     pending_message_offer: Option<PendingMessageOffer>,
     message_offer: Option<AgentMessageOffer>,
-    next_message_offer_refresh: Option<std::time::Instant>,
     pending_work: Option<PendingWork>,
     permission_refused: bool,
     focus_reset: bool,
@@ -612,7 +611,6 @@ impl Default for AgentQuickComposer {
             pending_message: None,
             pending_message_offer: None,
             message_offer: None,
-            next_message_offer_refresh: None,
             pending_work: None,
             permission_refused: false,
             focus_reset: false,
@@ -738,7 +736,6 @@ impl AgentQuickComposer {
         self.pending_message = None;
         self.pending_message_offer = None;
         self.message_offer = None;
-        self.next_message_offer_refresh = None;
         self.pending_work = None;
         self.permission_refused = false;
         self.popover.set_anchor(anchor);
@@ -768,6 +765,7 @@ impl AgentQuickComposer {
             self.popover.set_viewport(viewport);
             self.popover.set_open(true);
             self.focus_reset = true;
+            self.refresh_message_offer_for_user_navigation();
             self.refresh_status();
             self.refresh_enabled();
             return;
@@ -814,11 +812,8 @@ impl AgentQuickComposer {
         }
         self.pending_message_offer = None;
         self.message_offer = None;
-        self.next_message_offer_refresh = None;
         self.status.set(t("agent-quick-checking"));
-        if self.pending_message.is_none() {
-            self.start_message_offer_refresh();
-        }
+        self.refresh_message_offer_for_user_navigation();
         self.popover.set_anchor(anchor);
         self.popover.set_viewport(viewport);
         self.popover.set_open(true);
@@ -958,7 +953,6 @@ impl AgentQuickComposer {
         self.intent.set(selected);
         self.pending_message_offer = None;
         self.message_offer = None;
-        self.next_message_offer_refresh = None;
         self.permission_refused = false;
         if let Some(session) =
             self.retained_sessions
@@ -978,9 +972,7 @@ impl AgentQuickComposer {
         if let Some(tasks) = self.tasks.as_mut() {
             tasks.observe(&self.room, &self.agent);
         }
-        if selected == ComposerIntent::Message && self.pending_message.is_none() {
-            self.start_message_offer_refresh();
-        }
+        self.refresh_message_offer_for_user_navigation();
     }
 
     fn refresh_task_picker(&mut self) {
@@ -1201,7 +1193,6 @@ impl AgentQuickComposer {
                     self.pending_message = None;
                     self.permission_refused = true;
                     self.message_offer = None;
-                    self.schedule_message_offer_refresh();
                     self.status.set(t("agent-quick-message-refused"));
                 }
             }
@@ -1234,7 +1225,6 @@ impl AgentQuickComposer {
             return;
         };
         self.message_offer = None;
-        self.next_message_offer_refresh = None;
         self.pending_message_offer = Some(PendingMessageOffer {
             state: ui::agent_message_action::begin(actions, &self.room),
             deadline: std::time::Instant::now()
@@ -1244,21 +1234,18 @@ impl AgentQuickComposer {
         });
     }
 
-    fn schedule_message_offer_refresh(&mut self) {
-        self.next_message_offer_refresh =
-            std::time::Instant::now().checked_add(std::time::Duration::from_secs(5));
+    fn refresh_message_offer_for_user_navigation(&mut self) {
+        if self.shown_intent == ComposerIntent::Message
+            && self.pending_message.is_none()
+            && self.pending_message_offer.is_none()
+        {
+            self.start_message_offer_refresh();
+        }
     }
 
     fn poll_message_offer(&mut self) {
         if self.pending_message.is_some() {
             return;
-        }
-        if self.pending_message_offer.is_none()
-            && self
-                .next_message_offer_refresh
-                .is_some_and(|deadline| std::time::Instant::now() >= deadline)
-        {
-            self.start_message_offer_refresh();
         }
         let (Some(actions), Some(pending)) = (&self.actions, self.pending_message_offer.as_mut())
         else {
@@ -1284,13 +1271,11 @@ impl AgentQuickComposer {
                 self.pending_message_offer = None;
                 self.message_offer = Some(offer);
                 self.permission_refused = false;
-                self.schedule_message_offer_refresh();
             }
             AgentMessageOfferPoll::Failed => {
                 self.pending_message_offer = None;
                 self.message_offer = None;
                 self.permission_refused = true;
-                self.schedule_message_offer_refresh();
             }
         }
     }
@@ -1570,7 +1555,6 @@ impl Widget for AgentQuickComposer {
                     })
                 }),
             );
-            deadline = earliest(deadline, self.next_message_offer_refresh);
         }
         if self.is_open() || self.pending_work.is_some() {
             deadline = earliest(
@@ -1614,7 +1598,7 @@ impl Widget for AgentQuickComposer {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
     use super::*;
     use taffy::{AvailableSpace, Size};
@@ -1647,6 +1631,127 @@ mod tests {
             return ui::undo::get_state(widget);
         }
         widget.children_mut().into_iter().find_map(editor_state)
+    }
+
+    struct MessageOfferHost {
+        authorized: AtomicBool,
+        queries: AtomicUsize,
+        invokes: AtomicUsize,
+    }
+
+    impl MessageOfferHost {
+        fn row() -> tilo_actions::remote::CatalogueRow {
+            let resource = "chat.person:scribe".to_owned();
+            tilo_actions::remote::CatalogueRow {
+                provider: "chat-provider".into(),
+                app_id: "so.tilo.chat".into(),
+                parent_resource: String::new(),
+                resource: tilo_actions::remote::CatalogueResource {
+                    id: resource.clone(),
+                    kind: "chat.agent".into(),
+                    label: "Agent".into(),
+                    presentation: None,
+                },
+                action: Some(tilo_actions::ActionDescriptor {
+                    address: ActionAddress::new(&resource, "message"),
+                    semantic_identity: Some(tilo_actions::ResourceSemanticIdentity {
+                        kind: "chat.agent".into(),
+                        key: resource,
+                    }),
+                    resource_kind: "chat.agent".into(),
+                    resource_label: "Agent".into(),
+                    action_label: "Message".into(),
+                    description: None,
+                    locus: tilo_actions::ExecutionLocus::ClientLocal,
+                    kind: tilo_actions::OperationKind::Document,
+                    contract: tilo_actions::ActionContract::default(),
+                    input: tilo_actions::InputSpec::None,
+                    params: Vec::new(),
+                    view: None,
+                }),
+                has_children: false,
+                visibility: None,
+            }
+        }
+    }
+
+    impl ActionHost for MessageOfferHost {
+        fn query(
+            &self,
+            _caller: &Caller,
+            query: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionHostError>> {
+            self.queries.fetch_add(1, Ordering::Relaxed);
+            let mut page = CataloguePage {
+                revision: "chat-r1".into(),
+                exhausted: true,
+                ..CataloguePage::default()
+            };
+            if query.canonical_route.is_some() {
+                page.providers
+                    .push(tilo_actions::remote::CatalogueProvider {
+                        provider: "chat-provider".into(),
+                        app_id: "so.tilo.chat".into(),
+                        room: "room-a".into(),
+                        record_id: String::new(),
+                        browsable: true,
+                    });
+            } else if query.target.is_none() || self.authorized.load(Ordering::Relaxed) {
+                page.rows.push(Self::row());
+            }
+            Pending::ready(Ok(page))
+        }
+
+        fn invoke(
+            &self,
+            _caller: &Caller,
+            request: InvokeRequest,
+        ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+            self.invokes.fetch_add(1, Ordering::Relaxed);
+            Pending::ready(Ok(InvocationReceipt {
+                invocation: request.invocation,
+                status: ReceiptStatus::Completed {
+                    output: tilo_actions::ActionOutput::default(),
+                },
+            }))
+        }
+
+        fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+            None
+        }
+
+        fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Result<(), ActionHostError> {
+            Err(ActionHostError::NotCancellable {
+                reason: "fixture actions settle immediately".into(),
+            })
+        }
+    }
+
+    fn message_offer_composer(host: Arc<MessageOfferHost>) -> AgentQuickComposer {
+        let actions = ui::remote_actions::RemoteActions::with_host(
+            host,
+            Caller::local_person("owner").in_room("room-a"),
+        );
+        let mut composer = AgentQuickComposer {
+            room: "room-a".into(),
+            agent: "scribe".into(),
+            actions: Some(actions),
+            shown_intent: ComposerIntent::Message,
+            ..AgentQuickComposer::default()
+        };
+        composer.popover.set_open(true);
+        composer.refresh_message_offer_for_user_navigation();
+        composer
+    }
+
+    fn settle_message_offer(composer: &mut AgentQuickComposer) {
+        for _ in 0..16 {
+            composer.tick();
+            if composer.pending_message_offer.is_none() {
+                return;
+            }
+        }
+        panic!("bounded Message offer did not settle");
     }
 
     struct CompletedTaskHost {
@@ -2722,7 +2827,6 @@ mod tests {
             pages_remaining: 1,
         });
         composer.actions = Some(actions);
-        composer.next_message_offer_refresh = None;
 
         let sampled_at = ui::time::now();
         let wake = composer
@@ -2731,6 +2835,80 @@ mod tests {
         assert!(wake > sampled_at);
         assert!(wake <= ui::time::now() + std::time::Duration::from_millis(50));
         assert!(wake < deadline);
+    }
+
+    #[test]
+    fn available_message_offer_stays_idle_until_a_user_or_submission_refresh() {
+        let host = Arc::new(MessageOfferHost {
+            authorized: AtomicBool::new(true),
+            queries: AtomicUsize::new(0),
+            invokes: AtomicUsize::new(0),
+        });
+        let mut composer = message_offer_composer(host.clone());
+        settle_message_offer(&mut composer);
+        assert!(composer.message_offer.is_some());
+        composer.popover.set_open(false);
+        assert_eq!(composer.next_wake_deadline(), None);
+        let settled_queries = host.queries.load(Ordering::Relaxed);
+
+        for _ in 0..64 {
+            assert!(!composer.tick(), "a stable offer must not repaint at idle");
+        }
+
+        assert_eq!(host.queries.load(Ordering::Relaxed), settled_queries);
+        assert!(composer.pending_message_offer.is_none());
+        assert_eq!(composer.next_wake_deadline(), None);
+    }
+
+    #[test]
+    fn stale_message_offer_is_refused_on_submit_and_waits_for_user_refresh() {
+        let host = Arc::new(MessageOfferHost {
+            authorized: AtomicBool::new(true),
+            queries: AtomicUsize::new(0),
+            invokes: AtomicUsize::new(0),
+        });
+        let mut composer = message_offer_composer(host.clone());
+        settle_message_offer(&mut composer);
+        composer.set_draft("Review the release notes");
+        host.authorized.store(false, Ordering::Relaxed);
+
+        composer.submit();
+        assert!(composer.pending_message.is_some());
+        for _ in 0..16 {
+            composer.tick();
+            if composer.pending_message.is_none() {
+                break;
+            }
+        }
+        assert!(composer.pending_message.is_none());
+        assert!(composer.permission_refused);
+        assert!(composer.message_offer.is_none());
+        assert!(!composer.send_enabled.get());
+        assert_eq!(composer.draft(), "Review the release notes");
+        assert_eq!(host.invokes.load(Ordering::Relaxed), 0);
+        composer.popover.set_open(false);
+        assert_eq!(composer.next_wake_deadline(), None);
+        let refused_queries = host.queries.load(Ordering::Relaxed);
+
+        host.authorized.store(true, Ordering::Relaxed);
+        for _ in 0..64 {
+            composer.tick();
+        }
+        assert_eq!(
+            host.queries.load(Ordering::Relaxed),
+            refused_queries,
+            "permission failure stays disabled until another user navigation"
+        );
+        assert!(composer.permission_refused);
+        assert_eq!(composer.next_wake_deadline(), None);
+
+        composer.popover.set_open(true);
+        composer.refresh_message_offer_for_user_navigation();
+        settle_message_offer(&mut composer);
+        assert!(composer.message_offer.is_some());
+        assert!(!composer.permission_refused);
+        assert!(composer.send_enabled.get());
+        assert!(host.queries.load(Ordering::Relaxed) > refused_queries);
     }
 
     #[test]
