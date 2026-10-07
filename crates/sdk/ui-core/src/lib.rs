@@ -529,3 +529,5 @@ pub use control_custody::{
     ControlCoverage, ControlDomain, ControlOutbox, ControlProducerDiscipline,
 };
 mod focus_navigation;
+
+pub use widget::{KeyboardMap, KeyboardMapInput, KeyboardMapKey, KeyboardMapSelection};

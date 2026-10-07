@@ -7460,6 +7460,33 @@ mod responsive_tests {
     }
 
     #[test]
+    fn responsive_primary_bar_editor_opens_from_overflow_and_escape_closes() {
+        use ui::a11y::Action;
+        let mut frame = Framed::new(ui::State::new(), fixture_bar(), (320, 480), Theme::dark());
+        Framed::harness_mut(&mut frame)
+            .perform_named("toolbar.overflow", &Action::Activate)
+            .unwrap();
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        let rect = Framed::harness(&frame)
+            .controls()
+            .into_iter()
+            .find(|control| control.name.as_deref() == Some(t("topbar-editor-title").as_str()))
+            .and_then(|control| control.bounds)
+            .expect("painted editor command");
+        Framed::harness_mut(&mut frame).click_at(rect.center().x, rect.center().y);
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        assert!(frame.widget_editing);
+        assert!(!frame.responsive.toolbar.is_overflow_open());
+        let out = std::path::PathBuf::from("target/primary-bar-shots");
+        std::fs::create_dir_all(&out).unwrap();
+        Framed::harness(&frame).render_png(out.join("dark-editor.png"));
+        Framed::harness_mut(&mut frame).key("Escape");
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        assert!(!frame.widget_editing);
+        assert!(!frame.wants_pointer_capture());
+    }
+
+    #[test]
     fn responsive_primary_bar_production_capture_matrix_is_written() {
         let out = std::env::var_os("TILO_PRIMARY_BAR_SHOTS").map_or_else(
             || std::path::PathBuf::from("target/primary-bar-shots"),
