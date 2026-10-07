@@ -29,7 +29,7 @@ const FIXTURES = {
   png: () => file('persist-probe.png', 'image/png', png(64, 48)),
   epub: () => file('sample.epub', 'application/epub+zip', fixtureBytes(repo, 'apps/ebook/assets/artifacts.json', 'sample.epub')),
   pdf: () => file('latin.pdf', 'application/pdf', fixtureBytes(repo, 'crates/platform/tilo-pdf/tests/fixtures/artifacts.json', 'latin.pdf')),
-  mp4: () => file('persist-clip.mp4', 'video/mp4', readFileSync(`${repo}/apps/video-player/tests/fixtures/h264-aac.mp4`)),
+  mp4: () => file('persist-clip.mp4', 'video/mp4', fixtureBytes(repo, 'apps/video-player/tests/fixtures/artifacts.json', 'h264-aac.mp4')),
 };
 
 // Steps: {at: [x, y]} clicks; {press: 'Name'} clicks the control with that
