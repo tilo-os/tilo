@@ -347,7 +347,7 @@ pub use effect::{
     ChosenFile, DocumentVersion, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected,
     JobProgress, Jobs, Progress, Projection,
 };
-pub use kinds::{hosted_kinds, resource_kind, seed_record};
+pub use kinds::{hosted_kinds, resource_kind, seed_record, seed_record_in_room};
 pub use launch::{Command, Helper, LaunchInput, OpenHere};
 pub use live::Live;
 pub use participant::Participant;

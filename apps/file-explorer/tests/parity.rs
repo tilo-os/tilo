@@ -28,6 +28,7 @@ fn e(name: &str, is_dir: bool, size: u64, mime: &str, year: i32) -> Entry {
         share: None,
         history: None,
         rich_metadata: None,
+        observed: None,
     }
 }
 
@@ -405,6 +406,7 @@ fn list_build_yields_a_file_view() {
         share: None,
         history: None,
         rich_metadata: None,
+        observed: None,
     }];
     let rename_rect = std::rc::Rc::new(std::cell::Cell::new(None));
     let drop_targets = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -441,6 +443,7 @@ fn grid_mode_uses_responsive_file_view() {
         share: None,
         history: None,
         rich_metadata: None,
+        observed: None,
     }];
     let sel = SelectionModel::new();
     let sink = new_sink();

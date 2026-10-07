@@ -13,6 +13,17 @@ impl crate::collaboration::PeerTransport for HostedModelTransport {
     fn poll(&mut self) -> Vec<CollabEvent> {
         vec![]
     }
+    // Legacy owner-route delivery is explicit; no native capture is synthesized.
+    fn join_route(&mut self, _: crate::collaboration::RouteSpec) -> Result<(), String> {
+        Ok(())
+    }
+    fn send_to_route(
+        &mut self,
+        _: crate::collaboration::RouteSpec,
+        request: CollabRequest,
+    ) -> Result<(), String> {
+        self.send(request)
+    }
     fn publish_action_directory(&mut self, _: String) -> Result<(), String> {
         Ok(())
     }
@@ -102,7 +113,7 @@ fn hosted_directory_fixture() -> App {
     );
     app.action_registry_mut()
         .register::<CounterAction>(COUNTER_TYPE);
-    app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+    app.collaboration.manager = admitted_delivery_manager();
     app.init_layout();
     app.pump_collab_presence();
     app.publish_action_surface();
@@ -168,7 +179,7 @@ fn hosted_directory_provider_generation_change_remains_stale() {
     );
     app.action_registry_mut()
         .register::<CounterAction>(COUNTER_TYPE);
-    app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+    app.collaboration.manager = admitted_delivery_manager();
     app.init_layout();
     app.pump_collab_presence();
     app.publish_action_surface();
@@ -292,7 +303,7 @@ fn hosted_directory_known_actual_owner_noop_keeps_revision_and_current_counter()
         AppConstructionInputs::controlled()
     })
     .unwrap();
-    app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+    app.collaboration.manager = admitted_delivery_manager();
     app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
         route: binding.broker_route().unwrap(),
         epoch: uuid::Uuid::new_v4(),
@@ -427,7 +438,7 @@ fn hosted_directory_lazy_target_domain_versions_even_with_unchanged_search_gener
     );
     app.action_registry_mut()
         .register::<CounterAction>(COUNTER_TYPE);
-    app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+    app.collaboration.manager = admitted_delivery_manager();
     app.init_layout();
     app.pump_collab_presence();
     app.publish_action_surface();

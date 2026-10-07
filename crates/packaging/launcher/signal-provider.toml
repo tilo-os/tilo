@@ -5,7 +5,7 @@ id = "so.tilo.signal-provider"
 name = "Signal provider"
 category = "System"
 version = "0.1.0"
-kind = "app"
+kind = "service"
 runtime = "tilo-runtime/2026.10.1-signal"
 [package.isa]
 x86_64 = "v3"

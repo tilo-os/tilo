@@ -1617,6 +1617,7 @@ mod tests {
             share: None,
             history: None,
             rich_metadata: None,
+            observed: None,
         }
     }
 
@@ -1984,6 +1985,7 @@ mod tests {
             share: None,
             history: None,
             rich_metadata: None,
+            observed: None,
         };
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2065,6 +2067,7 @@ mod tests {
             share: None,
             history: None,
             rich_metadata: None,
+            observed: None,
         }
     }
 

@@ -96,7 +96,8 @@ never mutating the base. Feed this runtime into `qualify_apk.py`; do not overwri
 an accepted payload or change its receipt after preparation.
 
 The fixture compiles against the existing official SDK Android 35 `android.jar`.
-Use SDK build-tools 36.1.0 `aapt2 compile --dir res`, then `aapt2 link --manifest
+Stage the byte-exact MIT icon with `python3 prepare-res.py NEW_RESOURCE_DIR`.
+Use SDK build-tools 36.1.0 `aapt2 compile --dir NEW_RESOURCE_DIR`, then `aapt2 link --manifest
 AndroidManifest.xml -I android.jar`, add the fixture DEX, sign with an ephemeral
 **test-only** key, and verify the actual APK with SDK `apksigner`. Keep the key out
 of the repository. A fresh build/key changes APK and signer pins: record the actual

@@ -513,6 +513,7 @@ mod tests {
             id: "vision-1".into(),
             label: "Vision 1".into(),
             context_window: Some(8_192),
+            request_limits: None,
             revision: Some("a".repeat(40)),
             vision,
             face_recognition: false,

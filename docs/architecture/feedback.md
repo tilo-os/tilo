@@ -32,6 +32,9 @@ requires a receipt from the authenticated destination with matching identity,
 destination and payload digest, and persists that receipt before showing Sent.
 Failed or pending writes cannot produce success. Pending reports cannot be
 evicted to make room.
+If the store refuses its first write, the approved payload stays in memory with
+its original identity. Retry persists that same payload before any transport
+call; a refused write is never described as a durable queued report.
 
 Chat exposes `submit-feedback` on text-channel resources, requiring Comment.
 The action validates the channel's workspace, derives attribution from the
@@ -42,10 +45,25 @@ available separately from the ordinary message. The `triage` report action
 requires Write and records attributed status changes, duplicate targets or an
 address of an existing task. A task reference grants no access and creates no
 external task automatically.
+Opening a report reveals its exact message rather than just its channel.
+`read-feedback-receipt` uses Chat's registered semantic reader over the canonical
+record at the SDK's stamped committed heads. The request binds to the published
+report resource and accepts no caller-selected heads, destination or source.
 
 ## Host integration still required
 
-The shared composer and native/browser entry points are not mounted yet. A host
+The SDK provides `feedback_composer::prepare`, a real shared resource component
+with the same semantic actions as its themed, localized controls. It always
+prepares an isolated ephemeral store and private component: raw draft text never
+enters profile records, history or room synchronization. Both attachment choices
+start off. Review shows masked issue/context and PNG before explicit approval;
+redaction, screenshot removal and retry use published effects. Changed issue text
+or consent requires a fresh review. The system-owned `feedback::Composer` freezes
+an approved queued payload and resumes a matching pending outbox report after
+restart. Hosts call `FeedbackServices::pump` on storage/transport wakes so the
+current private presentation updates and announces progress without another
+click; its local-state wake belongs to that component's retirement scope.
+Native/browser desktop entry points are not mounted yet. A host
 must supply its existing durable profile store, an admitted
 `Destination { room, provider, channel }`, authenticated action transport,
 content storage, and an explicit focused-surface capture adapter. The composer
@@ -56,13 +74,58 @@ Use shared toolkit controls, themed/localized presentation and semantic actions.
 The destination receipt adapter must check the **canonical**
 `RecordStore::save_status(record)` at the time it reads the canonical document.
 Use `chat::feedback::receipt_from_record` with the retained canonical owner,
-record id and admitted destination. It checks current durability and room scope
-before reading the report. MemoryOnly, pending saves
+record id and admitted destination. It checks current durability and the store's
+Chat package/room namespace before reading the report. Named records also need
+their matching room stamp; Chat's package-primary document uses its actual store
+namespace rather than a fabricated record stamp. MemoryOnly, pending saves
 and failures are not receipts. The UI's cached Saved indicator is not a receipt
 witness: it can describe earlier heads. Retain the authenticated source identity
 through this adapter; never derive it from report payloads or URLs. The submitting
 host feeds the receipt to `Outbox::confirm_durable_receipt` with that identity.
 Persist masked screenshot bytes before allowing its immutable payload to send.
+
+The browser room-action server can serve an explicitly selected record's
+registered semantic readers through an exact-target catalogue lookup. Document
+operations keep their existing catalogue revision and invocation path. It mounts the compiled app over the host's exact
+retained, signature-verified source, qualifies the existing record binding,
+and rechecks current certified Read before disclosure and after projection.
+Only actual registered Read/Immediate readers with their exact result contract
+are admitted; generic effects remain excluded. The SDK-stamped output survives
+the response. A governor-created primary uses the empty wire record name and its
+internal SDK primary identity; windowless creation receives the actual selected
+room rather than inventing a starter workspace.
+
+This read path does not grant document authorship or broaden the room-action
+service's existing host-person invocation policy. A browser's existing
+ClientLocal Chat action still submits through its certified participant and
+normal peer publication. The signed HTTPS fixture retries one reviewed payload,
+checks opted-in personal context redaction and current/stale source revisions,
+reads a retained receipt and confirms that an unpublished local-only report
+cannot return a receipt. Host-side document actions retain their existing peer
+publication limitation: publish/local cache completion alone is not a durable
+commit acknowledgment. A separate writer correction requires qualification.
+No anonymous/public-guest submission journey is established by these tests.
+The existing browser frame transport signs document frames as `OpClass::Splice`,
+which maps to Write under governed admission. The app's Comment requirement alone
+does not establish that transport authority. An admitted demo participant and its
+actual overrides must be qualified; never infer a broader document grant from
+permission to submit a report.
+
+Private component paints propagate declared capture protection through the
+existing `SecretPaint` boundary. The browser binds protection to the scene only
+when that GPU output actually presents, so an unpublished update cannot clear
+protection of old visible pixels. The presented-source capture refuses protected
+or unknown protection before copying pixels. This is a protection prerequisite,
+not a complete feedback screenshot adapter: complete classified text geometry
+and explicit focused-surface consent remain required.
+
+For the qualified registered-read path, invoke `read-feedback-receipt` through the
+existing admitted action transport. Check the returned SDK record stamp against the retained Chat
+record, and the receipt identity, digest and destination against the outbox.
+This projection alone is **not** a durability witness. Accept it only from the
+authenticated destination owner's existing durable action service, after that
+owner's commit completed. A local app dispatch, a replica's Saved indicator or
+caller-supplied JSON must not be promoted to delivery confirmation.
 
 This integration uses the existing public demo deployment. It does not authorize
 publishing, changing access policy or connecting personal resources/accounts.
@@ -74,7 +137,8 @@ Run with the configured cargo drop-in:
 ```sh
 cargo test --locked -p tilo-feedback-review --lib
 cargo test --locked -p tilo-feedback --lib
-cargo test --locked -p chat --lib feedback::tests
+cargo test --locked -p tilo-app --lib feedback_composer::tests
+cargo test --locked -p chat --lib feedback::
 cargo clippy --locked -p tilo-feedback -p chat --all-targets -- -D warnings
 cargo check --locked -p shell --tests
 ```

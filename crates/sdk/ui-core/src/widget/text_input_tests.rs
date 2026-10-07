@@ -4452,3 +4452,88 @@ fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
     assert!(!french.personal_word("Élodie"));
     assert!(french.spell_dictionary.as_ref().unwrap().is_empty());
 }
+
+#[test]
+fn delayed_paste_publishes_once_and_cancels_when_the_target_changes() {
+    use crate::clipboard::{ClipboardBackend, ClipboardTarget};
+    use std::sync::{Arc, Mutex, mpsc};
+    #[derive(Default)]
+    struct Delayed(Mutex<Option<mpsc::Sender<Option<String>>>>);
+    impl ClipboardBackend for Delayed {
+        fn set_text(&self, _: ClipboardTarget, _: &str) -> bool {
+            false
+        }
+        fn text(&self, _: ClipboardTarget) -> Option<String> {
+            None
+        }
+        fn request_text(&self, _: ClipboardTarget) -> mpsc::Receiver<Option<String>> {
+            let (send, receive) = mpsc::channel();
+            *self.0.lock().unwrap() = Some(send);
+            receive
+        }
+        fn name(&self) -> &'static str {
+            "delayed-paste"
+        }
+    }
+    let clipboard = Arc::new(Delayed::default());
+    let services = crate::host::HostServices::null().with_clipboard(clipboard.clone());
+    let _host = crate::host::enter(&services);
+    let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let captured = changes.clone();
+    let mut input = TextInput::local()
+        .with_initial_value("a")
+        .on_change(move |value| captured.borrow_mut().push(value.to_owned()));
+    input.set_focus(true);
+    let mut document = AutoCommit::new();
+    drive(
+        &mut input,
+        &mut document,
+        &char_key_event("v"),
+        mods(true, false),
+    );
+    assert_eq!(input.value(), "a");
+    clipboard
+        .0
+        .lock()
+        .unwrap()
+        .take()
+        .unwrap()
+        .send(Some("b\nc".into()))
+        .unwrap();
+    Widget::sync(&mut input, &document, &automerge::ROOT);
+    assert_eq!(input.value(), "abc");
+    assert_eq!(&*changes.borrow(), &["abc"]);
+    Widget::sync(&mut input, &document, &automerge::ROOT);
+    assert_eq!(&*changes.borrow(), &["abc"]);
+
+    for change in 0..3 {
+        drive(
+            &mut input,
+            &mut document,
+            &char_key_event("v"),
+            mods(true, false),
+        );
+        let reply = clipboard.0.lock().unwrap().take().unwrap();
+        match change {
+            0 => {
+                input.set_focus(false);
+                input.set_focus(true);
+            }
+            1 => {
+                input.set_cursor_pos(0);
+                input.set_cursor_pos(3);
+            }
+            _ => {
+                input.set_text("changed");
+                input.set_text("abc");
+            }
+        }
+        let _ = reply.send(Some("stale".into()));
+        Widget::sync(&mut input, &document, &automerge::ROOT);
+        assert_eq!(
+            input.value(),
+            "abc",
+            "changed target must cancel delayed paste"
+        );
+    }
+}

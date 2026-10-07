@@ -270,3 +270,100 @@ async fn quota_failure_is_atomic_and_secret_retention_merges_within_batch() {
         b"old".as_slice()
     );
 }
+
+struct Grant(std::sync::atomic::AtomicBool);
+impl StateAuthority for Grant {
+    fn allowed(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[tokio::test]
+async fn revoked_original_grant_stops_actual_sdk_ratchet_and_pending_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let grant = Arc::new(Grant(std::sync::atomic::AtomicBool::new(true)));
+    let initial = open(dir.path());
+    let prior_clone = initial.clone();
+    let backend = initial.guarded(grant.clone()).unwrap();
+    let sdk: Arc<dyn Backend> = Arc::new(backend.clone());
+    sdk.create().await.unwrap();
+    sdk.put_session("peer@lid", b"original-ratchet")
+        .await
+        .unwrap();
+    let before = std::fs::read(dir.path().join("state.enc")).unwrap();
+    grant.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        sdk.put_session("peer@lid", b"revoked-ratchet")
+            .await
+            .is_err()
+    );
+    assert!(
+        sdk.store_prekey(27, b"revoked-prekey", false)
+            .await
+            .is_err()
+    );
+    assert!(
+        sdk.store_pending_inbound_batch(&[
+            whatsapp_rust::wacore::store::traits::PendingInboundRow {
+                chat: "chat@lid",
+                sender: "peer@lid",
+                id: "revoked-message",
+                message: b"revoked-text",
+            },
+        ])
+        .await
+        .is_err()
+    );
+    assert!(sdk.load().await.is_err());
+    let forbidden = dir.path().join("revoked-custody");
+    assert!(EncryptedBackend::open_system(&forbidden, owner(), grant.clone()).is_err());
+    assert!(
+        !forbidden.exists(),
+        "revoked grants must perform no custody I/O"
+    );
+    assert!(
+        prior_clone
+            .clone()
+            .guarded(Arc::new(Grant(std::sync::atomic::AtomicBool::new(true))))
+            .is_err()
+    );
+    assert!(
+        prior_clone
+            .put_session("peer@lid", b"clone-write")
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read(dir.path().join("state.enc")).unwrap(), before);
+    drop(sdk);
+    drop(backend);
+    drop(prior_clone);
+    let restored = open(dir.path());
+    assert_eq!(
+        restored.get_session("peer@lid").await.unwrap().unwrap(),
+        b"original-ratchet".as_slice()
+    );
+    assert!(restored.load_prekey(27).await.unwrap().is_none());
+    assert!(
+        restored
+            .get_pending_inbound("chat@lid", "peer@lid", "revoked-message")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn revocation_during_custody_lookup_prevents_store_initialization() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("never-initialized");
+    let grant = Arc::new(Grant(std::sync::atomic::AtomicBool::new(true)));
+    let result = EncryptedBackend::open_authorized(&root, owner(), grant.clone(), || {
+        grant.0.store(false, std::sync::atomic::Ordering::SeqCst);
+        Ok(VaultKey::from_slice(&[7; 32]).unwrap())
+    });
+    assert!(result.is_err());
+    assert!(
+        !root.exists(),
+        "a grant revoked while custody responds must not create a private store"
+    );
+}

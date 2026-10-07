@@ -660,6 +660,8 @@ pub struct ShellOverlayHost {
     /// Workspace-settings transition, geometry, painting chrome, and typed
     /// hit targets. Policy outcomes are applied by this host.
     workspace_settings_overlay: WorkspaceSettingsOverlay,
+    /// A rename submit owns its held Enter repeats and release after the draft closes.
+    workspace_rename_submit_held: bool,
     palette_was_visible: bool,
     /// Interruptible open/close driver for the command palette.
     palette_transition: ui::Transition,
@@ -2171,6 +2173,7 @@ impl ShellOverlayHost {
             strip_rail_hover: None,
             qs_refresh: inputs.qs_refresh,
             workspace_settings_overlay: WorkspaceSettingsOverlay::default(),
+            workspace_rename_submit_held: false,
             palette_was_visible: false,
             palette_transition: ui::Transition::closed(),
             group_row_ptrs: HashMap::new(),
@@ -12087,7 +12090,14 @@ impl ShellOverlayHost {
         // Workspace naming is a text-field modal.  It must arbitrate before
         // every shell chord: otherwise Super+W/K/T can close a tab or open a
         // palette while the field is visibly active.
+        let rename_submit = matches!(logical_key, Key::Named(NamedKey::Enter))
+            && !self.palette_visible
+            && self
+                .chrome
+                .as_ref()
+                .is_some_and(|chrome| chrome.borrow().editing_workspace_name.is_some());
         if self.handle_workspace_rename_key(logical_key, modifiers, handled) {
+            self.workspace_rename_submit_held |= rename_submit;
             return true;
         }
         if self.status_editing {
@@ -13424,6 +13434,31 @@ impl ShellOverlayHost {
             st.dismiss_notification(id);
             *handled = true;
             return true;
+        }
+        false
+    }
+
+    /// Finish the key sequence the rename field started, even after commit
+    /// removes the draft. A fresh press belongs to normal contextual routing.
+    fn consume_workspace_rename_submit_edge(&mut self, event: &WindowEvent) -> bool {
+        if matches!(event, WindowEvent::Focused(false)) {
+            self.workspace_rename_submit_held = false;
+        }
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        if !matches!(key.logical_key, Key::Named(NamedKey::Enter)) {
+            return false;
+        }
+        if self.workspace_rename_submit_held && (key.repeat || key.state == ElementState::Released)
+        {
+            if key.state == ElementState::Released {
+                self.workspace_rename_submit_held = false;
+            }
+            return true;
+        }
+        if key.state == ElementState::Pressed {
+            self.workspace_rename_submit_held = false;
         }
         false
     }
@@ -17832,6 +17867,10 @@ impl Widget for ShellOverlayHost {
         // while every onboarding click was evaluated without a position.
         self.track_cursor_position(event, ctx.scale_factor);
         self.observe_window_focus();
+        if self.consume_workspace_rename_submit_edge(event) {
+            *ctx.handled = true;
+            return;
+        }
         // Print Screen has an explicit arbitration policy. It must run before
         // OOBE, portal and consent gates so Capture Studio can temporarily
         // own input above those preserved workflows instead of being consumed

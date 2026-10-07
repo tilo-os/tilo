@@ -268,6 +268,25 @@ impl InProcessApps {
         component.collaborate_through(broker(component.app_id(), room))
     }
 
+    /// Acknowledge startup writes through the fixture's real canonical owner.
+    #[cfg(test)]
+    pub(crate) fn flush_fixture_records(
+        &mut self,
+        app_id: &str,
+        room: &str,
+    ) -> Result<usize, String> {
+        let records = self
+            .owners
+            .open(app_id, room)
+            .map_err(|error| error.to_string())?;
+        let count = records.open_records().len();
+        if count == 0 {
+            return Err("fixture must observe mounted records before flushing".into());
+        }
+        records.try_flush()?;
+        Ok(count)
+    }
+
     /// The apps of a session whose state lives in `profile_root`: their
     /// records and views there, as this device.
     ///
@@ -483,6 +502,7 @@ pub type SharedInProcessApps = Rc<RefCell<InProcessApps>>;
 mod tests {
     use super::*;
     use tilo_resource::Resource as _;
+    include!("in_process_files_clipboard_tests.rs");
 
     const ROOM: &str = "6a3f0c2e-0f1b-4c5d-9e8f-123456789abc";
     const TAB: u64 = 41;
