@@ -889,6 +889,8 @@ class PresentedEditorTargetTests(unittest.TestCase):
 
     def test_native_ime_stage_is_explicit_and_configured_before_shell_launch(self):
         bootstrap = inspect.getsource(PROOF.bootstrap)
+        self.assertLess(bootstrap.index('run(binaries / "examples/proof_provider"'),
+                        bootstrap.index("configure_rime_input(profile)"))
         self.assertLess(bootstrap.index("configure_rime_input(profile)"),
                         bootstrap.index("subprocess.Popen(shell_args"))
         self.assertIn('"stage": "native-ime"', bootstrap)

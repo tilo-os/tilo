@@ -3434,8 +3434,6 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
         env.pop("TILO_APPS_SYSTEM_DIR", None)
         enable_isolated_accessibility(output, env, processes, logs)
         start_isolated_secret_service(output, env, processes, logs)
-        if ime_only:
-            configure_rime_input(profile)
         require_locked_cargo_metadata(env, profile)
         install_packages(binaries, profile, env, include_store=launch_path == "store")
         installed = subprocess.check_output([str(binaries / "tilo-install"), "list"], env=env, text=True)
@@ -3460,6 +3458,11 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
                 raise RuntimeError("native fixture improperly seeded application records")
         provider = HeldProvider(marker_agent="tide" if marker_only else None)
         run(binaries / "examples/proof_provider", [profile / "config", provider.endpoint], env)
+        # Provider provisioning requires a genuinely empty profile. Merge the
+        # normal input settings only after it has created that profile, while
+        # still preceding the compositor's production settings load.
+        if ime_only:
+            configure_rime_input(profile)
         gateway_socket = runtime / "tilo/services/model-gateway.sock"
         gateway_socket.parent.mkdir(parents=True, mode=0o700)
         gateway_log = open(output / "gateway.log", "w")
