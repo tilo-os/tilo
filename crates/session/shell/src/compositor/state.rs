@@ -5015,14 +5015,6 @@ impl State {
         self.input_method_preedit.is_active()
     }
 
-    pub(crate) fn set_input_method_preedit_active_for_tests(&mut self, active: bool) {
-        self.input_method_preedit = if active {
-            InputMethodPreeditState::Active
-        } else {
-            InputMethodPreeditState::Inactive
-        };
-    }
-
     /// The xdg popups mapped over a window, in the order they opened.
     pub fn xdg_popups(&self) -> impl Iterator<Item = &PopupSurface> + '_ {
         self.popups.iter().map(|popup| &popup.surface)
