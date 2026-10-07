@@ -112,12 +112,11 @@
       "free_bytes_at_checkpoint": 141561638912,
       "required_production_admission_free_bytes": 176041230336,
       "owned_output_growth_bytes": 304472064,
-      "peak_RSS_bytes": 4124520448,
       "remaining_live_processes": [],
       "container_removed": true,
       "resume": "Retain production-generation A and completed Ninja objects; rerun production-A only after fresh headroom passes.",
       "maintenance_dry_run": "50.3 GB unused build units/incremental data eligible under normal policy; zero worktree evictions reported. No cleanup performed.",
-      "approval_block": "Automatic approval review rejected rcargo builder gc --keep-images: actual deletion of shared caches requires explicit approval. No alternate/indirect cleanup attempted.",
+      "approval_block": "Automatic approval review rejected normal shared-builder garbage collection: actual deletion of shared caches requires explicit approval. No alternate/indirect cleanup attempted. Exact operational command and rejection retained in the local continuation handoff.",
       "pending": [
         "full production SDK A",
         "independent clean B and byte comparison",
@@ -143,13 +142,15 @@
         "epoch": 1791415723.1371062,
         "available_memory_bytes": 159463841792,
         "free_disk_bytes": 527535243264
-      }
+      },
+      "max_observed_production_tranche_RSS_bytes": 4124520448,
+      "checkpoint_tranche_peak_RSS_bytes": 3648299008
     },
     "staged_source_hook": "PASS .githooks/pre-commit on final staged source patch, profiles, before/after evidence and resolved Git dependency lock."
   },
   "artifact": null,
   "production_defaults": "Keep official noncomponent release, pinned PGO/LTO, sysroot, public API headers, resources, locales and licenses.",
-  "remote_execution": "Existing rcargo/SSH builder only; isolated supported scratch root with directory FD/mount GC protection, task-only lock+standard activity/build-slot, pinned private PID/networkless ephemeral containers; no Cargo worktree lock or laptop compiler.",
+  "remote_execution": "Existing remote Cargo/SSH builder only; isolated supported scratch root with directory FD/mount GC protection, task-only lock plus standard activity/build-slot, pinned private PID/networkless ephemeral containers; no Cargo worktree lock or laptop compiler.",
   "delivery": "Normal required CI and existing signing/provenance verification. No consumer pin changes until qualification; no binary in Git.",
   "producer_build_patches": [
     {
