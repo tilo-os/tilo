@@ -609,12 +609,62 @@ impl crate::resources::PublishesResources for CounterCard {
     }
 }
 
+// These fixtures inject already admitted deliveries through the public handler.
+// The legacy peer models that transport; it claims no native history capture.
+pub(super) fn admitted_delivery_manager() -> CollaborationManager {
+    CollaborationManager::with_peer_transport(HostedModelTransport(Rc::new(RefCell::new(vec![]))))
+}
+
+// A legacy owner may receive an already admitted delivery after its outbound
+// channel disconnects. It has no native history/read protocol, and cannot
+// publish a terminal result or admit a new outbound action.
+struct DisconnectedDeliveryPeer;
+impl crate::collaboration::PeerTransport for DisconnectedDeliveryPeer {
+    fn is_connected(&self) -> bool {
+        false
+    }
+    fn send(&mut self, _: CollabRequest) -> Result<(), String> {
+        Err("fixture outbound channel disconnected".into())
+    }
+    fn poll(&mut self) -> Vec<CollabEvent> {
+        vec![]
+    }
+    fn join_route(&mut self, _: crate::collaboration::RouteSpec) -> Result<(), String> {
+        Ok(())
+    }
+    fn publish_action_directory(&mut self, _: String) -> Result<(), String> {
+        Ok(())
+    }
+}
+fn disconnected_delivery_manager() -> CollaborationManager {
+    CollaborationManager::with_peer_transport(DisconnectedDeliveryPeer)
+}
+
 fn app() -> App {
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(CounterCard::new()));
     app.action_registry_mut()
         .register::<CounterAction>(COUNTER_TYPE);
     app.init_layout();
     app
+}
+
+#[test]
+fn published_delivery_on_disabled_transport_refuses_before_document_handler() {
+    let mut app = app();
+    app.collaboration.manager = CollaborationManager::disabled();
+    let before = app.state.doc.clone().save();
+    app.invoke_published_action(
+        81,
+        tilo_actions::InvocationId::new(),
+        "test.counter".into(),
+        "bump".into(),
+        None,
+        "remote:original",
+        None,
+    );
+    assert_eq!(counter(&app), 0);
+    assert_eq!(app.state.doc.clone().save(), before);
+    assert!(app.actions.directed_invocations.is_empty());
 }
 
 fn lazy_resource(id: &str) -> Resource {
@@ -1027,6 +1077,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         app.action_registry_mut()
             .register::<CounterAction>(COUNTER_TYPE);
         app.init_layout();
+        app.collaboration.manager = admitted_delivery_manager();
         assert!(
             tilo_actions::door::survey(&app.collect_resources())
                 .iter()
@@ -1068,6 +1119,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         app.action_registry_mut()
             .register::<CounterAction>(COUNTER_TYPE);
         app.init_layout();
+        app.collaboration.manager = admitted_delivery_manager();
 
         let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(
             0xa5a5_a5a5_a5a5_a5a5_0000_0000_0000_002b,
@@ -1865,6 +1917,7 @@ fn an_effects_edit_is_applied_for_its_invoker_before_it_answers() {
     app.action_registry_mut()
         .register::<CounterAction>(COUNTER_TYPE);
     app.init_layout();
+    app.collaboration.manager = disconnected_delivery_manager();
     let invocation = tilo_actions::InvocationId::new();
     app.invoke_published_action(
         7,
@@ -2004,6 +2057,7 @@ fn broker_invocation_uuid_collision_preserves_original_operation_route() {
         app.action_registry_mut()
             .register::<CounterAction>(COUNTER_TYPE);
         app.init_layout();
+        app.collaboration.manager = admitted_delivery_manager();
         let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(
             0xa5a5_a5a5_a5a5_a5a5_0000_0000_0000_002b,
         ));
