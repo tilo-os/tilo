@@ -215,7 +215,11 @@ enforces them. In-process models retain their separate installation path.
 A runtime source may include signed `execution` settings. Omitting them retains
 legacy vLLM serialization/signing bytes. `engine: "vllm"` requires
 `max_context_tokens` and `cpu_offload_gib`; `engine: "llama_cpp"` requires
-`max_context_tokens` and `gpu_layers`. There is no arbitrary command/argv field.
+`max_context_tokens` and `gpu_layers`. Its optional `parallel_slots` is a nonzero
+integer from 1 through 64 and generates only `--parallel N`. Omission preserves
+existing signing bytes and leaves the backend default unchanged. Slot count does
+not reduce signed memory requirements or attest resident fit or throughput.
+There is no arbitrary command/argv field.
 The catalogue compiler and supervisor reject malformed or unbounded settings.
 The selected image must have the corresponding server as its pinned entrypoint.
 

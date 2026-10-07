@@ -1785,6 +1785,7 @@ mod tests {
                 execution: Some(RuntimeExecution::LlamaCpp {
                     max_context_tokens: 4096,
                     gpu_layers: 8,
+                    parallel_slots: None,
                 }),
             },
         };
@@ -1838,6 +1839,7 @@ mod tests {
         catalog.runtimes[0].release.execution = Some(RuntimeExecution::LlamaCpp {
             max_context_tokens: 4096,
             gpu_layers: 8,
+            parallel_slots: None,
         });
         // Free storage must fit the complete installed artifact, rounded up.
         catalog.models[0].installed_size_bytes = 1024 * 1024 + 1;
