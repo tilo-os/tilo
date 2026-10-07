@@ -31,6 +31,12 @@ mod qualification {
         /// Isolate one public clip when investigating the model's load budget.
         #[arg(long)]
         single_case: Option<String>,
+        /// Diagnostic only: decode bounded segments; production remains unchanged.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(5..=30))]
+        chunk_seconds: Option<u64>,
+        /// Diagnostic only: choose the quietest 100 ms within 25% of each boundary.
+        #[arg(long, requires = "chunk_seconds")]
+        chunk_silence: bool,
     }
 
     #[derive(Deserialize)]
@@ -209,7 +215,75 @@ mod qualification {
         Ok(())
     }
 
-    fn probe(engine: &mut SpeechEngine, model: &str, probe: &Probe) -> Result<(), Failure> {
+    fn segment_length(samples: &[f32], desired: usize, silence: bool) -> usize {
+        let padding = desired / 4;
+        if !silence {
+            return desired.min(samples.len());
+        }
+        if samples.len() <= desired.saturating_add(padding) {
+            return samples.len();
+        }
+        let window = SAMPLE_RATE / 10;
+        (desired.saturating_sub(padding)..desired.saturating_add(padding))
+            .step_by(SAMPLE_RATE / 50)
+            .filter_map(|offset| {
+                let frame = samples.get(offset..offset.saturating_add(window))?;
+                let energy = frame
+                    .iter()
+                    .map(|sample| f64::from(*sample).powi(2))
+                    .sum::<f64>();
+                Some((offset.saturating_add(window / 2), energy))
+            })
+            .min_by(|left, right| left.1.total_cmp(&right.1))
+            .map_or(desired, |(boundary, _)| boundary)
+    }
+
+    fn recognize(
+        engine: &mut SpeechEngine,
+        samples: &[f32],
+        language: &std::ffi::CString,
+        chunk_seconds: Option<u64>,
+        silence: bool,
+    ) -> Result<String, Failure> {
+        let Some(seconds) = chunk_seconds else {
+            return engine
+                .transcribe(samples, language)
+                .map_err(|_| "recognition failed".into());
+        };
+        let size = usize::try_from(seconds)?
+            .checked_mul(SAMPLE_RATE)
+            .ok_or("segment bound")?;
+        let mut text = String::new();
+        let mut remaining = samples;
+        while !remaining.is_empty() {
+            let boundary = segment_length(remaining, size, silence);
+            let (chunk, next) = remaining.split_at(boundary);
+            remaining = next;
+            let part = engine
+                .transcribe(chunk, language)
+                .map_err(|_| "segment recognition failed")?;
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            text.push_str(part);
+            if text.len() > 16384 {
+                return Err("public segmented output exceeds bound".into());
+            }
+        }
+        Ok(text)
+    }
+
+    fn probe(
+        engine: &mut SpeechEngine,
+        model: &str,
+        probe: &Probe,
+        chunk_seconds: Option<u64>,
+        silence: bool,
+    ) -> Result<(), Failure> {
         let language = engine
             .language(&probe.case.language)
             .map_err(|_| "language unavailable")?;
@@ -222,25 +296,21 @@ mod qualification {
             .ok_or("prefix")?;
         phase(&probe.case, "draft-fixed-language")?;
         let start = Instant::now();
-        let draft = engine
-            .transcribe(prefix, &language)
+        let draft = recognize(engine, prefix, &language, chunk_seconds, silence)
             .map_err(|_| "draft recognition failed")?;
         let draft_ms = start.elapsed().as_millis();
         phase(&probe.case, "final-fixed-language")?;
         let start = Instant::now();
-        let text = engine
-            .transcribe(&probe.samples, &language)
+        let text = recognize(engine, &probe.samples, &language, chunk_seconds, silence)
             .map_err(|_| "recognition failed")?;
         let final_ms = start.elapsed().as_millis();
         phase(&probe.case, "final-auto-language")?;
         let start = Instant::now();
-        let detected = engine
-            .transcribe(&probe.samples, &auto)
+        let detected = recognize(engine, &probe.samples, &auto, chunk_seconds, silence)
             .map_err(|_| "auto recognition failed")?;
         let auto_ms = start.elapsed().as_millis();
         if probe.case.id.starts_with("long-")
-            && engine
-                .transcribe(&probe.samples, &language)
+            && recognize(engine, &probe.samples, &language, chunk_seconds, silence)
                 .map_err(|_| "repeated long recognition failed")?
                 != text
         {
@@ -250,6 +320,7 @@ mod qualification {
             "SPEECH_BENCHMARK {}",
             serde_json::json!({
                 "model": model, "id": probe.case.id, "language": probe.case.language,
+                "chunk_seconds": chunk_seconds, "chunk_silence": silence,
                 "samples": probe.samples.len(), "reference": probe.case.reference,
                 "draft": draft, "text": text, "auto_text": detected,
                 "draft_ms": draft_ms, "final_ms": final_ms, "auto_ms": auto_ms,
@@ -290,7 +361,13 @@ mod qualification {
             })
         );
         for input in probes.into_iter().filter(|probe| probe.case.primary) {
-            probe(&mut engine, &options.model, &input)?;
+            probe(
+                &mut engine,
+                &options.model,
+                &input,
+                options.chunk_seconds,
+                options.chunk_silence,
+            )?;
         }
         Ok(())
     }
@@ -321,6 +398,12 @@ mod qualification {
                 .arg(&options.model)
                 .arg("--single-case")
                 .arg(&id);
+            if let Some(seconds) = options.chunk_seconds {
+                command.arg("--chunk-seconds").arg(seconds.to_string());
+            }
+            if options.chunk_silence {
+                command.arg("--chunk-silence");
+            }
             let output = bounded_command::run_prepared(
                 command,
                 None,
