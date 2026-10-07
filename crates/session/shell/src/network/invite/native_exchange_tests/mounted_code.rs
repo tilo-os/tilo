@@ -352,6 +352,7 @@ async fn drive(
     body: &str,
     audits: usize,
 ) {
+    let stage_started = std::time::Instant::now();
     eprintln!(
         "mounted journey: awaiting {}",
         hex::encode(Sha256::digest(body.as_bytes()))
@@ -360,7 +361,7 @@ async fn drive(
         let mut reported = std::time::Instant::now();
         loop {
             if reported.elapsed() >= std::time::Duration::from_secs(20) {
-                eprintln!("mounted snapshots: {:?}", mounted.iter().map(|app| app.code.app.controlled_native_input_snapshot_for_test()).collect::<Vec<_>>());
+                report_snapshots(source, mounted, stage_started.elapsed());
                 reported = std::time::Instant::now();
             }
             for app in &mut *mounted { app.frame(); }
@@ -372,7 +373,8 @@ async fn drive(
                     && signed_audits(&app.network.native_owner().unwrap()) == signed
                     && has_committed_body(&app.network.native_owner().unwrap(), body))
             {
-                eprintln!("mounted convergence: {} bytes; {audits} exact signed terminal audits on both live native owners", body.len());
+                eprintln!("mounted convergence after {:?}: {} bytes; {audits} exact signed terminal audits on both live native owners", stage_started.elapsed(), body.len());
+                report_snapshots(source, mounted, stage_started.elapsed());
                 break;
             }
             tokio::select! {
@@ -433,6 +435,48 @@ fn has_committed_body(owner: &NativeWorkspaceOwner, expected: &str) -> bool {
                     .is_some_and(|bytes| {
                         cold_code::body(&automerge::AutoCommit::load(&bytes).unwrap()) == expected
                     }))
+            },
+        )
+        .unwrap()
+}
+
+fn report_snapshots(
+    source: &NativeWorkspaceOwner,
+    mounted: &[Mounted],
+    elapsed: std::time::Duration,
+) {
+    eprintln!(
+        "mounted governor after {elapsed:?}: {:?}",
+        committed_snapshot(source)
+    );
+    eprintln!(
+        "mounted snapshots: {:?}",
+        mounted
+            .iter()
+            .map(|app| serde_json::json!({
+                "connected": app.code.app.collaboration_is_connected(),
+                "ui": app.code.app.controlled_native_input_snapshot_for_test(),
+                "native": committed_snapshot(&app.network.native_owner().unwrap()),
+            }))
+            .collect::<Vec<_>>()
+    );
+}
+
+fn committed_snapshot(owner: &NativeWorkspaceOwner) -> Option<serde_json::Value> {
+    owner
+        .with_current(
+            RoomId::parse(tilo_joined_room::testing::ROOM).unwrap(),
+            |view| {
+                Ok(view.peer().document(APP, cold_code::RECORD).map(|bytes| {
+                    let mut document = automerge::AutoCommit::load(&bytes).unwrap();
+                    let body = cold_code::body(&document);
+                    serde_json::json!({
+                        "generation": view.generation(),
+                        "body_hash": hex::encode(Sha256::digest(body.as_bytes())),
+                        "body_bytes": body.len(),
+                        "heads": document.get_heads().iter().map(ToString::to_string).collect::<Vec<_>>(),
+                    })
+                }))
             },
         )
         .unwrap()

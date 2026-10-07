@@ -1,4 +1,13 @@
 chip-title = Chip Design
+chip-placement-title = Reported macro placement
+chip-placement-disclaimer = Macro footprints only; other instances are omitted. Reported geometry does not establish layout authentication or signoff. Coordinates are in micrometers, with the physical origin at the lower left.
+chip-placement-total = Total reported instances
+chip-placement-omitted = Instances omitted from this view
+chip-placement-die = Die bounds (µm)
+chip-placement-master = Cell master
+chip-placement-bounds = Macro bounds (µm)
+chip-placement-orientation = Orientation
+chip-placement-status = Placement status
 chip-study-disclaimer = Producer-reported architecture comparison. Stage links and artifact identities are unverified here. Cycles and generic cells establish no clock speed, physical area, energy or coding quality.
 chip-study-checks = Producer-reported stage checks
 chip-study-stage = Reported experiment stage
