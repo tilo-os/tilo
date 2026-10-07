@@ -29,7 +29,7 @@ native = ["dep:tilo-runner-native"]
 # The collaboration manager's built-in broker transport; see `tilo-ui`'s
 # `broker-transport`. Native only.
 broker-transport = ["tilo-runner-native?/broker-transport"]
-test-support = ["ui-core/test-support"]
+test-support = ["ui-core/test-support", "tilo-resource/test-support"]
 # Backend features of the native runner; on wasm32 they have no effect.
 # `portal` and `notifications` select nothing any more: the platform crates
 # choose each target's file choosers and notifications, and the native runner

@@ -19,9 +19,13 @@ mod durable_local_matrix {
     }
     impl Environment {
         fn new() -> Self {
+            Self::with_owner_initializer(crate::test_owner::SessionOwner::initialize)
+        }
+        fn with_owner_initializer(
+            initialize: impl FnOnce(&std::path::Path) -> Result<crate::test_owner::SessionOwner, String>,
+        ) -> Self {
             let root = tempfile::tempdir().unwrap();
-            let mut owner =
-                crate::test_owner::SessionOwner::initialize(&root.path().join("owner")).unwrap();
+            let mut owner = initialize(&root.path().join("owner")).unwrap();
             let cert = owner.peer().authority().clone();
             let key = owner.signing_key().clone();
             let person = owner.person_key().clone();
@@ -1090,4 +1094,5 @@ mod durable_local_matrix {
     include!("admitted_local_host_tests.rs");
     include!("certified_launch_tests.rs");
     include!("observed_launch_tests.rs");
+    include!("keyboard_map_read_authority_tests.rs");
 }
