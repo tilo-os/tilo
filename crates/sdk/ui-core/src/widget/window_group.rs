@@ -1253,6 +1253,15 @@ impl WindowGroup {
         true
     }
 
+    /// Retain the native client while its host awaits actual close admission.
+    /// The live host and tab metadata survive the provisional close animation.
+    pub fn cancel_tab_close(&mut self, tab_id: u64) -> bool {
+        let restored = self.bar.cancel_close(tab_id);
+        self.closing_hosts.remove(&tab_id);
+        self.pending_close_commit.retain(|id| *id != tab_id);
+        restored
+    }
+
     pub fn drag_in_flight(&self) -> bool {
         self.bar.drag_in_flight()
     }
@@ -2897,6 +2906,33 @@ mod tests {
             at(&idle, x, y),
             "the grip shows while resizing"
         );
+    }
+
+    #[test]
+    fn deferred_close_retains_host_pill_order_and_focus() {
+        let mut group = make_group();
+        assert!(group.request_close_tab(1));
+        assert!(group.has_closing_host(1));
+        assert!(group.cancel_tab_close(1));
+        group.sweep_expired_closing_hosts();
+        assert_eq!(
+            group
+                .bar
+                .tabs()
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert_eq!(group.active_tab_id(), 1);
+        assert!(group.has_host(1));
+        assert!(!group.has_closing_host(1));
+        assert!(!group.bar.is_closing(1));
+        assert!(
+            !group.cancel_tab_close(1),
+            "restoring twice must not duplicate the pill"
+        );
+        assert_eq!(group.tab_count(), 2);
     }
 
     fn make_group() -> WindowGroup {
