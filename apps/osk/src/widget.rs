@@ -261,8 +261,7 @@ pub struct OskWidget {
     predictor: Predictor,
     /// Host-issued reader of the person's shared local vocabulary. No app
     /// path fallback: an anonymous or unbound keyboard has no personal hints.
-    personal_vocabulary:
-        Option<std::sync::Arc<dyn settings_store::personal_dictionary::Vocabulary>>,
+    personal_vocabulary: Option<std::sync::Arc<dyn ui::personal_dictionary::Vocabulary>>,
     /// The language the preferred letter layout types; the predictor, the
     /// autocorrector and the swipe decoder all serve it.
     language: Language,
@@ -533,7 +532,7 @@ impl OskWidget {
     /// This does not learn words or persist an OSK-specific vocabulary.
     pub fn set_personal_vocabulary(
         &mut self,
-        source: Option<std::sync::Arc<dyn settings_store::personal_dictionary::Vocabulary>>,
+        source: Option<std::sync::Arc<dyn ui::personal_dictionary::Vocabulary>>,
     ) {
         self.personal_vocabulary = source;
         self.last_correction = None;
@@ -546,7 +545,7 @@ impl OskWidget {
         self.refresh_completion_suggestions();
     }
 
-    fn personal_words(&self) -> settings_store::personal_dictionary::Snapshot {
+    fn personal_words(&self) -> ui::personal_dictionary::Snapshot {
         self.personal_vocabulary
             .as_ref()
             .and_then(|source| source.snapshot().ok())

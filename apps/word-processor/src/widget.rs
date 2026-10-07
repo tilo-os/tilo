@@ -2978,8 +2978,8 @@ impl WordProcessorWidget {
     /// with any persisted user words layered in. Owned so "Add to dictionary"
     /// can mutate it.
     fn dictionary(&mut self) -> &mut spellcheck::Dictionary {
-        // Words added on another device, or in another window, arrive with
-        // the setting: build the dictionary again when they change.
+        // Explicit words added through the shared local host follow every
+        // window: build the spelling overlay again when they change.
         if let Some(personal) = &self.proofing.personal {
             let snapshot = ui::personal_dictionary::snapshot();
             if !self.proofing.migration_requested
