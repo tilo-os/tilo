@@ -82,16 +82,23 @@ fn quick_settings_network_inspection_reads_ordinary_worker_adoption_and_failed_c
         state.quick_settings.wifi = true;
         state.quick_settings.wifi_scanning = true;
     }
-    host.qs_refresh.kick_wifi_networks_with(|| {
-        Ok(vec![os_actions::WifiNetworkInfo {
-            ssid: "Fixture network".into(),
-            signal: 3,
-            secure: false,
-            security: os_actions::WifiSecurity::Open,
-            connected: true,
-        }])
-    });
-    tilo_test_env::recv("scan completion must wake its actual owner", &wake_rx);
+    let (release, released) = std::sync::mpsc::channel();
+    host.qs_refresh.kick_wifi_observations_with(
+        || {
+            Ok(vec![os_actions::WifiNetworkInfo {
+                ssid: "Fixture network".into(),
+                signal: 3,
+                secure: false,
+                security: os_actions::WifiSecurity::Open,
+                connected: true,
+            }])
+        },
+        move || {
+            tilo_test_env::recv("explicit scan release", &released);
+            Err("fixture discovery refused".into())
+        },
+    );
+    tilo_test_env::recv("cached observation must wake its actual owner", &wake_rx);
     assert!(host.update(&automerge::AutoCommit::new(), &automerge::ROOT));
     let adopted = read(&chrome);
     assert_eq!(adopted["wifi_panel"]["open"], false);
@@ -107,15 +114,16 @@ fn quick_settings_network_inspection_reads_ordinary_worker_adoption_and_failed_c
         revision,
         "inspection must not refresh or mutate the cache"
     );
-    assert!(!host.qs_refresh.is_in_flight());
-    chrome.borrow_mut().quick_settings.wifi_scanning = true;
+    assert!(
+        host.qs_refresh.is_in_flight(),
+        "cached APs never complete fresh discovery"
+    );
+    release.send(()).unwrap();
     let pending = read(&chrome);
     assert_eq!(pending["scanning"], true);
-    assert_eq!(pending["wifi_panel"]["listed_network_count"], 0);
-    assert_eq!(pending["networks"][0]["listed"], false);
+    assert_eq!(pending["wifi_panel"]["listed_network_count"], 1);
+    assert_eq!(pending["networks"][0]["listed"], true);
     assert_painted_labels(&chrome, &pending);
-    host.qs_refresh
-        .kick_wifi_networks_with(|| Err("fixture discovery refused".into()));
     tilo_test_env::recv("failed scan must wake its actual owner", &wake_rx);
     assert!(host.update(&automerge::AutoCommit::new(), &automerge::ROOT));
     drop(host);
@@ -126,6 +134,6 @@ fn quick_settings_network_inspection_reads_ordinary_worker_adoption_and_failed_c
         failed["networks"][0]["ssid"], "Fixture network",
         "failed scans retain previous cached rows"
     );
-    assert_eq!(failed["wifi_panel"]["listed_network_count"], 0);
+    assert_eq!(failed["wifi_panel"]["listed_network_count"], 1);
     assert_painted_labels(&chrome, &failed);
 }

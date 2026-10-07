@@ -113,10 +113,23 @@ impl QuickSettingsWifiPane {
     }
 
     pub(super) fn displayed_network_count(state: &QuickSettingsState) -> usize {
-        if state.wifi && !state.wifi_scanning && state.wifi_scan_error.is_none() {
+        if state.wifi {
             state.wifi_networks.len()
         } else {
             0
+        }
+    }
+
+    /// Reserve one shared row band for progress/failure above cached APs.
+    fn list_top(state: &QuickSettingsState) -> f64 {
+        if Self::displayed_network_count(state) > 0
+            && (state.radio_change_pending
+                || state.wifi_scanning
+                || state.wifi_scan_error.is_some())
+        {
+            Self::LIST_TOP + ROW_HEIGHT
+        } else {
+            Self::LIST_TOP
         }
     }
 
@@ -187,9 +200,11 @@ impl QuickSettingsWifiPane {
 
     /// Every currently visible action in visual and keyboard order.
     pub fn semantic_rects(&self, panel: Rect, state: &QuickSettingsState) -> Vec<(String, Rect)> {
-        let visible =
-            self.list
-                .visible_rects(panel, Self::displayed_network_count(state), Self::LIST_TOP);
+        let visible = self.list.visible_rects(
+            panel,
+            Self::displayed_network_count(state),
+            Self::list_top(state),
+        );
         Self::focusable_indices(state)
             .into_iter()
             .filter_map(|index| {
@@ -238,7 +253,11 @@ impl QuickSettingsWifiPane {
             network => {
                 let network = network.checked_sub(Self::NETWORK_FOCUS_START)?;
                 self.list
-                    .visible_rects(panel, Self::displayed_network_count(state), Self::LIST_TOP)
+                    .visible_rects(
+                        panel,
+                        Self::displayed_network_count(state),
+                        Self::list_top(state),
+                    )
                     .into_iter()
                     .find_map(|(index, rect)| (index == network).then_some(rect))
             }
@@ -341,7 +360,7 @@ impl QuickSettingsWifiPane {
             self.list.ensure_visible(
                 panel,
                 Self::displayed_network_count(state),
-                Self::LIST_TOP,
+                Self::list_top(state),
                 network,
             );
         }
@@ -371,7 +390,7 @@ impl QuickSettingsWifiPane {
             self.list.ensure_visible(
                 panel,
                 Self::displayed_network_count(state),
-                Self::LIST_TOP,
+                Self::list_top(state),
                 network,
             );
         }
@@ -381,7 +400,7 @@ impl QuickSettingsWifiPane {
         self.list.scroll_wheel(
             panel,
             Self::displayed_network_count(state),
-            Self::LIST_TOP,
+            Self::list_top(state),
             rows,
         )
     }
@@ -401,13 +420,16 @@ impl QuickSettingsWifiPane {
             Self::RESCAN_FOCUS => Self::rescan_rect(panel).center(),
             Self::HOTSPOT_FOCUS => Self::hotspot_rect(panel).center(),
             network => {
-                self.list
-                    .layout_from(panel, Self::displayed_network_count(state), Self::LIST_TOP);
+                self.list.layout_from(
+                    panel,
+                    Self::displayed_network_count(state),
+                    Self::list_top(state),
+                );
                 let network = network.saturating_sub(Self::NETWORK_FOCUS_START);
                 self.list.ensure_visible(
                     panel,
                     Self::displayed_network_count(state),
-                    Self::LIST_TOP,
+                    Self::list_top(state),
                     network,
                 );
                 let Some(rect) = self.list.row_for(network) else {
@@ -457,8 +479,11 @@ impl QuickSettingsWifiPane {
         state: &mut QuickSettingsState,
         actions: &dyn QsActions,
     ) -> WifiPaneOutcome {
-        self.list
-            .layout_from(panel, Self::displayed_network_count(state), Self::LIST_TOP);
+        self.list.layout_from(
+            panel,
+            Self::displayed_network_count(state),
+            Self::list_top(state),
+        );
         // The same geometry paint uses, so a click before the first frame
         // still lands on the row that will be drawn.
         if self.list.back_contains(point) {
@@ -577,7 +602,7 @@ impl QuickSettingsWifiPane {
         let busy = state.wifi_joining.is_some() || state.radio_change_pending;
         let displayed_networks = Self::displayed_network_count(state);
         self.list
-            .layout_from(panel, displayed_networks, Self::LIST_TOP);
+            .layout_from(panel, displayed_networks, Self::list_top(state));
         let colors = &theme.tokens.colors;
         self.list
             .draw_header(scene, transform, text, theme, panel, cursor, &t("qs-wifi"));
@@ -796,6 +821,55 @@ mod tests {
             signal: 3,
             secure,
             connected: false,
+        }
+    }
+
+    #[test]
+    fn cached_rows_during_scan_keep_exact_pointer_keyboard_and_semantic_geometry() {
+        let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
+        let actions = RecordingActions::default();
+        for scan_failed in [false, true] {
+            let mut pane = QuickSettingsWifiPane::default();
+            let mut state = QuickSettingsState {
+                wifi: true,
+                wifi_scanning: !scan_failed,
+                wifi_scan_error: scan_failed.then(|| "fixture scan timed out".into()),
+                wifi_networks: vec![network("Observed", false)],
+                ..Default::default()
+            };
+            let targets = pane.semantic_rects(panel, &state);
+            let rect = targets
+                .iter()
+                .find(|(name, _)| name == "quick_settings_wifi_network[0]")
+                .map(|(_, rect)| *rect)
+                .expect("cached AP remains publicly actionable");
+            assert!(
+                rect.y0 >= panel.y0 + QuickSettingsWifiPane::LIST_TOP + ROW_HEIGHT,
+                "cached AP cannot overlap its visible scan status band"
+            );
+            assert_eq!(
+                pane.handle_click(rect.center(), panel, &mut state, &actions),
+                WifiPaneOutcome::JoinOpen("Observed".into())
+            );
+            let snapshot = pane.accessibility_snapshot(&state);
+            let child = snapshot
+                .children
+                .iter()
+                .position(|node| node.name.as_deref() == Some("Observed"))
+                .expect("the same AP is reachable by accessibility");
+            assert_eq!(
+                pane.accessibility_rect_for_path(panel, &[0, child], &state),
+                Some(rect)
+            );
+            assert!(pane.focus_accessibility_path(&[0, child], panel, &state));
+            assert_eq!(
+                pane.activate_focused(panel, &mut state, &actions),
+                WifiPaneOutcome::JoinOpen("Observed".into())
+            );
+            assert!(
+                actions.joins.borrow().is_empty(),
+                "activation remains off-thread host intent"
+            );
         }
     }
 

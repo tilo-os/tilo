@@ -9215,6 +9215,13 @@ impl ShellOverlayHost {
                         brightness, volume, wifi, bluetooth, power, wired, battery, None, None,
                     )
                 }
+                QsReading::WifiCachedNetworks(result) => {
+                    // This is an observation, never completion of the fresh scan.
+                    match result {
+                        Ok(nets) => (None, None, None, None, None, None, None, Some(nets), None),
+                        Err(_) => return,
+                    }
+                }
                 QsReading::WifiNetworks(result) => {
                     st.quick_settings.wifi_scanning = false;
                     match result {

@@ -397,6 +397,36 @@ pub fn list_wifi_networks() -> Result<Vec<WifiNetworkInfo>, String> {
     list_wifi_networks_via("nmcli", &[])
 }
 
+/// Read `NetworkManager`'s already observed access points without requesting a scan.
+/// This does not assert that the radio has just refreshed its observations.
+///
+/// # Errors
+/// Returns the bounded native query failure.
+pub fn list_cached_wifi_networks() -> Result<Vec<WifiNetworkInfo>, String> {
+    list_cached_wifi_networks_via("nmcli", &[])
+}
+
+fn list_cached_wifi_networks_via(
+    cli: &str,
+    prefix: &[&str],
+) -> Result<Vec<WifiNetworkInfo>, String> {
+    let mut args = prefix.to_vec();
+    args.extend_from_slice(&[
+        "--wait",
+        "2",
+        "-t",
+        "-f",
+        "IN-USE,SSID,SIGNAL,SECURITY",
+        "device",
+        "wifi",
+        "list",
+        "--rescan",
+        "no",
+    ]);
+    let out = run_capture(cli, &args)?;
+    Ok(parse_nmcli_wifi_list(&out))
+}
+
 fn list_wifi_networks_via(cli: &str, prefix: &[&str]) -> Result<Vec<WifiNetworkInfo>, String> {
     let mut args = prefix.to_vec();
     args.extend_from_slice(&[
@@ -2298,6 +2328,20 @@ mod wifi_deadline_tests {
             list_wifi_networks_via(argv[0].to_str().unwrap(), &[argv[1].to_str().unwrap()])
                 .unwrap();
         assert_eq!(networks.len(), 1);
+    }
+
+    #[test]
+    fn cached_network_read_never_requests_a_radio_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = tilo_test_env::script(dir.path().join("cached-args"),
+            "test \"$*\" = '--wait 2 -t -f IN-USE,SSID,SIGNAL,SECURITY device wifi list --rescan no' || exit 44\nprintf '*:Fixture network:70:WPA2\\n'\n").unwrap();
+        let argv = script.exec_argv();
+        let networks =
+            list_cached_wifi_networks_via(argv[0].to_str().unwrap(), &[argv[1].to_str().unwrap()])
+                .unwrap();
+        assert_eq!(networks.len(), 1);
+        assert!(networks[0].connected);
+        assert_eq!(networks[0].ssid, "Fixture network");
     }
 
     #[test]

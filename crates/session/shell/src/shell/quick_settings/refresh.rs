@@ -44,6 +44,7 @@ pub enum QsReading {
     Fast(Box<FastReading>),
     Firmware(Option<Vec<qs::FirmwareUpdate>>),
     WifiNetworks(Result<Vec<qs::WifiNetworkInfo>, String>),
+    WifiCachedNetworks(Result<Vec<qs::WifiNetworkInfo>, String>),
     BtDevices(Option<Vec<qs::BtDeviceInfo>>),
     WifiJoin(WifiJoinResult),
 }
@@ -225,8 +226,26 @@ impl QsRefresh {
     }
 
     pub fn kick_wifi_networks(&mut self) {
-        self.spawn(Tier::Wifi, || {
-            QsReading::WifiNetworks(qs::list_wifi_networks())
+        self.kick_wifi_observations_with(qs::list_cached_wifi_networks, qs::list_wifi_networks);
+    }
+
+    /// Publish the cached observation before waiting for bounded fresh discovery.
+    pub(crate) fn kick_wifi_observations_with<C, S>(&mut self, cached: C, scan: S)
+    where
+        C: FnOnce() -> Result<Vec<qs::WifiNetworkInfo>, String> + Send + 'static,
+        S: FnOnce() -> Result<Vec<qs::WifiNetworkInfo>, String> + Send + 'static,
+    {
+        let tx = self.tx.clone();
+        let wake = self.wake.clone();
+        let host_wake = self.host_wake.clone();
+        self.spawn(Tier::Wifi, move || {
+            if tx.send(QsReading::WifiCachedNetworks(cached())).is_ok() {
+                wake.wake();
+                if let Some(host_wake) = host_wake {
+                    host_wake();
+                }
+            }
+            QsReading::WifiNetworks(scan())
         });
     }
 
@@ -260,9 +279,14 @@ impl QsRefresh {
     pub fn drain(&mut self) -> Vec<QsReading> {
         let mut out = Vec::new();
         while let Ok(reading) = self.rx.try_recv() {
+            if matches!(reading, QsReading::WifiCachedNetworks(_)) {
+                out.push(reading);
+                continue;
+            }
             let tier = match &reading {
                 QsReading::Fast(_) => Tier::Fast,
                 QsReading::WifiNetworks(_) => Tier::Wifi,
+                QsReading::WifiCachedNetworks(_) => continue,
                 QsReading::BtDevices(_) => Tier::Bt,
                 QsReading::Firmware(_) => Tier::Firmware,
                 QsReading::WifiJoin(_) => Tier::WifiJoin,

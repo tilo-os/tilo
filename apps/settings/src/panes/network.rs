@@ -419,6 +419,7 @@ type Part<T> = Option<Result<T, String>>;
 /// shown as unreadable instead of as a device state.
 pub(crate) struct NetworkSnapshot {
     networks: Result<Vec<WifiNetworkInfo>, String>,
+    fresh_scan: bool,
     wifi_enabled: Part<bool>,
     /// Read only for the first snapshot.
     sims: Part<Vec<os_actions::SimInfo>>,
@@ -434,11 +435,16 @@ pub(crate) struct NetworkSnapshot {
 impl NetworkSnapshot {
     /// Query `NetworkManager`. Every call here may block on `nmcli` or the
     /// system bus, so this never runs on the UI thread.
-    fn read(initial: bool) -> Self {
+    fn read(initial: bool, fresh_scan: bool) -> Self {
         let profiles = os_actions::list_saved_network_profiles();
         let radios = os_actions::get_radio_state();
         Self {
-            networks: os_actions::list_wifi_networks(),
+            networks: if fresh_scan {
+                os_actions::list_wifi_networks()
+            } else {
+                os_actions::list_cached_wifi_networks()
+            },
+            fresh_scan,
             wifi_enabled: Some(wifi_enabled_from(&radios)),
             sims: initial.then(os_actions::list_mobile_sims),
             wired: Some(os_actions::get_wired()),
@@ -465,6 +471,7 @@ impl NetworkSnapshot {
     fn of_networks(networks: Vec<WifiNetworkInfo>) -> Self {
         Self {
             networks: Ok(networks),
+            fresh_scan: true,
             wifi_enabled: Some(Ok(true)),
             sims: Some(Ok(Vec::new())),
             wired: Some(Ok(WiredInfo::default())),
@@ -592,6 +599,10 @@ impl Drop for NetworkChange {
 pub(crate) trait NetworkService: Send + Sync {
     /// Read everything Network shows; `initial` also reads the SIMs.
     fn snapshot(&self, initial: bool) -> NetworkSnapshot;
+    /// Explicit bounded radio discovery; ordinary snapshots only read cached APs.
+    fn scan(&self) -> NetworkSnapshot {
+        self.snapshot(false)
+    }
     /// Carry out `change`.
     ///
     /// # Errors
@@ -627,7 +638,11 @@ struct DeviceNetwork {
 
 impl NetworkService for DeviceNetwork {
     fn snapshot(&self, initial: bool) -> NetworkSnapshot {
-        NetworkSnapshot::read(initial)
+        NetworkSnapshot::read(initial, false)
+    }
+
+    fn scan(&self) -> NetworkSnapshot {
+        NetworkSnapshot::read(false, true)
     }
 
     fn change(&self, change: &NetworkChange) -> Result<(), String> {
@@ -891,7 +906,7 @@ impl NetworkArea {
         let model = self.model().borrow();
         let offer = |effect: NetworkEffect| SettingsEffect::from(effect).bound();
         let mut rows: Vec<LiveRow> = model
-            .networks
+            .networks()
             .iter()
             .map(|network| {
                 let row = LiveRow::new(
@@ -956,6 +971,8 @@ pub struct NetworkModel {
     loaded: bool,
     snapshot: Option<std::sync::mpsc::Receiver<NetworkSnapshot>>,
     networks: Vec<WifiNetworkInfo>,
+    last_observed_networks: Vec<WifiNetworkInfo>,
+    networks_fresh: bool,
     wifi_enabled: bool,
     /// The last radio state read lists no Wi-Fi adapter.
     wifi_adapter_absent: bool,
@@ -1067,6 +1084,15 @@ impl NetworkModel {
             }), "label":known_connectivity.then(|| connectivity_shown(self.connectivity)) },
             "scan": { "snapshot_pending":self.snapshot.is_some(), "jobs_pending":self.refreshes_pending },
             "changes_pending":self.in_flight, "networks":networks,
+            "network_observation":if !self.loaded { "unobserved" }
+                else if self.read_errors.networks.is_some() { "last-observed" }
+                else if self.networks_fresh { "scan-complete" } else { "cached" },
+            "last_observed_networks":self.last_observed_networks.iter().take(MAX_ROWS).map(|network|
+                serde_json::json!({"resource":network_row_id(network), "ssid":network.ssid,
+                    "signal_bucket":network.signal,"security":network.security,"connected":network.connected,
+                    "visible":self.loaded && self.wifi_enabled})).collect::<Vec<_>>(),
+            "last_observed_count":self.last_observed_networks.len(),
+            "last_observed_truncated":self.last_observed_networks.len() > MAX_ROWS,
             "network_count":self.networks.len(), "networks_truncated":self.networks.len() > MAX_ROWS,
             "errors": { "networks":self.read_errors.networks, "wifi_enabled":self.read_errors.wifi_enabled,
                 "radios":self.read_errors.radios, "wired":self.read_errors.wired, "connectivity":self.read_errors.connectivity },
@@ -1117,6 +1143,8 @@ impl NetworkModel {
             loaded: false,
             snapshot: None,
             networks: Vec::new(),
+            last_observed_networks: Vec::new(),
+            networks_fresh: false,
             wifi_enabled: false,
             wifi_adapter_absent: false,
             wired: WiredInfo::default(),
@@ -1158,7 +1186,11 @@ impl NetworkModel {
 
     /// The networks in range, as last scanned.
     pub fn networks(&self) -> &[WifiNetworkInfo] {
-        &self.networks
+        if self.read_errors.networks.is_some() {
+            &self.last_observed_networks
+        } else {
+            &self.networks
+        }
     }
 
     /// Start reading a snapshot in the background; a newer read supersedes
@@ -1187,13 +1219,17 @@ impl NetworkModel {
         self.changed = true;
         let outcome = match snapshot.networks {
             Ok(networks) => {
+                self.last_observed_networks.clone_from(&networks);
                 self.networks = networks;
+                self.networks_fresh = snapshot.fresh_scan;
                 self.read_errors.networks = None;
                 Ok(t("net-notice-refreshed"))
             }
             Err(error) => {
                 warn!(target: "tilo::settings", op = "list_wifi_networks", %error, "network scan failed");
-                // The last list is no longer what the radio sees.
+                // Retain separately labelled last observations without crediting
+                // them as a successful current read or scan.
+                self.networks_fresh = false;
                 self.networks.clear();
                 self.read_errors.networks = Some(error.clone());
                 Err(t_args("net-notice-refresh-err", &[("error", error.into())]))
@@ -1372,7 +1408,7 @@ impl NetworkModel {
             }
             NetworkEffect::RefreshNetworks => {
                 self.refreshes_pending += 1;
-                Begun::work(move || Landed::Refreshed(service.snapshot(false)))
+                Begun::work(move || Landed::Refreshed(service.scan()))
             }
             NetworkEffect::SetWifi { on } => {
                 if let Some(error) = &self.read_errors.wifi_enabled {
@@ -2204,7 +2240,7 @@ impl NetworkModel {
             wifi_rows.push(caption(notice));
         }
         if self.wifi_enabled {
-            for net in &self.networks {
+            for net in self.networks() {
                 wifi_rows.push(self.network_row(net));
                 // The password prompt opens directly beneath its network.
                 if self.expanded.as_deref() == Some(net.ssid.as_str()) {
@@ -3301,6 +3337,7 @@ mod tests {
         profiles: Mutex<Vec<SavedNetworkProfile>>,
         snapshot_gate: Mutex<Option<SnapshotGate>>,
         snapshot_reads: std::sync::atomic::AtomicUsize,
+        scan_error: Mutex<Option<String>>,
     }
 
     impl NetworkService for FakeNetwork {
@@ -3321,6 +3358,7 @@ mod tests {
                 }
                 return NetworkSnapshot {
                     networks: Err(reason.clone()),
+                    fresh_scan: true,
                     wifi_enabled: Some(failed(&reason)),
                     sims: Some(failed(&reason)),
                     wired: Some(failed(&reason)),
@@ -3335,6 +3373,15 @@ mod tests {
             let mut snapshot = NetworkSnapshot::of_networks(self.networks.lock().unwrap().clone());
             snapshot.vpns = Some(Ok(self.vpns.lock().unwrap().clone()));
             snapshot.profiles = Some(Ok(self.profiles.lock().unwrap().clone()));
+            snapshot
+        }
+
+        fn scan(&self) -> NetworkSnapshot {
+            let mut snapshot = self.snapshot(false);
+            let error = self.scan_error.lock().unwrap().clone();
+            if let Some(error) = error {
+                snapshot.networks = Err(error);
+            }
             snapshot
         }
 
@@ -3510,6 +3557,97 @@ mod tests {
             1
         );
         assert!(fake.changes.lock().unwrap().is_empty());
+        assert!(app.harness().component_contract_violations().is_empty());
+    }
+
+    #[test]
+    fn cached_network_rows_remain_usable_during_scan_and_after_scan_failure() {
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.networks.lock().unwrap() = networks();
+        let mut observed = model(&fake);
+        observed.networks_fresh = false;
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        mount_network(&mut app, observed).unwrap();
+        let open = crate::effects::open_pane_address(crate::categories::Category::Network);
+        app.call_on(&open.resource, &open.action, serde_json::json!({}))
+            .unwrap();
+        app.settle();
+        let cached = app
+            .call("inspect-network-state", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(cached["network_observation"], "cached");
+        assert_eq!(cached["network_count"], 3);
+        let (started, starts) = std::sync::mpsc::channel();
+        let (release, releases) = std::sync::mpsc::channel();
+        *fake.snapshot_gate.lock().unwrap() = Some(SnapshotGate {
+            started,
+            release: releases,
+        });
+        let mut release = ReleaseSnapshot(Some(release));
+        *fake.scan_error.lock().unwrap() = Some("fixture scan timed out".into());
+        assert!(
+            app.operate(ui::tilo_resource::Invoke::effect(&SettingsEffect::from(
+                NetworkEffect::RefreshNetworks
+            )))
+            .unwrap()
+            .is_none()
+        );
+        starts
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        app.settle();
+        let pending = app
+            .call("inspect-network-state", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(pending["scan"]["jobs_pending"], 1);
+        assert_eq!(pending["last_observed_count"], 3);
+        assert_eq!(pending["last_observed_networks"][0]["visible"], true);
+        release.0.take().unwrap().send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let failed = loop {
+            app.settle();
+            let state = app
+                .call("inspect-network-state", serde_json::json!({}))
+                .unwrap()
+                .unwrap();
+            if state["scan"]["jobs_pending"] == 0 {
+                break state;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        assert_eq!(
+            failed["network_count"], 0,
+            "no failed scan is credited as a current observation"
+        );
+        assert_eq!(failed["network_observation"], "last-observed");
+        assert_eq!(failed["last_observed_count"], 3);
+        assert_eq!(failed["last_observed_networks"][0]["visible"], true);
+        assert_eq!(failed["errors"]["networks"], "fixture scan timed out");
+        assert_eq!(failed["wifi"]["enabled"], true);
+        let rows = app
+            .surface::<SettingsApp, _>(|settings| {
+                settings
+                    .network()
+                    .rows()
+                    .iter()
+                    .map(|row| row.id().to_owned())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        for network in failed["last_observed_networks"].as_array().unwrap() {
+            assert!(
+                rows.iter()
+                    .any(|row| Some(row.as_str()) == network["resource"].as_str())
+            );
+        }
+        let connect = format!("settings.network.connect.{}", networks()[1].ssid);
+        assert!(
+            find(app.harness().root_widget(), &connect).is_some(),
+            "the actual mounted last-observed AP retains its ordinary control"
+        );
         assert!(app.harness().component_contract_violations().is_empty());
     }
 
