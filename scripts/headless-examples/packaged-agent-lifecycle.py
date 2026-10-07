@@ -910,6 +910,16 @@ def fresh_floating_presentation(current, previous):
     return current if current["frame_seq"] > previous["frame_seq"] else None
 
 
+def current_same_floating_presentation(response, previous):
+    """Refresh seat state without accepting another logical/native window."""
+    current = presented_floating_frame(response, previous["app_id"])
+    if current is None or current.get("floating_id") != previous.get("floating_id") \
+            or native_surface_id(current) != native_surface_id(previous) \
+            or current["frame_seq"] < previous["frame_seq"]:
+        return None
+    return current
+
+
 def float_return_evidence_proven(evidence):
     """Require the structured success field, not arbitrary container truthiness."""
     return isinstance(evidence, dict) and evidence.get("proven") is True
@@ -1333,6 +1343,15 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity):
             "Tide", detached=True, diagnostic_path=output / "ime-detached-accessibility.json"),
         process,
     )
+    # AT discovery is asynchronous. Keep the first frame above as evidence,
+    # but verify the seat now, on that same native window, not its cached
+    # pre-adoption observation. This still refuses an unfocused destination.
+    current_frame = current_same_floating_presentation(
+        call(socket, {"op": "foreign_frames"}), frame
+    )
+    if current_frame is None:
+        raise RuntimeError("Float's exact native destination is no longer presented")
+    frame = current_frame
     if detached_access["process"] != chat_process or frame["keyboard_focused"] is not True:
         raise RuntimeError("Float replaced Chat or failed to transfer its keyboard seat")
     if not private_editor_value_matches(detached_access, committed_before) \

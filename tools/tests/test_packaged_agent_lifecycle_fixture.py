@@ -1151,6 +1151,30 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertIn('"native-ime"', main)
         self.assertIn('ime_only=args.stage == "native-ime"', main)
 
+    def test_floating_focus_refresh_keeps_exact_native_identity_and_fresh_state(self):
+        first = {
+            "app_id": "so.tilo.chat", "floating_id": "inert-fixture-surface",
+            "surface_id": 7, "frame_seq": 1, "presented": True,
+            "pixels_ready": True, "last_error": None, "keyboard_focused": False,
+        }
+        current = {**first, "frame_seq": 2, "keyboard_focused": True}
+        response = lambda row: {"answer": {"frames": [row]}}
+        self.assertEqual(
+            PROOF.current_same_floating_presentation(response(current), first), current
+        )
+        self.assertFalse(first["keyboard_focused"], "the first observation stays immutable")
+        self.assertEqual(
+            PROOF.current_same_floating_presentation(response(first), first), first,
+            "refreshing does not fabricate focus for an unfocused destination",
+        )
+        for changed in [
+            {"surface_id": 8}, {"floating_id": "another-surface"},
+            {"frame_seq": 0}, {"presented": False},
+        ]:
+            self.assertIsNone(PROOF.current_same_floating_presentation(
+                response({**current, **changed}), first
+            ))
+
     def test_presented_content_geometry_accepts_only_authoritative_finite_fields(self):
         expected = {
             "rect": {"x": 700.0, "y": 100.0, "w": 600.0, "h": 500.0},
