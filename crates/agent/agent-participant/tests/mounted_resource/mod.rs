@@ -444,7 +444,9 @@ pub async fn run() {
                     .unwrap();
                 println!("MOUNTED_RESOURCE_STAGE={event}");
             } else if event["stage"] == "revoke" {
-                rooms
+                let started = std::time::Instant::now();
+                println!("MOUNTED_RESOURCE_REVOCATION={{\"state\":\"requested\"}}");
+                let completion = rooms
                     .remove_member(
                         &room.room,
                         &host.cert,
@@ -455,7 +457,16 @@ pub async fn run() {
                     )
                     .await
                     .unwrap();
-                input.write_all(b"{\"revoked\":true}\n").await.unwrap();
+                let acknowledgement = serde_json::json!({
+                    "revoked": true,
+                    "generation": completion.generation,
+                    "elapsedMs": started.elapsed().as_millis(),
+                });
+                println!("MOUNTED_RESOURCE_REVOCATION={acknowledgement}");
+                input
+                    .write_all(format!("{acknowledgement}\n").as_bytes())
+                    .await
+                    .unwrap();
             } else {
                 println!("MOUNTED_RESOURCE_STAGE={event}");
             }
