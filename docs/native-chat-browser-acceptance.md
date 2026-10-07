@@ -73,6 +73,17 @@ current-caller read guard. Missing groups are refused without initialization;
 wrong vaults/devices and corrupt state are refused. No membership is added by
 this recovery, and native plaintext replay still requires the exact governor.
 
+The encrypted fixture also uses the writer's actual person id in the shared
+Chat record and checks the compiled public message read retains it separately
+from the viewing person. Its `identity-boundary.json` saves only public fixture
+person labels and semantics. Previously an unbound creator's fallback name was
+persisted as `You`, and another reader saw that word as the message author.
+Unknown creators now receive a neutral, short identity label. Legacy saved
+`You` names remain untouched and are displayed with a short identity tag in
+message headers, mentions and public person resources; the current reader still
+sees `You` for their own messages. This does not establish Contacts lookup or
+verify a person's chosen display name from the content of a message.
+
 This qualifies local governed certified-peer resource navigation and actual
 browser disconnect/retry. It does not qualify a full browser-profile restart
 with queued edits, physical devices/microphones, cross-app Follow,
