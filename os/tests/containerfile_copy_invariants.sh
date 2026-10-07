@@ -119,7 +119,9 @@ containerfile="$repo/os/Containerfile"
 # information location. Only that text is added to extension-files; Cisco
 # binaries remain separately downloaded by opted-in devices.
 # The offline, signed Flathub descriptor is the one additional payload row.
-expected_contract=574499b721f83b97f1d4ed8e665e0b09800f54982cffebb38f32aa2a601c13a1
+# The AppHost service unit moves from a direct context COPY into its component
+# manifest; the installed path, reviewed bytes and 0644 mode are unchanged.
+expected_contract=7a5a82dccbbe1b49c908390530df8027d9bae292fe2dc5cef2120cd892414f48
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
