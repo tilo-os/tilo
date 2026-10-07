@@ -1274,22 +1274,60 @@ fn dense_capture_does_not_inherit_another_producers_canvas_policy() {
 }
 
 #[cfg(target_os = "linux")]
-#[test]
-fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same_screen() {
-    const SIZE: (u32, u32) = (1280, 720);
-    let mut clock = tilo_test_env::ScopedEnv::new();
-    let _ambient = DenyAmbientStarts::new();
-    clock.set("TILO_CLOCK", "09:41");
-    let mut frame = wide_retained_fixture(SIZE);
-    frame.relayout();
-    let _ = frame.paint();
-    assert!(
-        frame.paint_with_damage().cache.is_none(),
-        "no layers unless a presenter composites them"
+fn acknowledge_notes_saves(frame: &mut PopulatedShellFixture) {
+    let (apps, room) = {
+        let chrome = frame.chrome();
+        let room = chrome
+            .tree()
+            .desktop
+            .active_workspace()
+            .expect("fixture workspace")
+            .room
+            .to_string();
+        let apps = chrome
+            .hosted_inputs()
+            .in_process()
+            .expect("fixture app owner")
+            .clone();
+        (apps, room)
+    };
+    assert_eq!(
+        apps.borrow_mut()
+            .flush_fixture_records(notes::definition().app_id, &room)
+            .expect("actual Notes startup writes acknowledged"),
+        3
     );
+    // Durability is sampled after sync; the next sync presents that sample.
+    assert_eq!(frame.wake_mounted_components(), 3);
+    let _ = frame.paint_with_damage();
+    assert_eq!(frame.wake_mounted_components(), 3);
+    let _ = frame.paint_with_damage();
+}
 
-    frame.set_retained_layer_width(Some(8192));
-    // Settle: the first frames lay the tab bars out at their final widths.
+#[cfg(target_os = "linux")]
+fn assert_notes_startup_saved(frame: &mut PopulatedShellFixture) {
+    let saved = std::cell::RefCell::new(Vec::new());
+    let _ = frame.mounted_mut::<()>(|widget| {
+        if let Some(notes) = tilo_app::framework::testing::surface_in_root::<
+            notes::NotesShell,
+            notes::NotesApp,
+        >(widget)
+        {
+            saved
+                .borrow_mut()
+                .push(notes.status_bar_for_test().state().save_status);
+        }
+        None
+    });
+    assert_eq!(
+        *saved.borrow(),
+        vec![notes::status_bar::SaveStatus::Saved; 3],
+        "all three real Notes surfaces present their acknowledged startup state"
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn acknowledged_notes_canvas(frame: &mut PopulatedShellFixture) -> FramePaint {
     let mut at_rest = frame.paint_with_damage();
     for _ in 0..8 {
         frame.relayout();
@@ -1306,6 +1344,32 @@ fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same
             break;
         }
     }
+    // Startup creates real records. A writer acknowledgment between the two
+    // encodings would change Saving to Saved and invalidate the pixel oracle.
+    acknowledge_notes_saves(frame);
+    at_rest = frame.paint_with_damage();
+    assert_notes_startup_saved(frame);
+    at_rest
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same_screen() {
+    const SIZE: (u32, u32) = (1280, 720);
+    let mut clock = tilo_test_env::ScopedEnv::new();
+    let _ambient = DenyAmbientStarts::new();
+    clock.set("TILO_CLOCK", "09:41");
+    let mut frame = wide_retained_fixture(SIZE);
+    frame.relayout();
+    let _ = frame.paint();
+    assert!(
+        frame.paint_with_damage().cache.is_none(),
+        "no layers unless a presenter composites them"
+    );
+
+    frame.set_retained_layer_width(Some(8192));
+    // Settle: the first frames lay the tab bars out at their final widths.
+    let at_rest = acknowledged_notes_canvas(&mut frame);
     let rest = at_rest.cache.as_ref().expect("the frame as layers");
     assert!(rest.strips.is_empty(), "a strip at rest is read in place");
     assert!(
@@ -1351,6 +1415,9 @@ fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same
     frame.set_retained_layer_width(None);
     // Encode both paths before rasterizing either: app status bubbles use
     // monotonic linger deadlines, and CPU rendering may cross a deadline.
+    // Exercise the same late acknowledgment boundary that reproduced the
+    // historical 1,034-pixel failure; startup is already durable on both paths.
+    acknowledge_notes_saves(&mut frame);
     let dense_scene = frame.paint();
     assert_layer_cpu_pixels_match(&panned.scene, &dense_scene, SIZE);
 

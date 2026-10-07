@@ -1098,6 +1098,26 @@ impl FrameBuilder {
         self.set_native_focus_with_reveal(focus, target, true);
     }
 
+    /// Request a real frame from each embedded component's existing wake scope.
+    #[cfg(test)]
+    pub(crate) fn wake_mounted_components(&mut self) -> usize {
+        let mut count = 0_usize;
+        for pointer in self.node_map.values_mut() {
+            // SAFETY: node_map pointers are owned by the live widget tree and
+            // remain valid for the exclusive borrow of this frame.
+            let widget = unsafe { &mut **pointer };
+            if let Some(app) = widget
+                .as_any_mut()
+                .and_then(|widget| widget.downcast_mut::<ui::app::EmbeddedApp>())
+            {
+                let _entry = app.app().enter_wake_scope();
+                ui::wake::WakeHandle::new().wake();
+                count = count.saturating_add(1);
+            }
+        }
+        count
+    }
+
     /// The first widget in the live layout `find` recognises: an app a tab
     /// mounted, for a test that drives it.
     #[cfg(test)]

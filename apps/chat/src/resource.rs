@@ -343,10 +343,9 @@ impl ResourceApp for ChatShell {
         crate::i18n::ensure();
         let me = cx.me().unwrap_or_default().to_owned();
         let live = cx.mode().is_live();
-        // Only a live window reaches the shell's voice service. Attachments
-        // are in the store the host lends the window, which carries them on
-        // the conversation's route.
-        let native = live && crate::app::native_services();
+        // Native path access controls attachment import. A live browser
+        // independently discovers its host's voice service through media replies.
+        let native = live && crate::app::native_file_access();
         let content = cx.content().unwrap_or_else(ContentStore::memory);
         // A capture shows the app as a device with its services draws it;
         // nothing it stages reaches them.

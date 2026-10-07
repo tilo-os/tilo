@@ -298,6 +298,8 @@ impl PersistenceRuntime {
 pub(super) struct ContinuationRuntime {
     pub(super) owner_view: crate::collaboration::owner_view::OwnerViewRuntime,
     pub(super) last_published: Option<crate::collaboration::ContinuationMetadata>,
+    /// Distinguish a queued clear from an unknown prior projection.
+    pub(super) publication_initialized: bool,
     pub(super) pending_restore: Option<crate::collaboration::ContinuationMetadata>,
     /// Generic view restoration waits until layout has built the focus order.
     pub(super) pending_view: Option<crate::view::View>,
@@ -314,6 +316,7 @@ impl ContinuationRuntime {
         Self {
             owner_view: Default::default(),
             last_published: None,
+            publication_initialized: false,
             pending_restore,
             pending_view: None,
             last_private_route: None,
