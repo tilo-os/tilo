@@ -289,6 +289,29 @@ For an actual installer VM cycle with an already prepared medium, continue using
 `tilo-vm` ([Dev VMs](#dev-vms-tilo-vm)); for the disposable Fedora desktop
 development session use `dist/dev/fedora44-vm-iterate.sh`.
 
+Source builds prepare the pinned font catalog during compilation, outside the
+source tree. Python 3.11+ is required. The first build downloads the exact reviewed
+fonts; subsequent builds verify the cached bytes. Prewarm with
+`python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures`.
+Set `TILO_FONT_ASSETS_OFFLINE=1` (or `CARGO_NET_OFFLINE=true`) to require a warm
+cache, or supply a complete matching catalog with `TILO_FONT_CATALOG_ROOT`.
+See [font artifact preparation](crates/sdk/ui-core/assets/fonts/ARTIFACTS.md).
+
+A remote Cargo client compiles against the builder's prepared catalog. If its
+binary will run locally, fetch that generated catalog as part of the build;
+fetching an executable alone does not bring font data back:
+
+```sh
+rcargo --fetch font-artifacts/catalogs build --locked -p clocks
+rcargo --fetch font-artifacts/catalogs run --locked -p clocks
+```
+
+The fetched directory preserves the compiled catalog path, license notices and
+provenance. Verify it locally without a network using
+`python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --offline`.
+Remote tests and `rcargo --on-builder run` use the builder's catalog directly.
+Applications do not download fonts at runtime.
+
 For measured Rust edit feedback on the remote builder, run one scoped command:
 
 ```sh
