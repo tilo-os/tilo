@@ -3045,7 +3045,28 @@ fn live_play_and_resolve_stream(app: &mut MusicApp, doc: &mut AutoCommit, first:
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    let url = loaded_url.expect("app resolved + loaded a rangeable audio URL");
+    let uri_metadata = app
+        .audio
+        .current_uri()
+        .and_then(|uri| url::Url::parse(uri).ok())
+        .map(|uri| {
+            (
+                uri.scheme().to_owned(),
+                uri.host_str().map(str::to_owned),
+                uri.query_pairs()
+                    .map(|(key, _)| key.into_owned())
+                    .collect::<Vec<_>>(),
+            )
+        });
+    assert!(
+        loaded_url.is_some(),
+        "app resolved + loaded a rangeable audio URL; current={:?}, source={:?}, uri_metadata={uri_metadata:?}, request={:?}, error={:?}",
+        app.pb.current,
+        app.lib.track(first).map(|t| &t.yt_id),
+        app.active_resolve_request,
+        app.playback_error
+    );
+    let url = loaded_url.unwrap();
     assert!(
         is_streamable(&url),
         "resolved a rangeable, itag-bearing audio URL"
@@ -4477,6 +4498,47 @@ fn page_widget(app: &MusicApp, id: &str) -> Rect {
         .iter()
         .find_map(|part| part.find(id))
         .unwrap_or_else(|| panic!("the page shows {id}"))
+}
+
+#[test]
+fn recommendations_shared_input_and_dismiss_controls_record_canonical_actions() {
+    let (mut app, mut doc) = app_with_doc();
+    app.disconnect();
+    app.view = View::Recommendations;
+    draw_at(&mut app, &mut doc, 1280.0, 2400.0);
+    let toggle = page_widget(&app, "music-recommendations-input-likes");
+    hosted_click(&mut app, &mut doc, toggle.center());
+    assert!(!doc::load_library(&doc).recommendations.likes);
+    assert_eq!(
+        last_action_label(&mut doc).as_deref(),
+        Some(ui::i18n!("music-recommendations-change-inputs").as_str())
+    );
+    app.dispatch(
+        Action::Recommendation(crate::actions::MusicAction::SetRecommendationInput {
+            input: crate::recommendations::Input::Likes,
+            enabled: true,
+        }),
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    draw_at(&mut app, &mut doc, 1280.0, 2400.0);
+    let pick = crate::recommendations::suggestions(&app.lib, 1)
+        .pop()
+        .unwrap();
+    let dismiss = page_widget(
+        &app,
+        &format!("music-recommendations-dismiss-{}", pick.track),
+    );
+    hosted_click(&mut app, &mut doc, dismiss.center());
+    assert!(
+        doc::load_library(&doc)
+            .recommendations
+            .dismissed
+            .contains(&pick.track)
+    );
+    assert_eq!(
+        last_action_label(&mut doc).as_deref(),
+        Some(ui::i18n!("music-recommendations-dismiss").as_str())
+    );
 }
 
 fn has_nav(app: &MusicApp, view: View) -> bool {

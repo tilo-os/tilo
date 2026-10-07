@@ -815,36 +815,6 @@
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
   },
   {
-    "path": "crates/sdk/ui-core/tests/fixtures/typography/dark-display-1-text-1.png",
-    "oid": "b91c8181a0db0d98f6596e255e96e83622223154",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/sdk/ui-core/tests/fixtures/typography/dark-display-1_25-text-1.png",
-    "oid": "a86028bb74a62e2718dd2001fe99e5e7e09b961b",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/sdk/ui-core/tests/fixtures/typography/dark-display-1_5-text-1_25.png",
-    "oid": "8b8911a0280fd90c0081b325943a95ad0f6ff6bd",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/sdk/ui-core/tests/fixtures/typography/light-display-1-text-1.png",
-    "oid": "020791ad6d47b18bd291ea6c9a2aada3c1704c8f",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/sdk/ui-core/tests/fixtures/typography/light-display-1_25-text-1.png",
-    "oid": "bf6ef125cbee136825fbf82d7732aa1f0c5ea20e",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "crates/sdk/ui-core/tests/fixtures/typography/light-display-1_5-text-1_25.png",
-    "oid": "4fae8a3b94c5e81b8cca275ca7478167e278cf0c",
-    "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
     "path": "crates/session/desktop-model/tests/fixtures/room_contents.automerge",
     "oid": "bdef6e313dcd850a4298938a14f192a9152e3c2e",
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
