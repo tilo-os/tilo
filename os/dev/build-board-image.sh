@@ -40,6 +40,7 @@ common=(--builder "$BUILDER_NAME" --provenance=false -f "$TILO_OS_DIR/Containerf
   --build-arg "RPMS_REF=$RPMS_REF"
   --build-arg "TILO_HARDWARE_PROFILE=$board"
   --build-arg "TILO_TARGET_IMGREF=$image"
+  --build-arg "TILO_SIGNED_DEVELOPMENT_BOARD=${TILO_SIGNED_DEVELOPMENT_BOARD:-0}"
   --label "org.opencontainers.image.version=${image##*:}")
 push="push=true,compression=zstd,compression-level=1"
 placeholder="$(printf '0%.0s' $(seq 128))"
