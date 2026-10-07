@@ -8,7 +8,8 @@ use ui::tokens::TextRole;
 use ui::widget::{Column, Element, EmptyState, NavShell, Property, PropertyList, Scrollable, Text};
 
 use crate::model::{AttentionCache, MAX_REPORT_BYTES, MAX_REPORTS, StorageReport, report_id};
-use crate::resource::{ChipProject, import};
+use crate::resource::{ChipProject, ProjectState, import};
+use crate::verification::{CheckStatus, ReceiptStatus, VerificationRecord};
 
 static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
     "en-US",
@@ -35,6 +36,9 @@ pub enum ChipEffect {
     },
 }
 
+const REMOVE_VERIFICATION: ActionRef<ChipProject, String> =
+    ActionRef::new("remove-verification", &["report"]);
+
 const REMOVE: ActionRef<ChipProject, String> = ActionRef::new("remove-report", &["report"]);
 
 pub struct ChipDesignShell;
@@ -55,10 +59,11 @@ impl ResourceApp for ChipDesignShell {
         let inspected = selected.clone();
         cx.effects(move |effect: ChipEffect, cx| match effect {
             ChipEffect::Inspect { report } => {
-                if report
-                    .as_ref()
-                    .is_some_and(|id| !cx.live().with(|state| state.reports.contains_key(id)))
-                {
+                if report.as_ref().is_some_and(|id| {
+                    !cx.live().with(|state| {
+                        state.reports.contains_key(id) || state.verifications.contains_key(id)
+                    })
+                }) {
                     return Err(tr("chip-report-missing"));
                 }
                 inspected.set(report);
@@ -77,10 +82,20 @@ impl ResourceApp for ChipDesignShell {
                     }
                     let json =
                         String::from_utf8(chosen.bytes).map_err(|error| error.to_string())?;
-                    let id = report_id(&json);
+                    let is_storage = StorageReport::parse(&json).is_ok();
+                    let id = if is_storage {
+                        report_id(&json)
+                    } else {
+                        VerificationRecord::import(&json)?.0
+                    };
                     let invoke = import(json)?;
                     if cx.live().with(|state| {
-                        state.reports.len() >= MAX_REPORTS && !state.reports.contains_key(&id)
+                        if is_storage {
+                            state.reports.len() >= MAX_REPORTS && !state.reports.contains_key(&id)
+                        } else {
+                            state.verifications.len() >= MAX_REPORTS
+                                && !state.verifications.contains_key(&id)
+                        }
                     }) {
                         return Err(tr("chip-report-limit"));
                     }
@@ -91,36 +106,9 @@ impl ResourceApp for ChipDesignShell {
         });
         let content = cx.switch(&selected, |cx, selected| {
             let selected = selected.clone();
-            let reports = cx.value(|state| state.reports.clone());
-            cx.switch(&reports, move |cx, reports| {
-                if selected
-                    .as_ref()
-                    .is_some_and(|id| !reports.contains_key(id))
-                {
-                    return Box::new(EmptyState::new(tr("chip-report-missing")));
-                }
-                if reports.is_empty() {
-                    return Box::new(
-                        EmptyState::new(tr("chip-empty-title"))
-                            .with_message(tr("chip-empty-message")),
-                    );
-                }
-                let mut body = Column::new().with_intrinsic_height();
-                for (id, report) in reports {
-                    if selected.as_ref().is_some_and(|selection| selection != id) {
-                        continue;
-                    }
-                    body = body
-                        .push(Box::new(
-                            Text::new(&report.model).with_role(TextRole::Heading),
-                        ))
-                        .push(Box::new(Text::new(&tr("chip-imported-evidence"))))
-                        .push(Box::new(report_properties(id, report)))
-                        .push(Box::new(
-                            cx.button(&tr("chip-remove"), REMOVE.with(id.clone())),
-                        ));
-                }
-                Box::new(Scrollable::new_vertical().with_child(Box::new(body)))
+            let evidence = cx.value(Clone::clone);
+            cx.switch(&evidence, move |cx, state| {
+                evidence_body(cx, state, selected.as_deref())
             })
         });
         let import = Box::new(cx.effect_button(&tr("chip-import"), &ChipEffect::ImportFile));
@@ -135,17 +123,68 @@ impl ResourceApp for ChipDesignShell {
     }
 
     fn scenarios() -> &'static [&'static str] {
-        &["empty", "storage-report"]
+        &["empty", "storage-report", "checkpoint-verification"]
     }
 
     fn scenario(name: Option<&str>) -> Vec<Invoke<ChipProject>> {
         if name == Some("storage-report") {
             let action: ActionRef<ChipProject, String> = ActionRef::new("import-report", &["json"]);
             vec![action.with(include_str!("../fixtures/storage-report.json").to_owned())]
+        } else if name == Some("checkpoint-verification") {
+            let action: ActionRef<ChipProject, String> =
+                ActionRef::new("import-verification", &["json"]);
+            vec![action.with(include_str!("../fixtures/checkpoint-verification.json").to_owned())]
         } else {
             Vec::new()
         }
     }
+}
+
+fn evidence_body(
+    cx: &ViewCx<ChipProject>,
+    state: &ProjectState,
+    selected: Option<&str>,
+) -> Element {
+    let reports = &state.reports;
+    let verifications = &state.verifications;
+    if selected.is_some_and(|id| !reports.contains_key(id) && !verifications.contains_key(id)) {
+        return Box::new(EmptyState::new(tr("chip-report-missing")));
+    }
+    if reports.is_empty() && verifications.is_empty() {
+        return Box::new(
+            EmptyState::new(tr("chip-empty-title")).with_message(tr("chip-empty-message")),
+        );
+    }
+    let mut body = Column::new().with_intrinsic_height();
+    for (id, report) in reports {
+        if selected.is_some_and(|selection| selection != id.as_str()) {
+            continue;
+        }
+        body = body
+            .push(Box::new(
+                Text::new(&report.model).with_role(TextRole::Heading),
+            ))
+            .push(Box::new(Text::new(&tr("chip-imported-evidence"))))
+            .push(Box::new(report_properties(id, report)))
+            .push(Box::new(
+                cx.button(&tr("chip-remove"), REMOVE.with(id.clone())),
+            ));
+    }
+    for (id, record) in verifications {
+        if selected.is_some_and(|selection| selection != id.as_str()) {
+            continue;
+        }
+        body =
+            body.push(Box::new(
+                Text::new(&record.receipt.evidence).with_role(TextRole::Heading),
+            ))
+            .push(Box::new(Text::new(&tr("chip-verification-disclaimer"))))
+            .push(Box::new(verification_properties(id, record)))
+            .push(Box::new(
+                cx.button(&tr("chip-remove"), REMOVE_VERIFICATION.with(id.clone())),
+            ));
+    }
+    Box::new(Scrollable::new_vertical().with_child(Box::new(body)))
 }
 
 fn property(key: &str, value: &(impl ToString + ?Sized)) -> Property {
@@ -211,4 +250,99 @@ fn report_properties(id: &str, report: &StorageReport) -> PropertyList {
         (tr("chip-scope"), excluded),
     ])
     .with_id(format!("chip-report-{id}"))
+}
+
+fn check_status(status: &CheckStatus) -> String {
+    tr(match status {
+        CheckStatus::Passed => "chip-check-passed",
+        CheckStatus::Failed => "chip-check-failed",
+    })
+}
+
+fn verification_properties(id: &str, record: &VerificationRecord) -> PropertyList {
+    let receipt = &record.receipt;
+    let status = tr(match receipt.status {
+        ReceiptStatus::Passed => "chip-check-passed",
+        ReceiptStatus::Failed => "chip-check-failed",
+        ReceiptStatus::Cancelled => "chip-check-cancelled",
+    });
+    let mut scope = vec![
+        property("chip-reported-status", &status),
+        property("chip-evidence-class", &receipt.evidence),
+    ];
+    if let Some(failure) = &receipt.failure {
+        scope.push(property(
+            "chip-failure",
+            if failure.is_empty() { &status } else { failure },
+        ));
+    }
+    if let Some(stage) = &receipt.failure_stage {
+        scope.push(property("chip-failure-stage", stage));
+    }
+    if let Some(validation) = &receipt.input_validation {
+        scope.push(property("chip-input-validation", &check_status(validation)));
+    }
+    if let Some(lanes) = receipt.lanes {
+        scope.push(property("chip-lanes", &lanes));
+    }
+    if let Some(size) = receipt.group_size {
+        scope.push(property("chip-group-size", &size));
+    }
+    let mut identities = vec![
+        property("chip-import-digest", &record.imported_bytes_blake3),
+        property("chip-shared-receipt-digest", id),
+    ];
+    identities.push(property(
+        "chip-toolchain",
+        &receipt
+            .declared_toolchain_image
+            .clone()
+            .unwrap_or_else(|| tr("chip-unreported")),
+    ));
+    if let Some(digest) = &receipt.sample_manifest_sha256 {
+        identities.push(property("chip-sample-digest", digest));
+    }
+    if let Some(digest) = &receipt.verifier_sha256 {
+        identities.push(property("chip-verifier-digest", digest));
+    }
+    if let Some(digest) = &receipt.artifact_validator_sha256 {
+        identities.push(property("chip-artifact-validator-digest", digest));
+    }
+    if let Some(inputs) = &receipt.input_sha256 {
+        identities.extend(
+            inputs
+                .iter()
+                .map(|(name, digest)| Property::new(name, digest.clone())),
+        );
+    }
+    for (name, tool) in &receipt.tools {
+        identities.push(Property::new(name, tool.version.clone()));
+        identities.push(property("chip-tool-digest", &tool.executable_sha256));
+    }
+    if receipt.tools.is_empty() {
+        identities.push(property("chip-tools", &tr("chip-unreported")));
+    }
+    let checks = receipt
+        .checks
+        .iter()
+        .map(|(name, status)| Property::new(name, check_status(status)))
+        .collect();
+    let artifacts = receipt
+        .artifact_sha256
+        .iter()
+        .map(|(name, digest)| Property::new(name, digest.clone()))
+        .collect();
+    let exclusions = receipt
+        .excludes
+        .iter()
+        .map(|name| property("chip-verification-exclusion", name))
+        .collect();
+    PropertyList::sections(vec![
+        (tr("chip-receipt-scope"), scope),
+        (tr("chip-receipt-checks"), checks),
+        (tr("chip-provenance"), identities),
+        (tr("chip-receipt-artifacts"), artifacts),
+        (tr("chip-scope"), exclusions),
+    ])
+    .with_id(format!("chip-verification-{id}"))
 }

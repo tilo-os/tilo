@@ -1,0 +1,43 @@
+{
+  "artifact_sha256": {
+    "netlist-compile.log": "d7b4ebcc5b8361f2ad8cb8fc386049ab5377bbb466bf6c1f187522c1f44fde5d",
+    "netlist-simulation.log": "a3d60f116ab6e7d7b0ad993e2675ffa34967947bee9f65823bd142c6db47d434",
+    "rtl-compile.log": "20ec17f91a02fc3b2cb9df4cd1268d14118b54fc40be46a28445d6850f921fc6",
+    "rtl-simulation.log": "c38bc0bcd7d0a0bd898f3c3ec60605a06087c8bdff8fe00cd12425398be7af82",
+    "synthesis.log": "4ffda43d13e2b23cf3c855962a90a5253302b80abbe95f59c92faf5a6887dd37",
+    "synthesized.v": "360a0dc30c903e2c6b609e0889eecfddbc227aae256ff45348e6b6a834659cfd",
+    "verilator-version.log": "2685c296b138bf6c8442b37a13d0e352985705b84dbd6d9cf4388ebcd9671b42",
+    "yosys-version.log": "224fd4f8bc641226fcfb3eb1ed637d53779cc6383a7e2fae4fa37266a1bffe1e"
+  },
+  "checks": {
+    "generic_synthesis": "passed",
+    "netlist_vs_integer_oracle": "passed",
+    "rtl_vs_integer_oracle": "passed"
+  },
+  "declared_toolchain_image": "sha256:da8c943173a98e6a14e9734bcfd2583c64fbf8885228c06f294aab592e1ae403",
+  "evidence": "checkpoint_tile_integer_contract",
+  "excludes": [
+    "full_checkpoint_integrity",
+    "group_rescaling",
+    "activation_quantization",
+    "full_model_execution",
+    "coding_quality",
+    "physical_ppa"
+  ],
+  "input_validation": "passed",
+  "sample_manifest_sha256": "ced65fb7b867bae32f20da4b3ef649d566ccd12122b56668b2a880bc4df317a4",
+  "schema_version": 1,
+  "status": "passed",
+  "synthetic_activations": true,
+  "tools": {
+    "verilator": {
+      "executable_sha256": "9722b98811224914cf518c04b809be79bf071a88b99b43dde6960a6eb07eee12",
+      "version": "Verilator 5.046 2026-02-28 rev fedora-5.046"
+    },
+    "yosys": {
+      "executable_sha256": "1f75f6eab588a4af90ac016bb4ff58c5984ab8954519c2f49fe502b90725602a",
+      "version": "Yosys 0.63 (git sha1 3bc26ff4d055adfbba8b424508ab4a36405ffc0b, g++ 15.2.1 -O2 -flto=auto -ffat-lto-objects -fexceptions -fstack-protector-strong -m64 -march=x86-64 -mtune=generic -fasynchronous-unwind-tables -fstack-clash-protection -fcf-protection -mtls-dialect=gnu2 -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -fPIC -O3)"
+    }
+  },
+  "verifier_sha256": "84f4b0e58d38a919352aa1dd655edaaf6e4782c80f88998439f95ef6c42cde3a"
+}
