@@ -223,3 +223,159 @@ pub fn serve_decoder(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::speech::request;
+    use std::io::Cursor;
+
+    #[derive(Default)]
+    struct RecordingDecoder {
+        pushes: Vec<Vec<f32>>,
+        drafts: Vec<Vec<f32>>,
+        finals: Vec<Vec<f32>>,
+        reject_audio: bool,
+    }
+    impl SpeechDecoder for RecordingDecoder {
+        fn push(&mut self, samples: &[f32]) -> Result<(), SpeechError> {
+            self.pushes.push(samples.to_vec());
+            if self.reject_audio {
+                Err(SpeechError::Recognition)
+            } else {
+                Ok(())
+            }
+        }
+        fn draft(&mut self, samples: &[f32]) -> Result<String, SpeechError> {
+            self.drafts.push(samples.to_vec());
+            Ok("draft".to_owned())
+        }
+        fn finish(&mut self, samples: &[f32]) -> Result<String, SpeechError> {
+            self.finals.push(samples.to_vec());
+            Ok("final".to_owned())
+        }
+    }
+    fn append(input: &mut Vec<u8>, kind: RequestKind, sequence: u64, payload: &[u8]) {
+        FRAME
+            .write(input, &request(kind, sequence, payload))
+            .expect("fixture frame");
+    }
+    fn configured(input: &mut Cursor<Vec<u8>>) -> SpeechInput {
+        configure(input).expect("real configuration parser").0
+    }
+    fn replies(bytes: Vec<u8>) -> Vec<SpeechReply> {
+        let mut input = Cursor::new(bytes);
+        let mut messages = Vec::new();
+        while let Some(frame) = FRAME.read(&mut input).expect("bounded reply frame") {
+            messages.push(serde_json::from_slice(&frame).expect("typed reply"));
+        }
+        messages
+    }
+
+    #[test]
+    fn real_pipe_sends_only_new_pcm_and_retires_after_finish() {
+        let mut bytes = Vec::new();
+        append(
+            &mut bytes,
+            RequestKind::Configure,
+            1,
+            br#"{"language":"en"}"#,
+        );
+        append(&mut bytes, RequestKind::Audio, 2, &[0, 128, 0, 0]);
+        append(&mut bytes, RequestKind::Draft, 3, &[]);
+        append(&mut bytes, RequestKind::Audio, 4, &[255, 127]);
+        append(&mut bytes, RequestKind::Draft, 5, &[]);
+        append(&mut bytes, RequestKind::Finish, 6, &[]);
+        append(&mut bytes, RequestKind::Audio, 7, &[0, 0]);
+        let mut input = Cursor::new(bytes);
+        let session = configured(&mut input);
+        let mut decoder = RecordingDecoder::default();
+        let mut output = Vec::new();
+        serve_decoder(
+            ("fixture", "revision"),
+            session,
+            &mut decoder,
+            &mut input,
+            &mut output,
+        )
+        .expect("actual worker dispatch");
+        let last = 32767.0 / 32768.0;
+        assert_eq!(decoder.pushes, [vec![-1.0, 0.0], vec![last]]);
+        assert_eq!(decoder.drafts, [vec![-1.0, 0.0], vec![-1.0, 0.0, last]]);
+        assert_eq!(decoder.finals, [vec![-1.0, 0.0, last]]);
+        let messages = replies(output);
+        assert!(matches!(
+            messages.as_slice(),
+            [
+                SpeechReply::Ready { sequence: 1, .. },
+                SpeechReply::Draft { sequence: 3, .. },
+                SpeechReply::Draft { sequence: 5, .. },
+                SpeechReply::Done { sequence: 6, .. }
+            ]
+        ));
+        assert!(
+            FRAME
+                .read(&mut input)
+                .expect("unconsumed next session audio")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn decoder_failure_stops_pipe_before_draft_or_final() {
+        let mut bytes = Vec::new();
+        append(
+            &mut bytes,
+            RequestKind::Configure,
+            1,
+            br#"{"language":"en"}"#,
+        );
+        append(&mut bytes, RequestKind::Audio, 2, &[0, 0]);
+        append(&mut bytes, RequestKind::Draft, 3, &[]);
+        append(&mut bytes, RequestKind::Finish, 4, &[]);
+        let mut input = Cursor::new(bytes);
+        let session = configured(&mut input);
+        let mut decoder = RecordingDecoder {
+            reject_audio: true,
+            ..Default::default()
+        };
+        let mut output = Vec::new();
+        assert!(matches!(
+            serve_decoder(
+                ("fixture", "revision"),
+                session,
+                &mut decoder,
+                &mut input,
+                &mut output
+            ),
+            Err(SpeechError::Recognition)
+        ));
+        assert_eq!(decoder.pushes, [vec![0.0]]);
+        assert!(decoder.drafts.is_empty() && decoder.finals.is_empty());
+        assert!(matches!(
+            replies(output).as_slice(),
+            [SpeechReply::Ready { sequence: 1, .. }]
+        ));
+    }
+
+    #[test]
+    fn unconfigured_decoder_never_emits_readiness() {
+        let mut decoder = RecordingDecoder::default();
+        let mut input = Cursor::new(Vec::new());
+        let mut output = Vec::new();
+        assert!(matches!(
+            serve_decoder(
+                ("fixture", "revision"),
+                SpeechInput::default(),
+                &mut decoder,
+                &mut input,
+                &mut output
+            ),
+            Err(SpeechError::Protocol)
+        ));
+        assert!(output.is_empty());
+        assert!(
+            decoder.pushes.is_empty() && decoder.drafts.is_empty() && decoder.finals.is_empty()
+        );
+    }
+}
