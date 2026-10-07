@@ -6260,6 +6260,7 @@ impl CapnpBrokerState {
             | CollabEvent::AgentMessage(_)
             | CollabEvent::AgentMessageReply { .. }
             | CollabEvent::AgentMessageObservation { .. }
+            | CollabEvent::AgentMessageProgress { .. }
             | CollabEvent::AgentMessageDisconnected { .. }
             | CollabEvent::TaskRun(_)
             | CollabEvent::TaskActionInvocationResult { .. }
@@ -7304,6 +7305,66 @@ impl blob_stream::Server for BlobStreamServer {
 }
 
 impl channel_handle::Server for CapnpChannelHandle {
+    fn read_agent_message_progress(
+        self: Rc<Self>,
+        params: channel_handle::ReadAgentMessageProgressParams,
+        mut results: channel_handle::ReadAgentMessageProgressResults,
+    ) -> Promise<(), capnp::Error> {
+        let read = || -> Result<String, capnp::Error> {
+            let context = self.document_read_context().map_err(capnp::Error::failed)?;
+            let route = context.route();
+            if route.app_id != "so.tilo.chat"
+                || !route.record_id.is_empty()
+                || context.agent_id().is_some()
+            {
+                return Err(capnp::Error::failed(
+                    "public Agent Message progress requires canonical Chat Read".into(),
+                ));
+            }
+            let request = params.get()?;
+            let invocation = request
+                .get_invocation()?
+                .to_str()
+                .map_err(|_| capnp::Error::failed("invalid Message invocation".into()))?;
+            let row = request
+                .get_request_row()?
+                .to_str()
+                .map_err(|_| capnp::Error::failed("invalid Message row".into()))?;
+            runtime_collab::validate_agent_message_progress_query(invocation, row)
+                .map_err(capnp::Error::failed)?;
+            let id = uuid::Uuid::parse_str(invocation)
+                .map_err(|_| capnp::Error::failed("invalid Message invocation".into()))?;
+            let service = self
+                .state
+                .services
+                .workspace_messages
+                .as_ref()
+                .ok_or_else(|| {
+                    capnp::Error::failed("public Message progress unavailable".into())
+                })?;
+            let progress = service
+                .read_progress(&context, id, row)
+                .map_err(capnp::Error::failed)?;
+            context.revalidate().map_err(capnp::Error::failed)?;
+            let json = serde_json::to_string(&progress).map_err(|_| {
+                capnp::Error::failed("public Message progress encoding failed".into())
+            })?;
+            if json.len() > runtime_collab::MAX_AGENT_MESSAGE_PROGRESS_BYTES {
+                return Err(capnp::Error::failed(
+                    "public Message progress too large".into(),
+                ));
+            }
+            Ok(json)
+        };
+        match read() {
+            Ok(json) => {
+                results.get().set_progress_json(&json);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(error),
+        }
+    }
+
     fn observe_agent_message(
         self: Rc<Self>,
         params: channel_handle::ObserveAgentMessageParams,

@@ -58,11 +58,16 @@ impl runtime_collab::collab_capnp::action_directory::Server for MessageDirectory
 fn native_worker(
     fixture: &NativeFixture,
 ) -> Promise<(runtime_collab::ChannelHandle, tokio::task::JoinHandle<()>), capnp::Error> {
-    let route = tilo_action_broker::collab_broker::CrdtRoute::record(
-        "so.tilo.chat",
-        fixture.room.to_string(),
-        "",
-    );
+    native_worker_route(fixture, "so.tilo.chat", "")
+}
+
+fn native_worker_route(
+    fixture: &NativeFixture,
+    app: &str,
+    record: &str,
+) -> Promise<(runtime_collab::ChannelHandle, tokio::task::JoinHandle<()>), capnp::Error> {
+    let route =
+        tilo_action_broker::collab_broker::CrdtRoute::record(app, fixture.room.to_string(), record);
     let (socket, _authorizer) = fixture
         .broker
         .connect_local_worker_with_authorizer(route.clone(), &fixture.certificate)
@@ -89,10 +94,12 @@ fn native_worker(
             .join_channel(&route.channel_key(), &evidence)
             .await
             .unwrap();
-        channel
-            .publish_action_directory("so.tilo.chat", capnp_rpc::new_client(MessageDirectory))
-            .await
-            .unwrap();
+        if route.app_id == "so.tilo.chat" && route.record_id.is_empty() {
+            channel
+                .publish_action_directory("so.tilo.chat", capnp_rpc::new_client(MessageDirectory))
+                .await
+                .unwrap();
+        }
         Ok((channel, task))
     })
 }
@@ -354,6 +361,8 @@ async fn actual_native_message_source_commits_chat_and_addressed_input_atomicall
         assert_eq!(delivered.invocation_uuid, *original.0.as_bytes());
         let body = native_contribution(&fixture, &delivered);
         publish_contribution(&channel, &delivered, &body).await.unwrap();
+        assert!(channel.read_agent_message_progress(&original.0.to_string(), &format!("m_{}", original.0.simple())).await.is_err(),
+            "signed publication custody does not grant native document-reader launcher custody");
         fixture.owner.with_current(fixture.room, |view| {
             let bytes = view.peer().document("so.tilo.chat", "").unwrap();
             let mut doc = automerge::AutoCommit::load(&bytes).unwrap();
@@ -370,6 +379,46 @@ async fn actual_native_message_source_commits_chat_and_addressed_input_atomicall
         assert_eq!(pending["source"]["invocation"], original.0.to_string());
         assert_eq!(pending["source"]["payload"]["text"], "Explicit native input");
     }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn actual_public_progress_refuses_foreign_app_record_and_original_row() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let fixture = fixture();
+            let original = uuid::Uuid::from_u128(1701);
+            let invocation = original.to_string();
+            let row = format!("m_{}", original.simple());
+            for (app, record) in [("so.tilo.notes", ""), ("so.tilo.chat", "foreign-record")] {
+                let (channel, rpc) = native_worker_route(&fixture, app, record).await.unwrap();
+                assert!(
+                    channel
+                        .read_agent_message_progress(&invocation, &row)
+                        .await
+                        .is_err(),
+                    "an installed noncanonical channel must not introspect Chat owner progress"
+                );
+                drop(channel);
+                rpc.abort();
+            }
+            let (channel, rpc) = native_worker(&fixture).await.unwrap();
+            assert!(
+                channel
+                    .read_agent_message_progress(&invocation, &row)
+                    .await
+                    .is_err(),
+                "a canonical signed worker still lacks document-reader launcher custody"
+            );
+            assert!(
+                channel
+                    .read_agent_message_progress(&invocation, "foreign-row")
+                    .await
+                    .is_err()
+            );
+            drop(channel);
+            rpc.abort();
+        })
+        .await;
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -128,6 +128,9 @@ pub fn pump(relay: &mut MemoryRelay) {
     let peer_ids: Vec<String> = inboxes.keys().cloned().collect();
     for (from, req) in pending {
         match req {
+            CollabRequest::ReadAgentMessageProgress { .. } => {
+                panic!("MemoryRelay cannot authenticate native Message progress")
+            }
             CollabRequest::NativeExecutedContribution { .. }
             | CollabRequest::SubscribeAgentMessages { .. }
             | CollabRequest::ObserveAgentMessage { .. }

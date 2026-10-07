@@ -339,6 +339,23 @@ fn current_request_edit_or_deletion_fences_each_actual_process_boundary() {
                 })
                 .unwrap();
             change_chat(&fixture, invocation, change);
+            let public = fixture
+                .owner
+                .agent_message_public_progress(
+                    room,
+                    &fixture.certificate,
+                    invocation,
+                    &original.source.request_row,
+                    fixture.now,
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                public.phase,
+                tilo_actions::agent_message::AgentMessagePublicPhase::NeedsAttention(
+                    tilo_actions::agent_message::AgentMessagePublicReason::RequestChanged
+                )
+            );
             assert!(
                 running.process.facts().is_ok(),
                 "actual process remains live"
@@ -574,6 +591,7 @@ fn assert_observation(
     expected: &AgentMessageExecutionObservation,
     now: SystemTime,
 ) {
+    use tilo_actions::agent_message::AgentMessagePublicPhase;
     let owner = &running.service.owner;
     let before = owner
         .with_current(delivery.room, |view| {
@@ -598,6 +616,30 @@ fn assert_observation(
             Ok(())
         })
         .unwrap();
+    let expected_phase = match expected {
+        AgentMessageExecutionObservation::Bound | AgentMessageExecutionObservation::Accepted => {
+            AgentMessagePublicPhase::WaitingForReply
+        }
+        AgentMessageExecutionObservation::Prepared { .. } => AgentMessagePublicPhase::Publishing,
+        AgentMessageExecutionObservation::Committed { reply } => {
+            AgentMessagePublicPhase::Committed {
+                reply_row: format!("m_{}", reply.simple()),
+            }
+        }
+        AgentMessageExecutionObservation::NeedsAttention => return,
+    };
+    let public = owner
+        .agent_message_public_progress(
+            delivery.room,
+            &running.service.attestor,
+            delivery.invocation,
+            &delivery.request_row,
+            now,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(public.phase, expected_phase);
+    assert_eq!(public.generation, before.0);
 }
 
 fn assert_committed_reply(
@@ -860,6 +902,61 @@ fn actual_exit_before_each_owner_boundary_cannot_accept_or_prepare_reply() {
             MessagePhase::NeedsAttention(MessageAttention::ExecutionRetired)
         ));
     }
+}
+
+#[test]
+fn public_publishing_cannot_survive_original_session_close_or_replacement() {
+    use tilo_actions::agent_message::{AgentMessagePublicPhase, AgentMessagePublicReason};
+    let (fixture, invocation) = admitted();
+    let mut running = launch(&fixture);
+    let delivery = running.service.deliver(invocation, fixture.now).unwrap();
+    running.service.accept(invocation, fixture.now).unwrap();
+    running
+        .service
+        .prepare_reply(
+            invocation,
+            "Fixture retained output; not model proof",
+            fixture.now,
+        )
+        .unwrap();
+    let public = || {
+        fixture
+            .owner
+            .agent_message_public_progress(
+                delivery.room,
+                &fixture.certificate,
+                invocation,
+                &delivery.request_row,
+                fixture.now,
+            )
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(public().phase, AgentMessagePublicPhase::Publishing);
+    fixture
+        .owner
+        .close_agent_session(&running.service.session, &fixture.certificate, fixture.now)
+        .unwrap();
+    assert_eq!(
+        public().phase,
+        AgentMessagePublicPhase::NeedsAttention(AgentMessagePublicReason::ExecutionRetired)
+    );
+    assert!(
+        matches!(
+            phase(&fixture, invocation),
+            MessagePhase::ReplyPrepared { .. }
+        ),
+        "projection is read-only, not a guessed owner transition"
+    );
+    running.launcher.shutdown().unwrap();
+    let mut replacement = launch(&fixture);
+    assert!(replacement.process.facts().is_ok());
+    assert_eq!(
+        public().phase,
+        AgentMessagePublicPhase::NeedsAttention(AgentMessagePublicReason::ExecutionRetired),
+        "replacement cannot silently retarget the retained original"
+    );
+    replacement.launcher.shutdown().unwrap();
 }
 
 #[test]

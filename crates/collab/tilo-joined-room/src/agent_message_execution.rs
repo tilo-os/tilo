@@ -276,7 +276,7 @@ impl AgentMessageHostService {
     }
 }
 
-fn source_attention(
+pub(crate) fn source_attention(
     view: &NativeCommittedView,
     message: &StoredAgentMessage,
     now: SystemTime,

@@ -45,6 +45,19 @@ pub trait NativeAgentMessageSession: Send + Sync {
 pub trait WorkspaceMessages: Send + Sync {
     fn requires_room(&self, room: &str) -> bool;
 
+    /// Sanitized public read on the existing exact native document context.
+    /// The installed owner must repeat current document Read under its turn.
+    /// # Errors
+    /// Missing custody, revoked Read, mismatched route or unavailable history.
+    fn read_progress(
+        &self,
+        _context: &NativeDocumentReadContext,
+        _invocation: uuid::Uuid,
+        _request_row: &str,
+    ) -> Result<Option<runtime_collab::AgentMessagePublicProgress>, String> {
+        Err("public Agent Message progress unavailable".into())
+    }
+
     /// Install only from the broker's actual connected managed-process proof.
     ///
     /// # Errors

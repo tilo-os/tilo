@@ -68,6 +68,11 @@ pub mod collab_capnp {
 mod agent_messages;
 pub mod committed_document;
 pub use agent_messages::{AgentMessageInput, AgentMessageObservation};
+pub use agent_messages::{
+    AgentMessagePublicPhase, AgentMessagePublicProgress, AgentMessagePublicReason,
+    MAX_AGENT_MESSAGE_PROGRESS_BYTES, validate_agent_message_progress_query,
+    validate_agent_message_public_progress,
+};
 pub mod document_contribution;
 #[cfg(feature = "client")]
 pub mod live_activity;

@@ -882,6 +882,14 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         }
         CollabRequest::SubscribeEnrolledTasks { .. } => {}
         CollabRequest::SubscribeAgentMessages { .. } => {}
+        CollabRequest::ReadAgentMessageProgress {
+            invocation,
+            request_row,
+            ..
+        } => {
+            meter.string_capacity(invocation);
+            meter.string_capacity(request_row);
+        }
         CollabRequest::AcceptAgentMessage { invocation, .. }
         | CollabRequest::ObserveAgentMessage { invocation, .. }
         | CollabRequest::CommitAgentMessageReply { invocation, .. } => {
@@ -1336,6 +1344,14 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             }
         }
         CollabEvent::AgentMessageDisconnected { detail } => meter.string_capacity(detail),
+        CollabEvent::AgentMessageProgress { result, .. } => match result {
+            Ok(Some(runtime_collab::AgentMessagePublicProgress {
+                phase: runtime_collab::AgentMessagePublicPhase::Committed { reply_row },
+                ..
+            })) => meter.string_capacity(reply_row),
+            Err(detail) => meter.string_capacity(detail),
+            Ok(_) => {}
+        },
         CollabEvent::AgentMessageObservation { result, .. } => match result {
             Ok(runtime_collab::AgentMessageObservation::Prepared { reply, text }) => {
                 meter.string_capacity(reply);
@@ -6125,6 +6141,31 @@ async fn dispatch_sdk_request(
                 .map_err(|error| error.to_string());
             let _ = inbound_tx
                 .send_durable(CollabEvent::AgentMessageObservation { request_id, result });
+        }
+        CollabRequest::ReadAgentMessageProgress {
+            request_id,
+            room,
+            invocation,
+            request_row,
+        } => {
+            let result = if route.spec.app_id != "so.tilo.chat"
+                || route.spec.cluster_id != room
+                || route
+                    .spec
+                    .record
+                    .as_deref()
+                    .is_some_and(|record| !record.is_empty())
+            {
+                Err("public Message progress requires the current canonical Chat route".into())
+            } else {
+                route
+                    .channel
+                    .read_agent_message_progress(&invocation, &request_row)
+                    .await
+                    .map_err(|error| error.to_string())
+            };
+            let _ =
+                inbound_tx.send_durable(CollabEvent::AgentMessageProgress { request_id, result });
         }
         CollabRequest::PrepareAgentMessageReply {
             request_id,

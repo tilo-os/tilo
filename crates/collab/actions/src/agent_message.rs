@@ -3,6 +3,38 @@
 //! explicitly addressed input from a certified invocation and committed row.
 use serde::{Deserialize, Serialize};
 
+/// Sanitized owner milestone for one canonical Chat request. No execution,
+/// input, model output or process authority is present in this public value.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentMessagePublicProgress {
+    pub generation: u64,
+    pub phase: AgentMessagePublicPhase,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum AgentMessagePublicPhase {
+    WaitingForReply,
+    Publishing,
+    NeedsAttention(AgentMessagePublicReason),
+    /// Hide status only once this exact row is visible in the Chat replica.
+    Committed {
+        reply_row: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AgentMessagePublicReason {
+    MembershipChanged,
+    AuthorRevoked,
+    HostChanged,
+    ExecutionRetired,
+    RequestChanged,
+    DeliveryUnavailable,
+    Closed,
+}
+
 /// Explicit authored intent, never inferred from the message's prose.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

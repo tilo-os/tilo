@@ -414,6 +414,9 @@ interface ChannelHandle {
   commitAgentMessageReply @61 (invocation :Text, sourceDigest :Data) -> ();
   # Read-only recovery for an exact original on this actual managed process.
   observeAgentMessage @62 (invocation :Text, sourceDigest :Data) -> (observationJson :Text);
+  # Public phase only, under current exact canonical Chat document Read.
+  # No room parameter, private input/output or execution proof is returned.
+  readAgentMessageProgress @63 (invocation :Text, requestRow :Text) -> (progressJson :Text);
 
 }
 

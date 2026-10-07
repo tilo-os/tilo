@@ -429,6 +429,13 @@ pub enum CollabRequest {
         invocation: String,
         source_digest: [u8; 32],
     },
+    /// Public read on the existing exact canonical Chat route, never @62.
+    ReadAgentMessageProgress {
+        request_id: u64,
+        room: Uuid,
+        invocation: String,
+        request_row: String,
+    },
     AcceptAgentMessage {
         request_id: u64,
         invocation: String,
@@ -829,6 +836,10 @@ pub enum CollabEvent {
     AgentMessageObservation {
         request_id: u64,
         result: Result<runtime_collab::AgentMessageObservation, String>,
+    },
+    AgentMessageProgress {
+        request_id: u64,
+        result: Result<Option<runtime_collab::AgentMessagePublicProgress>, String>,
     },
     AgentMessageReply {
         request_id: u64,

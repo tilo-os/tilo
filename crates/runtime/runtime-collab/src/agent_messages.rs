@@ -1,6 +1,96 @@
 //! Bounded explicit input on an authenticated managed Agent connection.
 //! These descriptive fields grant neither Chat history nor write authority.
 
+/// Strict sanitized transport vocabulary, never private execution output.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentMessagePublicProgress {
+    pub generation: u64,
+    pub phase: AgentMessagePublicPhase,
+}
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum AgentMessagePublicPhase {
+    WaitingForReply,
+    Publishing,
+    NeedsAttention(AgentMessagePublicReason),
+    Committed { reply_row: String },
+}
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum AgentMessagePublicReason {
+    MembershipChanged,
+    AuthorRevoked,
+    HostChanged,
+    ExecutionRetired,
+    RequestChanged,
+    DeliveryUnavailable,
+    Closed,
+}
+pub const MAX_AGENT_MESSAGE_PROGRESS_BYTES: usize = 1024;
+
+#[cfg(test)]
+mod public_progress_tests {
+    use super::*;
+    #[test]
+    fn public_query_and_closed_reply_reject_private_or_foreign_data() {
+        let id = "12345678-1234-1234-1234-123456789abc";
+        let row = "m_12345678123412341234123456789abc";
+        assert!(validate_agent_message_progress_query(id, row).is_ok());
+        assert!(validate_agent_message_progress_query(id, "another-row").is_err());
+        assert!(
+            validate_agent_message_progress_query("12345678123412341234123456789abc", row).is_err()
+        );
+        for raw in [
+            r#"{"generation":1,"phase":"WaitingForReply","text":"private"}"#,
+            r#"{"generation":1,"phase":{"Prepared":{"reply":"uuid","text":"private"}}}"#,
+            r#"{"generation":1,"phase":{"Committed":{"reply_row":"m_12345678123412341234123456789abc","source_digest":[1]}}}"#,
+        ] {
+            assert!(serde_json::from_str::<AgentMessagePublicProgress>(raw).is_err());
+        }
+        let malformed = AgentMessagePublicProgress {
+            generation: 1,
+            phase: AgentMessagePublicPhase::Committed {
+                reply_row: "m_00000000000000000000000000000000".into(),
+            },
+        };
+        assert!(validate_agent_message_public_progress(&malformed).is_err());
+    }
+}
+
+/// Validate only inert canonical correlation, never read authority.
+/// # Errors
+/// Noncanonical UUID or row not belonging to that original.
+pub fn validate_agent_message_progress_query(invocation: &str, row: &str) -> Result<(), String> {
+    if !canonical_uuid(invocation) || row != format!("m_{}", invocation.replace('-', "")) {
+        return Err("invalid public Agent Message correlation".into());
+    }
+    Ok(())
+}
+
+/// # Errors
+/// Malformed milestone or reply row; no input/model text is accepted.
+pub fn validate_agent_message_public_progress(
+    progress: &AgentMessagePublicProgress,
+) -> Result<(), String> {
+    if progress.generation == 0 {
+        return Err("invalid public Agent Message generation".into());
+    }
+    if let AgentMessagePublicPhase::Committed { reply_row } = &progress.phase {
+        let raw = reply_row
+            .strip_prefix("m_")
+            .ok_or("invalid public Message reply row")?;
+        if raw.len() != 32
+            || raw == "00000000000000000000000000000000"
+            || !raw
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        {
+            return Err("invalid public Message reply row".into());
+        }
+    }
+    Ok(())
+}
+
 /// One owner-retained addressed message. Only the explicit submitted text is
 /// delivered, not a Chat replica or conversation history. Prepared output is
 /// immutable recovery data, not a request to generate another model answer.
@@ -155,6 +245,36 @@ impl crate::ChannelHandle {
             .map_err(|_| capnp::Error::failed("invalid Message observation".into()))?;
         observation.validate().map_err(capnp::Error::failed)?;
         Ok(observation)
+    }
+
+    /// Read public phase only from this authenticated canonical Chat channel.
+    /// # Errors
+    /// Unsupported protocol, current Read refusal or malformed public response.
+    pub async fn read_agent_message_progress(
+        &self,
+        invocation: &str,
+        request_row: &str,
+    ) -> Result<Option<AgentMessagePublicProgress>, runtime_portal::NotAvailable> {
+        validate_agent_message_progress_query(invocation, request_row)
+            .map_err(capnp::Error::failed)?;
+        let mut request = self.inner.read_agent_message_progress_request();
+        request.get().set_invocation(invocation);
+        request.get().set_request_row(request_row);
+        let response = request.send().promise.await?;
+        let reader = response.get()?;
+        let json = reader
+            .get_progress_json()?
+            .to_str()
+            .map_err(|_| capnp::Error::failed("invalid public Message progress encoding".into()))?;
+        if json.len() > MAX_AGENT_MESSAGE_PROGRESS_BYTES {
+            return Err(capnp::Error::failed("public Message progress too large".into()).into());
+        }
+        let progress: Option<AgentMessagePublicProgress> = serde_json::from_str(json)
+            .map_err(|_| capnp::Error::failed("invalid public Message progress".into()))?;
+        if let Some(progress) = &progress {
+            validate_agent_message_public_progress(progress).map_err(capnp::Error::failed)?;
+        }
+        Ok(progress)
     }
     /// Subscribe to only explicitly addressed input for this actual Agent.
     ///

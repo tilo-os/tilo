@@ -827,6 +827,7 @@ impl App {
             | CollabEvent::AgentMessage(_)
             | CollabEvent::AgentMessageReply { .. }
             | CollabEvent::AgentMessageObservation { .. }
+            | CollabEvent::AgentMessageProgress { .. }
             | CollabEvent::AgentMessageDisconnected { .. }
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::TaskRun(_)

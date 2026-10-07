@@ -15,6 +15,8 @@ mod agent_message_commit;
 #[cfg(target_os = "linux")]
 mod agent_message_execution;
 mod agent_message_history;
+#[cfg(target_os = "linux")]
+mod agent_message_progress;
 mod agent_message_publisher;
 mod agent_message_reconciliation;
 mod agent_session;
@@ -49,6 +51,10 @@ pub use agent_message_admission::{
 pub use agent_message_execution::{
     AgentMessageDelivery, AgentMessageExecutionObservation, AgentMessageHostService,
     AgentMessageReplyReceipt,
+};
+#[cfg(target_os = "linux")]
+pub use agent_message_progress::{
+    AgentMessagePublicPhase, AgentMessagePublicProgress, AgentMessagePublicReason,
 };
 pub use agent_message_publisher::{
     AgentMessagePublisherData, AgentMessagePublisherLease, AgentMessagePublisherRegistration,
