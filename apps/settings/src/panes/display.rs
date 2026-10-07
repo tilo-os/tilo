@@ -677,6 +677,7 @@ pub struct DisplayModel {
     of_device: bool,
     brightness_control: Arc<dyn BrightnessControl>,
     outputs: Vec<DisplayOutput>,
+    device_displays: Vec<settings_store::device_displays::DeviceDisplay>,
     ambient_sensor_available: bool,
     brightness: f32,
     prefs: Followed<DisplayPrefs>,
@@ -758,6 +759,8 @@ impl DisplayModel {
             pending_brightness: None,
             notice: None,
             arrangement_drag: LocalState::new(None),
+            device_displays: settings_store::device_displays::DeviceDisplaySnapshot::load()
+                .map_or_else(Vec::new, |snapshot| snapshot.displays),
             changed: false,
         }
     }
@@ -765,12 +768,15 @@ impl DisplayModel {
     /// A built-in panel at 62 %, with an ambient light sensor; nothing it
     /// does reaches the device or its files.
     fn sample(cx: PaneCx) -> Self {
+        let device_displays = cx
+            .scene()
+            .map_or_else(Vec::new, |scene| scene.device_displays.clone());
         let mode = OutputMode {
             width: 1920,
             height: 1080,
             refresh_mhz: 60_000,
         };
-        Self::detached(cx).with_outputs(vec![DisplayOutput {
+        let mut model = Self::detached(cx).with_outputs(vec![DisplayOutput {
             label: "Built-in display".into(),
             connected: true,
             builtin: true,
@@ -788,7 +794,9 @@ impl DisplayModel {
             color_profiles: Vec::new(),
             color_profile_labels: BTreeMap::new(),
             monitor: None,
-        }])
+        }]);
+        model.device_displays = device_displays;
+        model
     }
 
     /// A model with no outputs whose brightness changes nothing; tests give
@@ -815,6 +823,7 @@ impl DisplayModel {
             pending_brightness: None,
             notice: None,
             arrangement_drag: LocalState::new(None),
+            device_displays: Vec::new(),
             changed: false,
         }
     }
@@ -858,6 +867,7 @@ impl DisplayModel {
                     "vrr_available": output.vrr,
                 })
             }).collect::<Vec<_>>(),
+            "device_displays": self.device_displays,
             "saved_configuration": self.output_config,
             "staged_configuration": self.staged(),
             "has_staged_changes": self.pending_candidate.is_some(),
@@ -1500,6 +1510,12 @@ impl DisplayModel {
             return;
         }
         self.last_snapshot_check = ui::time::now();
+        let devices = settings_store::device_displays::DeviceDisplaySnapshot::load()
+            .map_or_else(Vec::new, |snapshot| snapshot.displays);
+        if devices != self.device_displays {
+            self.device_displays = devices;
+            self.changed = true;
+        }
         let stamp = settings_store::hardware::display_snapshot_path()
             .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
         if stamp != self.snapshot_stamp {
@@ -1549,6 +1565,9 @@ impl DisplayModel {
         let brightness = self.build_brightness_card();
 
         let mut cards = vec![arrangement];
+        if let Some(devices) = self.build_device_arrangement_card() {
+            cards.push(devices);
+        }
         if let Some(notice) = &self.notice {
             cards.push(card(&t("display-card-title"), rows(vec![caption(notice)])));
         }
@@ -1561,6 +1580,67 @@ impl DisplayModel {
         }
         cards.push(brightness);
         crate::widgets::cards(cards)
+    }
+
+    /// Certified peer connectors at their observed shared logical positions.
+    /// Observation alone never makes a screen movable or grants input access.
+    fn build_device_arrangement_card(&self) -> Option<El> {
+        use super::display_arrangement::{
+            ArrangedDisplay, DisplayArrangement, placement::Placement,
+        };
+        if !self.device_displays.iter().any(|display| !display.local) {
+            return None;
+        }
+        let first_local = self
+            .device_displays
+            .iter()
+            .position(|display| display.local);
+        let displays = self
+            .device_displays
+            .iter()
+            .enumerate()
+            .filter_map(|(index, display)| {
+                Some(ArrangedDisplay {
+                    connector: display.key(),
+                    label: t_args(
+                        "display-device-screen",
+                        &[
+                            ("device", display.device_label.clone().into()),
+                            ("screen", display.label.clone().into()),
+                            (
+                                "status",
+                                t(if display.online {
+                                    "display-device-online"
+                                } else {
+                                    "display-device-offline"
+                                })
+                                .into(),
+                            ),
+                        ],
+                    ),
+                    number: index + 1,
+                    placement: Placement::new(
+                        display.x,
+                        display.y,
+                        i32::try_from(display.width).ok()?,
+                        i32::try_from(display.height).ok()?,
+                    ),
+                    primary: first_local == Some(index),
+                    movable: false,
+                })
+            })
+            .collect();
+        Some(card(
+            &t("display-devices-title"),
+            rows(vec![
+                Box::new(DisplayArrangement::new(
+                    displays,
+                    Vec::new(),
+                    self.arrangement_drag.clone(),
+                )),
+                caption(&t("display-devices-observed")),
+            ]),
+        ))
     }
 
     /// The "Displays" arrangement card: a drag-to-arrange canvas of the
@@ -3194,5 +3274,63 @@ mod tests {
         .unwrap();
         assert!(!TrustedDisplayTools::load().contains(&kanshi));
         assert!(pane.build_trusted_tools_card().is_none());
+    }
+    #[test]
+    fn peer_displays_are_inspectable_accessible_and_not_an_input_grant() {
+        fn accessible_names(widget: &dyn Widget, names: &mut Vec<String>) {
+            fn collect(node: &ui::a11y::AccessNode, names: &mut Vec<String>) {
+                if let Some(name) = &node.name {
+                    names.push(name.clone());
+                }
+                for child in &node.children {
+                    collect(child, names);
+                }
+            }
+            if let Some(node) = widget.accessibility() {
+                collect(&node, names);
+            }
+            for child in widget.children() {
+                accessible_names(child, names);
+            }
+        }
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
+        let mut pane = laptop_with_monitor();
+        assert!(pane.build_device_arrangement_card().is_none());
+        pane.device_displays = vec![settings_store::device_displays::DeviceDisplay {
+            device: "certified-peer".into(),
+            device_label: "Peer laptop".into(),
+            connector: "eDP-1".into(),
+            label: "Panel".into(),
+            online: false,
+            local: false,
+            x: 1920,
+            y: 0,
+            width: 1280,
+            height: 720,
+            scale_milli: 1250,
+        }];
+        let card = pane
+            .build_device_arrangement_card()
+            .expect("discovered peer has a real canvas");
+        let mut names = Vec::new();
+        accessible_names(card.as_ref(), &mut names);
+        assert!(
+            names
+                .iter()
+                .any(|name| name.contains("Peer laptop") && name.contains("Offline")),
+            "assistive users receive actual peer and offline state"
+        );
+        let inspection = pane.inspection();
+        assert_eq!(inspection["device_displays"][0]["device"], "certified-peer");
+        assert_eq!(inspection["device_displays"][0]["scale_milli"], 1250);
+        assert!(
+            pane.apply(&DisplayEffect::MoveDisplay {
+                display: "certified-peer/eDP-1".into(),
+                x: 0,
+                y: 0,
+            })
+            .is_err(),
+            "read-only discovery cannot edit local outputs or grant input"
+        );
     }
 }

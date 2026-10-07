@@ -1947,3 +1947,11 @@ input-map-preview-description = Vorschau des gewählten Layouts. Wähle eine Ebe
 input-map-inspect-key = Physische Taste untersuchen
 input-map-inspection-unavailable = Die aktuellen Zeichen dieser physischen Taste sind nicht verfügbar. Aktiviere das Einstellungsfenster oder wähle eine Layout-Vorschau.
 input-map-current-symbols = Aktuelle Zeichen
+
+settings-appearance-text-scale = Textskalierung
+
+display-devices-title = Bildschirme auf deinen Geräten
+display-device-screen = { $device } · { $screen } · { $status }
+display-device-online = Online
+display-device-offline = Offline
+display-devices-observed = Beobachtete Bildschirmpositionen. Eingabezugriff wird gesondert erteilt.

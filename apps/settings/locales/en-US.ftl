@@ -1947,3 +1947,11 @@ input-map-preview-description = Previewing the selected layout. Choose a level o
 input-map-inspect-key = Inspect a physical key
 input-map-inspection-unavailable = This physical key’s current symbols are unavailable. Focus Settings or choose a layout preview.
 input-map-current-symbols = Current symbols
+
+settings-appearance-text-scale = Text scale
+
+display-devices-title = Screens on your devices
+display-device-screen = { $device } · { $screen } · { $status }
+display-device-online = Online
+display-device-offline = Offline
+display-devices-observed = Observed screen positions. Input access is granted separately.

@@ -27,6 +27,8 @@ pub const NARROW_VIEWPORT: (u32, u32) = (440, 820);
 /// The query the `search` scenario types into the sidebar's field.
 pub const SEARCH_QUERY: &str = "light";
 
+const DEVICE_DISPLAYS: &str = "device-displays";
+
 const NARROW: &str = "narrow";
 const NARROW_LIST: &str = "narrow-list";
 const SEARCH: &str = "search";
@@ -39,7 +41,14 @@ pub fn names() -> &'static [&'static str] {
         Category::ALL
             .iter()
             .map(|category| category.slug())
-            .chain([NARROW, NARROW_LIST, SEARCH, ACCOUNT_FORM, ACCOUNTS_NARROW])
+            .chain([
+                NARROW,
+                NARROW_LIST,
+                SEARCH,
+                ACCOUNT_FORM,
+                ACCOUNTS_NARROW,
+                DEVICE_DISPLAYS,
+            ])
             .collect()
     });
     &NAMES
@@ -49,6 +58,7 @@ pub fn names() -> &'static [&'static str] {
 pub fn viewport(scenario: Option<&str>) -> (u32, u32) {
     match scenario {
         Some(NARROW | NARROW_LIST | ACCOUNTS_NARROW) => NARROW_VIEWPORT,
+        Some(DEVICE_DISPLAYS) => (1200, 1100),
         _ => WIDE_VIEWPORT,
     }
 }
@@ -62,6 +72,8 @@ pub struct CaptureScene {
     pub account_root: Option<PathBuf>,
     /// The account form the scenario shows open.
     pub account_form: Option<AccountKind>,
+    /// Synthetic certified-peer observations; available only to capture fixtures.
+    pub device_displays: Vec<settings_store::device_displays::DeviceDisplay>,
 }
 
 /// Prepare `fixture`'s capture: every capture shows the sample accounts.
@@ -74,7 +86,45 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
     fixture.provide(CaptureScene {
         account_root,
         account_form,
+        device_displays: if fixture.scenario() == Some(DEVICE_DISPLAYS) {
+            device_display_fixture()
+        } else {
+            Vec::new()
+        },
     });
+}
+
+/// Two fixture devices with device-qualified connector identities and logical sizes.
+fn device_display_fixture() -> Vec<settings_store::device_displays::DeviceDisplay> {
+    use settings_store::device_displays::DeviceDisplay;
+    vec![
+        DeviceDisplay {
+            device: "fixture-laptop".into(),
+            device_label: "Laptop".into(),
+            connector: "eDP-1".into(),
+            label: "Built-in display".into(),
+            online: true,
+            local: true,
+            x: 0,
+            y: 0,
+            width: 960,
+            height: 540,
+            scale_milli: 2000,
+        },
+        DeviceDisplay {
+            device: "fixture-desktop".into(),
+            device_label: "Desktop".into(),
+            connector: "DP-1".into(),
+            label: "External display".into(),
+            online: true,
+            local: false,
+            x: 960,
+            y: 0,
+            width: 1280,
+            height: 720,
+            scale_milli: 1250,
+        },
+    ]
 }
 
 /// How a scenario lays the app out once its pane is chosen.
@@ -92,6 +142,7 @@ pub enum Staged {
 pub fn staged(scenario: Option<&str>) -> Staged {
     match scenario {
         None => Staged::Pane(Category::Appearance),
+        Some(DEVICE_DISPLAYS) => Staged::Pane(Category::Displays),
         Some(NARROW) => Staged::Pane(Category::RegionFormats),
         Some(NARROW_LIST) => Staged::List(Category::RegionFormats),
         Some(SEARCH) => Staged::Search(Category::Appearance),
@@ -107,7 +158,7 @@ mod tests {
     /// Each scenario names one layout: its pane, its screen, its size.
     #[test]
     fn scenarios_name_their_pane_and_size() {
-        assert_eq!(names().len(), Category::ALL.len() + 5);
+        assert_eq!(names().len(), Category::ALL.len() + 6);
         for category in Category::ALL {
             assert_eq!(staged(Some(category.slug())), Staged::Pane(*category));
             assert_eq!(viewport(Some(category.slug())), WIDE_VIEWPORT);

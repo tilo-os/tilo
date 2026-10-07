@@ -248,6 +248,9 @@ signer, SBOM, freshness and provenance checks. Promotion verifies the exact
 source, aarch64 profile and hardware-definition hash before publishing
 `code.tilo.so/tilo/tilo:orangepi-3b-v2-1-<full-source-commit>` by preserved digest.
 Registry/signing access failures stop the lane; no development trust is accepted.
+Orange Pi uses the ordinary public Tilo image repository with repository-pinned
+firmware. The owner-visibility restriction applies to independently imported Lenovo
+firmware; selecting Orange Pi cannot admit those Lenovo firmware inputs.
 
 This is a generation-1 immutable board reference, outside generic `latest` /
 `genN`. It neither changes the generic rollback floor nor automatically updates
