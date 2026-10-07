@@ -7,7 +7,7 @@ use crate::shell::personal_continuity::DeviceId;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 struct Session {
-    network: ShellNetwork,
+    network: Arc<ShellNetwork>,
     endpoint: iroh::Endpoint,
     actor: Option<tokio::task::JoinHandle<()>>,
     cert: DeviceCert,
@@ -15,6 +15,10 @@ struct Session {
 }
 
 impl Session {
+    fn network_mut(&mut self) -> &mut ShellNetwork {
+        Arc::get_mut(&mut self.network).expect("configure a fixture before sharing its network")
+    }
+
     async fn new(root: &ed25519_dalek::SigningKey, tag: u8, tree: WorkspaceTree) -> Self {
         let device = iroh::SecretKey::from_bytes(&[tag; 32]);
         let lookup = MemoryLookup::new();
@@ -61,7 +65,7 @@ impl Session {
         network.host_identity = Some(identity());
         network.continuity_policy_override = Some(policy());
         Self {
-            network,
+            network: Arc::new(network),
             endpoint,
             actor: Some(actor),
             cert,
@@ -93,6 +97,27 @@ impl Session {
             })
             .await
             .unwrap();
+    }
+
+    fn authenticated_on(&self, topic: u64, peer: iroh::EndpointId) -> bool {
+        if topic == personal_continuity_topic_id(&self.cert.user_public_key) {
+            return self
+                .network
+                .authenticated_personal_routes
+                .lock()
+                .unwrap()
+                .contains_key(&(topic, peer));
+        }
+        self.network
+            .workspace_control_direct
+            .lock()
+            .unwrap()
+            .contains(&(topic, peer))
+            && self
+                .network
+                .peer_identities
+                .get(&crate::shell::state::PeerOrigin::peer(&peer))
+                .is_some_and(|identity| identity.is_same_user(&self.cert.user_public_key))
     }
 
     fn admit_without_app_cache(&self) {
@@ -139,6 +164,10 @@ fn policy() -> crate::shell::continuity_policy::ContinuityPolicySnapshot {
 
 async fn pair(left: &Session, right: &Session) {
     let topic = personal_continuity_topic_id(&left.cert.user_public_key);
+    pair_on_topic(left, right, topic).await;
+}
+
+async fn pair_on_topic(left: &Session, right: &Session, topic: u64) {
     left.join(topic).await;
     right.join(topic).await;
     left.network
@@ -177,18 +206,8 @@ async fn pair(left: &Session, right: &Session) {
         loop {
             left.network.tick();
             right.admit_without_app_cache();
-            if left
-                .network
-                .authenticated_personal_routes
-                .lock()
-                .unwrap()
-                .contains_key(&(topic, right.endpoint.id()))
-                && right
-                    .network
-                    .authenticated_personal_routes
-                    .lock()
-                    .unwrap()
-                    .contains_key(&(topic, left.endpoint.id()))
+            if left.authenticated_on(topic, right.endpoint.id())
+                && right.authenticated_on(topic, left.endpoint.id())
             {
                 break;
             }
@@ -197,6 +216,9 @@ async fn pair(left: &Session, right: &Session) {
     })
     .await;
 }
+
+#[path = "cold_editor_record_tests.rs"]
+mod cold_editor_record_tests;
 
 fn selection() -> SharedSelection {
     Arc::new(Mutex::new(selection::SelectionStore::default()))
@@ -906,8 +928,10 @@ impl NativeEditorPair {
             local.desktop.workspaces[0].room = room;
             let mut left = Box::pin(Session::new(&signer, 0xB1, tree)).await;
             let mut right = Box::pin(Session::new(&signer, 0xB2, local)).await;
-            left.network.personal_continuity_path = Some(home.data().join("left-continuity.bin"));
-            right.network.personal_continuity_path = Some(home.data().join("right-continuity.bin"));
+            left.network_mut().personal_continuity_path =
+                Some(home.data().join("left-continuity.bin"));
+            right.network_mut().personal_continuity_path =
+                Some(home.data().join("right-continuity.bin"));
             let left_registry = Arc::new(Mutex::new(
                 crate::shell::personal_continuity_registry::ContinuationRegistry::default(),
             ));
@@ -1274,7 +1298,7 @@ async fn paired_native_editor_views_require_enrollment_and_cancel_on_revocation(
     assert_eq!(online.len(), 1);
     assert!(online[0].0.generation > offline[0].0.generation);
     pair.apply_target(&online[0].0, 70);
-    pair.right.network.continuity_policy_override =
+    pair.right.network_mut().continuity_policy_override =
         Some(crate::shell::continuity_policy::ContinuityPolicySnapshot::default());
     let revoked = in_owner_registry(&pair.right_registry, || {
         pair.right.network.pump_owner_views()
@@ -1297,7 +1321,7 @@ async fn paired_native_editor_takeover_is_durable_idempotent_and_survives_restar
     let durable = pair.right.network.personal_continuity_path.clone().unwrap();
     let blocked = pair.home.data().join("blocked-write");
     std::fs::create_dir(&blocked).unwrap();
-    pair.right.network.personal_continuity_path = Some(blocked);
+    pair.right.network_mut().personal_continuity_path = Some(blocked);
     let token = remote[0].counter.checked_add(1).unwrap();
     pair.claim_target(token, 55);
     in_owner_registry(&pair.right_registry, || {
@@ -1324,7 +1348,7 @@ async fn paired_native_editor_takeover_is_durable_idempotent_and_survives_restar
         .is_empty(),
         "no takeover acknowledgement before durable write"
     );
-    pair.right.network.personal_continuity_path = Some(durable.clone());
+    pair.right.network_mut().personal_continuity_path = Some(durable.clone());
     in_owner_registry(&pair.right_registry, || {
         assert!(
             pair.right
