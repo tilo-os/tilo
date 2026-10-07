@@ -980,6 +980,14 @@ activity-catch-up-needs-review = Deine Prüfung ist nötig · { $count ->
     }
 activity-catch-up-waiting-detail = { $task } · { $who }
 
+notification-alarm-snoozed = Um 5 Minuten verschoben. Verwirf diesen Eintrag, um die ausstehende Erinnerung abzubrechen.
+notification-alarm-dismiss = Verwerfen
+notification-alarm-snooze = In 5 Minuten erneut erinnern
+notification-alarm-action-failed = Dieser Wecker konnte nicht geändert werden
+notification-alarm-action-title = { $action }: { $title }
+notification-alarm-action-subtitle = Für dieses Weckereignis
+notification-alarm-action-retry = Behalte diese Benachrichtigung und versuche es erneut.
+
 activity-task-review-unavailable = Authentifizierte Aufgabensteuerung ist nicht verfügbar. Der bisherige Verlauf bleibt lesbar.
 activity-task-review-history = Aktionsverlauf prüfen
 activity-task-steer = Anweisungen ändern

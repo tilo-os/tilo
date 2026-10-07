@@ -486,6 +486,13 @@ fn local_hardware(root: &Path) -> HardwareSnapshot {
 /// store. Only `NotFound` permits bounded ascent; invalid paths and probe errors
 /// remain unavailable rather than borrowing capacity from an unrelated store.
 fn store_free_storage_mib(root: &Path) -> Option<u64> {
+    store_free_storage_mib_with(root, free_storage_mib)
+}
+
+fn store_free_storage_mib_with(
+    root: &Path,
+    mut probe: impl FnMut(&Path) -> Option<u64>,
+) -> Option<u64> {
     if !root.is_absolute()
         || root.components().any(|part| {
             matches!(
@@ -499,7 +506,7 @@ fn store_free_storage_mib(root: &Path) -> Option<u64> {
     let mut path = root;
     for _ in 0..32 {
         match std::fs::symlink_metadata(path) {
-            Ok(metadata) if metadata.is_dir() => return free_storage_mib(path),
+            Ok(metadata) if metadata.is_dir() => return probe(path),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => path = path.parent()?,
             Ok(_) | Err(_) => return None,
         }
@@ -1843,13 +1850,24 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let store = temporary.path().join("selected-store");
         std::fs::create_dir(&store).unwrap();
-        let expected = free_storage_mib(&store).expect("actual filesystem must be observable");
-        assert!(expected > 0);
-        assert_eq!(store_free_storage_mib(&store), Some(expected));
-        assert_eq!(
-            store_free_storage_mib(&store.join("not-created/models")),
-            Some(expected)
-        );
+        // Record the one actual probe used by each production-path invocation.
+        // Free bytes can change between independent statvfs calls on a live store.
+        let expected = std::cell::Cell::new(None);
+        let calls = std::cell::RefCell::new(Vec::new());
+        let mut probe = |path: &Path| {
+            assert_eq!(path, store);
+            calls.borrow_mut().push(path.to_owned());
+            let available = free_storage_mib(path).expect("actual filesystem must be observable");
+            assert!(available > 0);
+            expected.set(Some(available));
+            Some(available)
+        };
+        let observed = store_free_storage_mib_with(&store, &mut probe);
+        assert_eq!(observed, expected.get());
+        assert_eq!(calls.borrow().as_slice(), std::slice::from_ref(&store));
+        let observed = store_free_storage_mib_with(&store.join("not-created/models"), &mut probe);
+        assert_eq!(observed, expected.get());
+        assert_eq!(calls.borrow().as_slice(), [store.clone(), store.clone()]);
         let file = temporary.path().join("file");
         std::fs::write(&file, "not a directory").unwrap();
         assert_eq!(store_free_storage_mib(&file), None);

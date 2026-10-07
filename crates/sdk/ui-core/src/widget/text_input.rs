@@ -208,6 +208,14 @@ pub(super) struct SingleLineAttributes {
     pub links: Vec<(usize, usize)>,
 }
 
+#[derive(PartialEq)]
+struct PersonalSpelling {
+    owner: Option<[u8; 32]>,
+    generation: u64,
+    language: String,
+    snapshot: Option<crate::personal_dictionary::Snapshot>,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent widget-configuration or ephemeral-UI-state flag (hover/focus/drag/dirty/secret/etc), not a state machine; grouping them would misrepresent orthogonal concerns and ripple through every accessor in this file"
@@ -322,6 +330,8 @@ pub struct TextInput {
     spell_spans: Vec<(usize, usize)>,
     /// Per-user vocabulary layered over every installed language.
     spell_dictionary: Option<spellcheck::Dictionary>,
+    /// Ephemeral view of the shared host service, never an app vocabulary store.
+    personal_spelling: Option<PersonalSpelling>,
     ignored_spellings: HashSet<String>,
     /// Caches both preview hits and misses so idle redraws never re-query a
     /// dictionary for the same caret word.
@@ -565,6 +575,7 @@ impl TextInput {
             spell_cache_key: None,
             spell_spans: Vec::new(),
             spell_dictionary: None,
+            personal_spelling: None,
             ignored_spellings: HashSet::new(),
             autocorrection_preview_key: None,
             autocorrection_preview: None,
@@ -3746,6 +3757,7 @@ impl TextInput {
     /// for [`SUGGESTION_SETTLE`](crate::text_edit::SUGGESTION_SETTLE) — a
     /// pause at the end of a word or the caret coming back to an earlier one.
     pub(super) fn refresh_suggestion_at(&mut self, now: Instant) {
+        self.refresh_personal_spelling();
         let offers = self.autocorrect_enabled() || self.checks_spelling();
         if !offers || !self.is_focused || self.core.has_preedit() {
             self.caret_word.clear();
@@ -3774,6 +3786,48 @@ impl TextInput {
         self.autocorrection_preview = preview;
     }
 
+    fn personal_word(&self, word: &str) -> bool {
+        self.personal_spelling.as_ref().is_some_and(|personal| {
+            personal
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.contains(word, &personal.language))
+        })
+    }
+
+    fn refresh_personal_spelling(&mut self) {
+        if self.holds_secret() || (!self.checks_spelling() && !self.autocorrect_enabled()) {
+            self.personal_spelling = None;
+            self.spell_dictionary = None;
+            return;
+        }
+        if !self.spell_active && !self.is_focused {
+            return;
+        }
+        let current = PersonalSpelling {
+            owner: crate::local_identity::bound().map(|identity| identity.group_public_key),
+            generation: crate::local_identity::generation(),
+            language: self.spell_language.replace('_', "-").to_ascii_lowercase(),
+            snapshot: crate::personal_dictionary::snapshot().ok(),
+        };
+        if self.personal_spelling.as_ref() != Some(&current) {
+            if self.personal_spelling.as_ref().is_some_and(|previous| {
+                previous.owner != current.owner || previous.generation != current.generation
+            }) {
+                self.ignored_spellings.clear();
+            }
+            let words = current
+                .snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.hints(&current.language).collect::<Vec<_>>())
+                .unwrap_or_default();
+            self.spell_dictionary = Some(spellcheck::Dictionary::from_words(words));
+            self.personal_spelling = Some(current);
+            self.spell_cache_key = None;
+            self.clear_suggestion();
+        }
+    }
+
     fn suggestion_for(
         &mut self,
         range: Range<usize>,
@@ -3791,8 +3845,9 @@ impl TextInput {
         let original = self.text.get(range.clone())?.to_string();
         let dictionary = self
             .spell_dictionary
-            .get_or_insert_with(spellcheck::Dictionary::user_dict_overlay);
+            .get_or_insert_with(spellcheck::Dictionary::default);
         if dictionary.contains(&original)
+            || self.personal_word(&original)
             || self.ignored_spellings.contains(&original.to_lowercase())
         {
             return None;
@@ -3824,6 +3879,7 @@ impl TextInput {
 
     /// Replace the previewed word with its correction (a click on the chip).
     fn accept_suggestion(&mut self) -> bool {
+        self.refresh_personal_spelling();
         let Some(preview) = self.autocorrection_preview.take() else {
             return false;
         };
@@ -3840,12 +3896,14 @@ impl TextInput {
     }
 
     fn autocorrection_candidate(&mut self) -> Option<AutocorrectionPreview> {
+        self.spell_active = true;
+        self.refresh_personal_spelling();
         let (start, end) = self.word_ending_at_caret()?;
         let original = self.text.get(start..end)?.to_string();
         let dictionary = self
             .spell_dictionary
-            .get_or_insert_with(spellcheck::Dictionary::user_dict_overlay);
-        if dictionary.contains(&original) {
+            .get_or_insert_with(spellcheck::Dictionary::default);
+        if dictionary.contains(&original) || self.personal_word(&original) {
             return None;
         }
         let replacement = spellcheck::probable_correction(&self.spell_language, &original)?;
@@ -3896,6 +3954,7 @@ impl TextInput {
     }
 
     fn refresh_spelling(&mut self) {
+        self.refresh_personal_spelling();
         if !self.checks_spelling() || self.text.is_empty() {
             self.spell_spans.clear();
             self.spell_cache_key = None;
@@ -3913,10 +3972,18 @@ impl TextInput {
         let mut spans = spellcheck::spans_for_language(&self.spell_language, &self.text);
         let dictionary = self
             .spell_dictionary
-            .get_or_insert_with(spellcheck::Dictionary::user_dict_overlay);
+            .get_or_insert_with(spellcheck::Dictionary::default);
+        let personal = self.personal_spelling.as_ref();
         spans.retain(|&(start, end)| {
             self.text.get(start..end).is_some_and(|word| {
-                !dictionary.contains(word) && !self.ignored_spellings.contains(&word.to_lowercase())
+                !dictionary.contains(word)
+                    && !personal.is_some_and(|personal| {
+                        personal
+                            .snapshot
+                            .as_ref()
+                            .is_some_and(|snapshot| snapshot.contains(word, &personal.language))
+                    })
+                    && !self.ignored_spellings.contains(&word.to_lowercase())
             })
         });
         self.spell_spans = spans;
@@ -4122,11 +4189,17 @@ impl TextInput {
                     replacement,
                 }));
             }
-            menu.push(MenuItem::action(
-                format!("Add ‘{word}’ to dictionary"),
-                || {},
-            ));
-            actions.push(Some(CtxAction::AddToDictionary(word.clone())));
+            if self
+                .personal_spelling
+                .as_ref()
+                .is_some_and(|personal| personal.snapshot.is_some())
+            {
+                menu.push(MenuItem::action(
+                    format!("Add ‘{word}’ to dictionary"),
+                    || {},
+                ));
+                actions.push(Some(CtxAction::AddToDictionary(word.clone())));
+            }
             menu.push(MenuItem::action("Ignore in this field", || {}));
             actions.push(Some(CtxAction::IgnoreInField(word)));
             menu.push(MenuItem::separator());
@@ -4189,11 +4262,16 @@ impl TextInput {
                 self.spell_cache_key = None;
             }
             CtxAction::AddToDictionary(word) => {
-                let dictionary = self
-                    .spell_dictionary
-                    .get_or_insert_with(spellcheck::Dictionary::user_dict_overlay);
-                if dictionary.add_word(&word) {
-                    let _ = dictionary.save_user_dict();
+                let result = crate::personal_dictionary::snapshot().and_then(|snapshot| {
+                    crate::personal_dictionary::edit(
+                        snapshot.revision,
+                        crate::personal_dictionary::Edit::Add(
+                            crate::personal_dictionary::Word::new(&word, None)?,
+                        ),
+                    )
+                });
+                if let Err(error) = result {
+                    tracing::warn!(%error, "could not add the shared personal word");
                 }
                 self.spell_cache_key = None;
                 self.refresh_spelling();

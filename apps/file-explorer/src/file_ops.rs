@@ -37,6 +37,9 @@ pub enum FileOp {
     /// Copy `paths` into `folder`; a copy whose name is taken gets a free
     /// one.
     Copy { paths: Vec<String>, folder: String },
+    /// A transfer already settled by the native host. It is never executed
+    /// by a path-based projection; only its exact receipt can be compensated.
+    ClipboardReceipt { operation: String },
     /// Undo the queued operation `op`: compensate what it changed.
     Revert { op: String },
 }
@@ -57,6 +60,10 @@ pub enum Change {
     Restored { entry: String, to: String },
     /// The empty folder `path` was removed.
     Removed { path: String },
+    /// Exact opaque receipt of the native host's published objects.
+    ClipboardTransfer { operation: String },
+    /// A native receipt already compensated; redo needs native restoration.
+    ClipboardUndo { operation: String },
 }
 
 /// What carrying out an operation came to.
@@ -137,6 +144,7 @@ pub fn execute(op: &FileOp, reverting: Option<&Outcome>) -> Outcome {
                 });
             })
         }),
+        FileOp::ClipboardReceipt { .. } => Err("clipboard receipt requires its native host".into()),
         FileOp::Revert { .. } => match reverting {
             Some(outcome) => outcome
                 .changes()
@@ -203,6 +211,9 @@ fn trash(path: &Path) -> Result<Change, String> {
 /// turn.
 fn compensate(change: &Change) -> Result<Change, String> {
     match change {
+        Change::ClipboardTransfer { .. } | Change::ClipboardUndo { .. } => {
+            Err("clipboard compensation requires its current native caller".into())
+        }
         Change::Created { path } => {
             std::fs::remove_dir(path).map_err(|error| format!("cannot remove {path}: {error}"))?;
             Ok(Change::Removed { path: path.clone() })

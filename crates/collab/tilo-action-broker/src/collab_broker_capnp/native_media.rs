@@ -58,7 +58,10 @@ pub(super) struct LocalAppConnection {
 
 #[cfg(target_os = "linux")]
 #[derive(Clone)]
-pub(super) struct PeerProcess(Arc<std::os::fd::OwnedFd>);
+pub(super) struct PeerProcess {
+    task: Arc<std::os::fd::OwnedFd>,
+    launcher: Option<Arc<std::os::fd::OwnedFd>>,
+}
 #[cfg(not(target_os = "linux"))]
 pub(super) struct PeerProcess;
 
@@ -87,7 +90,21 @@ impl PeerProcess {
         if len as usize != std::mem::size_of::<libc::c_int>() {
             return None;
         }
-        let process = Self(Arc::new(owned));
+        let process = Self {
+            task: Arc::new(owned),
+            launcher: None,
+        };
+        process.alive().then_some(process)
+    }
+    #[cfg(target_os = "linux")]
+    pub(super) fn with_executing(
+        self,
+        peer: runtime_portal::process_binding::ExecutingPeer,
+    ) -> Option<Self> {
+        let process = Self {
+            task: Arc::new(peer.into_pidfd()),
+            launcher: Some(self.task),
+        };
         process.alive().then_some(process)
     }
     #[cfg(not(target_os = "linux"))]
@@ -96,14 +113,43 @@ impl PeerProcess {
     }
 
     #[cfg(target_os = "linux")]
-    fn alive(&self) -> bool {
+    fn duplicate(&self, descriptor: u32) -> Result<std::fs::File, String> {
+        use std::os::fd::FromRawFd as _;
+        let descriptor = i32::try_from(descriptor).map_err(|_| "invalid peer descriptor")?;
+        // SAFETY: owned kernel-attested pidfd, bounded descriptor number, zero
+        // flags. Success returns a fresh owned close-on-exec descriptor.
+        let result =
+            unsafe { libc::syscall(libc::SYS_pidfd_getfd, self.task.as_raw_fd(), descriptor, 0) };
+        let fd = i32::try_from(result).map_err(|_| "peer descriptor exceeds bound")?;
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        // SAFETY: successful pidfd_getfd transfers this fresh descriptor.
+        Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+    }
+    #[cfg(not(target_os = "linux"))]
+    fn duplicate(&self, _: u32) -> Result<std::fs::File, String> {
+        Err("peer descriptors require Linux".into())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn alive(&self) -> bool {
         let mut poll = libc::pollfd {
-            fd: self.0.as_raw_fd(),
+            fd: self.task.as_raw_fd(),
             events: libc::POLLIN,
             revents: 0,
         };
         // SAFETY: one initialized pollfd, owned pidfd, nonblocking query.
-        unsafe { libc::poll(&raw mut poll, 1, 0) == 0 }
+        (unsafe { libc::poll(&raw mut poll, 1, 0) == 0 })
+            && self.launcher.as_ref().is_none_or(|launcher| {
+                let mut poll = libc::pollfd {
+                    fd: launcher.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // SAFETY: another owned launch pidfd and nonblocking query.
+                unsafe { libc::poll(&raw mut poll, 1, 0) == 0 }
+            })
     }
     #[cfg(not(target_os = "linux"))]
     #[expect(
@@ -118,7 +164,7 @@ impl PeerProcess {
 #[cfg(target_os = "linux")]
 impl AsRawFd for PeerProcess {
     fn as_raw_fd(&self) -> std::os::fd::RawFd {
-        self.0.as_raw_fd()
+        self.task.as_raw_fd()
     }
 }
 
@@ -137,6 +183,15 @@ impl LocalAppConnection {
                 process,
                 connected: AtomicBool::new(true),
             })
+        })
+    }
+    pub(super) fn from_launch(
+        handoff: super::CollabLaunchHandoff,
+        process: Option<PeerProcess>,
+        creation: Option<crate::services::ApplicationCreationEvidence>,
+    ) -> Option<Arc<Self>> {
+        process.and_then(|process| {
+            Self::attested(handoff.app_id, handoff.workspace_id, process, creation)
         })
     }
     pub(super) fn current(&self) -> bool {
@@ -170,10 +225,13 @@ impl ProcessMonitor {
             let state = Arc::downgrade(state);
             let stop: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
                 checked.stop();
-                if let Some(state) = state.upgrade()
-                    && let Some(service) = state.services.native_media.as_ref()
-                {
-                    service.disconnect(peer);
+                if let Some(state) = state.upgrade() {
+                    if let Some(service) = state.services.native_media.as_ref() {
+                        service.disconnect(peer);
+                    }
+                    if let Some(service) = state.services.file_clipboard.as_ref() {
+                        service.disconnect(peer);
+                    }
                 }
             });
             match watch_death(connection.process.clone(), stop) {
@@ -191,10 +249,26 @@ fn watch_death(
     process: PeerProcess,
     stop: Arc<dyn Fn() + Send + Sync>,
 ) -> std::io::Result<tokio::task::JoinHandle<()>> {
+    let launcher = process
+        .launcher
+        .as_ref()
+        .map(|task| {
+            tokio::io::unix::AsyncFd::new(PeerProcess {
+                task: Arc::clone(task),
+                launcher: None,
+            })
+        })
+        .transpose()?;
     let process = tokio::io::unix::AsyncFd::new(process)?;
     Ok(tokio::spawn(async move {
         // Death and monitor failure both revoke before the callback returns.
-        let _ = process.readable().await;
+        tokio::select! {
+            _ = process.readable() => {},
+            () = async {
+                if let Some(launcher) = launcher { let _ = launcher.readable().await; }
+                else { std::future::pending::<()>().await; }
+            } => {},
+        }
         stop();
     }))
 }
@@ -215,7 +289,7 @@ impl CapnpChannelHandle {
         clippy::suspicious_operation_groupings,
         reason = "a route's cluster is the connection's workspace; the names differ by layer"
     )]
-    fn native_media_context(
+    pub(super) fn native_media_context(
         &self,
         stopping: bool,
     ) -> Result<NativeMediaRequestContext, capnp::Error> {
@@ -264,6 +338,28 @@ impl CapnpChannelHandle {
         })
     }
 
+    pub(super) fn clipboard_descriptor_source(
+        &self,
+    ) -> Result<crate::services::SelectedDescriptorSource, String> {
+        let context = self
+            .native_media_context(false)
+            .map_err(|error| error.to_string())?;
+        if context.app_id() != "so.tilo.file-explorer" {
+            return Err("selected descriptors belong only to Files".into());
+        }
+        let local = self
+            .lease
+            .as_ref()
+            .and_then(|lease| lease.local_media.clone())
+            .ok_or("launcher-attested Files process unavailable")?;
+        Ok(Arc::new(move |descriptor| {
+            context.revalidate()?;
+            let file = local.process.duplicate(descriptor)?;
+            context.revalidate()?;
+            Ok(file)
+        }))
+    }
+
     pub(super) fn native_media_dispatch(
         self: Rc<Self>,
         bytes: &[u8],
@@ -277,7 +373,9 @@ impl CapnpChannelHandle {
             runtime_collab::native_media::Command::Leave
                 | runtime_collab::native_media::Command::SetMuted { muted: true }
         );
-        let context = self.native_media_context(stopping)?;
+        let context = self.native_media_context(stopping).inspect_err(|_| {
+            tracing::debug!("native media broker refused local context");
+        })?;
         let service = self
             .state
             .services
@@ -290,3 +388,42 @@ impl CapnpChannelHandle {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests;
+
+#[cfg(all(test, target_os = "linux"))]
+mod descriptor_tests {
+    use super::*;
+    use std::os::unix::fs::MetadataExt as _;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn attested_peer_descriptor_preserves_selected_object_after_path_replacement() {
+        let directory = tempfile::tempdir().expect("descriptor fixture");
+        let path = directory.path().join("selected");
+        std::fs::write(&path, b"shown object").expect("original object");
+        let selected = std::fs::File::open(&path).expect("retained selected descriptor");
+        let original = selected.metadata().expect("original identity");
+        let (socket, _peer) = tokio::net::UnixStream::pair().expect("actual local socket");
+        let process = PeerProcess::from_socket(&socket).expect("kernel peer pidfd");
+        std::fs::rename(&path, directory.path().join("original")).expect("replace shown name");
+        std::fs::write(&path, b"replacement object").expect("new object");
+        let duplicated = process
+            .duplicate(u32::try_from(selected.as_raw_fd()).expect("fd"))
+            .expect("duplicate actual peer descriptor");
+        let retained = duplicated.metadata().expect("retained identity");
+        let replacement = std::fs::metadata(&path).expect("replacement identity");
+        assert_eq!(
+            (retained.dev(), retained.ino()),
+            (original.dev(), original.ino())
+        );
+        assert_ne!(
+            (retained.dev(), retained.ino()),
+            (replacement.dev(), replacement.ino())
+        );
+        assert!(process.duplicate(u32::MAX).is_err());
+        let descriptor = u32::try_from(selected.as_raw_fd()).expect("selected fd");
+        drop(selected);
+        assert!(
+            process.duplicate(descriptor).is_err(),
+            "a closed selection is not adopted"
+        );
+    }
+}

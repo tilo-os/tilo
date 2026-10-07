@@ -289,6 +289,7 @@ impl PersistenceRuntime {
 
 /// Continuation publication and deferred restore state.
 pub(super) struct ContinuationRuntime {
+    pub(super) owner_view: crate::collaboration::owner_view::OwnerViewRuntime,
     pub(super) last_published: Option<crate::collaboration::ContinuationMetadata>,
     pub(super) pending_restore: Option<crate::collaboration::ContinuationMetadata>,
     /// Generic view restoration waits until layout has built the focus order.
@@ -304,6 +305,7 @@ pub(super) struct ContinuationRuntime {
 impl ContinuationRuntime {
     pub(super) fn new(pending_restore: Option<crate::collaboration::ContinuationMetadata>) -> Self {
         Self {
+            owner_view: Default::default(),
             last_published: None,
             pending_restore,
             pending_view: None,

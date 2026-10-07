@@ -29,3 +29,12 @@ never changes, so generation 3 covers it at sequence 4 and generation 6 at
 sequence 7 with the same payload. The last frame is the late sequence-4
 checkpoint, which governance has already superseded; the retained directory
 holds the exact sequence-7 successor.
+
+Persisted byte fixtures are stored as `.hex` files: two lowercase hexadecimal
+digits per byte, separated by spaces, with 16 bytes per LF line. Decode the
+text before passing it to the production reader. The decoded bytes are the
+original capture, including signatures, compression and malformed inputs;
+regenerating them with a newer codec would erase the compatibility regression.
+Tests materialize the decoded files with their original names in a temporary
+directory so production directory traversal, frame decoding and store replay
+continue to exercise the same retained input.
