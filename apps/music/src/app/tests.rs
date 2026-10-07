@@ -4479,6 +4479,47 @@ fn page_widget(app: &MusicApp, id: &str) -> Rect {
         .unwrap_or_else(|| panic!("the page shows {id}"))
 }
 
+#[test]
+fn recommendations_shared_input_and_dismiss_controls_record_canonical_actions() {
+    let (mut app, mut doc) = app_with_doc();
+    app.disconnect();
+    app.view = View::Recommendations;
+    draw_at(&mut app, &mut doc, 1280.0, 2400.0);
+    let toggle = page_widget(&app, "music-recommendations-input-likes");
+    hosted_click(&mut app, &mut doc, toggle.center());
+    assert!(!doc::load_library(&doc).recommendations.likes);
+    assert_eq!(
+        last_action_label(&mut doc).as_deref(),
+        Some(ui::i18n!("music-recommendations-change-inputs").as_str())
+    );
+    app.dispatch(
+        Action::Recommendation(crate::actions::MusicAction::SetRecommendationInput {
+            input: crate::recommendations::Input::Likes,
+            enabled: true,
+        }),
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    draw_at(&mut app, &mut doc, 1280.0, 2400.0);
+    let pick = crate::recommendations::suggestions(&app.lib, 1)
+        .pop()
+        .unwrap();
+    let dismiss = page_widget(
+        &app,
+        &format!("music-recommendations-dismiss-{}", pick.track),
+    );
+    hosted_click(&mut app, &mut doc, dismiss.center());
+    assert!(
+        doc::load_library(&doc)
+            .recommendations
+            .dismissed
+            .contains(&pick.track)
+    );
+    assert_eq!(
+        last_action_label(&mut doc).as_deref(),
+        Some(ui::i18n!("music-recommendations-dismiss").as_str())
+    );
+}
+
 fn has_nav(app: &MusicApp, view: View) -> bool {
     let want = Action::Nav(view);
     app.hits.iter().any(|h| h.action == want)
