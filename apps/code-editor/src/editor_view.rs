@@ -16,7 +16,7 @@
 //! characters (not bytes), matching Automerge Text's char addressing. Multiple
 //! carets are supported; the primary caret drives the status bar and scrolling.
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ObjId, ReadDoc};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::gesture::{DragSelect, Granularity};
@@ -379,6 +379,70 @@ impl EditorView {
     /// Drain the rising-edge "Open File" click from the zero-state, if any.
     pub fn take_empty_action(&mut self) -> bool {
         self.empty.take_action()
+    }
+
+    /// Portable native view over the currently bound shared text resource.
+    pub(crate) fn continuation_position(
+        &self,
+        doc: &AutoCommit,
+        resource_id: &str,
+    ) -> Option<ui::text_position::TextPosition> {
+        let object = self.text_obj.as_ref()?;
+        if doc.text(object).ok()? != self.cached_text || self.cell_w <= 0.0 {
+            return None;
+        }
+        let top_line = self.scroll_y.max(0.0).floor() as usize;
+        let view = ui::text_position::ResolvedTextPosition {
+            carets: self
+                .carets
+                .iter()
+                .map(|caret| {
+                    (
+                        self.char_index(caret.line, caret.col),
+                        caret
+                            .anchor
+                            .map(|(line, column)| self.char_index(line, column)),
+                    )
+                })
+                .collect(),
+            top_character: self.char_index(top_line.min(self.lines.len().saturating_sub(1)), 0),
+            vertical_fraction: self.scroll_y.max(0.0).fract(),
+            horizontal_columns: self.scroll_x.max(0.0) / self.cell_w,
+        };
+        ui::text_position::TextPosition::capture(doc, object, resource_id, &view)
+    }
+
+    /// Restore presentation only: focus and canonical text are untouched.
+    pub(crate) fn restore_continuation_position(
+        &mut self,
+        doc: &AutoCommit,
+        position: &ui::text_position::TextPosition,
+    ) -> bool {
+        let Some(object) = self.text_obj.as_ref() else {
+            return false;
+        };
+        let Some(view) = position.resolve(doc, object) else {
+            return false;
+        };
+        self.sync_from_doc(doc);
+        self.carets = view
+            .carets
+            .iter()
+            .map(|(cursor, anchor)| {
+                let (line, col) = self.pos_from_flat(*cursor);
+                Caret {
+                    line,
+                    col,
+                    anchor: anchor.map(|position| self.pos_from_flat(position)),
+                }
+            })
+            .collect();
+        self.clamp_carets();
+        let (line, _) = self.pos_from_flat(view.top_character);
+        self.scroll_y = line as f64 + view.vertical_fraction;
+        self.scroll_x = view.horizontal_columns * self.cell_w;
+        self.dirty = true;
+        true
     }
 
     /// The primary caret. `carets` is always non-empty by construction (`new`
@@ -2735,6 +2799,30 @@ mod tests {
         let root = automerge::ROOT;
         ev.sync(&doc, &root);
         (ev, doc)
+    }
+
+    #[test]
+    fn native_text_continuation_scales_horizontal_columns_for_the_receiving_view() {
+        let (mut source, doc) = bound_editor(&"x".repeat(1000));
+        source.force_geometry(Rect::new(0.0, 0.0, 320.0, 240.0), 8.0);
+        source.set_selection_lc((0, 450), (0, 500));
+        let position = source
+            .continuation_position(&doc, "11111111-2222-4333-8444-555555555555")
+            .unwrap();
+        let (source_x, source_y) = source.native_scroll_offsets();
+        assert!(source_x > 0.0);
+        let mut target = EditorView::new();
+        target.bind(source.text_obj.clone().unwrap(), Language::Rust);
+        target.force_geometry(Rect::new(0.0, 0.0, 320.0, 240.0), 16.0);
+        target.sync(&doc, &automerge::ROOT);
+        assert!(target.restore_continuation_position(&doc, &position));
+        assert_eq!(target.native_scroll_offsets(), (source_x * 2.0, source_y));
+        assert_eq!(target.selected_text(), source.selected_text());
+        assert_eq!(
+            target.continuation_position(&doc, &position.resource_id),
+            Some(position),
+            "portable view coordinates survive different measured cell widths"
+        );
     }
 
     #[test]

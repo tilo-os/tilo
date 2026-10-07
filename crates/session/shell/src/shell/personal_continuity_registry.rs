@@ -103,6 +103,7 @@ fn semantic_schema_for_builtin(app_id: &str) -> Option<ContinuitySemanticSchema>
         "so.tilo.ebook" => Some(ContinuitySemanticSchema::PublicationPositionV1),
         "so.tilo.music" => Some(ContinuitySemanticSchema::MediaPositionV1),
         "so.tilo.chat" => Some(ContinuitySemanticSchema::RealtimeSessionV1),
+        "so.tilo.code-editor" => Some(ContinuitySemanticSchema::TextPositionV1),
         _ => None,
     }
 }
@@ -129,6 +130,10 @@ fn validate_portable_semantic_metadata(
                 let _ = resume.position_ms;
                 resume.paused && portable_id(&resume.track_id)
             }),
+        ContinuitySemanticSchema::TextPositionV1 => {
+            serde_json::from_slice::<ui::text_position::TextPosition>(bytes)
+                .is_ok_and(|position| position.valid())
+        }
         ContinuitySemanticSchema::RealtimeSessionV1 => serde_json::from_slice::<ChatResume>(bytes)
             .is_ok_and(|resume| {
                 let _ = resume.controls;
@@ -518,6 +523,62 @@ pub fn global_registry() -> Arc<Mutex<ContinuationRegistry>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_text_metadata_is_bounded_path_free_and_structurally_checked() {
+        use automerge::{ObjType, ROOT, transaction::Transactable};
+        use ui::text_position::{ResolvedTextPosition, TextPosition};
+        let mut doc = automerge::AutoCommit::new();
+        let text = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
+        doc.splice_text(&text, 0, 0, "private buffer content")
+            .unwrap();
+        let mut position = TextPosition::capture(
+            &doc,
+            &text,
+            "11111111-2222-4333-8444-555555555555",
+            &ResolvedTextPosition {
+                carets: vec![(2, Some(1))],
+                top_character: 0,
+                vertical_fraction: 0.25,
+                horizontal_columns: 2.0,
+            },
+        )
+        .unwrap();
+        let safe = serde_json::to_vec(&position).unwrap();
+        assert!(validate_app_metadata("so.tilo.code-editor", 1, &safe));
+        assert!(!validate_app_metadata("so.tilo.code-editor", 2, &safe));
+        assert!(!String::from_utf8(safe).unwrap().contains("private buffer"));
+        position.carets[0].cursor = vec![255];
+        assert!(!validate_app_metadata(
+            "so.tilo.code-editor",
+            1,
+            &serde_json::to_vec(&position).unwrap()
+        ));
+        assert!(!validate_app_metadata(
+            "so.tilo.code-editor",
+            1,
+            br#"{"resource_id":"/home/alice/private","carets":[],"password":"secret"}"#
+        ));
+        let empty =
+            ui::app::compose_structural_continuation_metadata(ui::view::View::default(), None)
+                .unwrap();
+        let contract = ContinuityContract {
+            required: vec![ContinuityFacet::Presentation],
+            semantic_schema: Some(ContinuitySemanticSchema::TextPositionV1),
+        };
+        assert!(
+            ContinuationRegistry::default()
+                .report_with_contract(
+                    RoomId::new(),
+                    "so.tilo.code-editor".into(),
+                    AppInstanceId(1),
+                    empty.schema_version,
+                    empty.bytes,
+                    &contract,
+                )
+                .unwrap()
+        );
+    }
 
     fn browser_checkpoint(url: &[u8]) -> ui::collaboration::ContinuationMetadata {
         ui::app::compose_structural_continuation_metadata(
