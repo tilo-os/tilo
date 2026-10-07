@@ -2022,7 +2022,9 @@ fn owned_navigation_admission_queue_loss_and_renderer_death_are_observable() {
     engine.shared.fail("fixture helper disconnected".into());
     assert!(engine.drain_events().iter().any(|event| matches!(event, WebViewEvent::NavigationOutcome { request_id: 9, error: Some(error), .. } if error == "fixture helper disconnected")));
     assert!(engine.navigate_owned(10, NavigationCommand::Back).is_err());
-    let (dir, host) = helper_fixture("exec 3>&1; exec cat >/dev/null");
+    // Queue loss and renderer death are separate controls. Keep the helper's
+    // event pipe alive after command EOF until the engine owner tears it down.
+    let (dir, host) = helper_fixture("exec 3>&1; cat >/dev/null; exec sleep 30");
     let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
     engine.tx.close();
     assert!(
