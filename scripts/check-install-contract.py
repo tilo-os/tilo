@@ -105,7 +105,28 @@ assert "TILO_RPM_SIGNING_KEY_B64" in packaging_docs
 assert "unencrypted armored" in packaging_docs and "private key" in packaging_docs
 assert "TILO_RPM_SIGNING_KEY_B64" in session_workflow
 assert "TILO_RPM_SIGNING_FINGERPRINT" in session_workflow
-assert "startsWith(github.ref, 'refs/tags/desktop-v') && '1' || '0'" in session_workflow
+# A protected tag step, after exact-main qualification, is the only place
+# the RPM private key may enter packaging. Ordinary candidates stay unsigned.
+unsigned_step, signed_step = session_workflow.split(
+    "      - name: Build, install-test and sign protected desktop release userspaces\n", 1
+)
+signed_step = signed_step.split("      # The v4 artifact pins", 1)[0]
+unsigned_step = unsigned_step.split(
+    "      - name: Build and install-test unsigned candidate userspaces\n", 1
+)[1]
+assert "if: startsWith(github.ref, 'refs/tags/desktop-v')" in signed_step
+assert "if: ${{ !startsWith(github.ref, 'refs/tags/desktop-v') }}" in unsigned_step
+assert 'TILO_RPM_SIGNING_ENABLED: "1"' in signed_step
+assert 'TILO_RPM_SIGNING_ENABLED: "0"' in unsigned_step
+assert "secrets." not in unsigned_step
+for signing_name in ("TILO_RPM_SIGNING_KEY_B64", "TILO_RPM_SIGNING_KEY_ID"):
+    reference = "secrets." + signing_name
+    assert session_workflow.count(reference) == 1
+    assert reference in signed_step
+validation = session_workflow.split("  validate:\n", 1)[1].split("  package:\n", 1)[0]
+assert 'run: tools/ci/receipt.sh verify "$GITHUB_SHA" origin' in validation
+package_job = session_workflow.split("  package:\n", 1)[1].split("  host-session-e2e:\n", 1)[0]
+assert "    needs: validate\n" in package_job
 assert "TILO_RPM_SIGNING_KEY_ARTIFACT: ${{ matrix.arch == 'amd64' && '1' || '0' }}" in session_workflow
 rpm_job = (ROOT / "dist/ci/run-package-job.sh").read_text()
 assert "--env TILO_RPM_SIGNING_KEY_B64" in rpm_job
