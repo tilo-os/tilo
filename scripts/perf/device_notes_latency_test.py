@@ -86,30 +86,100 @@ class DeviceCaptureSafety(unittest.TestCase):
                 device.action("new-page", {"value": "scratch"})
             run.assert_not_called()
 
-    def test_exact_room_record_selects_its_read_and_ignores_foreign_match(self):
-        device = Device(argparse.Namespace(device="test", slot="device", notes_room="owned-room",
+    def test_scoped_foreign_match_refuses_without_invocation(self):
+        room = "5ba25f73-87c5-447f-a5a6-880dc4249a81"
+        device = Device(argparse.Namespace(device="test", slot="device", notes_room=room,
                                           notes_record="owned-record"))
         calls = []
-        def run(arguments):
+        def control(arguments):
             calls.append(arguments)
-            if "list" in arguments:
-                return json.dumps({"actions": [
-                    dict(application="so.tilo.notes", room="foreign-room",
-                         record="owned-record", operation="read", provider="app-actions", id="foreign"),
-                    dict(application="so.tilo.notes", room="owned-room",
-                         record="old-user-record", operation="read", provider="app-actions", id="old"),
-                    dict(application="so.tilo.notes", room="owned-room",
-                         record="owned-record", operation="read", provider="app-actions", id="owned") ]})
-            if "invoke" in arguments:
-                return json.dumps({"receipt": {"broker_invocation_id": 17}})
-            return json.dumps({"receipt": {"update": {"state": "succeeded",
-                                                      "output": {"value": {"text": ""}}}}})
-        device.run = run
-        self.assertEqual(device.control(["read", "so.tilo.notes", "notes.page:new"]), {"text": ""})
-        invoke = next(args for args in calls if "invoke" in args)
-        self.assertEqual(invoke[5:7], ["app-actions", "owned"])
-        self.assertEqual(json.loads(invoke[-1]), {"item": "notes.page:new"})
-        self.assertFalse(any("old" in args or "foreign" in args for args in calls))
+            return dict(query="", scope=dict(application="so.tilo.notes", room=room,
+                        record="owned-record", semantic_family="notes.notebook"), count=1,
+                        actions=[dict(provider="app-actions", application="so.tilo.notes",
+                                      room=room, record="old-user-record", operation="read")])
+        device.control = control
+        with self.assertRaisesRegex(RuntimeError, "foreign row"):
+            device.action("read", {"item": "notes.page:new"})
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][:2], ["actions", "list"])
+
+    def test_notes_owned_operation_uses_metadata_scope_without_text_query(self):
+        room = "5ba25f73-87c5-447f-a5a6-880dc4249a81"
+        record = "derived:default@tab:f276000000000044"
+        device = Device(argparse.Namespace(device="test", slot="device", notes_room=room,
+                                          notes_record=record))
+        calls = []
+        invocation = "e22af039-b881-4c66-91ab-e4164f4a51f0"
+        def control(arguments):
+            calls.append(arguments)
+            if arguments[:2] == ["actions", "list"]:
+                scoped = "--application" in arguments
+                scope = dict(application="so.tilo.notes", room=room, record=record,
+                             semantic_family="notes.notebook") if scoped else None
+                rows = [dict(provider="app-actions", application="so.tilo.notes", room=room,
+                             record=record, resource="bound", id="read-bound", operation="read",
+                             semantic_identity=dict(kind="notes.notebook", key="notes.notebook"),
+                             params=[], contract=dict(availability=dict(state="available")))] if scoped else []
+                return dict(query="" if scoped else "so.tilo.notes", scope=scope,
+                            count=len(rows), actions=rows)
+            return {"receipt": {"broker_invocation_id": 17, "update": {
+                "invocation": invocation, "state": "succeeded", "output": {"value": {"pages": []}}}}}
+        device.control = control
+        with patch("device_notes_latency.time.sleep"), patch("device_notes_latency.time.monotonic", side_effect=[0, 1, 20, 21, 22]):
+            self.assertEqual(device.action("read", {}), {"pages": []})
+        self.assertNotEqual(calls[0][2], "so.tilo.notes")
+        self.assertIn("--application", calls[0])
+        self.assertIn("--programmatic", calls[0])
+
+    def test_owned_page_open_matches_semantic_key_not_opaque_suffix(self):
+        room = "5ba25f73-87c5-447f-a5a6-880dc4249a81"
+        device = Device(argparse.Namespace(device="test", slot="device", notes_room=room,
+                                          notes_record="owned-record"))
+        calls = []
+        invocation = "e22af039-b881-4c66-91ab-e4164f4a51f0"
+        def control(arguments):
+            calls.append(arguments)
+            if arguments[:2] == ["actions", "list"]:
+                rows = [dict(provider="app-actions", application="so.tilo.notes", room=room,
+                             record="owned-record", resource="opaque-current-alias", id="open-owned",
+                             operation="open", semantic_identity=dict(kind="notes.page", key="notes.page:new"),
+                             params=[], contract=dict(availability=dict(state="available")))]
+                return dict(query="", scope=dict(application="so.tilo.notes", room=room,
+                            record="owned-record", semantic_family="notes.page"), count=1, actions=rows)
+            return {"receipt": {"broker_invocation_id": 17, "update": {
+                "invocation": invocation, "state": "succeeded", "output": {"value": None}}}}
+        device.control = control
+        self.assertIsNone(device.action("open", {}, resource="notes.page:new"))
+        self.assertEqual(calls[1][2:4], ["app-actions", "open-owned"])
+
+    def test_status_cannot_change_the_admitted_job_or_uuid(self):
+        room = "5ba25f73-87c5-447f-a5a6-880dc4249a81"
+        for fault in ("job", "uuid", "boolean-job", "missing-uuid", "unavailable"):
+            device = Device(argparse.Namespace(device="test", slot="device", notes_room=room,
+                                              notes_record="owned-record"))
+            calls = []
+            invocation = "e22af039-b881-4c66-91ab-e4164f4a51f0"
+            def control(arguments):
+                calls.append(arguments)
+                if arguments[:2] == ["actions", "list"]:
+                    rows = [dict(provider="app-actions", application="so.tilo.notes", room=room,
+                                 record="owned-record", id="read-owned", operation="read",
+                                 semantic_identity=dict(kind="notes.notebook", key="notebook"), params=[],
+                                 contract=dict(availability=dict(state="unavailable" if fault == "unavailable" else "available")))]
+                    return dict(query="", scope=dict(application="so.tilo.notes", room=room,
+                                record="owned-record", semantic_family="notes.notebook"), count=1, actions=rows)
+                job = True if fault == "boolean-job" else 17
+                identity = None if fault == "missing-uuid" else invocation
+                if arguments[1] == "status":
+                    job = 18 if fault == "job" else job
+                    identity = "e22af039-b881-4c66-91ab-e4164f4a51f1" if fault == "uuid" else identity
+                return {"receipt": {"broker_invocation_id": job, "update": {
+                    "invocation": identity, "state": "succeeded", "output": {"value": {"pages": []}}}}}
+            device.control = control
+            with self.subTest(fault=fault), self.assertRaises(RuntimeError):
+                device.action("read", {})
+            self.assertLessEqual(sum(args[1] == "invoke" for args in calls), 1)
+            if fault == "unavailable": self.assertEqual(len(calls), 1)
 
     def test_wrong_compositor_keyboard_route_never_types(self):
         device = DeviceFixture(wrong_focus=True)

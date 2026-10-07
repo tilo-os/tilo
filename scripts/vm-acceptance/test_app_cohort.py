@@ -18,6 +18,14 @@ app = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(app)
 
 
+ROOM = "5ba25f73-87c5-447f-a5a6-880dc4249a81"
+
+def response(args, rows):
+    scope = {key: args[args.index(flag)+1] for key, flag in
+             (("application", "--application"), ("room", "--room"),
+              ("record", "--record"), ("semantic_family", "--semantic-family"))} if "--application" in args else None
+    return dict(query="", scope=scope, count=len(rows), actions=rows)
+
 def receipt(state, job=17, invocation="owner", value=None):
     return {"receipt": {"broker_invocation_id": job, "update": {
         "invocation": invocation, "state": state, "output": {"value": value}}}}
@@ -32,18 +40,31 @@ def polls(probe, timeout, **kwargs):
 
 
 def state(*tabs):
-    return {"workspace_tree": {"local_app_records": {str(tab): {"room": "room",
-            "app_id": app.BROWSER, "record_instance": tab + 10} for tab in tabs}, "workspaces": [{"room": "room", "strips": [{
+    return {"workspace_tree": {"local_app_records": {str(tab): {"room": ROOM,
+            "app_id": app.BROWSER, "record_instance": tab + 10} for tab in tabs}, "workspaces": [{"room": ROOM, "strips": [{
         "window_groups": [{"tabs": [{"id": tab, "tile": {"Foreign": {
             "app_id": app.BROWSER, "surface_id": tab + 100}}} for tab in tabs]}]}]}]}}
 
 
 def row(record="derived:default@tab:000000000000000b", operation="navigate"):
     return {"provider": "app-actions", "application": app.BROWSER,
-            "room": "room", "record": record, "resource": "bound:" + record,
+            "room": ROOM, "record": record, "resource": "bound:" + record,
             "id": record + ":" + operation, "operation": operation,
             "semantic_identity": {"kind": "browser.page", "key": "browser.page"}, "params": [],
             "contract": {"availability": {"state": "available"}}}
+
+
+class ApplicationMetadataDiscovery(unittest.TestCase):
+    def test_application_identifier_is_metadata_not_a_text_query(self):
+        descriptor = row()
+        descriptor["title"] = "Read the page"
+        class VM:
+            def control_json(self, *args):
+                words = [word for word in args[2:] if not word.startswith("--")]
+                query = " ".join(words)
+                rows = [] if query else [descriptor, dict(descriptor, application=app.STORE)]
+                return {"query": query, "scope": None, "count": len(rows), "actions": rows}
+        self.assertEqual(app.catalog(VM(), app.BROWSER), [descriptor])
 
 
 class ActivatedCohort(unittest.TestCase):
@@ -244,7 +265,7 @@ class Jobs(unittest.TestCase):
 
 class AdoptedAppDoor(unittest.TestCase):
     def subject(self):
-        return {"room":"room", "tab_id":1, "surface_id":101, "package_id":app.STORE,
+        return {"room":ROOM, "tab_id":1, "surface_id":101, "package_id":app.STORE,
                 "record_instance":11, "peer_pid":456, "peer_start_time_ticks":"12345",
                 "adoption_id":"12345678-1234-1234-1234-123456789abc"}
 
@@ -277,7 +298,7 @@ class AdoptedAppDoor(unittest.TestCase):
                 if args[:2]==("actions","status"):return receipt("succeeded",value="reviewed")
                 rows=([self.descriptor] if self.descriptors is None else self.descriptors)
                 if self.catalogue_sequence is not None:rows=next(self.catalogue_sequence)
-                result={"query":app.STORE,"actions":copy.deepcopy(rows)}
+                result=response(args,copy.deepcopy(rows))
                 if self.on_catalogue is not None:self.on_catalogue()
                 return result
             def invoke(self,provider,identity,args):
@@ -391,7 +412,7 @@ class AdoptedAppDoor(unittest.TestCase):
         def two_store_windows():
             value=current()
             records=value["workspace_tree"]["local_app_records"]
-            records["2"]={"room":"room","app_id":app.STORE,"record_instance":12}
+            records["2"]={"room":ROOM,"app_id":app.STORE,"record_instance":12}
             tabs=value["workspace_tree"]["workspaces"][0]["strips"][0]["window_groups"][0]["tabs"]
             tabs.append({"id":2,"tile":{"Foreign":{"app_id":app.STORE,"surface_id":102}}})
             value["chrome"]["native_window_provenance"]["windows"].append(
@@ -419,7 +440,7 @@ class AdoptedAppDoor(unittest.TestCase):
 class BrowserWorker(unittest.TestCase):
     def current(self):
         value = state(1, 2)
-        worker = {"room":"room", "tab_id":2, "surface_id":102, "package_id":app.BROWSER,
+        worker = {"room":ROOM, "tab_id":2, "surface_id":102, "package_id":app.BROWSER,
                   "record_instance":12, "peer_pid":456, "peer_start_time_ticks":"12345",
                   "adoption_id":"12345678-1234-1234-1234-123456789abc"}
         value["chrome"] = {"native_window_provenance":{"method":"authenticated-wayland-peer", "omitted":0,
@@ -429,17 +450,17 @@ class BrowserWorker(unittest.TestCase):
     def test_uses_public_record_instance_and_exact_new_surface_not_other_workers(self):
         value, worker = self.current()
         value["chrome"]["native_window_provenance"]["windows"].append(dict(worker, tab_id=1, surface_id=101, peer_pid=789))
-        self.assertEqual(app.browser_subject(value,("room","2","102")),worker)
+        self.assertEqual(app.browser_subject(value,(ROOM,"2","102")),worker)
 
     def test_foreign_record_pid_lifetime_ambiguous_or_missing_provenance_refuses(self):
         for field,bad in [("record_instance",2),("package_id",app.STORE),("peer_pid",True),
                           ("peer_start_time_ticks",""),("adoption_id","00000000-0000-0000-0000-000000000000")]:
             value,worker=self.current();worker[field]=bad
-            with self.assertRaises(VmError):app.browser_subject(value,("room","2","102"))
+            with self.assertRaises(VmError):app.browser_subject(value,(ROOM,"2","102"))
         value,worker=self.current();value["chrome"]["native_window_provenance"]["windows"].append(dict(worker))
-        with self.assertRaises(VmError):app.browser_subject(value,("room","2","102"))
+        with self.assertRaises(VmError):app.browser_subject(value,(ROOM,"2","102"))
         value,_=self.current();value["chrome"]["native_window_provenance"]["omitted"]=1
-        with self.assertRaises(VmError):app.browser_subject(value,("room","2","102"))
+        with self.assertRaises(VmError):app.browser_subject(value,(ROOM,"2","102"))
 
     def test_executable_must_be_unique_in_the_current_selected_signed_layer(self):
         row={"component":"apps+runtime","layer":"a"*64,"path":"/usr/share/tilo-apps/pkg/bin/browser","sha256":"b"*64}
@@ -458,7 +479,7 @@ class FreshBrowser(unittest.TestCase):
                 tabs=(1, 2) if self.stage and new_surface else (1,)
                 value=state(*tabs)
                 value["chrome"]={"session_locked":False,"native_window_provenance":{"method":"authenticated-wayland-peer", "omitted":0,
-                    "windows":[{"room":"room", "tab_id":tab, "surface_id":tab+100, "package_id":app.BROWSER,
+                    "windows":[{"room":ROOM, "tab_id":tab, "surface_id":tab+100, "package_id":app.BROWSER,
                                 "record_instance":tab+10, "peer_pid":400+tab, "peer_start_time_ticks":str(1000+tab),
                                 "adoption_id":f"12345678-1234-1234-1234-{tab:012x}"} for tab in tabs]}}
                 return value
@@ -475,7 +496,9 @@ class FreshBrowser(unittest.TestCase):
                 rows = [row()]
                 if self.stage and new_record:
                     rows.append(row("derived:default@tab:000000000000000c"))
-                return {"query": app.BROWSER, "actions": rows}
+                if "--record" in args:
+                    rows = [r for r in rows if r["record"] == args[args.index("--record")+1]]
+                return response(args, rows)
         return VM()
 
     def test_only_new_mapped_record_becomes_target(self):
@@ -483,7 +506,7 @@ class FreshBrowser(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch.object(app, "wait_until", polls):
             door, tab = app.fresh_browser(vm, Path(directory))
         self.assertEqual(door.bound[2], "derived:default@tab:000000000000000c")
-        self.assertEqual(tab, ("room", "2", "102"))
+        self.assertEqual(tab, (ROOM, "2", "102"))
         self.assertEqual(vm.invoked, [("actions", "tab.open-beside", {"app": app.BROWSER, "background": True})])
 
     def test_open_success_without_new_record_or_surface_aborts(self):
@@ -500,8 +523,9 @@ class FreshBrowser(unittest.TestCase):
         original = vm.control_json
         def catalogue(*args):
             value = original(*args)
-            if vm.stage:
+            if vm.stage and "--record" not in args:
                 value["actions"].append(row("derived:default@tab:0000000000000099"))
+                value["count"] = len(value["actions"])
             return value
         vm.control_json = catalogue
         with tempfile.TemporaryDirectory() as directory, patch.object(app, "wait_until", polls):
@@ -512,7 +536,7 @@ class FreshBrowser(unittest.TestCase):
 
     def test_missing_foreign_or_invalid_public_association_never_guesses_tab_identity(self):
         for association in (None, {"room": "other", "app_id": app.BROWSER, "record_instance": 12},
-                            {"room": "room", "app_id": app.BROWSER, "record_instance": True}):
+                            {"room": ROOM, "app_id": app.BROWSER, "record_instance": True}):
             vm = self.vm()
             original = vm.state
             def current():
@@ -556,7 +580,7 @@ class HttpsReadback(unittest.TestCase):
 
     def test_navigate_then_settle_then_read_and_refuse_transport_only_success(self):
         class Door:
-            bound = (app.BROWSER, "room", "new-record", "page")
+            bound = (app.BROWSER, ROOM, "new-record", "page")
             def call(self, *args):
                 return next(self.results)
         door = Door()

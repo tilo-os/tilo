@@ -11,6 +11,11 @@ import os
 from pathlib import Path
 import subprocess
 import time
+import sys
+import uuid
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "vm-acceptance"))
+from acceptance.action_discovery import discover, semantic_identity
 
 from input_latency import summarize_physical_notes_latency
 from device_notes_trace import collect_trace
@@ -91,33 +96,56 @@ class Device:
         record = getattr(self.options, "notes_record", None)
         if not room or not record:
             raise RuntimeError("Explicit owned Notes room and record are required")
+        if operation not in ("read", "new-page", "inspect-editor", "open"):
+            raise RuntimeError("Unsupported scratch Notes operation")
+        if (operation == "open") != (resource is not None):
+            raise RuntimeError("Scratch page Open requires an observed semantic resource")
         deadline = time.monotonic() + 15
         while True:
-            catalogue = self.control(["actions", "list", "so.tilo.notes", "--json"])
-            rows = [row for row in catalogue["actions"]
+            family = "notes.page" if operation == "open" else "notes.notebook"
+            catalogue = discover(self.control, "so.tilo.notes",
+                                 ("so.tilo.notes", room, record), family)
+            rows = [row for row in catalogue
                     if (row.get("application"), row.get("room"), row.get("record"))
                     == ("so.tilo.notes", room, record)
                     and row.get("operation") == operation
-                    and (resource is None or row.get("resource") == resource
-                         or str(row.get("resource", "")).endswith(
-                             ":" + resource.encode().hex()))]
+                    and semantic_identity(row) is not None
+                    and (resource is None or semantic_identity(row)[1] == resource)]
             if len(rows) == 1:
                 break
             if len(rows) > 1 or time.monotonic() >= deadline:
                 raise RuntimeError("No unique live Notes operation: " + operation)
             time.sleep(.25)
         row = rows[0]
+        params = row.get("params")
+        if (not isinstance(params, list) or any(not isinstance(p, dict)
+                or not isinstance(p.get("name"), str) for p in params)
+                or not {p["name"] for p in params if p.get("required")} <= set(payload)
+                or not set(payload) <= {p["name"] for p in params}
+                or row.get("contract", {}).get("availability", {}).get("state") != "available"
+                or not isinstance(row.get("id"), str) or not row["id"]):
+            raise RuntimeError("Scratch Notes action contract is unavailable or unverified")
         # The fixed benchmark operations carry only a generated scratch title
         # or no parameters. They never accept secrets.
         result = self.control(["actions", "invoke", row["provider"], row["id"],
                                "--args-json", json.dumps(payload)])
         job = result.get("receipt", {}).get("broker_invocation_id")
-        if job is None:
+        invocation = result.get("receipt", {}).get("update", {}).get("invocation")
+        if type(job) is not int or job <= 0:
             raise RuntimeError("Notes action did not return a trackable job")
+        try:
+            uuid.UUID(invocation)
+        except (ValueError, TypeError, AttributeError) as error:
+            raise RuntimeError("Notes action did not return an invocation identity") from error
         deadline = time.monotonic() + 20
         while True:
             result = self.control(["actions", "status", str(job)])
-            update = result["receipt"]["update"]
+            receipt = result.get("receipt", {})
+            update = receipt.get("update", {})
+            if (type(receipt.get("broker_invocation_id")) is not int
+                    or receipt["broker_invocation_id"] != job
+                    or update.get("invocation") != invocation):
+                raise RuntimeError("Notes action status changed invocation identity")
             if update["state"] == "succeeded":
                 return update.get("output", {}).get("value")
             if update["state"] not in ("accepted", "running"):

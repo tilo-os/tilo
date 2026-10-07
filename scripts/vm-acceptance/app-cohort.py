@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from acceptance.action_jobs import invoke, require
+from acceptance.action_discovery import discover, semantic_identity
 from acceptance.cohort import selected_layer, runtime_inventory
 from acceptance.vm import TiloVm, first_json, wait_until
 
@@ -25,23 +26,8 @@ def binding(row):
     return tuple(row.get(k) for k in ("application", "room", "record", "resource"))
 
 
-def semantic_identity(row):
-    identity = row.get("semantic_identity")
-    if not isinstance(identity, dict):
-        return None
-    kind, key = identity.get("kind"), identity.get("key")
-    if (not isinstance(kind, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", kind)
-            or not isinstance(key, str) or not key or len(key.encode()) > 4096
-            or any(ord(character) < 32 or 127 <= ord(character) < 160 for character in key)):
-        return None
-    return kind, key
-
-
-def catalog(vm, app):
-    result = vm.control_json("actions", "list", app, "--programmatic", "--json")
-    require(result.get("query") == app and isinstance(result.get("actions"), list),
-            "matched programmatic action discovery unavailable")
-    return [r for r in result["actions"] if r.get("application") == app]
+def catalog(vm, app, bound=None, family=None):
+    return discover(lambda arguments: vm.control_json(*arguments), app, bound, family)
 
 
 def choose(rows, app, kind, operation, args, bound=None, semantic=None):
@@ -104,7 +90,7 @@ class AppDoor:
                 return None
             self.tab, self.worker = tabs[0], dict(worker)
         self._check_custody()
-        rows = catalog(self.vm, self.app)
+        rows = catalog(self.vm, self.app, self.bound, self.kind)
         identities = {identity for row in rows
                       if row.get("provider") == "app-actions" and binding(row)[:3] == self.bound[:3]
                       and (identity := semantic_identity(row)) and identity[0] == self.kind
@@ -131,7 +117,7 @@ class AppDoor:
     def call(self, operation, args=None, timeout=120):
         args = dict(args or {})
         self._check_custody()
-        row = choose(catalog(self.vm, self.app), self.app, self.kind, operation, args,
+        row = choose(catalog(self.vm, self.app, self.bound, self.kind), self.app, self.kind, operation, args,
                      self.bound, self.semantic)
         self._check_custody()
         self.bound = binding(row)
@@ -317,7 +303,7 @@ def fresh_browser(vm, out):
             if record is None:
                 return None
             require(record not in {b[2] for b in old}, "new tab reused an existing Browser record")
-            rows = [r for r in catalog(vm, BROWSER)
+            rows = [r for r in catalog(vm, BROWSER, (BROWSER, tab[0], record), "browser.page")
                     if (r.get("semantic_identity") or {}).get("kind") == "browser.page"
                     and r.get("room") == tab[0] and r.get("record") == record]
             bound = {binding(r) for r in rows}

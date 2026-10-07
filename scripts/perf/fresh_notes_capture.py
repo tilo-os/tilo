@@ -166,7 +166,7 @@ class OwnedDevice(Device):
         if arguments[:2] == ["read", APP]:
             return self.action("read", {"item": arguments[2]} if len(arguments) == 3 else {})
         if arguments[:2] == ["actions", "list"]:
-            arguments = [*arguments, "--programmatic"]
+            arguments = arguments if "--programmatic" in arguments else [*arguments, "--programmatic"]
         return self.vm.control_json(*arguments)
 
     def action(self, operation, payload, resource=None):
