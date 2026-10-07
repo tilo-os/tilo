@@ -8663,10 +8663,18 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(current) => current,
             Err(error) => return Promise::err(error),
         };
-        let Some(agent_id) = current.agent_id else {
+        let Some(agent_id) = current.agent_id.clone() else {
             return Promise::err(capnp::Error::failed(
                 "only an agent may invoke a task action".into(),
             ));
+        };
+        let enrolled = if current.managed_scope.is_some() {
+            match enrolled_tasks::Context::from_channel(&self) {
+                Ok(context) => Some(context),
+                Err(error) => return Promise::err(capnp::Error::failed(error)),
+            }
+        } else {
+            None
         };
         let state = self.state.clone();
         let peer_id = self.peer_id;
@@ -8700,9 +8708,23 @@ impl channel_handle::Server for CapnpChannelHandle {
                     "durable task steps are not served by this host".into(),
                 ));
             }
-            let job = state
-                .start_task_action(peer_id, &agent_id, request.get_run_id(), &lease, target)
-                .map_err(capnp::Error::failed)?;
+            let job = match enrolled {
+                Some(context) => enrolled_tasks::start_action(
+                    &context,
+                    &current,
+                    request.get_run_id(),
+                    &lease,
+                    target,
+                ),
+                None => state.start_task_action(
+                    peer_id,
+                    &agent_id,
+                    request.get_run_id(),
+                    &lease,
+                    target,
+                ),
+            }
+            .map_err(capnp::Error::failed)?;
             let update = state.invocation_status(job.id).ok_or_else(|| {
                 capnp::Error::failed("accepted task action has no broker state".into())
             })?;
@@ -8728,19 +8750,29 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(current) => current,
             Err(error) => return Promise::err(error),
         };
-        let Some(agent_id) = current.agent_id else {
+        let Some(agent_id) = current.agent_id.clone() else {
             return Promise::err(capnp::Error::failed(
                 "only an agent may observe task cancellation".into(),
             ));
+        };
+        let enrolled = if current.managed_scope.is_some() {
+            match enrolled_tasks::Context::from_channel(&self) {
+                Ok(context) => Some(context),
+                Err(error) => return Promise::err(capnp::Error::failed(error)),
+            }
+        } else {
+            None
         };
         let state = self.state.clone();
         let peer_id = self.peer_id;
         Promise::from_future(async move {
             let request = params.get()?;
             let lease = request.get_lease()?.to_str()?.to_owned();
-            let cancelled = state
-                .task_run_cancelled(peer_id, &agent_id, request.get_run_id(), &lease)
-                .map_err(capnp::Error::failed)?;
+            let cancelled = match enrolled {
+                Some(context) => enrolled_tasks::cancelled(&context, request.get_run_id(), &lease),
+                None => state.task_run_cancelled(peer_id, &agent_id, request.get_run_id(), &lease),
+            }
+            .map_err(capnp::Error::failed)?;
             results.get().set_cancelled(cancelled);
             Ok(())
         })

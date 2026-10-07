@@ -11,6 +11,10 @@ use tilo_peer_state::{
     workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskCommand, WorkspaceTaskFinish},
 };
 
+#[path = "enrolled_tasks/task_actions.rs"]
+mod task_actions;
+pub(super) use task_actions::{cancelled, start_action};
+
 const MAX_CONNECTIONS: usize = 32;
 const MAX_RUNS: usize = 256;
 const MAX_UPDATE_BYTES: usize = 8192;

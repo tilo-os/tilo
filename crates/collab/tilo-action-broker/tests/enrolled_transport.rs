@@ -417,6 +417,52 @@ fn actual_task_only_sdk_consumes_signed_descriptor_and_never_publishes_app_docum
 }
 
 #[test]
+fn signed_enrolled_sdk_observes_exact_owner_cancelled_epoch() {
+    let mut fixture = running_fixture_options(false, false, Some("cancelled")).unwrap();
+    fixture.accept_and_progress().unwrap();
+    let request = OwnerCommitRequest {
+        room: fixture.native.room.to_string(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation: uuid::Uuid::new_v4(),
+            authority: WorkspaceTaskAuthority::Agent {
+                attestor: fixture.certificate.clone(),
+                agent_id: "fixture-agent".into(),
+            },
+            command: WorkspaceTaskCommand::Finish {
+                task_id: fixture.task.clone(),
+                run_epoch: 1,
+                outcome: tilo_peer_state::workspace_task::WorkspaceTaskFinish::Cancelled,
+                summary: "Actual fixture owner cancellation".into(),
+            },
+        },
+    };
+    fixture
+        .native
+        .owner
+        .commit_workspace_task_command(request.clone(), SystemTime::now())
+        .unwrap()
+        .validate_for(&request)
+        .unwrap();
+    fixture.model_peer.write_all(b"F").unwrap();
+    let observed = read_frame(&mut fixture.model_peer, "cancelled").unwrap();
+    assert_eq!(observed["owner_cancelled_observed"], true);
+    let snapshot = fixture
+        .native
+        .owner
+        .workspace_task_snapshot(fixture.native.room)
+        .unwrap();
+    let (task, control) = task_view(&snapshot, &fixture.task).unwrap();
+    assert_eq!(
+        task.status,
+        tilo_desktop_model::WorkspaceTaskStatus::Cancelled
+    );
+    assert_eq!(control.run_epoch, 1);
+    assert!(control.active_run.is_none());
+    fixture.model_peer.write_all(b"E").unwrap();
+    fixture.stop().unwrap();
+}
+
+#[test]
 fn ordinary_sdk_constructor_cannot_acquire_document_custody_from_managed_descriptor() {
     let mut fixture = running_fixture_options(false, false, Some("ordinary")).unwrap();
     let refused = read_frame(&mut fixture.model_peer, "sdk-ordinary-refused").unwrap();

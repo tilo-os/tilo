@@ -52,13 +52,59 @@ impl Recipient {
         };
         result.map_err(Into::into)
     }
+    fn cancellation(
+        &mut self,
+        id: u64,
+        run: &runtime_collab::TaskRunEnvelope,
+        lease: &str,
+    ) -> Result<std::result::Result<bool, String>> {
+        if !self.manager.send(CollabRequest::TaskRunCancellation {
+            request_id: id,
+            run_id: run.run_id,
+            lease: lease.into(),
+        }) {
+            return Err("SDK cancellation request refused".into());
+        }
+        let reply = self.take(|event| matches!(event, CollabEvent::TaskRunCancellation { request_id, .. } if *request_id == id))?;
+        let CollabEvent::TaskRunCancellation { result, .. } = reply else {
+            return Err("cancellation reply changed".into());
+        };
+        Ok(result)
+    }
+    fn unavailable_action(
+        &mut self,
+        id: u64,
+        run: &runtime_collab::TaskRunEnvelope,
+        lease: &str,
+    ) -> Result<String> {
+        if !self.manager.send(CollabRequest::InvokeTaskAction {
+            request_id: id,
+            invocation: tilo_actions::InvocationId::new(),
+            run_id: run.run_id,
+            lease: lease.into(),
+            step: None,
+            peer_id: u64::MAX,
+            resource: "missing-resource".into(),
+            action: "inspect".into(),
+            arguments: serde_json::Map::default(),
+        }) {
+            return Err("SDK task action request refused".into());
+        }
+        let event = self.take(|event| matches!(event, CollabEvent::TaskActionInvocationResult { request_id, .. } if *request_id == id))?;
+        let CollabEvent::TaskActionInvocationResult { result, .. } = event else {
+            return Err("task action reply changed".into());
+        };
+        result
+            .err()
+            .ok_or_else(|| "unpublished resource action was admitted".into())
+    }
 }
 
 pub(super) fn exercise(
     fd: RawFd,
     context: &serde_json::Value,
     mut model: UnixStream,
-    ordinary: bool,
+    mode: &str,
 ) -> Result<()> {
     let text = |key| {
         context
@@ -68,7 +114,7 @@ pub(super) fn exercise(
     };
     let room = text("room")?.parse()?;
     let agent = text("agent")?;
-    if ordinary {
+    if mode == "ordinary" {
         return refuse_ordinary_sdk(fd, room, agent, &mut model);
     }
     let manager =
@@ -92,6 +138,12 @@ pub(super) fn exercise(
         &serde_json::json!({"stage":"offered", "envelope":envelope, "sdk_task_only":true}),
     )?;
     gate(&mut model, b'A')?;
+    if recipient
+        .cancellation(10, &envelope.task, &envelope.task.lease)?
+        .is_ok()
+    {
+        return Err("unaccepted enrolled lease acquired cancellation authority".into());
+    }
     let mut custody = runtime_collab::EnrolledRecipientCustody::new(
         agent,
         text("launch")?,
@@ -110,9 +162,11 @@ pub(super) fn exercise(
             acceptance: accepted.clone(),
         },
     )?;
+    check_accepted_lease(&mut recipient, &envelope.task)?;
     frame(
         &mut model,
-        &serde_json::json!({"stage":"accepted", "acceptance":accepted}),
+        &serde_json::json!({"stage":"accepted", "acceptance":accepted, "native_lease_observed":true,
+            "unaccepted_lease_refused":true,"wrong_lease_refused":true,"wrong_numeric_run_refused":true}),
     )?;
     gate(&mut model, b'P')?;
     recipient.request(
@@ -127,7 +181,28 @@ pub(super) fn exercise(
         },
     )?;
     frame(&mut model, &serde_json::json!({"stage":"progress"}))?;
-    gate(&mut model, b'F')?;
+    finish(&mut recipient, &mut model, &envelope.task, accepted, mode)
+}
+
+fn finish(
+    recipient: &mut Recipient,
+    model: &mut UnixStream,
+    task: &runtime_collab::TaskRunEnvelope,
+    accepted: runtime_collab::EnrolledTaskAcceptance,
+    mode: &str,
+) -> Result<()> {
+    gate(model, b'F')?;
+    if mode == "cancelled" {
+        if recipient.cancellation(15, task, &task.lease)? != Ok(true) {
+            return Err("exact accepted native cancellation was not observed".into());
+        }
+        frame(
+            model,
+            &serde_json::json!({"stage":"cancelled", "owner_cancelled_observed":true}),
+        )?;
+        gate(model, b'E')?;
+        return Ok(());
+    }
     recipient.request(
         4,
         CollabRequest::ReportEnrolledTask {
@@ -139,8 +214,46 @@ pub(super) fn exercise(
             },
         },
     )?;
-    frame(&mut model, &serde_json::json!({"stage":"finished"}))?;
-    gate(&mut model, b'E')?;
+    if recipient.cancellation(14, task, &task.lease)?.is_ok() {
+        return Err("terminal enrolled lease retained cancellation authority".into());
+    }
+    frame(
+        model,
+        &serde_json::json!({"stage":"finished", "terminal_lease_refused":true}),
+    )?;
+    gate(model, b'E')?;
+    Ok(())
+}
+
+fn check_accepted_lease(
+    recipient: &mut Recipient,
+    task: &runtime_collab::TaskRunEnvelope,
+) -> Result<()> {
+    if recipient.cancellation(11, task, &task.lease)? != Ok(false) {
+        return Err("accepted enrolled lease cannot observe current native cancellation".into());
+    }
+    if recipient.cancellation(12, task, "wrong-lease")?.is_ok() {
+        return Err("wrong lease acquired native cancellation authority".into());
+    }
+    let mut foreign = task.clone();
+    foreign.run_id = foreign
+        .run_id
+        .checked_add(1)
+        .ok_or("numeric run overflow")?;
+    if recipient.cancellation(13, &foreign, &task.lease)?.is_ok() {
+        return Err("wrong numeric run acquired native cancellation authority".into());
+    }
+    let unpublished = recipient.unavailable_action(16, task, &task.lease)?;
+    if !unpublished.contains("no longer published in this workspace") {
+        return Err(format!(
+            "accepted task action failed before current publication check: {unpublished}"
+        )
+        .into());
+    }
+    let wrong_action_lease = recipient.unavailable_action(17, task, "wrong-lease")?;
+    if !wrong_action_lease.contains("accepted enrolled lease not retained") {
+        return Err("wrong task action lease reached resource admission".into());
+    }
     Ok(())
 }
 

@@ -291,7 +291,7 @@ fn main() -> Result<()> {
     let identity: serde_json::Value = serde_json::from_slice(&presentation)?;
     if let Some(mode) = identity.get("sdk_mode").and_then(serde_json::Value::as_str) {
         let mut diagnostics = model.try_clone()?;
-        let result = enrolled_sdk::exercise(transferred, &context, model, mode == "ordinary");
+        let result = enrolled_sdk::exercise(transferred, &context, model, mode);
         if let Err(error) = &result {
             frame(
                 &mut diagnostics,
