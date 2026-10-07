@@ -20,6 +20,7 @@ pub(crate) trait Scheduler {
     fn schedule_alarm(
         &self,
         id: &str,
+        activation: &str,
         alarm: &crate::Alarm,
         end: SystemTime,
         last_rung: Option<chrono::NaiveDate>,
@@ -30,11 +31,12 @@ impl Scheduler for dyn Notifier {
     fn schedule_alarm(
         &self,
         id: &str,
+        activation: &str,
         alarm: &crate::Alarm,
         end: SystemTime,
         last_rung: Option<chrono::NaiveDate>,
     ) -> Result<(), String> {
-        let notification = Notification::new(id, "Alarm", &alarm.label).with_activation(ALARMS_URI);
+        let notification = Notification::new(id, "Alarm", &alarm.label).with_activation(activation);
         Notifier::schedule_alarm(
             self,
             &notification,
@@ -76,6 +78,31 @@ pub(crate) fn timer_id(id: &str) -> String {
     format!("t{}", id.chars().take(14).collect::<String>())
 }
 
+pub(crate) fn alarm_activation(record: Option<&ui::record::RecordId>, alarm: &str) -> String {
+    record.map_or_else(
+        || format!("tilo-clocks:alarm/{alarm}"),
+        |record| format!("tilo-clocks:record/{record}/alarm/{alarm}"),
+    )
+}
+
+pub(crate) fn activation_record(uri: &str) -> Option<ui::record::RecordId> {
+    let path = uri.strip_prefix("tilo-clocks:record/")?;
+    let record = path
+        .split_once("/alarm/")
+        .map_or(path, |(record, _)| record);
+    ui::record::RecordId::parse(record)
+}
+
+pub(crate) fn activation_alarm(uri: &str) -> Option<&str> {
+    uri.strip_prefix("tilo-clocks:alarm/").or_else(|| {
+        let (record, alarm) = uri
+            .strip_prefix("tilo-clocks:record/")?
+            .split_once("/alarm/")?;
+        ui::record::RecordId::parse(record)?;
+        Some(alarm)
+    })
+}
+
 pub(crate) fn alarm_id(id: &str) -> String {
     format!("a{}", id.chars().take(14).collect::<String>())
 }
@@ -86,6 +113,7 @@ pub(crate) fn alarm_id(id: &str) -> String {
 /// the platform is touched, so deleting a timer or crashing after a
 /// submission never loses the ability to cancel its notification.
 pub(crate) fn reconcile(
+    record: Option<&ui::record::RecordId>,
     clocks: &Clocks,
     delivery: &mut Delivery,
     host: &(impl Scheduler + ?Sized),
@@ -153,7 +181,7 @@ pub(crate) fn reconcile(
         let id = timer_id(id);
         wanted.contains(&id) || retained.contains(&id)
     });
-    if let Err(error) = reconcile_alarms(clocks, delivery, host, now) {
+    if let Err(error) = reconcile_alarms(record, clocks, delivery, host, now) {
         result = Err(error);
     }
     persist(delivery)?;
@@ -209,6 +237,7 @@ pub(crate) fn restore_alarms(
 }
 
 fn reconcile_alarms(
+    record: Option<&ui::record::RecordId>,
     clocks: &Clocks,
     delivery: &mut Delivery,
     host: &(impl Scheduler + ?Sized),
@@ -247,7 +276,13 @@ fn reconcile_alarms(
             .alarms
             .get(id.as_str())
             .and_then(|armed| armed.last_rung);
-        match host.schedule_alarm(&alarm_id(id.as_str()), alarm, system_time(at), last_rung) {
+        match host.schedule_alarm(
+            &alarm_id(id.as_str()),
+            &alarm_activation(record, id.as_str()),
+            alarm,
+            system_time(at),
+            last_rung,
+        ) {
             Ok(()) => {
                 delivery
                     .native_alarms_scheduled
@@ -277,6 +312,69 @@ mod tests {
     use ui::prelude::{Collection, Id};
 
     #[derive(Default)]
+    struct CapturedAlarm(std::sync::Mutex<Option<Notification>>);
+    impl Notifier for CapturedAlarm {
+        fn show(&self, _: &Notification) -> Result<(), ui::notify::NotifyError> {
+            Err(ui::notify::NotifyError::Unavailable)
+        }
+        fn withdraw(&self, _: &str) -> Result<(), ui::notify::NotifyError> {
+            Ok(())
+        }
+        fn scheduled(&self) -> Result<Vec<Scheduled>, ui::notify::NotifyError> {
+            Ok(Vec::new())
+        }
+        fn schedule(
+            &self,
+            notification: &Notification,
+            _: SystemTime,
+        ) -> Result<(), ui::notify::NotifyError> {
+            *self.0.lock().unwrap() = Some(notification.clone());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn real_alarm_handoff_transmits_the_full_resource_identity() {
+        let now = chrono::Local::now();
+        let due = now + chrono::Duration::minutes(5);
+        let mut clocks = Clocks::default();
+        clocks.alarms.insert(
+            0,
+            Id::from_raw("complete-alarm-resource-identity"),
+            crate::Alarm {
+                label: "Requested".into(),
+                hour: u8::try_from(chrono::Timelike::hour(&due)).unwrap(),
+                minute: u8::try_from(chrono::Timelike::minute(&due)).unwrap(),
+                enabled: true,
+                enabled_at_ms: now.timestamp_millis(),
+                ..crate::Alarm::default()
+            },
+        );
+        let mut delivery = Delivery::default();
+        crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now);
+        let captured = CapturedAlarm::default();
+        let host: &dyn Notifier = &captured;
+        let record = ui::record::RecordId::minted();
+        reconcile(
+            Some(&record),
+            &clocks,
+            &mut delivery,
+            host,
+            now.with_timezone(&Utc),
+            |_| Ok(()),
+        )
+        .unwrap();
+        let notification = captured.0.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            notification.activation.as_deref(),
+            Some(
+                format!("tilo-clocks:record/{record}/alarm/complete-alarm-resource-identity")
+                    .as_str()
+            )
+        );
+    }
+
+    #[derive(Default)]
     struct TestScheduler {
         pending: RefCell<BTreeMap<String, SystemTime>>,
         fail_cancel: Cell<bool>,
@@ -304,6 +402,7 @@ mod tests {
         fn schedule_alarm(
             &self,
             id: &str,
+            _: &str,
             _: &crate::Alarm,
             end: SystemTime,
             last_rung: Option<chrono::NaiveDate>,
@@ -345,6 +444,7 @@ mod tests {
         let stored = RefCell::new(Delivery::default());
         let host = TestScheduler::default();
         reconcile(
+            None,
             &clocks,
             &mut delivery,
             &host,
@@ -395,6 +495,7 @@ mod tests {
         };
         let host = TestScheduler::default();
         reconcile(
+            None,
             &clocks,
             &mut delivery,
             &host,
@@ -406,6 +507,7 @@ mod tests {
         host.fail_cancel.set(true);
         assert!(
             reconcile(
+                None,
                 &clocks,
                 &mut delivery,
                 &host,
@@ -419,6 +521,7 @@ mod tests {
         assert_eq!(host.pending().unwrap().len(), 1);
         host.fail_cancel.set(false);
         reconcile(
+            None,
             &clocks,
             &mut restarted,
             &host,
@@ -458,6 +561,7 @@ mod tests {
         crate::schedule::tick(&clocks, &mut delivery, now.with_timezone(&Utc), now);
         let host = TestScheduler::default();
         reconcile(
+            None,
             &clocks,
             &mut delivery,
             &host,
@@ -566,6 +670,7 @@ mod tests {
             )
             .unwrap();
             reconcile(
+                None,
                 &Clocks::default(),
                 &mut Delivery::default(),
                 &host,
@@ -591,7 +696,7 @@ mod tests {
             let mut first = running("Owned timer");
             let owned_id = first_id(&first);
             let mut delivery = Delivery::default();
-            reconcile(&first, &mut delivery, &host, Utc::now(), store).unwrap();
+            reconcile(None, &first, &mut delivery, &host, Utc::now(), store).unwrap();
             assert_eq!(
                 stored.borrow().native_scheduled.len(),
                 1,
@@ -599,9 +704,14 @@ mod tests {
             );
             let second = running("Other profile");
             let second_id = timer_id(&first_id(&second));
-            reconcile(&second, &mut Delivery::default(), &host, Utc::now(), |_| {
-                Ok(())
-            })
+            reconcile(
+                None,
+                &second,
+                &mut Delivery::default(),
+                &host,
+                Utc::now(),
+                |_| Ok(()),
+            )
             .unwrap();
             assert_eq!(
                 host.pending.borrow().len(),
@@ -612,7 +722,7 @@ mod tests {
             first.timers = Collection::default();
             host.fail_cancel.set(true);
             assert!(
-                reconcile(&first, &mut delivery, &host, Utc::now(), store).is_err(),
+                reconcile(None, &first, &mut delivery, &host, Utc::now(), store).is_err(),
                 "case deleted-timer: failed cancellation is reported"
             );
             let mut restarted = stored.borrow().clone();
@@ -621,7 +731,7 @@ mod tests {
                 "case deleted-timer: ownership retained for retry"
             );
             host.fail_cancel.set(false);
-            reconcile(&first, &mut restarted, &host, Utc::now(), store).unwrap();
+            reconcile(None, &first, &mut restarted, &host, Utc::now(), store).unwrap();
             assert_eq!(
                 host.pending.borrow().len(),
                 1,
@@ -643,7 +753,7 @@ mod tests {
             let clocks = running("Owned timer");
             let mut delivery = Delivery::default();
             assert!(
-                reconcile(&clocks, &mut delivery, &host, Utc::now(), |_| Err(
+                reconcile(None, &clocks, &mut delivery, &host, Utc::now(), |_| Err(
                     "storage unavailable".into()
                 ))
                 .is_err(),
@@ -668,9 +778,14 @@ mod tests {
             host.pending
                 .borrow_mut()
                 .insert(timer_id(&id), ui::time::wall() - Duration::from_secs(60));
-            reconcile(&Clocks::default(), &mut delivery, &host, Utc::now(), |_| {
-                Ok(())
-            })
+            reconcile(
+                None,
+                &Clocks::default(),
+                &mut delivery,
+                &host,
+                Utc::now(),
+                |_| Ok(()),
+            )
             .unwrap();
             assert!(
                 host.pending.borrow().contains_key(&timer_id(&id)),
@@ -681,9 +796,14 @@ mod tests {
                 "case elapsed: ownership retained"
             );
             host.pending.borrow_mut().clear();
-            reconcile(&Clocks::default(), &mut delivery, &host, Utc::now(), |_| {
-                Ok(())
-            })
+            reconcile(
+                None,
+                &Clocks::default(),
+                &mut delivery,
+                &host,
+                Utc::now(),
+                |_| Ok(()),
+            )
             .unwrap();
             assert!(
                 delivery.native_owners.is_empty(),
