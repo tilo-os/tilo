@@ -30,8 +30,9 @@ const CATALOGUE_FRESH_FOR: Duration = Duration::from_secs(1);
 /// How long a task waits for the broker's pushed action catalogue.
 const TASK_CATALOGUE_WAIT: Duration = Duration::from_secs(2);
 const TASK_ACTION_WAIT: Duration = Duration::from_secs(30);
-/// How long one durable step may stay unsettled before the agent gives up
-/// waiting. The host keeps driving the bound child either way.
+/// Default durable-step wait without an explicit owner budget. Owner policies
+/// use the remaining anchored turn allowance, also capped by the total task.
+/// An unsettled child remains uncertain after the local wait ends.
 const TASK_STEP_WAIT: Duration = Duration::from_secs(120);
 /// Local wait for one step reply. Longer than the broker's own 10 s step
 /// wait so its "retry the same step" answer arrives before this expires.
@@ -413,6 +414,7 @@ pub struct Session {
     enrolled_sequence: u64,
     /// Monotonic deadline from an explicit broker-minted owner task policy.
     task_deadline: Option<Instant>,
+    task_turn_deadline: Option<Instant>,
     /// When the agent last asked the room for the document. It asks again
     /// until it has one: an app that was still opening its file when the
     /// agent arrived never saw the first ask, and the agent would then wait
@@ -560,6 +562,7 @@ impl Session {
             enrolled_active: None,
             enrolled_sequence: 0,
             task_deadline: None,
+            task_turn_deadline: None,
             last_route: None,
             asked_at: ui::time::now(),
             broker_catalogue: tilo_actions::remote::CataloguePage::default(),
@@ -707,11 +710,37 @@ impl Session {
         }
     }
 
+    fn run_task(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
+        // Only the host-minted envelope chooses these bounds. Start before
+        // catalogue discovery so later waits never gain a fresh total allowance.
+        self.task_deadline = run
+            .execution_budget
+            .filter(|budget| budget.validate().is_ok())
+            .and_then(|budget| {
+                ui::time::now().checked_add(Duration::from_millis(u64::from(budget.total_ms)))
+            });
+        self.task_turn_deadline = run
+            .execution_budget
+            .filter(|budget| budget.validate().is_ok())
+            .filter(|_| matches!(run.planning, runtime_collab::TaskRunPlanning::RulesOnly))
+            .and_then(|budget| {
+                ui::time::now().checked_add(Duration::from_millis(u64::from(budget.turn_ms)))
+            })
+            .map(|deadline| {
+                self.task_deadline
+                    .map_or(deadline, |task| deadline.min(task))
+            });
+        let result = self.run_task_with_budget(run);
+        self.task_turn_deadline = None;
+        self.task_deadline = None;
+        result
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one task run keeps planning, per-step reporting, chunked writing and the terminal update in a single auditable sequence"
     )]
-    fn run_task(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
+    fn run_task_with_budget(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
         let validation = if self.enrolled_active.is_some() {
             validate_enrolled_context(run)
         } else {
@@ -1170,6 +1199,12 @@ impl Session {
             .map_or(ordinary, |task| ordinary.min(task))
     }
 
+    fn durable_step_deadline(&self) -> Instant {
+        // The turn starts before planning; a long check consumes what remains.
+        self.task_turn_deadline
+            .unwrap_or_else(|| self.task_wait_deadline(TASK_STEP_WAIT))
+    }
+
     fn task_budget_expired(&self) -> bool {
         self.task_deadline
             .is_some_and(|deadline| ui::time::now() >= deadline)
@@ -1228,6 +1263,25 @@ impl Session {
         task_action_from_offer(offer, arguments).map(|action| (vec![action], None))
     }
 
+    fn unsettled_step_deadline(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+    ) -> Result<TaskActionStop> {
+        if self.task_budget_expired() {
+            self.link.send(&CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Cancel { invocation },
+            })?;
+            Ok(TaskActionStop::Failed(
+                "Task time budget expired; cancellation requested, step outcome remains unknown"
+                    .into(),
+            ))
+        } else {
+            Ok(TaskActionStop::Failed(
+                "Task step did not settle before its deadline; its outcome is still unknown".into(),
+            ))
+        }
+    }
+
     /// Run one durable step of an enrolled task. Every attempt re-sends the
     /// identical request (same request id, step and arguments), so the host
     /// returns the one child it bound for this step instead of starting a new
@@ -1246,6 +1300,12 @@ impl Session {
                 "Task time budget expired before starting a step".into(),
             )));
         }
+        let deadline = self.durable_step_deadline();
+        if ui::time::now() >= deadline {
+            return Ok(Err(TaskActionStop::Failed(
+                "Task turn time budget expired before starting a step".into(),
+            )));
+        }
         let request_id = self.next_request_id();
         // One invocation id for every attempt: a retry is the same request.
         let invocation = tilo_actions::InvocationId::new();
@@ -1260,17 +1320,14 @@ impl Session {
             action: action.action.clone(),
             arguments: arguments.clone(),
         };
-        let deadline = self.task_wait_deadline(TASK_STEP_WAIT);
         loop {
-            if self.task_budget_expired() {
-                self.link.send(&CollabRequest::RemoteAction {
-                    message: RemoteActionMessage::Cancel { invocation },
-                })?;
-                return Ok(Err(TaskActionStop::Failed(
-                    "Task time budget expired; cancellation requested, step outcome remains unknown".into())));
+            if self.task_budget_expired() || ui::time::now() >= deadline {
+                return Ok(Err(self.unsettled_step_deadline(invocation)?));
             }
             self.link.send(&request)?;
-            match self.wait_for_task_action_reply(request_id, TASK_STEP_REPLY_WAIT)? {
+            let reply_wait =
+                TASK_STEP_REPLY_WAIT.min(deadline.saturating_duration_since(ui::time::now()));
+            match self.wait_for_task_action_reply(request_id, reply_wait)? {
                 // No reply or a pending step: the outcome is uncertain, so
                 // only the same step may be asked again.
                 None
@@ -1310,12 +1367,11 @@ impl Session {
                 }
             }
             if ui::time::now() >= deadline {
-                return Ok(Err(TaskActionStop::Failed(
-                    "Task step did not settle before its deadline; its outcome is still unknown"
-                        .into(),
-                )));
+                return Ok(Err(self.unsettled_step_deadline(invocation)?));
             }
-            std::thread::sleep(TASK_STEP_RETRY_PAUSE);
+            std::thread::sleep(
+                TASK_STEP_RETRY_PAUSE.min(deadline.saturating_duration_since(ui::time::now())),
+            );
         }
     }
 
@@ -3360,6 +3416,7 @@ mod tests {
                     enrolled_active: managed.then_some(acceptance),
                     enrolled_sequence: 0,
                     task_deadline: None,
+                    task_turn_deadline: None,
                     asked_at: ui::time::now(),
                     last_route: None,
                     broker_catalogue: tilo_actions::remote::CataloguePage::default(),
@@ -3614,6 +3671,7 @@ mod tests {
                 enrolled_active: Some(acceptance),
                 enrolled_sequence: 0,
                 task_deadline: None,
+                task_turn_deadline: None,
                 asked_at: ui::time::now(),
                 last_route: None,
                 broker_catalogue: tilo_actions::remote::CataloguePage::default(),
@@ -4813,6 +4871,7 @@ mod task_startup_tests {
             enrolled_active: None,
             enrolled_sequence: 0,
             task_deadline: None,
+            task_turn_deadline: None,
             asked_at: ui::time::now(),
             last_route: None,
             broker_catalogue: tilo_actions::remote::CataloguePage::default(),
