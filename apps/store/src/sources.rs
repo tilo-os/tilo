@@ -160,6 +160,7 @@ pub fn installed_tilo_to_store_item(entry: &InstalledPackage) -> StoreItem {
             download_url: None,
             root_hash_hex: None,
             size_bytes: 0,
+            runtime: None,
         }],
         publisher_pubkey_hex: (!entry.publisher_key_hex.trim().is_empty())
             .then(|| entry.publisher_key_hex.clone()),
@@ -182,6 +183,7 @@ fn tilo_version_to_store(v: &RegistryVersion) -> StoreItemVersion {
         download_url: Some(v.tapp_url.clone()),
         root_hash_hex: Some(v.tapp_root_hash_hex.clone()),
         size_bytes: v.tapp_size_bytes,
+        runtime: v.target.runtime.clone(),
     }
 }
 
@@ -224,6 +226,7 @@ pub fn flathub_placeholder_to_item(
             download_url: None,
             root_hash_hex: None,
             size_bytes: 0,
+            runtime: None,
         }],
         publisher_pubkey_hex: None,
         installed,
@@ -255,6 +258,7 @@ pub fn installed_flatpak_to_item(app_id: &str, version: &str) -> StoreItem {
             download_url: None,
             root_hash_hex: None,
             size_bytes: 0,
+            runtime: None,
         }],
         publisher_pubkey_hex: None,
         installed: InstalledState::Installed {
@@ -407,6 +411,7 @@ pub fn flathub_record_to_item(
             download_url: None,
             root_hash_hex: None,
             size_bytes: 0,
+            runtime: None,
         }],
         publisher_pubkey_hex: None,
         installed,

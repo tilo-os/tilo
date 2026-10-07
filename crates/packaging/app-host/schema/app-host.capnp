@@ -113,4 +113,6 @@ interface AppHost {
     installLocal @19 (tappBytes :Data, reviewedRoot :Text,
                       reviewedArchiveHash :Text) -> (id :Data);
 
+    # Resolve a precise runtime from enabled, pinned repositories, including retained versions.
+    runtimeOffer @20 (registry :Text, runtime :Text) -> (offer :Text);
 }

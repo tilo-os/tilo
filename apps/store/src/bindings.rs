@@ -49,7 +49,7 @@ pub fn effect(effect: &StoreEffect) -> Option<ActionBinding<()>> {
 
 /// A control carrying out `action` on `item`.
 pub fn package(item: &StoreItem, action: ActionKind) -> Option<ActionBinding<()>> {
-    let effect = StoreEffect::package(action, item.id.clone());
+    let effect = StoreEffect::package(action, item);
     if let Some((code, reason)) = item.unavailable_action(action) {
         let spec = effect.bound().unavailable(code, reason);
         ActionBinding::static_json(&DOOR, &spec, effect.arguments()).ok()
