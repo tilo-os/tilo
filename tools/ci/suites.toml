@@ -1435,3 +1435,7 @@ inputs = [
   "os/Containerfile",
 ]
 readers = ["crates/packaging/runtime-bundle/examples/browser_runtime_release.rs"]
+
+[[covered]]
+suite = "tools/font-catalog.py"
+by = "tools/tests/test_font_artifacts.py"
