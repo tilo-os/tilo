@@ -31,7 +31,15 @@ cleanup() {
     wait "$pid" || closed=false
   done
   "$closed" || { echo 'browser descendants could not be reaped; preserving profiles' >&2; return 1; }
-  rm -rf "$profiles"
+  # Retain bounded retries for filesystem removal after proven process exit.
+  for ((attempt=0; attempt<10; attempt++)); do
+    if rm -rf -- "$profiles"; then
+      return 0
+    fi
+    sleep .1
+  done
+  echo 'could not remove browser profiles after child exit' >&2
+  return 1
 }
 trap cleanup EXIT
 trap 'exit 130' INT
