@@ -351,6 +351,20 @@ impl AudioEngine {
         }
     }
 
+    /// Safe, device-local diagnostics for the resource action door.
+    pub fn spotify_startup_stage(&self) -> Option<&'static str> {
+        #[cfg(feature = "spotify-native")]
+        {
+            self.native
+                .as_ref()
+                .map(spotify_audio::NativeAudio::startup_stage)
+        }
+        #[cfg(not(feature = "spotify-native"))]
+        {
+            None
+        }
+    }
+
     pub fn prepare_spotify_next(&self, uri: Option<&str>) {
         #[cfg(feature = "spotify-native")]
         if let Some(native) = &self.native {
