@@ -268,6 +268,25 @@ impl InProcessApps {
         component.collaborate_through(broker(component.app_id(), room))
     }
 
+    /// Acknowledge startup writes through the fixture's real canonical owner.
+    #[cfg(test)]
+    pub(crate) fn flush_fixture_records(
+        &mut self,
+        app_id: &str,
+        room: &str,
+    ) -> Result<usize, String> {
+        let records = self
+            .owners
+            .open(app_id, room)
+            .map_err(|error| error.to_string())?;
+        let count = records.open_records().len();
+        if count == 0 {
+            return Err("fixture must observe mounted records before flushing".into());
+        }
+        records.try_flush()?;
+        Ok(count)
+    }
+
     /// The apps of a session whose state lives in `profile_root`: their
     /// records and views there, as this device.
     ///
