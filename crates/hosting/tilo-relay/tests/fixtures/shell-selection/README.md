@@ -25,3 +25,12 @@ Envelope signature is not independent authentication: the import models bytes
 already admitted through authenticated ingress, with locally pinned shell
 authority. The helpers still verify the signed inner messages and exact room
 and application receipts.
+
+Persisted byte fixtures are stored as `.hex` files: two lowercase hexadecimal
+digits per byte, separated by spaces, with 16 bytes per LF line. Decode the
+text before passing it to the production reader. The decoded bytes are the
+original capture, including signatures, compression and malformed inputs;
+regenerating them with a newer codec would erase the compatibility regression.
+Tests materialize the decoded files with their original names in a temporary
+directory so production directory traversal, frame decoding and store replay
+continue to exercise the same retained input.

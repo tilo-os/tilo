@@ -714,6 +714,9 @@ mod component_adapter {
             theme: &Theme,
             presence: &PresenceCtx,
         ) -> bool {
+            if self.component.behaviour.capture_protected {
+                crate::secret_paint::note_secret_painted();
+            }
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
                 return false;
@@ -797,6 +800,17 @@ mod component_adapter {
         );
         fn as_any(&self) -> Option<&dyn std::any::Any> {
             Some(self)
+        }
+
+        fn observe_physical_input(&mut self, input: crate::widget::PhysicalInput) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            let Some(root) = self.component.root.as_deref_mut() else {
+                return;
+            };
+            root.observe_physical_input(input);
         }
 
         // A component's diagnostic probe observes its own record, the
@@ -1061,6 +1075,11 @@ mod component_adapter {
             let Some(root) = self.component.root.as_deref_mut() else {
                 return;
             };
+            // Protection belongs to this component even inside a desktop or
+            // chrome container; its enclosing presented frame must retain it.
+            if self.component.behaviour.capture_protected {
+                crate::secret_paint::note_secret_painted();
+            }
             // TileHost's clipped/animated steady-state paint uses ordinary draw.
             // Canonical roots must still receive their permission-aware hook.
             let permissions = binding.permissions.borrow().clone();
@@ -1735,6 +1754,9 @@ mod component_adapter {
             presence: &PresenceCtx,
             _permissions: &crate::permissions::PermissionContext,
         ) {
+            if self.component.behaviour.capture_protected {
+                crate::secret_paint::note_secret_painted();
+            }
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
                 return;
@@ -1760,6 +1782,9 @@ mod component_adapter {
             theme: &Theme,
             presence: &PresenceCtx,
         ) {
+            if self.component.behaviour.capture_protected {
+                crate::secret_paint::note_secret_painted();
+            }
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
                 return;

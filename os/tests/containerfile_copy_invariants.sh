@@ -121,7 +121,11 @@ containerfile="$repo/os/Containerfile"
 # The offline, signed Flathub descriptor is the one additional payload row.
 # The AppHost service unit moves from a direct context COPY into its component
 # manifest; the installed path, reviewed bytes and 0644 mode are unchanged.
-expected_contract=7a5a82dccbbe1b49c908390530df8027d9bae292fe2dc5cef2120cd892414f48
+# Firstboot account handoff and authenticated startup recovery now ship in the
+# base image too: their three helpers, three units and the greeter baseline.
+# The session wrapper moves into the shell component beside its compositor;
+# the destination, source bytes and executable mode remain the same.
+expected_contract=a67f5b224dd494f8d87a808930dc944ef2dd307b26d13cbdad518455505ab072
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -202,7 +206,6 @@ containerfile_instructions "$containerfile" |
 
 for path in \
   os/scripts/finalize-rpmdb.sh \
-  os/usr/libexec/tilo-session \
   os/usr/libexec/tilo-disk-encrypt \
   os/usr/libexec/tilo-store-volume \
   os/usr/libexec/tilo-verified-boot-install-preflight \
@@ -225,3 +228,15 @@ for path in \
 done
 
 echo "rootfs COPY contract unchanged; $instructions-instruction layer budget satisfied"
+
+# The shell's startup companion is now installed by the canonical component
+# installer rather than a direct COPY --chmod. Observe that actual image path
+# and its mandatory executable-mode plan instead of accepting a staging COPY.
+containerfile_installs_output "$containerfile" '@manifest/usr/libexec/tilo-session' /usr/libexec/tilo-session
+python3 "$repo/os/scripts/install-components.py" shell --dry-run --format json |
+  python3 -c 'import json,sys
+rows = [row for row in json.load(sys.stdin) if row["to"] == "/usr/libexec/tilo-session"]
+assert len(rows) == 1, "shell must install exactly one startup wrapper"
+row = rows[0]
+assert row["from"] == "@manifest/usr/libexec/tilo-session", row
+assert row["mode"] == "0755" and not row["optional"], row'

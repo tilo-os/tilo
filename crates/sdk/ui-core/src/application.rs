@@ -1116,6 +1116,7 @@ impl Default for ComponentBehaviour {
 
 /// Real app content and its lifetime; hosts cannot extract an unbound root.
 pub struct AppComponent {
+    host_owner_wakes: Option<crate::owner_wake::OwnerWakeRegistration>,
     pub(crate) behaviour: ComponentBehaviour,
     pub(crate) history: Option<crate::history_mode::HistoryRegistration>,
     context: HostContext,
@@ -1409,6 +1410,7 @@ impl AppComponent {
             registry_owner,
             record_save: None,
             save_status_changed: false,
+            host_owner_wakes: None,
         }
     }
 
@@ -1477,6 +1479,35 @@ impl AppComponent {
             .bind(sink)
             .map_err(|e| LaunchError::Operation(e.to_string()))
     }
+    /// Mount with exact-owner queue intake while retaining the original host sink.
+    /// Registration owns no application callback and its sink retains only weak metadata.
+    /// # Errors
+    /// Refuses unprepared, already registered, stale or closed components.
+    pub fn mount_with_owner_queue(
+        &mut self,
+        queue: &crate::owner_wake::OwnerWakeQueue,
+        sink: impl Fn(WakeEvent) + Send + Sync + 'static,
+    ) -> Result<(), LaunchError> {
+        if !self.prepared || self.host_owner_wakes.is_some() {
+            return Err(LaunchError::BindingMismatch);
+        }
+        let binding = self.callback_binding();
+        self.with_live_component(&binding, |_, _, _| ())
+            .map_err(|error| LaunchError::Operation(format!("{error:?}")))?;
+        let (registration, intake) = queue
+            .register(binding)
+            .map_err(|error| LaunchError::Operation(format!("{error:?}")))?;
+        self.host_owner_wakes = Some(registration);
+        let result = self.mount(move |event| {
+            intake.enqueue(event.clone());
+            sink(event);
+        });
+        if result.is_err() {
+            drop(self.host_owner_wakes.take());
+        }
+        result
+    }
+
     /// # Errors
     /// Rejects closed components and invalid widget geometry.
     pub fn capture_local_view(&self) -> Result<View, ThawError> {
@@ -1629,6 +1660,7 @@ impl AppComponent {
     /// Finalization after a successful host checkpoint. No second fallible
     /// write is introduced after the host has committed to destroying the tree.
     pub(crate) fn finish_admitted_close(&mut self) {
+        drop(self.host_owner_wakes.take());
         self.context.retire_semantic_mount();
         if self.close_report.is_some() {
             return;
@@ -1675,6 +1707,7 @@ impl AppComponent {
         CloseComponentOnExit(self).0.close_owned()
     }
     fn close_owned(&mut self) -> ComponentCloseReport {
+        drop(self.host_owner_wakes.take());
         self.context.retire_semantic_mount();
         let mut report = ComponentCloseReport {
             recovery: None,
@@ -1754,6 +1787,7 @@ impl AppComponent {
         self.close_report.as_ref()
     }
     fn teardown(&mut self) -> Result<(), String> {
+        drop(self.host_owner_wakes.take());
         self.context.retire_semantic_mount();
         self.context.control_domain.close();
         self.context.closing.set(true);

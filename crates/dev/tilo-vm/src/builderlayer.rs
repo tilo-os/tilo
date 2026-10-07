@@ -44,6 +44,8 @@ pub struct Packed {
     pub target: Option<String>,
     /// `rustc <version> (...)`, from the built binary.
     pub toolchain: Option<String>,
+    #[serde(default)]
+    pub source_digest: Option<String>,
 }
 
 /// The remote builder's `run` that builds and streams `component`'s layer:
@@ -87,7 +89,19 @@ pub fn remote_command(builder: &[String], component: &Component, extra: &[String
 /// # Errors
 /// An unknown component, a failed build or installer, I/O.
 pub fn pack(name: &str, profile: &str, extra: &[String]) -> Result<(), CliError> {
+    pack_with_source(name, profile, extra, None)
+}
+
+pub(crate) fn pack_with_source(
+    name: &str,
+    profile: &str,
+    extra: &[String],
+    inventory: Option<&Path>,
+) -> Result<(), CliError> {
     let root = std::env::current_dir().map_err(CliError::io("find the worktree"))?;
+    let source_digest = inventory
+        .map(|path| crate::source_inputs::verify(&root, path))
+        .transpose()?;
     let manifest_path = root.join("os/components.toml");
     let manifest = tilo_vm_protocol::Manifest::load(&manifest_path)
         .map_err(|e| CliError::Config {
@@ -108,7 +122,13 @@ pub fn pack(name: &str, profile: &str, extra: &[String]) -> Result<(), CliError>
         .with_profile(Some(profile));
     // `cargo run` sets CARGO to the cargo that runs this program.
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    run_to_stderr(Command::new(&cargo).args(component.cargo_args(extra)))?;
+    if !component.image_assembled {
+        run_to_stderr(Command::new(&cargo).args(component.cargo_args(extra)))?;
+    } else if component.name != "apps+runtime" {
+        return Err(CliError::InvalidInput(
+            "no maintained assembler for this image component".into(),
+        ));
+    }
     let metadata = Command::new(&cargo)
         .args(["metadata", "--no-deps", "--format-version", "1"])
         .output()
@@ -125,14 +145,40 @@ pub fn pack(name: &str, profile: &str, extra: &[String]) -> Result<(), CliError>
         .map_err(CliError::io("create layer staging"))?;
     let tree = staging.path().join("tree");
     let from = format!("{target}/{}", component.profile_dir());
-    run_to_stderr(
-        Command::new("python3").args(component.installer_args(&from, &tree.display().to_string())),
-    )?;
+    if component.image_assembled {
+        run_to_stderr(Command::new("python3").args([
+            "os/dev/assemble-app-runtime.py",
+            "--repo",
+            &root.display().to_string(),
+            "--target-dir",
+            &target,
+            "--profile",
+            &component.profile,
+            "--features",
+            &component.build_features(extra).join(","),
+            "--dest",
+            &tree.display().to_string(),
+        ]))?;
+    } else {
+        run_to_stderr(
+            Command::new("python3")
+                .args(component.installer_args(&from, &tree.display().to_string())),
+        )?;
+    }
+    if let Some(inventory) = inventory
+        && crate::source_inputs::verify(&root, inventory)?
+            != source_digest.clone().unwrap_or_default()
+    {
+        return Err(CliError::InvalidInput(
+            "source changed during component assembly".into(),
+        ));
+    }
     let facts = build::first_elf(&tree).unwrap_or_default();
     let packed = Packed {
         component: component.name,
         target: facts.target,
         toolchain: facts.toolchain,
+        source_digest,
     };
     let stdout = std::io::stdout();
     let mut out = std::io::BufWriter::new(stdout.lock());
@@ -147,7 +193,7 @@ pub fn pack(name: &str, profile: &str, extra: &[String]) -> Result<(), CliError>
 }
 
 /// Run `command` with its stdout on our stderr: our stdout is the layer.
-fn run_to_stderr(command: &mut Command) -> Result<(), CliError> {
+pub(crate) fn run_to_stderr(command: &mut Command) -> Result<(), CliError> {
     let shown = format!("{command:?}");
     let stderr = std::os::fd::AsFd::as_fd(&std::io::stderr())
         .try_clone_to_owned()
@@ -168,7 +214,7 @@ fn run_to_stderr(command: &mut Command) -> Result<(), CliError> {
 }
 
 /// Bytes written as [`DATA`] lines, hashed and counted on the way.
-struct Lines<'a, W: Write> {
+pub(crate) struct Lines<'a, W: Write> {
     out: &'a mut W,
     pending: Vec<u8>,
     hasher: Sha256,
@@ -176,7 +222,7 @@ struct Lines<'a, W: Write> {
 }
 
 impl<'a, W: Write> Lines<'a, W> {
-    fn new(out: &'a mut W) -> Self {
+    pub(crate) fn new(out: &'a mut W) -> Self {
         Self {
             out,
             pending: Vec::with_capacity(LINE_BYTES),
@@ -197,7 +243,7 @@ impl<'a, W: Write> Lines<'a, W> {
         Ok(())
     }
 
-    fn finish(mut self) -> std::io::Result<(String, u64)> {
+    pub(crate) fn finish(mut self) -> std::io::Result<(String, u64)> {
         self.emit()?;
         Ok((hex::encode(self.hasher.finalize()), self.bytes))
     }
@@ -251,6 +297,13 @@ impl<R: BufRead> Stream<R> {
     /// # Errors
     /// The stream ended without a layer (the build failed), or I/O.
     pub fn header(&mut self, passthrough: &mut dyn Write) -> std::io::Result<Packed> {
+        self.header_as(passthrough)
+    }
+
+    pub(crate) fn header_as<T: serde::de::DeserializeOwned>(
+        &mut self,
+        passthrough: &mut dyn Write,
+    ) -> std::io::Result<T> {
         let mut line = String::new();
         loop {
             line.clear();
@@ -331,6 +384,7 @@ mod tests {
                 component: "shell".into(),
                 target: Some("aarch64-unknown-linux-gnu".into()),
                 toolchain: None,
+                source_digest: None,
             })
             .unwrap()
         )

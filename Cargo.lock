@@ -5418,7 +5418,9 @@ dependencies = [
  "chrono",
  "console-control",
  "greetd-client",
+ "rustix 1.1.4",
  "serde_json",
+ "settings-store",
  "taffy",
  "tempfile",
  "tilo-automerge-fork",
@@ -5430,6 +5432,8 @@ dependencies = [
  "tilo-winit",
  "tracing",
  "tracing-subscriber",
+ "wayland-client",
+ "wayland-protocols-wlr",
  "workspace-hack",
  "zeroize",
 ]
@@ -7020,6 +7024,7 @@ dependencies = [
  "runtime-bundle",
  "semver",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "tilo-app-package",
@@ -7885,6 +7890,7 @@ dependencies = [
  "package-store",
  "runtime-bundle",
  "runtime-identity",
+ "runtime-portal",
  "serde",
  "serde_json",
  "tempfile",
@@ -8637,6 +8643,7 @@ dependencies = [
  "cc",
  "clap",
  "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
  "hex",
  "libc",
  "reqwest 0.13.4",
@@ -8647,6 +8654,7 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-advisory-lock",
  "tilo-files",
  "tilo-net",
  "tilo-sandbox-core",
@@ -10569,6 +10577,7 @@ dependencies = [
  "runtime-dylib",
  "serde",
  "serde_json",
+ "settings-store",
  "swipe",
  "taffy",
  "tempfile",
@@ -12959,6 +12968,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "hex",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",
@@ -14025,6 +14035,7 @@ dependencies = [
  "tilo-desktop-entry",
  "tilo-files",
  "tilo-fs",
+ "tilo-keyboard-map",
  "tilo-media",
  "tilo-model-gateway",
  "tilo-net",
@@ -14055,7 +14066,9 @@ dependencies = [
  "tilo-clock",
  "tilo-files",
  "tilo-paths",
+ "tilo-rt",
  "tilo-test-env",
+ "unicode-normalization",
  "workspace-hack",
 ]
 
@@ -14249,6 +14262,7 @@ dependencies = [
  "gbm",
  "getrandom 0.4.3",
  "greetd-client",
+ "greeter",
  "gstreamer-app",
  "hex",
  "image",
@@ -15806,8 +15820,10 @@ dependencies = [
  "postcard",
  "runtime-collab",
  "runtime-identity",
+ "runtime-portal",
  "serde",
  "serde_json",
+ "settings",
  "settings-store",
  "tempfile",
  "tilo-actions",
@@ -15959,6 +15975,7 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge",
  "tilo-content",
+ "tilo-feedback",
  "tilo-files",
  "tilo-resource",
  "tilo-runner-native",
@@ -16749,6 +16766,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-feedback"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "durable-store",
+ "image",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tilo-feedback-review",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-feedback-review"
 version = "0.1.0"
 dependencies = [
@@ -17011,6 +17042,15 @@ dependencies = [
  "tracing",
  "uuid",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-keyboard-map"
+version = "0.1.0"
+dependencies = [
+ "tilo-winit",
+ "workspace-hack",
+ "xkbcommon",
 ]
 
 [[package]]
@@ -17948,6 +17988,7 @@ dependencies = [
  "gstreamer-app",
  "librespot",
  "tilo-clock",
+ "tilo-media",
  "tilo-rt",
  "tokio",
  "workspace-hack",
@@ -18287,6 +18328,7 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-app-package",
  "tilo-files",
  "tilo-vm-protocol",
  "tilo-xdg-paths",
@@ -18300,8 +18342,10 @@ name = "tilo-vm-protocol"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "hex",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "thiserror 2.0.21",
  "toml 1.0.6+spec-1.1.0",
 ]
@@ -18314,7 +18358,10 @@ dependencies = [
  "chrono",
  "clap",
  "hex",
+ "launcher",
  "libc",
+ "package-store",
+ "runtime-bundle",
  "serde",
  "serde_json",
  "settings-store",
@@ -18323,11 +18370,13 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-advisory-lock",
+ "tilo-app-package",
  "tilo-clock",
  "tilo-files",
  "tilo-test-env",
  "tilo-vm",
  "tilo-vm-protocol",
+ "toml 1.0.6+spec-1.1.0",
  "uuid",
  "workspace-hack",
 ]
@@ -21735,6 +21784,7 @@ dependencies = [
  "runtime-dylib",
  "serde",
  "serde_json",
+ "settings-store",
  "taffy",
  "tempfile",
  "tilo-actions",

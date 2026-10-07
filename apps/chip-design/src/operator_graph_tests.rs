@@ -21,6 +21,7 @@ fn add(id: &str, kind: OperatorKind) -> OperatorAction {
                 vec![4, 8]
             },
             normalization_width: 8,
+            output_width: None,
             x: 0,
             y: 0,
         },
@@ -89,6 +90,7 @@ fn generic_graph_admits_large_tensor_dimensions_without_model_specific_limits() 
                     kind: OperatorKind::Input,
                     shape: shape.clone(),
                     normalization_width: width,
+                    output_width: None,
                     x: 0,
                     y: 0,
                 },
@@ -102,6 +104,7 @@ fn generic_graph_admits_large_tensor_dimensions_without_model_specific_limits() 
             kind: OperatorKind::Input,
             shape: vec![2, 32769],
             normalization_width: 32769,
+            output_width: None,
             x: 0,
             y: 0,
         },
@@ -318,6 +321,7 @@ fn shape_and_normalization_parameters_refuse_invalid_sequential_edits() {
                 kind: OperatorKind::RmsNorm,
                 shape,
                 normalization_width: width,
+                output_width: None,
                 x: 0,
                 y: 0,
             },
@@ -328,4 +332,64 @@ fn shape_and_normalization_parameters_refuse_invalid_sequential_edits() {
         );
         assert!(app.state().operator_graph.nodes.is_empty());
     }
+}
+
+#[test]
+fn residual_add_public_ports_refuse_shape_mismatch_and_undo_connections() {
+    let mut app = TestApp::<ChipDesignShell>::new().unwrap();
+    for (node, kind) in [("residual", "input"), ("branch", "input"), ("sum", "add")] {
+        app.call_on(
+            RESOURCE_ID,
+            "add-node",
+            serde_json::json!({"node":node,"kind":kind,"shape":[4,8],
+                "normalization_width":8,"x":0,"y":0}),
+        )
+        .unwrap();
+    }
+    for (source, target) in [("residual", "left"), ("branch", "right")] {
+        app.call_on(
+            RESOURCE_ID,
+            "connect",
+            serde_json::json!({"from_node":source,"from_port":"value",
+                "to_node":"sum","to_port":target}),
+        )
+        .unwrap();
+    }
+    assert_eq!(app.state().operator_graph.active.len(), 2);
+    let content = app
+        .call("read", serde_json::json!({"item":RESOURCE_ID}))
+        .unwrap()
+        .unwrap();
+    assert_eq!(content["nodes"]["sum"]["kind"], "add");
+    assert_eq!(
+        content["graph"]["nodes"]["sum"]["inputs"][0]["data_type"],
+        "f32[4, 8]"
+    );
+    assert_eq!(
+        content["graph"]["nodes"]["sum"]["outputs"][0]["id"],
+        "result"
+    );
+    assert!(app.undo());
+    assert_eq!(app.state().operator_graph.active.len(), 1);
+    app.call_on(
+        RESOURCE_ID,
+        "set-shape",
+        serde_json::json!({"node":"branch","shape":[8]}),
+    )
+    .unwrap();
+    let before = app.state().operator_graph.candidates.len();
+    assert!(
+        app.call_on(
+            RESOURCE_ID,
+            "connect",
+            serde_json::json!({
+                "from_node":"branch","from_port":"value","to_node":"sum","to_port":"right"
+            })
+        )
+        .is_err()
+    );
+    assert_eq!(app.state().operator_graph.candidates.len(), before);
+    let wire = serde_json::to_string(&app.state().operator_graph.nodes["sum"]).unwrap();
+    let decoded: OperatorNode = serde_json::from_str(&wire).unwrap();
+    assert_eq!(decoded.kind, OperatorKind::Add);
 }

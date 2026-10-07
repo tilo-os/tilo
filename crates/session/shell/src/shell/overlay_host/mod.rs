@@ -660,6 +660,8 @@ pub struct ShellOverlayHost {
     /// Workspace-settings transition, geometry, painting chrome, and typed
     /// hit targets. Policy outcomes are applied by this host.
     workspace_settings_overlay: WorkspaceSettingsOverlay,
+    /// A rename submit owns its held Enter repeats and release after the draft closes.
+    workspace_rename_submit_held: bool,
     palette_was_visible: bool,
     /// Interruptible open/close driver for the command palette.
     palette_transition: ui::Transition,
@@ -2171,6 +2173,7 @@ impl ShellOverlayHost {
             strip_rail_hover: None,
             qs_refresh: inputs.qs_refresh,
             workspace_settings_overlay: WorkspaceSettingsOverlay::default(),
+            workspace_rename_submit_held: false,
             palette_was_visible: false,
             palette_transition: ui::Transition::closed(),
             group_row_ptrs: HashMap::new(),
@@ -7241,6 +7244,22 @@ impl ShellOverlayHost {
         None
     }
 
+    /// The shared window grip overlays client content. Resolve it in laid-out
+    /// screen coordinates, after strip panning, before forwarding client input.
+    pub fn group_resize_hit(&self, group_id: u64, point: (f64, f64)) -> bool {
+        self.group_resize_rect(group_id)
+            .is_some_and(|rect| rect.contains(Point::new(point.0, point.1)))
+    }
+
+    /// Visible grip geometry shared by local routing and remote admission.
+    pub fn group_resize_rect(&self, group_id: u64) -> Option<Rect> {
+        self.group_row_ptrs.values().find_map(|&ptr| {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &GroupRow = unsafe { &*ptr };
+            row.group_resize_rect(group_id)
+        })
+    }
+
     /// Every tile laid out on this device, with the tab it shows, in
     /// screen space: what peer pointers are anchored to and placed over
     /// (see [`crate::shell::peer_presence::PointerAnchor`]).
@@ -12085,7 +12104,14 @@ impl ShellOverlayHost {
         // Workspace naming is a text-field modal.  It must arbitrate before
         // every shell chord: otherwise Super+W/K/T can close a tab or open a
         // palette while the field is visibly active.
+        let rename_submit = matches!(logical_key, Key::Named(NamedKey::Enter))
+            && !self.palette_visible
+            && self
+                .chrome
+                .as_ref()
+                .is_some_and(|chrome| chrome.borrow().editing_workspace_name.is_some());
         if self.handle_workspace_rename_key(logical_key, modifiers, handled) {
+            self.workspace_rename_submit_held |= rename_submit;
             return true;
         }
         if self.status_editing {
@@ -13386,6 +13412,31 @@ impl ShellOverlayHost {
             st.dismiss_notification(id);
             *handled = true;
             return true;
+        }
+        false
+    }
+
+    /// Finish the key sequence the rename field started, even after commit
+    /// removes the draft. A fresh press belongs to normal contextual routing.
+    fn consume_workspace_rename_submit_edge(&mut self, event: &WindowEvent) -> bool {
+        if matches!(event, WindowEvent::Focused(false)) {
+            self.workspace_rename_submit_held = false;
+        }
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        if !matches!(key.logical_key, Key::Named(NamedKey::Enter)) {
+            return false;
+        }
+        if self.workspace_rename_submit_held && (key.repeat || key.state == ElementState::Released)
+        {
+            if key.state == ElementState::Released {
+                self.workspace_rename_submit_held = false;
+            }
+            return true;
+        }
+        if key.state == ElementState::Pressed {
+            self.workspace_rename_submit_held = false;
         }
         false
     }
@@ -17093,6 +17144,7 @@ impl Widget for ShellOverlayHost {
         let pairing_dirty = self.pairing.pump(doc, path);
         let radio_dirty = self.poll_quick_settings_radio();
         let quick_settings_dirty = self.apply_quick_settings_readings();
+        let display_storage_dirty = self.projection_overlay.poll_storage();
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
         self.tick_shortcut_triggers();
@@ -17246,6 +17298,7 @@ impl Widget for ShellOverlayHost {
         content_dirty
             || quick_settings_dirty
             || radio_dirty
+            || display_storage_dirty
             || pairing_dirty
             || close_dirty
             || palette_dirty
@@ -17779,6 +17832,10 @@ impl Widget for ShellOverlayHost {
         // while every onboarding click was evaluated without a position.
         self.track_cursor_position(event, ctx.scale_factor);
         self.observe_window_focus();
+        if self.consume_workspace_rename_submit_edge(event) {
+            *ctx.handled = true;
+            return;
+        }
         // Print Screen has an explicit arbitration policy. It must run before
         // OOBE, portal and consent gates so Capture Studio can temporarily
         // own input above those preserved workflows instead of being consumed

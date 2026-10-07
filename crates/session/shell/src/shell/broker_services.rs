@@ -5,6 +5,10 @@ use super::state::WorkspaceTreeHandle;
 #[cfg(target_os = "linux")]
 mod airdrop_transfer;
 mod committed_document;
+#[cfg(target_os = "linux")]
+mod file_clipboard;
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use file_clipboard::test_support::TestTransferPause;
 #[cfg(test)]
 #[path = "broker_services/native_effect_tests.rs"]
 mod native_effect_tests;
@@ -53,6 +57,37 @@ impl NativeOwnerCommitService {
     }
 }
 impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitService {
+    fn commit_member_effect_receipt(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        caller: tilo_user_identity::DeviceCert,
+    ) -> tilo_peer_state::owner_commit::CommitFuture {
+        let owner = self.owner.clone();
+        let network = self.network.clone();
+        Box::pin(async move {
+            let owner = owner.ok_or("native effect governor unavailable")?;
+            let room = super::state::RoomId::parse(&request.room).ok_or("invalid effect room")?;
+            if let Some(network) = network.as_ref() {
+                network.check_native_custody(&owner, room)?;
+                if network.governed_elsewhere(room) {
+                    return Err("member receipt requires the actual governing owner".into());
+                }
+            }
+            let (key, governor) = tilo_identity_host::broker::trusted_current_device(&request.room)
+                .map_err(|error| format!("effect governor custody unavailable: {error}"))?;
+            let receipt = owner.commit_member_effect_receipt(
+                &request,
+                &caller,
+                &governor,
+                &key,
+                std::time::SystemTime::now(),
+            )?;
+            if let Some(network) = network {
+                network.schedule_native_owner_publication(room);
+            }
+            Ok(receipt)
+        })
+    }
     fn requires_room(&self, room: &str) -> bool {
         super::state::RoomId::parse(room)
             .is_some_and(|room| self.tree.read().commits_native_documents(room))
@@ -729,9 +764,33 @@ impl LauncherServices for NativeLauncher {
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
+    fn authenticated_launch(
+        &self,
+        pid: u32,
+        app: &str,
+        room: &str,
+    ) -> Result<Option<tilo_action_broker::services::AuthenticatedApplicationLaunch>, String> {
+        Ok(super::launcher::authenticated_window_launch(pid, app, room))
+    }
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
         super::launcher::attest_trusted_service_launch_for_pid(pid, app, room).is_some()
             || super::launcher::consume_in_process_launch(pid, app, room)
+    }
+    #[cfg(target_os = "linux")]
+    fn attest_executing_process(
+        &self,
+        launcher_pid: u32,
+        peer: &runtime_portal::process_binding::ExecutingPeer,
+        app: &str,
+        room: &str,
+    ) -> bool {
+        let Some((_, start)) = super::launcher::proc_stat(launcher_pid) else {
+            return false;
+        };
+        super::launcher::attest_trusted_service_launch_for_pid(launcher_pid, app, room).is_some()
+            && peer.belongs_to(launcher_pid, start)
+            && super::launcher::attest_trusted_service_launch_for_pid(launcher_pid, app, room)
+                .is_some()
     }
     fn application_creation_evidence(
         &self,
@@ -1445,6 +1504,11 @@ pub fn native_services(
     });
     let launcher = Arc::new(NativeLauncher(membership.clone(), network.clone()));
     HostServices {
+        #[cfg(target_os = "linux")]
+        file_clipboard: membership.as_ref().map(|tree| {
+            Arc::new(file_clipboard::NativeFileClipboard::new(tree.clone()))
+                as Arc<dyn tilo_action_broker::services::FileClipboardServices>
+        }),
         app_action_access: Some(super::app_action_access::installed_resolver()),
         app_action_grants,
         committed_documents,

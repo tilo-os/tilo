@@ -7,12 +7,12 @@ use ui::widget::Widget as _;
 fn fixture() -> (crate::WordProcessorWidget, ui::State, String) {
     let mut state = crate::initialized_state();
     let mut writer = crate::WordProcessorWidget::detached();
-    writer.sync(&mut state.doc, &state.root);
+    writer.sync(&state.doc, &state.root);
     writer
         .model_mut()
         .insert_str(&mut ui::widget::Edits::lend(&mut state.doc), "A😀éZ");
     state.doc.commit();
-    writer.sync(&mut state.doc, &state.root);
+    writer.sync(&state.doc, &state.root);
     let c = tilo_doc::model::open(&state.doc, &automerge::ROOT).unwrap();
     let block = tilo_doc::model::blocks_in_order(&state.doc, &c).remove(0);
     (writer, state, block)
@@ -20,24 +20,25 @@ fn fixture() -> (crate::WordProcessorWidget, ui::State, String) {
 
 fn encoded_for(
     writer: &crate::WordProcessorWidget,
-    doc: &AutoCommit,
+    _doc: &AutoCommit,
     participant: &ParticipantId,
 ) -> EncodedAction {
     let _scope = ui::invocation_scope::InvokerScope::enter(
         ActionInvoker::actor("one-authenticated-principal").with_participant(participant.clone()),
     );
-    let resources = ui::resources::resources(writer, doc);
-    let resource = resources
-        .iter()
-        .find(|r| r.id.as_str() == "word-processor.document")
+    // The framework owns document publication; use the surface's real
+    // participant-bound declaration rather than the retired widget publisher.
+    let declaration = ui::framework::ResourceSurface::bound_declarations(writer)
+        .into_iter()
+        .find(|declaration| declaration.id == "type-text")
         .unwrap();
-    let spec = resource
-        .actions
-        .iter()
-        .find(|s| s.id == "type-text")
-        .unwrap();
-    let args = serde_json::json!({"text": "new content"});
-    spec.build_json(args.as_object().unwrap()).unwrap()
+    let supplied = serde_json::json!({"text": "new content"});
+    let args = tilo_actions::ActionArgs::bind_json(
+        declaration.params.as_slice(),
+        supplied.as_object().unwrap(),
+    )
+    .unwrap();
+    crate::actions::encode(&(declaration.build)(&args, 0).unwrap())
 }
 
 #[test]

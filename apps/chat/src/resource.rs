@@ -32,6 +32,7 @@ use ui::tilo_resource::Effect as _;
 /// participant; a view compares the authors it records with its own `me`.
 #[derive(Clone, Debug, Default)]
 pub struct ChatState {
+    pub feedback: Vec<crate::feedback::Report>,
     pub workspaces: Vec<Workspace>,
     pub channels: Vec<Channel>,
     pub categories: Vec<Category>,
@@ -116,6 +117,8 @@ impl Resource for Chat {
             .filter(|key| !ChatDoc::draft_text(doc, key).is_empty())
             .collect();
         Ok(ChatState {
+            feedback: crate::feedback::reports(doc)
+                .map_err(|error| ModelError::invalid(error.to_string()))?,
             workspaces,
             channels,
             categories,
@@ -132,6 +135,17 @@ impl Resource for Chat {
         Ok(())
     }
 
+    fn permission(action: &ChatAction) -> tilo_actions::PermissionRequirement {
+        match action {
+            ChatAction::Feedback(action) => action.permission(),
+            _ => tilo_actions::PermissionRequirement::Write,
+        }
+    }
+
+    fn least_permission() -> tilo_actions::PermissionRequirement {
+        tilo_actions::PermissionRequirement::Comment
+    }
+
     fn declarations() -> Vec<ActionDecl<Self>> {
         // Creating channels and categories is offered on each workspace.
         Vec::new()
@@ -139,6 +153,7 @@ impl Resource for Chat {
 
     fn children(state: &ChatState) -> Vec<PublishedResource> {
         let mut children = actions::publish_children(state);
+        children.extend(state.feedback.iter().map(crate::feedback::publish));
         // Each composer draft is a rich-text child, edited as one.
         children.extend(state.draft_keys.iter().map(|key| {
             let owned = key.clone();
@@ -175,7 +190,12 @@ impl Resource for Chat {
     }
 
     fn child(state: &ChatState, id: &str) -> Option<PublishedResource> {
-        actions::resolve_child(state, id)
+        state
+            .feedback
+            .iter()
+            .find(|report| format!("chat.feedback:{}", report.submission.id) == id)
+            .map(crate::feedback::publish)
+            .or_else(|| actions::resolve_child(state, id))
     }
 
     fn search(state: &ChatState) -> Vec<SearchEntry> {
@@ -323,10 +343,9 @@ impl ResourceApp for ChatShell {
         crate::i18n::ensure();
         let me = cx.me().unwrap_or_default().to_owned();
         let live = cx.mode().is_live();
-        // Only a live window reaches the shell's voice service. Attachments
-        // are in the store the host lends the window, which carries them on
-        // the conversation's route.
-        let native = live && crate::app::native_services();
+        // Native path access controls attachment import. A live browser
+        // independently discovers its host's voice service through media replies.
+        let native = live && crate::app::native_file_access();
         let content = cx.content().unwrap_or_else(ContentStore::memory);
         // A capture shows the app as a device with its services draws it;
         // nothing it stages reaches them.
@@ -403,13 +422,13 @@ impl ResourceApp for ChatShell {
             return Vec::new();
         }
         let creator = LocalIdentity::for_participant(cx.me());
-        let action = if let Some(workspace) = cx.host().and_then(|host| host.creation_workspace()) {
+        let action = if let Some((workspace, name)) = cx.creation_workspace() {
             ChatAction::SeedWorkspace {
-                workspace: workspace.id.clone(),
-                workspace_name: if workspace.name.trim().is_empty() {
-                    workspace.id.clone()
+                workspace: workspace.to_owned(),
+                workspace_name: if name.trim().is_empty() {
+                    workspace.to_owned()
                 } else {
-                    workspace.name.clone()
+                    name.to_owned()
                 },
                 creator_name: creator.name,
                 creator_initials: creator.initials,
@@ -554,6 +573,52 @@ fn draft_keys(doc: &Doc) -> Vec<String> {
 mod tests {
     use super::*;
     use ui::framework::testing::TestApp;
+
+    #[test]
+    fn sidebar_remains_docked_and_semantically_resizable_in_a_medium_chat_window() {
+        let mut app = TestApp::<ChatShell>::new().unwrap();
+        app.harness().resize((760, 720)).unwrap();
+        let resources = app.harness().resources();
+        let resize = resources
+            .iter()
+            .find(|resource| resource.label == "Resize sidebar")
+            .expect("a medium conversation keeps its shared resize handle");
+        let address = ui::tilo_actions::ActionAddress::new(resize.id.as_str(), "set-value");
+        let arguments = serde_json::Map::from_iter([(
+            ui::tilo_actions::PROMPTED_PARAM.to_owned(),
+            serde_json::Value::String("40%".into()),
+        )]);
+        assert!(
+            app.harness()
+                .invoke_action(&address, &arguments, false, None)
+                .unwrap()
+                .completed()
+                .is_some()
+        );
+        assert_eq!(
+            app.with_surface::<ChatApp, _>(|surface| (
+                surface.left_flap.is_docked(),
+                surface.sidebar_rect().width(),
+                surface.content_rect().width(),
+            )),
+            Some((true, 228.0, 456.0))
+        );
+        assert!(app.harness().component_contract_violations().is_empty());
+        app.harness().resize((600, 720)).unwrap();
+        assert!(
+            app.harness()
+                .resources()
+                .iter()
+                .all(|resource| resource.label != "Resize sidebar"),
+            "a genuinely narrow window uses the shared overlay drawer"
+        );
+        app.harness().resize((760, 720)).unwrap();
+        assert_eq!(
+            app.with_surface::<ChatApp, _>(|surface| surface.sidebar_rect().width()),
+            Some(228.0),
+            "the usable resized width survives narrow-window collapse"
+        );
+    }
 
     #[test]
     fn sidebar_shared_resize_uses_the_complete_mounted_app_door() {

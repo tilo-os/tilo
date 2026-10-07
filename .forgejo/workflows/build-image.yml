@@ -400,6 +400,9 @@ jobs:
       - name: Checkout signing policy
         if: (needs.plan.outputs.publish == 'true' || needs.plan.outputs.signed-development-board == 'true')
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Validate signed board inputs before native build
+        if: needs.plan.outputs.signed-development-board == 'true'
+        run: python3 os/tests/test_signed_development_board.py
       - name: Install checksum-pinned Cosign
         if: (needs.plan.outputs.publish == 'true' || needs.plan.outputs.signed-development-board == 'true')
         uses: ./.forgejo/actions/install-cosign
@@ -422,7 +425,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 180
     container:
-      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
     outputs:
       rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}
     steps:
@@ -561,7 +564,9 @@ jobs:
         env:
           DEV_BUILD: ${{ github.event_name == 'workflow_call' || needs.plan.outputs.signed-development-board == 'true' }}
           COLLECTION_SOURCE: ${{ needs.plan.outputs.app_collection_source }}
-          PACKAGE_TOKEN: ${{ (github.event_name == 'workflow_call' || needs.plan.outputs.signed-development-board == 'true') && secrets.REGISTRY_TOKEN || '' }}
+          # Grouped credential expressions become Booleans in reusable jobs.
+          # Use the existing task-scoped token directly; gate its use below.
+          PACKAGE_TOKEN: ${{ github.token }}
           COLLECTION_AUDIENCE: ${{ vars.TILO_OS_APP_COLLECTION_AUDIENCE }}
           COLLECTION_URL_INPUT: ${{ github.event.inputs.app_collection_url }}
           COLLECTION_SHA256_INPUT: ${{ github.event.inputs.app_collection_sha256 }}
@@ -630,8 +635,8 @@ jobs:
             auth="Bearer $jwt"
           else
             # A called workflow (Build / OS dev) receives no OIDC token. Its
-            # package read uses the CI account; the SHA-256 pins the bytes.
-            [[ -n ${PACKAGE_TOKEN:-} ]] || { echo '::error::no OIDC token and no package token'; exit 1; }
+            # package read uses its task-scoped token; the SHA-256 pins the bytes.
+            [[ $DEV_BUILD == true && -n ${PACKAGE_TOKEN:-} ]] || { echo '::error::no OIDC token and no allowed package token'; exit 1; }
             auth="token $PACKAGE_TOKEN"
           fi
           case "$COLLECTION_URL" in
@@ -710,7 +715,8 @@ jobs:
       - name: Materialize the pinned desktop payload
         env:
           PAYLOAD_AUDIENCE: ${{ vars.TILO_OS_APP_COLLECTION_AUDIENCE }}
-          PACKAGE_TOKEN: ${{ github.event_name == 'workflow_call' && secrets.REGISTRY_TOKEN || '' }}
+          PACKAGE_FALLBACK_ALLOWED: ${{ github.event_name == 'workflow_call' }}
+          PACKAGE_TOKEN: ${{ github.token }}
           PAYLOAD_URL_INPUT: ${{ github.event.inputs.desktop_payload_url }}
           PAYLOAD_SHA256_INPUT: ${{ github.event.inputs.desktop_payload_sha256 }}
           PAYLOAD_URL_DEFAULT: ${{ needs.plan.outputs.desktop_payload_url }}
@@ -752,8 +758,8 @@ jobs:
             auth="Bearer $jwt"
           else
             # A called workflow (Build / OS dev) receives no OIDC token. Its
-            # package read uses the CI account; the SHA-256 pins the bytes.
-            [[ -n ${PACKAGE_TOKEN:-} ]] || { echo '::error::no OIDC token and no package token'; exit 1; }
+            # package read uses its task-scoped token; the SHA-256 pins the bytes.
+            [[ $PACKAGE_FALLBACK_ALLOWED == true && -n ${PACKAGE_TOKEN:-} ]] || { echo '::error::no OIDC token and no allowed package token'; exit 1; }
             auth="token $PACKAGE_TOKEN"
           fi
           case "$PAYLOAD_URL" in

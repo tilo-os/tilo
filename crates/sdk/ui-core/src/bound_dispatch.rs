@@ -1932,9 +1932,9 @@ pub(crate) fn execute_resource_operation(
         let before = applied
             .as_ref()
             .map(|envelope| envelope.base_change_hashes());
-        if let Some(envelope) = applied {
+        if let Some(envelope) = applied.as_ref() {
             if let Some(scope) = scope {
-                scope.prepare_applied_anchor(widget, doc, &envelope);
+                scope.prepare_applied_anchor(widget, doc, envelope);
             }
             // Reuse the executor's actual admission frontier: this adds no
             // document loan, commit, replay behavior, or cross-owner traversal.
@@ -1950,17 +1950,54 @@ pub(crate) fn execute_resource_operation(
             matches!(spec.contract.result, tilo_actions::ResultSpec::Json { .. }).then(|| {
                 // Submitted to another host, nothing here shows its effect.
                 before
+                    .as_ref()
                     .and_then(|before| {
                         let after = doc.get_heads();
-                        let changes = doc.diff(&before, &after);
+                        let changes = doc.diff(before, &after);
                         crate::resources::document_action_result(&*widget, doc, address, &changes)
                     })
                     .unwrap_or(serde_json::Value::Null)
             });
-        crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput {
+        let output = tilo_actions::ActionOutput {
             value,
             ..tilo_actions::ActionOutput::default()
-        })
+        };
+        if !matches!(
+            spec.contract.execution,
+            tilo_actions::ExecutionMode::Immediate
+        ) && let Some(envelope) = applied.as_ref()
+            && let Some(effects) = crate::widget::capability::capability_mut::<
+                dyn crate::widget::document_effects::DocumentEffects,
+            >(widget)
+        {
+            let operation = match scope {
+                Some(scope) => crate::widget::ResourceOperation::scoped(
+                    scope,
+                    tilo_actions::OperationKind::Document,
+                    &envelope.action.type_id,
+                    &envelope.action.payload,
+                ),
+                None => crate::widget::ResourceOperation::local(
+                    source_invocation.unwrap_or(invocation),
+                    tilo_actions::OperationKind::Document,
+                    &envelope.action.type_id,
+                    &envelope.action.payload,
+                ),
+            };
+            let before = envelope.base_change_hashes();
+            let applied = crate::widget::document_effects::AppliedDocument {
+                invocation,
+                before: &before,
+                document: doc,
+                output: output.clone(),
+            };
+            effects
+                .start_document_effects(&operation, &applied)
+                .map_err(tilo_actions::DoorError::Failed)?
+                .unwrap_or(crate::widget::ResourceOperationStart::Completed(output))
+        } else {
+            crate::widget::ResourceOperationStart::Completed(output)
+        }
     } else if let Some(readers) =
         crate::semantic_document_read::registered_in_tree(&*widget, &encoded.type_id)
     {
@@ -2327,12 +2364,95 @@ pub(crate) struct ComponentRequest<'a> {
     pub(crate) visit: &'a mut ComponentVisitor<'a>,
 }
 
+/// One original ordinary model pass for the current retained owner. No callback
+/// is omitted from a wake reason, document frontier or presentation state.
+pub(crate) fn service_retained_owner_model(
+    root: &mut dyn Widget,
+    outer: &mut AutoCommit,
+    work: &crate::owner_wake::OwnerWakeRequest,
+) -> Result<(), BoundDispatchError> {
+    let captured = work.binding();
+    let _entry = captured.enter()?;
+    let mut result = None;
+    let mut visit = |current: &CallbackBinding,
+                     owner: &mut dyn crate::widget::AppWidget,
+                     _: &tilo_actions::ActionRegistry| {
+        if current.same_component(captured) {
+            let updated = current
+                .with_settlement(outer, |document, record_root| {
+                    owner.update(document, record_root);
+                    owner.settle(&mut crate::widget::Edits::lend(document), record_root);
+                    current.drain_owned_tree(owner, document).map(|_| ())
+                })
+                .and_then(|result| result);
+            // Preserve the original separate update and sync admissions/actor
+            // restoration, rather than holding a canonical loan across both.
+            let synced = current
+                .with_document(outer, |document, record_root| {
+                    owner.sync(document, record_root);
+                    current.drain_owned_tree(owner, document).map(|_| ())
+                })
+                .and_then(|result| result);
+            // The original host attempts sync after a nonpanic update/drain
+            // refusal. Retain its first error without omitting the fresh door.
+            let admitted = updated.and(synced);
+            // Original status projection follows the canonical loan, including
+            // refusal. No application callback runs under a record-store loan.
+            let projected = current.enter().and_then(|_entry| {
+                current
+                    .records
+                    .save_status(&current.checkout.id)
+                    .map_err(BoundDispatchError::Record)
+                    .map(|status| owner.record_save_status(status))
+            });
+            // Offer only this admitted record, after both canonical loans.
+            // Pending host acknowledgement is accepted, not a model retry.
+            let offered = current.enter().and_then(|_entry| {
+                current
+                    .records
+                    .offer_record(&current.checkout.id)
+                    .map_err(BoundDispatchError::Persistence)
+            });
+            result = Some(admitted.and(projected).and(offered));
+        }
+        None
+    };
+    let mut request = ComponentRequest {
+        target: Some(captured),
+        found: false,
+        visit: &mut visit,
+    };
+    root.visit_retained_components(&mut RetainedComponentRequest {
+        inner: &mut request,
+    })?;
+    result.unwrap_or(Err(BoundDispatchError::ClosedLifetime))
+}
+
+/// SDK-owned retained component traversal, separate from public callback reach.
+pub struct RetainedComponentRequest<'a, 'b> {
+    inner: &'a mut ComponentRequest<'b>,
+}
+impl<'b> RetainedComponentRequest<'_, 'b> {
+    pub(crate) fn inner(&mut self) -> &mut ComponentRequest<'b> {
+        self.inner
+    }
+    /// Forward only through actual retained storage. Unknown roots preserve their
+    /// original `visit_components` callback, including refusals and side effects.
+    pub fn visit(&mut self, child: &mut dyn Widget) -> Result<(), BoundDispatchError> {
+        if self.inner.found {
+            return Ok(());
+        }
+        child.visit_retained_components(self)
+    }
+}
+
 #[derive(Debug)]
 pub enum BoundDispatchError {
     MissingNode,
     ClosedLifetime,
     CrossRecordReentry,
     Record(RecordOpenError),
+    Persistence(String),
 }
 
 /// Logical typing ownership survives physical commits made when an opaque
@@ -3365,6 +3485,24 @@ impl CallbackBinding {
         self.history_request_with_registry(outer, request, None)
     }
 
+    /// Outside changes need a new admitted history invocation: a local
+    /// stack inversion has no current broker caller for its consequence.
+    pub(crate) fn history_uses_compensation(
+        &self,
+        outer: &mut AutoCommit,
+    ) -> Result<bool, BoundDispatchError> {
+        self.with_record_frame(outer, false, |doc, _| {
+            tilo_resource::history::committed_versions(doc)
+                .iter()
+                .any(|version| {
+                    version
+                        .context
+                        .as_ref()
+                        .is_some_and(|context| context.compensation.is_some())
+                })
+        })
+    }
+
     pub(crate) fn history_request_with_registry(
         &self,
         outer: &mut AutoCommit,
@@ -3460,6 +3598,8 @@ impl CallbackBinding {
         outer: &mut AutoCommit,
         callback: impl FnOnce(&mut AutoCommit, &ObjId) -> R,
     ) -> Result<R, BoundDispatchError> {
+        #[cfg(test)]
+        document_admission_probe::record(self);
         self.with_record_frame(outer, true, callback)
     }
     /// Lend typed edits without opening a mutation merely because a frame polls.
@@ -3469,6 +3609,8 @@ impl CallbackBinding {
         outer: &mut AutoCommit,
         callback: impl FnOnce(&mut AutoCommit, &ObjId) -> R,
     ) -> Result<R, BoundDispatchError> {
+        #[cfg(test)]
+        document_admission_probe::record(self);
         self.with_record_frame(outer, false, |document, root| {
             let handle = ACTIVE
                 .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
@@ -4533,3 +4675,46 @@ mod device_actor_tests;
 #[cfg(test)]
 #[path = "bound_dispatch/native_text_tests.rs"]
 mod native_text_tests;
+
+#[cfg(test)]
+pub(crate) mod document_admission_probe {
+    use super::*;
+    struct Observation {
+        owner: std::rc::Weak<Cell<bool>>,
+        closing: Rc<RefCell<Vec<bool>>>,
+    }
+    thread_local! { static CURRENT: RefCell<Option<Observation>> = const { RefCell::new(None) }; }
+    pub(crate) struct Probe {
+        previous: Option<Observation>,
+        closing: Rc<RefCell<Vec<bool>>>,
+    }
+    impl Probe {
+        pub(crate) fn new(binding: &CallbackBinding) -> Self {
+            let closing = Rc::new(RefCell::new(Vec::new()));
+            let previous = CURRENT.with_borrow_mut(|current| {
+                current.replace(Observation {
+                    owner: Rc::downgrade(&binding.closing),
+                    closing: closing.clone(),
+                })
+            });
+            Self { previous, closing }
+        }
+        pub(crate) fn attempts(&self) -> Vec<bool> {
+            self.closing.borrow().clone()
+        }
+    }
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            CURRENT.with_borrow_mut(|current| *current = self.previous.take());
+        }
+    }
+    pub(super) fn record(binding: &CallbackBinding) {
+        CURRENT.with_borrow(|current| {
+            if let Some(current) = current
+                && std::rc::Weak::ptr_eq(&current.owner, &Rc::downgrade(&binding.closing))
+            {
+                current.closing.borrow_mut().push(binding.closing.get());
+            }
+        });
+    }
+}

@@ -1830,19 +1830,16 @@ impl App {
 
     fn private_continuity_route(&mut self) -> Option<crate::collaboration::RouteSpec> {
         let witness = self.collaboration.manager.primary_route()?.clone();
-        witness
-            .route
-            .record
-            .as_deref()?
-            .strip_prefix("continuation:")?
-            .parse::<u64>()
-            .ok()?;
-        if self.continuation.last_private_route.as_ref() != Some(&witness) {
+        let instance = self.collaboration.manager.private_window_instance()?;
+        if self.continuation.last_private_route.as_ref() != Some(&witness)
+            || self.continuation.private_instance != Some(instance)
+        {
             if self
                 .continuation
                 .last_private_route
                 .as_ref()
                 .is_some_and(|last| last.route != witness.route)
+                || self.continuation.private_instance != Some(instance)
             {
                 self.continuation.owner_view = Default::default();
             } else {
@@ -1850,9 +1847,11 @@ impl App {
                 self.continuation.owner_view.last_generation = 0;
             }
             self.continuation.last_published = None;
+            self.continuation.publication_initialized = false;
             self.last_published_playback = None;
             self.last_playback_publish = None;
             self.continuation.last_private_route = Some(witness.clone());
+            self.continuation.private_instance = Some(instance);
         }
         Some(witness.route)
     }

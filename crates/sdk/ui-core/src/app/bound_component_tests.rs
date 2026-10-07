@@ -11,6 +11,7 @@ thread_local! { static CAPTURES: RefCell<Vec<(&'static str, crate::LatestRequest
 thread_local! { static DISCOVERY_COUNT: Cell<usize> = const { Cell::new(0) }; }
 thread_local! { static CONTROL_AUTHORITY: RefCell<Vec<(bool, bool)>> = const { RefCell::new(vec![]) }; }
 thread_local! { static COMPOUND_MODE: Cell<u8> = const { Cell::new(0) }; }
+thread_local! { static DOCUMENT_JOB_MODE: Cell<bool> = const { Cell::new(false) }; }
 thread_local! {
     static PAGED_SEARCH_COUNTS: RefCell<Option<Rc<[Cell<usize>; 2]>>> = const { RefCell::new(None) };
 }
@@ -467,6 +468,18 @@ impl crate::resources::PublishesResources for Probe {
         if self.strict {
             action.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
         }
+        let mut document = tilo_actions::ActionSpec::immediate(
+            "apply",
+            "Apply follow up",
+            "bound.apply",
+            &FollowUp,
+        )
+        .unwrap();
+        if DOCUMENT_JOB_MODE.get() {
+            document.contract.execution =
+                tilo_actions::ExecutionMode::Background { cancellable: true };
+            document.contract.result = tilo_actions::ResultSpec::Job;
+        }
         vec![
             tilo_actions::Resource::new(
                 self.collision.as_deref().unwrap_or("bound:probe"),
@@ -474,15 +487,7 @@ impl crate::resources::PublishesResources for Probe {
                 "Probe",
             )
             .with_action(action)
-            .with_action(
-                tilo_actions::ActionSpec::immediate(
-                    "apply",
-                    "Apply follow up",
-                    "bound.apply",
-                    &FollowUp,
-                )
-                .unwrap(),
-            )
+            .with_action(document)
             .with_action(
                 tilo_actions::ActionSpec::operation(
                     "view",
@@ -977,7 +982,10 @@ impl ActionFixture {
     }
     fn broker() -> Self {
         let mut fixture = Self::with_same_record(true);
-        fixture.app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+        // This fixture captures broker submission and injects admitted delivery;
+        // it does not exercise authenticated native document history.
+        fixture.app.collaboration.manager =
+            super::semantic_tree_app_tests::admitted_delivery_manager();
         fixture.app.actions.bound_broker_route_for_test =
             Some(crate::collaboration::PrimaryRouteWitness {
                 route: fixture.bindings[0].broker_route().unwrap(),
@@ -1008,6 +1016,78 @@ include!("owner_publication_tests.rs");
 include!("action_directory_snapshot_bound_tests.rs");
 include!("bound_record_sync_tests.rs");
 include!("standalone_history_record_restore_tests.rs");
+
+#[test]
+fn background_document_job_is_broker_admitted_before_its_canonical_edit() {
+    DOCUMENT_JOB_MODE.set(true);
+    let mut fixture = ActionFixture::broker();
+    let target = fixture.target(0, "apply");
+    let actor = fixture.app.collaboration.local_author.0.clone();
+    let before = fixture
+        .records
+        .read(&target.binding.checkout.id, |doc| doc.clone().get_heads())
+        .unwrap();
+    let mut requests = Vec::new();
+    let started = fixture
+        .app
+        .invoke_bound_target_with_broker(
+            &target,
+            &ResourceInvocation::new(&target.address.address, &actor).confirmed(true),
+            Some(&mut |request| requests.push(request)),
+        )
+        .unwrap();
+    assert!(matches!(
+        started,
+        crate::widget::ResourceOperationStart::Accepted
+    ));
+    assert_eq!(
+        requests.len(),
+        1,
+        "document work needs an actual native source invocation"
+    );
+    assert_eq!(
+        fixture
+            .records
+            .read(&target.binding.checkout.id, |doc| doc.clone().get_heads())
+            .unwrap(),
+        before,
+        "no canonical edit or outside consequence before broker admission"
+    );
+    let CollabRequest::RemoteAction {
+        message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
+    } = requests.pop().unwrap()
+    else {
+        panic!("expected canonical broker request")
+    };
+    assert_eq!(request.target.provider, tilo_actions::remote::OWN_PROVIDER);
+    let delivered = fixture
+        .app
+        .invoke_bound_target_with_broker(
+            &target,
+            &ResourceInvocation::new(&target.address.address, &actor)
+                .confirmed(true)
+                .broker_admitted(true)
+                .invocation(Some(request.invocation)),
+            Some(&mut |request| requests.push(request)),
+        )
+        .unwrap();
+    assert!(matches!(
+        delivered,
+        crate::widget::ResourceOperationStart::Completed(_)
+    ));
+    assert!(
+        requests.is_empty(),
+        "an admitted delivery must not route in a loop"
+    );
+    assert_ne!(
+        fixture
+            .records
+            .read(&target.binding.checkout.id, |doc| doc.clone().get_heads())
+            .unwrap(),
+        before
+    );
+    DOCUMENT_JOB_MODE.set(false);
+}
 
 #[allow(
     clippy::too_many_lines,

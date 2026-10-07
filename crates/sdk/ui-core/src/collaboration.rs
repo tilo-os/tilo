@@ -44,7 +44,7 @@ pub const SESSION_RUNTIME_SUPPORTED: bool = false;
 mod broker;
 pub mod channel_live_activity;
 #[cfg(feature = "broker-transport")]
-mod channel_settings;
+pub(crate) mod channel_settings;
 pub mod handoff;
 mod history;
 pub mod owner_view;
@@ -112,6 +112,7 @@ pub const CURRENT_CONNECTION_PEER_ID: u64 = u64::MAX;
 
 pub use collab_types::DocumentMutation;
 use collab_types::SignedOp;
+pub use runtime_collab::file_clipboard;
 pub use runtime_collab::{
     CalibrationInfo, CalibrationMemberInfo, CalibrationMemberState, CalibrationMicrophoneInfo,
     CalibrationMicrophoneRun, CalibrationMicrophoneState, CalibrationPhaseInfo,
@@ -203,6 +204,11 @@ impl From<TransportError> for CollabSendError {
 
 #[derive(Debug, Clone)]
 pub enum CollabRequest {
+    LocalFileClipboard {
+        request_id: u64,
+        command: runtime_collab::file_clipboard::Command,
+        on_behalf_of: Option<tilo_actions::InvocationId>,
+    },
     Hello {
         app_id: String,
         cluster_id: Uuid,
@@ -639,6 +645,10 @@ impl ChannelAccessState {
 
 #[derive(Debug, Clone)]
 pub enum CollabEvent {
+    LocalFileClipboardResult {
+        request_id: u64,
+        result: Result<runtime_collab::file_clipboard::Reply, String>,
+    },
     /// Original committed history from this SDK channel, applied by its document owner.
     CommittedDocument {
         route: RouteSpec,
@@ -1219,10 +1229,9 @@ impl CollaborationManager {
     }
 }
 
-/// Launcher-issued instance identity for an app window. It deliberately rides
-/// in the existing record component of the authenticated CRDT route so the
-/// broker can retain multiple Browser windows in one workspace without
-/// conflating their continuation metadata.
+/// Compatibility route marker for a launcher-issued app window. Native
+/// document routes obtain their separate window binding from original broker
+/// custody; this environment value cannot authorize native private control.
 fn continuation_instance_env() -> Option<String> {
     let environment = crate::host::environment();
     let value = environment.identity.continuity_instance.as_deref()?.trim();
@@ -1353,6 +1362,23 @@ impl CollaborationManager {
     /// event loop to keep ticking so the stream drains promptly.
     pub(crate) fn primary_route(&self) -> Option<&PrimaryRouteWitness> {
         self.primary_route.current(self.is_connected())
+    }
+
+    pub(crate) fn private_window_instance(&self) -> Option<u64> {
+        let witness = self.primary_route()?;
+        let Backend::Transport(transport) = &self.backend else {
+            return None;
+        };
+        if transport.committed_document_required(&witness.route.channel_id()) {
+            return transport.private_window_binding(&witness.route);
+        }
+        witness
+            .route
+            .record
+            .as_deref()?
+            .strip_prefix("continuation:")?
+            .parse::<u64>()
+            .ok()
     }
 
     /// Whether requests currently reach peers: [`Self::state`] is
@@ -1626,6 +1652,17 @@ impl CollaborationManager {
         let _ = self.try_send_to_route(route, req);
     }
 
+    /// Whether the actual route's original document history has been applied.
+    /// This is the same transport gate used before document publication.
+    pub(crate) fn document_route_ready(&self, route: Option<&RouteSpec>) -> bool {
+        let channel = route.map(RouteSpec::channel_id);
+        !self.awaiting_primary
+            && match &self.backend {
+                Backend::Transport(transport) => transport.document_publishable(channel.as_deref()),
+                Backend::Disabled(_) => false,
+            }
+    }
+
     /// Test-only: whether `route` has resolved its document mode, so a
     /// document mutation on it would be admitted rather than refused.
     #[cfg(test)]
@@ -1682,12 +1719,19 @@ impl CollaborationManager {
             }
             Backend::Disabled(_) => false,
         };
-        if unpublishable {
+        let known_pending_document = matches!(&req, CollabRequest::Document { .. })
+            && matches!(&self.backend, Backend::Transport(transport)
+                if transport.committed_document_required(&route.channel_id()));
+        if unpublishable && !known_pending_document {
             // Join first; the route's original history must be applied
             // before any local mutation is published on it.
             let _ = self.submit(TransportCommand::Join(route));
             return Err(CollabSendError::Unavailable);
         }
+        // A known committed route may be refreshing. Required original
+        // custody was checked above; retain this mutation in the bounded queue.
+        // The worker still waits for this exact route before checking retained
+        // custody and applying the route's existing certification/commit policy.
         Ok(self.submit(TransportCommand::ToRoute(route, req))?)
     }
 

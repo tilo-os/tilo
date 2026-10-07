@@ -37,6 +37,12 @@ pub enum ChipEffect {
     /// Choose an output before invoking the typed connect action.
     #[effect(view, permission = "read")]
     SelectOutput { node: String, port: String },
+    /// Inspect a reported evidence stage, artifact, or subflow reference.
+    #[effect(view, permission = "read")]
+    InspectEvidence { report: String, item: String },
+    /// Open an exactly matched imported subflow; refuses unloaded references.
+    #[effect(view, permission = "read")]
+    OpenEvidenceSubflow { report: String, id: String },
     /// Inspect one report, or return to all reports.
     #[effect(view, permission = "read")]
     Inspect {
@@ -58,6 +64,12 @@ fn capture_notice(cx: &ViewCx<ChipProject>, selected: &ui::LocalState<Option<Str
     let staged = selected.clone();
     cx.on_stage(move |scenario| {
         notice.set(scenario.is_some_and(|name| name != "empty" && name != "operator-graph"));
+        if scenario == Some("evidence-flow")
+            && let Ok((id, _)) =
+                VerificationRecord::import(include_str!("../fixtures/evidence-flow.json"))
+        {
+            staged.set(Some(format!("{id}/stage/physical")));
+        }
         if scenario == Some("operator-graph") {
             staged.set(Some(crate::operator_graph::RESOURCE_ID.into()));
         }
@@ -95,6 +107,10 @@ impl ResourceApp for ChipDesignShell {
             | ChipEffect::InspectOperator { .. }
             | ChipEffect::SelectOutput { .. }) => {
                 crate::operator_graph_view::present(effect, cx, &graph_opened, &graph_inspected)
+            }
+            effect @ (ChipEffect::OpenEvidenceSubflow { .. }
+            | ChipEffect::InspectEvidence { .. }) => {
+                crate::evidence_flow_view::present(effect, cx, &inspected)
             }
             ChipEffect::Inspect { report } => {
                 if report.as_ref().is_some_and(|id| {
@@ -181,12 +197,17 @@ impl ResourceApp for ChipDesignShell {
             "checkpoint-verification",
             "q4k-superblock",
             "research-mapping",
+            "evidence-flow",
         ]
     }
 
     fn scenario(name: Option<&str>) -> Vec<Invoke<ChipProject>> {
         if name == Some("operator-graph") {
             crate::operator_graph_view::scenario()
+        } else if name == Some("evidence-flow") {
+            let action: ActionRef<ChipProject, String> =
+                ActionRef::new("import-verification", &["json"]);
+            vec![action.with(include_str!("../fixtures/evidence-flow.json").to_owned())]
         } else if name == Some("storage-report") {
             let action: ActionRef<ChipProject, String> = ActionRef::new("import-report", &["json"]);
             vec![action.with(include_str!("../fixtures/storage-report.json").to_owned())]
@@ -213,6 +234,19 @@ fn evidence_body(
     state: &ProjectState,
     selected: Option<&str>,
 ) -> Element {
+    if let Some(value) = selected {
+        let (report, selection) = crate::evidence_flow_view::split(value)
+            .map_or((value, None), |(report, kind, id)| {
+                (report, Some((kind, id)))
+            });
+        if state
+            .verifications
+            .get(report)
+            .is_some_and(|record| record.receipt.evidence_flow.is_some())
+        {
+            return crate::evidence_flow_view::body(cx, state, report, selection);
+        }
+    }
     let reports = &state.reports;
     let verifications = &state.verifications;
     if selected.is_some_and(|id| !reports.contains_key(id) && !verifications.contains_key(id)) {
@@ -242,12 +276,23 @@ fn evidence_body(
         if selected.is_some_and(|selection| selection != id.as_str()) {
             continue;
         }
+        if let Some(flow) = &record.receipt.evidence_flow {
+            body = body.push(Box::new(cx.effect_button(
+                &flow.title,
+                &ChipEffect::Inspect {
+                    report: Some(id.clone()),
+                },
+            )));
+            continue;
+        }
         body =
             body.push(Box::new(
                 Text::new(&record.receipt.evidence).with_role(TextRole::Heading),
             ))
             .push(Box::new(Text::new(&tr(
-                if record.receipt.operator_summary.is_some() {
+                if record.receipt.architecture_study.is_some() {
+                    "chip-study-disclaimer"
+                } else if record.receipt.operator_summary.is_some() {
                     "chip-operator-disclaimer"
                 } else {
                     "chip-verification-disclaimer"
@@ -395,7 +440,9 @@ fn superblock_identities(receipt: &VerificationReceipt) -> Vec<Property> {
 }
 
 fn verification_checks_label(receipt: &VerificationReceipt) -> &'static str {
-    if receipt.operator_summary.is_some() {
+    if receipt.architecture_study.is_some() {
+        "chip-study-checks"
+    } else if receipt.operator_summary.is_some() {
         "chip-operator-checks"
     } else {
         "chip-receipt-checks"
@@ -404,6 +451,47 @@ fn verification_checks_label(receipt: &VerificationReceipt) -> &'static str {
 
 fn verification_properties(id: &str, record: &VerificationRecord) -> PropertyList {
     let receipt = &record.receipt;
+    let scope = verification_scope(receipt);
+    let identities = verification_identities(id, record);
+    let checks = receipt
+        .checks
+        .iter()
+        .map(|(name, status)| Property::new(name, check_status(status)))
+        .collect();
+    let artifacts = receipt
+        .artifact_sha256
+        .iter()
+        .map(|(name, digest)| Property::new(name, digest.clone()))
+        .collect();
+    let exclusions = receipt
+        .excludes
+        .iter()
+        .map(|name| property("chip-verification-exclusion", name))
+        .collect();
+    let mut sections = vec![
+        (tr("chip-receipt-scope"), scope),
+        (tr(verification_checks_label(receipt)), checks),
+        (tr("chip-provenance"), identities),
+        (tr("chip-receipt-artifacts"), artifacts),
+        (tr("chip-scope"), exclusions),
+    ];
+    if let Some(study) = &receipt.architecture_study {
+        for variant in &study.variants {
+            sections.push((variant.identity.clone(), study_variant_properties(variant)));
+            if let Some(synthesis) = &variant.synthesis {
+                for memory in &synthesis.memories {
+                    sections.push((
+                        format!("{} / {}", variant.identity, memory.name),
+                        study_memory_properties(&variant.identity, memory),
+                    ));
+                }
+            }
+        }
+    }
+    PropertyList::sections(sections).with_id(format!("chip-verification-{id}"))
+}
+
+fn verification_scope(receipt: &VerificationReceipt) -> Vec<Property> {
     let status = tr(match receipt.status {
         ReceiptStatus::Passed => "chip-check-passed",
         ReceiptStatus::Failed => "chip-check-failed",
@@ -436,6 +524,21 @@ fn verification_properties(id: &str, record: &VerificationRecord) -> PropertyLis
     }
     scope.extend(superblock_scope(receipt));
     scope.extend(mapping_scope(receipt));
+    if let Some(study) = &receipt.architecture_study {
+        scope.push(property(
+            "chip-study-stage",
+            &tr(&format!("chip-study-stage-{}", study.stage.key())),
+        ));
+        scope.push(property(
+            "chip-study-words",
+            &study.expected_comparison_words,
+        ));
+    }
+    scope
+}
+
+fn verification_identities(id: &str, record: &VerificationRecord) -> Vec<Property> {
+    let receipt = &record.receipt;
     let mut identities = vec![
         property("chip-import-digest", &record.imported_bytes_blake3),
         property("chip-shared-receipt-digest", id),
@@ -474,29 +577,80 @@ fn verification_properties(id: &str, record: &VerificationRecord) -> PropertyLis
     }
     identities.extend(superblock_identities(receipt));
     identities.extend(reported_tools(receipt));
-    let checks = receipt
-        .checks
-        .iter()
-        .map(|(name, status)| Property::new(name, check_status(status)))
-        .collect();
-    let artifacts = receipt
-        .artifact_sha256
-        .iter()
-        .map(|(name, digest)| Property::new(name, digest.clone()))
-        .collect();
-    let exclusions = receipt
-        .excludes
-        .iter()
-        .map(|name| property("chip-verification-exclusion", name))
-        .collect();
-    PropertyList::sections(vec![
-        (tr("chip-receipt-scope"), scope),
-        (tr(verification_checks_label(receipt)), checks),
-        (tr("chip-provenance"), identities),
-        (tr("chip-receipt-artifacts"), artifacts),
-        (tr("chip-scope"), exclusions),
-    ])
-    .with_id(format!("chip-verification-{id}"))
+    if let Some(study) = &receipt.architecture_study {
+        identities.push(property(
+            "chip-study-original",
+            &study.original_receipt_sha256,
+        ));
+        identities.push(property("chip-study-producer", &study.producer_sha256));
+        identities.push(property("chip-study-input", &study.input_identity_sha256));
+        for (stage, link) in &study.links {
+            identities.push(Property::new(
+                tr(&format!("chip-study-stage-{stage}")),
+                link.receipt.clone(),
+            ));
+            identities.push(property("chip-study-producer", &link.producer));
+        }
+    }
+    identities
+}
+
+fn study_variant_properties(variant: &crate::verification::study::Variant) -> Vec<Property> {
+    let mut rows = Vec::new();
+    if let Some(value) = &variant.numerical {
+        rows.extend([
+            property("chip-study-cold-cycles", &value.cold_program_cycles),
+            property("chip-study-vector-cycles", &value.vector_load_cycles),
+            property("chip-study-warm-cycles", &value.warm_cycles),
+            property("chip-study-weight-bytes", &value.accepted_weight_bytes),
+            property(
+                "chip-study-descriptor-bytes",
+                &value.accepted_descriptor_bytes,
+            ),
+            property("chip-study-cache-reads", &value.cache_reads),
+            property("chip-study-quant-packets", &value.quantizer_packets),
+            property("chip-study-compared-words", &value.comparison_words),
+            property("chip-study-output", &value.output_sha256),
+        ]);
+    }
+    if let Some(value) = &variant.synthesis {
+        rows.extend([
+            property("chip-study-generic-cells", &value.generic_logic_cells),
+            property("chip-study-cache-bits", &value.activation_cache_bits),
+            property("chip-study-programmed-bits", &value.programmed_weight_bits),
+            property("chip-study-fixed-bits", &value.fixed_initialized_bits),
+        ]);
+    }
+    rows
+}
+
+fn study_memory_properties(
+    variant: &str,
+    memory: &crate::verification::study::LogicalMemory,
+) -> Vec<Property> {
+    vec![
+        property(
+            "chip-study-memory-name",
+            &format!("{variant} / {}", memory.name),
+        ),
+        property("chip-study-memory-width", &memory.width_bits),
+        property("chip-study-memory-depth", &memory.depth_words),
+        property("chip-study-memory-bits", &memory.bits),
+        property("chip-study-memory-read-ports", &memory.read_ports),
+        property(
+            "chip-study-memory-clocked-reads",
+            &memory.clocked_read_ports,
+        ),
+        property("chip-study-memory-write-ports", &memory.write_ports),
+        property(
+            "chip-study-memory-initialized",
+            &tr(if memory.fully_initialized {
+                "chip-value-yes"
+            } else {
+                "chip-value-no"
+            }),
+        ),
+    ]
 }
 
 fn identities_for_operator_scope(

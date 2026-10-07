@@ -27,6 +27,11 @@ board="$1"; base="$2"; image="$3"
 auth="${REGISTRY_AUTH_FILE:-${DOCKER_CONFIG:-$HOME/.docker}/config.json}"
 [ -s "$auth" ] || die "no registry credentials at $auth"
 repository="${image%:*}"
+# Match the production sealer's tooling base, independently of the sealed OS
+# payload being layered. No installed-image signature policy is changed.
+tool_base="$(. "$TILO_OS_DIR/base-snapshot.env" && printf '%s' "${BASE_REF:-}")"
+[[ "$tool_base" =~ ^registry\.tilo\.so/tilo/fedora-bootc@sha256:[0-9a-f]{64}$ ]] \
+  || die "base-snapshot.env must pin the Fedora tooling base by digest"
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/tilo-board-$board.XXXXXX")"
 trap 'rm -rf -- "$work"' EXIT
@@ -37,6 +42,7 @@ if [ -d "$TILO_OS_DIR/hardware/firmware/$board" ]; then
 fi
 common=(--builder "$BUILDER_NAME" --provenance=false -f "$TILO_OS_DIR/Containerfile.board" "${firmware[@]}"
   --build-arg "BASE_IMAGE=$base"
+  --build-arg "BASE_REF=$tool_base"
   --build-arg "RPMS_REF=$RPMS_REF"
   --build-arg "TILO_HARDWARE_PROFILE=$board"
   --build-arg "TILO_TARGET_IMGREF=$image"
