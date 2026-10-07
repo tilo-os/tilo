@@ -18,7 +18,7 @@
 //!
 //! | Target | Backend |
 //! |---|---|
-//! | Linux | the notification portal (which the Tilo shell implements), else `org.freedesktop.Notifications` |
+//! | Linux | the notification portal, else `org.freedesktop.Notifications`; Tilo's service also owns durable deadlines |
 //! | macOS | `UNUserNotificationCenter`, which needs the app bundle's identifier: an unbundled binary has none and answers [`NotifyError::Unavailable`] |
 //! | Web | the Notifications API, while the page is open |
 //! | Windows | toasts under the installer-registered app id |
@@ -32,7 +32,9 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 
+mod calendar;
 mod caps;
+pub use calendar::CalendarAlarm;
 pub mod conformance;
 #[cfg(target_os = "linux")]
 mod linux;
@@ -186,6 +188,17 @@ pub struct Scheduled {
     pub at: SystemTime,
 }
 
+/// The host's authoritative occurrence and delivery history for an alarm.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AlarmState {
+    pub tag: String,
+    pub alarm: CalendarAlarm,
+    pub enabled_at_ms: i64,
+    pub next_at: Option<SystemTime>,
+    pub last_at: Option<SystemTime>,
+    pub last_rung: Option<chrono::NaiveDate>,
+}
+
 /// Host-owned user notifications.
 pub trait Notifier: Send + Sync {
     /// Show `notification`, replacing any earlier one with the same tag.
@@ -210,6 +223,35 @@ pub trait Notifier: Send + Sync {
         Err(NotifyError::Unsupported(caps::unsupported(
             Feature::Schedule,
         )))
+    }
+
+    /// Schedule a local-time alarm. Hosts that understand calendar alarms
+    /// retain recurrence and timezone semantics after the app closes; other
+    /// hosts retain the supplied next occurrence through `schedule`.
+    ///
+    /// # Errors
+    /// Invalid calendar fields, an unavailable scheduler, or a host refusal.
+    fn schedule_alarm(
+        &self,
+        notification: &Notification,
+        at: SystemTime,
+        alarm: CalendarAlarm,
+        enabled_at_ms: i64,
+    ) -> Result<(), NotifyError> {
+        if !alarm.valid() {
+            return Err(NotifyError::Invalid("invalid alarm time or weekdays"));
+        }
+        let _ = enabled_at_ms;
+        self.schedule(notification, at)
+    }
+
+    /// Calendar handoffs and delivered occurrences owned by this app.
+    /// Hosts that retain only an absolute deadline return no calendar state.
+    ///
+    /// # Errors
+    /// The durable calendar service is unavailable or refused the caller.
+    fn alarm_states(&self) -> Result<Vec<AlarmState>, NotifyError> {
+        Ok(Vec::new())
     }
 
     /// The notifications this app has scheduled that are not yet delivered.
