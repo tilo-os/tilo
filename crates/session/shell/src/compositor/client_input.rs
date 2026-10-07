@@ -1320,7 +1320,7 @@ pub fn sync_pointer_constraint(
 /// [`foreign_tile_at`] resolves local clicks with. `session_locked` must be
 /// passed in since the lock surface isn't part of the tiled tree — without it a guest's click would pass through to a password-protected window.
 pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_locked: bool) {
-    let tiles: Vec<(u64, Rect)> = {
+    let (tiles, chrome_regions) = {
         let chrome = fb.chrome();
         let tree = chrome.tree();
         let mut tiles = foreign_tiles(&tree, fb.host())
@@ -1329,6 +1329,14 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
             .filter(|hit| state.client_input.surfaces.contains_key(&hit.surface_id))
             .map(|hit| (hit.surface_id, hit.rect))
             .collect::<Vec<_>>();
+        let chrome_regions = foreign_tiles(&tree, fb.host())
+            .iter()
+            .filter_map(|hit| {
+                fb.host()
+                    .group_resize_rect(hit.group)
+                    .map(|rect| (hit.surface_id, rect))
+            })
+            .collect();
         drop(tree);
         drop(chrome);
         tiles.extend(
@@ -1339,7 +1347,7 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
         tiles.extend(state.output_presentation_remote_tiles());
         let offscreen = state.offscreen_stream_tiles(&tiles);
         tiles.extend(offscreen);
-        tiles
+        (tiles, chrome_regions)
     };
     let view = crate::network::input_firewall::ShellView::new(
         tiles,
@@ -1353,6 +1361,7 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
         chrome_captures_input(fb) || fb.host().dictation_mutes_remote_input(),
         fb.host().palette_visible(),
     )
+    .chrome_regions(chrome_regions)
     .locked(session_locked)
     .pointer_held(state.pointer_lock.is_engaged());
     state.remote_input_firewall.publish_view(view);
@@ -2393,6 +2402,16 @@ mod tests {
                 None,
                 false,
                 false,
+            )
+            .chrome_regions(
+                tiles
+                    .iter()
+                    .filter_map(|hit| {
+                        fb.host()
+                            .group_resize_rect(hit.group)
+                            .map(|rect| (hit.surface_id, rect))
+                    })
+                    .collect(),
             );
 
             // Probe each tile's inside and just past each edge — a hit-test discrepancy shows up at a boundary first, derived from the layout's actual rects.

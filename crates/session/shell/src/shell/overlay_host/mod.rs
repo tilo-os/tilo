@@ -906,6 +906,11 @@ pub struct ShellSceneSections {
     pub backdrop: Scene,
     pub topbar: Scene,
     pub workspace: Scene,
+    /// Desktop content over the strips that stays where it is on screen
+    /// (notices, the permission prompt, the overview) while the strips are
+    /// drawn in canvas coordinates ([`ui::retained_present::unbake_scroll`]);
+    /// in `workspace` otherwise. Drawn right after `workspace`.
+    pub workspace_overlays: Scene,
     pub topbar_bounds: Option<Rect>,
     pub quick_settings: Scene,
     pub above_quick_settings: Scene,
@@ -919,9 +924,10 @@ pub struct ShellSceneSections {
 mod backdrop_layer {
     pub const BACKDROP: u32 = 0;
     pub const WORKSPACE: u32 = 1;
-    pub const TOPBAR: u32 = 2;
-    pub const QUICK_SETTINGS: u32 = 3;
-    pub const ABOVE_QUICK_SETTINGS: u32 = 4;
+    pub const WORKSPACE_OVERLAYS: u32 = 2;
+    pub const TOPBAR: u32 = 3;
+    pub const QUICK_SETTINGS: u32 = 4;
+    pub const ABOVE_QUICK_SETTINGS: u32 = 5;
 }
 
 impl ShellSceneSections {
@@ -931,6 +937,7 @@ impl ShellSceneSections {
     pub fn register_backdrop_layers(&self) {
         ui::backdrop::layer_scene(&self.backdrop, backdrop_layer::BACKDROP);
         ui::backdrop::layer_scene(&self.workspace, backdrop_layer::WORKSPACE);
+        ui::backdrop::layer_scene(&self.workspace_overlays, backdrop_layer::WORKSPACE_OVERLAYS);
         ui::backdrop::layer_scene(&self.topbar, backdrop_layer::TOPBAR);
         ui::backdrop::layer_scene(&self.quick_settings, backdrop_layer::QUICK_SETTINGS);
         ui::backdrop::layer_scene(
@@ -945,6 +952,7 @@ impl ShellSceneSections {
         let order = [
             &self.backdrop,
             &self.workspace,
+            &self.workspace_overlays,
             &self.topbar,
             &self.quick_settings,
             &self.above_quick_settings,
@@ -1601,6 +1609,7 @@ impl ShellOverlayHost {
             backdrop: Scene::new(),
             topbar: Scene::new(),
             workspace: Scene::new(),
+            workspace_overlays: Scene::new(),
             topbar_bounds: None,
             quick_settings: Scene::new(),
             above_quick_settings: Scene::new(),
@@ -1611,6 +1620,7 @@ impl ShellOverlayHost {
             backdrop,
             topbar,
             workspace,
+            workspace_overlays,
             quick_settings,
             above_quick_settings,
             ..
@@ -1634,23 +1644,51 @@ impl ShellOverlayHost {
             theme,
             presence,
         );
-        self.draw_desktop_extras(workspace, transform, text_renderer, theme, presence);
+        if ui::retained_present::unbake_scroll() {
+            self.draw_real_peers(
+                workspace_overlays,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
+            self.draw_docked_wheel(workspace, transform, text_renderer, theme, presence);
+            self.draw_desktop_notices(
+                workspace_overlays,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
+        } else {
+            self.draw_desktop_extras(workspace, transform, text_renderer, theme, presence);
+        }
         let rows: Vec<_> = self.group_row_ptrs.values().copied().collect();
         for row in rows {
+            // A strip drawn in canvas coordinates is panned by the presenter;
+            // surfaces floating over its windows move with it.
+            // SAFETY: identical sequential traversal to `Widget::draw` above.
+            let shift = unsafe { (&*row).canvas_shift() };
+            let row_transform = transform.pre_translate(vello::kurbo::Vec2::new(shift, 0.0));
             // SAFETY: identical sequential traversal to `Widget::draw` above.
             unsafe {
                 ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
                     &mut *row,
                     workspace,
-                    transform,
+                    row_transform,
                     text_renderer,
                     theme,
                     presence,
                 );
             }
         }
+        let overview_scene = if ui::retained_present::unbake_scroll() {
+            &mut *workspace_overlays
+        } else {
+            &mut *workspace
+        };
         self.draw_overview_and_ws_settings_overlays(
-            workspace,
+            overview_scene,
             transform,
             text_renderer,
             theme,
@@ -7125,6 +7163,22 @@ impl ShellOverlayHost {
         None
     }
 
+    /// The shared window grip overlays client content. Resolve it in laid-out
+    /// screen coordinates, after strip panning, before forwarding client input.
+    pub fn group_resize_hit(&self, group_id: u64, point: (f64, f64)) -> bool {
+        self.group_resize_rect(group_id)
+            .is_some_and(|rect| rect.contains(Point::new(point.0, point.1)))
+    }
+
+    /// Visible grip geometry shared by local routing and remote admission.
+    pub fn group_resize_rect(&self, group_id: u64) -> Option<Rect> {
+        self.group_row_ptrs.values().find_map(|&ptr| {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &GroupRow = unsafe { &*ptr };
+            row.group_resize_rect(group_id)
+        })
+    }
+
     /// Every tile laid out on this device, with the tab it shows, in
     /// screen space: what peer pointers are anchored to and placed over
     /// (see [`crate::shell::peer_presence::PointerAnchor`]).
@@ -8530,6 +8584,58 @@ impl ShellOverlayHost {
             .collect()
     }
 
+    /// The strip the docked wheel rides: the topmost strip of the active
+    /// workspace.
+    fn docked_strip(&self) -> Option<StripId> {
+        let top_strip = self.chrome.as_ref().and_then(|chrome| {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            tree.desktop
+                .active_workspace()
+                .and_then(|workspace| workspace.strips.first().map(|strip| strip.id))
+        });
+        top_strip
+            .filter(|id| self.group_row_ptrs.contains_key(id))
+            .or_else(|| self.group_row_ptrs.keys().next().copied())
+    }
+
+    /// A summoned wheel places itself around the pointer in screen space,
+    /// and a promoted group is drawn unpanned: the wheel then does not ride
+    /// the strip.
+    fn docked_wheel_pinned(&self) -> bool {
+        self.chrome.as_ref().is_some_and(|chrome| {
+            let state = chrome.borrow();
+            state.wheel_summon().is_some() || state.is_fullscreen()
+        })
+    }
+
+    /// [`GroupRow::canvas_shift`] of the strip the docked wheel rides.
+    fn docked_strip_canvas_shift(&self) -> f64 {
+        self.docked_strip()
+            .and_then(|id| self.group_row_ptrs.get(&id).copied())
+            // SAFETY: same contract as every other `group_row_ptrs` accessor:
+            // the pointer is captured from a `Box<GroupRow>` owned through the
+            // content tree, and the host outlives it.
+            .map_or(0.0, |ptr| unsafe { (&*ptr).canvas_shift() })
+    }
+
+    /// Where on screen `strip` pans when it is drawn in canvas coordinates:
+    /// its row with the shadows drawn past it, as tall as the docked wheel
+    /// when the wheel rides this strip.
+    pub fn strip_pan_rect(&self, strip: StripId) -> Option<vello::kurbo::Rect> {
+        let mut rect = GroupRow::drawn_bounds(self.strip_row_rect(strip)?);
+        if self.docked_strip() == Some(strip)
+            && !self.docked_wheel_pinned()
+            && !self.overlay_flags().overview
+            && let Some(wheel) = self.sidebar.as_ref().map(|sidebar| sidebar.get_rect())
+            && wheel.area() > 0.0
+        {
+            rect.y0 = rect.y0.min(wheel.y0);
+            rect.y1 = rect.y1.max(wheel.y1);
+        }
+        Some(rect)
+    }
+
     /// Every strip's horizontal pan, keyed by strip id, paired with its
     /// max — on a strip whose content fits the display the pan is pinned
     /// at zero, so "the viewport didn't move" needs the bound to mean
@@ -9447,15 +9553,25 @@ impl ShellOverlayHost {
 
     /// Keyboard navigation for the notification centre, available without
     /// pointer hover. Returns whether the centre consumed the key.
+    #[cfg(test)]
     fn handle_qs_notification_keyboard(&mut self, logical_key: &Key) -> bool {
+        self.handle_qs_notification_keyboard_with_shift(logical_key, false)
+    }
+
+    fn handle_qs_notification_keyboard_with_shift(
+        &mut self,
+        logical_key: &Key,
+        backwards: bool,
+    ) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
         let layout = self.qs_notification_layout();
-        let outcome = self.notification_center.key(
+        let outcome = self.notification_center.key_with_shift(
             &ChromeNotifications::new(&chrome).with_agents(&self.room_activity),
             &layout,
             logical_key,
+            backwards,
         );
         self.apply_notification_center_outcome(outcome)
     }
@@ -11355,11 +11471,23 @@ impl ShellOverlayHost {
         }
     }
 
+    fn notification_history_covers_pointer(&self, point: Point) -> bool {
+        self.chrome.as_ref().is_some_and(|chrome| {
+            let st = chrome.borrow();
+            st.overlays.quick_settings
+                && matches!(
+                    st.quick_settings.current_level(),
+                    crate::shell::quick_settings::QsLevel::Notifications
+                )
+                && self.quick_settings_rect().contains(point)
+        })
+    }
+
     /// Absorbs every non-`Pressed` pointer event over an open overlay so
     /// a hover/drag can't continue underneath it (`Pressed` is excluded
     /// so the per-overlay branches later still get clicks), and a
-    /// left-click on a toast dismisses it before the permission prompt
-    /// or any other overlay sees the press.
+    /// left-click on an uncovered toast dismisses it. Foreground notification
+    /// history receives its own presses rather than dismissing a covered toast.
     fn route_absorbable_pointer_and_toast_click(
         &mut self,
         event: &WindowEvent,
@@ -11391,6 +11519,7 @@ impl ShellOverlayHost {
             },
         ) = (self.chrome.as_ref(), event)
             && let Some(p) = self.last_cursor
+            && !self.notification_history_covers_pointer(p)
             && self
                 .notification_stack
                 .click_at(&ChromeNotifications::new(chrome), p)
@@ -12976,6 +13105,24 @@ impl ShellOverlayHost {
 
     /// The Escape dismissal ladder. Priority matches z-order: palette >
     /// overview > ws settings > quick settings.
+    fn finish_notification_reading(
+        &mut self,
+        st: &mut crate::shell::chrome_state::ChromeState,
+    ) -> bool {
+        if st.overlays.quick_settings
+            && matches!(
+                st.quick_settings.current_level(),
+                crate::shell::quick_settings::QsLevel::Notifications
+            )
+            && self.notification_center.close_reader()
+        {
+            st.bump();
+            true
+        } else {
+            false
+        }
+    }
+
     fn handle_shell_escape_chord(&mut self, handled: &mut bool) -> bool {
         if self.cancel_tab_drags() {
             *handled = true;
@@ -13042,6 +13189,10 @@ impl ShellOverlayHost {
         if st.overlays.collaborators {
             st.overlays.collaborators = false;
             st.bump();
+            *handled = true;
+            return true;
+        }
+        if self.finish_notification_reading(&mut st) {
             *handled = true;
             return true;
         }
@@ -14894,7 +15045,7 @@ impl ShellOverlayHost {
             history_level,
             Some(crate::shell::quick_settings::QsLevel::Notifications)
         ) {
-            let consumed = self.handle_qs_notification_keyboard(logical_key);
+            let consumed = self.handle_qs_notification_keyboard_with_shift(logical_key, backwards);
             *handled = consumed;
             return consumed;
         }
@@ -17415,6 +17566,36 @@ impl Widget for ShellOverlayHost {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
+    fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        let st = self.chrome.as_ref()?.borrow();
+        if st.overlays.quick_settings
+            && matches!(
+                st.quick_settings.current_level(),
+                crate::shell::quick_settings::QsLevel::Notifications
+            )
+        {
+            self.notification_center.reading_scroll()
+        } else {
+            None
+        }
+    }
+
+    fn apply_primary_vertical_scroll(
+        &mut self,
+        action: ui::widget::PrimaryScrollAction,
+    ) -> ui::widget::PrimaryScrollResult {
+        if self.primary_vertical_scroll().is_none() {
+            return ui::widget::PrimaryScrollResult::Unsupported;
+        }
+        let result = self.notification_center.apply_reading_scroll(action);
+        if matches!(result, ui::widget::PrimaryScrollResult::Changed(_))
+            && let Some(chrome) = &self.chrome
+        {
+            chrome.borrow_mut().bump();
+        }
+        result
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "event routing stays linear so modal gates retain their security-sensitive order"
@@ -17822,6 +18003,37 @@ impl Widget for ShellOverlayHost {
             },
         ) {
             return;
+        }
+        if let Some(chrome) = self.chrome.clone() {
+            let reading = {
+                let st = chrome.borrow();
+                st.overlays.quick_settings
+                    && matches!(
+                        st.quick_settings.current_level(),
+                        crate::shell::quick_settings::QsLevel::Notifications
+                    )
+                    && self.notification_center.is_reading()
+            };
+            if reading
+                && self.notification_center.reader_event(
+                    event,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: ctx.scale_factor,
+                        modifiers: ctx.modifiers,
+                        state: state.reborrow(),
+                        path: ctx.path,
+                        handled: &mut *ctx.handled,
+                        focus_target: &mut *ctx.focus_target,
+                        node_id: ctx.node_id,
+                        taffy: ctx.taffy,
+                    },
+                )
+            {
+                chrome.borrow_mut().bump();
+            }
+            if *ctx.handled {
+                return;
+            }
         }
         if self.route_qs_slider_drag(event, ctx.handled) {
             return;
@@ -19812,18 +20024,80 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
     ) {
         self.draw_real_peers(scene, transform, text_renderer, theme, presence);
+        self.draw_docked_wheel(scene, transform, text_renderer, theme, presence);
+        self.draw_desktop_notices(scene, transform, text_renderer, theme, presence);
+    }
 
+    /// The sidebar wheel docked beside the strips.
+    fn draw_docked_wheel(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
         // Sidebar wheel: above desktop content, below every overlay
         // (including scrims) — it's part of the desktop, so it dims with it.
         // The wheel and overview are two ways to navigate the same workspace
         // set. Showing both under one modal creates competing destinations;
         // the wheel returns as soon as the overview closes.
+        // Layout parks the docked wheel at `x - scroll` so it rides the
+        // strip. A strip drawn in canvas coordinates is panned by the
+        // presenter, so the wheel is drawn at the same canvas x, or the scene
+        // would change with every pan.
+        let shift = if self.docked_wheel_pinned() {
+            0.0
+        } else {
+            self.docked_strip_canvas_shift()
+        };
         if !self.overlay_flags().overview
             && let Some(sidebar) = self.sidebar.as_mut()
         {
+            fn wheel(
+                sidebar: &mut Box<dyn Widget>,
+            ) -> Option<&mut tilo_desktop::sidebar_wheel_disc::SidebarWheelDisc> {
+                sidebar.as_any_mut().and_then(|value| {
+                    value.downcast_mut::<tilo_desktop::sidebar_wheel_disc::SidebarWheelDisc>()
+                })
+            }
+            let hits_before = wheel(sidebar).map(|wheel| {
+                wheel.rect.x0 += shift;
+                wheel.rect.x1 += shift;
+                (wheel.plus_rect, wheel.spoke_hit_rects.clone())
+            });
             sidebar.draw(scene, transform, text_renderer, theme, presence);
+            // Hit rects the draw recomputed are in canvas coordinates too.
+            if let Some(wheel) = wheel(sidebar) {
+                wheel.rect.x0 -= shift;
+                wheel.rect.x1 -= shift;
+                if let Some((plus_before, spokes_before)) = hits_before {
+                    if wheel.plus_rect != plus_before {
+                        wheel.plus_rect.x0 -= shift;
+                        wheel.plus_rect.x1 -= shift;
+                    }
+                    if wheel.spoke_hit_rects != spokes_before {
+                        for spoke in &mut wheel.spoke_hit_rects {
+                            spoke.x0 -= shift;
+                            spoke.x1 -= shift;
+                        }
+                    }
+                }
+            }
         }
+    }
 
+    /// What the desktop shows over its windows where it is on screen: the
+    /// follow chip, the permission prompt, notifications and the visual
+    /// alert.
+    fn draw_desktop_notices(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
         self.draw_follow_chip(scene, transform, text_renderer, theme);
         // Below the overlay layer, so an open modal occludes it: act on
         // the modal first, then come back to the prompt.
