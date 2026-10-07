@@ -50,10 +50,13 @@ impl OriginalInvocationData {
             Command::Paste { .. } => {
                 self.spec.kind == tilo_actions::OperationKind::Effect && action == "paste"
             }
+            Command::RestoreTrash { .. } => {
+                self.spec.kind == tilo_actions::OperationKind::Effect && action == "restore"
+            }
             Command::Observe { .. } | Command::Cancel { .. } => {
                 matches!(
                     action,
-                    "paste" | "undo" | "redo" | "recover-clipboard-transfers"
+                    "paste" | "restore" | "undo" | "redo" | "recover-clipboard-transfers"
                 )
             }
             Command::Undo { .. } => self.clipboard_compensation() && action == "undo",

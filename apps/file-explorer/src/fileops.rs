@@ -398,11 +398,31 @@ pub fn transfer_into_with(
     remove_source: bool,
     observer: &mut impl TransferObserver,
 ) -> Result<PathBuf, String> {
-    ensure_destination_is_outside_source(src, dest_dir)?;
     let name = src
         .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
         .ok_or_else(|| crate::i18n::t("files-source-no-name"))?;
+    transfer_into_named_with(src, dest_dir, name, remove_source, observer)
+}
+
+/// Transfer to one explicit leaf name with the same live admission and recovery.
+/// This grants no filesystem access and never replaces an occupied destination.
+///
+/// # Errors
+/// Refuses invalid names, lost authority, collisions and I/O failures.
+pub fn transfer_into_named_with(
+    src: &Path,
+    dest_dir: &Path,
+    name: &std::ffi::OsStr,
+    remove_source: bool,
+    observer: &mut impl TransferObserver,
+) -> Result<PathBuf, String> {
+    let mut components = Path::new(name).components();
+    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+        || components.next().is_some()
+    {
+        return Err(crate::i18n::t("files-invalid-destination-name"));
+    }
+    ensure_destination_is_outside_source(src, dest_dir)?;
     let source_parent = src
         .parent()
         .and_then(|parent| std::fs::canonicalize(parent).ok());
@@ -411,7 +431,7 @@ pub fn transfer_into_with(
         return Err("the item is already in this folder".into());
     }
 
-    let names = DestinationNames::new(&name);
+    let names = DestinationNames::new(name);
     // Preserve the existing diagnostic for an inaccessible destination before
     // allocating staging storage beneath it.
     inspect_destination(&dest_dir.join(names.for_suffix(1)))?;
@@ -625,32 +645,32 @@ fn restore_failed_cut(
 }
 
 struct DestinationNames {
-    original: String,
-    stem: String,
-    extension: Option<String>,
+    original: std::ffi::OsString,
+    stem: std::ffi::OsString,
+    extension: Option<std::ffi::OsString>,
 }
 
 impl DestinationNames {
-    fn new(name: &str) -> Self {
+    fn new(name: &std::ffi::OsStr) -> Self {
         let path = Path::new(name);
         Self {
-            original: name.to_owned(),
-            stem: path
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            extension: path
-                .extension()
-                .map(|extension| extension.to_string_lossy().into_owned()),
+            original: name.to_os_string(),
+            stem: path.file_stem().unwrap_or_default().to_os_string(),
+            extension: path.extension().map(std::ffi::OsStr::to_os_string),
         }
     }
 
-    fn for_suffix(&self, suffix: u32) -> String {
+    fn for_suffix(&self, suffix: u32) -> std::ffi::OsString {
         if suffix == 1 {
-            self.original.clone()
-        } else {
-            suffixed_name(&self.stem, self.extension.as_deref(), suffix)
+            return self.original.clone();
         }
+        let mut name = self.stem.clone();
+        name.push(format!(" ({suffix})"));
+        if let Some(extension) = &self.extension {
+            name.push(".");
+            name.push(extension);
+        }
+        name
     }
 }
 
@@ -685,7 +705,7 @@ fn publish_staging(
     Err(crate::i18n::t_args(
         "files-destination-names-exhausted",
         &[
-            crate::i18n::arg("name", names.original.clone()),
+            crate::i18n::arg("name", names.original.to_string_lossy().into_owned()),
             crate::i18n::arg("path", dest_dir.to_string_lossy().into_owned()),
         ],
     ))

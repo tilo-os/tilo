@@ -148,6 +148,7 @@ enum OpFollowUp {
     /// Show a native receipt only after its document action has settled.
     Clipboard {
         completed: usize,
+        restore: bool,
         error: Option<String>,
     },
 }
@@ -1080,9 +1081,20 @@ impl FileExplorerWidget {
                     Some(error) => t_args("files-undo-trash-failed", &[arg("error", error)]),
                 });
             }
-            OpFollowUp::Clipboard { completed, error } => {
+            OpFollowUp::Clipboard {
+                completed,
+                restore,
+                error,
+            } => {
                 self.status = Some(match error {
-                    None => t_args("files-pasted", &[arg("count", fluent_count(completed))]),
+                    None => t_args(
+                        if restore {
+                            "files-restored"
+                        } else {
+                            "files-pasted"
+                        },
+                        &[arg("count", fluent_count(completed))],
+                    ),
                     Some(error) => t_args(
                         "files-clipboard-partial",
                         &[arg("count", fluent_count(completed)), arg("error", error)],
@@ -2019,6 +2031,17 @@ impl FileExplorerWidget {
                 self.navigate(path);
                 Some(self.folder_answer())
             }
+            FilesEffect::OpenTrash => {
+                let path = fileops::trash_dir().ok_or_else(|| t("files-trash-unavailable"))?;
+                self.navigate(path);
+                if let Some(error) = &self.error {
+                    return Err(error.clone());
+                }
+                if self.hosted_clipboard() && host_fs::trash::user_trash_dir().is_none() {
+                    self.status = Some(t("files-user-trash-unavailable"));
+                }
+                Some(self.folder_answer())
+            }
             FilesEffect::Up => {
                 self.go_up();
                 None
@@ -2099,6 +2122,9 @@ impl FileExplorerWidget {
                 if !self.is_trash_view() {
                     return Err("Empty Trash from the Trash folder".into());
                 }
+                if self.has_native_trash_entries() {
+                    return Err(t("files-native-trash-delete-unavailable"));
+                }
                 // The effect is confirmed by its contract; no second sheet.
                 self.perform_empty_trash();
                 None
@@ -2164,12 +2190,26 @@ impl FileExplorerWidget {
                 }
                 self.entry_command(&entry, |_, _| Some(FileCommand::Cut))?
             }
-            FilesEffect::Restore { entry } => self.entry_command(&entry, |files, _| {
-                files
-                    .is_trash_view()
-                    .then_some(FileCommand::RestoreFromTrash)
-            })?,
+            FilesEffect::Restore { entry } => {
+                let target = self
+                    .visible_entry_path(&entry)
+                    .ok_or_else(|| t("files-clipboard-source-unavailable"))?;
+                if self.is_native_trash_entry(&target) {
+                    return self.restore_clipboard_entry(invocation, &target);
+                }
+                self.entry_command(&entry, |files, _| {
+                    files
+                        .is_trash_view()
+                        .then_some(FileCommand::RestoreFromTrash)
+                })?
+            }
             FilesEffect::DeletePermanently { entry } => {
+                let target = self
+                    .visible_entry_path(&entry)
+                    .ok_or_else(|| t("files-clipboard-source-unavailable"))?;
+                if self.is_native_trash_entry(&target) {
+                    return Err(t("files-native-trash-delete-unavailable"));
+                }
                 self.entry_command(&entry, |files, target| {
                     files
                         .is_trash_view()
@@ -3144,6 +3184,19 @@ impl FileExplorerWidget {
         if crate::recent::is_location(path) {
             return Ok(self.recent_entries());
         }
+        if self.hosted_clipboard() && fileops::is_trash_dir(path) {
+            let mut entries = read_dir_sync(path)?;
+            if let Some(user_trash) = host_fs::trash::user_trash_dir()
+                && user_trash != path
+            {
+                match std::fs::symlink_metadata(&user_trash) {
+                    Ok(_) => entries.extend(read_dir_sync(&user_trash)?),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+            return Ok(entries);
+        }
         if self.startup_accounts.is_some() {
             crate::model::read_dir_with_workspace_roots(path, &self.workspace_roots)
         } else {
@@ -3168,7 +3221,7 @@ impl FileExplorerWidget {
         self.close_app_chooser();
         // Opening the Trash for the first time (nothing deleted yet) should show
         // an empty folder, not a "no such directory" error, so materialise it.
-        if matches!(self.services, FileServices::Legacy) && fileops::is_trash_dir(&path) {
+        if fileops::is_trash_dir(&path) {
             let _ = fileops::ensure_trash_dir();
         }
         let recent = crate::recent::is_location(&path);
@@ -4431,7 +4484,7 @@ impl FileExplorerWidget {
             }
             FileCommand::Delete => self.apply_delete(),
             FileCommand::UndoLastTrash => self.apply_undo_last_trash(),
-            FileCommand::RestoreFromTrash => self.apply_restore_from_trash(),
+            FileCommand::RestoreFromTrash => self.request_restore_from_trash(),
             FileCommand::EmptyTrash => self.request_empty_trash_confirmation(),
             FileCommand::Copy => self.apply_copy(),
             FileCommand::Cut => self.apply_cut(),
@@ -4625,6 +4678,10 @@ impl FileExplorerWidget {
     /// Trash) first ask before permanently purging it.
     fn apply_delete(&mut self) -> bool {
         let paths = self.selected_paths();
+        if paths.iter().any(|path| self.is_native_trash_entry(path)) {
+            self.status = Some(t("files-native-trash-delete-unavailable"));
+            return true;
+        }
         if !paths.is_empty() {
             if self.is_trash_view() {
                 // Already in the Trash — a second delete is irreversible.
@@ -4677,6 +4734,10 @@ impl FileExplorerWidget {
 
     /// Carry out a previously confirmed permanent deletion from Trash.
     fn apply_permanent_delete(&mut self, paths: &[PathBuf]) -> bool {
+        if paths.iter().any(|path| self.is_native_trash_entry(path)) {
+            self.status = Some(t("files-native-trash-delete-unavailable"));
+            return true;
+        }
         self.last_trash_undo = None;
         match fileops::purge_entries(paths) {
             Ok(n) => {
@@ -4695,6 +4756,27 @@ impl FileExplorerWidget {
 
     /// `FileCommand::RestoreFromTrash` — restore the selection to its
     /// original location.
+    fn is_native_trash_entry(&self, path: &Path) -> bool {
+        self.hosted_clipboard()
+            && host_fs::trash::user_trash_dir()
+                .is_some_and(|root| path.parent() == Some(root.as_path()))
+    }
+
+    fn request_restore_from_trash(&mut self) -> bool {
+        let paths = self.selected_paths();
+        if paths.iter().any(|path| self.is_native_trash_entry(path)) {
+            let [path] = paths.as_slice() else {
+                self.status = Some(t("files-native-restore-select-one"));
+                return true;
+            };
+            self.perform(crate::effects::FilesEffect::Restore {
+                entry: crate::search_provider::entry_resource_id(path),
+            });
+            return true;
+        }
+        self.apply_restore_from_trash()
+    }
+
     fn apply_restore_from_trash(&mut self) -> bool {
         self.last_trash_undo = None;
         let paths = self.selected_paths();
@@ -4716,6 +4798,10 @@ impl FileExplorerWidget {
     /// non-empty Trash. An already-empty Trash is safe feedback, not a
     /// confirmation flow.
     fn request_empty_trash_confirmation(&mut self) -> bool {
+        if self.has_native_trash_entries() {
+            self.status = Some(t("files-native-trash-delete-unavailable"));
+            return true;
+        }
         if self.entries.is_empty() {
             self.status = Some(t("files-trash-already-empty"));
             return true;
@@ -4735,6 +4821,10 @@ impl FileExplorerWidget {
 
     /// Carry out a previously confirmed request to empty the Trash.
     fn perform_empty_trash(&mut self) -> bool {
+        if self.has_native_trash_entries() {
+            self.status = Some(t("files-native-trash-delete-unavailable"));
+            return true;
+        }
         self.last_trash_undo = None;
         match fileops::empty_trash() {
             Ok(n) => {
@@ -6523,13 +6613,21 @@ impl FileExplorerWidget {
                 ));
                 spec.push((String::new(), None));
                 spec.push((t("files-menu-restore"), Some(FileCommand::RestoreFromTrash)));
-                spec.push((
-                    t("files-menu-delete-permanently"),
-                    Some(FileCommand::Delete),
-                ));
+                if !self
+                    .selected_paths()
+                    .iter()
+                    .any(|path| self.is_native_trash_entry(path))
+                {
+                    spec.push((
+                        t("files-menu-delete-permanently"),
+                        Some(FileCommand::Delete),
+                    ));
+                }
             }
             spec.push((String::new(), None));
-            spec.push((t("files-menu-empty-trash"), Some(FileCommand::EmptyTrash)));
+            if !self.has_native_trash_entries() {
+                spec.push((t("files-menu-empty-trash"), Some(FileCommand::EmptyTrash)));
+            }
             return tidy_menu(spec);
         }
 
@@ -6983,10 +7081,18 @@ impl FileExplorerWidget {
         tidy_menu(spec)
     }
 
-    /// Whether the current directory is the Trash, which swaps the delete
-    /// affordances for Restore / Empty / permanent-delete.
+    /// Host entries cannot be purged through private-data Trash controls.
+    fn has_native_trash_entries(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| self.is_native_trash_entry(&entry.path))
+    }
+
+    /// Whether this view offers Trash operations rather than editing.
     fn is_trash_view(&self) -> bool {
         fileops::is_trash_dir(&self.current_path)
+            || (self.hosted_clipboard()
+                && host_fs::trash::user_trash_dir().as_ref() == Some(&self.current_path))
     }
 
     /// The path of the single selected entry when it is a directory (drives the
@@ -7342,7 +7448,7 @@ impl FileExplorerWidget {
             Some(FileCommand::ToggleHidden),
             Some(self.show_hidden),
         ));
-        if self.is_trash_view() {
+        if self.is_trash_view() && !self.has_native_trash_entries() {
             spec.push((
                 t("files-menu-empty-trash"),
                 Some(FileCommand::EmptyTrash),
@@ -8502,7 +8608,7 @@ impl FileExplorerWidget {
                 ));
             }
         }
-        let entry_effects: Vec<(FilesEffect, &str, String)> = if self.is_trash_view() {
+        let mut entry_effects: Vec<(FilesEffect, &str, String)> = if self.is_trash_view() {
             vec![
                 (
                     FilesEffect::Restore { entry: id() },
@@ -8545,6 +8651,10 @@ impl FileExplorerWidget {
                 ),
             ]
         };
+        if self.is_native_trash_entry(&entry.path) {
+            entry_effects
+                .retain(|(effect, _, _)| !matches!(effect, FilesEffect::DeletePermanently { .. }));
+        }
         for (effect, action, label) in entry_effects {
             resource.actions.push(row_action(&effect, action, label));
         }

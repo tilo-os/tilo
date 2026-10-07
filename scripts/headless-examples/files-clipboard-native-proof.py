@@ -128,7 +128,7 @@ def capture(socket, output, name):
     pixels.assert_nonblank_png(path)
 
 
-def proof(binaries, output):
+def proof(binaries, output, trash_restore=False):
     env, profile = scratch_session_env()
     processes, logs = [], []
     runtime_owner = tempfile.TemporaryDirectory(prefix="tilo-files-entry-run-")
@@ -145,6 +145,12 @@ def proof(binaries, output):
                     "RAYON_NUM_THREADS": "4", "LP_NUM_THREADS": "4"})
         for name in ("DISPLAY", "WAYLAND_DISPLAY", "TILO_APPS_SYSTEM_DIR"):
             env.pop(name, None)
+        if trash_restore:
+            # Exercise the common host data layout under the already granted
+            # Home. This changes no grant or launcher sandbox policy.
+            data = profile / "home" / ".local" / "share"
+            data.mkdir(parents=True)
+            env["XDG_DATA_HOME"] = str(data)
         inputs = install(binaries, profile, env)
         inputs.update({name: shared.digest_file(path) for name, path in {
             "shell": binaries / "shell", "launcher": binaries / "tilo-launcher",
@@ -242,7 +248,7 @@ def proof(binaries, output):
         key(socket, "z")
         shared.wait_for("native Undo preserves source and removes receiving copy", lambda:
                         not destination.exists() and (source / "report.txt").read_bytes() == original, shell)
-        trash = profile / "data" / "Trash" / "files"
+        trash = pathlib.Path(env["XDG_DATA_HOME"]) / "Trash" / "files"
         copies = [item for item in trash.iterdir() if item.is_file() and item.read_bytes() == edited]
         if len(copies) != 1:
             raise RuntimeError("edited native Copy must be recoverable in standard Trash")
@@ -267,6 +273,33 @@ def proof(binaries, output):
         shared.wait_for("Redo republishes the exact receiving entry resource", lambda:
                         entry in entry_keys(socket, room, record), shell)
         capture(socket, output, "after-redo")
+        if trash_restore:
+            key(socket, "z")
+            shared.wait_for("second Undo retains edited bytes for Trash Restore", lambda:
+                            not destination.exists(), shell)
+            execute(socket, room, record, "history", shell, output)
+            execute(socket, room, record, "open-trash", shell, output)
+            capture(socket, output, "trash-before-restore")
+
+            def restore_action():
+                rows = [row for row in shared.actions(socket) if row.get("application") == APP
+                        and row.get("room") == room and row.get("record") == record
+                        and row.get("operation") == "restore"
+                        and isinstance(row.get("semantic_identity"), dict)
+                        and row["semantic_identity"].get("kind") == "files.entry"]
+                if len(rows) > 1:
+                    raise RuntimeError("ambiguous actual Trash Restore entry")
+                return rows[0] if rows else None
+
+            action = shared.wait_for("actual Trash entry Restore action", restore_action, shell)
+            acknowledgement = shared.invoke(socket, action)
+            restored = shared.wait_terminal(socket, acknowledgement, shell,
+                                            public_failure_path=output / "failed-trash-restore.json")
+            (output / "completed-trash-restore.json").write_text(json.dumps(restored, indent=2))
+            shared.wait_for("Trash Restore returns the later edited bytes", lambda:
+                            destination.is_file() and destination.read_bytes() == edited, shell)
+            execute(socket, room, record, "go-to", shell, output, {"path": str(receiving)})
+            capture(socket, output, "after-trash-restore")
         if (source / "report.txt").read_bytes() != original or protected.read_bytes() != b"ungranted host control":
             raise RuntimeError("source or ungranted control changed")
         (output / "result.json").write_text(json.dumps({
@@ -274,6 +307,7 @@ def proof(binaries, output):
             "presented_primary_frame": True, "native_copy_paste_undo_redo": True,
             "later_edit_preserved_in_trash_and_redo": True, "source_and_control_intact": True,
             "post_redo_history_receipt": True, "published_entry_tracks_undo_redo": True,
+            "packaged_trash_restore": trash_restore,
             "packaging_seconds": round(packaged_at - started, 3),
             "journey_seconds": round(time.monotonic() - packaged_at, 3),
             "operator_profile_modified": False, "display_launched": False,
@@ -318,12 +352,14 @@ def proof(binaries, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binaries", type=pathlib.Path, required=True)
+    parser.add_argument("--trash-restore", action="store_true",
+                        help="Also browse host Trash and restore the edited copy through its published entry action")
     parser.add_argument("--font-namespace", type=pathlib.Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.font_namespace is not None:
         subprocess.run([sys.executable, "-B", str(REPO / "tools/font-catalog.py"), "verify",
                         "/usr/share/fonts/tilo", "--scope", "os"], check=True)
-        proof(args.binaries.resolve(), args.font_namespace)
+        proof(args.binaries.resolve(), args.font_namespace, args.trash_restore)
         return
     parent = REPO / "target/files-clipboard-native"
     parent.mkdir(parents=True, exist_ok=True)
@@ -339,10 +375,13 @@ def main():
             "mount": "/usr/share/fonts/tilo", "read_only": True,
             "host_files_modified": False,
         }, indent=2))
-        subprocess.run(["bwrap", "--die-with-parent", "--bind", "/", "/", "--dev-bind", "/dev", "/dev",
+        command = ["bwrap", "--die-with-parent", "--bind", "/", "/", "--dev-bind", "/dev", "/dev",
                         "--tmpfs", "/usr/share/fonts", "--ro-bind", str(fonts), "/usr/share/fonts/tilo", "--",
                         sys.executable, "-B", str(pathlib.Path(__file__).resolve()), "--binaries",
-                        str(args.binaries.resolve()), "--font-namespace", str(output)], check=True)
+                        str(args.binaries.resolve()), "--font-namespace", str(output)]
+        if args.trash_restore:
+            command.append("--trash-restore")
+        subprocess.run(command, check=True)
 
 
 if __name__ == "__main__":
