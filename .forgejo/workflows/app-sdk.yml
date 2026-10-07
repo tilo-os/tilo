@@ -69,7 +69,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 20
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:281af08d34010af96f97630aa5fde224b6ca02b130aff553ceb3d297d44fca7d
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -106,7 +106,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
     outputs:
       image: ${{ steps.resolve.outputs.image }}
       main: ${{ steps.merge.outputs.main }}
