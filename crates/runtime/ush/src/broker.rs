@@ -1385,7 +1385,7 @@ fn serve_host_command(
     stop: &Arc<AtomicBool>,
     host_mutation_gate: &Arc<Mutex<()>>,
 ) -> bool {
-    let Ok(_mutation_guard) =
+    let Ok(mutation_guard) =
         acquire_host_mutation(command, host_mutation_gate, writer, reader.get_ref(), stop)
     else {
         log_disconnected(state, command);
@@ -1394,7 +1394,7 @@ fn serve_host_command(
     let mut child = match start_host_command(command, state) {
         Ok(child) => child,
         Err(response) => {
-            return write_frame(writer, &WireFrame::Complete { response });
+            return complete_host_command(writer, response, mutation_guard);
         }
     };
     let deadline = command
@@ -1456,7 +1456,7 @@ fn serve_host_command(
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             stop_child(&mut child);
             let response = past_time_limit(command, state);
-            return write_frame(writer, &WireFrame::Complete { response });
+            return complete_host_command(writer, response, mutation_guard);
         }
         if last_activity.elapsed() >= HEARTBEAT_INTERVAL {
             if !write_frame(writer, &WireFrame::Heartbeat) {
@@ -1484,12 +1484,18 @@ fn serve_host_command(
             Some(&detail),
         );
     }
-    write_frame(
-        writer,
-        &WireFrame::Complete {
-            response: Response::Command { code },
-        },
-    )
+    complete_host_command(writer, Response::Command { code }, mutation_guard)
+}
+
+/// The mutation has finished before the guest can observe its completion.
+/// A slow response reader must not retain the host's update serialization gate.
+fn complete_host_command(
+    writer: &mut UnixStream,
+    response: Response,
+    mutation_guard: Option<std::sync::MutexGuard<'_, ()>>,
+) -> bool {
+    drop(mutation_guard);
+    write_frame(writer, &WireFrame::Complete { response })
 }
 
 /// "30 minutes"; seconds for limits that are not whole minutes.
@@ -1939,6 +1945,74 @@ mod tests {
     }
 
     #[test]
+    fn completed_host_command_releases_gate_before_a_blocked_completion_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        fake_host_program(dir.path(), "tilo", "#!/bin/sh\nexit 7\n");
+        let state = Arc::new(Mutex::new(state(dir.path())));
+        let command = {
+            let state = state.lock().unwrap();
+            host_command_for(
+                &state.host_root,
+                &state.environment.policy(),
+                &Request::SystemUpdate,
+            )
+            .unwrap()
+        };
+        let audit = state.lock().unwrap().audit.clone();
+        let gate = Arc::new(Mutex::new(()));
+        let (mut writer, peer) = UnixStream::pair().unwrap();
+        writer.set_nonblocking(true).unwrap();
+        // Fill every remaining byte so the actual Complete write cannot finish.
+        loop {
+            match writer.write(&[0]) {
+                Ok(1) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                other => panic!("failed to fill completion socket: {other:?}"),
+            }
+        }
+        writer.set_nonblocking(false).unwrap();
+        let reader = BufReader::new(writer.try_clone().unwrap());
+        let worker_gate = gate.clone();
+        let worker = std::thread::spawn(move || {
+            serve_host_command(
+                &command,
+                &state,
+                &mut writer,
+                &reader,
+                &Arc::new(AtomicBool::new(false)),
+                &worker_gate,
+            )
+        });
+        let started = Instant::now();
+        let mut completed = false;
+        let mut released = false;
+        while started.elapsed() < Duration::from_secs(2) {
+            completed = audit
+                .read_all()
+                .iter()
+                .any(|record| record.detail.as_deref() == Some("exit 7"));
+            if completed && gate.try_lock().is_ok() {
+                released = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let blocked = !worker.is_finished();
+        // Always retire the fixture socket and join before asserting, even on failure.
+        peer.shutdown(std::net::Shutdown::Both).unwrap();
+        assert!(!worker.join().unwrap());
+        assert!(completed, "production command did not reach completion");
+        assert!(
+            blocked,
+            "fixture did not block the production completion write"
+        );
+        assert!(
+            released,
+            "completed command retained the host mutation gate while sending its response"
+        );
+    }
+
+    #[test]
     fn host_updates_run_one_at_a_time_and_say_so() {
         let dir = tempfile::tempdir().unwrap();
         let events = dir.path().join("events");
@@ -2192,7 +2266,12 @@ mod tests {
             stopped, pids,
             "the command process group survived its guest connection"
         );
-        let audit = broker.state().lock().unwrap().audit.read_all();
+        // Observing a terminated process can precede the broker's wait/reap
+        // returning and its subsequent cancellation audit. Join the actual
+        // connection worker before observing that final production record.
+        let state = broker.state().clone();
+        drop(broker);
+        let audit = state.lock().unwrap().audit.read_all();
         assert!(audit.iter().any(|record| {
             !record.allowed
                 && record
@@ -2200,7 +2279,6 @@ mod tests {
                     .as_deref()
                     .is_some_and(|detail| detail.contains("disconnected"))
         }));
-        drop(broker);
     }
 
     #[test]

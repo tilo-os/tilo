@@ -112,6 +112,7 @@ pub struct ActivityGlance {
 /// chrome, search and agents all resolve through the same shape.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ActivityFocus {
+    pub task_id: Option<String>,
     pub author: Option<String>,
     pub group_id: Option<String>,
     pub entry_id: Option<[u8; 16]>,

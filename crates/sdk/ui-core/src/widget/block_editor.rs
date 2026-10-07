@@ -1882,6 +1882,7 @@ impl BlockEditor {
             return;
         }
         self.find_visible = true;
+        self.structure_dirty = true;
         self.replace_field.set_focus(false);
         self.find_field.set_focused(true);
         self.find_field.select_all();
@@ -1894,6 +1895,7 @@ impl BlockEditor {
 
     fn close_find(&mut self) {
         self.find_visible = false;
+        self.structure_dirty = true;
         self.replace_field.set_focus(false);
         self.replace_requested.set(false);
         self.replace_all_requested.set(false);
@@ -7606,6 +7608,9 @@ impl Widget for BlockEditor {
             .map_or(0.0, |block| block.line.text_inset(theme));
         let find_node = self.find_field.build_layout(taffy, theme, node_map);
         let mut find_style = taffy.style(find_node).cloned().unwrap_or_default();
+        if !self.find_visible {
+            find_style.display = taffy::Display::None;
+        }
         find_style.position = taffy::Position::Absolute;
         find_style.inset.top = length(8.0_f32 * theme.text_scale);
         find_style.inset.right = length(108.0_f32 * theme.text_scale);
@@ -7627,6 +7632,9 @@ impl Widget for BlockEditor {
                 (all, 88.0_f32, 8.0_f32, 120.0_f32),
             ] {
                 let mut style = taffy.style(node).cloned().unwrap_or_default();
+                if !self.find_visible {
+                    style.display = taffy::Display::None;
+                }
                 style.position = taffy::Position::Absolute;
                 style.inset.top = length(top * theme.text_scale);
                 style.inset.right = length(right * theme.text_scale);

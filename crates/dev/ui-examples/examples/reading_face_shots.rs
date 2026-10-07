@@ -497,10 +497,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or("page")
         .to_owned();
     // The checked-in catalog, without host fonts: the faces Tilo ships.
-    let catalog = FontCatalog::controlled_fixture(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/ui-core/assets/fonts"),
-        "en-US",
-    );
+    let catalog = FontCatalog::controlled_fixture(tilo_ui::font_catalog::checkout_root(), "en-US");
     let mut text = TextRenderer::with_font_catalog(&catalog)?;
     // The SDK's standalone catalog, as a third-party app bundles it: no
     // New Computer Modern Regular, so Book sets the title.

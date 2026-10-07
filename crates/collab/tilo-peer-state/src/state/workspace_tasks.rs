@@ -50,8 +50,11 @@ impl StatePeer {
             workspace.capabilities.clone_from(&caps);
             workspace.role_of_agent_in_room_at(agent, &self.core.room, seconds)
         };
-        if let Some(agent) = command.agent()
-            && agent_role(agent).is_none_or(|role| role == Role::Denied)
+        if let Some(agent) = command
+            .agent()
+            .map(str::to_owned)
+            .or(direction_agent(command, room)?)
+            && agent_role(&agent).is_none_or(|role| role == Role::Denied)
         {
             return Err("workspace task agent is not a current room member".into());
         }
@@ -113,6 +116,22 @@ impl StatePeer {
         }
         Ok((changed, result))
     }
+}
+
+fn direction_agent(
+    command: &WorkspaceTaskCommand,
+    room: &automerge::AutoCommit,
+) -> Result<Option<String>, String> {
+    let (WorkspaceTaskCommand::Direction { task_id, .. }
+    | WorkspaceTaskCommand::DirectionForRun { task_id, .. }) = command
+    else {
+        return Ok(None);
+    };
+    tilo_desktop_model::projection::workspace_tasks_of(room)
+        .into_iter()
+        .find(|task| &task.id == task_id)
+        .ok_or_else(|| "workspace task no longer exists".into())
+        .map(|task| task.assigned_agent)
 }
 
 #[cfg(test)]

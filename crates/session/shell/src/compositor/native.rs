@@ -6888,6 +6888,9 @@ fn attach_collab_broker_bridges(
             .host_mut()
             .attach_app_action_broker(action_broker);
     }
+    if let Some(review) = broker.task_review() {
+        frame_builder.host_mut().attach_task_review(review);
+    }
     if let Some(realtime) = broker.realtime_fabric_bridge() {
         frame_builder
             .host_mut()
@@ -8386,6 +8389,12 @@ pub fn run() {
     frame_builder
         .host_mut()
         .set_quick_settings_wake(Arc::clone(&session_wake));
+    frame_builder.with_chrome(|chrome| {
+        if let Some(apps) = chrome.hosted_inputs.in_process() {
+            apps.borrow_mut()
+                .bind_messaging_record_wake(Arc::clone(&session_wake));
+        }
+    });
     let chooser_attended = Arc::new(AtomicBool::new(false));
     let mut published_room = PublishedRoom::new();
     let chooser_service = start_chooser_service(
@@ -10368,6 +10377,14 @@ pub fn run() {
                     .collect(),
             );
             st.pump_dbus_notifications();
+            for request in st.take_notification_launch_requests() {
+                if let Err(error) = crate::shell::notification::launch_scheduled_notification(
+                    request,
+                    &st.tree_handle(),
+                ) {
+                    tracing::warn!(%error, "scheduled notification activation failed");
+                }
+            }
         });
         if let Some(network) = peer_sync.as_ref()
             && continuity_feed_polled
@@ -10392,6 +10409,9 @@ pub fn run() {
             // the normal desktop way; it is not a process kill.
             let mut close_requests = Vec::new();
             frame_builder.with_chrome(|chrome| {
+                if let Some(apps) = chrome.hosted_inputs.in_process() {
+                    apps.borrow_mut().pump_messaging_records();
+                }
                 for request in app_closes.drain() {
                     let tabs = crate::shell::app_close::tabs_of(&chrome.tree().desktop, &request);
                     eprintln!(

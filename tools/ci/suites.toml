@@ -527,11 +527,6 @@ suites = [
 # listed in the entry's optional `scope`: then only the scope's `filter`
 # (a nextest filterset) within its `test` target runs for that package.
 
-[[cargo]]
-package = "file-explorer"
-# Breadcrumb geometry shapes labels with the shipped toolkit font fixture.
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["apps/file-explorer/src/path_bar.rs"]
 
 [[cargo]]
 package = "tilo-ui"
@@ -563,17 +558,6 @@ scope = { inputs = [
   "crates/sdk/tilo-app/src/framework/app.rs",
 ], test = "it", filter = "test(/^design_token_audit::/) | test(/^spacing_token_audit::/) | test(/^typography_token_audit::/) | test(/^copy_audit::/)" }
 
-[[cargo]]
-package = "ui-examples"
-# Gallery and type specimen shots render with the toolkit's checked-in fonts.
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = [
-  "crates/dev/ui-examples/examples/gallery_shots.rs",
-  "crates/dev/ui-examples/examples/type_specimen_shots.rs",
-  "crates/dev/ui-examples/examples/distinct_letters_shots.rs",
-  "crates/dev/ui-examples/examples/distinct_letters_specimen.rs",
-  "crates/dev/ui-examples/examples/reading_face_shots.rs",
-]
 
 [[cargo]]
 package = "tilo-app-package"
@@ -810,8 +794,8 @@ readers = ["crates/agent/local-model-service/src/main.rs"]
 package = "tilo-font-catalog"
 # Compiles in the catalog's manifest and verifies the checkout's copy; the PDF
 # helper reads the fonts through it.
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["crates/sdk/font-catalog/src/lib.rs"]
+inputs = ["crates/sdk/ui-core/assets/fonts/", "tools/font-catalog.py"]
+readers = ["crates/sdk/font-catalog/build.rs"]
 
 [[cargo]]
 package = "pdf-viewer"
@@ -849,23 +833,20 @@ scope = { inputs = ["vendor/fcast-sender-sdk/src/chromecast_tls.rs", "vendor/fca
 
 [[cargo]]
 package = "notes"
-inputs = ["crates/sdk/ui-core/assets/fonts/", "apps/settings/shots/settings.png"]
+inputs = ["apps/settings/shots/settings.png"]
 readers = [
   "apps/notes/src/app.rs",
-  "apps/notes/src/scenario.rs", "apps/notes/tests/support/component.rs",
+  "apps/notes/src/scenario.rs",
   "apps/notes/tests/effects.rs",
 ]
 
-[[cargo]]
-package = "ebook"
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["apps/ebook/src/app/interaction_tests.rs"]
 
 [[cargo]]
 package = "shell"
 inputs = [
   "apps/browser/tilo-app.toml",
   "tools/protocols/airdrop_sender.py",
+  "tools/test-assets.py",
   "crates/sdk/ui-core/assets/fonts/",
   "dist/VERSION",
   "docs/shell-navigation-keyboard-map.md",
@@ -875,30 +856,15 @@ inputs = [
 ]
 readers = [
   "crates/session/shell/src/shell/broker_services/airdrop_transfer.rs",
-  "crates/session/shell/examples/support/populated_shell_fixture.rs",
   "crates/session/shell/examples/packaged_native_bootstrap.rs",
   "crates/session/shell/src/linux_main.rs",
+  "crates/session/shell/tests/support/snapshot.rs",
   "crates/session/shell/src/shell/fixed_chords.rs",
-  "crates/session/shell/src/shell/fixture_inputs.rs",
   "crates/session/shell/src/shell/network/paired_continuity_tests.rs",
-  "crates/session/shell/src/shell/test_support.rs",
-  "crates/session/shell/tests/input_method_wire.rs",
 ]
 
-[[cargo]]
-package = "chat"
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["apps/chat/src/component_tests.rs"]
 
-[[cargo]]
-package = "word-processor"
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["apps/word-processor/tests/canonical_component.rs"]
 
-[[cargo]]
-package = "tilo-desktop"
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["crates/session/desktop/src/topbar.rs"]
 
 [[cargo]]
 package = "tilo-relay-protocol"
@@ -1427,6 +1393,17 @@ reason = "explicit root private-mount-namespace integration entrypoint; run with
 package = "runtime-bundle"
 inputs = [
   "tools/apps/browser_runtime_release.py",
+  "tools/apps/signal_runtime_fixture.py",
+  "tools/apps/signal_provider_release.py",
+  "os/dev/cache-github-assets.sh",
+  "tools/apps/pack-signal-provider.sh",
+  "os/scripts/prepare-signal-provider.py",
+  "os/signal-provider/java/",
+  "tools/tests/SignalProviderIdentityFixture.java",
+  "tools/tests/SignalProviderProxyFixture.java",
+  "os/scripts/stage-signal-runtime.py",
+  "os/external-assets/signal-runtime.json",
+  "os/external-assets/github-assets.tsv",
   "tools/apps/pack-runtime-package.sh",
   "scripts/browser/",
   "apps/browser/chromium/",
@@ -1436,8 +1413,17 @@ inputs = [
   "crates/sdk/ui-core/src/webview/chromium/runtime.rs",
   "os/Containerfile",
 ]
-readers = ["crates/packaging/runtime-bundle/examples/browser_runtime_release.rs"]
+readers = [
+  "crates/packaging/runtime-bundle/examples/browser_runtime_release.rs",
+  "crates/packaging/runtime-bundle/examples/signal_runtime_fixture.rs",
+  "crates/packaging/runtime-bundle/examples/signal_provider_release.rs",
+]
 
 [[covered]]
 suite = "tools/font-catalog.py"
 by = "tools/tests/test_font_artifacts.py"
+
+[[cargo]]
+package = "ebook"
+inputs = ["tools/test-assets.py"]
+readers = ["apps/ebook/src/app/interaction_tests.rs"]

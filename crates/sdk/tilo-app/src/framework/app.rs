@@ -564,15 +564,14 @@ fn create<A: ResourceApp>(
     if let Some(file) = &file {
         file.report_opened(<A::Resource as Resource>::KIND);
     }
-    let handoff = context.take_handoff();
-    let lent = super::scenario::Lent::new(context.take_lent());
     let run = run
         .launched(Launched {
+            record: Some(context.record().id.clone()),
             arguments,
             options,
             file,
-            handoff,
-            lent,
+            handoff: context.take_handoff(),
+            lent: super::scenario::Lent::new(context.take_lent()),
         })
         .opening_with(opener)
         .showing_file_history(
