@@ -1,6 +1,4 @@
-fn emit_hex_fixture(source: &str, filename: &str) -> Result<(), Box<dyn std::error::Error>> {
-    println!("cargo:rerun-if-changed={source}");
-    let text = std::fs::read_to_string(source)?;
+fn emit_hex_fixture(text: &str, filename: &str) -> Result<(), Box<dyn std::error::Error>> {
     let digits: String = text
         .chars()
         .filter(|value| !value.is_ascii_whitespace())

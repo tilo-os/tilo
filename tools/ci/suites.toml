@@ -1432,7 +1432,6 @@ package = "store"
 inputs = ["tools/test-assets.py", "tools/test-assets-build.rs"]
 readers = ["apps/store/build.rs"]
 
-[[group]]
-name = "android-fixture-resources"
-inputs = ["tools/android/mediation/prepare-res.py", "tools/android/mediation/res/"]
-suites = ["tools/tests/test_android_fixture_resources.py"]
+[[covered]]
+suite = "tools/android/mediation/prepare-res.py"
+by = "tools/tests/test_android_fixture_resources.py"

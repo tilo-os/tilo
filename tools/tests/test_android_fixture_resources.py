@@ -21,3 +21,7 @@ class AndroidResourcesTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "existing"):
                 RESOURCES.prepare(output)
             self.assertEqual((output / "drawable/icon.png").read_bytes(), icon)
+
+
+if __name__ == "__main__":
+    unittest.main()
