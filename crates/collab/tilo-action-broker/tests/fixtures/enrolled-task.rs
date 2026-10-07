@@ -3,6 +3,8 @@
 use std::io::{Read, Write};
 use std::os::fd::{FromRawFd, IntoRawFd};
 use std::os::unix::net::UnixStream;
+#[path = "enrolled-sdk.rs"]
+mod enrolled_sdk;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -272,7 +274,7 @@ fn main() -> Result<()> {
     collab.write_all(&challenge)?;
     gate(&mut collab, 1)?;
     collab.set_read_timeout(None)?;
-    let _transferred = collab.into_raw_fd(); // The production portal now owns this same descriptor.
+    let transferred = collab.into_raw_fd(); // The production portal now owns this same descriptor.
     let mut identity = service("TILO_SVC_IDENTITY_FD")?;
     let mut length = [0; 4];
     identity.read_exact(&mut length)?;
@@ -286,12 +288,20 @@ fn main() -> Result<()> {
         serde_json::from_str(&std::env::var("TILO_MANAGED_AGENT_CONTEXT")?)?;
     let model = service("TILO_SVC_MODEL-GATEWAY_FD")?;
     model.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
+    let identity: serde_json::Value = serde_json::from_slice(&presentation)?;
+    if let Some(mode) = identity.get("sdk_mode").and_then(serde_json::Value::as_str) {
+        let mut diagnostics = model.try_clone()?;
+        let result = enrolled_sdk::exercise(transferred, &context, model, mode == "ordinary");
+        if let Err(error) = &result {
+            frame(
+                &mut diagnostics,
+                &serde_json::json!({"stage":"sdk-fixture-error", "error":error.to_string()}),
+            )?;
+        }
+        return result;
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(tokio::task::LocalSet::new().run_until(exercise(
-        serde_json::from_slice(&presentation)?,
-        context,
-        model,
-    )))
+    runtime.block_on(tokio::task::LocalSet::new().run_until(exercise(identity, context, model)))
 }

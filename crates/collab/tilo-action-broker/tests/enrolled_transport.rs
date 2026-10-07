@@ -226,6 +226,38 @@ impl Drop for Broker {
     }
 }
 fn broker(root: &Path, native: &Arc<native::Native>) -> Qualification<Broker> {
+    broker_with_document_obligation(root, native, false)
+}
+
+/// No application document is provisioned in this task fixture. The obligation
+/// is native; attempted reads must fail before inventing any document content.
+struct RequiredDocuments(String);
+impl tilo_action_broker::services::NativeDocumentReads for RequiredDocuments {
+    fn requires_room(&self, room: &str) -> bool {
+        self.0 == room
+    }
+    fn authorize(
+        &self,
+        context: &tilo_action_broker::services::NativeDocumentReadContext,
+    ) -> Result<(), String> {
+        context.revalidate()?;
+        Err("fixture has no application document".into())
+    }
+    fn capture(
+        &self,
+        _: &tilo_action_broker::services::NativeDocumentReadContext,
+        _: Option<[u8; 32]>,
+        _: usize,
+    ) -> Result<tilo_action_broker::services::NativeDocumentRead, String> {
+        Err("fixture has no application document bytes".into())
+    }
+}
+
+fn broker_with_document_obligation(
+    root: &Path,
+    native: &Arc<native::Native>,
+    required: bool,
+) -> Qualification<Broker> {
     let socket = root.join("control.sock");
     std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))?;
     let fanout = Arc::new(FanoutState::new());
@@ -233,6 +265,10 @@ fn broker(root: &Path, native: &Arc<native::Native>) -> Qualification<Broker> {
     let services = HostServices {
         workspace_memberships: Some(native.clone()),
         native_certificates: Some(native.clone()),
+        committed_documents: required.then(|| {
+            Arc::new(RequiredDocuments(native.room.to_string()))
+                as Arc<dyn tilo_action_broker::services::NativeDocumentReads>
+        }),
         ..Default::default()
     };
     let thread = tilo_action_broker::collab_broker_capnp::spawn(
@@ -352,6 +388,96 @@ fn signed_descriptor_empty_join_rejects_wrong_bindings_and_replay_before_native_
     fixture.accept_and_progress().unwrap();
     fixture.finish().unwrap();
     fixture.stop().unwrap();
+}
+
+#[test]
+fn actual_task_only_sdk_consumes_signed_descriptor_and_never_publishes_app_documents() {
+    let mut fixture = running_fixture_options(false, false, Some("enrolled")).unwrap();
+    fixture.accept_and_progress().unwrap();
+    let snapshot = fixture
+        .native
+        .owner
+        .workspace_task_snapshot(fixture.native.room)
+        .unwrap();
+    assert!(
+        !serde_json::to_string(&snapshot.tasks)
+            .unwrap()
+            .contains("Private SDK progress")
+    );
+    assert!(
+        fixture
+            .state
+            .published_surfaces()
+            .iter()
+            .all(|surface| surface.app_id != "so.tilo.agent"),
+        "task-only SDK must never publish an ordinary app resource directory"
+    );
+    fixture.finish().unwrap();
+    fixture.stop().unwrap();
+}
+
+#[test]
+fn ordinary_sdk_constructor_cannot_acquire_document_custody_from_managed_descriptor() {
+    let mut fixture = running_fixture_options(false, false, Some("ordinary")).unwrap();
+    let refused = read_frame(&mut fixture.model_peer, "sdk-ordinary-refused").unwrap();
+    assert!(
+        refused["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("committed read requires launcher custody")),
+        "ordinary document mode must retain its actual committed-read custody gate: {refused}"
+    );
+    let snapshot = fixture
+        .native
+        .owner
+        .workspace_task_snapshot(fixture.native.room)
+        .unwrap();
+    let (_, control) = task_view(&snapshot, &fixture.task).unwrap();
+    assert_eq!(control.run_epoch, 0);
+    assert!(control.execution.is_none());
+    assert!(control.active_run.is_none());
+    fixture.model_peer.write_all(b"E").unwrap();
+    fixture.stop().unwrap();
+}
+
+#[test]
+fn task_only_sdk_constructor_cannot_turn_ordinary_socket_into_managed_authority() {
+    use std::os::fd::IntoRawFd as _;
+    let root = tempfile::tempdir().unwrap();
+    let (native, _, _) = native::installed(root.path()).unwrap();
+    let broker = broker(root.path(), &native).unwrap();
+    let socket = root.path().join("control.sock");
+    let deadline = tilo_test_env::hang_deadline();
+    while !socket.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "actual native broker never bound"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let stream = UnixStream::connect(socket).unwrap();
+    let refused = ui::collaboration::CollaborationManager::for_enrolled_task_route_fd(
+        stream.into_raw_fd(),
+        "so.tilo.agent",
+        native.room.as_uuid(),
+        "fixture-agent",
+    );
+    let Err(error) = refused else {
+        panic!("an ordinary socket cannot mint kernel-managed task custody");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("requires a certified device presentation")
+    );
+    assert!(
+        native
+            .owner
+            .workspace_task_snapshot(native.room)
+            .unwrap()
+            .tasks
+            .is_empty()
+    );
+    drop(broker);
 }
 
 #[test]
@@ -520,10 +646,18 @@ fn foreign_join_identity(room: &str) -> Qualification<Vec<u8>> {
 }
 
 fn running_fixture_join(empty: bool, gate_join: bool) -> Qualification<RunningFixture> {
+    running_fixture_options(empty, gate_join, None)
+}
+
+fn running_fixture_options(
+    empty: bool,
+    gate_join: bool,
+    sdk_mode: Option<&str>,
+) -> Qualification<RunningFixture> {
     let root = tempfile::tempdir()?;
     let (native, key, certificate) = native::installed(root.path())?;
     let task = queued(&native, &key, &certificate)?;
-    let broker = broker(root.path(), &native)?;
+    let broker = broker_with_document_obligation(root.path(), &native, sdk_mode.is_some())?;
     let state = broker
         .fanout
         .capnp_state()
@@ -591,6 +725,7 @@ fn running_fixture_join(empty: bool, gate_join: bool) -> Qualification<RunningFi
         "empty_descriptor_probe": empty,
         "gate_join": gate_join,
         "foreign_presentation": if empty { foreign_join_identity(&native.room.to_string())? } else { Vec::new() },
+        "sdk_mode": sdk_mode,
     }))?;
     identity_peer.write_all(&u32::try_from(presentation.len())?.to_le_bytes())?;
     identity_peer.write_all(&presentation)?;

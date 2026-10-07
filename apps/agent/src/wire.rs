@@ -52,7 +52,7 @@ impl Link {
         let agent_id = handle.ok_or_else(|| anyhow::anyhow!("agent connection needs an id"))?;
         let manager = if std::env::var_os("TILO_MANAGED_AGENT_CONTEXT").is_some() {
             let fd = runtime_portal::agent_transport::claim_managed_agent_fd()?;
-            CollaborationManager::for_agent_route_fd(fd, app_id, cluster_id, record, agent_id)
+            CollaborationManager::for_enrolled_task_route_fd(fd, app_id, cluster_id, agent_id)
         } else {
             CollaborationManager::for_agent_route(app_id, cluster_id, record, agent_id)
         }

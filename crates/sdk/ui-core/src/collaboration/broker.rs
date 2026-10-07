@@ -225,6 +225,7 @@ pub(super) fn flush_live_activity() {
 /// `.recv()` then yields `None` and the thread exits. `_thread` is kept
 /// only so the `JoinHandle` isn't detached.
 pub(super) struct BrokerTransport {
+    enrolled_only: bool,
     outbound_tx: tokio_mpsc::Sender<QueuedSdkCommand>,
     /// Native media rides its own bounded lane so a wedged document RPC can
     /// never delay a stop obligation.
@@ -252,6 +253,9 @@ pub(super) struct BrokerTransport {
 
 impl BrokerTransport {
     fn enqueue(&self, command: SdkCommand) -> Result<(), TransportError> {
+        if self.enrolled_only && !enrolled_command_allowed(&command) {
+            return Err(TransportError::Unsupported);
+        }
         try_enqueue_sdk_command(&self.outbound_tx, command, &self.state)
     }
 
@@ -336,6 +340,7 @@ impl CollabTransport for BrokerTransport {
     fn drain(&mut self, out: &mut Vec<CollabEvent>) {
         self.state.begin_poll();
         if !self.wifi_bridge_registered
+            && !self.enrolled_only
             && matches!(self.state.connect_phase(), ConnectPhase::Connected)
         {
             self.register_wifi_bridge();
@@ -516,6 +521,27 @@ enum SdkCommand {
     FlushSettings,
     /// Send the app's live activity over the primary route.
     FlushLiveActivity,
+}
+
+fn enrolled_command_allowed(command: &SdkCommand) -> bool {
+    match command {
+        SdkCommand::Hello(_) | SdkCommand::PrimaryReady(_) => true,
+        SdkCommand::Primary(request) => matches!(
+            request,
+            CollabRequest::SubscribeEnrolledTasks { .. }
+                | CollabRequest::AcceptEnrolledTask { .. }
+                | CollabRequest::ReportEnrolledTask { .. }
+                | CollabRequest::InvokeTaskAction { .. }
+                | CollabRequest::TaskRunCancellation { .. }
+                | CollabRequest::RemoteAction { .. }
+                | CollabRequest::QueryActionDirectory { .. }
+                | CollabRequest::ResolvePublishedAction { .. }
+                | CollabRequest::PublishedInvocationStatus { .. }
+                | CollabRequest::CancelPublishedInvocation { .. }
+                | CollabRequest::LaunchPublishedApplication { .. }
+        ),
+        _ => false,
+    }
 }
 
 struct PrimaryHello {
@@ -1995,6 +2021,7 @@ impl HostSessionConnector {
 enum SdkConnectSource {
     Env,
     Fd(RawFd),
+    Enrolled(RawFd),
     Host(HostSessionConnector, RouteSpec),
 }
 
@@ -2005,7 +2032,7 @@ impl SdkConnectSource {
                 std::io::Error::other("host session requires worker-side identity admission"),
             )),
             SdkConnectSource::Env => runtime_collab::try_connect(),
-            SdkConnectSource::Fd(fd) => {
+            SdkConnectSource::Fd(fd) | SdkConnectSource::Enrolled(fd) => {
                 use capnp_rpc::rpc_twoparty_capnp;
                 let unix = runtime_portal::UnixCapnpClient::from_connected_fd(
                     fd,
@@ -2241,6 +2268,8 @@ struct LocalSdkJoinIdentity {
 }
 
 enum LocalSdkDocumentSigner {
+    /// Task recipients retain no document signer or app publication authority.
+    EnrolledOnly,
     Inherited(SdkDocumentSigner),
     Host(runtime_identity::AsyncBrokerSigningIdentity),
 }
@@ -2716,6 +2745,7 @@ impl CollaborationManager {
         } = route;
         let mut identity = match endpoint_identity {
             Some(identity) => Some(identity),
+            None if matches!(&source, SdkConnectSource::Enrolled(_)) => None,
             None if matches!(&source, SdkConnectSource::Host(_, _)) => None,
             None if matches!(&source, SdkConnectSource::Env) => {
                 Some(sdk_join_identity(cluster_id)?)
@@ -2807,6 +2837,29 @@ impl CollaborationManager {
             app_id.into(),
             cluster_id,
             record,
+            Some(agent_id.into()),
+            None,
+            "agent",
+        )
+    }
+
+    /// Join only the task-bound Agent route on a consumed managed descriptor.
+    /// The broker alone verifies kernel custody, current identity and Agent role.
+    /// This transport owns no document, resources, presence or signing credential.
+    ///
+    /// # Errors
+    /// Refuses an ordinary descriptor, wrong route or retired managed custody.
+    pub fn for_enrolled_task_route_fd(
+        fd: RawFd,
+        app_id: impl Into<String>,
+        cluster_id: Uuid,
+        agent_id: impl Into<String>,
+    ) -> Result<Self, runtime_portal::NotAvailable> {
+        Self::for_route_from(
+            SdkConnectSource::Enrolled(fd),
+            app_id.into(),
+            cluster_id,
+            None,
             Some(agent_id.into()),
             None,
             "agent",
@@ -3019,6 +3072,7 @@ impl CollaborationManager {
         source: SdkConnectSource,
         identity: SdkIdentitySource,
     ) -> Result<(BrokerTransport, mpsc::Receiver<InitStatus>), runtime_portal::NotAvailable> {
+        let enrolled_only = matches!(&source, SdkConnectSource::Enrolled(_));
         let (outbound_tx, outbound_rx) = tokio_mpsc::channel::<QueuedSdkCommand>(SDK_COMMAND_QUEUE);
         let (inbound_tx, inbound_rx) = tokio_mpsc::channel::<QueuedCollabEvent>(SDK_EVENT_QUEUE);
         let state = BridgeState::new();
@@ -3039,8 +3093,9 @@ impl CollaborationManager {
         };
 
         let transport = BrokerTransport {
+            enrolled_only,
             outbound_tx,
-            media: Some(media_tx),
+            media: (!enrolled_only).then_some(media_tx),
             inbound_rx,
             state,
             action_directory_rx,
@@ -3090,7 +3145,9 @@ impl CollaborationManager {
 
         match status {
             InitStatus::Ready => {
-                transport.register_wifi_bridge();
+                if !transport.enrolled_only {
+                    transport.register_wifi_bridge();
+                }
                 Ok(transport)
             }
             InitStatus::Failed(e) => {
@@ -3186,6 +3243,16 @@ fn run_shovel(
     local.block_on(&rt, async move {
         let state = init_state;
         let session = match source {
+            source @ SdkConnectSource::Enrolled(_) => source.build_client().map(|client| {
+                (
+                    client,
+                    LocalSdkJoinIdentity {
+                        presentation: Vec::new(),
+                        participant_kind: "agent",
+                        signer: LocalSdkDocumentSigner::EnrolledOnly,
+                    },
+                )
+            }),
             SdkConnectSource::Host(connector, route) => {
                 let cluster_id = route.cluster_id;
                 let identity_timeout = connector.identity_exchange_timeout;
@@ -3279,17 +3346,20 @@ async fn drive_shovel(
         participant_kind,
         mut signer,
     } = identity;
+    let enrolled_only = matches!(&signer, LocalSdkDocumentSigner::EnrolledOnly);
     let media_routes = native_media::Routes::default();
-    let _media_worker = native_media::start(media_rx, media_routes.clone());
+    let _media_worker =
+        (!enrolled_only).then(|| native_media::start(media_rx, media_routes.clone()));
     // Every route of a certified endpoint is an encrypted channel whose keys
     // come from the identity service. A harness has no such service, and an
     // inherited host signer commits cleartext through its host owner, so
     // both stay plaintext.
     let asks_channel_keys = !matches!(
         signer,
-        LocalSdkDocumentSigner::Inherited(
-            SdkDocumentSigner::Harness(_) | SdkDocumentSigner::Host(_)
-        )
+        LocalSdkDocumentSigner::EnrolledOnly
+            | LocalSdkDocumentSigner::Inherited(
+                SdkDocumentSigner::Harness(_) | SdkDocumentSigner::Host(_)
+            )
     );
     let mut key_refresh = tokio::time::interval(CHANNEL_KEY_REFRESH);
     key_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -3355,6 +3425,7 @@ async fn drive_shovel(
                     tokio::time::Instant::from_std(deadline.start()),
                     ensure_sdk_route(
                         &SdkJoinContext {
+                            enrolled_only,
                             asks_channel_keys,
                             client: &client,
                             presentation: &presentation,
@@ -3374,7 +3445,9 @@ async fn drive_shovel(
                     Err(_) => Err(PRIMARY_ROUTE_TIMED_OUT.to_string()),
                 };
                 primary = primary_result.is_ok().then_some(key);
-                if let Some(route) = primary.as_ref().and_then(|key| routes.get(key)) {
+                if !enrolled_only
+                    && let Some(route) = primary.as_ref().and_then(|key| routes.get(key))
+                {
                     settings_link = link_settings(&route.channel, &inbound_tx).await;
                     if let Some(link) = settings_link.as_ref() {
                         link.flush(&inbound_tx).await;
@@ -3409,6 +3482,7 @@ async fn drive_shovel(
             SdkCommand::Join(spec, record_kind) => {
                 let _ = ensure_sdk_route(
                     &SdkJoinContext {
+                        enrolled_only,
                         asks_channel_keys,
                         client: &client,
                         presentation: &presentation,
@@ -3427,6 +3501,7 @@ async fn drive_shovel(
                 let key = spec.channel_id();
                 let joined = ensure_sdk_route(
                     &SdkJoinContext {
+                        enrolled_only,
                         asks_channel_keys,
                         client: &client,
                         presentation: &presentation,
@@ -3490,6 +3565,7 @@ async fn drive_shovel(
             SdkCommand::InstallEncryption { spec, group, reply } => {
                 let result = install_sdk_encryption(
                     SdkJoinContext {
+                        enrolled_only,
                         asks_channel_keys,
                         client: &client,
                         presentation: &presentation,
@@ -3617,6 +3693,7 @@ async fn install_sdk_encryption(
 
 #[derive(Clone, Copy)]
 struct SdkJoinContext<'a> {
+    enrolled_only: bool,
     asks_channel_keys: bool,
     client: &'a runtime_collab::CollabClient,
     presentation: &'a [u8],
@@ -3650,6 +3727,7 @@ async fn ensure_sdk_route(
     record_kind: &str,
 ) -> Result<(), String> {
     let SdkJoinContext {
+        enrolled_only,
         asks_channel_keys,
         client,
         presentation: identity_bytes,
@@ -3691,6 +3769,24 @@ async fn ensure_sdk_route(
         // Queue the first decision baseline before document traffic so an
         // agent cannot start deciding against stale local fallback data.
         spawn_action_catalogue_stream(&channel, inbound_tx).await?;
+    }
+    if enrolled_only {
+        // Task RPC uses this acknowledged handle. No document/read/publication,
+        // presence, app settings, media or ordinary invocation stream is installed.
+        routes.insert(
+            channel_id,
+            SdkRoute {
+                spec: spec.clone(),
+                channel,
+                presence: None,
+                workspace_controls: std::collections::HashMap::new(),
+                committed: false,
+                encryption: std::sync::Arc::new(std::sync::Mutex::new(
+                    super::route_keys::RouteKeys::plain(),
+                )),
+            },
+        );
+        return Ok(());
     }
     let committed = committed_document::install(&channel, spec, inbound_tx).await?;
     // A committed route's owner admits and applies each edit itself, and a
@@ -4544,6 +4640,13 @@ async fn try_send_frame(
         };
     let now = crate::time::wall();
     let author = match signer {
+        LocalSdkDocumentSigner::EnrolledOnly => {
+            return FrameSend::Failed(state.publication_failed(
+                "document signing unavailable",
+                "enrolled task transport owns no document",
+                true,
+            ));
+        }
         // Host-signed documents commit through the host owner before this
         // frame path; an inherited host signer cannot sign a frame here.
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Host(_)) => {
@@ -4598,6 +4701,13 @@ async fn try_send_frame(
         }
     };
     let signature = match signer {
+        LocalSdkDocumentSigner::EnrolledOnly => {
+            return FrameSend::Failed(state.publication_failed(
+                "document signing unavailable",
+                "enrolled task transport owns no document",
+                true,
+            ));
+        }
         // Host-signed documents commit through the host owner before this
         // frame path; an inherited host signer cannot sign a frame here.
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Host(_)) => {
@@ -4772,7 +4882,8 @@ async fn refresh_route_keys(route: &SdkRoute, signer: &mut LocalSdkDocumentSigne
                 .channel_keys(&workspace_id, &route.spec.app_id, record_id, generation)
                 .await
         }
-        LocalSdkDocumentSigner::Inherited(
+        LocalSdkDocumentSigner::EnrolledOnly
+        | LocalSdkDocumentSigner::Inherited(
             SdkDocumentSigner::Harness(_) | SdkDocumentSigner::Host(_),
         ) => return false,
     };
@@ -8440,6 +8551,7 @@ mod tests {
         let (action_directory_tx, action_directory_rx) = mpsc::sync_channel(1);
         let state = BridgeState::new();
         manager.backend = Backend::Transport(Box::new(BrokerTransport {
+            enrolled_only: false,
             outbound_tx,
             media: None,
             inbound_rx,
