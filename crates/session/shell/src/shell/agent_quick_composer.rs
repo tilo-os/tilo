@@ -2641,7 +2641,7 @@ mod tests {
         composer.refresh_status();
         assert_eq!(
             composer.status.get(),
-            "Task Center queued an earlier submission as task queued-a"
+            "Earlier work was queued in Task Center."
         );
     }
 
@@ -2699,7 +2699,7 @@ mod tests {
         composer.refresh_status();
         assert_eq!(
             composer.status.get(),
-            "Earlier direction saved for task task-a, run 7, revision 5"
+            "Earlier direction was saved in Task Center."
         );
     }
 
@@ -2748,7 +2748,7 @@ mod tests {
 
         assert_eq!(
             composer.status.get(),
-            "Earlier direction applied to task task-a, run 7, revision 5"
+            "The agent applied earlier direction."
         );
     }
 
@@ -2815,7 +2815,7 @@ mod tests {
 
         assert_eq!(
             composer.status.get(),
-            "Earlier direction saved for task retired-task, run 2, revision 9"
+            "Earlier direction was saved in Task Center."
         );
         assert!(matches!(
             composer.tasks.as_ref().map(AgentTaskFrontiers::choice),

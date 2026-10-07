@@ -4215,7 +4215,11 @@ mod tests {
             revision: 3,
         };
         for (phase, sequence, label) in [
-            (WorkspaceTaskExecutionPhase::Accepted, 0, "Accepted"),
+            (
+                WorkspaceTaskExecutionPhase::Accepted,
+                0,
+                "Agent accepted task",
+            ),
             (WorkspaceTaskExecutionPhase::Planning, 1, "Planning"),
             (WorkspaceTaskExecutionPhase::Executing, 2, "Executing"),
         ] {
