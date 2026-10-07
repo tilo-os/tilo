@@ -361,19 +361,6 @@ fn compile(
             ));
         }
         validate_immutable_url(&model.license_url, source.production, Some(&model.revision))?;
-        // An in-process model names no runtime at all; every runtime a served
-        // model names must be one this catalog signs.
-        if !model.allowed_runtimes.iter().all(|kind| {
-            runtimes.iter().any(|runtime| {
-                runtime.release.kind == *kind
-                    && runtime.release.supports_format(model.artifact_format)
-            })
-        }) {
-            return Err(format!(
-                "model {} names a runtime kind absent from this catalog",
-                model.id
-            ));
-        }
         let receipt = resolve_artifact(
             &model.artifact,
             source_dir,
@@ -412,6 +399,19 @@ fn compile(
         release
             .validate_shape()
             .map_err(|error| format!("invalid model {}: {error}", release.id))?;
+        // An in-process model names no runtime at all; every runtime a served
+        // model names must be one this catalog signs.
+        if !release.allowed_runtimes.iter().all(|kind| {
+            runtimes.iter().any(|runtime| {
+                runtime.release.kind == *kind
+                    && runtime.release.supports_format(release.artifact_format)
+            })
+        }) {
+            return Err(format!(
+                "model {} names a runtime kind absent from this catalog",
+                release.id
+            ));
+        }
         release
             .artifact
             .validate()
