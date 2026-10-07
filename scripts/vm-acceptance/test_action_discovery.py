@@ -31,13 +31,26 @@ class DiscoverySafety(unittest.TestCase):
 
     def test_native_appended_unbound_diagnostics_are_not_app_candidates(self):
         value = reply()
-        value["actions"] += [dict(provider="session-diagnostics", id="configure@session-diagnostics"),
-                              dict(provider="session-diagnostics", id="inspect@session-diagnostics")]
+        value["actions"] += [dict(provider="session-diagnostics", id="configure@session-diagnostics",
+                                  resource="session-diagnostics", operation="configure"),
+                              dict(provider="session-diagnostics", id="inspect@session-diagnostics",
+                                   resource="session-diagnostics", operation="inspect")]
         value["count"] = 3
         self.assertEqual(discover(lambda arguments: value, APP, BOUND, FAMILY), reply()["actions"])
         value["actions"] = value["actions"][1:]
         value["count"] = 2
         self.assertEqual(discover(lambda arguments: value, APP, BOUND, FAMILY), [])
+
+    def test_diagnostic_rows_with_foreign_metadata_are_refused(self):
+        core = dict(provider="session-diagnostics", id="inspect@session-diagnostics",
+                    resource="session-diagnostics", operation="inspect")
+        for key in ("id", "resource", "operation", "application", "room", "record",
+                    "semantic_identity"):
+            value = reply()
+            value["actions"].append(dict(core, **{key: "foreign"}))
+            value["count"] = 2
+            with self.subTest(key=key), self.assertRaises(RuntimeError):
+                discover(lambda arguments: value, APP, BOUND, FAMILY)
 
     def test_scoped_empty_is_not_retried_with_broader_scope(self):
         calls = []

@@ -61,9 +61,11 @@ def discover(control, application, bound=None, family=None):
         # provider catalogue. Those rows never become app action candidates.
         if row.get("provider") != "app-actions":
             require(row.get("provider") == "session-diagnostics"
-                    and row.get("id") in ("configure@session-diagnostics", "inspect@session-diagnostics")
+                    and (row.get("id"), row.get("resource"), row.get("operation")) in
+                    (("configure@session-diagnostics", "session-diagnostics", "configure"),
+                     ("inspect@session-diagnostics", "session-diagnostics", "inspect"))
                     and all(row.get(key) is None for key in
-                            ("application", "room", "record", "resource", "semantic_identity", "operation")),
+                            ("application", "room", "record", "semantic_identity")),
                     "foreign row in scoped action discovery")
             continue
         app_rows.append(row)
