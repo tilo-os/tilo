@@ -2453,3 +2453,5 @@ dictation-copy-failed = Clipboard unavailable. Your complete transcript is still
 search-action-tab-drag-cancel = Cancel tab drag
 search-action-tab-drag-cancel-subtitle = Keep the dragged tab in its original place
 search-action-tab-drag-cancel-unavailable = Tab dragging cannot be cancelled while the session is locked.
+
+device-fabric-error-layout-changed = Display layout changed or unavailable. Refresh and try again.
