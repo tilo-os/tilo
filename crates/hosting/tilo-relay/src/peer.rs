@@ -778,6 +778,7 @@ where
                             &frame, v2,
                         )?)
                         .await?;
+                    trace_native_publication("written", &frame, Some(&peer.device_public_key));
                     private_burst = 0;
                     raw_turn = false;
                     continue;
@@ -891,6 +892,35 @@ fn private_may_overtake<'a>(
         return false;
     };
     active_control != Some(room) && queued.all(|frame| control_room(frame) != Some(room))
+}
+
+// Hash the same signed message bytes as the native publication cursor. This
+// target is opt-in: ordinary relay operation does not decode or hash for tracing.
+fn trace_native_publication(phase: &str, envelope: &Envelope, recipient: Option<&[u8; 32]>) {
+    if !tracing::enabled!(target: "tilo_relay::native_publication", tracing::Level::DEBUG) {
+        return;
+    }
+    let Envelope::Delta {
+        workspace_id,
+        author_device_public_key,
+        delta,
+        ..
+    } = envelope
+    else {
+        return;
+    };
+    let Some(payload) = crate::coedit::CoeditPayload::decode(delta) else {
+        return;
+    };
+    let (kind, body) = match payload {
+        crate::coedit::CoeditPayload::Checkpoint { body, .. } => ("checkpoint", body),
+        crate::coedit::CoeditPayload::RetainedDelta { body, .. } => ("delta", body),
+    };
+    tracing::debug!(target: "tilo_relay::native_publication",
+        phase, id = %blake3::hash(&body), kind, workspace_id,
+        author = %hex::encode(&author_device_public_key[..4]),
+        recipient = ?recipient.map(|key| hex::encode(&key[..4])),
+        "native relay publication hop");
 }
 
 fn inbound_bytes(frame: &EnvelopeV2) -> usize {
@@ -1216,6 +1246,11 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
                                 frame, session.v2,
                             )?)
                             .await?;
+                        trace_native_publication(
+                            "replay_written",
+                            frame,
+                            Some(&peer.device_public_key),
+                        );
                         // The position follows after `Ready`; a reconnect
                         // before it replays these frames once more.
                         let _ = resume_record(session, workspace_id, [frame]);
@@ -4672,6 +4707,11 @@ async fn enqueue_state_inner(
         move |result| async move {
             let result = async {
                 let mut commit = result?;
+                trace_native_publication(
+                    if commit.publish { "durable" } else { "suppressed" },
+                    &commit.envelope,
+                    None,
+                );
                 if !commit.publish {
                     return Ok(commit);
                 }
@@ -4928,6 +4968,7 @@ async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
             session.v2,
         )?)
         .await?;
+    trace_native_publication("written", &delivery.envelope, Some(&peer.device_public_key));
     if let Some(position) = resume_record(session, *workspace_id, [&*delivery.envelope]) {
         write
             .write_all(&tilo_delivery_protocol::transport_v2::encode_state(
