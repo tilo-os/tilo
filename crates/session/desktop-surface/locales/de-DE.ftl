@@ -1012,3 +1012,6 @@ activity-task-review-status = { $status } · Agent: { $agent }
 activity-task-review-frontier = Lauf { $epoch } · Anweisungen { $revision } · vom Agenten angewendet { $applied }
 activity-task-review-direction = { $author }: { $text }
 activity-task-review-missing = Diese Aufgabe ist in diesem Arbeitsbereich nicht mehr verfügbar.
+
+topbar-cpu-reading = CPU { $value }
+topbar-monitor-summary = CPU { $cpu }, RAM { $ram }, Temperatur { $temperature }

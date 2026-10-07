@@ -987,3 +987,6 @@ activity-task-review-status = { $status } · Agent: { $agent }
 activity-task-review-frontier = Run { $epoch } · instructions { $revision } · agent applied { $applied }
 activity-task-review-direction = { $author }: { $text }
 activity-task-review-missing = This task is no longer available in this workspace.
+
+topbar-cpu-reading = CPU { $value }
+topbar-monitor-summary = CPU { $cpu }, RAM { $ram }, temperature { $temperature }
