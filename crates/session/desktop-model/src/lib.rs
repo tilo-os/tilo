@@ -59,7 +59,8 @@ pub use task::{
     WorkspaceTaskActiveRun, WorkspaceTaskAuditEvent, WorkspaceTaskControl, WorkspaceTaskDirection,
     WorkspaceTaskDirectionApplied, WorkspaceTaskExecution, WorkspaceTaskExecutionPhase,
     WorkspaceTaskMutationReceipt, WorkspaceTaskMutationResult, WorkspaceTaskResource,
-    WorkspaceTaskRoute, WorkspaceTaskStatus,
+    WorkspaceTaskRoute, WorkspaceTaskStatus, WorkspaceTaskStep, WorkspaceTaskStepOutcome,
+    WorkspaceTaskStepState,
 };
 pub use topology::{DropTarget, GroupShape, RemovedTab, TabMove};
 pub use tree::{DesktopTree, STATE_SCHEMA_VERSION};

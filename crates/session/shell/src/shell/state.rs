@@ -3314,6 +3314,15 @@ impl WorkspaceTree {
         route: WorkspaceTaskRoute,
         resource: Option<WorkspaceTaskResource>,
     ) -> Option<String> {
+        // Native manual work is committed by the outcome handler after it drops
+        // the tree writer. Never mutate a parallel legacy task cache here.
+        if route == WorkspaceTaskRoute::Manual
+            && self
+                .room_of(workspace_id)
+                .is_some_and(|room| self.requires_native_owner(room))
+        {
+            return None;
+        }
         let title = title.into().trim().to_string();
         if title.is_empty() {
             return None;
@@ -3355,6 +3364,21 @@ impl WorkspaceTree {
         status: WorkspaceTaskStatus,
         actor: &str,
     ) -> bool {
+        if self
+            .room_of(workspace_id)
+            .is_some_and(|room| self.requires_native_owner(room))
+            && self
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == workspace_id)
+                .and_then(|workspace| workspace.tasks.iter().find(|task| task.id == task_id))
+                .is_some_and(|task| task.route == WorkspaceTaskRoute::Manual)
+        {
+            // Status needs a future typed owner command; a local cache write
+            // cannot complete native coordination work.
+            return false;
+        }
         let now = tilo_clock::unix_now_i64();
         let Some(task) = self
             .desktop
@@ -9169,3 +9193,6 @@ mod workspace_tree_lifecycle_tests {
         }
     }
 }
+
+#[path = "state/native_manual_tasks.rs"]
+pub(crate) mod native_manual_tasks;

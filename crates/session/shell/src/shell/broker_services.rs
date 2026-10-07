@@ -155,6 +155,38 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             .health()
     }
 
+    fn task_snapshot(
+        &self,
+        room: &str,
+    ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskSnapshot, String> {
+        let room = super::state::RoomId::parse(room).ok_or("invalid native task room")?;
+        self.owner
+            .as_ref()
+            .ok_or("native task owner unavailable")?
+            .workspace_task_snapshot(room)
+    }
+
+    fn task_agent_authority(
+        &self,
+        invocation: &tilo_action_broker::services::WorkspaceTaskAgentInvocation,
+    ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskAuthority, String> {
+        if !tilo_action_broker::services::WorkspaceMemberships::requires_room(
+            self,
+            invocation.room(),
+        ) {
+            return Err("native task agent workspace is unavailable".into());
+        }
+        let (_, attestor) =
+            tilo_identity_host::broker::trusted_current_device(invocation.room())
+                .map_err(|error| format!("native task host custody unavailable: {error}"))?;
+        Ok(
+            tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Agent {
+                attestor,
+                agent_id: invocation.agent_id().into(),
+            },
+        )
+    }
+
     fn execute(
         &self,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
@@ -171,14 +203,22 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
                     return Err("workspace membership requires the governing owner".into());
                 }
             }
-            let (key, governor) = tilo_identity_host::broker::trusted_current_device(&request.room)
-                .map_err(|error| format!("workspace governor is unavailable: {error}"))?;
-            let receipt = owner.commit_workspace_membership_command(
-                request,
-                &governor,
-                &key,
-                std::time::SystemTime::now(),
-            )?;
+            let receipt = if matches!(
+                request.operation,
+                tilo_peer_state::owner_commit::CommitOperation::WorkspaceTaskCommand { .. }
+            ) {
+                owner.commit_workspace_task_command(request, std::time::SystemTime::now())?
+            } else {
+                let (key, governor) =
+                    tilo_identity_host::broker::trusted_current_device(&request.room)
+                        .map_err(|error| format!("workspace governor is unavailable: {error}"))?;
+                owner.commit_workspace_membership_command(
+                    request,
+                    &governor,
+                    &key,
+                    std::time::SystemTime::now(),
+                )?
+            };
             if let Some(network) = network {
                 network.schedule_native_owner_publication(room);
             }

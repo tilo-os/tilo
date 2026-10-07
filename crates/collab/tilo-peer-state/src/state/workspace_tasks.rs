@@ -53,7 +53,7 @@ impl StatePeer {
         if let Some(agent) = command
             .agent()
             .map(str::to_owned)
-            .or(direction_agent(command, room)?)
+            .or(addressed_agent(command, room)?)
             && agent_role(&agent).is_none_or(|role| role == Role::Denied)
         {
             return Err("workspace task agent is not a current room member".into());
@@ -102,6 +102,8 @@ impl StatePeer {
                 }
             }
         };
+        require_budget_owner(command, &actor, owner.as_ref())?;
+        require_step_host(command, &actor)?;
         let mut candidate = room.clone();
         let AppliedTaskCommand { changed, result } = crate::workspace_task::apply(
             &mut candidate,
@@ -118,12 +120,40 @@ impl StatePeer {
     }
 }
 
-fn direction_agent(
+fn require_budget_owner(
+    command: &WorkspaceTaskCommand,
+    actor: &AdmittedTaskActor,
+    owner: Option<&String>,
+) -> Result<(), String> {
+    if matches!(command, WorkspaceTaskCommand::SetExecutionBudget { .. })
+        && !matches!(actor, AdmittedTaskActor::Person { id, .. } if owner == Some(id))
+    {
+        return Err("only the current workspace owner may configure task execution budgets".into());
+    }
+    Ok(())
+}
+
+fn require_step_host(
+    command: &WorkspaceTaskCommand,
+    actor: &AdmittedTaskActor,
+) -> Result<(), String> {
+    if matches!(
+        command,
+        WorkspaceTaskCommand::PrepareStep { .. } | WorkspaceTaskCommand::CommitStep { .. }
+    ) && !matches!(actor, AdmittedTaskActor::Host { .. })
+    {
+        return Err("only the authenticated host may admit or settle a task step".into());
+    }
+    Ok(())
+}
+
+fn addressed_agent(
     command: &WorkspaceTaskCommand,
     room: &automerge::AutoCommit,
 ) -> Result<Option<String>, String> {
     let (WorkspaceTaskCommand::Direction { task_id, .. }
-    | WorkspaceTaskCommand::DirectionForRun { task_id, .. }) = command
+    | WorkspaceTaskCommand::DirectionForRun { task_id, .. }
+    | WorkspaceTaskCommand::PrepareStep { task_id, .. }) = command
     else {
         return Ok(None);
     };
@@ -160,7 +190,7 @@ mod tests {
         certificate
     }
 
-    fn peer() -> (StatePeer, DeviceCert, DeviceCert, SystemTime) {
+    pub(super) fn peer() -> (StatePeer, DeviceCert, DeviceCert, SystemTime) {
         let governor_root = SigningKey::from_bytes(&[1; 32]);
         let governor_key = SigningKey::from_bytes(&[2; 32]);
         let governor = certificate(&governor_root, &governor_key, "Governor");
@@ -265,6 +295,165 @@ mod tests {
     }
 
     #[test]
+    fn task_execution_budget_requires_actual_owner_and_exact_inactive_frontier() {
+        use collab_types::task_budget::TaskExecutionBudget;
+        let (mut peer, governor, other, now) = peer();
+        let owner = WorkspaceTaskAuthority::Person {
+            caller: governor.clone(),
+        };
+        let (_, queued) = peer
+            .apply_workspace_task_command(
+                uuid::Uuid::from_u128(80),
+                [80; 32],
+                &owner,
+                &WorkspaceTaskCommand::Queue {
+                    title: "Bound coding work".into(),
+                    assigned_agent: "scribe".into(),
+                    route: WorkspaceTaskRoute::Model,
+                    resource: None,
+                },
+                now,
+            )
+            .unwrap();
+        let tilo_desktop_model::WorkspaceTaskMutationResult::Queued { task_id } = queued else {
+            panic!("queued task")
+        };
+        let budget = TaskExecutionBudget {
+            turn_ms: 900_000,
+            total_ms: 7_200_000,
+        };
+        let command = WorkspaceTaskCommand::SetExecutionBudget {
+            task_id: task_id.clone(),
+            expected_run_epoch: 0,
+            expected_budget: None,
+            budget: Some(budget),
+        };
+        let before = peer.durable().unwrap();
+        for authority in [
+            WorkspaceTaskAuthority::Person { caller: other },
+            WorkspaceTaskAuthority::Host {
+                attestor: governor.clone(),
+            },
+            WorkspaceTaskAuthority::Agent {
+                attestor: governor.clone(),
+                agent_id: "scribe".into(),
+            },
+        ] {
+            assert!(
+                peer.apply_workspace_task_command(
+                    uuid::Uuid::new_v4(),
+                    [1; 32],
+                    &authority,
+                    &command,
+                    now
+                )
+                .is_err()
+            );
+            assert_eq!(peer.durable().unwrap(), before);
+        }
+        let invocation = uuid::Uuid::from_u128(81);
+        let result = peer
+            .apply_workspace_task_command(invocation, [81; 32], &owner, &command, now)
+            .unwrap();
+        let saved = peer.durable().unwrap();
+        assert_eq!(
+            peer.apply_workspace_task_command(invocation, [81; 32], &owner, &command, now)
+                .unwrap(),
+            (false, result.1)
+        );
+        assert_eq!(peer.durable().unwrap(), saved);
+        assert!(
+            peer.apply_workspace_task_command(uuid::Uuid::new_v4(), [3; 32], &owner, &command, now)
+                .is_err()
+        );
+        assert_eq!(peer.durable().unwrap(), saved);
+        assert_eq!(
+            crate::workspace_task::controls_of(peer.core.room_doc.as_deref().unwrap()).unwrap()
+                [&task_id]
+                .execution_budget,
+            Some(budget)
+        );
+        peer.apply_workspace_task_command(
+            uuid::Uuid::from_u128(82),
+            [82; 32],
+            &WorkspaceTaskAuthority::Host { attestor: governor },
+            &WorkspaceTaskCommand::StartRun {
+                task_id: task_id.clone(),
+                agent_id: "scribe".into(),
+            },
+            now,
+        )
+        .unwrap();
+        let active = peer.durable().unwrap();
+        let clear = WorkspaceTaskCommand::SetExecutionBudget {
+            task_id,
+            expected_run_epoch: 1,
+            expected_budget: Some(budget),
+            budget: None,
+        };
+        assert!(
+            peer.apply_workspace_task_command(uuid::Uuid::new_v4(), [4; 32], &owner, &clear, now)
+                .is_err()
+        );
+        assert_eq!(peer.durable().unwrap(), active);
+    }
+
+    #[test]
+    fn task_execution_budget_rejects_invalid_caps_without_mutation() {
+        use collab_types::task_budget::TaskExecutionBudget;
+        let (mut peer, governor, _, now) = peer();
+        let owner = WorkspaceTaskAuthority::Person { caller: governor };
+        let (_, queued) = peer
+            .apply_workspace_task_command(
+                uuid::Uuid::from_u128(90),
+                [90; 32],
+                &owner,
+                &WorkspaceTaskCommand::Queue {
+                    title: "Bound coding work".into(),
+                    assigned_agent: "scribe".into(),
+                    route: WorkspaceTaskRoute::Model,
+                    resource: None,
+                },
+                now,
+            )
+            .unwrap();
+        let tilo_desktop_model::WorkspaceTaskMutationResult::Queued { task_id } = queued else {
+            panic!("queued task")
+        };
+        let before = peer.durable().unwrap();
+        for invalid in [
+            TaskExecutionBudget {
+                turn_ms: 0,
+                total_ms: 1,
+            },
+            TaskExecutionBudget {
+                turn_ms: 900_001,
+                total_ms: 7_200_000,
+            },
+            TaskExecutionBudget {
+                turn_ms: 1,
+                total_ms: 7_200_001,
+            },
+            TaskExecutionBudget {
+                turn_ms: 101,
+                total_ms: 100,
+            },
+        ] {
+            let bad = WorkspaceTaskCommand::SetExecutionBudget {
+                task_id: task_id.clone(),
+                expected_run_epoch: 0,
+                expected_budget: None,
+                budget: Some(invalid),
+            };
+            assert!(
+                peer.apply_workspace_task_command(uuid::Uuid::new_v4(), [2; 32], &owner, &bad, now)
+                    .is_err()
+            );
+            assert_eq!(peer.durable().unwrap(), before);
+        }
+    }
+
+    #[test]
     fn execution_phase_rechecks_current_agent_membership_before_mutation() {
         use tilo_desktop_model::WorkspaceTaskExecutionPhase;
         let (mut peer, governor, _, now) = peer();
@@ -356,6 +545,42 @@ mod tests {
         let encoded = serde_json::to_string(&phase).unwrap();
         assert!(!encoded.contains("Private full instruction"));
         assert!(!encoded.contains("message"));
+    }
+
+    #[test]
+    fn manual_creation_keeps_current_membership_write_admission() {
+        let (mut peer, governor, _, now) = peer();
+        let restriction = CapOverride::new(
+            Subject::Role(Role::Owner),
+            Scope::Workspace,
+            collab_types::caps::Effect::Restrict,
+            Verb::Read,
+        )
+        .with_id("read-only-owner");
+        peer.put_governed_capabilities(&[restriction], &SigningKey::from_bytes(&[2; 32]), now)
+            .unwrap();
+        let before = peer.durable().unwrap();
+        let result = peer.apply_workspace_task_command(
+            uuid::Uuid::from_u128(81),
+            [81; 32],
+            &WorkspaceTaskAuthority::Person { caller: governor },
+            &WorkspaceTaskCommand::CreateManual {
+                title: "Review mapped tile".into(),
+                resource: None,
+            },
+            now,
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "workspace task person lacks write authority"
+        );
+        assert_eq!(peer.durable().unwrap(), before);
+        assert!(
+            crate::workspace_task::snapshot(peer.admitted_room().unwrap())
+                .unwrap()
+                .tasks
+                .is_empty()
+        );
     }
 
     #[test]
@@ -452,3 +677,6 @@ mod tests {
         assert_eq!(task.status, WorkspaceTaskStatus::InProgress);
     }
 }
+
+#[cfg(test)]
+mod step_tests;

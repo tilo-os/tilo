@@ -270,6 +270,9 @@ fn validate_task_run(run: &runtime_collab::TaskRunEnvelope) -> Result<(), String
     {
         return Err("The task envelope has an invalid id, title, or lease".into());
     }
+    if let Some(budget) = run.execution_budget {
+        budget.validate().map_err(str::to_owned)?;
+    }
     let context = serde_json::from_value::<tilo_actions::ActionContext>(run.action_context.clone())
         .map_err(|_| "The task has an invalid action context".to_string())?;
     let valid_group = context.group.as_ref().is_some_and(|group| {
@@ -408,6 +411,8 @@ pub struct Session {
     enrolled_custody: Option<runtime_collab::EnrolledRecipientCustody>,
     enrolled_active: Option<runtime_collab::EnrolledTaskAcceptance>,
     enrolled_sequence: u64,
+    /// Monotonic deadline from an explicit broker-minted owner task policy.
+    task_deadline: Option<Instant>,
     /// When the agent last asked the room for the document. It asks again
     /// until it has one: an app that was still opening its file when the
     /// agent arrived never saw the first ask, and the agent would then wait
@@ -554,6 +559,7 @@ impl Session {
             enrolled_custody,
             enrolled_active: None,
             enrolled_sequence: 0,
+            task_deadline: None,
             last_route: None,
             asked_at: ui::time::now(),
             broker_catalogue: tilo_actions::remote::CataloguePage::default(),
@@ -640,9 +646,9 @@ impl Session {
             std::sync::Arc::new(crate::transform::GatewayModel),
             self.cfg.content.clone(),
         );
-        // The transforms are published under the agent's own route; a
-        // connection announcing another app may not publish for it.
-        if self.cfg.app_id == tilo_automation::AGENT_APP_ID {
+        // Only ordinary recipients publish application resources. Enrolled
+        // recipients retain their task-bound connection and own no app document.
+        if self.enrolled_custody.is_none() && self.cfg.app_id == tilo_automation::AGENT_APP_ID {
             self.link.send(&crate::transform::publication())?;
             tracing::info!(
                 resource = crate::transform::RESOURCE_ID,
@@ -1139,7 +1145,7 @@ impl Session {
         if !self.broker_surfaces.is_empty() {
             return Ok(());
         }
-        let deadline = ui::time::now() + TASK_CATALOGUE_WAIT;
+        let deadline = self.task_wait_deadline(TASK_CATALOGUE_WAIT);
         let mut deferred = Vec::new();
         while ui::time::now() < deadline {
             let remaining = deadline.saturating_duration_since(ui::time::now());
@@ -1157,6 +1163,18 @@ impl Session {
         Ok(())
     }
 
+    fn task_wait_deadline(&self, maximum: Duration) -> Instant {
+        let now = ui::time::now();
+        let ordinary = now.checked_add(maximum).unwrap_or(now);
+        self.task_deadline
+            .map_or(ordinary, |task| ordinary.min(task))
+    }
+
+    fn task_budget_expired(&self) -> bool {
+        self.task_deadline
+            .is_some_and(|deadline| ui::time::now() >= deadline)
+    }
+
     fn task_cancelled(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<bool> {
         let request_id = self.next_request_id();
         self.link.send(&CollabRequest::TaskRunCancellation {
@@ -1168,7 +1186,7 @@ impl Session {
     }
 
     fn wait_for_task_cancellation(&mut self, request_id: u64) -> Result<bool> {
-        let deadline = ui::time::now() + Duration::from_secs(5);
+        let deadline = self.task_wait_deadline(Duration::from_secs(5));
         let mut deferred = Vec::new();
         loop {
             let now = ui::time::now();
@@ -1223,6 +1241,11 @@ impl Session {
         arguments: &serde_json::Map<String, serde_json::Value>,
         stepped: &mut bool,
     ) -> Result<Result<Handoff, TaskActionStop>> {
+        if self.task_budget_expired() {
+            return Ok(Err(TaskActionStop::Failed(
+                "Task time budget expired before starting a step".into(),
+            )));
+        }
         let request_id = self.next_request_id();
         // One invocation id for every attempt: a retry is the same request.
         let invocation = tilo_actions::InvocationId::new();
@@ -1237,8 +1260,15 @@ impl Session {
             action: action.action.clone(),
             arguments: arguments.clone(),
         };
-        let deadline = ui::time::now() + TASK_STEP_WAIT;
+        let deadline = self.task_wait_deadline(TASK_STEP_WAIT);
         loop {
+            if self.task_budget_expired() {
+                self.link.send(&CollabRequest::RemoteAction {
+                    message: RemoteActionMessage::Cancel { invocation },
+                })?;
+                return Ok(Err(TaskActionStop::Failed(
+                    "Task time budget expired; cancellation requested, step outcome remains unknown".into())));
+            }
             self.link.send(&request)?;
             match self.wait_for_task_action_reply(request_id, TASK_STEP_REPLY_WAIT)? {
                 // No reply or a pending step: the outcome is uncertain, so
@@ -1295,6 +1325,11 @@ impl Session {
         action: &TaskAction,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Result<StepOutcome, TaskActionStop>> {
+        if self.task_budget_expired() {
+            return Ok(Err(TaskActionStop::Failed(
+                "Task time budget expired before invoking an action".into(),
+            )));
+        }
         let request_id = self.next_request_id();
         let invocation = tilo_actions::InvocationId::new();
         self.link.send(&CollabRequest::InvokeTaskAction {
@@ -1326,7 +1361,7 @@ impl Session {
     ) -> Result<Result<StepOutcome, TaskActionStop>> {
         let mut interaction_sequence = 0_u64;
         self.publish_task_interaction(run, action, &update, interaction_sequence)?;
-        let deadline = ui::time::now() + TASK_ACTION_WAIT;
+        let deadline = self.task_wait_deadline(TASK_ACTION_WAIT);
         while !update.is_terminal() && ui::time::now() < deadline {
             if self.task_cancelled(run)? {
                 self.link.send(&CollabRequest::RemoteAction {
@@ -1356,6 +1391,15 @@ impl Session {
             };
             interaction_sequence = interaction_sequence.saturating_add(1);
             self.publish_task_interaction(run, action, &update, interaction_sequence)?;
+        }
+        if self.task_budget_expired() && !update.is_terminal() {
+            self.link.send(&CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Cancel { invocation },
+            })?;
+            return Ok(Err(TaskActionStop::Failed(
+                "Task time budget expired; cancellation requested, action outcome remains unknown"
+                    .into(),
+            )));
         }
         match update {
             tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
@@ -1516,7 +1560,7 @@ impl Session {
         request_id: u64,
         wait: Duration,
     ) -> Result<Option<TaskReply>> {
-        let deadline = ui::time::now() + wait;
+        let deadline = self.task_wait_deadline(wait);
         let mut deferred = Vec::new();
         loop {
             // Keep a streaming model turn moving while the step settles.
@@ -1909,7 +1953,7 @@ impl Session {
         }
         // The broker's pushed directory travels on its own stream and may
         // be one frame behind the document that named the action.
-        let deadline = ui::time::now() + TASK_CATALOGUE_WAIT;
+        let deadline = self.task_wait_deadline(TASK_CATALOGUE_WAIT);
         let mut deferred = Vec::new();
         let mut found = None;
         while ui::time::now() < deadline {
@@ -2243,7 +2287,7 @@ impl Session {
         &mut self,
         wanted: impl Fn(&RemoteActionMessage) -> bool,
     ) -> Result<Option<RemoteActionMessage>> {
-        let deadline = ui::time::now() + Duration::from_secs(10);
+        let deadline = self.task_wait_deadline(Duration::from_secs(10));
         let mut deferred = Vec::new();
         loop {
             self.pump_turn();
@@ -3146,6 +3190,7 @@ mod tests {
             run_id: 7,
             lease: "broker-minted-lease".into(),
             planning: runtime_collab::TaskRunPlanning::RulesOnly,
+            execution_budget: None,
             action_context: serde_json::json!({
                 "purpose": "Review draft",
                 "group": {"id": "task:review", "label": "Review draft", "kind": "task"}
@@ -3314,6 +3359,7 @@ mod tests {
                     enrolled_custody: managed.then_some(custody),
                     enrolled_active: managed.then_some(acceptance),
                     enrolled_sequence: 0,
+                    task_deadline: None,
                     asked_at: ui::time::now(),
                     last_route: None,
                     broker_catalogue: tilo_actions::remote::CataloguePage::default(),
@@ -3567,6 +3613,7 @@ mod tests {
                 enrolled_custody: Some(custody),
                 enrolled_active: Some(acceptance),
                 enrolled_sequence: 0,
+                task_deadline: None,
                 asked_at: ui::time::now(),
                 last_route: None,
                 broker_catalogue: tilo_actions::remote::CataloguePage::default(),
@@ -4648,6 +4695,141 @@ mod tests {
                 "{}",
                 observed.instruction
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod task_startup_tests {
+    use super::*;
+    use std::{cell::RefCell, rc::Rc};
+
+    struct StartupPeer {
+        sent: Rc<RefCell<Vec<CollabRequest>>>,
+        pending: Vec<CollabEvent>,
+    }
+    impl ui::collaboration::PeerTransport for StartupPeer {
+        fn is_connected(&self) -> bool {
+            true
+        }
+        fn send(&mut self, request: CollabRequest) -> Result<(), String> {
+            if let CollabRequest::SubscribeEnrolledTasks { request_id } = &request {
+                self.pending.push(CollabEvent::EnrolledTaskReply {
+                    request_id: *request_id,
+                    result: Ok(()),
+                });
+            }
+            self.pending.push(CollabEvent::EnrolledTaskDisconnected {
+                detail: "startup fixture complete".into(),
+            });
+            self.sent.borrow_mut().push(request);
+            Ok(())
+        }
+        fn poll(&mut self) -> Vec<CollabEvent> {
+            std::mem::take(&mut self.pending)
+        }
+    }
+
+    /// Drives the actual session startup, not broker admission. The typed
+    /// recipient object selects the local mode; it grants no fixture authority.
+    #[test]
+    fn task_recipient_startup_subscribes_without_publishing_ordinary_resources() {
+        for custody in [
+            None,
+            Some(
+                runtime_collab::EnrolledRecipientCustody::new(
+                    "agent-1",
+                    "launch-1",
+                    "epoch-1",
+                    "channel-1",
+                )
+                .unwrap(),
+            ),
+        ] {
+            let enrolled = custody.is_some();
+            let sent = Rc::new(RefCell::new(Vec::new()));
+            let link = crate::wire::test_link(StartupPeer {
+                sent: sent.clone(),
+                pending: Vec::new(),
+            });
+            let mut session = startup_session(link, custody);
+            let error = session.run_task_runs().unwrap_err();
+            assert_eq!(error.to_string(), "startup fixture complete");
+            let observed = sent.borrow();
+            assert_eq!(observed.len(), 1);
+            if enrolled {
+                assert!(matches!(
+                    observed[0],
+                    CollabRequest::SubscribeEnrolledTasks { request_id: 1 }
+                ));
+            } else {
+                let CollabRequest::PublishActions { app_id, actions } = &observed[0] else {
+                    panic!("ordinary task recipient must publish its transform resources");
+                };
+                assert_eq!(app_id, tilo_automation::AGENT_APP_ID);
+                assert!(!actions.is_empty());
+                assert!(
+                    actions
+                        .iter()
+                        .all(|action| action.resource == crate::transform::RESOURCE_ID)
+                );
+            }
+        }
+    }
+
+    fn startup_session(
+        link: Link,
+        enrolled_custody: Option<runtime_collab::EnrolledRecipientCustody>,
+    ) -> Session {
+        Session {
+            cfg: Config {
+                agent_id: "agent-1".into(),
+                endpoint: None,
+                endpoint_identity: None,
+                app_id: "so.tilo.agent".into(),
+                cluster: Uuid::from_u128(1),
+                record: None,
+                name: "agent-1".into(),
+                pace: Duration::ZERO,
+                once: false,
+                model: false,
+                model_timeout: Duration::ZERO,
+                await_document: Duration::ZERO,
+                settle: Duration::ZERO,
+                permissions: PermissionContext::from_capabilities(
+                    ui::permissions::Actor::agent("agent-1"),
+                    vec![],
+                ),
+                content: tilo_content::ContentStore::memory(),
+            },
+            link,
+            editor: None,
+            peers: BTreeMap::new(),
+            handled: HashSet::new(),
+            watching: HashMap::new(),
+            dispatched_this_turn: HashSet::new(),
+            chooser: Chooser::new(false, Duration::ZERO),
+            enrolled_custody,
+            enrolled_active: None,
+            enrolled_sequence: 0,
+            task_deadline: None,
+            asked_at: ui::time::now(),
+            last_route: None,
+            broker_catalogue: tilo_actions::remote::CataloguePage::default(),
+            catalogue_fetched: None,
+            broker_surfaces: Vec::new(),
+            next_broker_request: 1,
+            active_run: None,
+            chat_run: None,
+            chat_pending: false,
+            chat_catalogue_received: false,
+            last_chat_action: None,
+            chat_sources: HashMap::new(),
+            live: crate::live::LivePublisher::default(),
+            broker_revision: 0,
+            catalogue_cache: None,
+            turn: None,
+            memory: agent_loop::Memory::default(),
         }
     }
 }

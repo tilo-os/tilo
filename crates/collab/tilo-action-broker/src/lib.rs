@@ -11,6 +11,8 @@ pub mod collab_outbound;
 pub mod collab_presence;
 pub mod collaboration_admin;
 pub mod host_documents;
+#[cfg(target_os = "linux")]
+pub mod managed_host;
 pub mod owner_turn;
 pub mod peer_actions;
 pub mod policy;

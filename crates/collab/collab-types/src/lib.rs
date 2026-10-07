@@ -84,6 +84,7 @@ pub mod redaction;
 pub mod role;
 pub mod share_control;
 pub mod space;
+pub mod task_budget;
 pub mod validator;
 
 // Convenience re-exports so downstream callers can do

@@ -80,6 +80,26 @@ pub trait LegacyWorkspaceProjection: Send + Sync {
 }
 pub type WorkspaceAuthorityHandle = Arc<dyn WorkspaceAuthority>;
 
+/// Original certified agent custody, constructed only by the broker after
+/// rechecking the exact admitted invocation and current workspace policy.
+/// This process capability is neither a wire argument nor a serialized actor.
+pub struct WorkspaceTaskAgentInvocation {
+    pub(crate) room: String,
+    pub(crate) agent_id: String,
+}
+
+impl WorkspaceTaskAgentInvocation {
+    #[must_use]
+    pub fn room(&self) -> &str {
+        &self.room
+    }
+
+    #[must_use]
+    pub fn agent_id(&self) -> &str {
+        &self.agent_id
+    }
+}
+
 /// Native room membership owner. Public callers choose only a closed typed
 /// command; this host service supplies the private governor signing custody.
 pub trait WorkspaceMemberships: Send + Sync {
@@ -92,6 +112,24 @@ pub trait WorkspaceMemberships: Send + Sync {
     /// Returns a diagnostic while owner continuity is unavailable or fenced.
     fn health(&self) -> Result<(), String> {
         Err("workspace membership owner continuity is unavailable".into())
+    }
+
+    /// Read canonical coordination state directly from the admitted owner.
+    /// # Errors
+    /// Refuses unavailable or fenced owner state; never substitutes presentation data.
+    fn task_snapshot(
+        &self,
+        room: &str,
+    ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskSnapshot, String>;
+
+    /// Attest an original admitted agent with this owner's actual host custody.
+    /// # Errors
+    /// Refuses hosts that cannot recover the exact pinned workspace attestor.
+    fn task_agent_authority(
+        &self,
+        _: &WorkspaceTaskAgentInvocation,
+    ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskAuthority, String> {
+        Err("native task agent attestation is unavailable".into())
     }
 
     fn execute(

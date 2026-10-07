@@ -95,6 +95,82 @@ pub fn enroll_interactive_governor(
         .unwrap();
     Ok(governor)
 }
+/// Enroll an actual certified device through this fixture governor's signed exchange.
+/// No proof or admitted view is fabricated; the public owner installs the verified completion.
+/// # Errors
+/// Refuses an invalid invitation/challenge, changed certificate or unacknowledged completion.
+pub fn enroll_certified_device(
+    owner: &NativeWorkspaceOwner,
+    governor: &mut governor::TestGovernor,
+    key: &SigningKey,
+    certificate: &DeviceCert,
+) -> Result<(), String> {
+    let endpoint = iroh_base::EndpointAddr::new(
+        iroh_base::EndpointId::from_bytes(&certificate.device_public_key)
+            .map_err(|error| error.to_string())?,
+    );
+    let hint = governor.hint(endpoint);
+    let now = SystemTime::now();
+    let now_ns = ns(now)?;
+    let mut transport = vec![hint.clone()];
+    if governor.host().capabilities.can_act_as_host {
+        transport.push(
+            tilo_delivery_protocol::workspace_join::DeliveryOriginLocatorV1 {
+                version: 1,
+                origin: "https://native.example".into(),
+            }
+            .transport_hint(governor.host(), governor.host_key())
+            .map_err(|error| error.to_string())?,
+        );
+    }
+    let invitation = governor.issue(
+        transport,
+        join::MemberRole::Editor,
+        Some(certificate.user_public_key),
+        None,
+        now_ns
+            .checked_add(60_000_000_000)
+            .ok_or("fixture invitation clock exhausted")?,
+    );
+    let verified = join::decode_and_verify_invitation(
+        &invitation,
+        Some(certificate.user_public_key),
+        &RevocationList::new(),
+        now_ns,
+    )?;
+    let response = governor.handle(
+        certificate.device_public_key,
+        join::JoinTransportRequest::Challenge(join::JoinChallengeRequest {
+            signed_invitation: invitation,
+            device_cert: certificate.clone(),
+            request_id: [95; 32],
+        }),
+    );
+    let join::JoinTransportResponse::Challenge(response) = response else {
+        return Err("genuine certified enrollment challenge refused".into());
+    };
+    let complete = join::JoinCompleteRequest {
+        proof: join::sign_join_proof(response.challenge, key)?,
+    };
+    let intent = VerifiedNativeEnrollmentIntent::from_proof(
+        verified,
+        complete.clone(),
+        certificate.clone(),
+        hint,
+        now,
+    )?;
+    let pending = owner.prepare_enrollment_into(&intent, None, now)?;
+    let response = governor.handle(
+        certificate.device_public_key,
+        join::JoinTransportRequest::Complete(complete),
+    );
+    let join::JoinTransportResponse::Complete(bootstrap) = response else {
+        return Err("genuine certified enrollment completion refused".into());
+    };
+    owner.install(&finalize(intent, pending, bootstrap)?, now)?;
+    Ok(())
+}
+
 /// Most outgoing entries one room holds.
 pub const MAX_OUTGOING_ENTRIES: usize = publication::MAX_ENTRIES;
 /// Largest outgoing publication one room holds.
