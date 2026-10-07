@@ -19,12 +19,16 @@
 )]
 
 mod capture;
+mod composer;
 mod outbox;
 mod review;
 
 pub use capture::{CapturePermit, MaskedScreenshot, PixelRect, SurfaceCapture};
+pub use composer::{Composer, Consent, FeedbackHost};
+pub use durable_store::{DurableStore, MemoryStore, StorageKey};
 pub use outbox::{DeliveryState, Outbox};
 pub use review::{Draft, Preview};
+pub use tilo_feedback_review::{DeclaredSensitivity, RedactionCategory, ReviewText, TextOrigin};
 
 use serde::{Deserialize, Serialize};
 
@@ -130,6 +134,12 @@ impl Submission {
                     > 4_000_000)
         {
             return Err(Error::Invalid("screenshot"));
+        }
+        // The existing native action transport allows 32 KiB of arguments.
+        // Leave room for its action wrapper and escaped JSON, and refuse an
+        // oversized report rather than truncate what the person approved.
+        if serde_json::to_vec(self)?.len() > 28_000 {
+            return Err(Error::Invalid("encoded submission size"));
         }
         Ok(())
     }
