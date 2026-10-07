@@ -254,7 +254,7 @@ fn render_public(cache: &str, output: &str, fingerprint: &str, expected: &str) -
     }
     let texture = |format, usage| {
         handle.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("public shader seed"),
+            label: Some("tilo-public-shader-seed"),
             size: wgpu::Extent3d {
                 width: 664,
                 height: 592,
@@ -290,12 +290,14 @@ fn render_public(cache: &str, output: &str, fingerprint: &str, expected: &str) -
     )
     .map_err(io::Error::other)?;
     let mut scene = vello::Scene::new();
-    scene.fill(
-        peniko::Fill::NonZero,
+    // Use the same framework region primitive as native windows, with a
+    // shipped public preset. Never read the owner's configured theme or fonts.
+    ui::surface::region(
+        &mut scene,
         kurbo::Affine::IDENTITY,
-        peniko::Color::from_rgb8(255, 0, 0),
-        None,
-        &kurbo::Rect::new(0.0, 0.0, 664.0, 592.0),
+        kurbo::Rect::new(0.0, 0.0, 664.0, 592.0),
+        ui::surface::Region::Content,
+        &ui::Theme::dark(),
     );
     renderer
         .render_to_texture(
