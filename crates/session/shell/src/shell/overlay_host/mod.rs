@@ -7736,12 +7736,22 @@ impl ShellOverlayHost {
     /// registered [`crate::shell::search::SearchProvider`]. Cheap on a warm
     /// cache; the first open pays for the files provider's deferred home walk
     /// and content index open (kept off the `OverlayHost` constructor on purpose).
+    fn selected_search_identity(&self) -> Option<(String, String)> {
+        self.palette
+            .selected_id()
+            .and_then(|id| id.strip_prefix("result:"))
+            .and_then(|id| id.parse::<usize>().ok())
+            .and_then(|index| self.search_results.get(index))
+            .map(|result| (result.provider_id.clone(), result.id.clone()))
+    }
+
     fn refresh_search_results(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
         self.poll_pending_action_admissions();
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
         let current_query = self.palette.query().to_string();
+        let preserve_selection = current_query == self.last_search_query;
         let (scope, active_provider) = {
             let st = chrome.borrow();
             let scope = st.search_scope;
@@ -7770,6 +7780,14 @@ impl ShellOverlayHost {
             self.last_search_revision = revision;
             self.search_registry
                 .query_grouped(&args, PALETTE_ROW_BUDGET)
+        };
+
+        // Provider revisions may insert/re-rank rows without a query edit.
+        // Keep the chosen resource, never its old callback or row index.
+        let previous_selection = if preserve_selection {
+            self.selected_search_identity()
+        } else {
+            None
         };
 
         // Kind travels as the row's section and glyph, not a `[Files]`
@@ -7823,7 +7841,23 @@ impl ShellOverlayHost {
 
         // Peer-sync rows are ordinary `ActionsProvider` results, ranked
         // against everything else rather than appended below every hit.
+        let selected_id = previous_selection
+            .and_then(|(provider, id)| {
+                results
+                    .iter()
+                    .position(|result| result.provider_id == provider && result.id == id)
+            })
+            .map(|index| format!("result:{index}"));
         self.palette.set_entries(entries);
+        if let Some(id) = selected_id
+            && let Some(cursor) = self
+                .palette
+                .visible_entries()
+                .iter()
+                .position(|entry| entry.id == id)
+        {
+            self.palette.set_cursor(cursor);
+        }
         self.search_results = results;
         // New entry count needs a new palette node height on the next
         // rebuild, or the palette stays pinned at its first-paint size.
