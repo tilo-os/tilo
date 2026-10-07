@@ -9,7 +9,6 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::io::{self, Cursor};
 use std::rc::Rc;
-use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -23,7 +22,6 @@ struct Wire {
     chunks: usize,
     received: u64,
     failure: Option<&'static str>,
-    latency: Duration,
 }
 
 struct Reader {
@@ -50,9 +48,6 @@ impl BufRead for Reader {
             let count = wire.replies.len();
             if count != 0 {
                 wire.batches.push(count);
-                // A controlled delayed-link model: already submitted requests
-                // can share one round trip. Assert batches, never wall time.
-                std::thread::sleep(wire.latency);
                 let mut bytes = Vec::new();
                 for reply in wire.replies.drain(..) {
                     serde_json::to_writer(&mut bytes, &reply).unwrap();
@@ -129,18 +124,18 @@ fn client(wire: Wire) -> (Client<Reader, Writer>, Rc<RefCell<Wire>>) {
 }
 
 #[test]
-fn upload_bounds_each_window_and_preserves_the_tail() {
+fn upload_acknowledges_each_chunk_and_preserves_the_tail() {
     let bytes = vec![19; UPLOAD_CHUNK_BYTES * 6 + 7];
     let (mut client, wire) = client(Wire::default());
     assert_eq!(client.upload(bytes.as_slice()).unwrap(), "test-upload");
     assert_eq!(wire.borrow().received, bytes.len() as u64);
-    assert_eq!(wire.borrow().batches, [1, 4, 3]);
+    assert_eq!(wire.borrow().batches, [1; 8]);
     assert!(wire.borrow().replies.is_empty());
     assert!(client.call(LayerList {}).unwrap().is_empty());
 }
 
 #[test]
-fn upload_errors_drain_the_window_before_the_next_call() {
+fn upload_errors_stop_before_sending_another_chunk() {
     let bytes = vec![7; UPLOAD_CHUNK_BYTES * 5];
     for failure in ["rpc", "count", "id"] {
         let (mut client, wire) = client(Wire {
@@ -152,7 +147,7 @@ fn upload_errors_drain_the_window_before_the_next_call() {
             "rpc" => assert!(matches!(error, ClientError::Rpc(_))),
             _ => assert!(matches!(error, ClientError::Protocol(_))),
         }
-        assert_eq!(wire.borrow().chunks, 4, "stop after the rejected window");
+        assert_eq!(wire.borrow().chunks, 2, "stop after the rejected chunk");
         assert!(wire.borrow().replies.is_empty());
         assert!(client.call(LayerList {}).unwrap().is_empty());
     }
@@ -162,27 +157,7 @@ fn upload_errors_drain_the_window_before_the_next_call() {
 }
 
 #[test]
-fn upload_windows_reduce_delayed_link_round_trips() {
-    let bytes = vec![31; UPLOAD_CHUNK_BYTES * 9];
-    let mut measurements = Vec::new();
-    for window in [1, 4] {
-        let (mut client, wire) = client(Wire {
-            latency: Duration::from_millis(20),
-            ..Wire::default()
-        });
-        let start = Instant::now();
-        client.upload_window(bytes.as_slice(), window).unwrap();
-        let millis = start.elapsed().as_millis();
-        let batches = wire.borrow().batches.len().saturating_sub(1);
-        assert_eq!(batches, 9_usize.div_ceil(window));
-        assert_eq!(wire.borrow().received, bytes.len() as u64);
-        measurements.push((window, batches, millis));
-    }
-    eprintln!("9 MiB upload, controlled 20 ms link delay: {measurements:?}");
-}
-
-#[test]
-fn source_failure_drains_already_submitted_chunks() {
+fn source_failure_leaves_no_pending_acknowledgment() {
     struct FailingRead(Cursor<Vec<u8>>);
     impl Read for FailingRead {
         fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
