@@ -2460,7 +2460,7 @@ display-confirm-answer-failed = Could not save the display answer: { $reason }
 display-sheet-saving-layout = Saving display layout…
 
 session-diagnostics-title = Session timing diagnostics
-session-diagnostics-configure = Configure timing for subsequent app launches
+session-diagnostics-configure = Configure session timing diagnostics
 session-diagnostics-inspect = Inspect session timing diagnostics
 session-diagnostics-presentation = Record content-free input and presentation timing
 session-diagnostics-gpu_stages = Record GPU stage timing

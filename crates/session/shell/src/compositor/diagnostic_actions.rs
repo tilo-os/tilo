@@ -121,7 +121,7 @@ pub(super) fn dispatch(command: &Command) -> Option<Response> {
     }
     let flags = session.diagnostic_options();
     Some(Response::Answer(
-        json!({"applies_to":"subsequent_launches","diagnostics":flags.value(),"live_input_delivery":flags.0[0],"current_gpu_renderer":"unchanged"}),
+        json!({"applies_to":"subsequent_launches","diagnostics":flags.value(),"live_input_delivery":flags.0[0],"current_gpu_renderer":"unchanged","live_compositor_phase_export":flags.0[1],"gpu_timestamp_options":"startup_only"}),
     ))
 }
 
