@@ -2598,6 +2598,10 @@ impl ShellNetwork {
         in_room
     }
 
+    pub(crate) fn private_message_identities(&self) -> PeerIdentityStore {
+        self.peer_identities.clone()
+    }
+
     /// Certificates of `user`'s devices this session authenticated (directly
     /// or through a workspace host), valid and not revoked now.
     pub fn authenticated_devices_of(&self, user: &[u8; 32]) -> Vec<tilo_user_identity::DeviceCert> {

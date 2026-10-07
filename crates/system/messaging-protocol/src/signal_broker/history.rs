@@ -101,7 +101,10 @@ impl History {
         if !owner.valid_principal()
             || !matches!(
                 owner.service,
-                crate::Service::Signal | crate::Service::Whatsapp | crate::Service::Sms
+                crate::Service::Tilo
+                    | crate::Service::Signal
+                    | crate::Service::Whatsapp
+                    | crate::Service::Sms
             )
             || !crate::identifier(&owner.device)
             || !crate::identifier(&owner.account)
@@ -432,7 +435,7 @@ impl History {
     ) -> Result<bool, SendError> {
         if !matches!(
             self.ledger.owner.service,
-            crate::Service::Whatsapp | crate::Service::Signal
+            crate::Service::Tilo | crate::Service::Whatsapp | crate::Service::Signal
         ) || self.outgoing_route(operation)? != *route
         {
             return Err(SendError::Revoked);
