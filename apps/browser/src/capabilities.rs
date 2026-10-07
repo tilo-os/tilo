@@ -426,8 +426,10 @@ impl Capabilities {
                                                 Ok(ui::portal::LaunchOutcome::Opened) => {
                                                     String::new()
                                                 }
-                                                Ok(ui::portal::LaunchOutcome::Failed(_))
-                                                | Err(_) => "Could not open the download. \
+                                                Ok(ui::portal::LaunchOutcome::Failed(reason)) => {
+                                                    reason
+                                                }
+                                                Err(_) => "Could not open the download. \
                                                              Try revealing its folder."
                                                     .into(),
                                             });
