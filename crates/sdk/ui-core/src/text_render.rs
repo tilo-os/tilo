@@ -3614,7 +3614,7 @@ mod tests {
         // Case `explicit_catalog_constructs_the_production_renderer_and_caches`.
         {
             let catalog = crate::font_catalog::FontCatalog::controlled_fixture(
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+                crate::font_catalog::checkout_root(),
                 "en-US",
             );
             let mut renderer = TextRenderer::with_font_catalog(&catalog).unwrap();
@@ -3746,7 +3746,7 @@ mod tests {
     #[test]
     fn browser_missing_glyphs_demand_exact_assets_then_install_reshapes() {
         let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+        let root = crate::font_catalog::checkout_root();
         let fonts = catalog
             .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
             .unwrap();
@@ -3791,7 +3791,7 @@ mod tests {
     #[test]
     fn browser_explicit_math_family_demands_its_face_while_core_emoji_stays_loaded() {
         let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+        let root = crate::font_catalog::checkout_root();
         let fonts = catalog
             .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
             .unwrap();
@@ -3898,7 +3898,7 @@ mod tests {
     #[test]
     fn failed_browser_fetch_rearms_cached_text_for_a_later_relevant_shape() {
         let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+        let root = crate::font_catalog::checkout_root();
         let fonts = catalog
             .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
             .unwrap();
