@@ -7788,6 +7788,13 @@ impl ShellOverlayHost {
     /// registered [`crate::shell::search::SearchProvider`]. Cheap on a warm
     /// cache; the first open pays for the files provider's deferred home walk
     /// and content index open (kept off the `OverlayHost` constructor on purpose).
+    /// Exact public action that Enter would activate in the visible palette.
+    pub fn palette_selected_action(&self) -> Option<(String, String)> {
+        self.palette_visible
+            .then(|| self.selected_search_identity())
+            .flatten()
+    }
+
     fn selected_search_identity(&self) -> Option<(String, String)> {
         self.palette
             .selected_id()

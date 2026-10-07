@@ -36,7 +36,7 @@ def _number(value):
 
 def _state(state):
     if (not isinstance(state,dict) or any(k not in state for k in _STABLE)
-        or state['app']!='dev.tilo.settings' or state['search_id']!='settings.search'
+        or state['app']!='so.tilo.settings' or state['search_id']!='settings.search'
         or state['ready'] is not True or state['selected_category']!='network'
         or state['narrow'] is not False or state['sidebar_open'] is not True
         or state['document_witness_kind']!='effective_heads_on_disposable_clone'
@@ -157,3 +157,88 @@ def validate_settings_frame_states(scenario,lines):
         next_input+=len(inputs);previous_frame=identity
     if next_input!=len(effects):raise ValueError('Missing Settings postdraw evidence')
     return len(frames)
+
+
+def validate_navigation_read(value, pane):
+    """Validate mounted state, without treating composition as presentation."""
+    if (not isinstance(value, dict) or value.get('app') != 'so.tilo.settings'
+            or value.get('selected_pane') != pane or value.get('requested_pane') != pane
+            or value.get('path') != 'settings://' + pane or value.get('pending') is not False
+            or value.get('ready') is not True or value.get('content_visible') is not True
+            or value.get('presentation_attribution_available') is not False):
+        raise ValueError('Requested Settings navigation is not observably ready')
+    return dict(selected_pane=pane, path=value['path'], navigation_verified=True,
+                latency_available=False)
+
+
+def settings_search_navigation(vm, bound, scope, call, query='keyboard'):
+    """Run only on an already pinned fresh owner window through maintained APIs.
+
+    ``scope`` must revalidate the authenticated host tab/record/native lifetime
+    and preserved user tabs; ``call`` is the existing tracked action_jobs invoke
+    adapter. The caller prepares/focuses its fresh window, never an app-only
+    selection. This does not provide hover or input-to-KMS latency evidence.
+    """
+    import time
+    if (not isinstance(bound, tuple) or len(bound) != 3
+            or bound[0] != 'so.tilo.settings' or not all(bound)
+            or query != 'keyboard'):
+        raise ValueError('Exact owned Settings binding and fixture query required')
+    scope()
+    rows = vm.control_json('actions', 'list', bound[0], '--programmatic', '--json').get('actions', [])
+
+    def row(resource, operation):
+        found = [r for r in rows if r.get('provider') == 'app-actions'
+                 and tuple(r.get(k) for k in ('application', 'room', 'record')) == bound
+                 and r.get('resource') == resource and r.get('operation') == operation
+                 and r.get('contract', {}).get('availability', {}).get('state') == 'available']
+        if len(found) != 1 or not found[0].get('id'):
+            raise ValueError('Exact available Settings operation missing or ambiguous')
+        return found[0]
+
+    target = row('settings.section:mouse_keyboard', 'open-pane')
+    inspector = row('settings.navigation', 'inspect-navigation')
+    scope()
+    vm.key('CTRL+K')
+    vm.input('type', query)
+    expected = {k: target[k] for k in ('provider', 'id')}
+    deadline = time.monotonic() + 10
+    visited = set()
+    while True:
+        scope()
+        palette = vm.state().get('chrome', {}).get('palette', {})
+        if palette.get('visible') is not True:
+            raise ValueError('Settings search palette unavailable')
+        if palette.get('query') != query:
+            if time.monotonic() >= deadline:
+                raise ValueError('Settings search query was not adopted')
+            time.sleep(.1)
+            continue
+        selected = palette.get('selected_action')
+        if selected == expected:
+            break
+        if time.monotonic() >= deadline:
+            raise ValueError('Exact owned search route unavailable; Enter was not sent')
+        if selected is None:
+            time.sleep(.1)
+            continue
+        identity = json.dumps(selected, sort_keys=True)
+        if identity in visited or len(visited) >= 32:
+            raise ValueError('Search traversal did not reach the exact owned route')
+        visited.add(identity)
+        vm.key('ArrowDown')
+    scope()
+    # Recheck exact selection immediately before the single activation.
+    if vm.state().get('chrome', {}).get('palette', {}).get('selected_action') != expected:
+        raise ValueError('Selected search action changed before Enter')
+    vm.key('Enter')
+    for attempt in range(20):
+        scope()
+        value = call(inspector, {}, 'settings-navigation-' + str(attempt))
+        try:
+            return validate_navigation_read(value, 'mouse_keyboard')
+        except ValueError:
+            if not isinstance(value, dict) or value.get('app') != bound[0]:
+                raise
+            time.sleep(.1)
+    raise ValueError('Selected Settings pane remained pending')

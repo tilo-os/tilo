@@ -5,7 +5,7 @@ from settings_effects import ALL_CATEGORIES, Z_CATEGORIES, validate_settings_typ
 
 class SettingsEffectsTests(unittest.TestCase):
     def fixture(self):
-        a=dict(app='dev.tilo.settings',search_id='settings.search',ready=True,
+        a=dict(app='so.tilo.settings',search_id='settings.search',ready=True,
           local_search_text='',synchronized_search_query='',search_widget_text='',search_caret_byte=0,
           search_focused=True,search_rect=[20,10,780,45],root_rect=[0,0,800,600],selected_category='network',
           rendered_result_count=23,rendered_category_ids=list(ALL_CATEGORIES),narrow=False,sidebar_open=True,
@@ -87,5 +87,52 @@ class SettingsEffectsTests(unittest.TestCase):
                 broken=copy.deepcopy(f);broken[1]['state'][k]=v
                 with self.assertRaises(ValueError):validate_settings_frame_states(s,self.lines(e,broken))
 
+
+
+class NavigationTests(unittest.TestCase):
+    def test_mounted_navigation_is_not_a_latency_certificate(self):
+        from settings_effects import validate_navigation_read
+        value=dict(app='so.tilo.settings',selected_pane='mouse_keyboard',requested_pane='mouse_keyboard',
+            path='settings://mouse_keyboard',pending=False,ready=True,content_visible=True,
+            presentation_attribution_available=False)
+        self.assertEqual(validate_navigation_read(value,'mouse_keyboard')['latency_available'],False)
+        for key,bad in [('selected_pane','network'),('requested_pane','network'),('pending',True),
+                ('ready',False),('content_visible',False),('presentation_attribution_available',True)]:
+            with self.subTest(key=key),self.assertRaises(ValueError):
+                validate_navigation_read(dict(value,**{key:bad}),'mouse_keyboard')
+
+    def test_exact_selected_route_and_pinned_scope_precede_activation(self):
+        from settings_effects import settings_search_navigation
+        bound=('so.tilo.settings','owned-room','fresh-record')
+        def row(resource,op):
+            return dict(provider='app-actions',id=resource+'/'+op,application=bound[0],room=bound[1],
+                record=bound[2],resource=resource,operation=op,contract={'availability':{'state':'available'}})
+        target=row('settings.section:mouse_keyboard','open-pane')
+        inspector=row('settings.navigation','inspect-navigation')
+        class Vm:
+            def __init__(self):self.keys=[];self.selected=dict(provider='app-actions',id='unrelated')
+            def control_json(self,*args):return {'actions':[target,inspector]}
+            def key(self,key):
+                self.keys.append(key)
+                if key=='ArrowDown':self.selected={k:target[k] for k in ('provider','id')}
+            def input(self,*args):pass
+            def state(self):return {'chrome':{'palette':{'visible':True,'query':'keyboard','selected_action':self.selected}}}
+        vm=Vm();scopes=[]
+        def call(actual,args,name):
+            self.assertEqual(actual,inspector)
+            return dict(app=bound[0],selected_pane='mouse_keyboard',requested_pane='mouse_keyboard',
+                path='settings://mouse_keyboard',pending=False,ready=True,content_visible=True,
+                presentation_attribution_available=False)
+        result=settings_search_navigation(vm,bound,lambda:scopes.append(True),call)
+        self.assertEqual(vm.keys,['CTRL+K','ArrowDown','Enter'])
+        self.assertGreater(len(scopes),3)
+        self.assertTrue(result['navigation_verified'])
+        vm=Vm()
+        def refuse():raise ValueError('replaced owned native lifetime')
+        with self.assertRaises(ValueError):settings_search_navigation(vm,bound,refuse,call)
+        self.assertEqual(vm.keys,[])
+        vm=Vm();target['record']='old-record'
+        with self.assertRaises(ValueError):settings_search_navigation(vm,bound,lambda:None,call)
+        self.assertEqual(vm.keys,[])
 
 if __name__=='__main__':unittest.main()

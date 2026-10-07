@@ -195,3 +195,34 @@ certify performance.
 Measurements are workload- and host-dependent. Record the image revision,
 CPU/memory/KVM settings, adapter, and `TILO_DISTROBOX` value with each result;
 do not treat an old run as a repository baseline.
+
+
+### Owned Settings search navigation
+
+`settings_effects.settings_search_navigation(vm, bound, scope, call)` exercises
+Ctrl+K, the fixed `keyboard` query and Enter on a fresh pinned Settings window.
+Use the maintained `OwnerVm` from `scripts/vm-acceptance/store-chooser.py`;
+`bound` is the actual authenticated `(application, room, record)` of the fresh
+operator-owned window, not an application-only guess. Prepare and focus only
+that tab. `scope` must revalidate its tab/surface/native lifetime, verified
+selected runtime, unlocked owner and preservation of earlier user tabs before
+every operation. Reuse the maintained tracked job adapter for `call`:
+
+```python
+from acceptance.action_jobs import invoke
+from settings_effects import settings_search_navigation
+result = settings_search_navigation(
+    owner_vm, bound, pinned_scope,
+    lambda row, args, name: invoke(owner_vm, row, args, private_out, name))
+```
+
+The runner requires the exact declared action identity exposed by the palette's
+`selected_action` before Enter. It reads the bound `settings.navigation`
+`inspect-navigation` capability to verify the requested mounted page. It does
+not close or select existing user Settings windows. Keep operator receipts in a
+private directory. Missing/replaced scope or ambiguous actions refuse input.
+
+This is navigation evidence only: `latency_available` remains false. Settings
+hover and page changes do not yet have the trusted changed-state/frame-to-KMS
+attribution needed for physical latency percentiles; CLI RTT and polling time
+are not substitutes. The p50 <20ms / p99 <50ms goal remains unverified.

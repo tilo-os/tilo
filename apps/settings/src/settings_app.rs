@@ -228,6 +228,30 @@ impl SettingsApp {
         self
     }
 
+    /// The actual mounted navigation state. Readiness is local composition,
+    /// never an assertion that this pane reached a display or that input is fast.
+    pub(crate) fn navigation_inspection(&self) -> serde_json::Value {
+        let pending = self.sidebar_selection.with(|request| *request);
+        let content_visible = self.shell.as_ref().is_some_and(|shell| {
+            let rect = shell.geometry().content_column;
+            rect.is_finite()
+                && rect.width() > 0.0
+                && rect.height() > 0.0
+                && !(self.is_narrow() && self.sidebar_open())
+        });
+        serde_json::json!({
+            "app": "so.tilo.settings",
+            "selected_pane": self.selected.slug(),
+            "requested_pane": pending.unwrap_or(self.selected).slug(),
+            "path": format!("settings://{}", self.selected.slug()),
+            "pending": pending.is_some(),
+            "ready": content_visible && pending.is_none() && !self.structure_dirty,
+            "content_visible": content_visible,
+            "narrow": self.is_narrow(), "sidebar_open": self.sidebar_open(),
+            "presentation_attribution_available": false,
+        })
+    }
+
     pub fn selected(&self) -> Category {
         self.selected
     }

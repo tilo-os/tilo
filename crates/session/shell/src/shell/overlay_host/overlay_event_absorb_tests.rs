@@ -1650,6 +1650,13 @@ fn palette_chips_and_scopes_filter_without_dismissing_and_enter_activates_the_se
         );
         let initially_selected = initially_selected.expect("first row is visibly selected");
         assert_eq!(initially_selected, rows[0].0);
+        assert_eq!(
+            h.host.palette_selected_action(),
+            Some((
+                h.host.search_results[0].provider_id.clone(),
+                h.host.search_results[0].id.clone()
+            ))
+        );
 
         assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::ArrowDown)),));
         let (_, _, selected_after_arrow, rows_after_arrow) = h.host.palette_snapshot();
@@ -1663,11 +1670,20 @@ fn palette_chips_and_scopes_filter_without_dismissing_and_enter_activates_the_se
             "ArrowDown must move the visible selection to the second app"
         );
 
+        assert_eq!(
+            h.host.palette_selected_action(),
+            Some((
+                h.host.search_results[1].provider_id.clone(),
+                h.host.search_results[1].id.clone()
+            ))
+        );
+
         assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Enter)),));
         assert!(
             !h.host.palette_visible(),
             "Enter's activation path must complete the selected app action"
         );
+        assert_eq!(h.host.palette_selected_action(), None);
         assert_ne!(
             selected_after_arrow, initially_selected,
             "activation must follow the arrow-selected row, not stale result zero"

@@ -3077,6 +3077,9 @@ fn palette_json(fb: &FrameBuilder) -> serde_json::Value {
         "visible": visible,
         "query": query,
         "selected_id": selected,
+        "selected_action": fb.host().palette_selected_action().map(|(provider, id)| {
+            serde_json::json!({ "provider": provider, "id": id })
+        }),
         // Which kind chips are lit — "filtered to apps" and "query that only apps
         // matched" give the same row list, but only the chip filter survives typing.
         "kind_filter": fb.host().palette_kind_filter(),

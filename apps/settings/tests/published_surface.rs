@@ -153,3 +153,121 @@ fn a_model_link_opens_agent_models() {
         "the model link selects the canonical Agent Models category"
     );
 }
+
+#[test]
+fn inspected_navigation_tracks_the_actual_selected_search_result_without_mutation() {
+    let mut app = TestApp::<SettingsShell>::new().expect("mounted Settings");
+    app.settle();
+    let before = app
+        .call_on(
+            "settings.navigation",
+            "inspect-navigation",
+            serde_json::json!({}),
+        )
+        .unwrap()
+        .unwrap();
+    let entries = settings::search::pane_entries();
+    let hit = entries
+        .iter()
+        .find(|entry| entry.title == Category::MouseKeyboard.label())
+        .expect("the actual keyboard search entry");
+    let open = hit
+        .action
+        .as_ref()
+        .expect("the search result owns its route");
+    app.call_on(&open.resource, &open.action, serde_json::json!({}))
+        .unwrap();
+    app.settle();
+    let shown = app
+        .call_on(
+            "settings.navigation",
+            "inspect-navigation",
+            serde_json::json!({}),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(shown["selected_pane"], "mouse_keyboard");
+    assert_eq!(shown["requested_pane"], "mouse_keyboard");
+    assert_eq!(shown["path"], "settings://mouse_keyboard");
+    assert_eq!(shown["pending"], false);
+    assert_eq!(shown["ready"], true);
+    assert_eq!(shown["content_visible"], true);
+    assert_eq!(shown["presentation_attribution_available"], false);
+    let actual = app
+        .surface::<settings::SettingsApp, _>(|settings| settings.selected())
+        .unwrap();
+    assert_eq!(actual, Category::MouseKeyboard);
+    assert_ne!(before["selected_pane"], shown["selected_pane"]);
+    assert!(
+        app.call("open-pane", serde_json::json!({"pane":"not-a-pane"}))
+            .is_err()
+    );
+    assert_eq!(
+        app.call_on(
+            "settings.navigation",
+            "inspect-navigation",
+            serde_json::json!({})
+        )
+        .unwrap()
+        .unwrap(),
+        shown
+    );
+    for private in ["search_text", "document", "password", "body"] {
+        assert!(shown.get(private).is_none());
+    }
+}
+
+#[test]
+fn read_navigation_permits_viewer_but_refuses_unrelated_actor() {
+    let mut app = TestApp::<SettingsShell>::with_role(ui::Role::Viewer).unwrap();
+    app.settle();
+    let read = |app: &mut TestApp<SettingsShell>| {
+        app.call_on(
+            "settings.navigation",
+            "inspect-navigation",
+            serde_json::json!({}),
+        )
+        .unwrap()
+        .unwrap()
+    };
+    let before = read(&mut app);
+    assert_eq!(read(&mut app), before);
+    // Read is declared device-local. An unrelated invocation is refused by
+    // the earlier private-view boundary; preserve that actual admission order
+    // rather than relabeling it or widening remote-view authority.
+    let action = app
+        .actions()
+        .unwrap()
+        .into_iter()
+        .find(|action| action.address.action == "inspect-navigation")
+        .unwrap();
+    assert_eq!(
+        action.contract.permission,
+        ui::tilo_actions::PermissionRequirement::Read
+    );
+    assert!(
+        action
+            .contract
+            .tags
+            .iter()
+            .any(|tag| tag == ui::tilo_actions::LOCAL_DEVICE_ONLY)
+    );
+    let mut owner = TestApp::<SettingsShell>::new().unwrap();
+    owner.settle();
+    let owner_before = read(&mut owner);
+    let denied = owner.call_by(
+        ui::tilo_actions::ActionInvoker {
+            actor: "unrelated-collaborator".into(),
+            participant: None,
+        },
+        "settings.navigation",
+        "inspect-navigation",
+        serde_json::json!({}),
+    );
+    assert!(
+        matches!(denied, Err(ui::tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "private_view"),
+        "actual denied result: {denied:?}"
+    );
+    assert_eq!(read(&mut app), before);
+    assert_eq!(read(&mut owner), owner_before);
+}

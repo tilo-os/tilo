@@ -126,6 +126,14 @@ settings_effects! {
 /// offers bound to it.
 pub(crate) fn rows(app: &SettingsApp) -> Vec<ui::framework::LiveRow> {
     let mut rows = pane_rows();
+    rows.push(
+        ui::framework::LiveRow::new(
+            "settings.navigation",
+            "settings.navigation",
+            crate::i18n::t("settings-nav-name"),
+        )
+        .operation(SettingsEffect::from(NavigationEffect::InspectNavigation).bound()),
+    );
     rows.extend(app.notifications().rows());
     rows.extend(app.default_apps().rows());
     rows.extend(app.input().rows());
@@ -205,6 +213,15 @@ fn pane_rows() -> Vec<ui::framework::LiveRow> {
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum NavigationEffect {
+    /// Read the actual local navigation state without changing a pane or search.
+    #[effect(
+        view,
+        returns,
+        device_only,
+        permission = "read",
+        label = "Inspect Settings navigation"
+    )]
+    InspectNavigation,
     /// Open a pane of Settings.
     #[effect(view, label = "Open settings pane")]
     OpenPane {
@@ -219,6 +236,9 @@ fn answer_navigation(
     _cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
     match effect {
+        NavigationEffect::InspectNavigation => {
+            Ok(ui::framework::Effected::value(app.navigation_inspection()))
+        }
         NavigationEffect::OpenPane { pane } => {
             let category = Category::from_slug(&pane)
                 .ok_or_else(|| format!("Settings has no pane `{pane}`"))?;
@@ -231,6 +251,23 @@ fn answer_navigation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn navigation_read_keeps_pending_request_distinct_from_selected_content() {
+        let app = SettingsApp::with_selected(Category::Network);
+        app.request_pane(Category::MouseKeyboard);
+        let pending = app.navigation_inspection();
+        assert_eq!(pending["selected_pane"], "network");
+        assert_eq!(pending["requested_pane"], "mouse_keyboard");
+        assert_eq!(pending["path"], "settings://network");
+        assert_eq!(pending["pending"], true);
+        assert_eq!(pending["ready"], false);
+        assert_eq!(
+            app.navigation_inspection(),
+            pending,
+            "Read never drains the request"
+        );
+    }
 
     struct Flattened(SettingsEffect);
 
