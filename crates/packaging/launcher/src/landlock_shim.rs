@@ -422,14 +422,73 @@ fn exec_real_command(command: &[String]) -> ! {
         .chain(std::iter::once(std::ptr::null()))
         .collect();
 
-    // SAFETY: cprogram + argv_ptrs are valid null-terminated strings; argv_ptrs
-    // is null-terminated. execvp either replaces the image or returns -1.
+    let environment = mesa_environment();
+    let env_ptrs: Option<Vec<*const libc::c_char>> = environment.as_ref().map(|env| {
+        env.iter()
+            .map(|value| value.as_ptr())
+            .chain(std::iter::once(std::ptr::null()))
+            .collect()
+    });
+    // SAFETY: program, argv and optional environment are live null-terminated
+    // CString arrays. Both exec calls preserve the existing signal dispositions
+    // and replace this process, or return -1. Cache setup adds no ambient fd.
     unsafe {
-        libc::execvp(cprogram.as_ptr(), argv_ptrs.as_ptr());
+        if let Some(envp) = &env_ptrs {
+            libc::execvpe(cprogram.as_ptr(), argv_ptrs.as_ptr(), envp.as_ptr());
+        } else {
+            libc::execvp(cprogram.as_ptr(), argv_ptrs.as_ptr());
+        }
     }
     let err = std::io::Error::last_os_error();
     eprintln!("tilo-sandbox-exec: execvp {program:?} failed: {err}");
     std::process::exit(2);
+}
+
+fn mesa_environment() -> Option<Vec<CString>> {
+    use std::os::unix::ffi::OsStrExt as _;
+    if std::env::var_os(crate::mesa_seed::CONSUME_ENV).as_deref() != Some(std::ffi::OsStr::new("1"))
+    {
+        return None;
+    }
+    let source =
+        std::path::PathBuf::from(std::env::var_os(crate::gpu::PIPELINE_SEED_ENV)?).join("mesa");
+    let cache = std::path::Path::new(crate::appdir::SANDBOX_APP_DIR).join(".cache/mesa-session");
+    if let Err(error) = crate::mesa_seed::prepare(&source, &cache) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            eprintln!("tilo-sandbox-exec: Mesa seed unavailable ({error}); compiling normally");
+        }
+        return None;
+    }
+    let mut env: std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString> =
+        std::env::vars_os().collect();
+    for name in [
+        "MESA_DISK_CACHE_SINGLE_FILE",
+        "MESA_DISK_CACHE_MULTI_FILE",
+        "MESA_DISK_CACHE_DATABASE",
+        "MESA_DISK_CACHE_READ_ONLY_FOZ_DBS_DYNAMIC_LIST",
+    ] {
+        env.remove(std::ffi::OsStr::new(name));
+    }
+    env.insert("MESA_SHADER_CACHE_DIR".into(), cache.into_os_string());
+    for (name, value) in [
+        ("MESA_SHADER_CACHE_MAX_SIZE", "16M"),
+        ("MESA_DISK_CACHE_COMBINE_RW_WITH_RO_FOZ", "1"),
+        ("MESA_DISK_CACHE_READ_ONLY_FOZ_DBS", "tilo-seed"),
+    ] {
+        env.insert(name.into(), value.into());
+    }
+    let result = env
+        .into_iter()
+        .map(|(key, value)| {
+            let mut entry = key.as_bytes().to_vec();
+            entry.push(b'=');
+            entry.extend_from_slice(value.as_bytes());
+            CString::new(entry)
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    eprintln!("tilo-sandbox-exec: validated read-only Mesa seed in private bounded cache");
+    Some(result)
 }
 
 #[cfg(test)]

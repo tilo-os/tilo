@@ -7706,6 +7706,7 @@ name = "launcher"
 version = "0.1.0"
 dependencies = [
  "ash",
+ "blake3",
  "clap",
  "collab-types",
  "ed25519-dalek 3.0.0",
@@ -7723,6 +7724,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "threshold-identity",
+ "tilo-advisory-lock",
  "tilo-app-package",
  "tilo-clock",
  "tilo-desktop-entry",
