@@ -24,6 +24,7 @@ const RECORD_WINDOW: Duration = Duration::from_secs(105);
 // automatic-language final. Keep capture off while a bounded slower pass finishes.
 const FINISH_WINDOW: Duration = Duration::from_secs(60);
 const DRAFT_INTERVAL: Duration = Duration::from_secs(1);
+const INITIAL_DRAFT_DELAY: Duration = Duration::from_secs(2);
 // A slow draft must not discard live speech. This covers the entire bounded
 // PCM16 session plus framing; it grows only as the owned worker backpressures.
 const QUEUE_BYTES: usize = 4 * 1024 * 1024;
@@ -486,6 +487,9 @@ fn pump_io(pipe: &mut Pipe, io: &mut ActorIo<'_>) -> Result<String, RuntimeError
                         .checked_sub(FINISH_WINDOW)
                         .unwrap_or_else(Instant::now),
                 );
+                // Anchor context accumulation to actual capture, not model
+                // startup or time spent awaiting the user's consent.
+                next_draft = later(INITIAL_DRAFT_DELAY);
                 event(io.events, RuntimeEvent::Listening)?;
             }
             Ok(Control::Finish) if ready && !finishing => {
@@ -572,8 +576,14 @@ pub(super) fn finishing_test_peer(pid: &std::path::Path) -> Runtime {
 }
 
 #[cfg(test)]
-pub(super) fn repair_test_peer(pid: &std::path::Path) -> Runtime {
-    let peer = tests::peer("repair", pid);
+pub(super) fn repair_test_peer(pid: &std::path::Path, language: &str) -> Runtime {
+    let mode = match language {
+        "de" => "repair_de",
+        "fr" => "repair_fr",
+        "es" => "repair_es",
+        _ => "repair",
+    };
+    let peer = Runtime::spawn(tests::peer_command(mode, pid), language).unwrap();
     assert!(matches!(tests::next(&peer), RuntimeEvent::Ready));
     peer
 }
@@ -600,7 +610,8 @@ def reply(value):
     sys.stdout.buffer.write(struct.pack('<I', len(b)) + b)
     sys.stdout.buffer.flush()
 k, s, b = read()
-assert k == 0 and s == 1 and json.loads(b)['language'] == 'en'
+expected_language=sys.argv[1].removeprefix('repair_') if sys.argv[1].startswith('repair_') else 'en'
+assert k == 0 and s == 1 and json.loads(b)['language'] == expected_language
 if sys.argv[1].startswith('dictionary_'): assert json.loads(b)['vocabulary'] == ['TiLo']
 reply(dict(kind='ready', sequence=2 if sys.argv[1] == 'replay' else s, model='fixture', revision='1'))
 if sys.argv[1] == 'backpressure':
@@ -618,12 +629,13 @@ k, s, b = read()
 assert k == 3 and b == b''
 if sys.argv[1] in ('slow', 'dictionary_slow'): time.sleep(60)
 if sys.argv[1] == 'delayed': time.sleep(18)
-if sys.argv[1] in ('repeated', 'repair', 'dictionary_repeated'):
+if sys.argv[1] in ('repeated', 'repair', 'dictionary_repeated') or sys.argv[1].startswith('repair_'):
     deadline = time.monotonic() + 10
     while not os.path.exists(sys.argv[2] + '.release'):
         assert time.monotonic() < deadline
         time.sleep(0.005)
-reply(dict(kind='done', sequence=s, text='Let me grab two, uh, no, three of these' if sys.argv[1] == 'repair' else 'unsafe\n' if sys.argv[1] == 'control' else 'Corrected 👋'))
+repairs={'repair':'Let me grab two, uh, no, three of these','repair_de':'TiLo braucht zwei, äh, nein, drei Stück.','repair_fr':'Prendre deux, euh, non, trois exemplaires.','repair_es':'TiLo necesita dos, eh, no, tres unidades.'}
+reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in repairs else 'unsafe\n' if sys.argv[1] == 'control' else 'Corrected 👋'))
 ";
 
     pub(super) fn peer_command(mode: &str, pid: &std::path::Path) -> Command {

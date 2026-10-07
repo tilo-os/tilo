@@ -4,6 +4,7 @@ use std::ffi::CString;
 use zeroize::{Zeroize as _, Zeroizing};
 
 const TARGET: usize = 20 * SAMPLE_RATE;
+const INITIAL_DRAFT_SAMPLES: usize = 2 * SAMPLE_RATE;
 const PADDING: usize = TARGET / 4;
 const QUIET_WINDOW: usize = SAMPLE_RATE / 10;
 const LOOKAHEAD: usize = TARGET + PADDING + QUIET_WINDOW;
@@ -44,10 +45,17 @@ impl SpeechRecognition {
         complete: bool,
         recognize: impl FnMut(&[f32]) -> Result<String, SpeechError>,
     ) -> Result<String, SpeechError> {
+        let deferred = !complete && samples.len() < INITIAL_DRAFT_SAMPLES;
         let result = if self.retired || samples.len() < self.observed {
             Err(SpeechError::Protocol)
         } else if samples.len() > MAX_SAMPLES || samples.iter().any(|s| !s.is_finite()) {
             Err(SpeechError::AudioTooLong)
+        } else if deferred {
+            // A truncated opening word produced confident hallucinations in
+            // paced public speech. Wait for initial context, without decoding
+            // or caching an empty hypothesis as a reusable final result.
+            self.observed = samples.len();
+            Ok(String::new())
         } else if self.draft_samples == Some(samples.len())
             && (!complete || samples.len().saturating_sub(self.consumed) <= TARGET + PADDING)
         {
@@ -62,7 +70,7 @@ impl SpeechRecognition {
             self.confirmed.zeroize();
             self.draft.zeroize();
             self.draft_samples = None;
-        } else if let Ok(text) = &result {
+        } else if !deferred && let Ok(text) = &result {
             self.draft.zeroize();
             self.draft.push_str(text);
             self.draft_samples = Some(samples.len());
@@ -183,8 +191,49 @@ mod tests {
     }
 
     #[test]
-    fn finish_reuses_unchanged_audio_but_never_skips_a_pending_cut() {
+    fn deferred_opening_draft_never_erases_a_short_final_or_accepts_audio_regression() {
         let audio = vec![0.5; SAMPLE_RATE];
+        let mut recognition = SpeechRecognition::default();
+        assert_eq!(
+            recognition.recognize(&audio, false, |_| panic!("opening context must wait")),
+            Ok(String::new())
+        );
+        assert_eq!(recognition.observed, audio.len());
+        assert!(
+            recognition.draft_samples.is_none(),
+            "deferred output is not a decoded cache"
+        );
+        let mut calls = 0;
+        assert_eq!(
+            recognition.recognize(&audio, true, |chunk| {
+                assert_eq!(chunk, audio);
+                calls += 1;
+                Ok("short final 👋".into())
+            }),
+            Ok("short final 👋".into())
+        );
+        assert_eq!(
+            calls, 1,
+            "stopping before two seconds still decodes all recorded audio"
+        );
+        assert!(recognition.retired);
+        assert!(recognition.draft.is_empty());
+        let mut recognition = SpeechRecognition::default();
+        recognition
+            .recognize(&audio, false, |_| panic!("opening context must wait"))
+            .unwrap();
+        assert_eq!(
+            recognition.recognize(&audio[..SAMPLE_RATE / 2], false, |_| panic!(
+                "regressed audio cannot decode"
+            )),
+            Err(SpeechError::Protocol)
+        );
+        assert!(recognition.retired);
+    }
+
+    #[test]
+    fn finish_reuses_unchanged_audio_but_never_skips_a_pending_cut() {
+        let audio = vec![0.5; INITIAL_DRAFT_SAMPLES];
         let mut recognition = SpeechRecognition::default();
         assert_eq!(
             recognition
