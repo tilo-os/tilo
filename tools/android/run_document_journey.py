@@ -140,6 +140,10 @@ def main():
                         raise RuntimeError('document APIs did not pass: ' + repr(lines))
                     if destination.read_bytes() != b'final\n':
                         raise RuntimeError('actual output bytes differ')
+                saved = list(private.rglob('document-uris.txt'))
+                if not args.expect_incompatibility and len(saved) != 1:
+                    raise RuntimeError('missing actual private document URIs')
+                private_uris = saved[0].read_bytes() if saved else None
                 if digest(source) != initial['source'] or digest(canary) != initial['canary']:
                     raise RuntimeError('source or ungranted sibling bytes changed')
                 _, _, tree = wait_for(lambda: picker.described('Android document resource status'),
@@ -164,6 +168,8 @@ def main():
                         raise RuntimeError('cold relaunch did not repeat the complete document assertions')
                     if digest(source) != initial['source'] or destination.read_bytes() != b'final\n':
                         raise RuntimeError('cold restored source/output bytes differ')
+                    if saved[0].read_bytes() != private_uris:
+                        raise RuntimeError('private document URIs changed during cold relaunch')
                     require_ok(journey.request('snapshot', path=str(output / 'cold-restored.png')))
                     journey.close()
                     wait_for(lambda: acceptance.read_text().splitlines().count('lifecycle=destroy') == 2,
@@ -178,11 +184,17 @@ def main():
                     journey.launch()
                     wait_for(lambda: recorded('revocation-complete=true'), 'actual revoked document API denials')
                     if 'failure=' in acceptance.read_text(): raise RuntimeError('revoked authority accepted')
+                    if saved[0].read_bytes() != private_uris:
+                        raise RuntimeError('revoked relaunch changed private document URIs')
                     require_ok(journey.request('snapshot', path=str(output / 'document-revocation.png')))
                     journey.close()
                     closes = 3 if cold else 2
                     wait_for(lambda: acceptance.read_text().splitlines().count('lifecycle=destroy') == closes,
                              'actual relaunch close')
+                    if destination.read_bytes() != b'final\n':
+                        raise RuntimeError('revoked relaunch changed exact output bytes')
+                if digest(source) != initial['source'] or digest(canary) != initial['canary']:
+                    raise RuntimeError('source or sibling bytes changed after withdrawal')
                 (output / 'acceptance.txt').write_text(acceptance.read_text())
                 log.flush()
                 runtime_log = (output / 'compositor.log').read_text()
@@ -198,6 +210,7 @@ def main():
                     'fixture_grants_revoked': True, 'source_and_canary_unchanged': True,
                     'ungranted_sibling_exists': not args.cold_hydration,
                     'revoked_metadata_reads_writes_denied': not args.expect_incompatibility,
+                    'private_document_uris_preserved': not args.expect_incompatibility,
                     'real_device': False, 'presented_frame': frame,
                     'png_sha256': {p.name: digest(p) for p in output.glob('*.png')}}
                 if cold: result['cold_hydration'] = cold.report()
