@@ -1,0 +1,164 @@
+use ui::tilo_actions::Resource;
+use ui::tilo_resource::Effect;
+
+use super::{Input, suggestion, suggestions};
+use crate::actions::{MusicAction, MusicEffect, Place, immediate_spec};
+use crate::model::Library;
+
+pub const PREFERENCES: &str = "music.recommendation-preferences:library";
+
+pub fn resource_by_id(lib: &Library, id: &str) -> Option<Resource> {
+    let open = || {
+        MusicEffect::Open {
+            place: Place::View("recommendations".into()),
+        }
+        .bound()
+    };
+    if id == PREFERENCES {
+        return Some(
+            Resource::new(
+                id,
+                "music.recommendation-preferences",
+                ui::i18n!("music-recommendations-title"),
+            )
+            .with_action(open())
+            .with_children(Input::ALL.into_iter().filter_map(|input| {
+                resource_by_id(lib, &format!("music.recommendation-input:{}", input.key()))
+            })),
+        );
+    }
+    if let Some(key) = id.strip_prefix("music.recommendation-input:") {
+        let input = Input::ALL.into_iter().find(|i| i.key() == key)?;
+        let enabled = lib.recommendations.enabled(input);
+        return Some(
+            Resource::new(
+                id,
+                "music.recommendation-input",
+                format!(
+                    "{}: {}",
+                    input.label(),
+                    ui::i18n!(if enabled {
+                        "music-recommendations-enabled"
+                    } else {
+                        "music-recommendations-disabled"
+                    })
+                ),
+            )
+            .with_action(immediate_spec(
+                "set-input",
+                &ui::i18n!(if enabled {
+                    "music-recommendations-disable"
+                } else {
+                    "music-recommendations-enable"
+                }),
+                &MusicAction::SetRecommendationInput {
+                    input,
+                    enabled: !enabled,
+                },
+            )),
+        );
+    }
+    if let Some(track) = id.strip_prefix("music.recommendation:") {
+        return song_resource(lib, id, track);
+    }
+    if let Some(artist) = id.strip_prefix("music.recommendation-artist:") {
+        let preferred = lib.recommendations.preferred_artists.contains(artist);
+        if !preferred && lib.artist(artist).is_none() {
+            return None;
+        }
+        return Some(
+            Resource::new(
+                id,
+                "music.recommendation-artist",
+                lib.artist(artist).map_or(artist, |a| a.name.as_str()),
+            )
+            .with_action(immediate_spec(
+                "set-preferred",
+                &ui::i18n!(if preferred {
+                    "music-recommendations-unprefer"
+                } else {
+                    "music-recommendations-prefer"
+                }),
+                &MusicAction::SetRecommendationArtist {
+                    artist: artist.into(),
+                    preferred: !preferred,
+                },
+            )),
+        );
+    }
+    None
+}
+
+fn song_resource(lib: &Library, id: &str, track: &str) -> Option<Resource> {
+    let dismissed = lib.recommendations.dismissed.contains(track);
+    let suggestion = suggestion(lib, track);
+    if suggestion.is_none() && !dismissed {
+        return None;
+    }
+    let title = lib.track(track).map_or(track, |t| t.title.as_str());
+    let label = suggestion.map_or_else(
+        || title.to_owned(),
+        |s| format!("{title} — {}", s.reason.label(lib)),
+    );
+    let play = MusicEffect::Play {
+        track: track.into(),
+        queued: None,
+    }
+    .bound();
+    let play = if lib.track(track).is_some() {
+        play
+    } else {
+        play.unavailable(
+            "missing_track",
+            ui::i18n!("music-recommendations-missing-track"),
+        )
+    };
+    let row = Resource::new(id, "music.recommendation", label)
+        .with_action(
+            MusicEffect::Open {
+                place: Place::View("recommendations".into()),
+            }
+            .bound(),
+        )
+        .with_action(play)
+        .with_action(immediate_spec(
+            if dismissed { "restore" } else { "dismiss" },
+            &ui::i18n!(if dismissed {
+                "music-recommendations-restore"
+            } else {
+                "music-recommendations-dismiss"
+            }),
+            &MusicAction::SetRecommendationDismissed {
+                track: track.into(),
+                dismissed: !dismissed,
+            },
+        ));
+    Some(row)
+}
+
+pub fn resources(lib: &Library) -> Vec<Resource> {
+    let picks = suggestions(lib, 6);
+    let artists = picks
+        .iter()
+        .filter_map(|pick| lib.track(&pick.track).map(|track| track.artist_id.clone()))
+        .chain(lib.recommendations.preferred_artists.iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>();
+    let ids = std::iter::once(PREFERENCES.to_owned())
+        .chain(
+            picks
+                .into_iter()
+                .map(|s| format!("music.recommendation:{}", s.track)),
+        )
+        .chain(
+            lib.recommendations
+                .dismissed
+                .iter()
+                .map(|id| format!("music.recommendation:{id}")),
+        )
+        .chain(
+            artists
+                .into_iter()
+                .map(|id| format!("music.recommendation-artist:{id}")),
+        );
+    ids.filter_map(|id| resource_by_id(lib, &id)).collect()
+}

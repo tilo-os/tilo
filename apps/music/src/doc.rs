@@ -21,7 +21,8 @@
 //! ├── "playlist_tombstones" (Map<playlist_id, true>)
 //! ├── "liked"     (Map<track_id, bool>)
 //! ├── "saved_albums" (Map<album_id, bool>)
-//! └── "followed_artists" (Map<artist_id, bool>)
+//! ├── "followed_artists" (Map<artist_id, bool>)
+//! └── "recommendations/{input,preferred-artist,dismissed}/{id}" (bool)
 //! ```
 
 use automerge::transaction::Transactable;
@@ -178,6 +179,7 @@ pub fn seed(doc: &mut AutoCommit, lib: &Library) {
     for id in &lib.followed_artists {
         let _ = doc.put(&followed, id.as_str(), true);
     }
+    let _ = crate::recommendations::seed(doc, &lib.recommendations);
 }
 
 fn write_track(doc: &mut AutoCommit, tracks: &ObjId, t: &Track) {
@@ -582,6 +584,7 @@ pub fn load_library(doc: &AutoCommit) -> Library {
     lib.liked = load_bool_set(doc, "liked");
     lib.saved_albums = load_bool_set(doc, "saved_albums");
     lib.followed_artists = load_bool_set(doc, "followed_artists");
+    lib.recommendations = crate::recommendations::read(doc);
 
     lib
 }
