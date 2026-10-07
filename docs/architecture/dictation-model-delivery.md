@@ -338,3 +338,32 @@ capitalization while preserving the strict raw score. Context1 remains default;
 context0 is exposed only as an explicit bounded review comparison. No cleanup,
 number normalization, word-order rewrite or holdout tuning was introduced. These
 results improve draft delivery, not the remaining accuracy or full OS acceptance.
+
+## Situational development journeys
+
+[Four additional confined streams](dictation-native-situational.json) use the
+final published worker with the same memory, deadline, sandbox and model-trust
+bounds. German seeded 10 dB noise delivered continuously every 20 ms retained
+3/18 raw errors and exactly identical final text across the old and Ready-driven
+cadences. First stable text improved from6373ms to5666ms, but meaningful stable
+text improved only from6373ms to6270ms. CPU rose from14.73s to15.27s. The earlier
+historical noisy score used a different audio transport; this comparison does
+not establish an accuracy gain from cadence.
+
+A fixed concatenation of the exposed English and German recordings exercised
+actual automatic recognition, with9/37 raw errors. The same PCM with the already
+predeclared unrestricted personal words Hongkong, Kowloon and TiLo returned8/37
+errors. Neither run inserted the unspoken TiLo hint. This is an assembled language
+transition, not natural code-switching acceptance, and the remaining accuracy gap
+is substantial. No cleanup, number conversion or word-order rewrite was applied.
+
+Personal-word language restrictions remain intact. Automatic mode includes only
+unrestricted additions until a language is known; passing all language-tagged
+entries would violate their explicit applicability. These journeys exercise
+recognition bias without broadening that contract. Holdout32, physical microphone,
+older-device/ARM and full editable-field acceptance remain untested here.
+
+Separately owned renderer source repair has before/after evidence, but its full
+production runtime qualification and published consumer remain blocked by the
+SDK disk admission check. That source proof does not establish safe installed
+cancellation; its guard and delivery hold remain in place.

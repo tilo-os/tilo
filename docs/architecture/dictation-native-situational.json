@@ -1,0 +1,419 @@
+{
+  "schema": 1,
+  "status": "Exposed synthetic-noise and assembled automatic-language journeys; candidate remains held",
+  "decision": "Keep context1 and bounded incremental cadence. Respect personal-word language restrictions: auto uses only unrestricted entries until a language is known. Vocabulary is recognition bias, never cleanup or a replacement rule.",
+  "bounds_unchanged": "1GiB AS,960MiB guard,180s deadline; verified1.25GiB hard/1.125GiB high/zero swap/twoCPU/task64/240s scope",
+  "qualification_limits": "Four public exposed development streams on pressured builder. Assembled EN-to-DE recordings are not natural code switching. Synthetic10dB noise is not natural microphone noise. Exact prefix stability is retrospective. Holdout32 untouched; no physical mic/ARM/older-device/full-app acceptance.",
+  "noise_comparison": "Same PCM and exact final,3/18 errors both. First stable6373\u21925666ms; meaningful6373\u21926270ms. CPU14.73\u219215.27s. Earlier historical22.22% noisy score used different audio transport; do not attribute16.67% here to cadence.",
+  "automatic_language_comparison": "Same assembled PCM,empty vocabulary9/37 errors; predeclared unrestricted Hongkong/Kowloon/TiLo8/37. Unspoken TiLo absent in both. Remaining raw accuracy gap persists; no number/word-order/accent cleanup.",
+  "holds": "No native production admission/install/signing/deploy/microphone grant/resident daemon/trust change",
+  "rows": [
+    {
+      "case": "de_de-0",
+      "language": "de",
+      "public_sources": [
+        {
+          "id": "de_de-0",
+          "sha256": "cc46d12f9faf44a694e709c8bcf04028e686e6b4c1deefe3ac6dbd821a970630"
+        }
+      ],
+      "input_pcm_sha256": "4040ab1de7fd47b3355f6f0d593bbda9f6d43e765218cf5c5f07ae84bd0609a1",
+      "original_pcm_sha256": "fe4d2a3b4113fb327094d0628ff7ed07e40726c1ab20564d01d3a745cba349b0",
+      "synthetic_noise": {
+        "kind": "synthetic seeded Gaussian white noise; not real noisy speech",
+        "seed": 0,
+        "requested_snr_db": 10,
+        "achieved_snr_db": 9.99994991724374,
+        "clipped_samples": 0
+      },
+      "assembled_language_transition": false,
+      "public_vocabulary": [
+        "Hongkong",
+        "Kowloon",
+        "TiLo"
+      ],
+      "model_sha256": "3fc991d3badad7277c11030a7519832cddaf2057aafed6d4b25147e953a070b1",
+      "audio_seconds": 17.94,
+      "first_draft_seconds": 2,
+      "draft_interval_ms": 1000.0,
+      "worker_draft_policy": "incremental",
+      "worker_cadence_used": false,
+      "native_right_context": 1,
+      "preparation_phases": {
+        "verify_ms": 4665.57539,
+        "native_ms": 420.266954
+      },
+      "audio_transport": "continuous20ms",
+      "finalization_ms": 113.42770300689153,
+      "receipt": "voice-nemo-situational-noise-before.log",
+      "variant": "noise-before",
+      "raw_errors": 3,
+      "raw_words": 18,
+      "unspoken_hint_inserted": false,
+      "ready_ms": 5091.351959999884,
+      "cpu_seconds": 14.729999999999999,
+      "process_memory_peak": {
+        "VmPeak": 950228,
+        "VmSize": 830844,
+        "VmHWM": 793616,
+        "VmRSS": 786912,
+        "Threads": 3
+      },
+      "scope_memory_peak_bytes": 1208201216,
+      "scope_events_after": {
+        "low": 0,
+        "high": 1520,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "scope_controls": {
+        "memory.max": "1342177280",
+        "memory.high": "1207959552",
+        "memory.swap.max": "0",
+        "cpu.max": "200000 100000",
+        "cpu.weight": "20",
+        "pids.max": "64"
+      },
+      "runtime": "4min",
+      "available_kib": 159992300,
+      "scope_pressure_before": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+      "scope_pressure_after": "some avg10=0.00 avg60=0.00 avg300=0.00 total=6231\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=6231\n",
+      "host_pressure_before": "some avg10=16.06 avg60=7.90 avg300=4.32 total=5995091688\nfull avg10=14.62 avg60=7.17 avg300=3.93 total=5536747873\n",
+      "host_pressure_after": "some avg10=3.24 avg60=6.40 avg300=4.26 total=5995958559\nfull avg10=2.95 avg60=5.80 avg300=3.87 total=5537542639\n",
+      "materialization_sha256": {
+        "worker": "b8df370ff2a03a8acc56f235cd1a113d771b35dfcbd925210db9c272aefcf380",
+        "tilo-speech-worker": "b8df370ff2a03a8acc56f235cd1a113d771b35dfcbd925210db9c272aefcf380",
+        "libnemo_speech_asr.so": "9475c188a55cb5abae0a0d08e392e6dc31c73345f38f21e287b547d0f67f78f0",
+        "libggml.so.0": "649ba42d24ce00b7cfbacf3b8d973a7473f991e2a4181814bf12b96b878aae01",
+        "libggml-cpu.so.0": "f7a524fd49cd62a8227e6809614f13073e3a62b3b7a50a03b657f572428bc78c",
+        "libggml-base.so.0": "caea5e3e5b0b01b6b2652115163a41b37dd7b26ffbc1b9b71ee1f5e9435303b9",
+        "probe.py": "390b149f1fe23dbfc3844f4171ea814e554f41e131c4539f0e7b47447d6f96de",
+        "probe_speech_memory.py": "f29511fe493ede490c3593089dba2c1b7c140c4e14e1d9497d25d5f48dba499f",
+        "probe_asr_candidate.py": "0d8735e2233b950a99c4b718203c72a9a23cc67d668c6f3581215e35740ebc7c",
+        "summarize_speech_benchmark.py": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7"
+      },
+      "latest_pipe_audio_frame_to_first_stable_ms": 372.9325989843346,
+      "first_partial_ms": 6373.021481005708,
+      "first_stable_partial_ms": 6373.021481005708,
+      "first_stable_partial_units": 3,
+      "first_meaningful_stable_partial_ms": 6373.021481005708,
+      "non_prefix_revisions_including_final": 0,
+      "stability_definition": "retrospective exact prefix of every later draft and final; not a causal guarantee",
+      "same_pcm_and_final_privately_verified_with": "noise-policy"
+    },
+    {
+      "case": "de_de-0",
+      "language": "de",
+      "public_sources": [
+        {
+          "id": "de_de-0",
+          "sha256": "cc46d12f9faf44a694e709c8bcf04028e686e6b4c1deefe3ac6dbd821a970630"
+        }
+      ],
+      "input_pcm_sha256": "4040ab1de7fd47b3355f6f0d593bbda9f6d43e765218cf5c5f07ae84bd0609a1",
+      "original_pcm_sha256": "fe4d2a3b4113fb327094d0628ff7ed07e40726c1ab20564d01d3a745cba349b0",
+      "synthetic_noise": {
+        "kind": "synthetic seeded Gaussian white noise; not real noisy speech",
+        "seed": 0,
+        "requested_snr_db": 10,
+        "achieved_snr_db": 9.99994991724374,
+        "clipped_samples": 0
+      },
+      "assembled_language_transition": false,
+      "public_vocabulary": [
+        "Hongkong",
+        "Kowloon",
+        "TiLo"
+      ],
+      "model_sha256": "3fc991d3badad7277c11030a7519832cddaf2057aafed6d4b25147e953a070b1",
+      "audio_seconds": 17.94,
+      "first_draft_seconds": 0.5,
+      "draft_interval_ms": 500.0,
+      "worker_draft_policy": "incremental",
+      "worker_cadence_used": true,
+      "native_right_context": 1,
+      "preparation_phases": {
+        "verify_ms": 4677.992329000001,
+        "native_ms": 408.37800200000004
+      },
+      "audio_transport": "continuous20ms",
+      "finalization_ms": 113.0168380041141,
+      "receipt": "voice-nemo-situational-noise-policy.log",
+      "variant": "noise-policy",
+      "raw_errors": 3,
+      "raw_words": 18,
+      "unspoken_hint_inserted": false,
+      "ready_ms": 5089.523197995732,
+      "cpu_seconds": 15.27,
+      "process_memory_peak": {
+        "VmPeak": 949684,
+        "VmSize": 826216,
+        "VmHWM": 793776,
+        "VmRSS": 786668,
+        "Threads": 3
+      },
+      "scope_memory_peak_bytes": 1207992320,
+      "scope_events_after": {
+        "low": 0,
+        "high": 1505,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "scope_controls": {
+        "memory.max": "1342177280",
+        "memory.high": "1207959552",
+        "memory.swap.max": "0",
+        "cpu.max": "200000 100000",
+        "cpu.weight": "20",
+        "pids.max": "64"
+      },
+      "runtime": "4min",
+      "available_kib": 154275476,
+      "scope_pressure_before": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+      "scope_pressure_after": "some avg10=0.00 avg60=0.00 avg300=0.00 total=2100\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=2100\n",
+      "host_pressure_before": "some avg10=3.24 avg60=6.40 avg300=4.26 total=5995959190\nfull avg10=2.95 avg60=5.80 avg300=3.87 total=5537543057\n",
+      "host_pressure_after": "some avg10=4.10 avg60=5.45 avg300=4.18 total=5996865405\nfull avg10=3.71 avg60=4.96 avg300=3.81 total=5538392327\n",
+      "materialization_sha256": {
+        "worker": "b8df370ff2a03a8acc56f235cd1a113d771b35dfcbd925210db9c272aefcf380",
+        "tilo-speech-worker": "b8df370ff2a03a8acc56f235cd1a113d771b35dfcbd925210db9c272aefcf380",
+        "libnemo_speech_asr.so": "9475c188a55cb5abae0a0d08e392e6dc31c73345f38f21e287b547d0f67f78f0",
+        "libggml.so.0": "649ba42d24ce00b7cfbacf3b8d973a7473f991e2a4181814bf12b96b878aae01",
+        "libggml-cpu.so.0": "f7a524fd49cd62a8227e6809614f13073e3a62b3b7a50a03b657f572428bc78c",
+        "libggml-base.so.0": "caea5e3e5b0b01b6b2652115163a41b37dd7b26ffbc1b9b71ee1f5e9435303b9",
+        "probe.py": "390b149f1fe23dbfc3844f4171ea814e554f41e131c4539f0e7b47447d6f96de",
+        "probe_speech_memory.py": "f29511fe493ede490c3593089dba2c1b7c140c4e14e1d9497d25d5f48dba499f",
+        "probe_asr_candidate.py": "0d8735e2233b950a99c4b718203c72a9a23cc67d668c6f3581215e35740ebc7c",
+        "summarize_speech_benchmark.py": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7"
+      },
+      "latest_pipe_audio_frame_to_first_stable_ms": 166.25695399125107,
+      "first_partial_ms": 5666.345359990373,
+      "first_stable_partial_ms": 5666.345359990373,
+      "first_stable_partial_units": 2,
+      "first_meaningful_stable_partial_ms": 6269.848898984492,
+      "non_prefix_revisions_including_final": 0,
+      "stability_definition": "retrospective exact prefix of every later draft and final; not a causal guarantee",
+      "same_pcm_and_final_privately_verified_with": "noise-before"
+    },
+    {
+      "case": "en_us-0+de_de-0",
+      "language": "auto",
+      "public_sources": [
+        {
+          "id": "en_us-0",
+          "sha256": "b438b60eb4e9fddbcaa303e27070c2458c3daac42f0b08d5d8622c47335d24f7"
+        },
+        {
+          "id": "de_de-0",
+          "sha256": "cc46d12f9faf44a694e709c8bcf04028e686e6b4c1deefe3ac6dbd821a970630"
+        }
+      ],
+      "input_pcm_sha256": "5dae37146aa94f07e4498c3191a4cb55909219dd667d85c05925c6b63ee58525",
+      "original_pcm_sha256": "5dae37146aa94f07e4498c3191a4cb55909219dd667d85c05925c6b63ee58525",
+      "synthetic_noise": null,
+      "assembled_language_transition": true,
+      "public_vocabulary": [],
+      "model_sha256": "3fc991d3badad7277c11030a7519832cddaf2057aafed6d4b25147e953a070b1",
+      "audio_seconds": 28.5,
+      "first_draft_seconds": 0.5,
+      "draft_interval_ms": 500.0,
+      "worker_draft_policy": "incremental",
+      "worker_cadence_used": true,
+      "native_right_context": 1,
+      "preparation_phases": {
+        "verify_ms": 4674.181703,
+        "native_ms": 715.634177
+      },
+      "audio_transport": "continuous20ms",
+      "finalization_ms": 105.50500798854046,
+      "receipt": "voice-nemo-situational-auto-transition.log",
+      "variant": "auto-transition",
+      "raw_errors": 9,
+      "raw_words": 37,
+      "unspoken_hint_inserted": false,
+      "ready_ms": 5392.974477988901,
+      "cpu_seconds": 23.720000000000002,
+      "process_memory_peak": {
+        "VmPeak": 948416,
+        "VmSize": 826216,
+        "VmHWM": 794140,
+        "VmRSS": 786032,
+        "Threads": 3
+      },
+      "scope_memory_peak_bytes": 1208025088,
+      "scope_events_after": {
+        "low": 0,
+        "high": 1443,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "scope_controls": {
+        "memory.max": "1342177280",
+        "memory.high": "1207959552",
+        "memory.swap.max": "0",
+        "cpu.max": "200000 100000",
+        "cpu.weight": "20",
+        "pids.max": "64"
+      },
+      "runtime": "4min",
+      "available_kib": 152418648,
+      "scope_pressure_before": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+      "scope_pressure_after": "some avg10=0.00 avg60=0.00 avg300=0.00 total=17560\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=17472\n",
+      "host_pressure_before": "some avg10=4.10 avg60=5.45 avg300=4.18 total=5996869105\nfull avg10=3.71 avg60=4.96 avg300=3.81 total=5538395428\n",
+      "host_pressure_after": "some avg10=2.37 avg60=3.93 avg300=3.92 total=5997633217\nfull avg10=2.19 avg60=3.60 avg300=3.58 total=5539146346\n",
+      "materialization_sha256": {
+        "worker": "b8df370ff2a03a8acc56f235cd1a113d771b35dfcbd925210db9c272aefcf380",
+        "tilo-speech-worker": "b8df370ff2a03a8acc56f235cd1a113d771b35dfcbd925210db9c272aefcf380",
+        "libnemo_speech_asr.so": "9475c188a55cb5abae0a0d08e392e6dc31c73345f38f21e287b547d0f67f78f0",
+        "libggml.so.0": "649ba42d24ce00b7cfbacf3b8d973a7473f991e2a4181814bf12b96b878aae01",
+        "libggml-cpu.so.0": "f7a524fd49cd62a8227e6809614f13073e3a62b3b7a50a03b657f572428bc78c",
+        "libggml-base.so.0": "caea5e3e5b0b01b6b2652115163a41b37dd7b26ffbc1b9b71ee1f5e9435303b9",
+        "probe.py": "390b149f1fe23dbfc3844f4171ea814e554f41e131c4539f0e7b47447d6f96de",
+        "probe_speech_memory.py": "f29511fe493ede490c3593089dba2c1b7c140c4e14e1d9497d25d5f48dba499f",
+        "probe_asr_candidate.py": "0d8735e2233b950a99c4b718203c72a9a23cc67d668c6f3581215e35740ebc7c",
+        "summarize_speech_benchmark.py": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7"
+      },
+      "latest_pipe_audio_frame_to_first_stable_ms": 162.93766399030574,
+      "first_partial_ms": 1663.008900010027,
+      "first_stable_partial_ms": 1663.008900010027,
+      "first_stable_partial_units": 1,
+      "first_meaningful_stable_partial_ms": 3171.982972009573,
+      "non_prefix_revisions_including_final": 0,
+      "stability_definition": "retrospective exact prefix of every later draft and final; not a causal guarantee",
+      "same_pcm_privately_verified_with": "auto-vocabulary"
+    },
+    {
+      "case": "en_us-0+de_de-0",
+      "language": "auto",
+      "public_sources": [
+        {
+          "id": "en_us-0",
+          "sha256": "b438b60eb4e9fddbcaa303e27070c2458c3daac42f0b08d5d8622c47335d24f7"
+        },
+        {
+          "id": "de_de-0",
+          "sha256": "cc46d12f9faf44a694e709c8bcf04028e686e6b4c1deefe3ac6dbd821a970630"
+        }
+      ],
+      "input_pcm_sha256": "5dae37146aa94f07e4498c3191a4cb55909219dd667d85c05925c6b63ee58525",
+      "original_pcm_sha256": "5dae37146aa94f07e4498c3191a4cb55909219dd667d85c05925c6b63ee58525",
+      "synthetic_noise": null,
+      "assembled_language_transition": true,
+      "public_vocabulary": [
+        "Hongkong",
+        "Kowloon",
+        "TiLo"
+      ],
+      "model_sha256": "3fc991d3badad7277c11030a7519832cddaf2057aafed6d4b25147e953a070b1",
+      "audio_seconds": 28.5,
+      "first_draft_seconds": 0.5,
+      "draft_interval_ms": 500.0,
+      "worker_draft_policy": "incremental",
+      "worker_cadence_used": true,
+      "native_right_context": 1,
+      "preparation_phases": {
+        "verify_ms": 4659.437397,
+        "native_ms": 379.561238
+      },
+      "audio_transport": "continuous20ms",
+      "finalization_ms": 111.43065898795612,
+      "receipt": "voice-nemo-situational-auto-vocabulary.log",
+      "variant": "auto-vocabulary",
+      "raw_errors": 8,
+      "raw_words": 37,
+      "unspoken_hint_inserted": false,
+      "ready_ms": 5044.0555149980355,
+      "cpu_seconds": 26.91,
+      "process_memory_peak": {
+        "VmPeak": 949152,
+        "VmSize": 826216,
+        "VmHWM": 794188,
+        "VmRSS": 786776,
+        "Threads": 3
+      },
+      "scope_memory_peak_bytes": 1208328192,
+      "scope_events_after": {
+        "low": 0,
+        "high": 1456,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "scope_controls": {
+        "memory.max": "1342177280",
+        "memory.high": "1207959552",
+        "memory.swap.max": "0",
+        "cpu.max": "200000 100000",
+        "cpu.weight": "20",
+        "pids.max": "64"
+      },
+      "runtime": "4min",
+      "available_kib": 153944264,
+      "scope_pressure_before": "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+      "scope_pressure_after": "some avg10=0.00 avg60=0.00 avg300=0.00 total=2198\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=2198\n",
+      "host_pressure_before": "some avg10=8.49 avg60=5.58 avg300=4.78 total=6012111642\nfull avg10=8.20 avg60=5.28 avg300=4.42 total=5552608893\n",
+      "host_pressure_after": "some avg10=4.72 avg60=6.46 avg300=5.15 total=6014505810\nfull avg10=4.12 avg60=5.91 avg300=4.73 total=5554691541\n",
+      "materialization_sha256": {
+        "worker": "b8df370ff2a03a8acc56f235cd1a113d771b35dfcbd925210db9c272aefcf380",
+        "tilo-speech-worker": "b8df370ff2a03a8acc56f235cd1a113d771b35dfcbd925210db9c272aefcf380",
+        "libnemo_speech_asr.so": "9475c188a55cb5abae0a0d08e392e6dc31c73345f38f21e287b547d0f67f78f0",
+        "libggml.so.0": "649ba42d24ce00b7cfbacf3b8d973a7473f991e2a4181814bf12b96b878aae01",
+        "libggml-cpu.so.0": "f7a524fd49cd62a8227e6809614f13073e3a62b3b7a50a03b657f572428bc78c",
+        "libggml-base.so.0": "caea5e3e5b0b01b6b2652115163a41b37dd7b26ffbc1b9b71ee1f5e9435303b9",
+        "probe.py": "390b149f1fe23dbfc3844f4171ea814e554f41e131c4539f0e7b47447d6f96de",
+        "probe_speech_memory.py": "f29511fe493ede490c3593089dba2c1b7c140c4e14e1d9497d25d5f48dba499f",
+        "probe_asr_candidate.py": "0d8735e2233b950a99c4b718203c72a9a23cc67d668c6f3581215e35740ebc7c",
+        "summarize_speech_benchmark.py": "c5dd4a4ca3079978283af644b3726a70eb5e96c51b509f6253c4a797a62381a7"
+      },
+      "latest_pipe_audio_frame_to_first_stable_ms": 269.287973002065,
+      "first_partial_ms": 1769.8737350001466,
+      "first_stable_partial_ms": 1769.8737350001466,
+      "first_stable_partial_units": 1,
+      "first_meaningful_stable_partial_ms": 3185.0490079959854,
+      "non_prefix_revisions_including_final": 0,
+      "stability_definition": "retrospective exact prefix of every later draft and final; not a causal guarantee",
+      "same_pcm_privately_verified_with": "auto-transition"
+    }
+  ],
+  "source_sha256": {
+    "crates/agent/provider-config/src/speech.rs": "080e1fc4caeb86c35f5c540cd3e17df7b5737d69ffa7a179dd541348251ee4b1",
+    "crates/agent/local-model-service/src/speech/worker.rs": "0bc10f6d148f11e28bb2fa9f3d6694df704affe986cf9417cc1b3c2038763496",
+    "crates/agent/local-model-service/examples/nemo_speech_worker.rs": "7b66cbe6a279ed87a082c90e6082b18d303630e0038b791a7542b61eeea204e7",
+    "crates/session/shell/src/compositor/dictation/runtime.rs": "2ca41ee9ee892256cf1c85756dea5205e20ab0d7c77ae21d5fd422aa76bc34eb",
+    "tools/release/fixtures/nemo_worker_bridge.cpp": "1359eb221e2b220a7e28fe925f720dafef5a486dd3d20c9766f36b87e93d441f",
+    "tools/release/probe_speech_stream.py": "390b149f1fe23dbfc3844f4171ea814e554f41e131c4539f0e7b47447d6f96de",
+    "tools/release/qualify_sealed_speech_scope.py": "4f61b28b81a9584abdb4e5c234a3c4596b1f1edd1dfbc6bb8b3711fb65a17760"
+  },
+  "verification": {
+    "fresh_final_published_native_worker_build": {
+      "passed": true,
+      "seconds": 5.2
+    },
+    "actual_confined_streams": {
+      "passed": true,
+      "count": 4
+    },
+    "scope_script_py_compile": {
+      "passed": true
+    },
+    "required_shell_test_target_check": {
+      "passed": true,
+      "seconds": 3.51
+    },
+    "owned_fixture_cleanup": {
+      "passed": true,
+      "all_four_units_inactive": true,
+      "original_source_model_build_untouched": true
+    }
+  }
+}
