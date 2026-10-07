@@ -17967,6 +17967,7 @@ dependencies = [
  "gstreamer-app",
  "librespot",
  "tilo-clock",
+ "tilo-media",
  "tilo-rt",
  "tokio",
  "workspace-hack",
