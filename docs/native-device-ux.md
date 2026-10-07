@@ -58,6 +58,27 @@ checks. No durable user resource is deleted by this slice.
 
 ## Pending usable integration
 
+Code Editor's typed continuation projects its active durable buffer identity,
+CRDT-anchored carets and selections, top visible character, fractional line offset
+and horizontal columns. It includes no file path or text. Resolution happens
+against the existing hydrated record after merge; unavailable or foreign-object
+anchors are refused. Pixel dimensions are measured on the receiving device.
+Restoring this presentation neither edits text nor grants keyboard focus.
+The text facet is available only with an active bound buffer. An empty editor
+retains the framework's presentation-only continuation; the manifest declares
+the optional typed schema without promising a text selection when none exists.
+
+The headless two-app fixture hydrates a same-room record through the existing
+checked storage installer before launching the receiving app. Both real editor
+dispatchers then make concurrent offline text edits and merge through the record
+store. It asserts matching body hashes, anchored selection and shifted viewport,
+with different measured cell widths and no focus grant. This is explicit native
+continuation, not continuous owner-session following or a physical handoff proof.
+Independent cold starts currently can create competing top-level text objects;
+the hydrated-record fixture does not claim that separate bootstrap issue is fixed.
+The cursor API also rejects a valid operation from another text sequence instead
+of asserting, so malformed continuation cannot crash that lookup.
+
 Live Displays now observes certified peers' connector topology through the shared
 host projection described below. Dragging peer screens still needs semantic
 bindings to the existing fabric placement actions and confirmation appropriate to
