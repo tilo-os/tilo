@@ -42,7 +42,7 @@ def row(record="derived:default@tab:000000000000000b", operation="navigate"):
     return {"provider": "app-actions", "application": app.BROWSER,
             "room": "room", "record": record, "resource": "bound:" + record,
             "id": record + ":" + operation, "operation": operation,
-            "semantic_identity": {"kind": "browser.page"}, "params": [],
+            "semantic_identity": {"kind": "browser.page", "key": "browser.page"}, "params": [],
             "contract": {"availability": {"state": "available"}}}
 
 
@@ -242,6 +242,180 @@ class Jobs(unittest.TestCase):
                 action_jobs.invoke(Untracked(), {"provider": "actions", "id": "open"}, {}, Path(directory), "open", require_job=False)
 
 
+class AdoptedAppDoor(unittest.TestCase):
+    def subject(self):
+        return {"room":"room", "tab_id":1, "surface_id":101, "package_id":app.STORE,
+                "record_instance":11, "peer_pid":456, "peer_start_time_ticks":"12345",
+                "adoption_id":"12345678-1234-1234-1234-123456789abc"}
+
+    def descriptor(self, alias="initial"):
+        value = row(operation="show-runtime-details")
+        value.update(application=app.STORE, resource=alias, id=alias+":show-runtime-details",
+                     semantic_identity={"kind":"store.catalog", "key":"store.catalog"},
+                     params=[{"name":"runtime", "required":True, "type":"text"},
+                             {"name":"registry", "required":False, "type":"text"}])
+        return value
+
+    def vm(self):
+        owner=self
+        class VM:
+            descriptor=owner.descriptor()
+            effects=[]
+            worker=owner.subject()
+            descriptors=None
+            catalogue_sequence=None
+            on_catalogue=None
+            on_invoke=None
+            gone=False
+            def state(self):
+                value=state(1)
+                value["workspace_tree"]["local_app_records"]["1"]["app_id"]=app.STORE
+                value["workspace_tree"]["workspaces"][0]["strips"][0]["window_groups"][0]["tabs"][0]["tile"]["Foreign"]["app_id"]=app.STORE
+                value["chrome"]={"session_locked":False,"native_window_provenance":{"method":"authenticated-wayland-peer", "omitted":0, "windows":[] if self.gone else [self.worker]}}
+                return value
+            def control_json(self,*args):
+                if args[:2]==("actions","status"):return receipt("succeeded",value="reviewed")
+                rows=([self.descriptor] if self.descriptors is None else self.descriptors)
+                if self.catalogue_sequence is not None:rows=next(self.catalogue_sequence)
+                result={"query":app.STORE,"actions":copy.deepcopy(rows)}
+                if self.on_catalogue is not None:self.on_catalogue()
+                return result
+            def invoke(self,provider,identity,args):
+                if identity!=self.descriptor["id"]:raise VmError("stale descriptor reached invocation")
+                self.effects.append((provider,identity,args))
+                if self.on_invoke is not None:self.on_invoke()
+                return receipt("accepted")
+        return VM()
+
+    def test_same_owned_worker_rebinds_the_stable_resource_after_startup_adoption(self):
+        vm=self.vm()
+        with tempfile.TemporaryDirectory() as directory, patch.object(app,"wait_until",polls):
+            door=app.AppDoor(vm,app.STORE,"store.catalog",app.binding(vm.descriptor),Path(directory))
+            vm.descriptor=self.descriptor("adopted")
+            self.assertEqual(door.call("show-runtime-details",{"runtime":"tilo-runtime/test"}),"reviewed")
+        self.assertEqual(vm.effects,[("app-actions","adopted:show-runtime-details",{"runtime":"tilo-runtime/test"})])
+
+
+    def test_startup_null_identity_is_only_read_until_the_exact_resource_is_adopted(self):
+        vm=self.vm()
+        pending=self.descriptor();pending["semantic_identity"]=None
+        vm.catalogue_sequence=iter([[pending],[self.descriptor()]])
+        with tempfile.TemporaryDirectory() as directory,patch.object(app,"wait_until",polls):
+            door=app.AppDoor(vm,app.STORE,"store.catalog",app.binding(vm.descriptor),Path(directory))
+            self.assertEqual(vm.effects,[])
+            vm.catalogue_sequence=None
+            self.assertEqual(door.call("show-runtime-details",{"runtime":"test"}),"reviewed")
+        self.assertEqual(len(vm.effects),1)
+
+    def test_original_public_semantic_identity_and_worker_allow_already_adopted_alias(self):
+        vm=self.vm();original=app.binding(vm.descriptor);subject=copy.deepcopy(vm.worker)
+        semantic=app.semantic_identity(vm.descriptor);vm.descriptor=self.descriptor("adopted-before-door")
+        with tempfile.TemporaryDirectory() as directory,patch.object(app,"wait_until",polls):
+            door=app.AppDoor(vm,app.STORE,"store.catalog",original,Path(directory),semantic,subject)
+            self.assertEqual(door.call("show-runtime-details",{"runtime":"test"}),"reviewed")
+        self.assertEqual(vm.effects[0][1],"adopted-before-door:show-runtime-details")
+
+    def test_unknown_initial_alias_never_guesses_a_unique_current_child(self):
+        vm=self.vm();original=app.binding(vm.descriptor);vm.descriptor=self.descriptor("other")
+        with tempfile.TemporaryDirectory() as directory,patch.object(app,"wait_until",polls):
+            with self.assertRaises(VmError):
+                app.AppDoor(vm,app.STORE,"store.catalog",original,Path(directory))
+        self.assertEqual(vm.effects,[])
+
+    def test_foreign_revoked_missing_and_ambiguous_current_descriptors_never_invoke(self):
+        for fault in ("foreign-app","foreign-room","foreign-record","foreign-child","null-identity",
+                      "missing-key","revoked","ambiguous","missing"):
+            vm=self.vm()
+            with tempfile.TemporaryDirectory() as directory,patch.object(app,"wait_until",polls):
+                door=app.AppDoor(vm,app.STORE,"store.catalog",app.binding(vm.descriptor),Path(directory))
+                if fault=="foreign-app":vm.descriptor["application"]=app.BROWSER
+                elif fault=="foreign-room":vm.descriptor["room"]="other"
+                elif fault=="foreign-record":vm.descriptor["record"]="other"
+                elif fault=="foreign-child":vm.descriptor["semantic_identity"]["key"]="runtime:other"
+                elif fault=="null-identity":vm.descriptor["semantic_identity"]=None
+                elif fault=="missing-key":vm.descriptor["semantic_identity"].pop("key")
+                elif fault=="revoked":vm.descriptor["contract"]["availability"]["state"]="unavailable"
+                elif fault=="ambiguous":vm.descriptors=[vm.descriptor,self.descriptor("other-alias")]
+                else:vm.descriptors=[]
+                with self.subTest(fault=fault),self.assertRaises(VmError):
+                    door.call("show-runtime-details",{"runtime":"test"})
+                self.assertEqual(vm.effects,[])
+
+    def test_replaced_closed_or_unattested_worker_never_inherits_the_original_door(self):
+        for fault in ("pid","start","adoption","record","package","closed"):
+            vm=self.vm()
+            with tempfile.TemporaryDirectory() as directory,patch.object(app,"wait_until",polls):
+                door=app.AppDoor(vm,app.STORE,"store.catalog",app.binding(vm.descriptor),Path(directory))
+                if fault=="pid":vm.worker["peer_pid"]=789
+                elif fault=="start":vm.worker["peer_start_time_ticks"]="999"
+                elif fault=="adoption":vm.worker["adoption_id"]="22345678-1234-1234-1234-123456789abc"
+                elif fault=="record":vm.worker["record_instance"]=12
+                elif fault=="package":vm.worker["package_id"]=app.BROWSER
+                else:vm.gone=True
+                with self.subTest(fault=fault),self.assertRaises(VmError):
+                    door.call("show-runtime-details",{"runtime":"test"})
+                self.assertEqual(vm.effects,[])
+
+    def test_worker_changes_during_discovery_refuse_before_effect_and_after_effect_never_replay(self):
+        for phase in ("catalogue","effect"):
+            vm=self.vm()
+            with tempfile.TemporaryDirectory() as directory,patch.object(app,"wait_until",polls):
+                door=app.AppDoor(vm,app.STORE,"store.catalog",app.binding(vm.descriptor),Path(directory))
+                def replace():vm.worker["peer_start_time_ticks"]="999"
+                if phase=="catalogue":vm.on_catalogue=replace
+                else:vm.on_invoke=replace
+                with self.subTest(phase=phase),self.assertRaises(VmError):
+                    door.call("show-runtime-details",{"runtime":"test"})
+                self.assertEqual(len(vm.effects),0 if phase=="catalogue" else 1)
+
+    def test_unavailable_owner_diagnostic_or_locked_context_never_invoke(self):
+        for fault in ("missing-owner-proof","foreign-method","locked","unknown-lock"):
+            vm=self.vm();current=vm.state
+            def denied():
+                value=current()
+                if fault=="missing-owner-proof":value["chrome"].pop("native_window_provenance")
+                elif fault=="foreign-method":value["chrome"]["native_window_provenance"]["method"]="caller-label"
+                elif fault=="locked":value["chrome"]["session_locked"]=True
+                else:value["chrome"].pop("session_locked")
+                return value
+            vm.state=denied
+            with tempfile.TemporaryDirectory() as directory,patch.object(app,"wait_until",polls):
+                with self.subTest(fault=fault),self.assertRaises(VmError):
+                    app.AppDoor(vm,app.STORE,"store.catalog",app.binding(vm.descriptor),Path(directory))
+            self.assertEqual(vm.effects,[])
+
+    def test_genuine_other_worker_subject_cannot_authorize_the_bound_record(self):
+        vm=self.vm();original=copy.deepcopy(vm.worker)
+        vm.descriptor["record"]="derived:default@tab:000000000000000c"
+        current=vm.state
+        def two_store_windows():
+            value=current()
+            records=value["workspace_tree"]["local_app_records"]
+            records["2"]={"room":"room","app_id":app.STORE,"record_instance":12}
+            tabs=value["workspace_tree"]["workspaces"][0]["strips"][0]["window_groups"][0]["tabs"]
+            tabs.append({"id":2,"tile":{"Foreign":{"app_id":app.STORE,"surface_id":102}}})
+            value["chrome"]["native_window_provenance"]["windows"].append(
+                dict(original,tab_id=2,surface_id=102,record_instance=12,peer_pid=789))
+            return value
+        vm.state=two_store_windows
+        with tempfile.TemporaryDirectory() as directory,patch.object(app,"wait_until",polls):
+            with self.assertRaises(VmError):
+                app.AppDoor(vm,app.STORE,"store.catalog",app.binding(vm.descriptor),Path(directory),
+                            app.semantic_identity(vm.descriptor),original)
+        self.assertEqual(vm.effects,[])
+
+    def test_each_call_uses_one_new_authorized_alias_and_tracks_its_original_job(self):
+        vm=self.vm()
+        with tempfile.TemporaryDirectory() as directory,patch.object(app,"wait_until",polls):
+            door=app.AppDoor(vm,app.STORE,"store.catalog",app.binding(vm.descriptor),Path(directory))
+            for alias in ("adopted-one","adopted-two"):
+                vm.descriptor=self.descriptor(alias)
+                self.assertEqual(door.call("show-runtime-details",{"runtime":"test"}),"reviewed")
+                self.assertEqual(door.bound[3],alias)
+        self.assertEqual([effect[1] for effect in vm.effects],
+                         ["adopted-one:show-runtime-details","adopted-two:show-runtime-details"])
+
+
 class BrowserWorker(unittest.TestCase):
     def current(self):
         value = state(1, 2)
@@ -281,7 +455,13 @@ class FreshBrowser(unittest.TestCase):
             invoked = []
 
             def state(self):
-                return state(1, 2) if self.stage and new_surface else state(1)
+                tabs=(1, 2) if self.stage and new_surface else (1,)
+                value=state(*tabs)
+                value["chrome"]={"session_locked":False,"native_window_provenance":{"method":"authenticated-wayland-peer", "omitted":0,
+                    "windows":[{"room":"room", "tab_id":tab, "surface_id":tab+100, "package_id":app.BROWSER,
+                                "record_instance":tab+10, "peer_pid":400+tab, "peer_start_time_ticks":str(1000+tab),
+                                "adoption_id":f"12345678-1234-1234-1234-{tab:012x}"} for tab in tabs]}}
+                return value
 
             def actions(self, query):
                 return [{"provider": "actions", "id": "tab.open-beside"}]

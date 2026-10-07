@@ -284,6 +284,25 @@ attestor. A self-signed cohort package is not that prerequisite. The source
 receipt and actual mapped ELF hashes, not a version label, establish the SDK
 association; installer/daemon verification remains authoritative.
 
+Application action aliases can change when a newly launched model is adopted.
+`AppDoor` pins the host-observed application, room, record and native worker
+(PID/start time, surface and adoption identity), together with the original
+published semantic resource kind/key. Each call discovers one fresh available
+descriptor for that same resource and tracks that invocation exactly once.
+A replaced worker, revoked action, ambiguous resource or locked owner session
+refuses the call; an uncertain completion is never replayed.
+
+An authorized owner adapter may reuse this door for an already prepared owned
+window. Retain its original descriptor and native subject at preparation time,
+then pass `binding(descriptor)`, `semantic_identity(descriptor)` and that
+subject to `AppDoor`. A null semantic identity is not usable resource proof:
+the door waits read-only for the exact initial alias to publish its identity.
+If the initial alias has already disappeared and its original semantic identity
+was not retained, repeat read-only preparation rather than guessing a child
+resource from its kind or decoding an opaque alias. The identity describes the
+resource; the fresh descriptor and existing authenticated transport still
+control availability and authorization.
+
 Flatpak acceptance refuses an already installed Calculator, disabled or
 foreign Flathub collisions, unavailable remotes and ambiguous bindings. It
 requires browse, search, readable details, completed install, account-level

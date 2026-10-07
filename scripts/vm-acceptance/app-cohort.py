@@ -7,7 +7,6 @@ Run only after the deployment owner hands off the matched cohort.
 import argparse
 import re
 import json
-import re
 import shlex
 import time
 from pathlib import Path
@@ -26,6 +25,18 @@ def binding(row):
     return tuple(row.get(k) for k in ("application", "room", "record", "resource"))
 
 
+def semantic_identity(row):
+    identity = row.get("semantic_identity")
+    if not isinstance(identity, dict):
+        return None
+    kind, key = identity.get("kind"), identity.get("key")
+    if (not isinstance(kind, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", kind)
+            or not isinstance(key, str) or not key or len(key.encode()) > 4096
+            or any(ord(character) < 32 or 127 <= ord(character) < 160 for character in key)):
+        return None
+    return kind, key
+
+
 def catalog(vm, app):
     result = vm.control_json("actions", "list", app, "--programmatic", "--json")
     require(result.get("query") == app and isinstance(result.get("actions"), list),
@@ -33,13 +44,15 @@ def catalog(vm, app):
     return [r for r in result["actions"] if r.get("application") == app]
 
 
-def choose(rows, app, kind, operation, args, bound=None):
+def choose(rows, app, kind, operation, args, bound=None, semantic=None):
     found = []
     for row in rows:
         if (row.get("provider") != "app-actions" or row.get("application") != app
-                or (row.get("semantic_identity") or {}).get("kind") != kind
+                or not (identity := semantic_identity(row)) or identity[0] != kind
                 or row.get("operation") != operation
-                or (bound is not None and binding(row) != bound)):
+                or (bound is not None and binding(row)[:3] != bound[:3])
+                or (semantic is not None and identity != semantic)
+                or (semantic is None and bound is not None and binding(row) != bound)):
             continue
         params = row.get("params")
         if not isinstance(params, list):
@@ -59,18 +72,76 @@ def choose(rows, app, kind, operation, args, bound=None):
 
 
 class AppDoor:
-    def __init__(self, vm, app, kind, bound, out):
+    def __init__(self, vm, app, kind, bound, out, semantic=None, subject=None):
         self.vm, self.app, self.kind, self.bound, self.out = vm, app, kind, bound, out
         self.sequence = 0
+        self.tab = self.worker = None
+        self.semantic = semantic
+        if semantic is not None:
+            require(isinstance(semantic, tuple) and len(semantic) == 2
+                    and semantic_identity({"semantic_identity": {"kind": semantic[0], "key": semantic[1]}}) == semantic
+                    and semantic[0] == kind, "invalid original resource semantic identity")
+        if subject is not None:
+            require(isinstance(subject, dict), "invalid original worker subject")
+            self.worker = dict(subject)
+            self.tab = (subject.get("room"), str(subject.get("tab_id")), str(subject.get("surface_id")))
+        if vm is not None:
+            require(len(bound) == 4 and all(isinstance(part, str) and part for part in bound)
+                    and bound[0] == app, "incomplete original application binding")
+            require(wait_until(self._adopt, 60) is True,
+                    "owned worker semantic resource never became observable")
+
+    def _adopt(self):
+        if self.worker is None:
+            state = self.vm.state()
+            tabs = [tab for tab in windows(state, self.app)
+                    if tab[0] == self.bound[1] and mapped_record(state, tab, self.app) == self.bound[2]]
+            require(len(tabs) <= 1, "original application record has ambiguous mapped windows")
+            if not tabs:
+                return None
+            worker = native_subject(state, tabs[0], self.app)
+            if worker is None:
+                return None
+            self.tab, self.worker = tabs[0], dict(worker)
+        self._check_custody()
+        rows = catalog(self.vm, self.app)
+        identities = {identity for row in rows
+                      if row.get("provider") == "app-actions" and binding(row)[:3] == self.bound[:3]
+                      and (identity := semantic_identity(row)) and identity[0] == self.kind
+                      and ((self.semantic is None and binding(row) == self.bound)
+                           or identity == self.semantic)}
+        require(len(identities) <= 1, "original worker has ambiguous semantic child resources")
+        self._check_custody()
+        if not identities:
+            return None
+        self.semantic = next(iter(identities))
+        return True
+
+    def _check_custody(self):
+        require(self.worker is not None and self.tab is not None,
+                "original authenticated worker custody unavailable")
+        state = self.vm.state()
+        require(state.get("chrome", {}).get("session_locked") is False,
+                "original owner session is not observably unlocked")
+        require(self.tab[0] == self.bound[1] and mapped_record(state, self.tab, self.app) == self.bound[2],
+                "original worker differs from the bound room or record")
+        require(native_subject(state, self.tab, self.app) == self.worker,
+                "original authenticated worker custody changed")
 
     def call(self, operation, args=None, timeout=120):
         args = dict(args or {})
-        row = choose(catalog(self.vm, self.app), self.app, self.kind, operation, args, self.bound)
+        self._check_custody()
+        row = choose(catalog(self.vm, self.app), self.app, self.kind, operation, args,
+                     self.bound, self.semantic)
+        self._check_custody()
+        self.bound = binding(row)
         if row.get("contract", {}).get("confirmation", {}).get("mode") == "confirm":
             args["confirm"] = True
         self.sequence += 1
         (self.out / f"{self.app}-{self.sequence}-contract.json").write_text(json.dumps(row, indent=2))
-        return invoke(self.vm, row, args, self.out, f"{self.app}-{self.sequence}-{operation}", timeout)
+        value = invoke(self.vm, row, args, self.out, f"{self.app}-{self.sequence}-{operation}", timeout)
+        self._check_custody()
+        return value
 
     def settled(self, app=None, timeout=120):
         deadline = time.monotonic() + timeout
@@ -150,7 +221,7 @@ def store(vm, out):
         require(rows, "Store resource never appeared")
     require(not any(r.get("operation") == "use-flathub-for-account" for r in rows), "obsolete Flathub opt-in remains")
     row = choose(rows, STORE, "store.catalog", "inspect-catalogue", {})
-    return AppDoor(vm, STORE, "store.catalog", binding(row), out)
+    return AppDoor(vm, STORE, "store.catalog", binding(row), out, semantic_identity(row))
 
 
 def flatpak_flow(door, baseline):
@@ -252,34 +323,41 @@ def fresh_browser(vm, out):
             bound = {binding(r) for r in rows}
             require(len(bound) <= 1, "new tab published ambiguous page bindings")
             if bound:
-                return next(iter(bound)), tab
+                identity = {semantic_identity(row) for row in rows}
+                require(len(identity) == 1 and None not in identity,
+                        "fresh Browser semantic identity unavailable or ambiguous")
+                return next(iter(bound)), tab, next(iter(identity))
         return None
 
     result = wait_until(probe, 60)
     require(result, "queued Open did not create a new mapped tab and record; existing page left untouched")
-    return AppDoor(vm, BROWSER, "browser.page", result[0], out), result[1]
+    return AppDoor(vm, BROWSER, "browser.page", result[0], out, result[2]), result[1]
 
 
 def browser_subject(state, tab):
-    """Bind only the new public tab/record to its admitted native process lifetime."""
-    record = mapped_record(state, tab, BROWSER)
+    return native_subject(state, tab, BROWSER)
+
+
+def native_subject(state, tab, application):
+    """Bind an exact public tab/record to its admitted native process lifetime."""
+    record = mapped_record(state, tab, application)
     if record is None:
         return None
     proof = state.get("chrome", {}).get("native_window_provenance")
     require(isinstance(proof, dict) and proof.get("method") == "authenticated-wayland-peer"
             and proof.get("omitted") == 0 and isinstance(proof.get("windows"), list),
-            "authenticated Browser worker provenance unavailable")
+            "authenticated native worker provenance unavailable")
     rows = [row for row in proof["windows"] if row.get("room") == tab[0]
             and str(row.get("tab_id")) == tab[1] and str(row.get("surface_id")) == tab[2]]
-    require(len(rows) <= 1, "ambiguous authenticated Browser worker")
+    require(len(rows) <= 1, "ambiguous authenticated native worker")
     if not rows:
         return None
     worker = rows[0]
     association = state["workspace_tree"]["local_app_records"][tab[1]]
-    require(worker.get("package_id") == BROWSER
+    require(worker.get("package_id") == application
             and type(worker.get("record_instance")) is int
             and worker["record_instance"] == association["record_instance"],
-            "Browser worker differs from the public launch record")
+            "native worker differs from the public launch record")
     require(type(worker.get("peer_pid")) is int and worker["peer_pid"] > 0
             and isinstance(worker.get("peer_start_time_ticks"), str)
             and worker["peer_start_time_ticks"].isdecimal()
@@ -287,7 +365,7 @@ def browser_subject(state, tab):
             and isinstance(worker.get("adoption_id"), str)
             and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", worker["adoption_id"])
             and worker["adoption_id"] != "00000000-0000-0000-0000-000000000000",
-            "Browser process lifetime or adoption unavailable")
+            "native process lifetime or adoption unavailable")
     return worker
 
 
