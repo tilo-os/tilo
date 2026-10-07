@@ -110,6 +110,7 @@ fn device_display_fixture() -> Vec<settings_store::device_displays::DeviceDispla
             width: 960,
             height: 540,
             scale_milli: 2000,
+            revision: 1,
         },
         DeviceDisplay {
             device: "fixture-desktop".into(),
@@ -123,6 +124,7 @@ fn device_display_fixture() -> Vec<settings_store::device_displays::DeviceDispla
             width: 1280,
             height: 720,
             scale_milli: 1250,
+            revision: 1,
         },
     ]
 }

@@ -2,6 +2,10 @@
 """Verify and stage Tilo fonts. Requires Python 3.11+; no third-party modules."""
 import argparse
 import hashlib
+import json
+import os
+import tempfile
+import urllib.request
 from pathlib import Path
 import shutil
 import tomllib
@@ -87,6 +91,95 @@ def stage(source, dest, scope):
         shutil.copyfile(checked_path(source, name), target)
     verify(dest, scope)
 
+
+def artifact_entries(root):
+    """Require artifact pins to describe the complete reviewed font catalog."""
+    data = manifest(root)
+    inventory = json.loads((root / "artifacts.json").read_text())
+    if set(inventory) != {"schema", "assets"} or type(inventory["schema"]) is not int or inventory["schema"] != 1:
+        raise ValueError("unsupported font artifact inventory")
+    expected = {entry["file"]: entry for entry in data["font"]}
+    actual = {}
+    for row in inventory["assets"]:
+        if not isinstance(row, dict) or set(row) != {"file", "bytes", "sha256", "url"}:
+            raise ValueError("invalid font artifact row")
+        name = row["file"]
+        if not isinstance(name, str) or name not in expected or name in actual:
+            raise ValueError("unknown or duplicate font artifact")
+        pin = expected[name]
+        if type(row["bytes"]) is not int or not 0 < row["bytes"] <= 64 * 1024**2:
+            raise ValueError("invalid font artifact size")
+        if row["bytes"] != pin["bytes"] or row["sha256"] != pin["sha256"]:
+            raise ValueError(f"font artifact differs from reviewed manifest: {name}")
+        url = ("https://code.tilo.so/api/packages/tilo/generic/source-evidence/"
+               + pin["sha256"] + "/" + ("font-" + pin["sha256"] + Path(name).suffix))
+        if row["url"] != url:
+            raise ValueError("font artifact URL differs from immutable pin")
+        actual[name] = row
+    if set(actual) != set(expected):
+        raise ValueError("font artifact inventory is incomplete")
+    return data, actual
+
+
+def verify_artifact(path, entry):
+    if path.is_symlink() or not path.is_file() or path.stat().st_size != entry["bytes"]:
+        raise ValueError(f"invalid cached font size or file type: {path}")
+    with path.open("rb") as stream:
+        if hashlib.file_digest(stream, "sha256").hexdigest() != entry["sha256"]:
+            raise ValueError(f"SHA-256 mismatch: {path}")
+
+
+def cached_font(entry, cache, offline):
+    cache = Path(cache)
+    path = cache / entry["sha256"] / entry["file"]
+    if path.exists() or path.is_symlink():
+        verify_artifact(path, entry)
+        return path
+    if offline:
+        raise ValueError(f"font artifact unavailable offline: {entry['file']}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+            with urllib.request.urlopen(entry["url"], timeout=60) as response:
+                if response.geturl() != entry["url"]:
+                    raise ValueError("font artifact redirect is forbidden")
+                left = entry["bytes"] + 1
+                while left:
+                    block = response.read(min(left, 65536))
+                    if not block:
+                        break
+                    stream.write(block)
+                    left -= len(block)
+        verify_artifact(temporary, entry)
+        os.replace(temporary, path)
+        verify_artifact(path, entry)
+        return path
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def prepare(source, dest, scope, cache, offline):
+    """Materialize exact fonts and license notices into a new build directory."""
+    source, dest = Path(source), Path(dest)
+    data, entries = artifact_entries(source)
+    if dest.exists() or dest.is_symlink():
+        raise ValueError(f"font destination already exists: {dest}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".tilo-fonts-", dir=dest.parent) as temporary:
+        root = Path(temporary) / "catalog"
+        root.mkdir()
+        for entry in selected(data, scope):
+            shutil.copyfile(cached_font(entries[entry["file"]], cache, offline), root / entry["file"])
+        for name in [row["file"] for row in data["license"]] + ["manifest.toml", "PROVENANCE.md"]:
+            target = root / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(checked_path(source, name), target)
+        verify(root, scope)
+        root.rename(dest)
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -97,12 +190,21 @@ def main():
     copy.add_argument("source", type=Path)
     copy.add_argument("dest", type=Path)
     copy.add_argument("--scope", choices=list(SCOPES), required=True)
+    prepared = commands.add_parser("prepare", help="materialize pinned artifacts and notices for an offline build")
+    prepared.add_argument("source", type=Path)
+    prepared.add_argument("dest", type=Path)
+    prepared.add_argument("--scope", choices=list(SCOPES), required=True)
+    prepared.add_argument("--cache", type=Path, default=Path(os.environ.get(
+        "TILO_FONT_ASSET_CACHE", AUTHORITATIVE.parents[4] / "target/font-artifacts")))
+    prepared.add_argument("--offline", action="store_true", default=os.environ.get("TILO_FONT_ASSETS_OFFLINE") == "1")
     args = parser.parse_args()
     try:
         if args.command == "verify":
             print(verify(args.root, args.scope))
-        else:
+        elif args.command == "stage":
             stage(args.source, args.dest, args.scope)
+        else:
+            prepare(args.source, args.dest, args.scope, args.cache, args.offline)
     except (ValueError, OSError) as error:
         parser.exit(1, f"Tilo font catalog: {error}\n")
 

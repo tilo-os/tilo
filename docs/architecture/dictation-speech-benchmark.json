@@ -5121,6 +5121,30 @@
         "log_sha256": "9606a4570075345cef7c63581d04b18e7f0dce978245f1c62e52cdc01744549b",
         "typed_temporary_diagnostics_absent": true,
         "temporary_fixture_signing_key_removed": true
+      },
+      "qualified_native_journey_commit": "791069d6e8db144bc54583a53e44afb4084046d2",
+      "ci_followup": {
+        "failed_before_tests_commit": "791069d6e8db144bc54583a53e44afb4084046d2",
+        "main_conflict_commit": "8694eae2a637b170b07f013f59a9aec3900a4e5f",
+        "cause": "Two additive Shell locale conflicts; preserved both sides and grouped four dictation strings with the existing dictation block",
+        "subsequent_main_changes": "New device-display intent/reply types; native history/handler/composition/capture logic unchanged",
+        "remerge_checks": {
+          "native_history": {
+            "passed_tests": 14,
+            "elapsed_seconds": 0.509,
+            "log_sha256": "f55617d958eb0c43fb77d1c7a66ffd992be27e70f55edf69f04697d5f7968d29"
+          },
+          "shell_tests_compile": {
+            "exit_code": 0,
+            "elapsed_seconds": 90,
+            "log_sha256": "c28df3a8f26dbf6aa5d89322a4b0ecc054cd47f53301f2b47b519d26468a6f8c"
+          },
+          "ui_all_target_clippy": {
+            "exit_code": 0,
+            "elapsed_seconds": 55.22,
+            "log_sha256": "2bb5e96dcb297f0d9e21efd106ee95629153a9eafe1ef5c7d198c857d655f70b"
+          }
+        }
       }
     }
   }

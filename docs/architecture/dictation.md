@@ -1090,8 +1090,9 @@ restored the exact original field, and Redo restored the exact dictated field.
 A repeated session was canceled without changing that field; both recorder
 and model worker exited before restart. Moving focus to the successor field
 while public speech was actively streaming retired capture and changed neither
-field. The confirmation run used the final diagnostic-free Shell executable;
-builder source digests match the candidate. Its temporary fixture signing key
+field. The confirmation run used diagnostic-free Shell at `791069d6e8`;
+builder source digests match that qualified candidate. Subsequent main merging
+adds device-display intent types without changing native history or dictation. Its temporary fixture signing key
 was removed after both successful runs. Physical microphones, complete OS
 rendering/fonts, older CPU/ARM and
 noisy conversations remain unqualified. No permission, sandbox rule, package
