@@ -69,7 +69,33 @@ fn readings(renderer: &mut Renderer) -> [Reading; 2] {
 #[derive(Default)]
 struct Ledger {
     last: Option<u64>,
-    owners: VecDeque<(u64, Frame)>,
+    owners: VecDeque<RecordingRange>,
+}
+
+struct RecordingRange {
+    first: u64,
+    last: u64,
+    frame: Frame,
+    consumed: Vec<u64>,
+}
+
+#[derive(Clone, Copy)]
+struct OwnedRecording {
+    id: u64,
+    first: u64,
+    last: u64,
+    frame: Frame,
+}
+
+impl RecordingRange {
+    fn recording(&self, id: u64) -> OwnedRecording {
+        OwnedRecording {
+            id,
+            first: self.first,
+            last: self.last,
+            frame: self.frame,
+        }
+    }
 }
 
 /// One recorder belongs to one render worker / renderer lifetime. IDs from a
@@ -133,22 +159,37 @@ impl Observer {
         for (ledger, reading) in self.ledgers.iter_mut().zip(readings) {
             if let Some(frame) = frame {
                 self.idle_polls_left = IDLE_POLLS;
-                let changed = reading.latest.is_some() && reading.latest != ledger.last;
-                if changed && let Some(id) = reading.latest {
+                // The pre-render drain pins the actual counter before this
+                // sole worker invokes Vello. One native frame can allocate
+                // several internal IDs, including records without queries
+                // while the timestamp buffer remains pending.
+                let first = ledger.last.unwrap_or(0).checked_add(1);
+                let range = first
+                    .zip(reading.latest)
+                    .filter(|(first, last)| first <= last);
+                let owner = range.map(|(first, last)| {
+                    let owned = RecordingRange {
+                        first,
+                        last,
+                        frame,
+                        consumed: Vec::new(),
+                    };
+                    let latest = owned.recording(last);
                     if ledger.owners.len() == OWNER_LIMIT
                         && let Some(evicted) = ledger.owners.pop_front()
                     {
-                        rows.push(row("owner_evicted", &reading, Some(evicted), None));
+                        rows.push(row(
+                            "owner_evicted",
+                            &reading,
+                            Some(evicted.recording(evicted.last)),
+                            None,
+                        ));
                     }
-                    ledger.owners.push_back((id, frame));
-                    ledger.last = Some(id);
-                }
-                let mut attempt = row(
-                    "attempt",
-                    &reading,
-                    reading.latest.filter(|_| changed).map(|id| (id, frame)),
-                    None,
-                );
+                    ledger.owners.push_back(owned);
+                    latest
+                });
+                ledger.last = reading.latest;
+                let mut attempt = row("attempt", &reading, owner, None);
                 attempt["worker_id"] = json!(frame.worker_id);
                 attempt["worker_frame_ix"] = json!(frame.worker_frame_ix);
                 attempt["cpu_frame_id"] = json!(frame.cpu_frame_id);
@@ -160,9 +201,13 @@ impl Observer {
             if let Some((id, sample)) = reading.sample.as_ref() {
                 let owner = ledger
                     .owners
-                    .iter()
-                    .position(|(known, _)| known == id)
-                    .and_then(|position| ledger.owners.remove(position));
+                    .iter_mut()
+                    .find(|range| range.first <= *id && *id <= range.last)
+                    .filter(|range| !range.consumed.contains(id))
+                    .map(|range| {
+                        range.consumed.push(*id);
+                        range.recording(*id)
+                    });
                 rows.push(row(
                     "completed",
                     &reading,
@@ -190,19 +235,21 @@ fn enabled(requested: bool, worker_id: u64) -> Option<Observer> {
 fn row(
     event: &str,
     reading: &Reading,
-    owner: Option<(u64, Frame)>,
+    owner: Option<OwnedRecording>,
     sample: Option<(u64, Value)>,
 ) -> Value {
     let matched = sample
         .as_ref()
-        .is_some_and(|(id, _)| owner.is_some_and(|(known, _)| known == *id));
+        .is_some_and(|(id, _)| owner.is_some_and(|known| known.id == *id));
     json!({
         "event": event, "kind": reading.kind, "status": reading.status,
         "supported": reading.supported, "pending": reading.pending,
-        "worker_id": owner.map(|(_, frame)| frame.worker_id),
-        "worker_frame_ix": owner.map(|(_, frame)| frame.worker_frame_ix),
-        "cpu_frame_id": owner.and_then(|(_, frame)| frame.cpu_frame_id),
-        "expected_current_submission_id": owner.map(|(id, _)| id),
+        "worker_id": owner.map(|owner| owner.frame.worker_id),
+        "worker_frame_ix": owner.map(|owner| owner.frame.worker_frame_ix),
+        "cpu_frame_id": owner.and_then(|owner| owner.frame.cpu_frame_id),
+        "expected_current_submission_id": owner.map(|owner| owner.id),
+        "recording_range_first": owner.map(|owner| owner.first),
+        "recording_range_last": owner.map(|owner| owner.last),
         "latest_submission_id": reading.latest,
         "sample_submission_id": sample.as_ref().map(|(id, _)| *id),
         "matched_current": matched, "missing_current": !matched,
@@ -256,6 +303,30 @@ mod tests {
             rows.iter()
                 .all(|row| row["stale_sample"] == true && row["cpu_frame_id"].is_null())
         );
+    }
+
+    #[test]
+    fn internal_recording_sample_keeps_whole_render_frame_owner() {
+        let mut observer = enabled(true, 7).unwrap();
+        // The pre-render drain reads the actual preceding renderer counter.
+        observer.read(reading(113, None), None);
+        // One native frame made two Vello recordings; only the earlier one
+        // acquired the timestamp buffer, while the second advanced latest.
+        observer.read(reading(115, None), Some(frame(40)));
+        observer.read(reading(117, None), Some(frame(41)));
+        let rows = observer.read(reading(117, Some(114)), None);
+        assert_eq!(rows.len(), 2);
+        for row in rows {
+            assert_eq!(row["worker_frame_ix"], 40);
+            assert_eq!(row["cpu_frame_id"], 140);
+            assert_eq!(row["sample_submission_id"], 114);
+            assert_eq!(row["matched_current"], true);
+            assert_eq!(row["delayed"], true);
+        }
+        let duplicate = observer.read(reading(117, Some(114)), None);
+        assert!(duplicate.iter().all(|row| row["stale_sample"] == true));
+        let later = observer.read(reading(117, Some(115)), None);
+        assert!(later.iter().all(|row| row["worker_frame_ix"] == 40));
     }
 
     #[test]

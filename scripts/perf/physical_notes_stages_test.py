@@ -180,6 +180,40 @@ class NativeGpuJoin(unittest.TestCase):
         self.assertAlmostEqual(gpu['dispatch_costs'][0]['duration']['p50_ms'], .0009)
         self.assertEqual(report['stages'], self.report(self.fixture())['stages'])
 
+    def test_internal_recording_range_keeps_samples_distinct_and_reports_query_gaps(self):
+        records = self.complete()
+        for prefix, row in records:
+            if prefix == 'tilo-native-gpu-stages ':
+                identity = row['expected_current_submission_id']
+                row.update(recording_range_first=identity, recording_range_last=identity + 1)
+                if row['event'] == 'attempt':
+                    row['expected_current_submission_id'] = identity + 1
+        gpu = self.report(records)['native_gpu']
+        self.assertTrue(gpu['complete'])
+        evidence = gpu['frames'][0]['kinds']['dispatches']
+        self.assertEqual(evidence['measured_recordings'], 1)
+        self.assertEqual(evidence['allocated_recordings'], 2)
+        self.assertFalse(evidence['all_recordings_measured'])
+        second = self.gpu(kind='dispatches', event='completed',
+                          sample_submission_id=102, expected_current_submission_id=102,
+                          latest_submission_id=102, recording_range_first=101,
+                          recording_range_last=102)
+        gpu = self.report(records + [second])['native_gpu']
+        evidence = gpu['frames'][0]['kinds']['dispatches']
+        self.assertEqual([sample['submission_id'] for sample in evidence['samples']], [101, 102])
+        self.assertNotIn('sample', evidence)
+        self.assertTrue(evidence['all_recordings_measured'])
+        with self.assertRaisesRegex(ValueError, 'Ambiguous'):
+            self.report(records + [second, second])
+        for changes in (dict(recording_range_first=102), dict(recording_range_last=103)):
+            bad = self.gpu(kind='dispatches', event='completed',
+                           recording_range_first=101, recording_range_last=102, **{})
+            bad[1].update(changes)
+            other = [record for record in records if not (record[0] == 'tilo-native-gpu-stages '
+                     and record[1]['kind'] == 'dispatches' and record[1]['event'] == 'completed'
+                     and record[1]['cpu_frame_id'] == bad[1]['cpu_frame_id'])]
+            self.assertFalse(self.report(other + [bad])['native_gpu']['complete'])
+
     def test_missing_unsupported_stale_partial_and_evicted_are_explicit(self):
         for changes, status in [(dict(supported=False), 'unsupported'),
                                 (dict(stale_sample=True), 'stale_sample'),

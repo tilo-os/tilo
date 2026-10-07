@@ -28,14 +28,24 @@ with open(p + '/environ', 'rb') as f:
     body = f.read(65537)
 if len(body) > 65536:
     raise SystemExit('Native environment exceeds observation bound')
+with open(p + '/status') as f:
+    nspid = [line for line in f if line.startswith('NSpid:')]
+if len(nspid) != 1:
+    raise SystemExit('Native PID namespace identity unavailable')
+nspid = [int(value) for value in nspid[0].split()[1:]]
+namespace = os.stat(p + '/ns/pid').st_ino
+if not nspid or nspid[0] != pid or any(value <= 0 for value in nspid):
+    raise SystemExit('Native PID namespace identity differs')
 keys = ('TILO_PROFILE_PRESENTATION', 'TILO_PROFILE_GPU_STAGES',
         'VELLO_GPU_TIMESTAMPS', 'VELLO_GPU_DISPATCH_TIMESTAMPS')
 values = dict(entry.split(b'=', 1) for entry in body.split(b'\0') if b'=' in entry)
 flags = {key: values.get(key.encode()) == b'1' for key in keys}
 del body, values
-if start() != expected or not all(flags.values()):
+if (start() != expected or os.stat(p).st_uid != uid
+        or os.stat(p + '/ns/pid').st_ino != namespace or not all(flags.values())):
     raise SystemExit('Exact startup GPU diagnostics unavailable')
-print(json.dumps({'pid': pid, 'start_time_ticks': expected, 'flags': flags}))
+print(json.dumps({'pid': pid, 'start_time_ticks': expected, 'flags': flags,
+                  'nspid': nspid, 'pid_namespace_inode': namespace}))
 '''
 
 
@@ -106,17 +116,32 @@ def fresh_binding(state, preserved, cohort):
                 record=record, subject=subject)
 
 
-def fine_gpu_ready(stages, pid):
+def fine_gpu_ready(stages, pid, namespace=None):
+    trace_pid = pid
+    if namespace is not None:
+        nspid = namespace.get("nspid")
+        if (namespace.get("pid") != pid or not isinstance(nspid, list) or not nspid
+                or nspid[0] != pid or any(type(value) is not int or value <= 0 for value in nspid)
+                or type(namespace.get("pid_namespace_inode")) is not int
+                or namespace["pid_namespace_inode"] <= 0
+                or not isinstance(namespace.get("start_time_ticks"), str)
+                or not namespace["start_time_ticks"].isdecimal()
+                or int(namespace["start_time_ticks"]) <= 0):
+            return False
+        trace_pid = nspid[-1]
     frames = stages.get("native_gpu", {}).get("frames", [])
-    if stages.get("process_id") != pid or len(frames) != 3:
+    if stages.get("process_id") != trace_pid or len(frames) != 3:
         return False
     fine = {20: "fine_area", 21: "fine_msaa8", 22: "fine_msaa16"}
     for frame in frames:
         if frame.get("complete") is not True:
             return False
-        passes = frame["kinds"]["passes"]["sample"]
-        dispatches = frame["kinds"]["dispatches"]["sample"]["stages"]
-        if passes["pass_count"] <= 0 or not any(
+        def samples(kind):
+            evidence = frame["kinds"][kind]
+            return [sample["sample"] for sample in evidence["samples"]] if "samples" in evidence else [evidence["sample"]]
+        passes = samples("passes")
+        dispatches = [stage for sample in samples("dispatches") for stage in sample["stages"]]
+        if not any(sample["pass_count"] > 0 for sample in passes) or not any(
                 fine.get(stage["stage_id"]) == stage["stage"]
                 and stage["dispatch_count"] > 0 and stage["duration_ns"] > 0
                 for stage in dispatches):
@@ -224,7 +249,7 @@ def capture_three(vm, cohort, options, installed, uid, executable):
             lines = collect_trace(device, capture["log_path"], capture["scratch_page"], records)
             stages = summarize_physical_notes_stages(lines, capture["scratch_page"], require_capture=True)
             private_write(options.out / "timeline.log", "\n".join(lines))
-            if len(report["samples"]) == 3 and fine_gpu_ready(stages, bound["subject"]["peer_pid"]):
+            if len(report["samples"]) == 3 and fine_gpu_ready(stages, bound["subject"]["peer_pid"], startup):
                 break
             if time.monotonic() >= deadline:
                 raise RuntimeError("Three exact physical/KMS/GPU frame families were not observed")

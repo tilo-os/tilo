@@ -134,6 +134,20 @@ class FreshCaptureGuards(unittest.TestCase):
             with self.subTest(change=change):
                 self.assertFalse(fresh.fine_gpu_ready(changed, 123))
 
+    def test_trace_namespace_pid_requires_pinned_kernel_namespace_observation(self):
+        stages = dict(process_id=2, native_gpu=dict(frames=[dict(complete=True, kinds=dict(
+            passes=dict(samples=[dict(sample=dict(pass_count=1))]),
+            dispatches=dict(samples=[dict(sample=dict(stages=[dict(
+                stage_id=20, stage="fine_area", dispatch_count=1, duration_ns=100)]))]))) for _ in range(3)]))
+        proof = dict(pid=123, start_time_ticks="567", nspid=[123, 2], pid_namespace_inode=999)
+        self.assertFalse(fresh.fine_gpu_ready(stages, 123))
+        self.assertTrue(fresh.fine_gpu_ready(stages, 123, proof))
+        for changes in (dict(pid=124), dict(nspid=[124, 2]), dict(nspid=[123, 3]),
+                        dict(nspid=[True, 2]), dict(pid_namespace_inode=None),
+                        dict(start_time_ticks="0")):
+            with self.subTest(changes=changes):
+                self.assertFalse(fresh.fine_gpu_ready(stages, 123, dict(proof, **changes)))
+
     def test_invalid_key_budget_refuses_before_any_device_observation(self):
         with self.assertRaisesRegex(RuntimeError, "exactly three"):
             fresh.capture_three(None, None, argparse.Namespace(samples=100), {}, 1000, None)
