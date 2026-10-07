@@ -4368,6 +4368,7 @@ fn submit_accessory_and_span_highlighting() {
     }
 }
 
+#[cfg(feature = "broker-transport")]
 #[test]
 fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
     struct Restore;
