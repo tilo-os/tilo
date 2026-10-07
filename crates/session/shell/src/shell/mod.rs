@@ -30,6 +30,7 @@ pub mod automation_triggers;
 pub(crate) mod broker_services;
 pub mod capture_protection;
 pub(crate) mod capture_surface;
+mod capture_timing;
 pub mod catalogue;
 mod certified_action_session;
 pub mod channel_encryption;

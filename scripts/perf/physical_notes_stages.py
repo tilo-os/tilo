@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 
+from foreign_capture import summarize_foreign_capture
 from compositor_phases import capture_lines, summarize_compositor_phases
 from input_latency import summarize_physical_notes_latency
 from main_stages import POINTS, STAGES
@@ -27,7 +28,7 @@ def bracket(row, prefix):
     return values
 
 
-def summarize_physical_notes_stages(lines, scratch_page, compositor_lines=None):
+def summarize_physical_notes_stages(lines, scratch_page, compositor_lines=None, require_capture=False):
     latency = summarize_physical_notes_latency(lines, scratch_page)
     inputs = rows(lines, 'tilo-physical-input ')
     producer = inputs[0]['process_id'], inputs[0]['observer_session']
@@ -114,14 +115,16 @@ def summarize_physical_notes_stages(lines, scratch_page, compositor_lines=None):
         [frame['intervals_ms'][key][index] for frame in frames], scale=1)
         for index, bound in enumerate(('lower', 'upper'))}
         for key in frames[0]['intervals_ms']}
+    phase_lines = lines if compositor_lines is None else compositor_lines
+    compositor = summarize_compositor_phases(phase_lines, latency['samples'], feedback)
+    capture = summarize_foreign_capture(phase_lines, compositor['frames'], latency['samples'],
+                                        feedback, deliveries, events, presents, require_capture)
     return dict(available=True, performance_certified=False,
                 main_stages_available=bool(mains),
                 clock='CLOCK_MONOTONIC', process_id=producer[0],
                 observer_session=producer[1], frames=frames, stages=stages,
                 latency=latency['latency'],
-                compositor=summarize_compositor_phases(
-                    lines if compositor_lines is None else compositor_lines,
-                    latency['samples'], feedback),
+                compositor=compositor, foreign_capture=capture,
                 limitations=['CPU stages include scheduling and logging overhead.',
                              'CPU render duration is not GPU execution duration.',
                              'KMS timestamps do not measure panel pixel response.'])
@@ -134,12 +137,15 @@ def main():
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--compositor-log', type=Path,
                         help='bounded lifecycle capture from the same boot/presenter; defaults to timeline.log')
+    parser.add_argument('--require-foreign-capture', action='store_true',
+                        help='fail unless every physical sample has exact capture/paint/presenter stages')
     options = parser.parse_args()
     capture = json.loads((options.capture / 'capture.json').read_text())
     report = summarize_physical_notes_stages(
         capture_lines(options.capture / 'timeline.log'),
         capture['scratch_page'],
-        capture_lines(options.compositor_log) if options.compositor_log else None)
+        capture_lines(options.compositor_log) if options.compositor_log else None,
+        options.require_foreign_capture)
     descriptor = os.open(options.out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, 'w') as output:
         json.dump(report, output, indent=2)

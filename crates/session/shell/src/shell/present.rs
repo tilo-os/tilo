@@ -115,6 +115,7 @@ enum PresentMsg {
         /// delay inhibitor.
         serial: u64,
         enqueued_at: Instant,
+        observed: Option<super::capture_timing::PipeTiming>,
         input_age_at_enqueue: Option<Duration>,
         inflight_at_enqueue: usize,
     },
@@ -326,10 +327,12 @@ impl PresentPipe {
                             output,
                             serial,
                             enqueued_at,
+                            mut observed,
                             input_age_at_enqueue,
                             inflight_at_enqueue,
                         } => {
                             let render_started = Instant::now();
+                            super::capture_timing::PipeTiming::render_started(&mut observed);
                             let queue_wait = render_started.saturating_duration_since(enqueued_at);
                             let physical = presenter.present_frame_observed(&frame, output);
                             thread_physical_results
@@ -338,6 +341,7 @@ impl PresentPipe {
                                 .push_back((serial, physical));
                             let phases = presenter.frame_phase_timing();
                             let render_done = Instant::now();
+                            super::capture_timing::PipeTiming::retire(observed, serial);
                             let render = render_done.saturating_duration_since(render_started);
                             let total = render_done.saturating_duration_since(enqueued_at);
                             log_frame_lifecycle(
@@ -509,6 +513,7 @@ impl PresentPipe {
             .fetch_add(1, Ordering::AcqRel)
             .saturating_add(1);
         let enqueued_at = Instant::now();
+        let observed = super::capture_timing::PipeTiming::start();
         if self
             .tx
             .send(PresentMsg::Frame {
@@ -516,6 +521,7 @@ impl PresentPipe {
                 output,
                 serial,
                 enqueued_at,
+                observed,
                 input_age_at_enqueue,
                 inflight_at_enqueue,
             })

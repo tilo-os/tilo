@@ -445,11 +445,22 @@ impl CopyPipelines {
 /// Copy `source` (any colour format the device samples) into a new owned
 /// `Rgba8Unorm` texture and wait for the copy, so the caller may release the
 /// buffer behind `source`.
+#[cfg(test)]
 fn copy_to_owned(
     present: &PresentDevice,
     source: &wgpu::Texture,
     opaque: bool,
     surface: u64,
+) -> Result<GpuFrame, String> {
+    copy_to_owned_observed(present, source, opaque, surface, None)
+}
+
+fn copy_to_owned_observed(
+    present: &PresentDevice,
+    source: &wgpu::Texture,
+    opaque: bool,
+    surface: u64,
+    mut timing: Option<&mut super::capture_timing::CaptureTiming>,
 ) -> Result<GpuFrame, String> {
     static PIPELINES: Mutex<Option<Arc<CopyPipelines>>> = Mutex::new(None);
     let pipelines = {
@@ -520,14 +531,21 @@ fn copy_to_owned(
         pass.set_bind_group(0, &bind_group, &[]);
         pass.draw(0..3, 0..1);
     }
+    if let Some(timing) = timing.as_mut() {
+        timing.copy_submit = super::capture_timing::now();
+    }
     let submission = present.queue.submit([encoder.finish()]);
-    present
-        .device
-        .poll(wgpu::PollType::Wait {
-            submission_index: Some(submission),
-            timeout: Some(GPU_WAIT),
-        })
-        .map_err(|error| format!("client frame copy wait: {error:?}"))?;
+    if let Some(timing) = timing.as_mut() {
+        timing.copy_submit_return = super::capture_timing::now();
+    }
+    let copied = present.device.poll(wgpu::PollType::Wait {
+        submission_index: Some(submission),
+        timeout: Some(GPU_WAIT),
+    });
+    if let Some(timing) = timing.as_mut() {
+        timing.copy_end = super::capture_timing::now();
+    }
+    copied.map_err(|error| format!("client frame copy wait: {error:?}"))?;
     Ok(GpuFrame {
         device: present.device.clone(),
         queue: present.queue.clone(),
@@ -620,6 +638,15 @@ pub fn import_dmabuf(
     dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf,
     surface: u64,
 ) -> Result<Arc<GpuFrame>, String> {
+    import_dmabuf_observed(dmabuf, surface, None)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn import_dmabuf_observed(
+    dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf,
+    surface: u64,
+    mut timing: Option<&mut super::capture_timing::CaptureTiming>,
+) -> Result<Arc<GpuFrame>, String> {
     use smithay::backend::allocator::{Buffer as _, Fourcc};
     use std::os::fd::AsFd as _;
 
@@ -643,7 +670,13 @@ pub fn import_dmabuf(
     };
     // Vulkan does not wait for the client's rendering into the buffer: the
     // dma-buf's implicit fence does. Readable means its writes are done.
+    if let Some(timing) = timing.as_mut() {
+        timing.fence_start = super::capture_timing::now();
+    }
     wait_readable(fd.as_fd());
+    if let Some(timing) = timing.as_mut() {
+        timing.fence_end = super::capture_timing::now();
+    }
     let planes = [ui::dmabuf_import::PlaneRef {
         fd: fd.as_fd(),
         offset,
@@ -659,13 +692,16 @@ pub fn import_dmabuf(
             height: dmabuf.height(),
             colorimetry: media::dmabuf::Colorimetry::RGB,
         },
-    )
-    .map_err(|error| error.to_string())?;
+    );
+    if let Some(timing) = timing.as_mut() {
+        timing.native_import_end = super::capture_timing::now();
+    }
+    let imported = imported.map_err(|error| error.to_string())?;
     let source = imported
         .planes
         .first()
         .ok_or_else(|| "the import returned no plane".to_owned())?;
-    let frame = copy_to_owned(&present, source, opaque, surface)?;
+    let frame = copy_to_owned_observed(&present, source, opaque, surface, timing)?;
     // The imported aliases go only after the copy completed.
     drop(imported);
     Ok(Arc::new(frame))
@@ -735,6 +771,35 @@ mod tests {
             },
         );
         texture
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn capture_owned_copy_retains_pixels_and_records_its_actual_submission_wait() {
+        let present = present().expect("a GPU adapter is required to observe the copy path");
+        let texture = source(&present, wgpu::TextureFormat::Bgra8Unorm, [10, 20, 30, 128]);
+        let mut timing = super::super::capture_timing::CaptureTiming::default();
+        let frame = copy_to_owned_observed(&present, &texture, false, 5, Some(&mut timing))
+            .expect("observed copy");
+        assert!(
+            frame.rgba.get().is_none(),
+            "the observer must not read pixels"
+        );
+        assert_eq!(
+            &frame.rgba().expect("oracle readback")[..4],
+            &[30, 20, 10, 128]
+        );
+        let submit = timing.copy_submit.expect("actual submission timestamp");
+        let submitted = timing
+            .copy_submit_return
+            .expect("submission returned timestamp");
+        let completed = timing.copy_end.expect("completed GPU wait timestamp");
+        assert!(submitted >= submit);
+        assert!(completed >= submitted);
+        assert!(
+            timing.fence_start.is_none(),
+            "this fixture is not a DMA fence observation"
+        );
     }
 
     #[test]

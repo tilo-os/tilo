@@ -397,3 +397,36 @@ resampled presentation time. The 256-pair per-frame bound reports omitted
 coverage explicitly. These records require a matching maintained collector;
 old captures are not repaired by deduplication or nearest-time joins. They do
 not establish panel response or remove logging overhead from latency samples.
+
+### Bounded foreign-capture timing
+
+The existing owner `session-diagnostics` presentation option also observes the
+foreign DMA capture worker and presenter admission. The `tilo-foreign-capture`
+records associate the actual surface and capture token with its activated pixel
+sequence; `tilo-compositor-feedback` associates the exact painted sequence with
+the presenter serial. `tilo-present-pipe` records the corresponding pre-send
+admission and render boundaries. All timestamps use `CLOCK_MONOTONIC`; the
+records contain no pixels, document values or client credentials. Import fences,
+source-buffer lifetime and presentation authority are unchanged.
+
+Each explicit presentation `false` → `true` transition renews quotas of 2048
+captures and 2048 presenter frames. Unchanged settings, reads and disabling do
+not renew them. Existing admitted jobs may finish after the transition. The
+capture quota emits an exhaustion marker; missing pipeline witnesses always
+fail required analysis. At an aggregate 120 observed captures per second, the
+capture quota lasts about 17 seconds; idle/repaint traffic counts too. Start a
+three-key causal capture immediately after enabling, and measure its actual
+rate before choosing a 100-key window strategy. Renewing between fully verified
+key families is bounded; increasing quotas without measuring traffic is not.
+
+Compositor observation is live. Native-app presentation diagnostics are inherited
+at app startup, so those must already be enabled for the owned scratch app.
+Toggling the compositor observation window does not change an existing app's
+environment or restart its renderer. Analyze the maintained physical capture with
+`physical_notes_stages.py --require-foreign-capture`; absent, partial, duplicate,
+omitted or mismatched token/sequence/serial evidence is a failed measurement.
+These elapsed stages include scheduling and diagnostic overhead, rather than
+isolating GPU execution or certifying panel latency. A copy-submit entry/return
+pair distinguishes CPU submission blocking from the subsequent GPU completion
+wait; an app present-return → capture interval distinguishes delivery delay from
+capture-worker queueing. No join uses timestamp proximity.
