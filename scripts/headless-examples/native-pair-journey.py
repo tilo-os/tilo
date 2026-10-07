@@ -308,14 +308,12 @@ class Fixture:
                                         public_failure_path=self.output / f"failed-{operation}.json")
         return receipt.get("update", {}).get("output", {}).get("value")
 
-    def context(self, sessions, room, presence_ids):
+    def conversations(self, sessions, room):
         alice, bob = sessions["alice"], sessions["bob"]
         for session in (alice, bob):
             report = self.act(session, room, "live-context-status")
             if report.get("sharing") is not False or report.get("following") is not False or report.get("videoCapture") is not False:
                 raise RuntimeError("native Chat did not start with private context")
-        self.act(alice, room, "new-channel", {"value": "Fixture second conversation"})
-
         def text_channels(socket):
             channels = {}
             for row in self.catalogue(socket):
@@ -329,9 +327,20 @@ class Fixture:
                 channels[logical] = resource
             return channels
 
-        channels = packaged.wait_for("two shared text channels", lambda: (
-            channels if len(channels := text_channels(alice[0])) >= 2 else None), alice[1])
-        first, second = sorted(channels)[:2]
+        created = []
+        for name in ("Fixture first conversation", "Fixture second conversation"):
+            before = set(text_channels(alice[0]))
+            self.act(alice, room, "new-channel", {"value": name})
+            def newly_created():
+                added = set(text_channels(alice[0])) - before
+                if len(added) > 1:
+                    raise RuntimeError("new channel exposed ambiguous resource identities")
+                return next(iter(added)) if added else None
+            created.append(packaged.wait_for("explicit fixture channel committed", newly_created, alice[1]))
+        first, second = created
+        channels = packaged.wait_for("both explicit shared text channels", lambda: (
+            {key: current[key] for key in created}
+            if set(created).issubset(current := text_channels(alice[0])) else None), alice[1])
         self.record("alice-new-channel-committed", channels=sorted(channels))
         try:
             packaged.wait_for("native peer sees the same resources", lambda: (
@@ -400,6 +409,11 @@ class Fixture:
         packaged.wait_for("live resource address reaches admitted native reader",
                           shared_reference, bob[1])
         self.record("native-live-resource-reference-preserves-existing-access")
+        return first, second, channels, text_channels
+
+    def context(self, sessions, room, presence_ids):
+        first, second, channels, text_channels = self.conversations(sessions, room)
+        alice, bob = sessions["alice"], sessions["bob"]
         self.act(alice, room, "open-channel", resource=channels[first])
         self.act(bob, room, "open-channel", resource=text_channels(bob[0])[second])
         require_ok(call(alice[0], {"op": "pointer_move", "x": 350, "y": 220}))
@@ -501,6 +515,71 @@ class Fixture:
         packaged.wait_for("shell follow explicitly released", lambda: (
             packaged.chrome_state(bob[0]).get("presence", {}).get("following") is None), bob[1])
         self.record("native-stop-sharing-and-stop-following", report=report)
+
+    def outage_messages(self, sessions, room, host):
+        first, second, _, text_channels = self.conversations(sessions, room)
+        alice, bob = sessions["alice"], sessions["bob"]
+        row = self.operation(alice[0], room, "post", alice[1],
+                             resource=text_channels(alice[0])[first])
+        text = "Fixture message during the owned governor outage"
+        descriptor = os.pidfd_open(host.pid)
+        try:
+            # Only this fixture's already-owned throwaway governor is paused.
+            # No compositor, user desktop, permission or device is suspended.
+            signal.pidfd_send_signal(descriptor, signal.SIGSTOP)
+            packaged.wait_for("owned governor is actually stopped", lambda: (
+                pathlib.Path(f"/proc/{host.pid}/stat").read_text().rsplit(") ", 1)[1].split()[0] == "T"), host, timeout=3)
+            acknowledgement = packaged.invoke(alice[0], row, {"value": text})
+            original = acknowledgement.get("receipt", {}).get("update", {}).get("invocation")
+            if not original:
+                raise RuntimeError("outage send has no original invocation")
+            self.record("owned-governor-outage-original-send-observed",
+                        state=acknowledgement["receipt"]["update"].get("state"))
+            time.sleep(3)
+            broker_id = acknowledgement.get("receipt", {}).get("broker_invocation_id")
+            if not isinstance(broker_id, int) or isinstance(broker_id, bool) or broker_id <= 0:
+                raise RuntimeError("outage send has no observable broker identity")
+            response = call(alice[0], {"op": "actions_status", "invocation_id": broker_id})
+            if "err" in response:
+                raise RuntimeError("outage original send observation was refused")
+            update = response.get("answer", {}).get("receipt", {}).get("update", {})
+            if update.get("invocation") != original:
+                raise RuntimeError("outage observation changed the original invocation")
+            state = update.get("state")
+            if state not in {"accepted", "progress", "item", "succeeded"}:
+                raise RuntimeError("outage original send failed before recovery")
+            self.record("owned-governor-outage-original-send-state-before-resume", state=state)
+        finally:
+            try:
+                signal.pidfd_send_signal(descriptor, signal.SIGCONT)
+            except ProcessLookupError:
+                pass
+            finally:
+                os.close(descriptor)
+        # Observe this same invocation through recovery. Never mint a second
+        # post to conceal an ambiguous failure or fabricate current authority.
+        packaged.wait_terminal(alice[0], acknowledgement, alice[1],
+                               public_failure_path=self.output / "outage-post-failure.json")
+
+        def recovered():
+            for session in (alice, bob):
+                resources = text_channels(session[0])
+                for logical in (first, second):
+                    page = self.act(session, room, "read-messages", {"pageSize": 32},
+                                    resource=resources[logical])
+                    content = page.get("content", {})
+                    if content.get("channel") != logical.removeprefix("chat.channel:"):
+                        raise RuntimeError("outage recovery returned another conversation")
+                    matches = [message for message in content.get("messages", [])
+                               if message.get("text") == text]
+                    if logical == second and matches or len(matches) > 1:
+                        raise RuntimeError("outage retry duplicated or misrouted the native message")
+                    if logical == first and (len(matches) != 1 or matches[0].get("complete") is not True):
+                        return False
+            return True
+        packaged.wait_for("native outage send converges exactly once in its room/conversation",
+                          recovered, bob[1])
+        self.record("native-outage-recovery-send-converges-once-in-intended-room")
 
     def voice(self, sessions, room):
         call_channel = None
@@ -773,7 +852,7 @@ class Fixture:
         self.act(sessions["alice"], room, "leave-call")
         packaged.wait_for("remaining participant leaves", lambda: self.no_audio_streams("alice", sessions["alice"]), sessions["alice"][1])
 
-    def run(self, *, voice_only=False):
+    def run(self, *, voice_only=False, messages_only=False):
         environments = {name: self.env(name) for name in ("alice", "bob")}
         publisher = self.root / "alice"
         for name, env in environments.items():
@@ -832,6 +911,9 @@ class Fixture:
             (self.output / f"{name}-actions.json").write_text(json.dumps(
                 [packaged.public_action_observation(row) for row in packaged.actions(socket)], indent=2))
             require_ok(call(socket, {"op": "snapshot", "path": str(self.output / f"{name}-chat.png")}))
+        if messages_only:
+            self.outage_messages(sessions, bootstrap["room"], host)
+            return
         if not voice_only:
             self.context(sessions, bootstrap["room"], bootstrap["presence_ids"])
         channel = self.voice(sessions, bootstrap["room"])
@@ -846,8 +928,9 @@ def main():
                         help="private extracted PipeWire server/config/plugin payload")
     parser.add_argument("--cleanup-proof", action="store_true", help="test exact private daemon cleanup without launching Chat")
     parser.add_argument("--voice-proof", action="store_true", help="test governed native voice without qualifying follow or the combined pair")
+    parser.add_argument("--messages-proof", action="store_true", help="test native messages and owned-governor outage recovery independently")
     args = parser.parse_args()
-    if args.cleanup_proof and args.voice_proof:
+    if sum((args.cleanup_proof, args.voice_proof, args.messages_proof)) > 1:
         parser.error("choose only one isolated proof mode")
     args.out.mkdir(parents=True, exist_ok=False, mode=0o700)
     fixture = Fixture(args.out.resolve(), args.binaries.resolve(), args.pipewire.resolve())
@@ -856,8 +939,8 @@ def main():
         if args.cleanup_proof:
             fixture.cleanup_proof()
         else:
-            fixture.run(voice_only=args.voice_proof)
-            qualified = not args.voice_proof
+            fixture.run(voice_only=args.voice_proof, messages_only=args.messages_proof)
+            qualified = not (args.voice_proof or args.messages_proof)
     except Exception as failure:
         error = str(failure)
         raise
@@ -870,7 +953,7 @@ def main():
             cleanup_error = str(failure)
         (args.out / "journey.json").write_text(json.dumps({
             "qualified": qualified,
-            "mode": "cleanup-proof" if args.cleanup_proof else "native-voice-proof" if args.voice_proof else "native-pair",
+            "mode": "cleanup-proof" if args.cleanup_proof else "native-voice-proof" if args.voice_proof else "native-messages-proof" if args.messages_proof else "native-pair",
             "error": error, "cleanup_error": cleanup_error, "stages": fixture.stages,
             "real_microphone": False, "video_screen_sharing": False,
         }, indent=2) + "\n")

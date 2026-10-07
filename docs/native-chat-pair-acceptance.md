@@ -292,7 +292,7 @@ current admission check was bypassed. Run 69 repeated both native conversation/r
 | Journey | Current evidence / remaining gap |
 | --- | --- |
 | Correct conversation and send | Runs 62/69: both native messages read in their intended conversations |
-| Retry and reconnect | Idempotent action tests exist; ordinary native outage/retry journey outstanding |
+| Retry and reconnect | Runs 70/72: one original send converged exactly once through a three-second owned-governor pause. Run 72 observed success before resume, so queued retry/full disconnect and browser retry remain unqualified |
 | Presence and Follow | Certified roster and semantic navigation/Stop observed; exact followed frame was unavailable, run 69 failed the strengthened exact-frame presentation check |
 | Readable history | Runs 62/69: bounded native reads passed; history/catch-up UI remains with its separate owner |
 | Live resource access | Landed browser/native journey; runs 62/69 native reference/provider convergence passed |
@@ -310,3 +310,54 @@ receipt exists. Physical Yoga/Pi journeys also remain unqualified.
 The two existing lower-level native audio proofs now fail when the Opus encoder
 is unavailable instead of printing SKIP and passing. They still use test media
 identity/authority and must not be described as governed native Chat acceptance.
+
+## Follow construction handshake
+
+The shell seam is `peer_windows::examine` and `peer_windows::open_for`: both
+classify `requires_native_owner` rooms as hosted per-tab records. The existing
+`WorkspaceTree::commits_native_documents` distinction excludes stewarded sealed
+application rooms. The reverted routing experiment changed only that
+classification and retained ordinary signed launch and access checks.
+
+The observed factory failure originates in
+`NativeConstruction::bind_component` (`ui-core/src/collaboration/native_initial.rs`).
+`dispatch_definition_with_manager` (`ui-core/src/launch.rs`) calls it with the
+prepared `HostContext` callback binding before constructing the component. It
+validates `CallbackBinding::admission_route`, then waits for genuine
+`InitialReadBridge::publishable` history confirmation with a three-second bound.
+The SDK worker's `committed_document::install` stages each genuine capture and
+waits for the canonical UI owner to apply it before the same-revision owner
+recheck can mark `Reads::Required` ready. `HostContext::merge_peer_document` and
+`RecordStore` own that validated merge and history; `record::load` acknowledges
+the initial capture through `CommittedDocument::applied`.
+
+A possible construction race is a second committed capture awaiting the UI
+owner while the constructor waits for publishability before that component
+exists. This is a hypothesis, not a diagnosed cause: original creation and route
+mismatch still need to be distinguished. Boolean-only timeout diagnostics and
+canonical application of genuine staged captures are the next reviewable seam;
+no readiness, history, identity, consent, access or revocation check may be
+fabricated or bypassed. Automatic approval review rejected the proposed scoped
+routing/SDK diagnostics for possible SDK ownership overlap. No such changes
+were applied, and explicit approval or owner coordination remains pending.
+
+The run 71 messages fixture selected the first-run `c_general` resource, which
+was withdrawn from the current native catalogue before posting; it failed before
+the outage phase and cleaned up. Run 72 instead created both fixture conversations
+through ordinary actions and retained their logical resource identities. Both
+peers read the distinct messages in the correct conversations, and typed live
+resource references converged. Its original outage send was accepted and already
+succeeded before the owned governor resumed; it then appeared exactly once in
+the intended conversation on both peers and nowhere in the second. Cleanup
+passed. This is native continuity through a host pause, not a transport retry.
+
+The delivered owner-view increment (#3291, merge `806b59294c68`) shares only
+`crates/session/shell/src/shell/collab_broker.rs` with this held Chat increment:
+Chat changes `DrainQueues::drain_presence` to route app-owned presence into the
+room; owner views add `DrainQueues::drain_owner_views` and its pump call. The
+sections are distinct. Its `OwnerView`/`OwnerProjection`, generation and Lamport
+fences, accepted-action takeover and current authenticated personal-route checks
+remain untouched. Its fixture prehydrates documents; cold-peer body transport
+has a separate owner. The Chat constructor seam
+above is `native_initial.rs` plus `committed_document.rs`, with `launch.rs` supplying
+the prepared canonical `HostContext`; no duplicate owner-view protocol is added.
