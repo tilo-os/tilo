@@ -269,3 +269,40 @@ seconds, and startup through that stable text from 12.793 to 11.578 seconds.
 Exact noise/PCM hashes and final transcripts matched between variants. This
 confirms the preparation gain on the current worst measured condition while
 preserving its accuracy failure as a release limitation.
+
+
+## Phase-separated preparation and completed-session reuse
+
+The actual private worker now reports bounded verification and native preparation
+counters only under `--phase-review`. The public probe supplies PCM every20ms while
+inference is busy, matching the service's two-second initial draft and one-second
+repeat cadence. [The phase ledger](dictation-native-phases.json) separates owned-file
+cache advice, fresh-worker cache repeat, resident-model repeat, and audio delivery
+to retrospectively stable text. Pipe-write timing does not measure microphone or
+hardware latency. `DONTNEED` advice does not establish physically cold storage.
+
+Full raw digest verification remains mandatory on the fs-verity immutable descriptor.
+A private fixed-Merkle shortcut and a sequential-read/no-hash variant were rejected:
+they moved work into lazy native loading without a consistent end-to-end gain.
+Neither shortcut is present in the landed worker source.
+
+The review worker accepts at most two completed sessions with `--review-sessions 2`.
+It retains the verified recognizer, destroys the old stream before acquiring the
+single supported decoder slot, clears accumulated transcript and sample count,
+and creates a fresh language/vocabulary stream. Failure or cancellation exits the
+owned worker; reuse follows only a successful Finish. Default execution remains
+one session. This is a bounded review path, not a production persistent service.
+
+In paired public English sessions, Configure-to-Ready fell from5203ms to7.5ms;
+German fell from5076ms to11.3ms. Each repeated final was identical. English remained
+4/19 strict raw errors, German0/18; cleanup and word order were unchanged. German
+with vocabulary followed by English silence with empty vocabulary returned empty
+drafts and final. All six sessions stayed under existing process/scope guards with
+zero hard-limit/OOM events. Scope cache reclamation and builder timing limitations
+are recorded; these results do not qualify physical older devices.
+
+Model reuse removes preparation from repeats, while capture-to-meaningful stable
+text still takes about3.3s English and6.3s German. The English errors include three
+numeric representation edits and one inflection error. Do not erase them with
+number normalization. Production residency, recognition quality, earlier stable
+streaming, and physical/full OS acceptance remain outstanding.
