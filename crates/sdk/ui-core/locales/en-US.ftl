@@ -551,3 +551,11 @@ dictation-copy-transcript = Copy transcript
 dictation-discard-transcript = Discard transcript
 
 dropdown-no-matches = No matching choices
+
+# Shared native screen topology canvas
+display-arrangement-name = Display arrangement
+display-arrangement-description = Drag a display to place it beside another. Each display's position menu does the same from the keyboard.
+display-arrangement-empty = No displays to arrange
+display-arrangement-item = Display { $number }: { $name }
+display-arrangement-item-primary = Display { $number }: { $name }, primary
+display-arrangement-item-position = { $width } × { $height } at { $x }, { $y }

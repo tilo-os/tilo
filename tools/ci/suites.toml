@@ -58,6 +58,7 @@ suites = [
   "os/tests/composefs_digest_parse.sh",
   "os/tests/containerfile_copy_invariants.sh",
   "os/tests/board_session.sh",
+  "os/tests/board_release_promotion.py",
   "os/tests/cage_session_env.sh",
   "os/tests/board_audio_contract.sh",
   "os/tests/disk_image_firstboot_seed.sh",
@@ -583,8 +584,21 @@ readers = ["crates/session/greeter/src/greeter_app.rs"]
 
 [[cargo]]
 package = "launcher"
-inputs = ["apps/*/tilo-app.toml", "os/usr/lib/tilo/jit-entitled.conf", "os/usr/lib/tilo/web-engine-entitled.conf", "os/usr/share/tilo/system-interfaces.toml"]
-readers = ["crates/packaging/launcher/src/manifest.rs", "crates/packaging/launcher/src/seccomp.rs", "crates/packaging/launcher/src/services.rs"]
+inputs = [
+  "apps/*/tilo-app.toml",
+  "os/usr/lib/tilo/jit-entitled.conf",
+  "os/usr/lib/tilo/web-engine-entitled.conf",
+  "os/usr/share/tilo/system-interfaces.toml",
+  "tools/with-test-environment.sh",
+  "scripts/headless-examples/startup-frame-timeline.py",
+  "scripts/headless-examples/_control.py",
+]
+readers = [
+  "crates/packaging/launcher/src/manifest.rs",
+  "crates/packaging/launcher/src/seccomp.rs",
+  "crates/packaging/launcher/src/services.rs",
+  "crates/packaging/launcher/examples/startup_frame_timeline.rs",
+]
 
 [[cargo]]
 package = "tilo-vm"
@@ -818,6 +832,13 @@ readers = [
 package = "format-host"
 inputs = ["docs/app-model/formats.md"]
 readers = ["crates/doc/format-host/tests/integration.rs"]
+
+[[cargo]]
+package = "tilo-projector"
+# The CI target compiles the exact production TLS source, including its tests.
+inputs = ["vendor/fcast-sender-sdk/src/chromecast_tls.rs", "vendor/fcast-sender-sdk/src/chromecast_tls/", "vendor/fcast-sender-sdk/src/chromecast_auth.rs", "vendor/fcast-sender-sdk/src/chromecast_auth/"]
+readers = ["crates/system/projector/tests/cast_tls.rs", "crates/system/projector/tests/cast_auth.rs"]
+scope = { inputs = ["vendor/fcast-sender-sdk/src/chromecast_tls.rs", "vendor/fcast-sender-sdk/src/chromecast_tls/"], test = "cast_tls", filter = "binary(cast_tls)" }
 
 [[cargo]]
 package = "notes"

@@ -3444,9 +3444,9 @@ impl State {
         true
     }
 
-    /// Deliver a raw keycode press/release to the seat keyboard. Shared by
-    /// the `RemoteDesktop` keycode + keysym paths; passed straight through to
-    /// smithay's `KeyboardHandle::input`, the same convention `network::wayland::WaylandServer::handle_input` and [`Self::apply_remote_input`]'s `Key` arm use.
+    /// Deliver a Linux evdev keycode press/release to the seat keyboard. Shared by
+    /// the `RemoteDesktop` and personal-fabric paths. Convert to Smithay's XKB
+    /// keycode convention by adding eight, as the other remote input paths do.
     fn inject_seat_key(&mut self, keycode: u32, pressed: bool, serial: Serial, time: u32) -> bool {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return false;
@@ -3456,10 +3456,14 @@ impl State {
         } else {
             KeyState::Released
         };
-        let _: Option<()> =
-            keyboard.input(self, keycode.into(), key_state, serial, time, |_, _, _| {
-                smithay::input::keyboard::FilterResult::<()>::Forward
-            });
+        let _: Option<()> = keyboard.input(
+            self,
+            keycode.saturating_add(8).into(),
+            key_state,
+            serial,
+            time,
+            |_, _, _| smithay::input::keyboard::FilterResult::<()>::Forward,
+        );
         true
     }
 
@@ -3478,7 +3482,9 @@ impl State {
             for raw in 8u32..=255 {
                 let kc: Keycode = raw.into();
                 if xkb.raw_syms_for_key_in_layout(kc, layout).contains(&target) {
-                    return Some(raw);
+                    // This helper returns evdev, like the keycode portal and
+                    // personal-fabric paths. Injection applies the XKB offset.
+                    return Some(raw.saturating_sub(8));
                 }
             }
             None

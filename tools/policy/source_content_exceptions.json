@@ -1,30 +1,5 @@
 [
   {
-    "path": "apps/calculator/shots/calculator_default.png",
-    "oid": "9edc577b2d1106d4739dd33a02264c26349877eb",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/calculator/shots/graph2d_default.png",
-    "oid": "744b308f1044734f8f49c166cda6e1e501320133",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/calculator/shots/graph3d_default.png",
-    "oid": "0d7173af21d703a36fe56854826748f772ac95a3",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/calculator/shots/long_formula.png",
-    "oid": "bf914cfc92791748f65f9370109d457263c5ab08",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/calculator/shots/long_formula_narrow.png",
-    "oid": "23bc359cd0d68212cd422bcd6ed84b5d52f0ad11",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
     "path": "apps/ebook/assets/sample.epub",
     "oid": "dd9b2aaa342d2bf46d1451f542d742d32d8ea0b4",
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
@@ -50,144 +25,14 @@
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
   },
   {
-    "path": "apps/git-client/shots/01_changes_diff.png",
-    "oid": "85560c21b557214de5e136ec9ae6a492f3d9d783",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/git-client/shots/02_history_graph.png",
-    "oid": "1b02e8058a5af035eb3a96d273f35d80882f2641",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/git-client/shots/03_branches.png",
-    "oid": "eb8ae0116339c8deee5701a64197b38f27e38d0e",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/git-client/shots/04_commit_message.png",
-    "oid": "a46d697b82efc41503fe7d94a4b2359f8fba56a1",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/maps/shots/default.png",
-    "oid": "7da1c1ba630b2aa1d5cdbfe33471b6f4540d927f",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/maps/shots/drive-time.png",
-    "oid": "053311888c8fc4066207679b1683def12bf4741f",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/maps/shots/maps.png",
-    "oid": "2c5dfbbb5894e970a186a2a673c11f16d6f3e730",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/maps/shots/pois.png",
-    "oid": "be49f11471e365227f775be6f852a11d55ef22f8",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/maps/shots/search-overlay.png",
-    "oid": "73de9e73a870b7b58ff278a68e7d15ae5a5c4fa8",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/maps/shots/transit.png",
-    "oid": "6cb065cde2895c82f56e398d94d42d10800e1743",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/monitor/shots/monitor-context-menu.png",
-    "oid": "6e829e98ef71a305cda3d642c98511b12a76b085",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/monitor/shots/monitor-narrow-resources.png",
-    "oid": "5e7a542e0b7af3a90f49577773d542ef684dfe2e",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/monitor/shots/monitor-narrow.png",
-    "oid": "3da4a22ccaab5c54b9b16c9943446292b82230e7",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/monitor/shots/monitor-per-process.png",
-    "oid": "f23752d5c916f5f306af47012d1c22cf7603c19c",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/monitor/shots/monitor-resources.png",
-    "oid": "a4710ddb1775b3a73093af4cad4deb9730f2e2c9",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/monitor/shots/monitor-tree-expanded.png",
-    "oid": "9fa4ce82447422759d3c7c4ff670f5b563e82535",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/monitor/shots/monitor.png",
-    "oid": "a6d31bc09de04130fc72e17e058690d01dfb66a4",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
     "path": "apps/notes/fixtures/roadmap.png",
     "oid": "91dbc6842b17c854d4d7ab28aa75a1a9f6a7571f",
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
   },
   {
-    "path": "apps/passwords/shots/passwords-desktop.png",
-    "oid": "b5d4c578ad6f91c5a6d4998fd553a3bb693336b3",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/passwords/shots/passwords-editor.png",
-    "oid": "cc22f9fcbf0ae82164cac694e5af074faca4b446",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/passwords/shots/passwords-export.png",
-    "oid": "3e52e200a2620e8654113ab62fa08b19f6d922a0",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/passwords/shots/passwords-health.png",
-    "oid": "518bc480943459957961e53bc3093fed61058b14",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/passwords/shots/passwords-import.png",
-    "oid": "d852cd28499255b88e12c1b51789fbb8a67a4dda",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/passwords/shots/passwords-narrow.png",
-    "oid": "58a5aa4f58e70addddd49b33a4dab5ed8ba6f820",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
     "path": "apps/pdf-viewer/tests/fixtures/sample.pdf",
     "oid": "df7e820556975738dbf2f5ea0db9d6d8c3bee494",
     "reason": "Existing test fixture or golden snapshot used to verify production behavior."
-  },
-  {
-    "path": "apps/settings/shots/settings-narrow.png",
-    "oid": "ced6daf219b72898e268975f98d2e8f2fe8eda30",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/settings/shots/settings-panel-power-narrow.png",
-    "oid": "60b7252a2f816488d63bdbdd806f9cf9545f91e8",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
-  },
-  {
-    "path": "apps/settings/shots/settings-panel-power.png",
-    "oid": "002b786402b9040a701bbb2563956908d93f1041",
-    "reason": "Existing user-viewable app screenshot; preserve until artifact migration is verified."
   },
   {
     "path": "apps/settings/shots/settings.png",
@@ -1138,6 +983,21 @@
     "path": "vendor/automerge/tests/fuzz-crashers/too_many_ops.automerge",
     "oid": "661258b0933e854bde60d741b6a47c731029de3b",
     "reason": "Upstream vendored test fixture or example asset; preserve upstream bytes."
+  },
+  {
+    "path": "vendor/fcast-sender-sdk/src/chromecast_auth/cast-crl-root.der",
+    "oid": "407e04c863fa692edcfc88f6d1a7b5a2032a07b9",
+    "reason": "Public Cast revocation signer authority DER from immutable Open Screen revision 1c526caf732881bd0aa1ab9479c36861bb225ba6; SHA-256 8b77c60291f9d62764613083f49750b1c5caac2d9efbe5a28edf301f9d84831d and BSD-3-Clause provenance retained in vendor/fcast-sender-sdk/PROVENANCE.md. Exact bytes are required by the protocol-private verifier."
+  },
+  {
+    "path": "vendor/fcast-sender-sdk/src/chromecast_auth/cast-root.der",
+    "oid": "15f2aecdd40a58a4fbe9fb27f695f136cada1cb2",
+    "reason": "Public Cast receiver identity authority DER from immutable Open Screen revision 1c526caf732881bd0aa1ab9479c36861bb225ba6; SHA-256 809af14700b3fe2611ad597eb1584d6354313b64ccdb3390f097fa3e5826d6ca and BSD-3-Clause provenance retained in vendor/fcast-sender-sdk/PROVENANCE.md. Exact bytes are required by the protocol-private verifier."
+  },
+  {
+    "path": "vendor/fcast-sender-sdk/src/chromecast_auth/eureka-root.der",
+    "oid": "608bd36c24bede1ba33504a646ae0f968b981f41",
+    "reason": "Public Eureka receiver identity authority DER from immutable Open Screen revision 1c526caf732881bd0aa1ab9479c36861bb225ba6; SHA-256 caf6d1e37b532203e01a76bf07187bb731ccd38801565ab2211a2c0ab7f3bc46 and BSD-3-Clause provenance retained in vendor/fcast-sender-sdk/PROVENANCE.md. Exact bytes are required by the protocol-private verifier."
   },
   {
     "path": "vendor/wgpu/src/macros/be-aligned.spv",
