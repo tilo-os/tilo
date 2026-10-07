@@ -44,6 +44,7 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/desktop-v') }}
 
 env:
+  TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY: ${{ vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: never
   # Tags and explicit full-native dispatches use the native-ARM pool.

@@ -498,11 +498,17 @@ impl DocWriter {
         if self.owner.is_none() || self.progress.get_mut().error.is_some() {
             return;
         }
+        if let Err(error) = self.request_changed(doc) {
+            self.refuse(&error);
+        }
+    }
+
+    fn request_changed(&mut self, doc: &mut AutoCommit) -> Result<(), StoreError> {
         let heads = doc.get_heads();
         if heads == self.sent {
-            return;
+            return Ok(());
         }
-        let result = if self.base == 0 || self.appended >= self.base.max(MIN_COMPACT_BYTES) {
+        if self.base == 0 || self.appended >= self.base.max(MIN_COMPACT_BYTES) {
             self.send_full(doc, heads)
         } else {
             let bytes = doc.save_after(&self.sent);
@@ -511,10 +517,32 @@ impl DocWriter {
                 self.appended = self.appended.saturating_add(len);
                 self.appends = self.appends.saturating_add(1);
             })
-        };
-        if let Err(error) = result {
-            self.refuse(&error);
         }
+    }
+
+    /// Offer current changes without waiting for host acknowledgement. An
+    /// accepted replacement may still have a sticky durability failure until
+    /// its own revision is acknowledged; that is not a submission refusal.
+    ///
+    /// # Errors
+    /// Returns a disabled writer or a synchronous store submission refusal.
+    pub fn offer(&mut self, doc: &mut AutoCommit) -> Result<(), String> {
+        self.settle();
+        if self.owner.is_none() {
+            return Err(self
+                .last_error()
+                .unwrap_or_else(|| "writer disabled".to_owned()));
+        }
+        let result = if self.last_error().is_some() {
+            let heads = doc.get_heads();
+            self.send_full(doc, heads)
+        } else {
+            self.request_changed(doc)
+        };
+        result.map_err(|error| {
+            self.refuse(&error);
+            error.to_string()
+        })
     }
 
     /// Submit the full current document regardless of what was submitted

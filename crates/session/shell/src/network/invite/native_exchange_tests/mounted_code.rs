@@ -8,10 +8,27 @@ use sha2::{Digest as _, Sha256};
 #[tokio::test]
 async fn native_mounted_code_resource_edit_reaches_another_mounted_app() {
     let _ = tracing_subscriber::fmt().with_env_filter("warn").try_init();
-    Box::pin(super::actual_exchange(false, true, true)).await;
+    Box::pin(super::actual_exchange(false, true, Some(Journey::Document))).await;
+}
+
+#[tokio::test]
+async fn native_mounted_code_has_acknowledged_private_continuity() {
+    Box::pin(super::actual_exchange(
+        false,
+        true,
+        Some(Journey::PrivateAdmission),
+    ))
+    .await;
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum Journey {
+    Document,
+    PrivateAdmission,
 }
 
 pub(super) struct Context<'a> {
+    pub journey: Journey,
     pub directory: &'a tempfile::TempDir,
     pub relay: &'a tilo_relay::Relay,
     pub publisher: &'a Arc<tilo_relay::RelayCoeditSession>,
@@ -216,11 +233,28 @@ pub(super) async fn run(
         2,
     )
     .await;
+    let private_routes = mounted
+        .iter_mut()
+        .map(|app| app.code.app.controlled_private_continuity_route_for_test())
+        .collect::<Vec<_>>();
     for app in mounted {
         app.close().await;
     }
     receipts.close().await;
     second.endpoint.close().await;
+    if matches!(context.journey, Journey::PrivateAdmission) {
+        assert!(
+            private_routes.iter().all(Option::is_some),
+            "both original mounted native Apps require an acknowledged private continuity route; observed {private_routes:?}"
+        );
+        assert!(
+            private_routes
+                .iter()
+                .flatten()
+                .all(|route| route.record.as_deref() == Some(cold_code::RECORD)),
+            "private admission stays on the original document route, without a continuation-label shortcut"
+        );
+    }
 }
 
 async fn enroll_second(
