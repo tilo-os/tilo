@@ -34,6 +34,8 @@
 //! the single primary sidebar simply docks or floats per the toolkit's
 //! breakpoint.
 
+mod continuity;
+
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use ui::widget::{AppModel, ModelPath};
@@ -611,6 +613,7 @@ pub struct CodeApp {
     /// used by a search hit and a cross-file go-to-definition, both of which
     /// open a file that has no editor geometry until the next frame.
     pending_jump: Option<(usize, usize)>,
+    pending_continuation: Option<ui::text_position::TextPosition>,
 }
 
 /// What a test runs with the editor and its document.
@@ -931,6 +934,7 @@ impl CodeApp {
             question_sheet: ui::widget::ModalSheet::new(),
             notice: None,
             pending_jump: None,
+            pending_continuation: None,
         }
     }
 
@@ -2675,7 +2679,10 @@ fn find_char_span(text: &str, needle: &str) -> Option<(usize, usize, usize)> {
 }
 
 impl Widget for CodeApp {
-    ui::provides!(dyn ui::widget::controls::ActionControls);
+    ui::provides!(
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::widget::Continuable
+    );
 
     fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
         fn rect(rect: Rect) -> [f64; 4] {
@@ -2734,6 +2741,7 @@ impl Widget for CodeApp {
         self.continue_staging(state);
         self.refresh_search_entries(state);
         self.editor.sync(state, path);
+        self.restore_pending_continuation(state);
 
         // A jump queued by a search hit or a cross-file definition lands once
         // the target buffer is actually bound.
