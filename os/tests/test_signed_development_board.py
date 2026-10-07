@@ -113,6 +113,23 @@ class SignedBoard(unittest.TestCase):
         native = WORKFLOW.split('  build-and-push:\n', 1)[1].split('    steps:', 1)[0]
         self.assertIn('signing-preflight', native)
 
+    def test_split_directory_preparation_is_repeatable_but_rejects_stale_kernel(self):
+        recipe = (ROOT/'os/Containerfile.board').read_text()
+        actual = recipe.split('FROM board-root AS split\nRUN ', 1)[1].split('&& bootc container split-kernel-and-rootfs', 1)[0]
+        actual = actual.strip().removesuffix('\\').rstrip()
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp)/'kernel'
+            shell = actual.replace('/kernel', str(output))
+            for _ in range(2):
+                result = subprocess.run(['bash', '-c', shell], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(list(output.iterdir()), [])
+            stale = output/'old-kernel'
+            stale.write_bytes(b'preserve unexpected input')
+            result = subprocess.run(['bash', '-c', shell], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(stale.read_bytes(), b'preserve unexpected input')
+
     def make_root(self, root):
         for directory in ['usr/lib/tilo', 'usr/share/tilo', 'etc/containers']:
             (root/directory).mkdir(parents=True)
