@@ -117,6 +117,7 @@ pub mod host {
     /// One app's `AppSettings` capability over `source`.
     pub struct AppSettingsServer {
         app_id: String,
+        dictionary_owner: Option<[u8; 32]>,
         source: Arc<dyn SettingsSource>,
         revalidate: Revalidate,
         /// The view last answered and the revision it was answered as, so
@@ -141,6 +142,7 @@ pub mod host {
             source.changes().listen(&listener);
             Self {
                 app_id: app_id.into(),
+                dictionary_owner: None,
                 source,
                 revalidate,
                 answered: RefCell::new((0, Map::new())),
@@ -149,10 +151,24 @@ pub mod host {
             }
         }
 
+        /// Host-certified local descriptor owner. Remote collaborators and
+        /// delegated agents are never given this projection authority.
+        #[must_use]
+        pub fn with_dictionary_owner(mut self, owner: Option<[u8; 32]>) -> Self {
+            self.dictionary_owner = owner;
+            self
+        }
+
         /// The current view, with a revision that changes exactly when the
         /// view does.
         fn current(&self) -> (u64, Map<String, Value>) {
-            let view = app_view(&self.source.load(), &self.app_id);
+            let mut view = app_view(&self.source.load(), &self.app_id);
+            settings_store::personal_dictionary::host::project(
+                self.source.as_ref(),
+                &self.app_id,
+                self.dictionary_owner,
+                &mut view,
+            );
             let mut answered = self.answered.borrow_mut();
             if answered.0 == 0 || answered.1 != view {
                 answered.0 = answered.0.wrapping_add(1).max(1);
@@ -231,8 +247,18 @@ pub mod host {
                         "a settings write is a JSON object".into(),
                     ));
                 };
-                update_for_app(self.source.as_ref(), &self.app_id, section, values)
-                    .map_err(|e| capnp::Error::failed(e.to_string()))?;
+                if !settings_store::personal_dictionary::host::command(
+                    self.source.as_ref(),
+                    &self.app_id,
+                    self.dictionary_owner,
+                    section,
+                    &values,
+                )
+                .map_err(|e| capnp::Error::failed(e.to_string()))?
+                {
+                    update_for_app(self.source.as_ref(), &self.app_id, section, values)
+                        .map_err(|e| capnp::Error::failed(e.to_string()))?;
+                }
                 let (revision, view) = self.current();
                 let mut reply = results.get();
                 reply.set_revision(revision);
