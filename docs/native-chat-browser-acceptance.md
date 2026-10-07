@@ -56,6 +56,23 @@ Chat frames are saved under `target/mounted-resource-voice/`. The SDK web lane
 runs this journey as an unprivileged user with Chromium's sandbox enabled and
 an owned descendant supervisor; missing prerequisites fail.
 
+The `--encrypted-restart` journey uses another person's Editor certificate to
+publish the native primary on its canonical wire route. It asserts that the
+host retained that writer's ciphertext on the exact document channel, closes
+the publisher and restarts the temporary host before starting the compiled
+Viewer. The Viewer must materialize the original message and selected range,
+share/Stop without video, Copy/Open, Leave and refuse access after owner removal.
+Its receipt and frame are written to `target/mounted-resource-encrypted/`.
+
+The focused native repro verifies the same reference succeeds before restart
+and after it. Previously the cold read failed with `source channel keys
+unavailable`: discovery checked only already-open stewards before a document
+subscription could reopen one. Resource reads now recover the existing sealed
+channel through the normal steward crash-recovery path, under the existing
+current-caller read guard. Missing groups are refused without initialization;
+wrong vaults/devices and corrupt state are refused. No membership is added by
+this recovery, and native plaintext replay still requires the exact governor.
+
 This qualifies local governed certified-peer resource navigation and actual
 browser disconnect/retry. It does not qualify a full browser-profile restart
 with queued edits, physical devices/microphones, cross-app Follow,
