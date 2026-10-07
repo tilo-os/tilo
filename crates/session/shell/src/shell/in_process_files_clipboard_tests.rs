@@ -281,9 +281,8 @@ mod files_clipboard_tests {
             };
             let collab = session.broker.capnp_socket().to_path_buf();
             let identity = session.identity_socket().to_path_buf();
-            let mut apps = InProcessApps::at(&profile.join("apps"), &session.actor)
-                .unwrap()
-                .reaching_broker(Rc::new(move |app, room| {
+            let mut apps =
+                mounted_apps(profile, &session.actor).reaching_broker(Rc::new(move |app, room| {
                     session_connector(collab.clone(), identity.clone(), app, room)
                 }));
             let mut shown = std::array::from_fn(|index| {
@@ -989,6 +988,153 @@ mod files_clipboard_tests {
         drop(fixture);
     }
 
+    fn assert_unsaved_undo_intent(fixture: &mut Fixture) {
+        let owner = fixture
+            .apps
+            .owners
+            .open(APP, &fixture.session.room)
+            .unwrap();
+        assert!(
+            owner
+                .read(
+                    &RecordId::for_tab(TABS[1]),
+                    ui::history_source::steps::pending_compensations,
+                )
+                .expect("the real receiving document must be open")
+                .is_empty(),
+            "this crash must precede durable Undo intent; the saved-intent branch has its own journey",
+        );
+    }
+
+    fn mounted_apps(profile: &Path, author: &str) -> InProcessApps {
+        let apps_root = profile.join("apps");
+        if std::env::var_os("TILO_CLIPBOARD_TEST_DEFER_DOC_SAVE").is_none() {
+            return InProcessApps::at(&apps_root, author).unwrap();
+        }
+        // Keep the real native store and its acknowledgements. Only this crash
+        // child's write schedule differs: Paste is explicitly flushed before Undo.
+        std::fs::create_dir_all(&apps_root).unwrap();
+        let native = ui::application::NativeProfile::open(&apps_root, None).unwrap();
+        InProcessApps::new(
+            Rc::new(app_state::FsStore::with_debounce(
+                apps_root,
+                std::time::Duration::from_secs(600),
+            )),
+            native.device_id(),
+            author,
+        )
+    }
+
+    fn kill_after_saving_cross_device_undo(profile: &Path, receiving: PathBuf) -> ! {
+        let mut fixture = Fixture::open_in(profile, true, [profile.join("source"), receiving]);
+        fixture.succeeds(0, "select-all");
+        fixture.succeeds(0, "cut-selection");
+        fixture.succeeds(1, "paste");
+        let owner = fixture
+            .apps
+            .owners
+            .open(APP, &fixture.session.room)
+            .unwrap();
+        owner.try_flush().unwrap();
+        let pause = crate::shell::broker_services::TestTransferPause::new(
+            &fixture.folders[1],
+            "compensation-after-publish",
+        );
+        fixture.start_invoke_at(1, "undo", serde_json::Map::default(), None);
+        let [first, second] = &mut fixture.shown;
+        until(
+            &mut [first, second],
+            "actual Undo target publication",
+            || pause.entered(),
+        );
+        let pending = owner
+            .read(
+                &RecordId::for_tab(TABS[1]),
+                ui::history_source::steps::pending_compensations,
+            )
+            .expect("the real receiving document must be open");
+        assert_eq!(
+            pending.len(),
+            1,
+            "the original Undo must still await its host receipt"
+        );
+        owner.try_flush().unwrap();
+        // Kill only after the real owner's acknowledgement of this pending intent.
+        // The worker is still held after durable publication and before removal.
+        // SAFETY: this phase runs only in its isolated child; the fixed
+        // signal targets that process's own PID and invokes no cleanup.
+        unsafe { libc::kill(libc::getpid(), libc::SIGKILL) };
+        // The live session must survive until the signal. This cleanup can only
+        // execute if the kill failed, in which case the test must fail too.
+        drop(fixture);
+        unreachable!("the isolated test process must be killed");
+    }
+
+    #[test]
+    fn mounted_files_cold_recovery_settles_a_saved_cross_device_undo() {
+        use std::os::unix::{fs::MetadataExt as _, process::ExitStatusExt as _};
+        const TEST: &str = "shell::in_process::tests::files_clipboard_tests::mounted_files_cold_recovery_settles_a_saved_cross_device_undo";
+        let Some(profile) = isolated_session_root(TEST) else {
+            return;
+        };
+        if let Some(receiving) = std::env::var_os("TILO_CLIPBOARD_TEST_CROSS_DEVICE") {
+            kill_after_saving_cross_device_undo(&profile, PathBuf::from(receiving));
+        }
+        std::fs::create_dir_all(&profile).unwrap();
+        let remote_mount = tempfile::Builder::new()
+            .prefix("tilo-saved-undo-cross-device-")
+            .tempdir_in("/dev/shm")
+            .expect("a real second filesystem is required");
+        assert_ne!(
+            std::fs::metadata(&profile).unwrap().dev(),
+            std::fs::metadata(remote_mount.path()).unwrap().dev(),
+        );
+        let root = profile.join("interrupted");
+        let receiving = remote_mount.path().join("receiving");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env("TILO_IN_PROCESS_TEST_ROOT", &root)
+            .env("TILO_CLIPBOARD_TEST_CROSS_DEVICE", &receiving)
+            .status()
+            .unwrap();
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
+        assert_eq!(
+            std::fs::read(root.join("source/report")).unwrap(),
+            b"original source"
+        );
+        let mut fixture = Fixture::open_in(&root, false, [root.join("source"), receiving.clone()]);
+        assert_eq!(
+            fixture.succeeds(1, "recover-clipboard-transfers")["completed"],
+            1
+        );
+        assert!(!receiving.join("report").exists());
+        assert_eq!(
+            std::fs::read(root.join("source/report")).unwrap(),
+            b"original source"
+        );
+        let history = fixture.succeeds(1, "history");
+        assert!(
+            history["versions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["action"] == "Paste files" && entry["undone"] == true),
+            "cold recovery must settle the actual saved Undo: {history}"
+        );
+        let result = fixture.invoke(1, "undo");
+        drop(fixture);
+        assert!(
+            matches!(&result, tilo_actions::InvocationUpdate::Failed { error, .. }
+            if error.message.contains("nothing in effect to undo")),
+            "a second Undo has no in-effect step after recovery: {result:?}"
+        );
+        assert_eq!(
+            std::fs::read(root.join("source/report")).unwrap(),
+            b"original source"
+        );
+        assert!(!receiving.join("report").exists());
+    }
+
     #[test]
     fn mounted_files_cross_device_undo_recovers_after_process_kill() {
         use std::os::unix::{fs::MetadataExt as _, process::ExitStatusExt as _};
@@ -1031,6 +1177,7 @@ mod files_clipboard_tests {
             .args(["--exact", TEST, "--nocapture"])
             .env("TILO_IN_PROCESS_TEST_ROOT", &root)
             .env("TILO_CLIPBOARD_TEST_KILL_AT", "compensation-after-publish")
+            .env("TILO_CLIPBOARD_TEST_DEFER_DOC_SAVE", "1")
             .env("TILO_CLIPBOARD_TEST_CROSS_DEVICE", &receiving)
             .status()
             .unwrap();
@@ -1044,6 +1191,7 @@ mod files_clipboard_tests {
             b"original source"
         );
         let mut fixture = Fixture::open_in(&root, false, [root.join("source"), receiving.clone()]);
+        assert_unsaved_undo_intent(&mut fixture);
         let result = fixture.succeeds(1, "recover-clipboard-transfers");
         assert_eq!(
             result["completed"], 1,
