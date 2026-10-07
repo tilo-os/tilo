@@ -34,3 +34,8 @@ jobs:
       probe_kind: explicit
     secrets:
       REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+  native:
+    uses: ./.forgejo/workflows/ci-package-auth-native-reusable.yml
+    with:
+      probe_kind: native-inherited
+    secrets: inherit
