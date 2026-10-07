@@ -1734,7 +1734,13 @@ impl CollaborationManager {
     /// since the last call; the caller must republish its surface.
     pub(crate) fn take_action_surface_failed(&mut self) -> bool {
         match &mut self.backend {
-            Backend::Transport(transport) => transport.take_action_surface_failed(),
+            Backend::Transport(transport) => {
+                let directory_failed = transport.take_action_directory_failed();
+                if directory_failed {
+                    self.action_directory_published = false;
+                }
+                transport.take_action_surface_failed() || directory_failed
+            }
             Backend::Disabled(_) => false,
         }
     }

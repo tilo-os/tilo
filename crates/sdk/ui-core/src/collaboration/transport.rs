@@ -200,6 +200,13 @@ pub trait CollabTransport: Send {
         false
     }
 
+    /// A pull-directory RPC failed and its bounded retry delay elapsed.
+    /// This is separate from an eager-surface refusal: one must not bypass
+    /// the other's retry delay or invalidate a successful registration.
+    fn take_action_directory_failed(&mut self) -> bool {
+        false
+    }
+
     /// Whether committed-document custody allows publishing a document
     /// mutation on `channel` (the primary route when `None` is not yet
     /// acknowledged). Transports without committed reads always allow it.

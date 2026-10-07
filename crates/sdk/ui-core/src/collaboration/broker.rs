@@ -437,6 +437,12 @@ impl CollabTransport for BrokerTransport {
             .swap(false, Ordering::AcqRel)
     }
 
+    fn take_action_directory_failed(&mut self) -> bool {
+        self.state
+            .action_directory_failed
+            .swap(false, Ordering::AcqRel)
+    }
+
     fn send_native_media(
         &mut self,
         channel: String,
@@ -1352,6 +1358,7 @@ struct BridgeState {
     /// The broker refused or failed an action-surface publication; the owner
     /// takes this and republishes.
     action_surface_failed: Arc<AtomicBool>,
+    action_directory_failed: Arc<AtomicBool>,
     command_bytes: ByteBudget,
     event_bytes: ByteBudget,
     document_command_bytes: ByteBudget,
@@ -1494,6 +1501,7 @@ impl BridgeState {
             healthy: Arc::new(AtomicBool::new(true)),
             publication_failure: Arc::new(std::sync::Mutex::new(None)),
             action_surface_failed: Arc::new(AtomicBool::new(false)),
+            action_directory_failed: Arc::new(AtomicBool::new(false)),
             command_bytes: ByteBudget::with_room_wake(outbound_room.clone()),
             event_bytes: ByteBudget::new(),
             document_command_bytes: ByteBudget::with_room_wake(outbound_room),
@@ -3598,6 +3606,17 @@ async fn drive_shovel(
                     .await
                 {
                     tracing::warn!(%error, "collab: publishing pull resource/action directory failed");
+                    // Keep the owner enqueue latch armed until backoff expires.
+                    // The local timer leaves the broker command pump available;
+                    // a refusal cannot create a self-waking publication hot-loop.
+                    let state = inbound_tx.state.clone();
+                    tokio::task::spawn_local(async move {
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        if state.is_healthy() {
+                            state.action_directory_failed.store(true, Ordering::Release);
+                            state.notify_events();
+                        }
+                    });
                 }
             }
             SdkCommand::WifiContinuity {
@@ -6447,6 +6466,8 @@ mod tests {
         refuse_action_publications: usize,
         refused_action_publications: usize,
         action_directories: Vec<String>,
+        refuse_action_directories: usize,
+        directory_attempts: Vec<std::time::Instant>,
         action_catalogue_fixture: Option<Vec<String>>,
         action_catalogue_subscriptions: usize,
         action_catalogue_reads: usize,
@@ -6864,9 +6885,13 @@ mod tests {
             _results: channel_handle::PublishActionDirectoryResults,
         ) -> Promise<(), capnp::Error> {
             let request = params.get().unwrap();
-            self.captures
-                .lock()
-                .unwrap()
+            let mut captures = self.captures.lock().unwrap();
+            captures.directory_attempts.push(std::time::Instant::now());
+            if captures.refuse_action_directories > 0 {
+                captures.refuse_action_directories -= 1;
+                return Promise::err(capnp::Error::failed("fixture directory refusal".into()));
+            }
+            captures
                 .action_directories
                 .push(request.get_app_id().unwrap().to_str().unwrap().to_owned());
             Promise::ok(())
@@ -9993,6 +10018,63 @@ mod tests {
                 },
             );
         }
+    }
+
+    #[test]
+    fn failed_directory_registration_retries_through_transport_and_quiets() {
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures {
+                refuse_action_directories: 2,
+                ..Captures::default()
+            })),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, worker) = stand_up_fake_broker(broker);
+        let app_id = crate::collaboration::local_app_id();
+        let manager = CollaborationManager::from_sdk_fd_for_test(fd, &app_id, Uuid::new_v4());
+        let mut app = crate::App::with_collaboration_manager(
+            crate::State::new(),
+            Box::new(crate::widget::Button::new("complete", "Complete").on_view(|| {})),
+            manager,
+        );
+        crate::app::draw_prepared_component_test_frame(&mut app);
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let registered = loop {
+            app.pump_collab_presence();
+            if !captures.lock().unwrap().action_directories.is_empty() {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
+            thread::sleep(Duration::from_millis(1));
+        };
+        // Successful registration must remain quiet on unchanged idle pumps.
+        for _ in 0..100 {
+            app.pump_collab_presence();
+        }
+        drop(app);
+        worker.join().unwrap();
+        let seen = captures.lock().unwrap();
+        assert!(
+            registered,
+            "a real failed directory RPC must retry without input or model changes"
+        );
+        assert_eq!(seen.directory_attempts.len(), 3);
+        assert_eq!(seen.action_directories.as_slice(), &[app_id]);
+        for pair in seen.directory_attempts.windows(2) {
+            assert!(
+                pair[1].duration_since(pair[0]) >= Duration::from_millis(200),
+                "refused directory registration must not hot-loop"
+            );
+        }
+        assert!(
+            !seen.action_publications.is_empty(),
+            "the ordinary semantic surface remains published"
+        );
     }
 
     #[test]
