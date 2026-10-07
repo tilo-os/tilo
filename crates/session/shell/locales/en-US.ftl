@@ -2473,3 +2473,8 @@ search-action-activity-acknowledge-keywords = catch up read seen review acknowle
 search-action-activity-tasks = Review workspace goals and agent work
 search-action-catch-up-tasks-subtitle = Inspect waiting tasks, results and action history
 search-action-activity-tasks-keywords = activity catch up goals attention decision waiting agent tasks
+
+search-action-workspace-create = Create a workspace
+search-action-workspace-create-subtitle = Create and switch to a new empty workspace
+search-action-workspace-create-default-name = Untitled
+search-action-workspace-create-invalid-name = Enter a workspace name of 1 to 120 characters without control characters.

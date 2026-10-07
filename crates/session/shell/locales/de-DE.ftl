@@ -2476,3 +2476,8 @@ search-action-activity-acknowledge-keywords = Rückblick gelesen gesehen prüfen
 search-action-activity-tasks = Ziele im Arbeitsbereich und die Arbeit von Agenten prüfen
 search-action-catch-up-tasks-subtitle = Wartende Aufgaben, Ergebnisse und Aktionsverlauf ansehen
 search-action-activity-tasks-keywords = Aktivitäten Rückblick Ziele Aufmerksamkeit Entscheidung wartend Agent Aufgaben
+
+search-action-workspace-create = Arbeitsbereich erstellen
+search-action-workspace-create-subtitle = Einen neuen leeren Arbeitsbereich erstellen und dorthin wechseln
+search-action-workspace-create-default-name = Unbenannt
+search-action-workspace-create-invalid-name = Gib einen Namen mit 1 bis 120 Zeichen ohne Steuerzeichen ein.
