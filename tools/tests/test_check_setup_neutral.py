@@ -93,6 +93,13 @@ class SetupNeutralTests(unittest.TestCase):
             found = checker.file_violations(path, "source.txt")
             self.assertEqual([(v.path, v.line) for v in found],
                              [("source.txt", line) for line in range(2, 9)])
+            # Each marker must pass the prefilter on its own: another marker
+            # in the same file must not conceal an omitted reference kind.
+            for line in lines[1:8]:
+                with self.subTest(line=line):
+                    path.write_text("ordinary text\n" + line + "\n", encoding="utf-8")
+                    found = checker.file_violations(path, "source.txt")
+                    self.assertEqual([(v.path, v.line) for v in found], [("source.txt", 2)])
 
     def test_file_prefilter_retains_gitignore_scratch_exception(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
