@@ -1,8 +1,14 @@
 // Socket-backed original history must precede public operation admission.
 use automerge::ReadDoc as _;
-struct InitialHistoryProbe(std::rc::Rc<std::cell::Cell<usize>>);
+struct InitialHistoryProbe(
+    std::rc::Rc<std::cell::Cell<usize>>,
+    std::rc::Rc<std::cell::Cell<bool>>,
+);
 impl crate::widget::Widget for InitialHistoryProbe {
-    crate::provides!(dyn crate::resources::PublishesResources);
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::controls::ActionControls
+    );
     crate::testing::inert_widget_methods!(
         unregistered_leaf_layout,
         apply_layout,
@@ -23,6 +29,16 @@ impl crate::widget::Widget for InitialHistoryProbe {
         Ok(Some(crate::widget::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         )))
+    }
+}
+impl crate::widget::controls::ActionControls for InitialHistoryProbe {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.1
+            .replace(false)
+            .then(|| tilo_actions::ControlInvocation {
+                address: tilo_actions::ActionAddress::new("initial-probe", "inspect"),
+                arguments: serde_json::Map::new(),
+            })
     }
 }
 impl crate::resources::PublishesResources for InitialHistoryProbe {
@@ -67,8 +83,13 @@ fn initial_history_app() -> (App, std::rc::Rc<std::cell::Cell<usize>>) {
         uuid::Uuid::new_v4(),
         history.save(),
     );
-    let mut app =
-        App::new_with_controlled_inputs(State::new(), Box::new(InitialHistoryProbe(calls.clone())));
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(InitialHistoryProbe(
+            calls.clone(),
+            std::rc::Rc::new(std::cell::Cell::new(false)),
+        )),
+    );
     app.collaboration.local_author = crate::permissions::UserId("fixture-user".into());
     app.collaboration.manager = manager;
     (app, calls)
@@ -364,9 +385,10 @@ fn initial_history_worker_readiness_wakes_parked_owner_for_publication() {
     };
     let mut app = App::new_with_controlled_inputs(
         State::new(),
-        Box::new(InitialHistoryProbe(std::rc::Rc::new(std::cell::Cell::new(
-            0,
-        )))),
+        Box::new(InitialHistoryProbe(
+            std::rc::Rc::new(std::cell::Cell::new(0)),
+            std::rc::Rc::new(std::cell::Cell::new(false)),
+        )),
     );
     app.collaboration.manager = manager;
     let deadline = tilo_test_env::hang_deadline();
@@ -407,4 +429,72 @@ fn initial_history_worker_readiness_wakes_parked_owner_for_publication() {
             .rows
             .is_empty()
     );
+}
+
+#[test]
+fn initial_history_local_control_is_not_admitted_while_committed_capture_is_pending() {
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let queued = std::rc::Rc::new(std::cell::Cell::new(true));
+    let mut history = automerge::AutoCommit::new();
+    history
+        .put(ROOT, "original-owner-history", "retained")
+        .unwrap();
+    history.commit();
+    let (release, gate) = tokio::sync::oneshot::channel();
+    let (manager, _) = CollaborationManager::native_initial_parked_fixture_for_test(
+        "so.tilo.initial-history-probe",
+        uuid::Uuid::new_v4(),
+        history.save(),
+        gate,
+    );
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(InitialHistoryProbe(calls.clone(), queued.clone())),
+    );
+    app.collaboration.local_author = crate::permissions::UserId("fixture-user".into());
+    app.collaboration.manager = manager;
+    let deadline = tilo_test_env::hang_deadline();
+    while app
+        .state
+        .doc
+        .get(ROOT, "original-owner-history")
+        .unwrap()
+        .is_none()
+    {
+        app.pump_collab_presence();
+        assert!(
+            crate::time::now() < deadline,
+            "actual original capture never reached its owner"
+        );
+        std::thread::yield_now();
+    }
+    assert!(!app.published_action_history_ready());
+    assert_eq!(app.dispatch_control_invocations(), 0);
+    assert!(
+        queued.get(),
+        "the original intent must remain with its producer, before admission"
+    );
+    assert_eq!(calls.get(), 0);
+    assert!(app.collaboration.manager.is_connected());
+    assert!(app.action_publication_failure.is_none());
+    release.send(()).unwrap();
+    while !app.published_action_history_ready() {
+        app.pump_collab_presence();
+        assert!(
+            crate::time::now() < deadline,
+            "original capture recheck never completed"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(app.dispatch_control_invocations(), 1);
+    assert!(!queued.get());
+    assert_eq!(calls.get(), 1);
+    assert_eq!(app.dispatch_control_invocations(), 0);
+    assert_eq!(
+        calls.get(),
+        1,
+        "the intent crosses the original door exactly once"
+    );
+    assert!(app.collaboration.manager.is_connected());
+    assert!(app.action_publication_failure.is_none());
 }
