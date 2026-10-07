@@ -116,6 +116,8 @@ pub trait Apply {
     fn start_unit(&mut self, unit: &str) -> Result<(), DaemonError>;
     fn stop_unit(&mut self, unit: &str) -> Result<(), DaemonError>;
     fn restart_unit(&mut self, unit: &str) -> Result<(), DaemonError>;
+    /// Verify a declared component unit is installed and loadable before deferring activation.
+    fn validate_unit(&mut self, unit: &str) -> Result<(), DaemonError>;
     /// Restart a declared component unit only if it is already running.
     fn try_restart_unit(&mut self, unit: &str) -> Result<(), DaemonError>;
     /// Restart a login's desktop in place: ask its `tilo-session` (SIGUSR1)
@@ -413,8 +415,27 @@ pub fn activate(
         apply.sysext_refresh()?;
         actions.push(Action::SysextRefresh);
         for unit in &restarts.units {
-            apply.try_restart_unit(unit)?;
-            actions.push(Action::RestartUnit { unit: unit.clone() });
+            // The greeter component is VM-wide, but its manager also owns
+            // the active login. Re-query the host's verified session rather
+            // than using a saved slot record or caller-supplied identity.
+            if unit == GREETER_UNIT
+                && apply.device_session().is_some_and(|device| {
+                    device.login.is_some_and(|login| {
+                        login.session.is_some_and(|id| !id.is_empty())
+                            && login.wrapper.is_some_and(|pid| pid > 0)
+                    })
+                })
+            {
+                apply.validate_unit(unit)?;
+                actions.push(Action::Deferred {
+                    reason: format!(
+                        "{unit}: active owner login preserved; updated greeter runs at the next greeter launch"
+                    ),
+                });
+            } else {
+                apply.try_restart_unit(unit)?;
+                actions.push(Action::RestartUnit { unit: unit.clone() });
+            }
         }
         return Ok(actions);
     };
@@ -745,6 +766,10 @@ impl Apply for RecordingApply {
     fn restart_unit(&mut self, unit: &str) -> Result<(), DaemonError> {
         self.call(format!("restart {unit}"));
         self.units.insert(unit.to_owned(), true);
+        Ok(())
+    }
+    fn validate_unit(&mut self, unit: &str) -> Result<(), DaemonError> {
+        self.call(format!("validate-unit {unit}"));
         Ok(())
     }
     fn try_restart_unit(&mut self, unit: &str) -> Result<(), DaemonError> {
@@ -1129,6 +1154,95 @@ mod tests {
             assert_eq!(
                 apply.calls,
                 ["link_sysext 1", "sysext_refresh", "try-restart fs.service"]
+            );
+        }
+    }
+
+    #[test]
+    fn vm_greeter_update_preserves_only_a_verified_active_owner_login() {
+        for (name, mut apply, defer) in [
+            ("owner", RecordingApply::with_login("quickuser"), true),
+            ("ordinary-vm", RecordingApply::default(), false),
+            (
+                "board-session",
+                RecordingApply::with_device("quickuser"),
+                false,
+            ),
+            (
+                "logged-out",
+                {
+                    let mut apply = RecordingApply::with_login("quickuser");
+                    apply.device = apply.device.take().map(DeviceSession::logged_out);
+                    apply
+                },
+                false,
+            ),
+            (
+                "incomplete-login",
+                {
+                    let mut apply = RecordingApply::with_login("quickuser");
+                    apply
+                        .device
+                        .as_mut()
+                        .unwrap()
+                        .login
+                        .as_mut()
+                        .unwrap()
+                        .session = None;
+                    apply
+                },
+                false,
+            ),
+        ] {
+            let mut slot = record("vm", SlotKind::Vm);
+            let next = generation(
+                1,
+                &[("greeter", "g", Scope::Vm, &[GREETER_UNIT, "fs.service"])],
+            );
+            let (policy, restarts) = policy(&slot, &Generation::default(), &next).unwrap();
+            let layers = vec![PathBuf::from("/var/lib/tilo-vm/layers/greeter")];
+            let actions = activate(
+                &mut apply,
+                &mut slot,
+                &next,
+                &layers,
+                policy,
+                &restarts,
+                SessionChange::Keep,
+            )
+            .unwrap();
+            assert_eq!(apply.sysext, layers, "{name}: verified layers still merge");
+            assert!(actions.contains(&Action::SysextRefresh));
+            assert!(
+                apply.calls.contains(&"try-restart fs.service".to_owned()),
+                "{name}: other required services still activate"
+            );
+            assert_eq!(
+                apply.calls.contains(&format!("try-restart {GREETER_UNIT}")),
+                !defer,
+                "{name}: an active owner's greetd manager must stay running"
+            );
+            assert_eq!(
+                apply
+                    .calls
+                    .contains(&format!("validate-unit {GREETER_UNIT}")),
+                defer,
+                "{name}: a deferred unit still passes installed-unit validation"
+            );
+            assert_eq!(
+                actions.iter().any(|action| matches!(action,
+                Action::Deferred { reason } if reason.contains(GREETER_UNIT))),
+                defer,
+                "{name}: report the actual deferred manager activation"
+            );
+            assert!(
+                !apply
+                    .calls
+                    .iter()
+                    .any(|call| call.starts_with("restart_desktop")
+                        || call.starts_with("stop ")
+                        || call.starts_with("start ")),
+                "{name}: this update cannot authenticate, log out or restart the owner"
             );
         }
     }
