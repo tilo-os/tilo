@@ -1338,6 +1338,16 @@ pub fn detached_live<R: Resource>(
 pub fn inspect_live_window<A: ResourceApp, T>(
     inspect: impl FnOnce(&ui_core::App) -> T,
 ) -> Result<T, LaunchError> {
+    inspect_live_window_mut::<A, T>(|app| inspect(app))
+}
+
+/// Inspect the actual native component with mutable access for host-service tests.
+/// The component and its private profile retain the same lifetime as the read-only inspector.
+/// # Errors
+/// Returns any launch, storage or construction failure.
+pub fn inspect_live_window_mut<A: ResourceApp, T>(
+    inspect: impl FnOnce(&mut ui_core::App) -> T,
+) -> Result<T, LaunchError> {
     let profile = tempfile::tempdir().map_err(operation)?;
     let mut host = ApplicationHost::new(
         profile.path().join("state"),
@@ -1357,7 +1367,7 @@ pub fn inspect_live_window<A: ResourceApp, T>(
     )?;
     let component = definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
     let mut app = ui_core::App::from_component(component, prepared.runner_inputs)?;
-    let seen = inspect(&app);
+    let seen = inspect(&mut app);
     app.close_components();
     Ok(seen)
 }
