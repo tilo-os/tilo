@@ -11,7 +11,7 @@ markers = ("tilo-physical-input ", "tilo-physical-frame ",
            "tilo-physical-delivery ", "tilo-display-frame ",
            "tilo-native-send ", "tilo-native-main-stages ",
            "tilo-native-worker ", "tilo-native-worker-handoff ",
-           "tilo-native-present-call ")
+           "tilo-native-present-call ", "tilo-native-gpu-stages ")
 phase_fields = set("serial event revision phase_timing queue_wait_us render_us total_us "
                    "inflight_at_enqueue input_age_at_enqueue_us encode_submit_us "
                    "gpu_completion_wait_us bump_settle_us backdrop_us kms_retirement_us "
