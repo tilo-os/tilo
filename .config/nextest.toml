@@ -69,6 +69,14 @@ filter = 'package(shell) and test(shell::render::paint::tests::gpu_target_)'
 threads-required = "num-cpus"
 priority = 100
 
+# Loopback peer-sync latency budgets assert a 50 ms p95 on wall-clock time;
+# sharing the runner with the parallel suite measures scheduler contention
+# instead of the push path, so they run with the pool to themselves.
+[[profile.default.overrides]]
+filter = 'package(shell) and binary(it) and (test(=peer_sync_test::warm_exact_target_input_stays_below_the_interactive_p95_budget) or test(=peer_sync_test::a_pushed_tab_change_reaches_the_other_device_within_the_interactive_budget) or test(=peer_sync_test::a_document_edit_reaches_the_other_device_within_the_interactive_budget))'
+threads-required = "num-cpus"
+priority = 100
+
 [[profile.default.overrides]]
 filter = '(package(notes) and binary(it) and (test(scenarios::) or test(capture_runtime::))) or (package(shell) and binary(it) and test(foreign_surface_compositing::))'
 threads-required = "num-cpus"
