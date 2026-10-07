@@ -715,9 +715,10 @@ readers = ["crates/collab/tilo-user-identity/src/bin/tilo-device-key-init.rs"]
 package = "tilo-fs"
 inputs = [
   "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf",
-  "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/sample.docx",
+  "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json",
+  "tools/test-assets.py", "tools/test-assets-build.rs",
 ]
-readers = ["crates/system/fs/src/main.rs", "crates/system/fs/src/tests/mod.rs"]
+readers = ["crates/system/fs/src/main.rs", "crates/system/fs/build.rs"]
 
 [[cargo]]
 package = "system-extension"
@@ -770,9 +771,8 @@ readers = ["apps/disks/src/probe.rs"]
 
 [[cargo]]
 package = "tilo-doc-codecs"
-inputs = ["crates/doc/fixtures/"]
-readers = ["crates/doc/tilo-doc-codecs/src/bulk_equivalence.rs", "crates/doc/tilo-doc-codecs/tests/office_roundtrip.rs",
-           "crates/doc/tilo-doc-codecs/tests/binary_inputs.rs", "crates/doc/tilo-doc-codecs/tests/office_fidelity.rs"]
+inputs = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
+readers = ["crates/doc/tilo-doc-codecs/build.rs"]
 
 [[cargo]]
 package = "ush"
@@ -798,13 +798,8 @@ readers = ["crates/sdk/font-catalog/build.rs"]
 
 [[cargo]]
 package = "pdf-viewer"
-# The reader's tests open the engine's typeset fixtures.
-inputs = ["crates/platform/tilo-pdf/tests/fixtures/"]
-readers = [
-  "apps/pdf-viewer/src/app.rs", "apps/pdf-viewer/src/app/adopt_tests.rs",
-  "apps/pdf-viewer/src/app/links_tests.rs", "apps/pdf-viewer/src/app/records_tests.rs",
-  "apps/pdf-viewer/tests/capture.rs",
-]
+inputs = ["crates/platform/tilo-pdf/tests/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
+readers = ["apps/pdf-viewer/build.rs"]
 
 [[cargo]]
 package = "tilo-agent-participant"
@@ -1423,10 +1418,20 @@ by = "tools/tests/test_font_artifacts.py"
 
 [[cargo]]
 package = "ebook"
-inputs = ["tools/test-assets.py"]
-readers = ["apps/ebook/src/app/interaction_tests.rs"]
+inputs = ["tools/test-assets.py", "tools/test-assets-build.rs"]
+readers = ["apps/ebook/src/app/interaction_tests.rs", "apps/ebook/build.rs"]
 
 [[cargo]]
 package = "store"
 inputs = ["tools/test-assets.py", "tools/test-assets-build.rs"]
 readers = ["apps/store/build.rs"]
+
+[[cargo]]
+package = "tilo-pdf"
+inputs = ["tools/test-assets.py", "tools/test-assets-build.rs"]
+readers = ["crates/platform/tilo-pdf/build.rs"]
+
+[[group]]
+name = "browser-fixture-assets"
+inputs = ["tools/web/fixture-assets.mjs", "tools/test-assets.py"]
+suites = ["tools/web/fixture-assets.test.mjs"]

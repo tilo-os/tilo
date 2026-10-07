@@ -26,7 +26,7 @@ use crate::xhtml::parse_xhtml;
 /// sample library and test fixtures use it; the native live shelf never gains
 /// it by itself, and only a host without files places it there
 /// ([`bundled_book_entry`]).
-pub(crate) const SAMPLE_EPUB: &[u8] = include_bytes!("../assets/sample.epub");
+pub(crate) const SAMPLE_EPUB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sample.epub"));
 
 /// The shelf location of a bundled book: inside the app, never shared.
 const BUNDLED_PATH: &str = "sample.epub";
