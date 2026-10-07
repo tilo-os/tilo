@@ -907,3 +907,104 @@ fn a_trusted_osk_toplevel_never_adopts_a_tab_before_its_app_id_arrives() {
     let public_window = foreign_id(&h.state, "so.tilo.osk");
     assert_ne!(h.state.osk_surface, Some(public_window));
 }
+
+#[test]
+fn native_window_provenance_requires_current_authenticated_surface_record_and_lifetime() {
+    use shell::shell::state::{LocalAppRecord, TileContent};
+    let room: shell::shell::state::RoomId = uuid::Uuid::new_v4().into();
+    let pid = std::process::id();
+    let kernel_stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let start: u64 = kernel_stat
+        .rsplit_once(')')
+        .unwrap()
+        .1
+        .split_whitespace()
+        .nth(19)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut h = Harness::with_identity(|state| {
+        state.workspace_tree.write().workspaces[0].room = room;
+        Arc::new(shell::compositor::state::ClientState {
+            package_id: Some("so.tilo.calculator".into()),
+            workspace_id: Some(room.to_string()),
+            enforce_package_id: true,
+            pid: Some(pid),
+            pid_start_time: Some(start),
+            ..Default::default()
+        })
+    });
+    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
+    h.pump();
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
+    let surface = compositor.create_surface(&h.queue.handle(), ());
+    let xdg = wm.get_xdg_surface(&surface, &h.queue.handle(), ());
+    let top = xdg.get_toplevel(&h.queue.handle(), ());
+    top.set_app_id("so.tilo.calculator".into());
+    top.set_title("private title excluded from owner provenance".into());
+    h.pump();
+    let id = foreign_id(&h.state, "so.tilo.calculator");
+    let tab = {
+        let tree = h.state.workspace_tree.read();
+        tree.workspaces
+            .iter()
+            .flat_map(|w| &w.strips)
+            .flat_map(|s| &s.window_groups)
+            .flat_map(|g| &g.tabs)
+            .find(|t| matches!(&t.tile, TileContent::Foreign {surface_id, ..} if *surface_id == id))
+            .unwrap()
+            .id
+    };
+    assert_eq!(
+        h.state.native_window_provenance_json()["windows"],
+        serde_json::json!([])
+    );
+    h.state.workspace_tree.write().local_app_records.insert(
+        tab,
+        LocalAppRecord {
+            room,
+            app_id: "so.tilo.calculator".into(),
+            record_instance: 77,
+        },
+    );
+    let proof = h.state.native_window_provenance_json();
+    assert_eq!(proof["windows"].as_array().unwrap().len(), 1);
+    assert_eq!(proof["windows"][0]["surface_id"], id);
+    assert_eq!(proof["windows"][0]["tab_id"], tab);
+    assert_eq!(proof["windows"][0]["record_instance"], 77);
+    assert_eq!(proof["windows"][0]["peer_pid"], pid);
+    assert_eq!(
+        proof["windows"][0]["peer_start_time_ticks"],
+        start.to_string()
+    );
+    assert!(!proof.to_string().contains("private title"));
+    h.state
+        .workspace_tree
+        .write()
+        .local_app_records
+        .get_mut(&tab)
+        .unwrap()
+        .room = uuid::Uuid::new_v4().into();
+    assert_eq!(
+        h.state.native_window_provenance_json()["windows"],
+        serde_json::json!([])
+    );
+    h.state
+        .workspace_tree
+        .write()
+        .local_app_records
+        .get_mut(&tab)
+        .unwrap()
+        .room = room;
+    top.destroy();
+    xdg.destroy();
+    surface.destroy();
+    h.pump();
+    assert_eq!(
+        h.state.native_window_provenance_json()["windows"],
+        serde_json::json!([])
+    );
+    assert!(shell::shell::test_control::Command::StateDump.admin_permitted());
+    assert!(!shell::shell::test_control::Command::StateDump.agent_permitted());
+}

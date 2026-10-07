@@ -123,12 +123,22 @@ def cohort(vm, args, out):
     return receipt, shown, installed
 
 
-def mapped(vm, comm, installed, uid, out, *, executable=None):
+def mapped(vm, comm, installed, uid, out, *, executable=None, selected=None):
     source = Path(__file__).with_name("acceptance").joinpath("runtime_backing.py").read_text()
-    value = first_json(vm.root_exec("python3 -c " + shlex.quote(source) + " " + shlex.quote(comm) + " " + str(uid)))
+    selection = ""
+    if selected is not None:
+        pid, start = selected.get("peer_pid"), selected.get("peer_start_time_ticks")
+        require(type(pid) is int and pid > 0 and isinstance(start, str) and start.isdecimal(),
+                "authenticated native worker identity unavailable")
+        selection = " " + str(pid) + " " + shlex.quote(start)
+    value = first_json(vm.root_exec("python3 -c " + shlex.quote(source) + " " + shlex.quote(comm) + " " + str(uid) + selection))
     require(value.get("method") == "proc-map-files-fd" and value.get("reader_uid") == 0,
             "exact read-only mapped backing observation unavailable")
     require(value["uid"] == uid and value["processes"], "native worker unobservable")
+    if selected is not None:
+        require(len(value["processes"]) == 1 and value["processes"][0].get("pid") == pid
+                and value["processes"][0].get("start_time_ticks") == start,
+                "kernel backing observer returned a foreign worker")
     for process in value["processes"]:
         if executable is not None:
             require(process.get("executable", {}).get("sha256") == executable,
