@@ -585,14 +585,26 @@ def presented_floating_frame(response, app_id):
             and type(row.get("frame_seq")) is int and row["frame_seq"] > 0]
     if len(rows) > 1:
         raise RuntimeError("ambiguous presented detached application window")
+    if rows:
+        native_surface_id(rows[0])
     return rows[0] if rows else None
 
 
+def native_surface_id(frame):
+    """Read the compositor-owned native identity, never the logical Float id."""
+    surface_id = frame.get("surface_id") if isinstance(frame, dict) else None
+    if type(surface_id) is not int or surface_id <= 0:
+        raise RuntimeError("detached application window has no valid native surface identity")
+    return surface_id
+
+
 def fresh_floating_presentation(current, previous):
-    """Accept a new surface identity or a newer frame on a reused identity."""
+    """Require this logical Float on a new or freshly painted native surface."""
     if current is None or previous is None:
         return None
-    if current["floating_id"] != previous["floating_id"]:
+    if current.get("floating_id") != previous.get("floating_id"):
+        return None
+    if native_surface_id(current) != native_surface_id(previous):
         return current
     return current if current["frame_seq"] > previous["frame_seq"] else None
 
@@ -730,7 +742,9 @@ def native_float_return(socket, room, record, output, size, process):
         "physical_typing": True, "physical_selection": True, "physical_undo": True,
         "input_method_commit": True, "pointer_drag_detach": True,
         "pointer_return": True,
-        "native_floating_id": frame["floating_id"], "frame_seq": frame["frame_seq"],
+        "native_floating_id": frame["floating_id"],
+        "native_surface_id": native_surface_id(frame),
+        "frame_seq": frame["frame_seq"],
         "returned_primary_frame_seq": primary["frame_seq"],
         "private_editor": attached, "private_content_recorded": False,
         "test_owned_draft_rendered": True,
@@ -739,6 +753,7 @@ def native_float_return(socket, room, record, output, size, process):
     return {
         "proven": True,
         "floating_id": frame["floating_id"],
+        "surface_id": native_surface_id(frame),
         "frame_seq": frame["frame_seq"],
     }
 

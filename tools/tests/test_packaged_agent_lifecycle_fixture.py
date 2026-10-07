@@ -264,18 +264,27 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertLess(bootstrap.index("physical_send_after_stop("),
                         bootstrap.index("native_agent_membership_revocation("))
 
-    def test_fresh_floating_presentation_allows_replacement_or_newer_reuse(self):
-        previous = {"floating_id": "float-a", "frame_seq": 8}
-        replacement = {"floating_id": "float-b", "frame_seq": 1}
-        newer_reuse = {"floating_id": "float-a", "frame_seq": 9}
+    def test_fresh_floating_presentation_uses_the_native_surface_identity(self):
+        previous = {"floating_id": "float-a", "surface_id": 41, "frame_seq": 8}
+        replacement = {"floating_id": "float-a", "surface_id": 42, "frame_seq": 1}
+        newer_reuse = {"floating_id": "float-a", "surface_id": 41, "frame_seq": 9}
         self.assertIs(PROOF.fresh_floating_presentation(replacement, previous), replacement)
         self.assertIs(PROOF.fresh_floating_presentation(newer_reuse, previous), newer_reuse)
         self.assertIsNone(PROOF.fresh_floating_presentation(
-            {"floating_id": "float-a", "frame_seq": 8}, previous
+            {"floating_id": "float-a", "surface_id": 41, "frame_seq": 8}, previous
         ))
         self.assertIsNone(PROOF.fresh_floating_presentation(
-            {"floating_id": "float-a", "frame_seq": 7}, previous
+            {"floating_id": "float-a", "surface_id": 41, "frame_seq": 7}, previous
         ))
+        self.assertIsNone(PROOF.fresh_floating_presentation(
+            {"floating_id": "float-b", "surface_id": 42, "frame_seq": 10}, previous
+        ))
+        for malformed in (None, True, 0, -1, "42"):
+            with self.subTest(surface_id=malformed), self.assertRaises(RuntimeError):
+                PROOF.fresh_floating_presentation(
+                    {"floating_id": "float-a", "surface_id": malformed, "frame_seq": 1},
+                    previous,
+                )
 
     def test_final_lifecycle_requires_structured_float_return_success(self):
         self.assertTrue(PROOF.float_return_evidence_proven({"proven": True}))
