@@ -714,6 +714,26 @@ mod managed_service_tests {
     }
 
     #[test]
+    fn signal_source_manifest_is_admitted_as_a_headless_managed_service() {
+        let manifest: MinimalManifest =
+            toml::from_str(include_str!("../signal-provider.toml")).unwrap();
+        let options = RunOptions {
+            app_id: Some("so.tilo.signal-provider".into()),
+            mode: LaunchMode::Service {
+                passthrough_argv: vec![],
+            },
+            no_services: true,
+            identity: IdentitySource::None,
+            ..RunOptions::default()
+        };
+        assert_eq!(
+            manifest.entrypoint.cli_bin(),
+            Some("bin/tilo-signal-provider")
+        );
+        validate_launch_mode(&manifest, &options).unwrap();
+    }
+
+    #[test]
     fn managed_service_launches_are_confined_to_headless_service_packages() {
         // Phase `managed_service_requires_service_kind_and_headless_entrypoint`.
         {
@@ -3066,14 +3086,22 @@ pub(crate) fn run_with_context(
         },
         &egress,
         net_gate.as_ref(),
-        native_owner.map(|observer| (observer, None)).or_else(|| {
-            enrolled.map(|(services, observer)| (observer, debug_output_log(services.data_home())))
-        }),
+        native_owner
+            .map(|observer| {
+                (
+                    observer,
+                    opts.data_home.as_deref().and_then(debug_output_log),
+                )
+            })
+            .or_else(|| {
+                enrolled
+                    .map(|(services, observer)| (observer, debug_output_log(services.data_home())))
+            }),
     )
 }
 
 /// Debug-only, off by default: when the launching host sets
-/// `TILO_LAUNCHER_DEBUG_STDERR=1`, a managed (enrolled) child's stdout and
+/// `TILO_LAUNCHER_DEBUG_STDERR=1`, a managed child's stdout and
 /// stderr go to a bounded log file in its data home instead of `/dev/null`.
 /// This changes no sandbox, policy or custody decision; it only keeps the
 /// diagnostic output a supervised app would otherwise lose.

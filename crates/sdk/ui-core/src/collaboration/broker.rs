@@ -29,6 +29,8 @@ use super::{
 // Worker-owned Cloud facilities: committed-document reads, the paged
 // directory client, managed sender attempts and the native media lane all
 // share this worker's queues, byte budgets and route handles.
+#[path = "audio_output.rs"]
+mod audio_output;
 #[path = "committed_document.rs"]
 pub(super) mod committed_document;
 #[path = "directory_client.rs"]
@@ -2591,6 +2593,12 @@ impl CollaborationManager {
 
     #[cfg(feature = "native")]
     pub(crate) fn for_native_launch(kind: &crate::record::RecordKind) -> Result<Self, String> {
+        if crate::host::environment()
+            .identity
+            .collab_service_configured
+        {
+            media::audio_output::require_governed();
+        }
         if runtime_portal::service_fd("collab").is_none() {
             if crate::host::environment()
                 .identity
@@ -2675,6 +2683,17 @@ impl CollaborationManager {
         gate: tokio::sync::oneshot::Receiver<()>,
     ) -> (Self, Box<dyn Fn() -> usize>) {
         tests::native_initial_fixture_gated(app, room, history, Some(gate))
+    }
+
+    /// Socket-backed committed-read fixture; the probe observes real recheck requests.
+    #[cfg(all(test, unix))]
+    pub(crate) fn native_initial_parked_fixture_for_test(
+        app: &str,
+        room: Uuid,
+        history: Vec<u8>,
+        gate: tokio::sync::oneshot::Receiver<()>,
+    ) -> (Self, Box<dyn Fn() -> usize>) {
+        tests::native_initial_parked_fixture(app, room, history, gate)
     }
 
     fn for_route_from(
@@ -3786,6 +3805,14 @@ async fn ensure_sdk_route(
     }
 
     media_routes.insert(channel_id.clone(), channel.clone());
+    if spec.record.is_none()
+        && participant_kind == "person"
+        && crate::host::environment()
+            .identity
+            .collab_service_configured
+    {
+        audio_output::install(channel.clone());
+    }
     routes.insert(
         channel_id,
         SdkRoute {
@@ -9083,6 +9110,45 @@ mod tests {
         (
             CollaborationManager::from_sdk_fd_for_test(fd, app, room),
             Box::new(move || captures.lock().unwrap().joined.len()),
+        )
+    }
+
+    pub(super) fn native_initial_parked_fixture(
+        app: &str,
+        room: Uuid,
+        history: Vec<u8>,
+        gate: tokio::sync::oneshot::Receiver<()>,
+    ) -> (CollaborationManager, Box<dyn Fn() -> usize>) {
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures {
+                committed_history_fixture: Some(history),
+                committed_recheck_gate: Some(gate),
+                ..Captures::default()
+            })),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, _thread) = stand_up_fake_broker(broker);
+        (
+            CollaborationManager::from_sdk_fd_for_test(fd, app, room),
+            Box::new(move || {
+                captures
+                    .lock()
+                    .unwrap()
+                    .committed_reads
+                    .iter()
+                    .filter(|request| {
+                        matches!(
+                            request,
+                            runtime_collab::committed_document::Request::Open {
+                                known_revision: Some(_)
+                            }
+                        )
+                    })
+                    .count()
+            }),
         )
     }
 

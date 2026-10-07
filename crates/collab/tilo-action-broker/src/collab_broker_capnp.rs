@@ -45,7 +45,10 @@ pub use committed_document::{
 use durable_local_invocation::DurableContext;
 pub(crate) use invocation_journal::DurableInvocation;
 use invocation_journal::{InvocationJournal, InvocationKey, InvocationOwner};
-pub use native_media::{NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices};
+pub use native_media::{
+    AudioOutputFuture, AudioOutputServices, NativeMediaFuture, NativeMediaRequestContext,
+    NativeMediaServices,
+};
 pub use published_invocation::OriginalInvocation;
 use published_invocation::{InvocationCaller, OriginalInvocationData};
 
@@ -5633,13 +5636,20 @@ impl CapnpBrokerState {
         )
     }
 
+    fn disconnect_device_media(&self, peer_id: u64) {
+        if let Some(media) = self.services.native_media.as_ref() {
+            media.disconnect(peer_id);
+        }
+        if let Some(output) = self.services.audio_output.as_ref() {
+            output.disconnect(peer_id);
+        }
+    }
+
     fn remove_connection(&self, peer_id: u64) {
         if let Ok(mut directories) = self.canonical_directories.lock() {
             directories.remove(peer_id);
         }
-        if let Some(media) = self.services.native_media.as_ref() {
-            media.disconnect(peer_id);
-        }
+        self.disconnect_device_media(peer_id);
         // Withdraw provenance before any stale surface can be observed during cleanup.
         match self.host_workers.lock() {
             Ok(mut workers) => {
@@ -7264,6 +7274,25 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .set_reply(&reply.encode().map_err(|e| capnp::Error::failed(e.into()))?);
             Ok(())
         })())
+    }
+
+    fn audio_output_command(
+        self: Rc<Self>,
+        params: channel_handle::AudioOutputCommandParams,
+        mut results: channel_handle::AudioOutputCommandResults,
+    ) -> Promise<(), capnp::Error> {
+        let future = (|| self.audio_output_dispatch(params.get()?.get_command()?))();
+        let future = match future {
+            Ok(future) => future,
+            Err(error) => return Promise::err(error),
+        };
+        Promise::from_future(async move {
+            let snapshot = future.await.map_err(capnp::Error::failed)?;
+            let bytes = serde_json::to_vec(&snapshot)
+                .map_err(|_| capnp::Error::failed("audio output reply encoding failed".into()))?;
+            results.get().set_reply(&bytes);
+            Ok(())
+        })
     }
 
     fn native_media_command(
@@ -13151,6 +13180,32 @@ pub mod tests {
                         .await
                         .err()
                         .expect("unattested channel must be refused");
+                    assert!(error.to_string().contains("launcher-attested"), "{error}");
+                }
+            })
+            .await;
+    }
+
+    #[cfg(test)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn audio_output_raw_admitted_channel_cannot_open_or_write_host_pcm() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let fixture = local_directory_fixture();
+                let channel = fixture.invocation_channel();
+                for command in [
+                    runtime_collab::audio_output::Command::Open {},
+                    runtime_collab::audio_output::Command::Write {
+                        generation: 1,
+                        sequence: 1,
+                        samples: vec![123; 1920],
+                    },
+                ] {
+                    let mut rpc = channel.audio_output_command_request();
+                    rpc.get().set_command(&command.encode().unwrap());
+                    let error = rpc.send().promise.await.err().expect(
+                        "an admitted remote/raw route cannot manufacture launcher process custody",
+                    );
                     assert!(error.to_string().contains("launcher-attested"), "{error}");
                 }
             })

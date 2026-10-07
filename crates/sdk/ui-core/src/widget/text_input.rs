@@ -231,6 +231,7 @@ pub struct TextInput {
     /// Paint-only suppression for drag previews; focus, selection and IME remain intact.
     caret_paint_suppressed: bool,
     text: String,
+    pending_paste: Option<PendingPaste>,
     /// Caret, selection (always on grapheme boundaries), the IME composition,
     /// and the optional per-character admission rule for domain-specific
     /// fields (for example a spreadsheet cell-reference box), which applies to
@@ -421,6 +422,13 @@ pub struct TextInput {
     span_highlighter: Option<SpanHighlighter>,
 }
 
+struct PendingPaste {
+    result: std::sync::mpsc::Receiver<Option<String>>,
+    text: zeroize::Zeroizing<String>,
+    caret: TextPosition,
+    anchor: usize,
+}
+
 /// Colours spans of a field's text from the theme: each `(range, colour)`
 /// is a byte range of the text and the ink it takes (a reference in a
 /// formula, in the colour of the cells it outlines).
@@ -532,6 +540,7 @@ impl TextInput {
             is_focused: false,
             caret_paint_suppressed: false,
             text: String::new(),
+            pending_paste: None,
             core: EditCore::new(),
             typing: TypingRun::default(),
             is_dragging: false,
@@ -1182,6 +1191,7 @@ impl TextInput {
         if self.text == s {
             return;
         }
+        self.pending_paste = None;
         if self.holds_secret() {
             self.text.zeroize();
             self.last_notified_text.zeroize();
@@ -1283,6 +1293,7 @@ impl TextInput {
 
     /// Does not count as a user edit (dirty stays false).
     pub fn set_cursor_pos(&mut self, pos: usize) {
+        self.pending_paste = None;
         self.core
             .set_caret(grapheme_boundary_at_or_before(&self.text, pos));
         self.goal_x = None;
@@ -1290,6 +1301,7 @@ impl TextInput {
 
     /// Seat the caret at an exact shaped position without counting as an edit.
     pub fn set_caret_position(&mut self, position: TextPosition) {
+        self.pending_paste = None;
         self.core.set_caret_position(TextPosition::with_affinity(
             grapheme_boundary_at_or_before(&self.text, position.byte),
             position.affinity,
@@ -1758,6 +1770,7 @@ impl TextInput {
     /// Restore a document selection's active endpoint after its per-block
     /// bands have been painted, retaining wrap/bidi affinity.
     pub(super) fn set_selection_at(&mut self, anchor: usize, cursor: TextPosition) {
+        self.pending_paste = None;
         let anchor = anchor.min(self.text.len());
         let byte = cursor.byte.min(self.text.len());
         self.core
@@ -3554,6 +3567,7 @@ impl TextInput {
             self.clamp_to_text();
             return false;
         }
+        self.pending_paste = None;
         edit.apply(&mut self.text);
         self.goal_x = None;
         self.typing.touch();
@@ -3658,12 +3672,42 @@ impl TextInput {
     /// Single-line strips all control characters; multiline keeps newlines
     /// (normalising `\r\n`/`\r` to `\n`) and tabs.
     fn do_paste(&mut self) {
-        if let Some(paste) = clipboard_paste() {
+        self.pending_paste = Some(PendingPaste {
+            result: crate::text_selection::request_clipboard_paste(),
+            text: zeroize::Zeroizing::new(self.text.clone()),
+            caret: self.core.caret_position(),
+            anchor: self.core.anchor(),
+        });
+        self.poll_pending_paste();
+    }
+
+    fn poll_pending_paste(&mut self) -> bool {
+        let Some(pending) = self.pending_paste.as_ref() else {
+            return false;
+        };
+        if self.effectively_disabled()
+            || self.text != *pending.text
+            || self.core.caret_position() != pending.caret
+            || self.core.anchor() != pending.anchor
+            || self.core.has_preedit()
+        {
+            self.pending_paste = None;
+            return false;
+        }
+        let paste = match pending.result.try_recv() {
+            Ok(value) => value,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+        };
+        self.pending_paste = None;
+        if let Some(paste) = paste {
             let cleaned = self.clean_pasted_text(&paste);
             if !cleaned.is_empty() {
                 self.insert_str(&cleaned);
+                return true;
             }
         }
+        false
     }
 
     fn clean_pasted_text(&self, paste: &str) -> String {
@@ -4615,6 +4659,9 @@ impl Widget for TextInput {
     }
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        if self.poll_pending_paste() {
+            self.notify_user_change(false);
+        }
         let (state, _) = crate::doc::document_ref(state, root);
         let local_value = self
             .local_state
@@ -4931,6 +4978,17 @@ impl Widget for TextInput {
         if self.effectively_disabled() {
             return;
         }
+        if matches!(event,
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed
+        ) || matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            } | WindowEvent::Ime(winit::event::Ime::Preedit(..) | winit::event::Ime::Commit(..))
+        ) {
+            self.pending_paste = None;
+        }
         self.clamp_to_text();
 
         // The show/hide control sees input first; a press it takes never
@@ -5140,6 +5198,7 @@ impl Widget for TextInput {
             self.spell_active = true;
         }
         if !focused {
+            self.pending_paste = None;
             self.core.clear_preedit();
         }
     }
