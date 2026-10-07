@@ -52,6 +52,7 @@ pub fn required_action(
 ) -> Option<(TreePath, ActionKind)> {
     if resource.provider == super::providers::permission_prompts::PROVIDER_ID
         || resource.provider == super::providers::terminal_device_shell::PROVIDER_ID
+        || resource.provider == super::providers::file_picker::PROVIDER_ID
         || resource.provider == "onboarding"
     {
         return Some((chrome_node(&resource.id), ActionKind::Outside));
@@ -202,7 +203,9 @@ impl ActionVisibility for PolicyVisibility<'_> {
     fn can_see(&self, resource: &ResourceRef, kind: &ResourceKind) -> bool {
         // First-use identity belongs to the local owner alone: never a person
         // the owner admitted, an app or an agent, whatever they were granted.
-        if resource.provider == "onboarding" {
+        if resource.provider == "onboarding"
+            || resource.provider == super::providers::file_picker::PROVIDER_ID
+        {
             return is_person_alone(&self.actor)
                 && self.workspace.owner().is_some_and(|owner| {
                     self.actor.principals.iter().any(
