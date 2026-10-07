@@ -1940,3 +1940,9 @@ settings-appearance-schedule-follow = Dem Tag- und Nachtzeitplan folgen
 settings-appearance-shared-body = Deine Darstellungseinstellungen folgen dir auf deine Geräte. Das Hintergrundbild kann für einen oder alle Arbeitsbereiche gelten.
 settings-appearance-shared-card = Deine Einstellungen
 settings-appearance-text-scale = Textskalierung
+
+display-devices-title = Bildschirme auf deinen Geräten
+display-device-screen = { $device } · { $screen } · { $status }
+display-device-online = Online
+display-device-offline = Offline
+display-devices-observed = Beobachtete Bildschirmpositionen. Eingabezugriff wird gesondert erteilt.

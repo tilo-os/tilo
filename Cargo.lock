@@ -4022,23 +4022,27 @@ dependencies = [
 [[package]]
 name = "fcast-sender-sdk"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f287d576e0dff57869e24c00468747821ab6a8a2db8e9093d29d12b7688a9bb5"
 dependencies = [
  "anyhow",
  "base64",
  "cfg_aliases 0.2.2",
  "fcast-protocol",
  "futures",
+ "getrandom 0.4.3",
  "google-cast-protocol",
  "log",
  "mdns-sd",
+ "prost",
+ "rand_core 0.10.0",
  "rustls-pki-types",
+ "rustls-webpki",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tokio",
  "tokio-rustls",
  "tokio-stream",
+ "x509-parser 0.18.1",
 ]
 
 [[package]]
@@ -17187,17 +17191,28 @@ dependencies = [
  "fcast-sender-sdk",
  "futures-util",
  "getrandom 0.4.3",
+ "google-cast-protocol",
  "hex",
  "mdns-sd",
+ "prost",
  "rand 0.10.1",
+ "rand_core 0.10.0",
+ "rcgen",
+ "rsa 0.10.0-rc.18",
+ "rustls-pki-types",
+ "rustls-webpki",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tilo-callstream",
  "tilo-rt",
  "tilo-test-env",
  "tilo-xdg-paths",
+ "time",
  "tokio",
+ "tokio-rustls",
  "workspace-hack",
+ "x509-parser 0.18.1",
  "zbus",
 ]
 

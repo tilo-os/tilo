@@ -15,7 +15,7 @@ ENTRY = Path(__file__).resolve().parents[2] / "crates/browser/tilo-web-desktop/s
 
 
 class SmokeShards(unittest.TestCase):
-    def run_driver(self, apps, shards="2", failing_app=""):
+    def run_driver(self, apps, shards="2", failing_app="", cleanup_failures=0):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             browser = root / "chrome"
@@ -55,7 +55,18 @@ class SmokeShards(unittest.TestCase):
                 "json.dumps({'args':sys.argv[1:],'port':os.environ['CDP_PORT'],'worker':os.environ.get('TILO_WEB_SMOKE_WORKER')}))\n"
                 "sys.exit(7 if os.environ['FAILING_APP'] in sys.argv[3:] else 0)\n"
             )
-            for executable in (browser, curl, node):
+            remove = root / "rm"
+            remove.write_text(
+                "#!/usr/bin/env python3\n"
+                "import os,pathlib,sys\n"
+                "attempts=pathlib.Path(os.environ['FIXTURE_ROOT'],'removal-attempts')\n"
+                "count=int(attempts.read_text())+1 if attempts.exists() else 1\n"
+                "attempts.write_text(str(count))\n"
+                "if count<=int(os.environ['CLEANUP_FAILURES']):\n"
+                " print('rm: Directory not empty',file=sys.stderr); sys.exit(1)\n"
+                f"os.execv({shutil.which('rm')!r},['rm',*sys.argv[1:]])\n"
+            )
+            for executable in (browser, curl, node, remove):
                 executable.chmod(0o755)
             environment = dict(
                 os.environ,
@@ -63,6 +74,7 @@ class SmokeShards(unittest.TestCase):
                 RUNNER_TEMP=directory,
                 FIXTURE_ROOT=directory,
                 FAILING_APP=failing_app,
+                CLEANUP_FAILURES=str(cleanup_failures),
                 TILO_WEB_SMOKE_SHARDS=shards,
                 CDP_PORT="9333",
                 PATH=f"{directory}:{os.environ['PATH']}",
@@ -77,7 +89,10 @@ class SmokeShards(unittest.TestCase):
             workers = [json.loads(p.read_text()) for p in root.glob("worker-*.json")]
             browsers = [json.loads(p.read_text()) for p in root.glob("chrome-*.json")]
             self.assertFalse((root / "cleanup-race").exists(), "profile removed before browser exit")
-            self.assertEqual(list(root.glob("smoke-browsers.*")), [])
+            if cleanup_failures < 100:
+                self.assertEqual(list(root.glob("smoke-browsers.*")), [])
+            else:
+                self.assertTrue(list(root.glob("smoke-browsers.*")), "permanent removal failure must remain observable")
             return result, workers, browsers
 
     def run_entrypoint(self, *, ci="true", worker="", code=0):
@@ -167,6 +182,21 @@ class SmokeShards(unittest.TestCase):
         result, workers, _ = self.run_driver(["calculator", "calendar", "desktop"], failing_app="calculator")
         self.assertEqual(result.returncode, 1)
         self.assertCountEqual([app for w in workers for app in w["args"][2:]], ["calculator", "calendar", "desktop"])
+
+    def test_delayed_profile_removal_does_not_fail_completed_probes(self):
+        result, workers, _ = self.run_driver(["calculator", "desktop"], cleanup_failures=1)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(workers), 2)
+
+    def test_permanent_profile_removal_failure_fails_the_job(self):
+        result, workers, _ = self.run_driver(["calculator", "desktop"], cleanup_failures=100)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len(workers), 2)
+        self.assertIn("could not remove browser profiles", result.stderr)
+
+    def test_cleanup_retry_preserves_a_failed_probe(self):
+        result, _, _ = self.run_driver(["calculator", "desktop"], failing_app="calculator", cleanup_failures=1)
+        self.assertEqual(result.returncode, 1)
 
     def test_single_app_starts_only_one_browser(self):
         result, workers, browsers = self.run_driver(["calculator"])

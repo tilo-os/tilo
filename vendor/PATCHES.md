@@ -1,5 +1,18 @@
 # Patches against upstream
 
+## Cast transport
+
+`fcast-sender-sdk` 0.3.0 is the checksum-verified MIT registry release, moved to
+edition 2024. Its local patch verifies TLS handshake signatures with Rustls/ring
+and authenticates DeviceAuth before control or media messages on that connection.
+Dedicated Cast/Eureka identity and Cast CRL anchors are private protocol constants;
+Open Screen's BSD-3-Clause license and immutable revision/DER pins are retained.
+Fresh nonces, SHA-256 proofs, validated paths, screen capability, current signed
+revocation and bounded negotiation are required. Expiry tears down the session.
+No machine trust setting or persistent access grant changes. See its
+`PROVENANCE.md`, production-source TLS/authentication regression tests and
+`docs/architecture/continuity-interop.md`.
+
 ## Spotify dependencies
 
 `librespot-core` 0.8.0 and `hyper-proxy2` 0.1.0 are checksum-verified MIT

@@ -151,22 +151,50 @@ def idle_sample(shell: subprocess.Popen) -> dict:
             "cpu_percent_one_core": 100 * (after - ticks) / os.sysconf("SC_CLK_TCK") / seconds,
             "rss_kib_before": rss_before, "rss_kib_after": rss_after}
 
+def seed_fixture(seed_dir: pathlib.Path, archive_root: pathlib.Path | None) -> None:
+    seed_dir.mkdir(parents=True, mode=0o700)
+    (seed_dir / "startup-probe-fresh-mesa").write_text("private fixture\n")
+    if archive_root is None:
+        return
+    source = archive_root.resolve(strict=True)
+    if any(path.is_symlink() for path in source.rglob("*")):
+        raise RuntimeError("fixture seed must contain regular archives, not symlinks")
+    archives = list(source.glob("*/*/foz_cache*.foz"))
+    if not archives:
+        raise RuntimeError("no driver-specific fixture archives observed")
+    for archive in archives:
+        if not archive.is_file() or archive.stat().st_size == 0:
+            raise RuntimeError(f"missing or empty fixture archive: {archive}")
+        target = seed_dir / "mesa" / archive.relative_to(source)
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        shutil.copyfile(archive, target)
+        target.chmod(0o444)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binaries", type=pathlib.Path, required=True)
     parser.add_argument("--out", type=pathlib.Path, required=True)
     parser.add_argument("--samples", type=int, default=3)
+    parser.add_argument("--fresh-mesa-cache", action="store_true")
+    parser.add_argument("--mesa-seed", type=pathlib.Path)
+    parser.add_argument("--mesa-seed-source", choices=("package", "session"), default="package")
+    parser.add_argument("--alternate-mesa-seed", action="store_true")
     parser.add_argument("--timeout", type=float, default=90)
     parser.add_argument("--production-mesa-seed", action="store_true",
                         help="six alternating fresh-cache launches plus wrong-driver and corrupt fallbacks; requires --samples 8")
     args = parser.parse_args()
     if not 1 <= args.samples <= 10 or not 0 < args.timeout <= 240:
         parser.error("samples must be 1..10 and timeout must be positive and at most 240s")
+    if args.production_mesa_seed and (args.fresh_mesa_cache or args.mesa_seed or args.alternate_mesa_seed):
+        parser.error("ordinary production qualification cannot use test-only Mesa fixtures")
     if args.production_mesa_seed and args.samples != 8:
         parser.error("production Mesa qualification requires --samples 8")
     if args.production_mesa_seed and any(name.startswith(("MESA_SHADER_CACHE_", "MESA_DISK_CACHE_")) for name in os.environ):
         parser.error("production Mesa qualification requires an environment without cache overrides")
+
+    if args.alternate_mesa_seed and (not args.mesa_seed or args.mesa_seed_source != "package" or args.samples % 2):
+        parser.error("alternating seed mode requires a package seed and an even sample count")
     binaries = args.binaries.resolve()
     paths = {"shell": binaries / "shell", "launcher": binaries / "tilo-launcher",
              "probe": binaries / "examples/startup-frame-probe"}
@@ -198,6 +226,14 @@ def main() -> None:
     payload = out / "payload"
     (payload / "bin").mkdir(parents=True)
     shutil.copy2(paths["probe"], payload / "bin/probe")
+    seed_dir = (payload / "startup-mesa-seed" if args.mesa_seed_source == "package"
+                else runtime / "tilo/pipeline-seed")
+    try:
+        if args.fresh_mesa_cache or args.mesa_seed:
+            seed_fixture(seed_dir, args.mesa_seed)
+    except BaseException:
+        shutil.rmtree(runtime)
+        raise
     manifest = payload / "manifest.toml"
     manifest.write_text(f'package_id = "{APP}"\nversion = "0.0.0"\nkind = "app"\n'
                         '[entrypoint]\nbin = "bin/probe"\n[sandbox.net]\nmode = "off"\n')
@@ -206,6 +242,11 @@ def main() -> None:
               "poll_interval_ms": POLL_SECONDS * 1000, "samples": [],
               "host_load_before": os.getloadavg(),
               "binary_sha256": {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in paths.items()}}
+    result["mesa_cache"] = (f"fresh private directory per app process with read-only {args.mesa_seed_source} seed"
+                            if args.mesa_seed else "fresh private directory per app process"
+                            if args.fresh_mesa_cache else "ordinary private app cache retained")
+    result["mesa_seed_source"] = args.mesa_seed_source if args.mesa_seed else None
+    result["alternate_mesa_seed"] = args.alternate_mesa_seed
     # The existing host action registers the wrapper's process ancestry before
     # exec; its child still enters the normal net-off native sandbox.
     helper = binaries / "examples/startup_frame_timeline"
@@ -278,6 +319,14 @@ def main() -> None:
                 result["cache"] = "fresh private app cache per launch; ordinary compositor-generated public seed; six alternating cold/seed launches and two observed fallback controls"
             for index in range(args.samples):
                 mode = production_seed.select(index, args.samples) if production_seed else None
+
+                seeded = bool(args.mesa_seed) and (not args.alternate_mesa_seed or index % 2 == 1)
+                if args.alternate_mesa_seed:
+                    active, inactive = seed_dir / "mesa", seed_dir / "mesa-inactive"
+                    if seeded and inactive.exists():
+                        inactive.rename(active)
+                    elif not seeded and active.exists():
+                        active.rename(inactive)
                 # Remove only the prior probe's metric; keep normal launcher routing.
                 for previous in (profile / "data").rglob("startup-frame-probe.json"):
                     previous.unlink()
@@ -314,14 +363,24 @@ def main() -> None:
                     if time.monotonic() >= deadline:
                         raise RuntimeError("SDK did not record an actually presented first frame")
                     time.sleep(POLL_SECONDS)
-                row = {"index": index, "launch_action_return_ms": (spawned - before) / 1e6,
+                names = {event["name"] for event in metrics["events"]}
+                if (args.fresh_mesa_cache or args.mesa_seed) and "probe-fresh-mesa-cache-ready" not in names:
+                    raise RuntimeError("app did not observe the requested fresh Mesa fixture")
+                if seeded != ("probe-mesa-seed-ready" in names):
+                    raise RuntimeError("app did not observe the requested cold/seeded shader mode")
+                if (args.fresh_mesa_cache or args.mesa_seed) and f"probe-mesa-source-{args.mesa_seed_source}" not in names:
+                    raise RuntimeError("app did not observe the requested read-only seed source")
+                row = {"index": index, "mesa_seeded": seeded, "launch_action_return_ms": (spawned - before) / 1e6,
                        "host_load_before": host_load,
                        "first_frame_observation_lower_ms": (lower - before) / 1e6,
                        "first_frame_observation_upper_ms": (query_after - before) / 1e6,
                        "frame": frame, "sdk_startup": metrics}
                 if production_seed:
+                    if "probe-fresh-mesa-cache-ready" in names:
+                        raise RuntimeError("ordinary production launch unexpectedly enabled a test-only cache fixture")
                     production_seed.observe(metric_paths[0], (payload / "probe.log").read_text(), mode)
                     row["mesa_mode"] = mode
+                    row["mesa_seeded"] = mode == "seed"
                 result["samples"].append(row)
                 (out / "timeline.json").write_text(json.dumps(result, indent=2) + "\n")
                 print(json.dumps(row), flush=True)
