@@ -210,6 +210,32 @@ impl tilo_desktop::activity::ActivityHost for PaneHost {
     }
 }
 #[test]
+fn native_review_cold_room_metadata_does_not_enable_legacy_mutations() {
+    let (_directory, owner, enrolled_room, _, _) = native_workspace_owner::test_enrolled_owner();
+    let caller = owner
+        .with_current(enrolled_room, |view| Ok(view.device().clone()))
+        .unwrap();
+    let review = NativeTaskReview::start(
+        worker::Worker::new(
+            owner.clone(),
+            Arc::new(
+                crate::shell::broker_services::NativeOwnerCommitService::new(
+                    native_workspace_owner::tree_of(&owner),
+                    None,
+                ),
+            ),
+        )
+        .with_certificate(caller),
+    )
+    .unwrap();
+    let room = uuid::Uuid::new_v4().to_string();
+    assert!(
+        review.requires_room(&room),
+        "an unobserved room must not fall back to unguarded model mutations before the owner-classification read"
+    );
+}
+
+#[test]
 fn native_review_binds_owner_read_and_commit_to_one_selected_certificate() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let (_directory, owner, room, _, _) = native_workspace_owner::test_enrolled_owner();
