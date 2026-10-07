@@ -37,7 +37,7 @@ fn example(stage: &str) -> Value {
     json!({"schema_version":1,"evidence":"architecture_study","status":"passed",
         "checks":checks.iter().map(|name| ((*name).to_owned(), "passed")).collect::<std::collections::BTreeMap<_,_>>(),
         "declared_toolchain_image":format!("sha256:{hash}"),
-        "tools":{"compiler":{"version":"synthetic compiler identity","executable_sha256":hash}},
+        "tools":{"g++":{"version":"synthetic compiler identity","executable_sha256":hash}},
         "artifact_sha256":{"stage-summary.json":hash},
         "excludes":["full_model_execution","coding_quality","physical_ppa","manufacturing",
             "payload_authentication","synthesized_netlist_equivalence"],
