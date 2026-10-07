@@ -83,6 +83,7 @@ pub struct GamepadAuthorizationView {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeviceFabricView {
+    pub displays: Vec<settings_store::device_displays::DeviceDisplay>,
     pub bluetooth_authorizations: Vec<BluetoothHandoffAuthorizationView>,
     pub bluetooth_handoffs: Vec<crate::shell::device_fabric_runtime::BluetoothHandoffStatusView>,
     pub gamepad_authorizations: Vec<GamepadAuthorizationView>,
