@@ -82,13 +82,14 @@ fn seed_roster_colours(authors: &mut AuthorDirectory, tree: &tilo_desktop_model:
             .flat_map(|ws| ws.collaborators.iter()),
     );
     for person in people {
-        let Some(rgb) = person
+        if person.name.trim().is_empty() {
+            continue;
+        }
+        let rgb = person
             .cursor_color
             .as_deref()
             .and_then(ui::presence::parse_hex_color)
-        else {
-            continue;
-        };
+            .unwrap_or_else(|| authors.colour_for(&person.id));
         authors.set_color_override(&person.id, rgb);
         let handle = automerge::ActorId::from(person.id.as_bytes()).to_hex_string();
         authors.register(
@@ -588,12 +589,31 @@ impl RoomScope {
 }
 
 /// What a dispatched event did.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeManualTaskRequest {
+    pub workspace: tilo_desktop_model::WorkspaceId,
+    pub room: String,
+    pub title: String,
+    pub actor: String,
+    pub resource: Option<WorkspaceTaskResource>,
+}
+
+/// Deferred managed creation; selection grants neither actor authority nor a run lease.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeManagedTaskRequest {
+    pub person_draft: NativeManualTaskRequest,
+    pub assigned_agent: String,
+    pub route: WorkspaceTaskRoute,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "these independent flags report distinct effects to the overlay host"
 )]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RoomActivityOutcome {
+    pub create_native_manual: Option<NativeManualTaskRequest>,
+    pub create_native_managed: Option<NativeManagedTaskRequest>,
     pub handled: bool,
     pub reverted: bool,
     /// A band was named/renamed/un-named — a document write too.
@@ -602,6 +622,7 @@ pub struct RoomActivityOutcome {
     pub compared: bool,
     pub undo_partial: bool,
     pub task_changed: bool,
+    pub task_refused: bool,
     /// A local managed-agent lifecycle changed. It is intentionally not a
     /// task-document write: a process beginning to connect is not work done.
     pub agent_runtime_changed: bool,
@@ -2091,6 +2112,11 @@ impl RoomActivityPane {
         }
         self.last_heads = heads;
         seed_roster_colours(self.source.authors_mut(), tree);
+        let local = self.local_user();
+        if !local.is_empty() && self.explicit_local_user.is_none() {
+            let handle = automerge::ActorId::from(local.as_bytes()).to_hex_string();
+            self.host.local_author(self.source.authors_mut(), &handle);
+        }
 
         // Bind the local automerge actor to the Tilo identity, or local user
         // id; a peer's actor stays unresolved until collaboration says who.
@@ -3820,7 +3846,10 @@ impl RoomActivityPane {
                 "activity-catch-up-waiting-detail",
                 &[
                     ("task", task.title.as_str().into()),
-                    ("who", task_assignee_label(task).into()),
+                    (
+                        "who",
+                        task_assignee_label(task, &self.task_creator_label(task)).into(),
+                    ),
                 ],
             );
             let style = theme.text(TextRole::Caption);
@@ -4554,6 +4583,7 @@ impl RoomActivityPane {
                 selected,
                 self.now(),
                 execution_notice.as_deref(),
+                &self.task_creator_label(task),
             );
             if selected {
                 let actions = self.task_actions_for(task);
@@ -5152,18 +5182,94 @@ impl RoomActivityPane {
         self.task_attachment = None;
     }
 
+    fn task_creator_label(&self, task: &WorkspaceTask) -> String {
+        let handle = automerge::ActorId::from(task.created_by.as_bytes()).to_hex_string();
+        let authors = self.source.authors();
+        if authors.is_registered(&handle) {
+            return authors.resolve(&handle).name;
+        }
+        if task.created_by == self.local_user() {
+            return t("workspace-settings-you");
+        }
+        if task.created_by.len() == 64 && task.created_by.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return format!(
+                "{} · {}",
+                t("activity-unknown-collaborator"),
+                ui::history_source::short_id(&task.created_by),
+            );
+        }
+        participant_display_label(&task.created_by)
+    }
+
     fn local_user(&self) -> String {
         self.explicit_local_user
             .clone()
             .unwrap_or_else(|| self.host.local_user())
     }
 
+    /// Close the draft only after the native owner retained its actual receipt.
+    pub fn complete_native_manual_task(&mut self, id: String, tree: &mut impl ActivityTree) {
+        self.selected_task = Some(id);
+        self.close_task_composer();
+        self.refresh(tree);
+    }
+
     fn create_task_from_draft(&mut self, tree: &mut impl ActivityTree) -> RoomActivityOutcome {
         if !self.host.mutations_available() || tree.document().pending_ops() > 0 {
+            if tree.native_manual_tasks(tree.active) {
+                return RoomActivityOutcome {
+                    handled: true,
+                    task_refused: true,
+                    ..RoomActivityOutcome::default()
+                };
+            }
             self.close_task_composer();
             return handled_outcome();
         }
         let workspace = tree.active;
+        if self.task_route == WorkspaceTaskRoute::Manual && tree.native_manual_tasks(workspace) {
+            let Some(slot) = tree.active_workspace() else {
+                return handled_outcome();
+            };
+            return RoomActivityOutcome {
+                handled: true,
+                create_native_manual: Some(NativeManualTaskRequest {
+                    workspace,
+                    room: slot.room.to_string(),
+                    title: self.task_draft.clone(),
+                    actor: self.local_user(),
+                    resource: self.task_attachment.clone(),
+                }),
+                ..RoomActivityOutcome::default()
+            };
+        }
+        if tree.native_manual_tasks(workspace) {
+            let Some(slot) = tree.active_workspace() else {
+                return handled_outcome();
+            };
+            let Some(agent) = self.task_agent.clone().filter(|agent| !agent.is_empty()) else {
+                return RoomActivityOutcome {
+                    handled: true,
+                    task_refused: true,
+                    ..Default::default()
+                };
+            };
+            return RoomActivityOutcome {
+                handled: true,
+                create_native_managed: Some(NativeManagedTaskRequest {
+                    person_draft: NativeManualTaskRequest {
+                        workspace,
+                        room: slot.room.to_string(),
+                        title: self.task_draft.clone(),
+                        actor: self.local_user(),
+                        resource: self.task_attachment.clone(),
+                    },
+                    assigned_agent: agent,
+                    route: self.task_route,
+                }),
+                ..Default::default()
+            };
+        }
         let assigned_agent = (self.task_route != WorkspaceTaskRoute::Manual)
             .then(|| self.task_agent.clone())
             .flatten();
@@ -5293,6 +5399,8 @@ impl RoomActivityPane {
                 return handled_outcome();
             }
         };
+        let native_manual =
+            task.route == WorkspaceTaskRoute::Manual && tree.native_manual_tasks(tree.active);
         let changed =
             tree.set_workspace_task_status(tree.active, &task_id, status, &self.local_user());
         if changed {
@@ -5301,6 +5409,7 @@ impl RoomActivityPane {
         RoomActivityOutcome {
             handled: true,
             task_changed: changed,
+            task_refused: !changed && native_manual,
             ..RoomActivityOutcome::default()
         }
     }
@@ -6485,7 +6594,10 @@ impl RoomActivityPane {
                         "activity-catch-up-waiting-detail",
                         &[
                             ("task", task.title.as_str().into()),
-                            ("who", task_assignee_label(task).into()),
+                            (
+                                "who",
+                                task_assignee_label(task, &self.task_creator_label(task)).into(),
+                            ),
                         ],
                     )));
             }
@@ -6514,7 +6626,11 @@ impl RoomActivityPane {
                 .map(|task| {
                     AccessNode::new(Role::ListItem)
                         .with_name(task.title.clone())
-                        .with_description(task_accessibility_description(task, self.now()))
+                        .with_description(task_accessibility_description(
+                            task,
+                            self.now(),
+                            &self.task_creator_label(task),
+                        ))
                 })
                 .collect();
             root.children.push(tasks);
@@ -6956,6 +7072,7 @@ fn draw_task_card(
     selected: bool,
     now: SystemTime,
     execution_notice: Option<&str>,
+    creator: &str,
 ) {
     let (scene, transform, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
     scene.fill(
@@ -7018,7 +7135,7 @@ fn draw_task_card(
             .text(TextRole::Body)
             .with_weight(ui::text_render::TextWeight::Medium),
     );
-    let assignee = task_assignee_label(task);
+    let assignee = task_assignee_label(task, creator);
     let resource = task
         .resource
         .as_ref()
@@ -7083,15 +7200,12 @@ fn draw_task_card(
     }
 }
 
-fn task_assignee_label(task: &WorkspaceTask) -> String {
+fn task_assignee_label(task: &WorkspaceTask, creator: &str) -> String {
     task.assigned_agent.as_ref().map_or_else(
         || {
             t_args(
                 "activity-task-unassigned-by",
-                &[(
-                    "creator",
-                    participant_display_label(&task.created_by).into(),
-                )],
+                &[("creator", creator.into())],
             )
         },
         |agent| {
@@ -7117,7 +7231,7 @@ fn task_audit_line(
     )
 }
 
-fn task_accessibility_description(task: &WorkspaceTask, now: SystemTime) -> String {
+fn task_accessibility_description(task: &WorkspaceTask, now: SystemTime, creator: &str) -> String {
     let latest = task.audit.last().map(|event| {
         let event_time = u64::try_from(event.at)
             .ok()
@@ -7130,7 +7244,7 @@ fn task_accessibility_description(task: &WorkspaceTask, now: SystemTime) -> Stri
         &[
             ("status", task_status_label(task.status).into()),
             ("route", task_route_label(task.route).into()),
-            ("assignee", task_assignee_label(task).into()),
+            ("assignee", task_assignee_label(task, creator).into()),
             ("count", task.audit.len().into()),
         ],
     );

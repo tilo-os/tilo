@@ -11278,7 +11278,7 @@ impl ShellOverlayHost {
                 )
             };
             let consumed = outcome.handled || (pointer_inside && !is_key);
-            Self::apply_room_activity_outcome(&chrome, outcome);
+            self.apply_room_activity_outcome(&chrome, outcome);
             // Pointer events over the sheet absorb regardless; keys
             // only when consumed, or an arrow key with the cursor
             // resting over the sheet would vanish.
@@ -11291,9 +11291,46 @@ impl ShellOverlayHost {
     }
 
     fn apply_room_activity_outcome(
+        &mut self,
         chrome: &Chrome,
-        outcome: crate::shell::room_activity::RoomActivityOutcome,
+        mut outcome: crate::shell::room_activity::RoomActivityOutcome,
     ) {
+        if let Some(draft) = outcome.create_native_manual.take() {
+            let tree = chrome.borrow().tree_handle();
+            match crate::shell::state::native_manual_tasks::create(&tree, draft) {
+                Ok(id) => {
+                    self.room_activity
+                        .complete_native_manual_task(id, &mut *tree.write());
+                    outcome.task_changed = true;
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "native manual task refused");
+                    outcome.task_refused = true;
+                }
+            }
+        }
+        if let Some(draft) = outcome.create_native_managed.take() {
+            let tree = chrome.borrow().tree_handle();
+            match crate::shell::state::native_manual_tasks::create_managed(&tree, draft) {
+                Ok(id) => {
+                    self.room_activity
+                        .complete_native_manual_task(id, &mut *tree.write());
+                    outcome.task_changed = true;
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "native managed task refused");
+                    outcome.task_refused = true;
+                }
+            }
+        }
+        if outcome.task_refused {
+            let mut state = chrome.borrow_mut();
+            state.push_notification(
+                t("host-history-task-refused-title"),
+                t("host-history-task-refused-body"),
+            );
+            state.bump();
+        }
         if outcome.reverted {
             let mut state = chrome.borrow_mut();
             state.bump();

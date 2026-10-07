@@ -93,6 +93,14 @@ pub trait WorkspaceMemberships: Send + Sync {
         Err("workspace membership owner continuity is unavailable".into())
     }
 
+    /// Read canonical coordination state directly from the admitted owner.
+    /// # Errors
+    /// Refuses unavailable or fenced owner state; never substitutes presentation data.
+    fn task_snapshot(
+        &self,
+        room: &str,
+    ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskSnapshot, String>;
+
     fn execute(
         &self,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,

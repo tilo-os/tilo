@@ -220,6 +220,10 @@ impl ActivityTree for WorkspaceTree {
         self.resync_cache_from_doc();
         Ok(())
     }
+    fn native_manual_tasks(&self, workspace: WorkspaceId) -> bool {
+        self.room_of(workspace)
+            .is_some_and(|room| self.requires_native_owner(room))
+    }
     fn create_workspace_task(
         &mut self,
         workspace: WorkspaceId,

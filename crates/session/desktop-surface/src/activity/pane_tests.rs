@@ -26,6 +26,123 @@ mod tests {
     use tilo_automerge::ApplyIncoming as _;
     use ui::widget::op_class_is_revertible;
 
+    #[derive(Clone)]
+    struct NativeTree(WorkspaceTree);
+    impl std::ops::Deref for NativeTree {
+        type Target = tilo_desktop_model::DesktopTree;
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+    impl std::ops::DerefMut for NativeTree {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.0
+        }
+    }
+    impl crate::activity::ActivityTree for NativeTree {
+        fn document(&self) -> &automerge::AutoCommit {
+            &self.0.doc
+        }
+        fn document_mut(&mut self) -> &mut automerge::AutoCommit {
+            &mut self.0.doc
+        }
+        fn resync_activity_cache(&mut self) -> Result<(), String> {
+            self.0.resync_cache_from_doc();
+            Ok(())
+        }
+        fn native_manual_tasks(&self, _: WorkspaceId) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn native_manual_draft_defers_owner_write_and_closes_only_after_completion() {
+        let mut tree = NativeTree(WorkspaceTree::bootstrap_default());
+        let mut pane = native_pane();
+        pane.open_task_composer(&tree);
+        pane.task_draft = "Review mapped receipt".into();
+        tree.0
+            .doc
+            .put(automerge::ROOT, "pending_projection_edit", true)
+            .unwrap();
+        let blocked = pane.create_task_from_draft(&mut tree);
+        assert!(blocked.task_refused);
+        assert!(blocked.create_native_manual.is_none());
+        assert!(!blocked.task_changed);
+        assert!(pane.task_compose_open);
+        assert_eq!(pane.task_draft, "Review mapped receipt");
+        tree.0.doc.commit();
+        let outcome = pane.create_task_from_draft(&mut tree);
+        assert!(outcome.handled);
+        assert!(!outcome.task_changed);
+        let draft = outcome.create_native_manual.unwrap();
+        assert_eq!(draft.workspace, tree.active);
+        assert_eq!(
+            draft.room,
+            tree.active_workspace().unwrap().room.to_string()
+        );
+        assert_eq!(draft.title, "Review mapped receipt");
+        assert!(tree.active_workspace().unwrap().tasks.is_empty());
+        assert!(pane.task_compose_open);
+        assert_eq!(pane.task_draft, "Review mapped receipt");
+        let workspace = tree.active;
+        let id = tree
+            .0
+            .create_workspace_task(
+                workspace,
+                draft.title,
+                draft.actor,
+                None,
+                WorkspaceTaskRoute::Manual,
+                None,
+            )
+            .unwrap();
+        pane.complete_native_manual_task(id.clone(), &mut tree);
+        assert!(!pane.task_compose_open);
+        assert_eq!(pane.selected_task.as_deref(), Some(id.as_str()));
+    }
+
+    #[test]
+    fn native_managed_draft_defers_without_cache_fallback_or_premature_completion() {
+        let mut tree = NativeTree(WorkspaceTree::bootstrap_default());
+        let mut pane = native_pane();
+        pane.open_task_composer(&tree);
+        pane.task_draft = "Inspect operator evidence".into();
+        for route in [WorkspaceTaskRoute::Model, WorkspaceTaskRoute::RulesOnly] {
+            pane.task_route = route;
+            pane.task_agent = None;
+            let missing = pane.create_task_from_draft(&mut tree);
+            assert!(missing.task_refused);
+            assert!(missing.create_native_managed.is_none());
+            assert!(pane.task_compose_open);
+            pane.task_agent = Some("scribe".into());
+            let outcome = pane.create_task_from_draft(&mut tree);
+            assert!(outcome.create_native_manual.is_none());
+            assert!(!outcome.task_changed);
+            let request = outcome.create_native_managed.unwrap();
+            assert_eq!(request.assigned_agent, "scribe");
+            assert_eq!(request.route, route);
+            assert_eq!(request.person_draft.title, "Inspect operator evidence");
+            assert_eq!(
+                request.person_draft.room,
+                tree.active_workspace().unwrap().room.to_string()
+            );
+            assert!(tree.active_workspace().unwrap().tasks.is_empty());
+            assert!(pane.task_compose_open);
+            assert!(pane.selected_task.is_none());
+        }
+        tree.0
+            .doc
+            .put(automerge::ROOT, "pending_projection_edit", true)
+            .unwrap();
+        let blocked = pane.create_task_from_draft(&mut tree);
+        assert!(blocked.task_refused);
+        assert!(blocked.create_native_managed.is_none());
+        assert!(pane.task_compose_open);
+        assert_eq!(pane.task_draft, "Inspect operator evidence");
+        assert!(tree.active_workspace().unwrap().tasks.is_empty());
+    }
+
     /// HIG §9.5 rest edges: the sheet's Panel border on its Panel ground,
     /// and the derived edge of every card class the sheet paints (lift-floor
     /// chips and group cards, the base-filled replay canvas) must register
@@ -867,6 +984,51 @@ mod tests {
     }
 
     #[test]
+    fn task_center_resolves_creator_without_cursor_color_and_preserves_identity() {
+        let (mut tree, workspace, _) = busy_room();
+        let creator = "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd";
+        tree.workspaces
+            .iter_mut()
+            .find(|room| room.id == workspace)
+            .unwrap()
+            .collaborators
+            .push(tilo_desktop_model::Collaborator::new(
+                creator,
+                "Ada Lovelace",
+            ));
+        tree.seed_doc_from_cache();
+        tree.create_workspace_task(
+            workspace,
+            "Review receipt",
+            creator,
+            None,
+            WorkspaceTaskRoute::Manual,
+            None,
+        )
+        .unwrap();
+        let mut pane = native_pane();
+        pane.set_view(ActivityView::Tasks);
+        pane.refresh(&mut tree);
+        let task = pane.tasks.first().unwrap();
+        let creator_label = pane.task_creator_label(task);
+        assert_eq!(creator_label, "Ada Lovelace");
+        assert!(task_assignee_label(task, &creator_label).contains("Ada Lovelace"));
+        let snapshot = format!("{:?}", pane.accessibility_snapshot());
+        assert!(snapshot.contains("Unassigned · created by Ada Lovelace"));
+        assert_eq!(task.created_by, creator);
+        assert_eq!(task.audit.first().unwrap().actor, creator);
+        let mut unidentified = task.clone();
+        unidentified.created_by =
+            "0123456789012345678901234567890123456789012345678901234567890123".into();
+        assert_eq!(
+            pane.task_creator_label(&unidentified),
+            "Unknown collaborator · 01234567"
+        );
+        unidentified.created_by = pane.local_user();
+        assert_eq!(pane.task_creator_label(&unidentified), "You");
+    }
+
+    #[test]
     fn task_center_presents_agent_principals_without_leaking_wire_ids() {
         let event_time = SystemTime::UNIX_EPOCH
             .checked_add(Duration::from_secs(42))
@@ -888,9 +1050,9 @@ mod tests {
             }],
         };
 
-        let byline = task_assignee_label(&task);
+        let byline = task_assignee_label(&task, "ada");
         let audit = task_audit_line(&task.audit[0], event_time, event_time);
-        let accessible = task_accessibility_description(&task, event_time);
+        let accessible = task_accessibility_description(&task, event_time, "ada");
 
         assert_eq!(byline, "Agent · scribe");
         assert!(audit.starts_with("scribe · Agent · Reviewed section 2"));
