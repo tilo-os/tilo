@@ -81,6 +81,15 @@ fn dispatch(args: &[String]) -> anyhow::Result<i32> {
     match args.first().map(String::as_str) {
         Some("serve") => cmd_serve(rest),
         Some("guest-init") => guest::init(rest),
+        Some("__approved-check-supervise") => {
+            let path = rest.first().filter(|_| rest.len() == 1).ok_or_else(|| {
+                anyhow::anyhow!("approved-check supervisor requires one private config")
+            })?;
+            ush::approved_checks::run_guest(Path::new(path)).map_err(anyhow::Error::msg)
+        }
+        Some("__approved-check-init") => {
+            ush::approved_checks::run_init(rest).map_err(anyhow::Error::msg)
+        }
         Some("ush" | "run") => host(rest),
         Some("pkg") => guest::pkg(rest),
         Some("perm") => guest::perm(rest),
