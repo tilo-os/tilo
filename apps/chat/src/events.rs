@@ -3576,7 +3576,7 @@ mod tests {
             "a constrained hero cannot suppress the only unavailable notice"
         );
         let mut text = ui::text_render::TextRenderer::new();
-        let constrained = app.messages_rect(&mut text);
+        let constrained = app.messages_rect(&mut text, &theme);
         assert!(!app.agent_empty_state_will_paint(
             &mut text,
             &theme,
@@ -3585,15 +3585,15 @@ mod tests {
         ));
         render_frame_with_theme(&mut app, 800.0, 600.0, &theme);
         assert!(app.agent_notice_in_empty_hero);
-        let compact_height = app.composer_height(&mut text);
+        let compact_height = app.composer_height(&mut text, &theme);
         app.agent_notice_in_empty_hero = false;
-        let duplicate_height = app.composer_height(&mut text);
+        let duplicate_height = app.composer_height(&mut text, &theme);
         app.agent_notice_in_empty_hero = true;
         assert!(
             compact_height < duplicate_height,
             "the omitted duplicate receipt must also release its layout row"
         );
-        let roomy = app.messages_rect(&mut text);
+        let roomy = app.messages_rect(&mut text, &theme);
         assert!(app.agent_empty_state_will_paint(
             &mut text,
             &theme,
@@ -3624,6 +3624,45 @@ mod tests {
             .find(|(_, hit, ..)| matches!(hit, Hit::Send))
             .expect("Save direction is exported through the semantic action door");
         assert_eq!(send.2, "Save direction");
+    }
+
+    #[test]
+    fn compact_large_text_agent_modes_reuse_the_private_editor() {
+        let (mut app, mut doc) = app_with_doc();
+        app.stage_scenario("agent-direction-saved-compact");
+        type_str(&mut app, &mut doc, "Keep this selected draft");
+        app.composer_main.select(5, 18);
+        let theme = ui::theme::Theme::high_contrast().with_text_scale(2.0);
+        render_frame_with_theme(&mut app, 344.0, 472.0, &theme);
+
+        let draft = app.composer_main.private_plain();
+        let selection = app.composer_main.selection();
+        for intent in [
+            crate::app::AgentComposerIntent::Message,
+            crate::app::AgentComposerIntent::Steer,
+        ] {
+            let target = Hit::AgentIntent(intent).semantic_id();
+            assert!(
+                ui::Widget::perform_semantic_action(
+                    &mut app,
+                    &target,
+                    &ui::a11y::Action::Activate,
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                ),
+                "the shared semantic mode control activates {intent:?}"
+            );
+            render_frame_with_theme(&mut app, 344.0, 472.0, &theme);
+            assert_eq!(app.direct_agent_intent(), intent);
+            assert_eq!(app.composer_main.private_plain(), draft);
+            assert_eq!(app.composer_main.selection(), selection);
+        }
+
+        assert_hit_in_view(&app, "Return conversation", |hit| {
+            matches!(hit, Hit::AgentWindow)
+        });
+        assert_hit_in_view(&app, "composer editor", |hit| matches!(hit, Hit::FocusMain));
+        assert_hit_in_view(&app, "Save direction", |hit| matches!(hit, Hit::Send));
     }
 
     #[test]
@@ -3782,7 +3821,10 @@ mod tests {
             render_frame_with_theme(&mut app, width, height, &theme);
             render_frame_with_theme(&mut app, width, height, &theme);
 
-            let composer = app.composer_rect(&mut ui::text_render::TextRenderer::new());
+            let composer = app.composer_rect(
+                &mut ui::text_render::TextRenderer::new(),
+                &ui::theme::Theme::dark(),
+            );
             assert!(
                 composer.y0 >= app.header_rect().y1,
                 "{width}x{height} composer {composer:?} overlaps header {:?}",
@@ -7021,11 +7063,46 @@ mod tests {
         app.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
     }
 
-    fn native_agent_float_scene(
-        width: u32,
-        height: u32,
+    fn native_agent_float_frame(
+        app: &mut ChatApp,
+        id: &str,
         theme: &ui::theme::Theme,
     ) -> (vello::Scene, vello::kurbo::Rect) {
+        let presentation =
+            ui::widget::FloatingSurfaceWidgetExt::floating_surface_presentations(app)
+                .into_iter()
+                .find(|presentation| presentation.id == id)
+                .expect("the native presentation is current");
+        let mut scene = vello::Scene::new();
+        let mut text = ui::text_render::TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
+        assert!(ui::widget::FloatingSurfaceWidgetExt::draw_floating_surface(
+            app,
+            id,
+            &mut scene,
+            vello::kurbo::Affine::IDENTITY,
+            &mut text,
+            theme,
+            &ui::presence::PresenceCtx::empty(),
+        ));
+        (scene, presentation.content_rect)
+    }
+
+    struct PreparedNativeAgentFloat {
+        app: ChatApp,
+        request: ui::floating_surface::FloatingSurfaceRequest,
+        initial_scene: vello::Scene,
+        initial_content: vello::kurbo::Rect,
+        channel: String,
+        draft: Option<String>,
+        selection: (usize, usize),
+        revision: Option<u64>,
+    }
+
+    fn prepare_native_agent_float(
+        app_rect: vello::kurbo::Rect,
+        theme: &ui::theme::Theme,
+    ) -> PreparedNativeAgentFloat {
         let mut doc = AutoCommit::new();
         ChatDoc::seed_starter(&mut doc, "u_alice", "Alice", "AL");
         let mut app = peer("u_alice", "Alice", "AL", 0);
@@ -7033,7 +7110,17 @@ mod tests {
         app.room_names
             .insert("agent:scribe".into(), "Scribe".into());
         app.reload(&doc);
-        render_frame_with_theme(&mut app, f64::from(width), f64::from(height), theme);
+        app.rect = app_rect;
+        let mut attached = vello::Scene::new();
+        let mut attached_text = ui::text_render::TextRenderer::new();
+        attached_text.set_text_scale(theme.text_scale);
+        app.draw(
+            &mut attached,
+            vello::kurbo::Affine::IDENTITY,
+            &mut attached_text,
+            theme,
+            &ui::presence::PresenceCtx::empty(),
+        );
         app.on_hit(
             Hit::Agent("scribe".into()),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -7045,6 +7132,17 @@ mod tests {
         let rect = request
             .initial_rect
             .expect("native content has exact geometry");
+        let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
+        let surface = app
+            .agent_surfaces
+            .get(&channel)
+            .expect("the retained Agent conversation");
+        let draft = surface.view.composer_main.private_plain();
+        let selection = surface.view.composer_main.selection();
+        let revision = surface
+            .view
+            .composer_main
+            .private_revision_for("ws_home", "scribe");
         ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
             &mut app,
             &ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
@@ -7056,6 +7154,42 @@ mod tests {
                 coordinate_offset: [0.0, 0.0],
             },
         );
+        let (initial_scene, initial_content) =
+            native_agent_float_frame(&mut app, &request.id, theme);
+        assert_eq!(initial_content, rect, "Prepare preserves transfer geometry");
+        PreparedNativeAgentFloat {
+            app,
+            request,
+            initial_scene,
+            initial_content,
+            channel,
+            draft,
+            selection,
+            revision,
+        }
+    }
+
+    fn native_agent_float_scenes(
+        app_rect: vello::kurbo::Rect,
+        theme: &ui::theme::Theme,
+    ) -> (
+        vello::Scene,
+        vello::kurbo::Rect,
+        vello::Scene,
+        vello::kurbo::Rect,
+        vello::kurbo::Size,
+    ) {
+        let PreparedNativeAgentFloat {
+            mut app,
+            request,
+            initial_scene,
+            initial_content,
+            channel,
+            draft,
+            selection,
+            revision,
+        } = prepare_native_agent_float(app_rect, theme);
+        let rect = request.initial_rect.expect("prepared geometry");
         ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
             &mut app,
             &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
@@ -7063,19 +7197,47 @@ mod tests {
                 rect: ui::floating_surface::protocol_rect_array(rect),
             },
         );
-        let presentation =
-            ui::widget::FloatingSurfaceWidgetExt::floating_surface_presentations(&app)
-                .into_iter()
-                .find(|presentation| presentation.id == request.id)
-                .expect("the adopted native presentation is current");
-        let mut scene = vello::Scene::new();
+        let settled_content = tilo_test_env::wait_for(
+            "the adopted Agent conversation to publish its preferred host geometry",
+            || {
+                let presentation =
+                    ui::widget::FloatingSurfaceWidgetExt::floating_surface_presentations(&app)
+                        .into_iter()
+                        .find(|presentation| presentation.id == request.id)?;
+                (presentation.content_rect.size() == request.preferred_size)
+                    .then_some(presentation.content_rect)
+            },
+        );
+        assert!(
+            settled_content.width() <= initial_content.width()
+                && settled_content.height() <= initial_content.height(),
+            "preferred settling is shrink-only: {initial_content:?} -> {settled_content:?}"
+        );
+        let surface = app
+            .agent_surfaces
+            .get(&channel)
+            .expect("settling retains the Agent conversation");
+        assert_eq!(surface.view.composer_main.private_plain(), draft);
+        assert_eq!(surface.view.composer_main.selection(), selection);
+        assert_eq!(
+            surface
+                .view
+                .composer_main
+                .private_revision_for("ws_home", "scribe"),
+            revision,
+            "geometry settlement retains the exact private editor revision"
+        );
+        let (settled_scene, painted_settled_content) =
+            native_agent_float_frame(&mut app, &request.id, theme);
+        assert_eq!(painted_settled_content, settled_content);
+        let mut sibling = vello::Scene::new();
         let mut text = ui::text_render::TextRenderer::new();
         text.set_text_scale(theme.text_scale);
         assert!(
             !ui::widget::FloatingSurfaceWidgetExt::draw_floating_surface(
                 &mut app,
                 "chat-conversation:other",
-                &mut scene,
+                &mut sibling,
                 vello::kurbo::Affine::IDENTITY,
                 &mut text,
                 theme,
@@ -7083,16 +7245,13 @@ mod tests {
             ),
             "a sibling native window cannot borrow these pixels"
         );
-        assert!(ui::widget::FloatingSurfaceWidgetExt::draw_floating_surface(
-            &mut app,
-            &request.id,
-            &mut scene,
-            vello::kurbo::Affine::IDENTITY,
-            &mut text,
-            theme,
-            &ui::presence::PresenceCtx::empty(),
-        ));
-        (scene, presentation.content_rect)
+        (
+            initial_scene,
+            initial_content,
+            settled_scene,
+            settled_content,
+            request.preferred_size,
+        )
     }
 
     fn stage_agent_work(app: &mut ChatApp, doc: &mut AutoCommit) {
@@ -7112,7 +7271,22 @@ mod tests {
         if let Some(output) = &output {
             std::fs::create_dir_all(output).unwrap();
         }
-        for (size, width, height) in [("normal", 1600_u32, 900_u32), ("compact", 960, 720)] {
+        for (size, width, height, app_rect) in [
+            (
+                "normal",
+                1600_u32,
+                900_u32,
+                vello::kurbo::Rect::new(0.0, 0.0, 1600.0, 900.0),
+            ),
+            (
+                "compact",
+                800,
+                600,
+                // This is the real compact native host allocation captured by
+                // the 800x600 shell journey, not a resized floating target.
+                vello::kurbo::Rect::new(252.0, 128.0, 596.0, 600.0),
+            ),
+        ] {
             for (name, theme) in [
                 ("light", ui::theme::Theme::light()),
                 ("dark", ui::theme::Theme::dark()),
@@ -7121,31 +7295,49 @@ mod tests {
                     ui::theme::Theme::high_contrast().with_text_scale(2.0),
                 ),
             ] {
-                let (scene, content) = native_agent_float_scene(width, height, &theme);
-                let mut renderer = OffscreenRenderer::new(width, height);
-                let transparent = renderer.render_rgba(&scene);
-                let inside = OffscreenRenderer::sample(
-                    &transparent,
-                    width,
-                    u32::try_from(ui::num::usize_of_f64(content.center().x)).unwrap(),
-                    u32::try_from(ui::num::usize_of_f64(content.center().y)).unwrap(),
-                );
-                assert_eq!(inside.3, u8::MAX, "{size} {name} content is opaque");
-                assert!(
-                    content.intersect(vello::kurbo::Rect::new(
-                        0.0,
-                        0.0,
-                        f64::from(width),
-                        f64::from(height),
-                    )) == content,
-                    "{size} {name} content stays within the capture"
-                );
-                if let Some(output) = &output {
-                    renderer.render_png(
-                        &scene,
-                        Color::from_rgb8(0x35, 0x1d, 0x3f),
-                        output.join(format!("native-float-{size}-{name}.png")),
+                let (initial, initial_content, settled, settled_content, preferred) =
+                    native_agent_float_scenes(app_rect, &theme);
+                assert_eq!(settled_content.size(), preferred);
+                if name != "high-contrast-200" {
+                    assert_eq!(
+                        settled_content.size(),
+                        if size == "normal" {
+                            vello::kurbo::Size::new(560.0, 360.0)
+                        } else {
+                            vello::kurbo::Size::new(344.0, 360.0)
+                        },
+                        "the ordinary-scale native host settles to its actual preferred geometry"
                     );
+                }
+                let mut renderer = OffscreenRenderer::new(width, height);
+                for (stage, scene, content) in [
+                    ("initial", &initial, initial_content),
+                    ("settled", &settled, settled_content),
+                ] {
+                    let transparent = renderer.render_rgba(scene);
+                    let inside = OffscreenRenderer::sample(
+                        &transparent,
+                        width,
+                        u32::try_from(ui::num::usize_of_f64(content.center().x)).unwrap(),
+                        u32::try_from(ui::num::usize_of_f64(content.center().y)).unwrap(),
+                    );
+                    assert_eq!(inside.3, u8::MAX, "{stage} {size} {name} content is opaque");
+                    assert!(
+                        content.intersect(vello::kurbo::Rect::new(
+                            0.0,
+                            0.0,
+                            f64::from(width),
+                            f64::from(height),
+                        )) == content,
+                        "{stage} {size} {name} content stays within the capture"
+                    );
+                    if let Some(output) = &output {
+                        renderer.render_png(
+                            scene,
+                            Color::from_rgb8(0x35, 0x1d, 0x3f),
+                            output.join(format!("native-float-{stage}-{size}-{name}.png")),
+                        );
+                    }
                 }
             }
         }

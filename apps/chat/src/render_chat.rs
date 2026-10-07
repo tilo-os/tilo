@@ -323,7 +323,7 @@ impl ChatApp {
         let width = composer_editor_width(field_w, theme, true, self.direct_agent.is_some());
         self.composer_main.measure(width, f32::INFINITY, theme, tr);
         self.resolve_agent_notice_layout(tr, theme);
-        let area = self.messages_rect(tr);
+        let area = self.messages_rect(tr, theme);
         if area.width() > 0.0 && area.height() >= self.chrome.body_line {
             push_clip(scene, tf, area);
             self.draw_messages(PaintCtx::new(scene, tf, tr, theme), presence, area, hits);
@@ -1225,20 +1225,66 @@ impl ChatApp {
 
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
         let max = (cluster_left - f64::from(sp.s3) - left).max(0.0);
-        let title_style = theme.text(TextRole::Heading);
-        let topic_style = theme.text(TextRole::Body);
         let identity = self.header_identity_text();
+        Self::draw_header_identity(&mut ctx, identity, h, left, max, cluster_left);
+    }
+
+    fn draw_header_identity(
+        ctx: &mut PaintCtx<'_>,
+        identity: HeaderIdentityText,
+        h: Rect,
+        left: f64,
+        max: f64,
+        cluster_left: f64,
+    ) {
+        let sp = &ctx.theme.tokens.spacing;
+        let title_style = ctx.theme.text(TextRole::Heading);
+        let topic_style = ctx.theme.text(TextRole::Body);
+        let text_primary = ctx.theme.text_primary;
+        let text_dim = ctx.theme.text_dim;
         if let Some(kind) = identity.kind {
-            let widths = agent_header_widths(ctx.text, theme, max);
             let gap = f64::from(sp.s3);
+            let full_identity_width = width_of(ctx.text, &identity.name, &title_style)
+                + gap
+                + width_of(ctx.text, &kind, &topic_style);
+            let stacked_name_style = ctx.theme.text(TextRole::Label);
+            let stacked_height =
+                f64::from(stacked_name_style.line_height_px() + topic_style.line_height_px());
+            if full_identity_width > max && stacked_height <= h.height() {
+                let y0 = h.center().y - stacked_height / 2.0;
+                let name_band = Rect::new(
+                    h.x0,
+                    y0,
+                    h.x1,
+                    y0 + f64::from(stacked_name_style.line_height_px()),
+                );
+                let kind_band = Rect::new(
+                    name_band.x0,
+                    name_band.y1,
+                    name_band.x1,
+                    y0 + stacked_height,
+                );
+                line_in(
+                    ctx,
+                    &identity.name,
+                    &stacked_name_style,
+                    text_primary,
+                    left,
+                    name_band,
+                    max,
+                );
+                line_in(ctx, &kind, &topic_style, text_dim, left, kind_band, max);
+                return;
+            }
+            let widths = agent_header_widths(ctx.text, ctx.theme, max);
             // Agent identity is not optional context. Reserve its complete,
             // localized kind before eliding a long display name; otherwise a
             // narrow or large-text header makes the Agent look like a Person.
             let name_width = line_in(
-                &mut ctx,
+                ctx,
                 &identity.name,
                 &title_style,
-                theme.text_primary,
+                text_primary,
                 left,
                 h,
                 widths.name,
@@ -1249,15 +1295,7 @@ impl ChatApp {
                 left
             };
             let kind_avail = (left + max - kind_x).max(0.0).min(widths.kind);
-            line_in(
-                &mut ctx,
-                &kind,
-                &topic_style,
-                theme.text_dim,
-                kind_x,
-                h,
-                kind_avail,
-            );
+            line_in(ctx, &kind, &topic_style, text_dim, kind_x, h, kind_avail);
 
             // Sharing/following is additional context, never a replacement
             // for the collaborator kind. It appears only when the complete
@@ -1268,10 +1306,10 @@ impl ChatApp {
                 && width_of(ctx.text, &identity.context, &topic_style) <= context_avail
             {
                 line_in(
-                    &mut ctx,
+                    ctx,
                     &identity.context,
                     &topic_style,
-                    theme.text_dim,
+                    text_dim,
                     context_x,
                     h,
                     context_avail,
@@ -1279,10 +1317,10 @@ impl ChatApp {
             }
         } else {
             let drawn = line_in(
-                &mut ctx,
+                ctx,
                 &identity.name,
                 &title_style,
-                theme.text_primary,
+                text_primary,
                 left,
                 h,
                 max,
@@ -1291,19 +1329,10 @@ impl ChatApp {
             // and the actions, never as an elided fragment.
             let tx = left + drawn + f64::from(sp.s3);
             let avail = cluster_left - f64::from(sp.s3) - tx;
-            let topic_style = theme.text(TextRole::Body);
             if !identity.context.is_empty()
                 && width_of(ctx.text, &identity.context, &topic_style) <= avail
             {
-                line_in(
-                    &mut ctx,
-                    &identity.context,
-                    &topic_style,
-                    theme.text_dim,
-                    tx,
-                    h,
-                    avail,
-                );
+                line_in(ctx, &identity.context, &topic_style, text_dim, tx, h, avail);
             }
         }
     }
@@ -1372,24 +1401,28 @@ impl ChatApp {
         let sp = &theme.tokens.spacing;
         let control = ButtonFace::height(ControlSize::Regular, theme);
         let cy = h.center().y;
-        // Search is the platform's: the header only opens it.
-        let search = square(
-            Point::new(h.x1 - self.chrome.gutter - control / 2.0, cy),
-            control,
-        );
-        Button::paint(
-            scene,
-            tf,
-            tr,
-            theme,
-            &ButtonFace::icon_only(search, Icon::Search, "Search").hovered(self.hovered(search)),
-        );
-        ChatApp::push_hit(hits, search, Hit::Search);
-        let mut cluster_left = search.x0;
         let placeholder = self.detached_agent_placeholder_status();
-        if self.direct_agent.is_some()
-            || placeholder.as_ref().is_some_and(|(_, detached)| *detached)
-        {
+        let agent_header = self.direct_agent.is_some()
+            || placeholder.as_ref().is_some_and(|(_, detached)| *detached);
+        let show_search = self.header_has_search(tr, theme, h, control, agent_header);
+        let mut cluster_left = h.x1 - self.chrome.gutter;
+        if show_search {
+            // Search is the platform's: the header only opens it. It yields
+            // only when a compact Agent header needs the complete identity
+            // and its presentation controls.
+            let search = square(Point::new(cluster_left - control / 2.0, cy), control);
+            Button::paint(
+                scene,
+                tf,
+                tr,
+                theme,
+                &ButtonFace::icon_only(search, Icon::Search, "Search")
+                    .hovered(self.hovered(search)),
+            );
+            ChatApp::push_hit(hits, search, Hit::Search);
+            cluster_left = search.x0;
+        }
+        if agent_header {
             let window = square(
                 Point::new(cluster_left - f64::from(sp.s2) - control / 2.0, cy),
                 control,
@@ -1463,6 +1496,33 @@ impl ChatApp {
             (right, cy, control),
             hits,
         )
+    }
+
+    fn header_has_search(
+        &self,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        header: Rect,
+        control: f64,
+        agent_header: bool,
+    ) -> bool {
+        if !agent_header {
+            return true;
+        }
+        let sp = &theme.tokens.spacing;
+        let identity = self.header_identity_text();
+        let name_width = width_of(tr, &identity.name, &theme.text(TextRole::Heading));
+        let identity_width = identity.kind.as_ref().map_or(name_width, |kind| {
+            name_width + f64::from(sp.s3) + width_of(tr, kind, &theme.text(TextRole::Body))
+        });
+        let agent_actions = 2.0 * control + 2.0 * f64::from(sp.s2);
+        let search_room = 2.0 * self.chrome.gutter
+            + identity_width
+            + f64::from(sp.s3)
+            + agent_actions
+            + f64::from(sp.s2)
+            + control;
+        header.width() >= search_room
     }
 
     fn draw_human_header_buttons(
@@ -2720,7 +2780,7 @@ impl ChatApp {
         presence: &PresenceCtx,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let rect = self.composer_rect(tr);
+        let rect = self.composer_rect(tr, theme);
         let can_write = self.can_participate();
         if !can_write && self.direct_agent.is_none() {
             self.composer_main.set_focus(false);
@@ -2740,7 +2800,7 @@ impl ChatApp {
         let draft = self.composer_main.value();
         let input = if self.direct_agent.is_some() {
             let wanted_input_h = self.composer_input_height();
-            let controls_h = (self.composer_height(tr) - wanted_input_h).max(0.0);
+            let controls_h = (self.composer_height(tr, theme) - wanted_input_h).max(0.0);
             let input_h = wanted_input_h.min((rect.height() - controls_h).max(0.0));
             let input = Rect::new(rect.x0, rect.y1 - input_h, rect.x1, rect.y1);
             let controls = Rect::new(rect.x0, rect.y0, rect.x1, input.y0);
@@ -2881,7 +2941,9 @@ impl ChatApp {
             y = refresh.y1 + gap;
         }
 
-        let mode = Rect::new(rect.x0, y, rect.x1, (y + row_h).min(rect.y1));
+        let mode_rows = self.agent_intent_picker_rows(tr, theme, rect.width());
+        let mode_h = mode_rows as f64 * row_h + mode_rows.saturating_sub(1) as f64 * gap;
+        let mode = Rect::new(rect.x0, y, rect.x1, (y + mode_h).min(rect.y1));
         self.draw_agent_intent_picker(scene, tf, tr, theme, mode, &tasks, hits);
     }
 
@@ -3013,27 +3075,55 @@ impl ChatApp {
             }))
             .with_enabled(can_steer),
         ];
-        let parts = SegmentedFace::partition_segments(
-            rect,
-            &segments,
-            SegmentedStyle::Segmented,
-            ControlSize::Small,
-            tr,
-            theme,
-        );
         let selected = match self.direct_agent_intent() {
             crate::app::AgentComposerIntent::Message => 0,
             crate::app::AgentComposerIntent::Queue => 1,
             crate::app::AgentComposerIntent::Steer => 2,
         };
-        ui::widget::ToggleGroup::paint(
-            scene,
-            tf,
-            tr,
-            theme,
-            &SegmentedFace::of_segments(&parts, &segments, selected)
-                .control_size(ControlSize::Small),
-        );
+        let stacked = self.agent_intent_picker_rows(tr, theme, rect.width()) > 1;
+        let parts = if stacked {
+            let gap = f64::from(theme.tokens.spacing.s2);
+            let row_h = SegmentedFace::height(ControlSize::Small, theme);
+            (0..segments.len())
+                .map(|index| {
+                    let y0 = rect.y0 + index as f64 * (row_h + gap);
+                    Rect::new(rect.x0, y0, rect.x1, (y0 + row_h).min(rect.y1))
+                })
+                .collect::<Vec<_>>()
+        } else {
+            SegmentedFace::partition_segments(
+                rect,
+                &segments,
+                SegmentedStyle::Segmented,
+                ControlSize::Small,
+                tr,
+                theme,
+            )
+        };
+        if stacked {
+            for (index, (part, segment)) in parts.iter().zip(&segments).enumerate() {
+                Button::paint(
+                    scene,
+                    tf,
+                    tr,
+                    theme,
+                    &ButtonFace::new(*part, &segment.label)
+                        .control_size(ControlSize::Small)
+                        .toggled(index == selected)
+                        .disabled(segment.disabled)
+                        .hovered(self.hovered(*part)),
+                );
+            }
+        } else {
+            ui::widget::ToggleGroup::paint(
+                scene,
+                tf,
+                tr,
+                theme,
+                &SegmentedFace::of_segments(&parts, &segments, selected)
+                    .control_size(ControlSize::Small),
+            );
+        }
         for (index, part) in parts.into_iter().enumerate() {
             let enabled = match index {
                 0 => can_message,
@@ -3048,6 +3138,34 @@ impl ChatApp {
                 };
                 ChatApp::push_hit(hits, part, Hit::AgentIntent(intent));
             }
+        }
+    }
+
+    pub(crate) fn agent_intent_picker_rows(
+        &self,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        available_width: f64,
+    ) -> usize {
+        let labels = [
+            crate::i18n::t("chat-agent-mode-message"),
+            crate::i18n::t("chat-agent-mode-queue"),
+            crate::i18n::t(
+                if self
+                    .direct_agent_tasks()
+                    .is_some_and(|tasks| tasks.borrow().can_steer())
+                {
+                    "chat-agent-mode-steer"
+                } else {
+                    "chat-agent-mode-steer-unavailable"
+                },
+            ),
+        ];
+        let refs = labels.iter().map(String::as_str).collect::<Vec<_>>();
+        if SegmentedFace::intrinsic_width(&refs, ControlSize::Small, tr, theme) <= available_width {
+            1
+        } else {
+            labels.len()
         }
     }
 
@@ -3717,7 +3835,7 @@ impl ChatApp {
             + body_h
             + if more > 0 { caption_h + pad } else { 0.0 }
             + pad;
-        let comp = self.composer_rect(tr);
+        let comp = self.composer_rect(tr, theme);
         let w = f64::from(theme.tokens.metrics.panel_width_list).min(self.rect.width() - 2.0 * pad);
         let x0 = comp.x0.min(self.rect.x1 - w - pad).max(self.rect.x0 + pad);
         let y1 = comp.y0 - pad;

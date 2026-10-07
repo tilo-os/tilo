@@ -3927,7 +3927,12 @@ impl ChatApp {
         lines
     }
 
-    fn composer_height_with_notice(&self, _tr: &mut TextRenderer, hero_notice: bool) -> f64 {
+    fn composer_height_with_notice(
+        &self,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        hero_notice: bool,
+    ) -> f64 {
         let field = self.composer_input_height();
         if self.direct_agent.is_none() {
             return field;
@@ -3951,7 +3956,15 @@ impl ChatApp {
             if hero_notice {
                 status.receipt = None;
             }
-            choice + status.count() + usize::from(self.has_unavailable_agent_message_progress()) + 1
+            let picker = self.agent_intent_picker_rows(
+                tr,
+                theme,
+                (self.center_right() - self.center_left() - 2.0 * self.chrome.gutter).max(0.0),
+            );
+            choice
+                + status.count()
+                + usize::from(self.has_unavailable_agent_message_progress())
+                + picker
         });
         let rows = rows.max(1);
         field
@@ -3959,17 +3972,22 @@ impl ChatApp {
             + rows.saturating_sub(1) as f64 * self.chrome.agent_control_gap
     }
 
-    pub(crate) fn composer_height(&self, tr: &mut TextRenderer) -> f64 {
-        self.composer_height_with_notice(tr, self.agent_notice_in_empty_hero)
+    pub(crate) fn composer_height(&self, tr: &mut TextRenderer, theme: &Theme) -> f64 {
+        self.composer_height_with_notice(tr, theme, self.agent_notice_in_empty_hero)
     }
 
-    fn composer_rect_with_notice(&self, tr: &mut TextRenderer, hero_notice: bool) -> Rect {
-        let wanted = self.composer_height_with_notice(tr, hero_notice);
+    fn composer_rect_with_notice(
+        &self,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        hero_notice: bool,
+    ) -> Rect {
+        let wanted = self.composer_height_with_notice(tr, theme, hero_notice);
         self.composer_rect_for_height(wanted)
     }
 
-    pub(crate) fn composer_rect(&self, tr: &mut TextRenderer) -> Rect {
-        let wanted = self.composer_height(tr);
+    pub(crate) fn composer_rect(&self, tr: &mut TextRenderer, theme: &Theme) -> Rect {
+        let wanted = self.composer_height(tr, theme);
         self.composer_rect_for_height(wanted)
     }
 
@@ -4004,7 +4022,7 @@ impl ChatApp {
         if !(has_agent_conversation && has_no_messages && needs_notice) {
             return;
         }
-        let full = self.composer_rect_with_notice(tr, false);
+        let full = self.composer_rect_with_notice(tr, theme, false);
         let hero = Rect::new(
             self.center_left(),
             self.header_rect().y1,
@@ -4059,8 +4077,8 @@ impl ChatApp {
     /// The timeline: between the header row and the composer. While the call
     /// window floats over it, the messages keep clear of it and wrap beside
     /// it, so it never covers what is being said.
-    pub(crate) fn messages_rect(&self, tr: &mut TextRenderer) -> Rect {
-        let composer = self.composer_rect(tr);
+    pub(crate) fn messages_rect(&self, tr: &mut TextRenderer, theme: &Theme) -> Rect {
+        let composer = self.composer_rect(tr, theme);
         let mut rect = Rect::new(
             self.center_left(),
             self.rect.y0 + self.chrome.header_h,
