@@ -8,7 +8,7 @@
 
 use crate::shell::state::WorkspaceAuthority as _;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::rc::Rc;
 
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
@@ -675,6 +675,8 @@ pub struct ChromeState {
     /// one the power flyout's rows reach.
     session_action_requests: Vec<os_actions::SessionAction>,
     notification_launch_requests: Vec<crate::shell::notification::NotificationLaunch>,
+    notification_action_requests: HashMap<u64, (u64, bool)>,
+    notification_action_results: HashMap<u64, Result<(), String>>,
     /// Id of the group full-screened via `xdg_toplevel.set_fullscreen`.
     /// NOT persisted — the compositor sets it from live state each
     /// frame via [`Self::set_fullscreen_group`]. Client fullscreen is a
@@ -878,6 +880,8 @@ impl ChromeState {
             session_lock_requested: false,
             session_action_requests: Vec::new(),
             notification_launch_requests: Vec::new(),
+            notification_action_requests: HashMap::new(),
+            notification_action_results: HashMap::new(),
             fullscreen_group: None,
             user_fullscreen_group: None,
             maximized_group: None,
@@ -3012,12 +3016,111 @@ impl ChromeState {
         std::mem::take(&mut self.notification_launch_requests)
     }
 
+    pub(crate) fn alarm_actions_available(&self) -> bool {
+        self.notification_bridge
+            .as_ref()
+            .is_some_and(crate::notifications::NotificationBridge::scheduled_actions_available)
+    }
+
+    pub(crate) fn alarm_action_authorized(&self, notification: &Notification) -> bool {
+        let Some(request) = crate::shell::notification::scheduled_launch(notification)
+            .filter(|request| request.target.calendar_alarm)
+        else {
+            return false;
+        };
+        self.tree().desktop.workspaces.iter().any(|workspace| {
+            if workspace.room.to_string() != request.target.room {
+                return false;
+            }
+            let actor = workspace.actor_for_person(&self.local_user_for_room(&workspace.room));
+            crate::shell::search::providers::actions::shell_action_authorized_for(
+                workspace,
+                &actor,
+                &format!("notification.{}.snooze", notification.id),
+            )
+        })
+    }
+
+    pub(crate) fn request_alarm_action(
+        &mut self,
+        id: u64,
+        action: crate::notifications::ScheduledAction,
+        retain_result: bool,
+    ) -> Result<u64, String> {
+        if self
+            .notification_action_requests
+            .len()
+            .saturating_add(self.notification_action_results.len())
+            >= 64
+        {
+            return Err("too many pending alarm actions".into());
+        }
+        let notification = self
+            .notification_log
+            .active()
+            .iter()
+            .find(|notice| notice.id == id)
+            .or_else(|| self.notification_log.history_entry(id))
+            .ok_or("alarm notification is no longer available")?;
+        let request = crate::shell::notification::scheduled_launch(notification)
+            .filter(|request| request.target.calendar_alarm)
+            .ok_or("notification is not a host calendar alarm")?;
+        if !self.alarm_action_authorized(notification) {
+            return Err("alarm's original workspace authority is unavailable".into());
+        }
+        let bridge = self
+            .notification_bridge
+            .as_ref()
+            .ok_or("alarm service unavailable")?;
+        let request_id = bridge.request_scheduled_action(request.app_id, request.target, action)?;
+        self.notification_action_requests
+            .insert(request_id, (id, retain_result));
+        self.bump();
+        Ok(request_id)
+    }
+
+    pub(crate) fn take_alarm_action_result(&mut self, id: u64) -> Option<Result<(), String>> {
+        self.notification_action_results.remove(&id)
+    }
+
+    fn pump_alarm_action_results(&mut self, bridge: &crate::notifications::NotificationBridge) {
+        let requests: Vec<_> = self.notification_action_requests.keys().copied().collect();
+        for request in requests {
+            let Some(result) = bridge.take_scheduled_action_result(request) else {
+                continue;
+            };
+            let Some((id, retain_result)) = self.notification_action_requests.remove(&request)
+            else {
+                continue;
+            };
+            if result.is_ok() {
+                if let Some(removed) = self.notification_log.take_active(id) {
+                    self.emit_closed(&removed, CloseReason::Dismissed);
+                }
+                self.notification_log.take_history(id);
+            } else if let Err(error) = &result
+                && !retain_result
+            {
+                tracing::warn!(%error, "alarm notification action failed");
+                self.push_warning_notification(
+                    tilo_desktop::notifications::alarm_action_failed_label(),
+                    tilo_desktop::notifications::alarm_action_retry_label(),
+                );
+            }
+            if retain_result {
+                self.notification_action_results.insert(request, result);
+            }
+            self.bump();
+        }
+    }
+
     /// Called once per frame; no-op when no bridge is installed.
     pub fn pump_dbus_notifications(&mut self) {
         use chrono::{Datelike, Timelike};
         let Some(bridge) = self.notification_bridge.clone() else {
             return;
         };
+        self.pump_alarm_action_results(&bridge);
         let refresh_policy = self
             .notification_policy_checked
             .is_none_or(|checked| checked.elapsed() >= std::time::Duration::from_millis(750));

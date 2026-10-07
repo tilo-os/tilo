@@ -145,6 +145,15 @@ const DEVICE_REVOKE_PARAMS: &[ActionParam] = &[
     ),
 ];
 
+fn alarm_action_contract() -> tilo_actions::ActionContract {
+    tilo_actions::ActionContract {
+        permission: tilo_actions::PermissionRequirement::Write,
+        retry: tilo_actions::RetryPolicy::Idempotent,
+        tags: vec!["desktop".into(), "notification".into(), "alarm".into()],
+        ..tilo_actions::ActionContract::default()
+    }
+}
+
 pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
     use tilo_actions::{
         ActionContract, ConfirmationPolicy, PermissionRequirement, RetryPolicy, RiskLevel,
@@ -152,6 +161,9 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
 
     let mut contract = ActionContract::default();
     match id {
+        id if crate::shell::notification::alarm_action_address(id).is_some() => {
+            contract = alarm_action_contract();
+        }
         "shortcut-help.toggle" | "overview.toggle" => {
             contract = ActionContract::view();
             contract.retry = RetryPolicy::AtMostOnce;
@@ -3339,6 +3351,14 @@ impl SearchProvider for ActionsProvider {
                     });
                 }
             }
+        }
+        for row in crate::shell::notification::alarm_action_rows(ctx.chrome) {
+            candidates.record(
+                &row.title.to_lowercase(),
+                &row.subtitle.clone().unwrap_or_default().to_lowercase(),
+                &row.id,
+            );
+            out.push(row);
         }
         crate::shell::search::rank_rows(&self.ranker, ctx.needle, out, &candidates.0)
     }

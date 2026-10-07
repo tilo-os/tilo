@@ -979,3 +979,10 @@ activity-catch-up-needs-review = Deine Prüfung ist nötig · { $count ->
    *[other] { $count } wartende Aufgaben
     }
 activity-catch-up-waiting-detail = { $task } · { $who }
+
+notification-alarm-dismiss = Verwerfen
+notification-alarm-snooze = In 5 Minuten erneut erinnern
+notification-alarm-action-failed = Dieser Wecker konnte nicht geändert werden
+notification-alarm-action-title = { $action }: { $title }
+notification-alarm-action-subtitle = Für dieses Weckereignis
+notification-alarm-action-retry = Behalte diese Benachrichtigung und versuche es erneut.
