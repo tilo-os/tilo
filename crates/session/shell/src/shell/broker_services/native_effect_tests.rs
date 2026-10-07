@@ -316,6 +316,234 @@ fn fixture() -> NativeFixture {
 }
 
 #[test]
+fn certified_job_canonical_observation_keeps_original_room_device_and_receipt() {
+    use crate::shell::{
+        chrome_state::ChromeState, search::providers::live_app_actions::LiveAppActionsProvider,
+    };
+    use std::rc::Rc;
+    use tilo_actions::remote::PendingPoll;
+
+    let mut fixture = fixture();
+    let actions = fixture.broker.app_action_broker().unwrap();
+    let surface = wait_for_membership_surface(&actions, fixture.room);
+    let expected = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+        fixture.certificate.user_public_key,
+    );
+    let provider = Rc::new(LiveAppActionsProvider::new(actions.clone()));
+    let action = surface
+        .actions
+        .iter()
+        .find(|action| action.action == "add-agent")
+        .unwrap();
+    assert_capacity_refuses_before_native_admission(
+        &fixture, &provider, &surface, action, &expected,
+    );
+    let mut pending = provider.begin_published_for_test(
+        &surface,
+        action,
+        expected.clone(),
+        serde_json::json!({"agent":"observed-agent", "preset":"contributor"})
+            .as_object()
+            .unwrap(),
+    );
+    let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();
+    let (job, original) = loop {
+        match pending.poll_ready() {
+            PendingPoll::Ready(Ok((job, receipt))) => break (job, receipt.invocation),
+            PendingPoll::Ready(Err(error)) => panic!("certified action refused: {error}"),
+            PendingPoll::Abandoned => panic!("certified action abandoned"),
+            PendingPoll::Waiting => {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    };
+    assert_eq!(
+        actions
+            .status_for_actor(job, &expected)
+            .unwrap()
+            .invocation(),
+        original,
+        "the existing local owner must retain this exact certified-origin invocation"
+    );
+    let mut tree = WorkspaceTree::bootstrap_default();
+    assert!(tree.set_room(tree.desktop.active, fixture.room));
+    let chrome = ChromeState::new_with_handle(tree.shared());
+    assert_eq!(chrome.borrow().active_local_user(), expected);
+    loop {
+        let receipt = canonical_job_receipt(provider.clone(), job, &chrome)
+            .expect("original certified status is reachable through the canonical resource door");
+        assert_eq!(receipt.update.invocation(), original);
+        if receipt.update.is_terminal() {
+            assert!(matches!(receipt.update, InvocationUpdate::Succeeded { .. }));
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let palette_job = palette_job_row(&provider, job, &chrome);
+    select_same_person_different_device(&mut fixture);
+    assert!(
+        canonical_job_receipt(provider.clone(), job, &chrome).is_none(),
+        "another signed device of the same Person cannot borrow the original execution"
+    );
+    assert!(
+        matches!(
+            invoke_palette_job(&palette_job, &chrome),
+            Err(crate::shell::search::action_api::ActionError::Refused(_))
+        ),
+        "a retained palette row must recheck the original certified device at invocation"
+    );
+    let original_system = fixture.home.config().join("test-system");
+    fixture
+        .home
+        .env()
+        .set("TILO_IDENTITY_ROOT", original_system);
+    let receipt = canonical_job_receipt(provider.clone(), job, &chrome).unwrap();
+    assert_eq!(
+        receipt.update.invocation(),
+        original,
+        "refused observation must preserve the original terminal route"
+    );
+    let foreign = ChromeState::new_with_handle(WorkspaceTree::default().shared());
+    foreign.borrow_mut().local_user_id = "another-person".into();
+    assert!(canonical_job_receipt(provider.clone(), job, &foreign).is_none());
+    drop(provider);
+    drop(actions);
+    drop(fixture);
+}
+
+fn select_same_person_different_device(fixture: &mut NativeFixture) {
+    let identity = runtime_identity::identity_dir_from_env().unwrap();
+    let other_system = fixture.home.config().join("other-signed-device");
+    crate::firstboot::ensure_collaboration_identity(
+        &identity,
+        &tilo_user_identity::IdentityPaths::under(&other_system),
+    )
+    .unwrap();
+    fixture.home.env().set("TILO_IDENTITY_ROOT", &other_system);
+    let (_, changed) =
+        tilo_identity_host::broker::trusted_current_device(&fixture.room.to_string()).unwrap();
+    assert_eq!(changed.user_public_key, fixture.certificate.user_public_key);
+    assert_ne!(
+        changed.device_public_key,
+        fixture.certificate.device_public_key
+    );
+}
+
+fn palette_job_row(
+    provider: &crate::shell::search::providers::live_app_actions::LiveAppActionsProvider,
+    job: u64,
+    chrome: &crate::shell::chrome_state::Chrome,
+) -> crate::shell::search::SearchResult {
+    crate::shell::search::SearchProvider::query(
+        provider,
+        crate::shell::search::SearchContext {
+            query_scope: Some(crate::shell::chrome_state::SearchScope::All),
+            include_programmatic: false,
+            needle: "jobs",
+            wanted: &[],
+            chrome: &chrome.borrow(),
+            doc: &automerge::AutoCommit::new(),
+            doc_root: &automerge::ROOT,
+        },
+    )
+    .into_iter()
+    .find(|row| row.id == crate::shell::search::providers::live_app_actions::job_status_id(job))
+    .expect("the ordinary palette also exposes the retained job")
+}
+
+fn invoke_palette_job(
+    row: &crate::shell::search::SearchResult,
+    chrome: &crate::shell::chrome_state::Chrome,
+) -> Result<crate::shell::search::ActionReceipt, crate::shell::search::action_api::ActionError> {
+    row.on_invoke.as_ref().unwrap()(
+        &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new()),
+        &automerge::ROOT,
+        chrome,
+        &crate::shell::search::action_api::ActionArgs::none(),
+    )
+}
+
+fn canonical_job_receipt(
+    provider: std::rc::Rc<
+        crate::shell::search::providers::live_app_actions::LiveAppActionsProvider,
+    >,
+    job: u64,
+    chrome: &crate::shell::chrome_state::Chrome,
+) -> Option<crate::shell::search::ActionReceipt> {
+    use crate::shell::search::{
+        SearchRegistry,
+        action_api::{ActionCatalog, AllVisible, ResourceRef},
+    };
+    let mut registry = SearchRegistry::new();
+    registry.register(provider);
+    let resource = ResourceRef::new(
+        "app-actions",
+        crate::shell::search::providers::live_app_actions::job_status_id(job),
+    );
+    let mut doc = automerge::AutoCommit::new();
+    let catalog = ActionCatalog::build_for_resource(
+        &registry,
+        &resource,
+        crate::shell::chrome_state::SearchScope::All,
+        None,
+        &chrome.borrow(),
+        &doc,
+        &automerge::ROOT,
+        &AllVisible,
+    );
+    let selected = catalog.select(&resource)?;
+    let outcome = selected
+        .invoke_nullary(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            chrome,
+        )
+        .ok()?;
+    let crate::shell::search::InvocationDisposition::Accepted(receipt) = outcome else {
+        panic!("job status must resolve through its actual existing receipt");
+    };
+    Some(receipt)
+}
+
+fn assert_capacity_refuses_before_native_admission(
+    fixture: &NativeFixture,
+    provider: &crate::shell::search::providers::live_app_actions::LiveAppActionsProvider,
+    surface: &tilo_action_broker::collab_broker_capnp::PublishedSurface,
+    action: &tilo_action_broker::collab_broker_capnp::PublishedAction,
+    person: &str,
+) {
+    use tilo_actions::remote::{ActionHostError, PendingPoll};
+    let before = fixture
+        .owner
+        .with_current(fixture.room, |view| Ok(view.generation()))
+        .unwrap();
+    let capacity = provider.exhaust_job_routes_for_test();
+    let mut pending = provider.begin_published_for_test(
+        surface,
+        action,
+        person.to_owned(),
+        serde_json::json!({"agent":"must-not-be-created", "preset":"contributor"})
+            .as_object()
+            .unwrap(),
+    );
+    assert!(
+        matches!(pending.poll_ready(), PendingPoll::Ready(Err(ActionHostError::Unavailable { reason }))
+        if reason == "certified job routing capacity exhausted before admission")
+    );
+    assert_eq!(
+        fixture
+            .owner
+            .with_current(fixture.room, |view| Ok(view.generation()))
+            .unwrap(),
+        before,
+        "capacity refusal must occur before invoking the genuine native owner effect"
+    );
+    drop(capacity);
+}
+
+#[test]
 fn native_certified_local_membership_retains_original_and_settles_failed_and_successful_effects() {
     let NativeFixture {
         home,
